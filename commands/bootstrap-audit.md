@@ -1,13 +1,13 @@
 ---
 name: bootstrap-audit
-description: "Stage 2D: Audit and reconcile generated config and skills for consistency."
+description: "Stage 5: Audit and reconcile generated config and skills for consistency."
 ---
 
-# Stage 2D: Audit & Reconciliation
+# Stage 5: Audit & Reconciliation
 
 Reconcile ALL existing skills against the new `analysis.yaml`. This stage ensures skills stay current with codebase evolution.
 
-**Prerequisites:** Stage 2A complete (CLAUDE.md and AGENTS.md must exist), Stage 2C complete, and Stage 2C+ complete (core and domain skills generated).
+**Prerequisites:** Stage 2 complete (CLAUDE.md and AGENTS.md must exist), Stage 3 complete, and Stage 4 complete (core and domain skills generated).
 
 **When to Run:**
 - **First Bootstrap:** Full validation of newly generated skills
@@ -34,7 +34,7 @@ This file contains all patterns, conventions, and recommendations from Stage 1 d
 
 At all other points, continue without pausing for user input.
 
-**First bootstrap note:** Stage 2D always runs after Stage 2C and Stage 2C+ have generated skills. The full 2.1a–2.1g audit applies to those newly generated skills — do not skip it. Step 2.1f (behavioral rules freshness) and Step 2.1g (references folder convention) always run. If Step 2.1's inventory finds zero skills, Stage 2C did not run successfully — stop and run Stage 2C and Stage 2C+ before continuing.
+**First bootstrap note:** Stage 5 always runs after Stage 3 and Stage 4 have generated skills. The full 2.1a–2.1g audit applies to those newly generated skills — do not skip it. Step 2.1f (behavioral rules freshness) and Step 2.1g (references folder convention) always run. If Step 2.1's inventory finds zero skills, Stage 3 did not run successfully — stop and run Stage 3 and Stage 4 before continuing.
 
 **Execution mode:** Prioritize execution over deliberation. For each skill, evaluate checks and record findings quickly — flag borderline cases with a recommendation and move on. Choose one interpretation for ambiguous cases and continue; only course-correct if you encounter a concrete contradiction. Write each audit finding once; do not revise or expand entries. Do not pause between skills unless a mandatory stop is reached.
 
@@ -68,7 +68,7 @@ done
 
 This bootstrap places Codex skills under `.agents/skills/` (documented contract). Verify parity to prevent drift. If your environment uses `.codex/skills/` as a compatibility mirror, validate that mirror separately.
 
-> **Note:** This parity check is also run in Stage 2E Check 7 as a post-reconciliation safety net. If 2.1a passes here but Stage 2E Check 7 fails, a Stage 2D reconciliation change introduced drift — re-sync the affected skill.
+> **Note:** This parity check is also run in Stage 6 Check 7 as a post-reconciliation safety net. If 2.1a passes here but Stage 6 Check 7 fails, a Stage 5 reconciliation change introduced drift — re-sync the affected skill.
 
 ```bash
 echo "=== Codex Skills Parity Check ==="
@@ -266,9 +266,9 @@ CRITICAL:   [skill-name] — potential secrets/credentials found
 
 **Why:** Project skills must not duplicate global skills or attempt to replicate global agent functionality. This check catches overlap that was missed during generation or introduced by manual edits.
 
-**Incremental approach:** Stage 2C already made deduplication decisions and saved them to `.claude/discovery/deduplication-report.txt`. Skills classified DUPLICATE, SUBSET, COMPLEMENT, or LAYERED in that report retain their classification — those decisions involved meaningful analysis and do not need re-evaluation. However, **CLEAN-classified skills must be re-evaluated** against the current global inventory: new global skills may have been installed since the last bootstrap, turning a previously-clean project skill into a duplicate. Skills not in the report at all (e.g., manually created) also get a full check.
+**Incremental approach:** Stage 3 already made deduplication decisions and saved them to `.claude/discovery/deduplication-report.txt`. Skills classified DUPLICATE, SUBSET, COMPLEMENT, or LAYERED in that report retain their classification — those decisions involved meaningful analysis and do not need re-evaluation. However, **CLEAN-classified skills must be re-evaluated** against the current global inventory: new global skills may have been installed since the last bootstrap, turning a previously-clean project skill into a duplicate. Skills not in the report at all (e.g., manually created) also get a full check.
 
-**Required format for deduplication-report.txt** (Stage 2E and this section parse it with `grep "^LAYERED: skill-name"`):
+**Required format for deduplication-report.txt** (Stage 6 and this section parse it with `grep "^LAYERED: skill-name"`):
 ```
 DUPLICATE: skill-name — covered by global skill: global-name
 SUBSET: skill-name — covered by global superset: global-name
@@ -279,7 +279,7 @@ LAYERED: skill-name — thin checklist, complements global agent-name agent
 Each classification keyword must be at line start, followed by `: `, followed immediately by the skill name. Do not indent lines or add prefixes before the classification keyword.
 
 ```bash
-echo "=== Deduplication Baseline (from Stage 2C) ==="
+echo "=== Deduplication Baseline (from Stage 3) ==="
 if [ -f ".claude/discovery/deduplication-report.txt" ]; then
     cat .claude/discovery/deduplication-report.txt
     echo "(DUPLICATE/SUBSET/COMPLEMENT/LAYERED retained — CLEAN skills will be re-evaluated against current globals)"
@@ -364,7 +364,7 @@ CLEAN:     [project-skill] — no global overlap
 
 **Why:** Behavioral rules live in the global `~/.claude/CLAUDE.md` (not in project files). This check verifies the global file is current. It runs once per re-bootstrap, not per-skill.
 
-Note: Stage 2E Check #11 re-runs behavioral rules detection as a post-reconciliation safety net (pattern-matching only, no remediation). If gaps found in Step 2.1f are fixed here, Stage 2E Check #11 should pass clean. If 2.1f passes but 2E #11 fails, a Stage 2D reconciliation change introduced new gaps.
+Note: Stage 6 Check #11 re-runs behavioral rules detection as a post-reconciliation safety net (pattern-matching only, no remediation). If gaps found in Step 2.1f are fixed here, Stage 6 Check #11 should pass clean. If 2.1f passes but 2E #11 fails, a Stage 5 reconciliation change introduced new gaps.
 
 ```bash
 ENG_TEAM_DIR="${ENG_TEAM_DIR:-~/claude-eng-team}"
@@ -383,7 +383,7 @@ fi
 for section in "## Behavioral Rules" "## General Guardrails"; do
     if grep -q "$section" CLAUDE.md 2>/dev/null; then
         echo "  ❌ Project CLAUDE.md contains '$section' — this section belongs in ~/.claude/CLAUDE.md, not in project files."
-        echo "     Remove it from CLAUDE.md (Stage 2A re-bootstrap will regenerate without it)."
+        echo "     Remove it from CLAUDE.md (Stage 2 re-bootstrap will regenerate without it)."
     fi
     if grep -q "$section" AGENTS.md 2>/dev/null; then
         echo "  ❌ Project AGENTS.md contains '$section' — remove it (belongs in global file only)."
@@ -405,7 +405,7 @@ Look for these common condensation gaps:
 - Cleanup rule missing entirely
 - Secrets rule missing entirely
 
-**Run gap-detection now** — do not wait for Stage 2E to catch these:
+**Run gap-detection now** — do not wait for Stage 6 to catch these:
 
 ```bash
 GLOBAL_CLAUDE="$HOME/.claude/CLAUDE.md"
@@ -426,7 +426,7 @@ if [ -f "$GLOBAL_CLAUDE" ] && grep -q "## Behavioral Rules" "$GLOBAL_CLAUDE"; th
 fi
 ```
 
-If any gaps are found, follow the "If outdated" instructions below. Stage 2E check #11 runs the same detection as a final safety net.
+If any gaps are found, follow the "If outdated" instructions below. Stage 6 check #11 runs the same detection as a final safety net.
 
 **If outdated: MANDATORY STOP.** This is a global file that affects all projects. Before modifying `~/.claude/CLAUDE.md`, present the detected gaps to the user and get explicit approval. Show:
 1. Which rules are missing or condensed
@@ -709,16 +709,16 @@ echo "Compare above lists to identify missing skills"
 ```
 
 **For each recommended skill that doesn't exist:**
-- **Core skills** (review-gates, security-review-gates, performance-review-gates, code-conventions): return to Stage 2C (`bootstrap-stage2c-skills-generation_prompt.md`) and generate it
-- **Domain/pattern skills** (codebase-overview, [pattern]-patterns, [failure-type]-prevention): return to Stage 2C+ (`bootstrap-stage2c-plus-domain-skills_prompt.md`) and generate it
+- **Core skills** (review-gates, security-review-gates, performance-review-gates, code-conventions): return to Stage 3 (`/bootstrap-skills`) and generate it
+- **Domain/pattern skills** (codebase-overview, [pattern]-patterns, [failure-type]-prevention): return to Stage 4 (`/bootstrap-domain`) and generate it
 - Use `init_skill.py` to create the structure. If `init_skill.py` is not available, create skills manually following the appropriate template.
 - Populate content from analysis.yaml
 - Add trigger to `skill-rules.json` only if the missing skill is critical (review gates/safety) and NOT classified LAYERED
-- **After returning from Stage 2C or Stage 2C+:** Apply Steps 2.1b–2.1e to each newly generated skill before proceeding to Step 2.5. The first-bootstrap note in Step 1 does not exempt this return trip — all newly generated skills must pass the full audit.
+- **After returning from Stage 3 or Stage 4:** Apply Steps 2.1b–2.1e to each newly generated skill before proceeding to Step 2.5. The first-bootstrap note in Step 1 does not exempt this return trip — all newly generated skills must pass the full audit.
 
-  **Return path:** After generating missing skills in Stage 2C or Stage 2C+, re-enter Stage 2D at Step 2.1a. Apply 2.1a through 2.1g to each newly generated skill. Append the new audit findings (PASS/REWRITE_DESC/etc.) to the existing audit results from the original pass. Proceed to Step 2.5 only after all newly generated skills have completed the full audit sub-steps.
+  **Return path:** After generating missing skills in Stage 3 or Stage 4, re-enter Stage 5 at Step 2.1a. Apply 2.1a through 2.1g to each newly generated skill. Append the new audit findings (PASS/REWRITE_DESC/etc.) to the existing audit results from the original pass. Proceed to Step 2.5 only after all newly generated skills have completed the full audit sub-steps.
 
-  ⚠️  One return trip only: if Step 2.4 still shows missing skills after returning from Stage 2C or Stage 2C+, document the remaining gaps in the reconciliation report and proceed to Step 2.5 rather than making another return trip. Do not loop.
+  ⚠️  One return trip only: if Step 2.4 still shows missing skills after returning from Stage 3 or Stage 4, document the remaining gaps in the reconciliation report and proceed to Step 2.5 rather than making another return trip. Do not loop.
 
 ---
 
@@ -744,7 +744,7 @@ STALE (decision required): [count]
 UNREGISTERED CRITICAL (adding triggers): [count]
   - [skill-name]: critical skill, adding to skill-rules.json
 
-MISSING (need to generate in Stage 2C): [count]
+MISSING (need to generate in Stage 3): [count]
   - [skill-name]: recommended by analysis, not yet created
 
 ---
@@ -788,10 +788,10 @@ After user approval, make changes for each skill category:
       jq . .claude/skills/skill-rules.json > /dev/null 2>&1 || echo "ERROR: skill-rules.json is invalid JSON after removing [name]"
   fi
   ```
-- **UNREGISTERED critical:** Add a trigger entry to `.claude/skills/skill-rules.json` following the format in Stage 2C (see review-gates example).
+- **UNREGISTERED critical:** Add a trigger entry to `.claude/skills/skill-rules.json` following the format in Stage 3 (see review-gates example).
 
 ---
 
-# Stage 2D Complete
+# Stage 5 Complete
 
-All audit steps (2.1a–2.1g, 2.2–2.6) executed. Proceed to Stage 2E (bootstrap-stage2e-completion_prompt.md).
+All audit steps (2.1a–2.1g, 2.2–2.6) executed. Proceed to Stage 6 — run `/bootstrap-complete`.

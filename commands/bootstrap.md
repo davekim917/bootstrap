@@ -22,11 +22,11 @@ Bootstrap stages:
 
   Stage 0: Ground truth collection (shell script, ~5 sec)
   Stage 1: /bootstrap-discovery — Analyze codebase patterns and architecture
-  Stage 2A: /bootstrap-config — Generate CLAUDE.md and AGENTS.md
-  Stage 2C: /bootstrap-skills — Generate project-specific skills
-  Stage 2C+: /bootstrap-domain — Generate domain-specific skills (optional)
-  Stage 2D: /bootstrap-audit — Audit and reconcile all generated artifacts
-  Stage 2E: /bootstrap-complete — Final cleanup and validation
+  Stage 2: /bootstrap-config — Generate CLAUDE.md and AGENTS.md
+  Stage 3: /bootstrap-skills — Generate project-specific skills
+  Stage 4: /bootstrap-domain — Generate domain-specific skills (optional)
+  Stage 5: /bootstrap-audit — Audit and reconcile all generated artifacts
+  Stage 6: /bootstrap-complete — Final cleanup and validation
 
 Run stages sequentially. Review output between each stage.
 ```

@@ -1,9 +1,9 @@
 ---
 name: bootstrap-config
-description: "Stage 2A: Generate CLAUDE.md and AGENTS.md from Stage 1 discovery analysis."
+description: "Stage 2: Generate CLAUDE.md and AGENTS.md from Stage 1 discovery analysis."
 ---
 
-# Stage 2A: Core Configuration
+# Stage 2: Core Configuration
 
 Generate the foundational configuration files: `CLAUDE.md` and `AGENTS.md`.
 
@@ -63,7 +63,7 @@ Content lives at three levels based on how critical it is to always have in cont
 
 ---
 
-# Your Mission (Stage 2A)
+# Your Mission (Stage 2)
 
 Generate core configuration files:
 1. `CLAUDE.md` - **Always-on guardrails + overview** for Claude Code (see Generation Rules for size and format constraints)
@@ -127,7 +127,7 @@ Handle all sections based on markers:
 
 1. **`<!-- AUTO-GENERATED: ... -->` sections:** Regenerate from analysis.yaml (replace entirely — do not carry forward entries from the previous version). Every Critical Guardrail and Known Pitfall must trace to a current entry in analysis.yaml. If a pattern or failure no longer appears in analysis.yaml, its corresponding line must not appear in the regenerated output.
 2. **`<!-- USER SECTION: ... -->` sections:** Preserve user content (do not overwrite)
-3. **`<!-- SKILL-DERIVED: ... -->` sections:** Preserve unchanged — authored by Stage 2C; Stage 2C will refresh them when it runs
+3. **`<!-- SKILL-DERIVED: ... -->` sections:** Preserve unchanged — authored by Stage 3; Stage 3 will refresh them when it runs
 4. **Unmarked sections:** Analyze and propose changes (see below)
 
 **Handling Unmarked/Legacy Content:**
@@ -192,21 +192,21 @@ if [ -f ".claude/hooks.json" ]; then
 fi
 
 # Remove any _skill-rules-entry.json files left behind by previous bootstrap cycles.
-# Only safe at the START of a fresh bootstrap — skip if Stage 2C has already started
-# (Stage 2C Step 7 sub-step 4 "Delete Artifacts" is the authoritative cleanup for mid-cycle runs).
-# Guard: skip if any SKILL.md already exists (means Stage 2C has started or completed).
+# Only safe at the START of a fresh bootstrap — skip if Stage 3 has already started
+# (Stage 3 Step 7 sub-step 4 "Delete Artifacts" is the authoritative cleanup for mid-cycle runs).
+# Guard: skip if any SKILL.md already exists (means Stage 3 has started or completed).
 if find .claude/skills -name "SKILL.md" -mindepth 2 -maxdepth 2 2>/dev/null | grep -q .; then
-    echo "Skipping _skill-rules-entry.json cleanup — Stage 2C appears to have started (SKILL.md files found). Stage 2C Step 7 sub-step 4 will clean up these files."
+    echo "Skipping _skill-rules-entry.json cleanup — Stage 3 appears to have started (SKILL.md files found). Stage 3 Step 7 sub-step 4 will clean up these files."
 else
     for f in .claude/skills/*/_skill-rules-entry.json; do [ -f "$f" ] && trash "$f"; done 2>/dev/null
-    echo "Cleaned up leftover _skill-rules-entry.json files (pre-Stage 2C state confirmed)."
+    echo "Cleaned up leftover _skill-rules-entry.json files (pre-Stage 3 state confirmed)."
 fi
 
 # Remove skill README.md files (these are temporary artifacts from init_skill.py)
 for f in .claude/skills/*/README.md; do [ -f "$f" ] && trash "$f"; done 2>/dev/null
 ```
 
-**Note:** `skill-rules.json` is an optional Claude Code extension for deterministic skill activation via hooks. It is generated in Stage 2C for critical skills (review gates, safety). Most skills use description-based activation and do not need entries here.
+**Note:** `skill-rules.json` is an optional Claude Code extension for deterministic skill activation via hooks. It is generated in Stage 3 for critical skills (review gates, safety). Most skills use description-based activation and do not need entries here.
 
 **Why:** Old files will confuse users and cause inconsistencies. All workflow content is now in CLAUDE.md.
 
@@ -224,7 +224,7 @@ for f in .claude/skills/*/README.md; do [ -f "$f" ] && trash "$f"; done 2>/dev/n
 **AUTO-GENERATED markers are required on all auto-generated sections:**
 - Use `<!-- AUTO-GENERATED: Section Name -->` and `<!-- END AUTO-GENERATED -->` for all content derived from `analysis.yaml` or codebase analysis
 - Use `<!-- USER SECTION: Section Name -->` and `<!-- END USER SECTION -->` only to preserve sections that already exist in a re-bootstrap file — do not create new USER SECTION blocks in fresh files
-- Use `<!-- SKILL-DERIVED: Section Name -->` and `<!-- END SKILL-DERIVED -->` for content authored by Stage 2C and Stage 2C+. On re-bootstrap, Stage 2A MUST preserve SKILL-DERIVED blocks unchanged. Stage 2C will overwrite them with fresh guardrails from the current skills after it runs.
+- Use `<!-- SKILL-DERIVED: Section Name -->` and `<!-- END SKILL-DERIVED -->` for content authored by Stage 3 and Stage 4. On re-bootstrap, Stage 2 MUST preserve SKILL-DERIVED blocks unchanged. Stage 3 will overwrite them with fresh guardrails from the current skills after it runs.
 - Sections without markers in re-bootstrap files will be analyzed and proposed for classification (see Step 3)
 
 ---
@@ -298,7 +298,7 @@ These rules apply even when no skill triggers. They are duplicated here from ski
 <!-- END AUTO-GENERATED -->
 
 <!-- SKILL-DERIVED: Skill Guardrails -->
-<!-- Populated by Stage 2C after skills are generated. Leave empty on first bootstrap. -->
+<!-- Populated by Stage 3 after skills are generated. Leave empty on first bootstrap. -->
 <!-- END SKILL-DERIVED -->
 
 <!-- AUTO-GENERATED: Known Pitfalls -->
@@ -391,7 +391,7 @@ These rules apply even when no skill triggers. They are duplicated here from ski
 <!-- END AUTO-GENERATED -->
 
 <!-- SKILL-DERIVED: Skill Guardrails -->
-<!-- Populated by Stage 2C after skills are generated. Leave empty on first bootstrap. -->
+<!-- Populated by Stage 3 after skills are generated. Leave empty on first bootstrap. -->
 <!-- END SKILL-DERIVED -->
 
 <!-- AUTO-GENERATED: Known Pitfalls -->
@@ -419,7 +419,7 @@ Historical failures from this codebase. Avoid repeating these.
 
 ---
 
-# Stage 2A Complete
+# Stage 2 Complete
 
 **Generated:**
 - ✅ `CLAUDE.md` (always-on guardrails + overview, per Generation Rules constraints)
@@ -429,11 +429,11 @@ Historical failures from this codebase. Avoid repeating these.
 **Deprecated (removed if present):**
 - ❌ Project-level agents — domain knowledge belongs in skills, not agents
 
-**Verify Stage 2A complete:**
+**Verify Stage 2 complete:**
 - [ ] `wc -w CLAUDE.md` → under 3,500 words
 - [ ] `wc -w AGENTS.md` → under 3,500 words
 - [ ] `diff <(sed 's/AGENTS\.md/CLAUDE.md/g' AGENTS.md) CLAUDE.md` → minimal diffs (path names only)
 - [ ] `grep "@import" CLAUDE.md AGENTS.md` → no results
 - [ ] `grep "## Behavioral Rules\|## General Guardrails" CLAUDE.md AGENTS.md` → no results
 
-**Next:** Run Stage 2C (Skills Generation).
+**Next:** Run Stage 3 (Skills Generation).

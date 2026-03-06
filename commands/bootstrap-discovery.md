@@ -152,7 +152,7 @@ Use for:
 
 ## 1. Tech Stack Discovery
 
-> **Why:** Stage 2A populates Tech Stack section from these findings.
+> **Why:** Stage 2 populates Tech Stack section from these findings.
 
 **File-based detection:**
 - Read package.json, requirements.txt, pyproject.toml, go.mod, etc.
@@ -179,7 +179,7 @@ imports. **Save exact versions where found.**
 
 ## 2. Architecture Analysis
 
-> **Why:** Stage 2A generates Overview and Code Conventions sections; Stage 2C creates codebase-overview skill.
+> **Why:** Stage 2 generates Overview and Code Conventions sections; Stage 3 creates codebase-overview skill.
 
 **Directory structure:**
 ```bash
@@ -217,7 +217,7 @@ navigation stacks for mobile). Use the same depth as the generic patterns above.
 
 ## 3. Code Convention Discovery
 
-> **Why:** Stage 2C generates the code-conventions skill directly from these patterns.
+> **Why:** Stage 3 generates the code-conventions skill directly from these patterns.
 
 **Pattern detection:**
 ```bash
@@ -245,7 +245,7 @@ grep -r "validate\|schema\|zod\|yup\|pydantic" --include="*.ts" --include="*.py"
 
 ## 4. Workflow Analysis
 
-> **Why:** Stage 2A generates Workflow and Commands sections from these findings.
+> **Why:** Stage 2 generates Workflow and Commands sections from these findings.
 
 **Discover:**
 - Git workflow (feature branches, trunk-based, gitflow)
@@ -272,7 +272,7 @@ For detected domains, search Makefile/README/scripts for domain-specific command
 
 ## 5. Testing Strategy
 
-> **Why:** Stage 2C incorporates test patterns into review-gates and code-conventions skills.
+> **Why:** Stage 3 incorporates test patterns into review-gates and code-conventions skills.
 
 **Identify:**
 ```bash
@@ -297,7 +297,7 @@ tests, ML evaluation metrics, DAG validation, reconciliation checks, LLM mocking
 
 ## 6. Patterns
 
-> **Why:** Stage 2C generates pattern-specific skills from service patterns.
+> **Why:** Stage 3 generates pattern-specific skills from service patterns.
 
 **Find:**
 ```bash
@@ -323,7 +323,7 @@ structure, financial computation patterns).
 
 ## 7. Domain Understanding
 
-> **Why:** Stage 2A populates Project Context section; Stage 2C may generate domain skills.
+> **Why:** Stage 2 populates Project Context section; Stage 3 may generate domain skills.
 
 **Infer from code:**
 - What does this application do?
@@ -353,7 +353,7 @@ find . -name "main.*" -o -name "index.*" -o -name "app.*" | \
 
 ## 8. Security Discovery
 
-> **Why:** Stage 2C generates security-review-gates skill from these findings.
+> **Why:** Stage 3 generates security-review-gates skill from these findings.
 
 **Grep patterns:**
 ```bash
@@ -380,7 +380,7 @@ security, mobile secure storage).
 
 ## 9. Consistent Terminology Detection
 
-> **Why:** Stage 2C uses preferred terms consistently across all generated skills.
+> **Why:** Stage 3 uses preferred terms consistently across all generated skills.
 
 **Detect inconsistent terminology:**
 ```bash
@@ -399,7 +399,7 @@ inconsistent usage across the codebase.
 
 ## 10. Known Historical Failures
 
-> **Why:** Stage 2A populates Known Pitfalls section; Stage 2C adds pitfalls to relevant skills.
+> **Why:** Stage 2 populates Known Pitfalls section; Stage 3 adds pitfalls to relevant skills.
 
 **Git history mining:**
 ```bash
@@ -432,7 +432,7 @@ like "overfit", "backfill", "crash", "reconcil" based on the stack).
 
 ## 11. Global Skills & Agents Inventory (Deduplication)
 
-> **Why:** Stage 2C uses these lists to skip project skills that would duplicate global coverage. Global skills/agents already provide domain expertise -- do not recommend project-level skills that duplicate what globals already cover. Inventory them here so Stage 2C can skip redundant generation.
+> **Why:** Stage 3 uses these lists to skip project skills that would duplicate global coverage. Global skills/agents already provide domain expertise -- do not recommend project-level skills that duplicate what globals already cover. Inventory them here so Stage 3 can skip redundant generation.
 
 **Inventory global skills:**
 ```bash
@@ -479,7 +479,7 @@ for skill_dir in ${CODEX_HOME:+"$CODEX_HOME"/skills/*/} ~/.codex/skills/*/; do
 done
 ```
 
-**Record all lists in analysis.yaml** (see output format below). Stage 2C uses these to skip project skills that would duplicate global coverage. For each global skill, derive the `covers` field from the description extracted by the bash loop above — do NOT read individual skill files for this step:
+**Record all lists in analysis.yaml** (see output format below). Stage 3 uses these to skip project skills that would duplicate global coverage. For each global skill, derive the `covers` field from the description extracted by the bash loop above — do NOT read individual skill files for this step:
 
 ```yaml
   covers:
@@ -499,7 +499,7 @@ Report findings with grep counts, file citations (file:line), consistency percen
 
 ## Pattern Classification
 
-For each critical pattern discovered, classify `pattern_type` as one of: `reference`, `workflow`, `review-gate`, `domain-pattern`, `failure-prevention`, `dynamic-context`, `visual-output`, `template`, `io-examples`. Optionally set `review_gate_variant` (only when `pattern_type` is `review-gate`) to one of: `"general"`, `"security"`, `"performance"`. Stage 2C uses these fields to route content to the correct review-gate skills.
+For each critical pattern discovered, classify `pattern_type` as one of: `reference`, `workflow`, `review-gate`, `domain-pattern`, `failure-prevention`, `dynamic-context`, `visual-output`, `template`, `io-examples`. Optionally set `review_gate_variant` (only when `pattern_type` is `review-gate`) to one of: `"general"`, `"security"`, `"performance"`. Stage 3 uses these fields to route content to the correct review-gate skills.
 
 Also set `recommended_skill` on the category entry to the skill name that should encode this pattern (e.g., `api-patterns`, `auth-patterns`, `auth-review-gates`).
 
@@ -600,12 +600,12 @@ Recommendations (after deduplication):
   - Domain skills: [Business logic, product domains — excluding those covered by global skills]
 - Skipped (covered by global skills): [List any recommended skills that were dropped due to global coverage]
 
-Evaluation Scenarios: Deferred to Stage 2C
+Evaluation Scenarios: Deferred to Stage 3
 
 Analysis saved to: .claude/discovery/analysis.yaml
-Inventory age note: The global skills inventory captured above is frozen at discovery time. Stage 2C will use it for deduplication decisions. If global skills change before Stage 2C runs, Stage 2C's Step 6a live-check fallback can update the inventory — but only if the `global_skills_available` section is entirely absent from analysis.yaml. For time-sensitive bootstraps (>1 day between Stage 1 and Stage 2), consider re-running Stage 1 discovery.
+Inventory age note: The global skills inventory captured above is frozen at discovery time. Stage 3 will use it for deduplication decisions. If global skills change before Stage 3 runs, Stage 3's Step 6a live-check fallback can update the inventory — but only if the `global_skills_available` section is entirely absent from analysis.yaml. For time-sensitive bootstraps (>1 day between Stage 1 and Stage 2), consider re-running Stage 1 discovery.
 
-Next: Proceed to Stage 2A (Core Configuration) and run bootstrap-stage2a-core-config_prompt.md
+Next: Proceed to Stage 2 (Core Configuration) — run `/bootstrap-config`
 ```
 
 **Greenfield check:** If more than half of the discovery areas produced empty arrays, append this warning to the summary:

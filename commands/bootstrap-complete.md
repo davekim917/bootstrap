@@ -1,13 +1,13 @@
 ---
 name: bootstrap-complete
-description: "Stage 2E: Final cleanup and validation of bootstrap output."
+description: "Stage 6: Final cleanup and validation of bootstrap output."
 ---
 
-# Stage 2E: Validation & Completion
+# Stage 6: Validation & Completion
 
 Final validation, completion report, and cleanup.
 
-**Prerequisites:** Stage 2D complete (audit & reconciliation done).
+**Prerequisites:** Stage 5 complete (audit & reconciliation done).
 
 **Default: proceed immediately.** Execute Steps 1–3 sequentially without pausing for confirmation. Run the validation script in Step 1 and report its output. Generate the completion report in Step 2 after validation passes. Run cleanup in Step 3.
 
@@ -15,7 +15,7 @@ Final validation, completion report, and cleanup.
 
 # Step 1: Final Validation
 
-**Why:** Automated validation catches configuration errors (invalid JSON, missing frontmatter, parity drift) before the user commits. Catching issues here prevents silent failures during actual use. This validation also serves as a secondary safety net for skills generated during Stage 2D's return trip to Stage 2C.
+**Why:** Automated validation catches configuration errors (invalid JSON, missing frontmatter, parity drift) before the user commits. Catching issues here prevents silent failures during actual use. This validation also serves as a secondary safety net for skills generated during Stage 5's return trip to Stage 3.
 
 Run the validation script before generating the completion report:
 
@@ -55,7 +55,7 @@ if [ -f "AGENTS.md" ]; then
         echo "   ⚠️  AGENTS.md exceeds 3,500 words ($TOKENS words) — prune longest sections first"
     fi
 else
-    echo "   ❌ AGENTS.md not found (required for Codex dual-tool setup — run Stage 2A to generate it)"
+    echo "   ❌ AGENTS.md not found (required for Codex dual-tool setup — run Stage 2 to generate it)"
 fi
 echo ""
 
@@ -73,7 +73,7 @@ echo "4. Skills Check (Claude Code + Codex):"
 SKILL_COUNT=$(find .claude/skills -mindepth 1 -maxdepth 1 -type d -exec test -f '{}/SKILL.md' \; -print 2>/dev/null | wc -l)
 echo "   Skills with SKILL.md: $SKILL_COUNT"
 if [ "$SKILL_COUNT" -eq 0 ]; then
-    echo "   ❌ No skills generated — Stage 2C may not have completed"
+    echo "   ❌ No skills generated — Stage 3 may not have completed"
 elif [ "$SKILL_COUNT" -lt 4 ]; then
     echo "   ⚠️  Only $SKILL_COUNT skills found — expected at least 4 core skills (review-gates, security-review-gates, performance-review-gates, code-conventions)"
 fi
@@ -95,7 +95,7 @@ else
 fi
 
 # Check critical skills have triggers (review gates, safety)
-# LAYERED exception: skills classified LAYERED in Stage 2C intentionally omit skill-rules.json entries.
+# LAYERED exception: skills classified LAYERED in Stage 3 intentionally omit skill-rules.json entries.
 # This check consults deduplication-report.txt and emits ℹ️ (not ❌) for correctly LAYERED skills.
 CRITICAL_SKILLS=("review-gates" "security-review-gates" "performance-review-gates")
 MISSING_CRITICAL=0
@@ -109,7 +109,7 @@ for critical in "${CRITICAL_SKILLS[@]}"; do
             if grep -qE "^LAYERED: ${critical}( |$)" .claude/discovery/deduplication-report.txt 2>/dev/null; then
                 echo "   ℹ️  LAYERED: $critical — classified LAYERED (complements global agent; no skill-rules.json entry expected)"
             else
-                echo "   ❌ MISSING TRIGGER: $critical (critical skill — add to skill-rules.json, or re-run Stage 2C to classify as LAYERED if a global agent covers this domain)"
+                echo "   ❌ MISSING TRIGGER: $critical (critical skill — add to skill-rules.json, or re-run Stage 3 to classify as LAYERED if a global agent covers this domain)"
                 MISSING_CRITICAL=$((MISSING_CRITICAL + 1))
             fi
         fi
@@ -229,8 +229,8 @@ fi
 # Codex content parity (not just count)
 echo ""
 echo "7. Codex Content Parity:"
-# Note: This check mirrors Stage 2D Step 2.1a's parity check. If Step 2.1a passed with no drift,
-# this should also pass. If it fails here but not in 2.1a, a Stage 2D change introduced drift.
+# Note: This check mirrors Stage 5 Step 2.1a's parity check. If Step 2.1a passed with no drift,
+# this should also pass. If it fails here but not in 2.1a, a Stage 5 change introduced drift.
 DRIFT_COUNT=0
 if [ ! -d ".agents/skills" ]; then
     echo "   ⚠️  .agents/skills not found (only required when Codex repo skills are enabled)"
@@ -311,9 +311,9 @@ fi
 echo ""
 
 echo "11. Behavioral Rules Check:"
-# Note: Stage 2D Step 2.1f is the authoritative fix location — it runs gap detection with remediation.
-# This check catches drift introduced during Stage 2D reconciliation. If gaps appear here that
-# weren't in Stage 2D's run, a reconciliation change is the cause.
+# Note: Stage 5 Step 2.1f is the authoritative fix location — it runs gap detection with remediation.
+# This check catches drift introduced during Stage 5 reconciliation. If gaps appear here that
+# weren't in Stage 5's run, a reconciliation change is the cause.
 GLOBAL_CLAUDE="$HOME/.claude/CLAUDE.md"
 if [ -f "$GLOBAL_CLAUDE" ]; then
     # Extract Behavioral Rules section only (not mentions elsewhere)

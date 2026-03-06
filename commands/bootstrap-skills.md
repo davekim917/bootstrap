@@ -1,13 +1,13 @@
 ---
 name: bootstrap-skills
-description: "Stage 2C: Generate project-specific skills from discovery analysis."
+description: "Stage 3: Generate project-specific skills from discovery analysis."
 ---
 
-# Stage 2C: Skills Generation (Core Skills)
+# Stage 3: Skills Generation (Core Skills)
 
 Generate core skills based on `analysis.yaml` recommendations.
 
-**Prerequisites:** Stage 2A complete.
+**Prerequisites:** Stage 2 complete.
 
 ---
 
@@ -48,7 +48,7 @@ else
   echo "⚠ WARNING: ~/.claude/CLAUDE.md is missing or lacks Behavioral Rules."
   echo "  These sections must NOT be regenerated into the project CLAUDE.md."
   echo "  Ask the user to create ~/.claude/CLAUDE.md from the global template before continuing."
-  echo "  Reference: claude-eng-team/bootstrap-stage2c-skills-generation_prompt.md Step 2"
+  echo "  Reference: /bootstrap-skills Step 2"
 fi
 ```
 
@@ -288,9 +288,9 @@ For EACH skill you are about to generate, apply these rules:
 - **50–80% overlap** → COMPLEMENT — generate the delta only (project-specific patterns not in the global skill)
 - **<50% overlap** → CLEAN — generate fully
 
-**Log deduplication decisions** — output to stdout AND save to `.claude/discovery/deduplication-report.txt` (Stage 2C+, Stage 2D, and Stage 2E reference this file for automated checks):
+**Log deduplication decisions** — output to stdout AND save to `.claude/discovery/deduplication-report.txt` (Stage 4, Stage 5, and Stage 6 reference this file for automated checks):
 
-**Format is machine-parseable** — each line must start with the classification keyword, followed by a colon and space, followed immediately by the skill name. Stage 2D and Stage 2E use `grep "^LAYERED: $skill_name"` to detect LAYERED classifications. Do not put any prefix before the skill name on LAYERED lines.
+**Format is machine-parseable** — each line must start with the classification keyword, followed by a colon and space, followed immediately by the skill name. Stage 5 and Stage 6 use `grep "^LAYERED: $skill_name"` to detect LAYERED classifications. Do not put any prefix before the skill name on LAYERED lines.
 
 **Write discipline:** Initialize with `>` (overwrite): the first write clears any prior run's entries. Use the format block as the complete file header. If called multiple times in the same session (e.g., for each skill), append subsequent lines only.
 
@@ -465,7 +465,7 @@ NON-TRIGGERS:
 4. **Delete Artifacts:**
    Remove the temporary `_skill-rules-entry.json` and `README.md` from the new skill directory.
 
-   **Note:** Stage 2A Step 2 also contains cleanup for `_skill-rules-entry.json` files. This Stage 2C step is the authoritative cleanup location. If running Stage 2A during a re-bootstrap mid-cycle (after Stage 2C has partially run), be aware that Stage 2A's cleanup may remove these files prematurely — this is why Stage 2A re-bootstrap should only be run at the start of a fresh bootstrap cycle.
+   **Note:** Stage 2 Step 2 also contains cleanup for `_skill-rules-entry.json` files. This Stage 3 step is the authoritative cleanup location. If running Stage 2 during a re-bootstrap mid-cycle (after Stage 3 has partially run), be aware that Stage 2's cleanup may remove these files prematurely — this is why Stage 2 re-bootstrap should only be run at the start of a fresh bootstrap cycle.
 
 5. **Mirror for Codex:**
    Create the skill under `.agents/skills/` with equivalent behavior (and any needed `references/`, `assets/`, `scripts/` subfolders).
@@ -766,9 +766,9 @@ For extended examples beyond what fits in this SKILL.md:
 
 ---
 
-# Stage 2C (Core Skills) Complete
+# Stage 3 (Core Skills) Complete
 
 **Generated:** review-gates (+ security/performance variants), code-conventions
 **Verified:** Descriptions pass checklist · Trigger suites defined · Four Failure Modes check passed · Claude Code triggers registered · Codex mirrors in sync · Critical guardrails extracted · No global duplication
 
-**Next:** Run Stage 2C+ (Domain Skills) to generate pattern-specific and domain skills.
+**Next:** Run Stage 4 (Domain Skills) to generate pattern-specific and domain skills.

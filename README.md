@@ -16,15 +16,18 @@ A Claude Code plugin that provides:
 
 ## Install
 
-```bash
-claude plugin add /path/to/bootstrap
+From the Claude Code plugin manager:
+
+```
+/plugin marketplace add davekim917/bootstrap
+/plugin install bootstrap@davekim917/bootstrap
 ```
 
-Or clone and add locally:
+Or clone and load locally:
 
 ```bash
-git clone https://github.com/davidkim/bootstrap.git
-claude plugin add ./bootstrap
+git clone https://github.com/davekim917/bootstrap.git
+claude --plugin-dir ./bootstrap
 ```
 
 ### Prerequisites
@@ -76,11 +79,11 @@ claude plugin add ./bootstrap
 |---------|---------|
 | `/bootstrap` | Orchestrator — guides you through the full sequence |
 | `/bootstrap-discovery` | Stage 1: Analyze codebase patterns and architecture |
-| `/bootstrap-config` | Stage 2A: Generate CLAUDE.md and AGENTS.md |
-| `/bootstrap-skills` | Stage 2C: Generate project-specific skills |
-| `/bootstrap-domain` | Stage 2C+: Generate domain-specific skills |
-| `/bootstrap-audit` | Stage 2D: Audit and reconcile all artifacts |
-| `/bootstrap-complete` | Stage 2E: Final cleanup and validation |
+| `/bootstrap-config` | Stage 2: Generate CLAUDE.md and AGENTS.md |
+| `/bootstrap-skills` | Stage 3: Generate project-specific skills |
+| `/bootstrap-domain` | Stage 4: Generate domain-specific skills |
+| `/bootstrap-audit` | Stage 5: Audit and reconcile all artifacts |
+| `/bootstrap-complete` | Stage 6: Final cleanup and validation |
 
 ### Agents
 

@@ -1,15 +1,15 @@
 ---
 name: bootstrap-domain
-description: "Stage 2C+: Generate additional domain-specific skills beyond core skills."
+description: "Stage 4: Generate additional domain-specific skills beyond core skills."
 ---
 
-# Stage 2C+: Domain Skills Generation
+# Stage 4: Domain Skills Generation
 
-> **Note:** This file is a direct continuation of Stage 2C, split for context-length management. Stage 2C generates core skills (review-gates, code-conventions). Stage 2C+ generates domain and pattern skills (codebase-overview, [pattern]-patterns, [failure-type]-prevention). Together they constitute the full skill generation phase. When running as part of the bootstrap pipeline, always run Stage 2C before Stage 2C+.
+> **Note:** This file is a direct continuation of Stage 3, split for context-length management. Stage 3 generates core skills (review-gates, code-conventions). Stage 4 generates domain and pattern skills (codebase-overview, [pattern]-patterns, [failure-type]-prevention). Together they constitute the full skill generation phase. When running as part of the bootstrap pipeline, always run Stage 3 before Stage 4.
 
 Generate domain-specific and pattern skills based on `analysis.yaml` recommendations.
 
-**Prerequisites:** Stage 2C (Core Skills) complete — review-gates, security-review-gates, performance-review-gates, and code-conventions skills exist.
+**Prerequisites:** Stage 3 (Core Skills) complete — review-gates, security-review-gates, performance-review-gates, and code-conventions skills exist.
 
 **Execution mode:** Prioritize execution over deliberation. Choose one approach and start
 producing output immediately. Do not compare alternatives or plan the entire generation
@@ -23,16 +23,16 @@ Phase 4 verification failures (description quality, Four Failure Modes, mirror c
 
 # Step 1: Continuity Check
 
-Before proceeding, restore context from Stage 2C. This section is critical if Stage 2C+ runs in a separate session from Stage 2C.
+Before proceeding, restore context from Stage 3. This section is critical if Stage 4 runs in a separate session from Stage 3.
 
 **Guard:** If `analysis.yaml` is missing or lacks a `recommendations` section, stop and report. Do not generate domain skills from assumptions.
 
 ```bash
-# Verify Stage 2C completed successfully — core skills must exist before generating domain skills
-echo "=== Stage 2C Output Check ==="
+# Verify Stage 3 completed successfully — core skills must exist before generating domain skills
+echo "=== Stage 3 Output Check ==="
 ls .claude/skills/ 2>/dev/null || echo "⚠️  No skills directory found"
 for required in review-gates security-review-gates performance-review-gates code-conventions; do
-    [ -f ".claude/skills/${required}/SKILL.md" ] && echo "✅ ${required}" || echo "❌ MISSING: ${required} — run Stage 2C before proceeding"
+    [ -f ".claude/skills/${required}/SKILL.md" ] && echo "✅ ${required}" || echo "❌ MISSING: ${required} — run Stage 3 before proceeding"
 done
 
 # Reload analysis data (required — domain skill generation reads analysis.yaml directly)
@@ -41,7 +41,7 @@ cat .claude/discovery/analysis.yaml
 # Reload skill-developer quality framework
 cat ~/.claude/skills/skill-developer/SKILL.md 2>/dev/null || echo "skill-developer not installed — use Quality Standards Recap as fallback"
 
-# Restore deduplication decisions from Stage 2C
+# Restore deduplication decisions from Stage 3
 cat .claude/discovery/deduplication-report.txt 2>/dev/null || echo "(no deduplication report found — see recovery path below)"
 ```
 
@@ -50,7 +50,7 @@ cat .claude/discovery/deduplication-report.txt 2>/dev/null || echo "(no deduplic
 if [ -f ".claude/discovery/deduplication-report.txt" ] && [ -f ".claude/discovery/analysis.yaml" ]; then
     if [ ".claude/discovery/deduplication-report.txt" -ot ".claude/discovery/analysis.yaml" ]; then
         echo "⚠️  deduplication-report.txt predates analysis.yaml — classifications may be stale."
-        echo "   If analysis.yaml was regenerated since Stage 2C ran, re-run Stage 2C Step 6"
+        echo "   If analysis.yaml was regenerated since Stage 3 ran, re-run Stage 3 Step 6"
         echo "   to refresh classifications before proceeding."
     else
         echo "✅ deduplication-report.txt is current (newer than analysis.yaml)"
@@ -58,7 +58,7 @@ if [ -f ".claude/discovery/deduplication-report.txt" ] && [ -f ".claude/discover
 fi
 ```
 
-**Recovery path if deduplication-report.txt is absent:** Do NOT re-run all of Stage 2C Step 6. Instead, for each skill you are about to generate in Stage 2C+, run the live check from Stage 2C Step 6a to inventory globals, then apply the deduplication rules from Stage 2C Step 6b to classify the skill. Create `deduplication-report.txt` with the result before the deduplication check in Step 3b. Create with `echo '=== Deduplication Report ===' > .claude/discovery/deduplication-report.txt` for the first skill; use `>>` to append for each subsequent skill.
+**Recovery path if deduplication-report.txt is absent:** Do NOT re-run all of Stage 3 Step 6. Instead, for each skill you are about to generate in Stage 4, run the live check from Stage 3 Step 6a to inventory globals, then apply the deduplication rules from Stage 3 Step 6b to classify the skill. Create `deduplication-report.txt` with the result before the deduplication check in Step 3b. Create with `echo '=== Deduplication Report ===' > .claude/discovery/deduplication-report.txt` for the first skill; use `>>` to append for each subsequent skill.
 
 ```
 # Format for each entry (must start at line start with keyword, colon, space, skill-name):
@@ -81,7 +81,7 @@ Apply these quality standards to every domain skill generated here.
 
 - **The Skill Test:** Does this content shape how the agent approaches a class of work? If not, it belongs in memory or CLAUDE.md.
 - **Description:** WHAT + WHEN + out-of-scope boundary, 5+ trigger keywords, third person, under 1024 chars, uses user terms (not just technical jargon).
-- **Evaluations first:** Define trigger/non-trigger suite before writing each skill (Stage 2C Step 4).
+- **Evaluations first:** Define trigger/non-trigger suite before writing each skill (Stage 3 Step 4).
 - **Guardrail extraction:** After each skill, extract critical rules to CLAUDE.md/AGENTS.md `Critical Guardrails`.
 - **Anti-hallucination:** Every claim traces to `analysis.yaml`. Missing data = "TBD" or skip section. Include `file:line` citations for code examples; include commit hashes for failure modes.
 
@@ -102,7 +102,7 @@ Also test for runtime failures before each skill:
 
 ## Deduplication Decision
 
-Before generating each skill, check against the deduplication report from Stage 2C (DUPLICATE / SUBSET / COMPLEMENT / LAYERED / CLEAN classifications). If `deduplication-report.txt` is missing, re-run the live check from Stage 2C Step 6a:
+Before generating each skill, check against the deduplication report from Stage 3 (DUPLICATE / SUBSET / COMPLEMENT / LAYERED / CLEAN classifications). If `deduplication-report.txt` is missing, re-run the live check from Stage 3 Step 6a:
 ```bash
 cat .claude/discovery/deduplication-report.txt 2>/dev/null || {
   echo "(deduplication-report.txt missing — running live global skills check)"
@@ -195,7 +195,7 @@ For extended architecture details beyond what fits in this SKILL.md:
 
 After creating the `.agents/skills/codebase-overview/` files, apply the substitution:
 
-<!-- Mirror per Stage 2C Step 7 Procedure (step 5) — same command for every skill -->
+<!-- Mirror per Stage 3 Step 7 Procedure (step 5) — same command for every skill -->
 ```bash
 # Replace CLAUDE.md references with AGENTS.md in the agents copy
 perl -pi -e 's/CLAUDE\.md/AGENTS.md/g' .agents/skills/codebase-overview/SKILL.md
@@ -207,12 +207,12 @@ grep -r "CLAUDE.md" .agents/skills/codebase-overview/ || echo "clean"
 
 # Step 3: Domain and Pattern Skills (Iterate over all recommended skills)
 
-> **Note:** `code-conventions` (Stage 2C Step 7d) is generated in Stage 2C. This stage continues at Step 2 (optional) and Step 3+.
+> **Note:** `code-conventions` (Stage 3 Step 7d) is generated in Stage 3. This stage continues at Step 2 (optional) and Step 3+.
 
 ## Step 3a: Extract the skill list
 
 ```bash
-echo "=== Skills to generate in Stage 2C+ ==="
+echo "=== Skills to generate in Stage 4 ==="
 PATTERN_SKILLS=$(yq '.recommendations.skills.pattern_skills[]' .claude/discovery/analysis.yaml 2>/dev/null) || \
 PATTERN_SKILLS=$(python3 -c "import yaml; d=yaml.safe_load(open('.claude/discovery/analysis.yaml')); print('\n'.join(d.get('recommendations',{}).get('skills',{}).get('pattern_skills',[])))" 2>/dev/null)
 
@@ -226,7 +226,7 @@ echo "Domain skills: ${DOMAIN_SKILLS:-<none>}"
 **Edge case handling:**
 - `pattern_skills` key missing → fall back to `critical_patterns[].recommended_skill` values; log `FALLBACK`
 - `domain_skills` key missing → continue with pattern_skills only; log the gap
-- Both empty → log `STAGE-2C+-SKIP`, proceed directly to Step 4
+- Both empty → log `STAGE-4-SKIP`, proceed directly to Step 4
 
 ## Step 3b: Per-skill iteration
 
@@ -241,23 +241,23 @@ grep "^DUPLICATE: [skill-name]\|^SUBSET: [skill-name]" .claude/discovery/dedupli
 - LAYERED → generate thin checklist only; defer to named agent explicitly
 - CLEAN or absent from report → run live check, append result to deduplication-report.txt, generate fully
 
-**Stage 2C-owned skills guard:** Before proceeding to Phase 2, check if this skill is one that Stage 2C generates (not Stage 2C+). Skip it if so — do not regenerate.
+**Stage 3-owned skills guard:** Before proceeding to Phase 2, check if this skill is one that Stage 3 generates (not Stage 4). Skip it if so — do not regenerate.
 
 ```bash
-STAGE_2C_SKILLS=("review-gates" "security-review-gates" "performance-review-gates" "code-conventions")
-for owned in "${STAGE_2C_SKILLS[@]}"; do
+STAGE_3_SKILLS=("review-gates" "security-review-gates" "performance-review-gates" "code-conventions")
+for owned in "${STAGE_3_SKILLS[@]}"; do
     if [ "$skill_name" = "$owned" ]; then
-        echo "SKIPPED: $skill_name — owned by Stage 2C (already generated)"
+        echo "SKIPPED: $skill_name — owned by Stage 3 (already generated)"
         # advance to next skill
     fi
 done
 ```
 
-If the current skill matches any of the four Stage 2C-owned skills, log `SKIPPED` and advance to the next skill. Do not regenerate them here.
+If the current skill matches any of the four Stage 3-owned skills, log `SKIPPED` and advance to the next skill. Do not regenerate them here.
 
 **Phase 2 — Evaluation suite (before writing SKILL.md)**
 
-Define the trigger/non-trigger suite per Stage 2C Step 4:
+Define the trigger/non-trigger suite per Stage 3 Step 4:
 - 2–3 prompts that SHOULD trigger this skill
 - 1–2 prompts that SHOULD NOT trigger it
 
@@ -285,7 +285,7 @@ Before advancing to the next skill, verify:
 After all skills are processed, print:
 
 ```
-=== Stage 2C+ Step 3 Summary ===
+=== Stage 4 Step 3 Summary ===
 Generated: [list]
 Skipped (DUPLICATE/SUBSET): [list]
 Partial (COMPLEMENT): [list]
@@ -391,7 +391,7 @@ Create `.claude/skills/[pattern-name]-patterns/references/examples.md` **and** `
 
 After creating the `.agents/skills/[pattern-name]-patterns/` files, apply the substitution:
 
-<!-- Mirror per Stage 2C Step 7 Procedure (step 5) — same command for every skill -->
+<!-- Mirror per Stage 3 Step 7 Procedure (step 5) — same command for every skill -->
 ```bash
 # Replace CLAUDE.md references with AGENTS.md in the agents copy
 perl -pi -e 's/CLAUDE\.md/AGENTS.md/g' .agents/skills/[pattern-name]-patterns/SKILL.md
@@ -484,7 +484,7 @@ Before completing related changes:
 
 After creating the `.agents/skills/[failure-type]-prevention/` files, apply the substitution:
 
-<!-- Mirror per Stage 2C Step 7 Procedure (step 5) — same command for every skill -->
+<!-- Mirror per Stage 3 Step 7 Procedure (step 5) — same command for every skill -->
 ```bash
 # Replace CLAUDE.md references with AGENTS.md in the agents copy
 perl -pi -e 's/CLAUDE\.md/AGENTS.md/g' .agents/skills/[failure-type]-prevention/SKILL.md
@@ -512,15 +512,15 @@ After generating each skill above, extract any rules that would cause bugs/data 
 
 ---
 
-# Stage 2C+ Complete (Domain Skills)
+# Stage 4 Complete (Domain Skills)
 
-**Generated across Stage 2C and Stage 2C+:**
+**Generated across Stage 3 and Stage 4:**
 
-From Stage 2C (verify only — do not regenerate here):
+From Stage 3 (verify only — do not regenerate here):
 - ✅ Review gate skills (`review-gates`, `security-review-gates`, `performance-review-gates`)
 - ✅ Code conventions skill (`code-conventions`)
 
-From Stage 2C+ (generated here):
+From Stage 4 (generated here):
 - ✅ Codebase overview skill (OPTIONAL — only if complex architecture warrants it)
 - ✅ Pattern-specific skills (based on analysis recommendations — behavioral guidance, not just reference)
 - ✅ Domain skills (business logic, product domains — only if not covered by global skills)
@@ -532,7 +532,7 @@ From Stage 2C+ (generated here):
 - ✅ Degrees of freedom appropriate for each skill (high/medium/low based on task fragility)
 - ✅ Four Failure Modes check passed (no Encyclopedia, Everything Bagel, Secret Handshake, or Fragile Skill)
 - ✅ Invocation control set where needed (`disable-model-invocation`, `user-invocable`, `context: fork`)
-- ✅ Claude Code triggers registered in `.claude/skills/skill-rules.json` for any critical domain skills generated here (review-gate triggers were registered in Stage 2C; only new safety-critical domain skills added in Stage 2C+ need entries here)
+- ✅ Claude Code triggers registered in `.claude/skills/skill-rules.json` for any critical domain skills generated here (review-gate triggers were registered in Stage 3; only new safety-critical domain skills added in Stage 4 need entries here)
 - ✅ Skills generated under `.agents/skills/` for Codex (optional `.codex/skills/` mirror only for compatibility)
 - ✅ CLAUDE.md references replaced with AGENTS.md in .agents/skills/ copies (substitution applied and verified)
 - ✅ Critical guardrails from skills extracted to CLAUDE.md/AGENTS.md
@@ -551,4 +551,4 @@ done
 diff <(ls .claude/skills/ 2>/dev/null | sort) <(ls .agents/skills/ 2>/dev/null | sort) && echo "✅ Codex mirrors in sync" || echo "⚠️  Parity mismatch — re-run mirror step"
 ```
 
-**Next:** Run Stage 2D (Audit & Reconciliation) to reconcile existing skills with new analysis.
+**Next:** Run Stage 5 (Audit & Reconciliation) to reconcile existing skills with new analysis.
