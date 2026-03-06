@@ -5,7 +5,7 @@
   "author": {
     "name": "David Kim"
   },
-  "repository": "https://github.com/davidkim/bootstrap",
+  "repository": "https://github.com/davekim917/bootstrap",
   "license": "MIT",
   "keywords": ["workflow", "skills", "hooks", "bootstrap", "team", "quality", "safety"],
   "skills": ["./skills/workflow", "./skills/domain", "./skills/utility"],
