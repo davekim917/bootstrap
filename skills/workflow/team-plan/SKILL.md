@@ -174,6 +174,30 @@ as verifiable statements, not intentions:
 What must be true before this task can start. Reference specific task IDs (e.g., "Task A1 must
 be complete — `requireAuth` middleware must exist at `src/auth/middleware/requireAuth.ts`").
 
+### Step 4.5: Constraint Injection
+
+Read `.context/specs/<feature>/decisions.yaml`. For each HARD constraint and each rejected option:
+
+1. Identify which task group's files could violate this constraint or reintroduce the rejected approach
+2. Encode the constraint as a negative ASSERT line or acceptance criterion in that group's task spec
+
+**Constraint → ASSERT examples:**
+```
+Decision record: C3 type=HARD "Must support horizontal scaling without shared state"
+→ Group A, Task A2 ASSERT: implementation does not use express-session, cookie-session,
+  or any server-side session state management
+
+Decision record: D1 rejected "Server-side sessions" reason="statelessness constraint"
+→ Group A, Task A2 acceptance criterion:
+  - [ ] No session middleware imported or configured
+```
+
+**Rules:**
+- Every HARD constraint must appear as an ASSERT or criterion in at least one task
+- Every rejected option must appear as a negative ASSERT or criterion in the task group most likely to reintroduce it
+- Populate `affects_groups` on each constraint and decision in the decision record
+- If a constraint cannot be meaningfully encoded as an assertion (e.g., "code must be maintainable"), note it as a Known Risk with an explicit reason
+
 ### Step 5: File Conflict Check
 
 Before finalizing the plan, run a static analysis:
@@ -205,6 +229,25 @@ Render-check coverage:
 ```
 
 Unassigned flags are plan defects. Either assign each to the closest owning task or add it to Known Risks with an explicit reason. Do not proceed with an unassigned flag silently dropped.
+
+### Step 5.5: Cross-Stage Traceability Check
+
+After writing all task specs, verify constraint coverage against the decision record:
+
+1. Read `.context/specs/<feature>/decisions.yaml`
+2. For each entry:
+
+| Entry type | Required traceability |
+|---|---|
+| HARD constraint | Must appear as ASSERT or acceptance criterion in at least one task |
+| Rejected option | Must appear as negative ASSERT or acceptance criterion in the task group most likely to reintroduce it |
+| SOFT constraint | Should appear (log as known risk if not traced) |
+| Assumption (unvalidated) | Must appear in Known Risks section |
+| Waiver | Must appear in Known Risks section with mitigation |
+
+3. Report traceability results using `references/plan-template.md` Constraint Traceability section
+
+**Untraced HARD constraints and rejected options are plan defects.** Fix them before presenting the plan.
 
 ### Step 6: STOP — Present Plan and Wait for Approval
 
@@ -384,12 +427,14 @@ Accepts rollback from `/team-build` when the plan is under-specified or structur
 **Read:**
 - `.context/specs/<feature>/design.md` — always (standard location)
 - `.context/specs/<feature>/review.md` — always (standard location; carry waived MUST-FIX as known risks)
+- `.context/specs/<feature>/decisions.yaml` — always (constraint injection and traceability check)
 - `CLAUDE.md` — always (conventions, guardrails)
 - 2-4 relevant project skills — transcribe patterns into task specs
 - Specific source files — only to confirm exact paths and existing function signatures for MODIFY tasks
 
 **Write:**
 - `.context/specs/<feature>/plan.md` — the completed plan (Step 6)
+- `.context/specs/<feature>/decisions.yaml` — updated with `affects_groups` mappings (Step 4.5)
 
 **Do NOT read:**
 - Entire codebase

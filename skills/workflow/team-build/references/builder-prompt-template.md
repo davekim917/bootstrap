@@ -142,6 +142,18 @@ Not valid reasons to skip TDD or self-review:
 - "Time pressure" — the test IS the shortcut
 - "It's just plumbing" — plumbing breaks too; test the contracts
 
+## Anti-Patterns
+
+- DO NOT make implementation decisions not covered by your task spec. If the spec
+  doesn't address something you need to decide, message the lead. "I chose X because
+  it seemed reasonable" is a spec gap — report it, don't fill it.
+- DO NOT import libraries, add dependencies, or use patterns not specified in your
+  task spec or CLAUDE.md excerpts without messaging the lead first.
+- DO NOT work around a constraint by finding a creative alternative. If a constraint
+  blocks your approach, that's a blocker — report it.
+- DO NOT silently drop or weaken an ASSERT condition. If an ASSERT seems wrong or
+  impossible to satisfy, message the lead — do not reinterpret it.
+
 ## If You Hit a Blocker
 
 Message "team-lead" immediately:

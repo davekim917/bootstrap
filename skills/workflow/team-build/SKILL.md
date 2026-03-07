@@ -49,11 +49,12 @@ in parallel, each isolated to their own task group and files.
 ### Step 1: Read and Parse the Plan
 
 1. Read the approved plan — either from `.context/specs/<feature>/plan.md` or ask user to provide it
-2. Read `CLAUDE.md` — extract:
+2. Read the decision record — `.context/specs/<feature>/decisions.yaml` (constraints, rejected options, waivers, assumptions). This record informs builder prompt construction and sequential group context refresh.
+3. Read `CLAUDE.md` — extract:
    - Tech stack and key commands (test runner, lint, build)
    - Critical guardrails (must-never-miss rules)
    - Workflow hints (which project skills are relevant)
-3. Parse the plan into:
+4. Parse the plan into:
    - **Task groups** — names, file ownership, task specs
    - **Dependency graph** — which groups block which
    - **Independent groups** — can start immediately (no blockedBy)
@@ -194,6 +195,15 @@ The lead stays active as the message hub. Builders send two types of messages:
 - SendMessage to builder with the resolution (a decision, a clarification, a file path)
 
 **When a sequential group becomes unblocked:**
+
+**Context refresh (required before spawning):**
+Before constructing the builder prompt for a sequential group, re-read:
+1. `.context/specs/<feature>/decisions.yaml` — extract decisions and constraints where `affects_groups` includes this group
+2. `.context/specs/<feature>/design.md` — re-read the constraint analysis and recommendation sections
+3. `.context/specs/<feature>/build-state.md` — re-read your own checkpoint to recover any compressed context
+
+Do not rely on conversation context for constraint details — it may have been compressed during earlier group validation.
+
 Spawn its builder immediately:
 ```
 Task(
@@ -228,6 +238,12 @@ before marking a group complete.
 > Both checks are needed; they do not overlap.
 
 Re-read the original task spec from the plan for this group.
+
+**Adversarial stance:** Assume the builder's completion report is optimistic. Do not trust self-reported
+criteria status. Read the actual code and run the actual tests — verify everything independently.
+The builder may have misunderstood the spec, implemented something slightly different from what was
+asked, or reported a criterion as passing based on reading code rather than running verification.
+
 For each task in the group:
 1. Check each acceptance criterion by name — not a general impression.
 2. For each `ASSERT:` annotation in the task spec: verify the stated condition holds.
@@ -253,6 +269,42 @@ Builders follow the `/team-receiving-review-feedback` protocol when processing r
 Gate: both stages clear before marking group complete.
 
 <!-- GATE: group-validation — Both review stages clear, all criteria verified -->
+
+### Lead Context Checkpoint
+
+After marking each group complete (and before spawning the next sequential group), write or update
+`.context/specs/<feature>/build-state.md`:
+
+```
+## Build State Checkpoint
+Last updated: [timestamp]
+
+### Groups Completed
+- [Group A]: validated [timestamp] — all criteria passed
+- [Group B]: validated [timestamp] — criterion X required 2 fix attempts
+
+### Groups Remaining
+- [Group C]: blocked by [A, B] — ready to spawn
+- [Group D]: blocked by [C] — waiting
+
+### Decisions Made During Build
+- [Interpretation call 1: what the lead decided and why]
+- [Blocker resolution 1: what was resolved and how]
+
+### Escalations
+- [None / criterion text + current status]
+
+### Known Risks (Accumulated)
+- [Pre-build drift PARTIAL findings]
+- [Waived review findings]
+- [Build-time decisions that deviated from plan]
+```
+
+This file is the lead's persistent memory. **If your conversation context has been compressed, re-read
+this file before any coordination action** (spawning builders, validating criteria, running drift checks).
+
+The checkpoint ensures that context compression during long builds does not cause the lead to forget
+validation results, interpretation calls, or accumulated risks.
 
 ### Verification Before Completion
 
@@ -392,7 +444,7 @@ Say "approved" to proceed, or flag anything to revisit.
 ## Builder Context Isolation
 
 Each builder receives **only**:
-1. Their task group spec (from the plan) — complete, self-contained
+1. Their task group spec (from the plan) — complete, self-contained, including injected constraint ASSERTs
 2. CLAUDE.md excerpts — tech stack, commands, critical guardrails
 3. Team name + task ID — for TaskUpdate and SendMessage
 
@@ -415,10 +467,12 @@ finished yet). Context isolation eliminates this entire class of failure.
 ## Lead Responsibilities (What the Lead Does and Does NOT Do)
 
 **Lead DOES:**
-- Read the plan and design, run the pre-build drift check
+- Read the plan, design, and decision record; run the pre-build drift check
 - Create team, create tasks, spawn builders
 - Answer blocker questions with decisions
 - Validate acceptance criteria by reading files and running tests
+- Write context checkpoints after each group completion
+- Re-read decision record and design before spawning sequential groups
 - Run the post-build drift check
 - Unblock sequential groups when dependencies complete
 - Shut down builders, delete team
@@ -490,3 +544,5 @@ When mid-build problems cannot be resolved within the build, escalate to a rollb
 - **Don't let the lead write code.** If the lead starts writing code, it has lost context isolation and is now operating outside its role.
 - **Don't delete the team before all shutdown confirmations.** TeamDelete on an active team leaves agents in an inconsistent state.
 - **Don't loop indefinitely on failures.** If a criterion fails 3 times or drift doesn't converge after 3 cycles, escalate to the user. Autonomous loops without termination guards waste tokens and delay resolution.
+- **Don't skip context checkpoints.** After each group completion, write `build-state.md`. Context compression during long builds silently erases the lead's working memory. Checkpoints are the recovery mechanism.
+- **Don't spawn sequential groups from memory.** Always re-read the decision record and design before constructing the next builder's prompt. The lead's conversation context may have been compressed since the last group.

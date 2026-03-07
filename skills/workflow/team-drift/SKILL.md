@@ -120,6 +120,9 @@ Claim types to look for:
 - CONSTRAINT: A limit that must be respected
 - ACCEPTANCE: A named acceptance criterion that must pass
 - BEHAVIOR: A specific behavior that must exist
+- REJECTION: Something explicitly excluded or forbidden (rejected alternatives, "must not" statements)
+
+For REJECTION claims: the target must NOT contain the rejected thing. Absence is the expected state.
 
 Format each claim as:
   Claim #N | Type | [Exact quote or precise paraphrase from SOT] | Source: [section/line]
@@ -128,9 +131,9 @@ PART 2 — VERIFY EACH CLAIM AGAINST THE TARGET
 For each claim you extracted, look for evidence in the target document.
 
 Verdict options:
-  CONFIRMED — Target clearly satisfies this claim
+  CONFIRMED — Target clearly satisfies this claim (for REJECTION claims: the rejected thing is absent)
   PARTIAL   — Target partially addresses this claim (note what's missing)
-  DIVERGED  — Target contradicts this claim (note the contradiction)
+  DIVERGED  — Target contradicts this claim (for REJECTION claims: the rejected thing IS present)
   MISSING   — Target has no corresponding content for this claim
 
 Format each verdict as:
@@ -166,6 +169,9 @@ Claim types to look for:
 - CONSTRAINT: A limit that must be respected
 - ACCEPTANCE: A named acceptance criterion that must pass
 - BEHAVIOR: A specific behavior that must exist
+- REJECTION: Something explicitly excluded or forbidden (rejected alternatives, "must not" statements)
+
+For REJECTION claims: the target must NOT contain the rejected thing. Absence is the expected state.
 
 Format each claim as:
   Claim #N | Type | [Exact quote or precise paraphrase from SOT] | Source: [section/line]
@@ -174,9 +180,9 @@ PART 2 — VERIFY EACH CLAIM AGAINST THE TARGET
 For each claim you extracted, look for evidence in the target document.
 
 Verdict options:
-  CONFIRMED — Target clearly satisfies this claim
+  CONFIRMED — Target clearly satisfies this claim (for REJECTION claims: the rejected thing is absent)
   PARTIAL   — Target partially addresses this claim (note what's missing)
-  DIVERGED  — Target contradicts this claim (note the contradiction)
+  DIVERGED  — Target contradicts this claim (for REJECTION claims: the rejected thing IS present)
   MISSING   — Target has no correspondence in this claim
 
 Format each verdict as:
@@ -209,6 +215,9 @@ Claim types to look for:
 - CONSTRAINT: A limit that must be respected
 - ACCEPTANCE: A named acceptance criterion that must pass
 - BEHAVIOR: A specific behavior that must exist
+- REJECTION: Something explicitly excluded or forbidden (rejected alternatives, 'must not' statements)
+
+For REJECTION claims: the target must NOT contain the rejected thing. Absence is the expected state.
 
 Format each claim as:
   Claim #N | Type | [Exact quote or precise paraphrase from SOT] | Source: [section/line]
@@ -217,9 +226,9 @@ PART 2 — VERIFY EACH CLAIM AGAINST THE TARGET
 For each claim you extracted, look for evidence in the target document.
 
 Verdict options:
-  CONFIRMED — Target clearly satisfies this claim
+  CONFIRMED — Target clearly satisfies this claim (for REJECTION claims: the rejected thing is absent)
   PARTIAL   — Target partially addresses this claim (note what's missing)
-  DIVERGED  — Target contradicts this claim (note the contradiction)
+  DIVERGED  — Target contradicts this claim (for REJECTION claims: the rejected thing IS present)
   MISSING   — Target has no correspondence in this claim
 
 Format each verdict as:
@@ -257,6 +266,9 @@ Claim types to look for:
 - CONSTRAINT: A limit that must be respected
 - ACCEPTANCE: A named acceptance criterion that must pass
 - BEHAVIOR: A specific behavior that must exist
+- REJECTION: Something explicitly excluded or forbidden (rejected alternatives, "must not" statements)
+
+For REJECTION claims: the target must NOT contain the rejected thing. Absence is the expected state.
 
 Format each claim as:
   Claim #N | Type | [Exact quote or precise paraphrase from SOT] | Source: [section/line]
@@ -265,9 +277,9 @@ PART 2 — VERIFY EACH CLAIM AGAINST THE TARGET
 For each claim you extracted, look for evidence in the target document.
 
 Verdict options:
-  CONFIRMED — Target clearly satisfies this claim
+  CONFIRMED — Target clearly satisfies this claim (for REJECTION claims: the rejected thing is absent)
   PARTIAL   — Target partially addresses this claim (note what's missing)
-  DIVERGED  — Target contradicts this claim (note the contradiction)
+  DIVERGED  — Target contradicts this claim (for REJECTION claims: the rejected thing IS present)
   MISSING   — Target has no correspondence in this claim
 
 Format each verdict as:
@@ -392,6 +404,7 @@ claims. Do not read unrelated files.
 
 - **Don't load CLAUDE.md or project skills.** This is the one skill where they actively hurt accuracy.
 - **Don't summarize claims.** "The plan specifies auth requirements" is not a claim. "Task A2 creates `src/auth/middleware/requireAuth.ts` with three exports" is a claim.
+- **Don't ignore rejected alternatives.** If the SOT explicitly rejected an approach, that rejection is a REJECTION claim. The target must not reintroduce the rejected approach. Check the decision record (`.context/specs/<feature>/decisions.yaml`) for `rejected` entries if it exists.
 - **Don't skip the multi-agent step.** Single-agent extraction has systematic blind spots. Additional agents catch what others missed — especially implicit claims. Cross-model extraction (Claude + Codex + Gemini) catches claims that same-family models may both miss systematically.
 - **Don't leave DISPUTED verdicts.** The team lead reads the source and rules. Every claim gets a final verdict.
 - **Don't silently drop PARTIAL findings.** Log them. The user decides whether to address them.

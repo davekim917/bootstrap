@@ -96,6 +96,22 @@
 
 ---
 
+## Decision Record Updates
+
+*Appended to `.context/specs/<feature>/decisions.yaml` — see `skills/workflow/shared/decision-record-schema.md`*
+
+**Decisions:**
+- **D[N]:** Chose [Option X]. Rejected: [Option Y] because [reason]; [Option Z] because [reason].
+  Constraint refs: [C1, C3]. Affects groups: [TBD — populated by /team-plan].
+
+**Constraints added:**
+- **C[N]:** [HARD/SOFT] — [constraint text]. Source: [design constraint analysis].
+
+**Assumptions added:**
+- **A[N]:** [assumption text]. Validation: [method]. Validated: false.
+
+---
+
 ## Questions for User *(if any)*
 
 - **[Decision requiring human judgment]:** Recommended default: [X] — [rationale]

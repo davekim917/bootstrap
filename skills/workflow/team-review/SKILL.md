@@ -315,6 +315,9 @@ Save the review report to disk:
 1. Derive the feature name from the design document title (kebab-case, e.g., "User Authentication" → "user-authentication")
 2. `mkdir -p .context/specs/<feature>/`
 3. Write the report to `.context/specs/<feature>/review.md`
+4. Update the decision record at `.context/specs/<feature>/decisions.yaml`:
+   - Append each waived MUST-FIX finding with its stated reason and risk level
+   - Format: see `skills/workflow/shared/decision-record-schema.md`
 
 Include the save path in the gate message so downstream skills (`/team-plan`) know where to find it.
 
@@ -403,6 +406,7 @@ The review report is a point-in-time assessment. A changed design requires a fre
 
 **Write:**
 - `.context/specs/<feature>/review.md` — the completed review report (Step 5)
+- `.context/specs/<feature>/decisions.yaml` — updated decision record with waivers (Step 5)
 
 **Do NOT read:**
 - Entire codebase

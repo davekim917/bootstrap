@@ -141,6 +141,11 @@ Save the brief to disk:
 1. Derive the feature name from the brief title (kebab-case, e.g., "User Authentication" → "user-authentication")
 2. `mkdir -p .context/specs/<feature>/`
 3. Write the brief to `.context/specs/<feature>/brief.md`
+4. Initialize the decision record at `.context/specs/<feature>/decisions.yaml`:
+   - Record all constraints from Step 2 (with HARD/SOFT classification)
+   - Record all decisions from Step 3 Q&A (what was asked, what the user chose, what alternatives were considered)
+   - Record all forced defaults from Step 4 (what was defaulted, what the alternative was)
+   - Format: see `skills/workflow/shared/decision-record-schema.md`
 
 Then STOP. Display exactly this gate:
 
@@ -196,6 +201,7 @@ Brief does not accept rollbacks. If later stages invalidate the brief, re-run `/
 
 **Write:**
 - `.context/specs/<feature>/brief.md` — the completed brief (Step 5)
+- `.context/specs/<feature>/decisions.yaml` — initialized decision record (Step 5)
 - `.claude/project-scope.md` — scope file written or refreshed in Step 1b
 
 **Do NOT read:**

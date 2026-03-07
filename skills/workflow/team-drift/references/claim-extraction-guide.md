@@ -24,6 +24,7 @@ A claim is any statement in the SOT that implies something must be true in the t
 | **CONSTRAINT** | A limit that must be respected | "Must not add dependencies beyond what's already in package.json" |
 | **ACCEPTANCE** | A named acceptance criterion | "Returns 401 { error: 'Unauthorized' } when token is missing" |
 | **BEHAVIOR** | A specific behavior that must be present | "Middleware calls next() when token is valid" |
+| **REJECTION** | Something explicitly excluded or forbidden | "Rejected Option A (sessions) because of statelessness constraint" |
 
 ---
 
@@ -53,6 +54,21 @@ Don't bundle. A sentence with two verifiable things = two claims.
 ### Step 5: Include implicit claims
 Some claims are implicit in the document structure.
 
+### Step 6: Extract negative claims (rejections)
+Scan for explicitly rejected alternatives, forbidden approaches, and "must not" statements.
+These are REJECTION claims — they define what the target must NOT contain.
+
+**Sources of negative claims:**
+- Design options that were evaluated and rejected (with stated reasons)
+- Constraints that forbid specific approaches ("must not add dependencies")
+- Explicit exclusions ("do not use server-side sessions")
+- Decision record entries with `rejected` options (from `.context/specs/<feature>/decisions.yaml`)
+
+**Example:**
+- SOT says: "Rejected Option A (server-side sessions) because horizontal scaling requires statelessness."
+- Claim: `REJECTION | Implementation must not use server-side sessions (express-session, cookie-session) | Source: Options / Option A rejection`
+- Verification: check that the target does not import or configure session middleware.
+
 Example: A plan with Task B2 marked "Pre-conditions: Task A1 must be complete" implies:
 - Claim: "Task A1's output exists before Task B2 runs"
 
@@ -68,10 +84,12 @@ Example: A design with Constraint HARD: "No new dependencies" implies:
 - Ignoring pre-conditions — they are claims about ordering
 - Missing file path claims — every named file path is a claim
 - Treating SOFT constraints as non-claims — they're PARTIAL if partially satisfied
+- **Ignoring rejected alternatives** — every explicitly rejected option is a REJECTION claim. If the SOT evaluated and rejected an approach, the target must not reintroduce it
+- **Missing "must not" statements** — negative constraints ("must not add dependencies", "do not use X") are REJECTION claims
 
 ### Over-extraction (false claims)
-- Extracting rationale as a claim — "We chose JWT because it's stateless" is not a claim
-- Extracting options not selected — if Option A was rejected, Option A's properties are not claims
+- Extracting rationale as a claim — "We chose JWT because it's stateless" is not a REQUIREMENT claim (but the rejection of alternatives IS a REJECTION claim — see Step 6)
+- Extracting rejected options' internal properties as requirements — if Option A was rejected, Option A's specific properties are not REQUIREMENT claims (but the rejection itself IS a REJECTION claim)
 - Extracting examples as requirements — "e.g., 200ms" is not a claim unless the SOT says "must"
 
 ### Imprecise extraction
@@ -96,6 +114,7 @@ Claim #3  | BEHAVIOR    | Attaches decoded JWT payload to req.user when token is
 Claim #4  | CONSTRAINT  | Does not modify login() or logout() functions in auth.ts | Source: Task A2 operation
 Claim #5  | DECISION    | Uses jsonwebtoken library (already in package.json) | Source: Task A2 code pattern
 Claim #6  | ACCEPTANCE  | All 3 named test cases (test_requireAuth_valid_token, test_requireAuth_missing_token, test_requireAuth_expired_token) pass | Source: Task A2 acceptance criteria
+Claim #7  | REJECTION   | Must not use server-side sessions (express-session, cookie-session) — rejected for statelessness constraint | Source: Design Options / Option A rejection
 ```
 
 ---
@@ -108,8 +127,10 @@ Claim #N | VERDICT | [Evidence from target — quote or file:line] | [Gap descri
 
 **Verdict rules:**
 - **CONFIRMED:** Quote the exact evidence from the target. Do not say "confirmed" without evidence.
+- **CONFIRMED (REJECTION):** State "No evidence of [rejected thing] found in [files searched]." Absence is the expected evidence for REJECTION claims.
 - **PARTIAL:** Quote what IS there, then state precisely what's missing.
 - **DIVERGED:** Quote the SOT claim AND the contradicting target content side by side.
+- **DIVERGED (REJECTION):** The rejected approach IS present in the target — quote where it appears.
 - **MISSING:** State "No corresponding content found" and note where you searched.
 
 **Example:**

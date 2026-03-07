@@ -129,6 +129,22 @@ test_[name]_[error_case]:
 
 ---
 
+## Constraint Traceability
+
+*Every HARD constraint and every rejected option from the decision record must trace to at least one
+task's ASSERT line or acceptance criterion.*
+
+| Decision Record Entry | Type | Traced To | Status |
+|-----------------------|------|-----------|--------|
+| C1: [constraint text] | HARD constraint | Task [X] ASSERT: [text] | Traced |
+| D1.rejected[0]: [option] | Rejection | Task [X] acceptance criterion: [text] | Traced |
+| C3: [constraint text] | HARD constraint | — | NOT TRACED |
+
+**Untraced entries are plan defects.** Either add an ASSERT/criterion to the relevant task, or add
+the entry to Known Risks with an explicit reason why no assertion is needed.
+
+---
+
 ## Integration Checklist
 
 Run after all groups complete, before `/team-build` marks the plan done:
@@ -137,6 +153,7 @@ Run after all groups complete, before `/team-build` marks the plan done:
 - [ ] No regressions in existing test suite
 - [ ] All named test cases passing
 - [ ] Known risks (waived findings) re-assessed against the built system
+- [ ] Constraint traceability: all entries traced or explicitly risk-accepted
 
 ---
 

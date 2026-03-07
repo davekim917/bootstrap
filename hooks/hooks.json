@@ -41,6 +41,15 @@
           "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-ts-hook.sh guards/file-protection.ts"
         }
       ]
+    },
+    {
+      "matcher": "TeamCreate",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-ts-hook.sh guards/workflow-gate-enforcement.ts"
+        }
+      ]
     }
   ],
   "PostToolUse": [

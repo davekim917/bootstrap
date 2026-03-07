@@ -128,6 +128,12 @@ Save the design to disk:
 1. Derive the feature name from the design title (kebab-case, matching the brief's feature name)
 2. `mkdir -p .context/specs/<feature>/`
 3. Write the design to `.context/specs/<feature>/design.md`
+4. Update the decision record at `.context/specs/<feature>/decisions.yaml`:
+   - Append the chosen option with rationale, citing constraint refs
+   - Append each rejected option with its rejection reason (these become REJECTION claims in drift detection)
+   - Append HARD/SOFT constraint classifications from Step 2 (if new constraints were identified beyond the brief's)
+   - Append all `[ASSUMPTION]` items from the Assumptions Log with validation method
+   - Format: see `skills/workflow/shared/decision-record-schema.md`
 
 Then STOP. Display exactly this gate:
 
@@ -213,6 +219,7 @@ Accepts rollback from `/team-review` (MUST-FIX requiring design revision) and `/
 **Read:**
 - `CLAUDE.md` — always (project context, conventions, guardrails)
 - `.context/specs/<feature>/brief.md` — the approved brief (Step 1)
+- `.context/specs/<feature>/decisions.yaml` — existing decision record from brief (Step 1)
 - `.claude/project-scope.md` — if it exists; determines which domain skills to load (Step 1)
 - Relevant project skills — loaded from `relevant_global_skills` in scope file (Step 3)
 - ~5-10 source files — scoped to the change area
@@ -221,6 +228,7 @@ Accepts rollback from `/team-review` (MUST-FIX requiring design revision) and `/
 
 **Write:**
 - `.context/specs/<feature>/design.md` — the completed design document (Step 7)
+- `.context/specs/<feature>/decisions.yaml` — updated decision record (Step 7)
 
 **Do NOT read:**
 - Every file in the codebase
