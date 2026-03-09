@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "bootstrap",
-      "source": ".",
+      "source": "./",
       "description": "Portable agent environment: team workflow skills, domain expertise, safety hooks, quality hooks, and project bootstrap commands.",
       "version": "1.0.0"
     }
