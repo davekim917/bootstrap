@@ -1,0 +1,14 @@
+{
+  "name": "davekim917-bootstrap",
+  "owner": {
+    "name": "David Kim"
+  },
+  "plugins": [
+    {
+      "name": "bootstrap",
+      "source": ".",
+      "description": "Portable agent environment: team workflow skills, domain expertise, safety hooks, quality hooks, and project bootstrap commands.",
+      "version": "1.0.0"
+    }
+  ]
+}
