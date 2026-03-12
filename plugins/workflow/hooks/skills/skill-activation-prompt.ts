@@ -3,7 +3,7 @@
  * UserPromptSubmit hook: Suggests relevant skills based on user prompt
  * Global hook that works across all projects with skill systems
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
 import type { UserPromptSubmitInput, SkillTriggers } from '../lib/types';
@@ -99,16 +99,21 @@ async function main() {
         const globalDiscovered = discoverSkillsInDir(globalSkillsDir, 'global', manualSkillNames);
         const projectDiscovered = discoverSkillsInDir(projectSkillsDir, projectDir, manualSkillNames);
 
-        // Also discover skills from plugin directories (workflow, domain, utility)
+        // Also discover skills from plugin directories (scan all subdirs dynamically)
         const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || '';
         let pluginDiscovered: Record<string, any> = {};
         if (pluginRoot) {
-            const pluginSkillSubdirs = ['workflow', 'domain', 'utility'];
-            for (const subdir of pluginSkillSubdirs) {
-                const pluginSkillsDir = join(pluginRoot, 'skills', subdir);
-                const discovered = discoverSkillsInDir(pluginSkillsDir, `plugin-${subdir}`, manualSkillNames);
-                pluginDiscovered = { ...pluginDiscovered, ...discovered };
-            }
+            const pluginSkillsRoot = join(pluginRoot, 'skills');
+            try {
+                const subdirs = readdirSync(pluginSkillsRoot).filter(entry => {
+                    try { return statSync(join(pluginSkillsRoot, entry)).isDirectory(); } catch { return false; }
+                });
+                for (const subdir of subdirs) {
+                    const pluginSkillsDir = join(pluginSkillsRoot, subdir);
+                    const discovered = discoverSkillsInDir(pluginSkillsDir, `plugin-${subdir}`, manualSkillNames);
+                    pluginDiscovered = { ...pluginDiscovered, ...discovered };
+                }
+            } catch {}
         }
 
         // Exit silently if no skill sources at all

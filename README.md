@@ -1,46 +1,45 @@
 # bootstrap
 
-A portable agent environment for Claude Code. Team workflow skills, domain expertise, safety hooks, quality hooks, and project bootstrap commands — all in one plugin.
+A portable agent environment for Claude Code. Three independent plugins — install what you need.
 
 Built for my own use, shared in case it's useful to others.
 
-## What This Is
+## Plugins
 
-A Claude Code plugin that provides:
-
-- **Team workflow** — a structured sequence for building features: brief → design → review → plan → build → qa → ship
-- **Domain skills** — patterns for software engineering, data engineering, analytics, data science, AI/LLM integration, and financial analytics
-- **Safety hooks** — blocks destructive commands (`rm` on protected paths), protects sensitive files (.env, .git, lock files)
-- **Quality hooks** — auto-runs TypeScript checks after edits, formats with Prettier, tracks edited files, suggests relevant skills based on your prompt
-- **Bootstrap commands** — analyze any codebase and generate a complete AI-assisted development setup (CLAUDE.md, project skills, conventions)
+| Plugin | What it provides |
+|--------|-----------------|
+| `bootstrap-workflow` | Team workflow skills (brief → design → review → plan → build → qa → ship), safety/quality hooks, specialized agents |
+| `bootstrap-domain` | Domain expertise skills for software engineering, data, analytics, AI, and finance |
+| `bootstrap-commands` | Codebase analysis commands that generate CLAUDE.md, project skills, and AI dev setup |
 
 ## Install
 
-From the Claude Code plugin manager:
+Add the marketplace, then install the plugins you want:
 
 ```
 /plugin marketplace add davekim917/bootstrap
-/plugin install bootstrap@davekim917/bootstrap
 ```
 
-Or clone and load locally:
-
-```bash
-git clone https://github.com/davekim917/bootstrap.git
-claude --plugin-dir ./bootstrap
+Install all three:
 ```
+/plugin install bootstrap-workflow@davekim917-bootstrap
+/plugin install bootstrap-domain@davekim917-bootstrap
+/plugin install bootstrap-commands@davekim917-bootstrap
+```
+
+Or just the ones you need. Each plugin is independent.
 
 ### Prerequisites
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
-- [Bun](https://bun.sh/) runtime (for TypeScript hooks)
+- [Bun](https://bun.sh/) runtime (for TypeScript hooks — workflow plugin only)
 - `jq` (for shell hooks — `brew install jq` on macOS)
 
-## What's Included
+## bootstrap-workflow
+
+13 team-* skills, 6 agents, safety/quality hooks.
 
 ### Skills
-
-**Workflow** (13 skills) — the team-* sequence:
 
 | Skill | Purpose |
 |-------|---------|
@@ -58,33 +57,6 @@ claude --plugin-dir ./bootstrap
 | `/team-verification-before-completion` | Evidence-based completion claims |
 | `/team-receiving-review-feedback` | Protocol for processing review findings |
 
-**Domain** (8 skills) — loaded contextually based on your project:
-
-- `software-engineering` — TypeScript, React, Node.js, APIs, testing
-- `analytics-engineering` — dbt, SQL modeling, data transformation
-- `analytics` — dashboards, metrics, BI tools
-- `data-engineering` — pipelines, orchestration, data quality
-- `data-science` — notebooks, ML, feature engineering
-- `ai-integration` — LLM APIs, prompt engineering, RAG, agents
-- `financial-analytics` — GL modeling, reconciliation, regulatory reporting
-- `jony-ive` — premium UI/UX design audit and refinement
-
-**Utility** (1 skill):
-
-- `skill-developer` — create and manage Claude Code skills
-
-### Commands
-
-| Command | Purpose |
-|---------|---------|
-| `/bootstrap` | Orchestrator — guides you through the full sequence |
-| `/bootstrap-discovery` | Stage 1: Analyze codebase patterns and architecture |
-| `/bootstrap-config` | Stage 2: Generate CLAUDE.md and AGENTS.md |
-| `/bootstrap-skills` | Stage 3: Generate project-specific skills |
-| `/bootstrap-domain` | Stage 4: Generate domain-specific skills |
-| `/bootstrap-audit` | Stage 5: Audit and reconcile all artifacts |
-| `/bootstrap-complete` | Stage 6: Final cleanup and validation |
-
 ### Agents
 
 Specialized subagents invoked by workflow skills:
@@ -101,6 +73,7 @@ Specialized subagents invoked by workflow skills:
 **Safety** (PreToolUse):
 - Block destructive bash commands (rm on protected paths, eval, shred, unlink)
 - Block edits to protected files (.env, .git/, lock files, terraform)
+- Workflow gate enforcement (blocks build without passing drift check)
 
 **Quality** (PostToolUse):
 - TypeScript type checking after file edits
@@ -114,89 +87,74 @@ Specialized subagents invoked by workflow skills:
 - Session timestamp injection
 - Cloud MCP connector management
 
-## Usage
-
-### Bootstrap a Project
-
-For an existing codebase that doesn't have Claude Code configuration:
-
-```bash
-cd /path/to/your-project
-```
-
-Then in Claude Code:
-
-```
-/bootstrap
-```
-
-This guides you through analyzing your codebase and generating:
-- `CLAUDE.md` — always-on guardrails and conventions
-- `.claude/skills/` — project-specific skills
-- `.claude/project-scope.md` — project domain context
-
-### Use the Team Workflow
+### Usage
 
 For a non-trivial feature:
 
 ```
-/team-brief
-```
-↓ requirements approved
-```
-/team-design
-```
-↓ design approved
-```
-/team-review
-```
-↓ findings addressed
-```
-/team-plan
-```
-↓ plan approved
-```
-/team-build
-```
-↓ build approved
-```
-/team-qa
-```
-↓ QA clear
-```
-/team-ship
+/team-brief → /team-design → /team-review → /team-plan → /team-build → /team-qa → /team-ship
 ```
 
 For smaller work with clear requirements, skip to `/team-design` → `/team-plan` → `/team-build`.
 
 For trivial fixes, skip the workflow entirely.
 
+## bootstrap-domain
+
+8 domain expertise skills — loaded contextually based on your project:
+
+- `software-engineering` — TypeScript, React, Node.js, APIs, testing
+- `analytics-engineering` — dbt, SQL modeling, data transformation
+- `analytics` — dashboards, metrics, BI tools
+- `data-engineering` — pipelines, orchestration, data quality
+- `data-science` — notebooks, ML, feature engineering
+- `ai-integration` — LLM APIs, prompt engineering, RAG, agents
+- `financial-analytics` — GL modeling, reconciliation, regulatory reporting
+- `jony-ive` — premium UI/UX design audit and refinement
+
+## bootstrap-commands
+
+7 commands for bootstrapping AI-assisted development in any codebase:
+
+| Command | Purpose |
+|---------|---------|
+| `/bootstrap` | Orchestrator — guides you through the full sequence |
+| `/bootstrap-discovery` | Stage 1: Analyze codebase patterns and architecture |
+| `/bootstrap-config` | Stage 2: Generate CLAUDE.md and AGENTS.md |
+| `/bootstrap-skills` | Stage 3: Generate project-specific skills |
+| `/bootstrap-domain` | Stage 4: Generate domain-specific skills |
+| `/bootstrap-audit` | Stage 5: Audit and reconcile all artifacts |
+| `/bootstrap-complete` | Stage 6: Final cleanup and validation |
+
+Also includes the `skill-developer` utility skill for creating new skills.
+
 ## Structure
 
 ```
 bootstrap/
-├── .claude-plugin/plugin.json
-├── skills/
-│   ├── workflow/          # 13 team-* skills
-│   ├── domain/            # 7 domain expertise skills
-│   └── utility/           # skill-developer
-├── commands/              # 7 bootstrap commands
-├── agents/                # 6 specialized subagents
-├── hooks/
-│   ├── guards/            # Safety: block destructive commands + file protection
-│   ├── lifecycle/         # Session start hooks
-│   ├── quality/           # TSC, Prettier, error handling reminder
-│   ├── skills/            # Prompt-based skill suggestions
-│   ├── tracking/          # Edit tracking
-│   └── lib/               # Shared TypeScript utilities
-└── scripts/               # Bootstrap helper scripts
+├── .claude-plugin/marketplace.json
+├── plugins/
+│   ├── workflow/               # bootstrap-workflow plugin
+│   │   ├── .claude-plugin/plugin.json
+│   │   ├── skills/workflow/    # 13 team-* skills
+│   │   ├── hooks/              # safety, quality, lifecycle hooks
+│   │   ├── agents/             # 6 specialized subagents
+│   │   └── tests/              # workflow validation specs
+│   ├── domain/                 # bootstrap-domain plugin
+│   │   ├── .claude-plugin/plugin.json
+│   │   └── skills/domain/      # 8 domain expertise skills
+│   └── bootstrap-commands/     # bootstrap-commands plugin
+│       ├── .claude-plugin/plugin.json
+│       ├── commands/           # 7 bootstrap commands
+│       ├── skills/utility/     # skill-developer
+│       └── scripts/            # helper scripts
 ```
 
 ## Customization
 
 ### Adding Domain Skills
 
-Create a new skill in `skills/domain/your-domain/SKILL.md`. The plugin's skill discovery hook picks it up automatically from the frontmatter description.
+Create a new skill in `plugins/domain/skills/domain/your-domain/SKILL.md`.
 
 ### Disabling Hooks
 

@@ -5,9 +5,21 @@
   },
   "plugins": [
     {
-      "name": "bootstrap",
-      "source": "./",
-      "description": "Portable agent environment: team workflow skills, domain expertise, safety hooks, quality hooks, and project bootstrap commands.",
+      "name": "bootstrap-workflow",
+      "source": "./plugins/workflow",
+      "description": "Structured team workflow: brief → design → review → plan → build → qa → ship",
+      "version": "1.0.0"
+    },
+    {
+      "name": "bootstrap-domain",
+      "source": "./plugins/domain",
+      "description": "Domain expertise skills for software, data, analytics, AI, and finance",
+      "version": "1.0.0"
+    },
+    {
+      "name": "bootstrap-commands",
+      "source": "./plugins/bootstrap-commands",
+      "description": "Codebase analysis and AI development setup generation",
       "version": "1.0.0"
     }
   ]
