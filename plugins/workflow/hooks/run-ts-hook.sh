@@ -19,14 +19,11 @@ if [[ "$1" == /* ]] || [[ "$1" == *..* ]]; then
     exit 1
 fi
 
-# Resolve plugin root — prefer CLAUDE_PLUGIN_ROOT, fall back to script location
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
-if [ -z "$PLUGIN_ROOT" ]; then
-    PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-fi
+# Resolve hooks directory from this script's own location (works regardless of PLUGIN_ROOT)
+HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Security: Validate the file exists
-HOOK_FILE="$PLUGIN_ROOT/hooks/$1"
+HOOK_FILE="$HOOKS_DIR/$1"
 if [ ! -f "$HOOK_FILE" ]; then
     echo "ERROR: Hook file does not exist: $1" >&2
     exit 1
@@ -38,5 +35,5 @@ if ! command -v bun &> /dev/null; then
     exit 1
 fi
 
-cd "$PLUGIN_ROOT/hooks"
+cd "$HOOKS_DIR"
 cat | bun "$HOOK_FILE"

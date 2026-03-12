@@ -1,0 +1,19 @@
+{
+  "name": "bootstrap",
+  "version": "1.0.0",
+  "description": "Complete portable agent environment: team workflow skills, domain expertise, safety hooks, quality hooks, specialized agents, and project bootstrap commands.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": ["workflow", "skills", "hooks", "bootstrap", "team", "quality", "safety"],
+  "skills": [
+    "./plugins/workflow/skills/workflow",
+    "./plugins/domain/skills/domain",
+    "./plugins/bootstrap-commands/skills/utility"
+  ],
+  "hooks": "./hooks/hooks.json",
+  "agents": "./plugins/workflow/agents",
+  "commands": "./plugins/bootstrap-commands/commands"
+}

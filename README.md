@@ -20,14 +20,17 @@ Add the marketplace, then install the plugins you want:
 /plugin marketplace add davekim917/bootstrap
 ```
 
-Install all three:
+Install everything:
 ```
-/plugin install bootstrap-workflow@davekim917-bootstrap
-/plugin install bootstrap-domain@davekim917-bootstrap
-/plugin install bootstrap-commands@davekim917-bootstrap
+/plugin install bootstrap@davekim917-bootstrap
 ```
 
-Or just the ones you need. Each plugin is independent.
+Or install only what you need:
+```
+/plugin install bootstrap-workflow@davekim917-bootstrap     # team workflow + hooks + agents
+/plugin install bootstrap-domain@davekim917-bootstrap       # domain skills only
+/plugin install bootstrap-commands@davekim917-bootstrap     # bootstrap commands only
+```
 
 ### Prerequisites
 
