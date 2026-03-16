@@ -223,20 +223,7 @@ Task(
 - [ ] Every acceptance criterion verifies as true (not self-reported — actually check)
 - [ ] No regressions: existing test suite still passes
 - [ ] For frontend groups with render-check acceptance criteria: after functional criteria pass, the **lead** (not the builder) performs visual verification — start the dev server, use `mcp__chrome-devtools__navigate_page` + `mcp__chrome-devtools__take_screenshot` if devtools MCP is available; or if devtools MCP is unavailable, pause and tell the user explicitly: "Render-check required — [specific decision from the acceptance criterion, e.g., 'text-accent on bg-primary logo color']. Please verify in the browser and confirm to continue." Do not ask the builder for visual confirmation — builder agents cannot render or observe visual output. Do not self-approve render-checks.
-- [ ] Domain-specific completion gate passes (see table below)
-
-**Domain-specific completion gates** — apply when a task group includes any of these artifact types:
-
-| Task type | Required before marking group complete |
-|---|---|
-| **dbt model** (analytics-engineering) | `dbt test --select <model_name>` passes — unique, not_null, relationships, and any custom tests defined in the spec |
-| **Airflow / Dagster / Prefect DAG** (data-engineering) | `airflow dags test <dag_id> <date>` (or framework equivalent) runs without error; idempotency verified if spec asserts it |
-| **ML training script** (data-science) | Eval metric gate logged (e.g., `val_auc ≥ threshold`) — check the spec's ASSERT for the specific threshold; MLflow / W&B run exists |
-| **LLM prompt pipeline / eval** (llm-engineering) | Eval suite passes — `pytest evals/` or equivalent meets the ≥ N/M threshold stated in the spec; token cost within stated budget |
-| **Agent loop / MCP tool** (agentic-systems) | Tool contract tests pass; verify structured error returns (no raw Python exceptions propagated); MAX_ITERATIONS cap present in agent loops |
-| **Financial GL model** (financial-analytics) | Reconciliation check passes within stated tolerance (typically ≤ $0.01 variance); accepted_values tests for categorical columns pass |
-
-These gates supplement (not replace) the standard criteria checks. A group with a dbt model must pass both the general acceptance criteria AND `dbt test`. If no domain-specific gate applies, skip this row.
+- [ ] Domain-specific completion gate passes — see [`references/domain-completion-gates.md`](references/domain-completion-gates.md) for gates by artifact type (dbt, DAG, ML, LLM eval, agent/MCP, GL model)
 
 ### Two-Stage Implementation Review
 
@@ -457,95 +444,33 @@ Say "approved" to proceed, or flag anything to revisit.
 
 ## Builder Context Isolation
 
-Each builder receives **only**:
-1. Their task group spec (from the plan) — complete, self-contained, including injected constraint ASSERTs
-2. CLAUDE.md excerpts — tech stack, commands, critical guardrails
-3. Team name + task ID — for TaskUpdate and SendMessage
+Each builder receives: task group spec (complete, with injected ASSERTs) + CLAUDE.md excerpts (stack/commands/guardrails) + team name + task ID.
 
-Each builder reads **only**:
-- Files listed in their task group's file ownership
-- Test files they need to run their named test cases
-
-Each builder **never**:
-- Reads other groups' files
-- Loads project skills (patterns are already in the task spec, transcribed by `/team-plan`)
-- Reads the full plan (only their section)
-- Writes to files not in their ownership list
-
-**Why this matters:** A builder that reads other groups' files will start making assumptions about
-what those groups produced. Those assumptions might be wrong mid-build (the other group hasn't
-finished yet). Context isolation eliminates this entire class of failure.
+Each builder reads only files in their task group's ownership list. Each builder never reads other groups' files, loads project skills, reads the full plan, or writes to files outside their ownership. Cross-group reads introduce mid-build assumptions about unfinished work — isolation eliminates this failure class.
 
 ---
 
-## Lead Responsibilities (What the Lead Does and Does NOT Do)
+## Lead Responsibilities
 
-**Lead DOES:**
-- Read the plan, design, and decision record; run the pre-build drift check
-- Create team, create tasks, spawn builders
-- Answer blocker questions with decisions
-- Validate acceptance criteria by reading files and running tests
-- Write context checkpoints after each group completion
-- Re-read decision record and design before spawning sequential groups
-- Run the post-build drift check
-- Unblock sequential groups when dependencies complete
-- Shut down builders, delete team
+**Lead DOES:** read plan/design/decision record, run drift checks, create team, spawn builders, answer blockers, validate criteria by reading files and running tests, write context checkpoints, shut down builders.
 
-**Lead does NOT:**
-- Write code directly
-- Edit files directly
-- Make implementation decisions that should have been in the plan (flag these to user instead)
-- Run builders sequentially when they could run in parallel
-
----
+**Lead does NOT:** write or edit code, make implementation decisions that should have been in the plan (flag to user instead), run builders sequentially when they could run in parallel.
 
 ## Handling Mid-Build Problems
 
-**Builder reports a plan ambiguity:**
-- Lead reads the plan section in question
-- Makes the interpretation call (document it in a reply)
-- If the decision is significant, note it for the drift check
-
-**Builder reports a file conflict (wasn't caught in /team-plan):**
-- Stop both affected builders via SendMessage
-- Resolve the conflict (which builder owns what)
-- Resume builders with updated ownership
-
-**Builder fails a test case:**
-- Lead reads the failing code and the test spec
-- SendMessage to builder with specific diagnosis and fix
-- Builder fixes and re-reports
-- Lead re-validates before marking complete
-
-**Builder hits an external dependency issue (missing env var, service down):**
-- This is a blocker for the whole build, not just the group
-- Lead notifies user immediately, pauses build
-- User resolves, lead resumes
+See [`references/handling-build-problems.md`](references/handling-build-problems.md) — covers plan ambiguity, file conflicts, test failures, and external dependency blockers.
 
 ---
 
 ## Rollback Protocol
 
-When mid-build problems cannot be resolved within the build, escalate to a rollback.
+**Triggers:** drift check shows DIVERGED/MISSING after fixes; 3 failed fix cycles on same criterion; criteria that cannot be verified as written; design assumption invalidated by implementation.
 
-**Triggers:**
-- Drift check shows DIVERGED/MISSING after fixes (plan doesn't match reality)
-- 3 failed fix cycles on the same acceptance criterion
-- Acceptance criteria that cannot be verified as written
-- Design assumption invalidated by implementation reality
+**Rollback targets:** `build → plan` (plan under-specified, re-enter `/team-plan` Step 2 or 4) or `build → design` (design assumption invalidated, re-enter `/team-design` Step 4). Preserve all builder work; pass rollback context forward.
 
-**Rollback Targets:**
-- **build → plan:** Plan was under-specified — builders had to guess, file conflicts emerged, or task boundaries were wrong. Re-enter `/team-plan` at Step 2 (task boundaries) or Step 4 (task specs).
-- **build → design:** Design assumption was invalidated — a library doesn't support an assumed capability, a constraint was misclassified, or the recommended approach is infeasible. Re-enter `/team-design` at Step 4 (First-Principles Reconstruction).
+**Execution:** Lead recommends rollback target with evidence. User decides. No unilateral rollback.
 
-**Artifact Handling:**
-- Preserve all builder work (don't discard code/models/queries already written)
-- Invalidate affected task group specs (mark as "needs re-planning")
-- Pass rollback context forward: what failed, what was learned, what the new constraint is
-
-**Execution:** Lead recommends rollback target with evidence. User decides. No unilateral rollback by the lead.
-
-**Full rollback matrix:** See `references/rollback-protocol.md` for all stage transitions and artifact handling rules.
+See [`references/rollback-protocol.md`](references/rollback-protocol.md) for the full stage transition matrix and artifact handling rules.
 
 ---
 
@@ -560,3 +485,18 @@ When mid-build problems cannot be resolved within the build, escalate to a rollb
 - **Don't loop indefinitely on failures.** If a criterion fails 3 times or drift doesn't converge after 3 cycles, escalate to the user. Autonomous loops without termination guards waste tokens and delay resolution.
 - **Don't skip context checkpoints.** After each group completion, write `build-state.md`. Context compression during long builds silently erases the lead's working memory. Checkpoints are the recovery mechanism.
 - **Don't spawn sequential groups from memory.** Always re-read the decision record and design before constructing the next builder's prompt. The lead's conversation context may have been compressed since the last group.
+
+---
+
+## Rationalization Resistance
+
+| Excuse | Counter |
+|--------|---------|
+| "The builder said it passed — I'll trust that" | Builder self-report is not validation. Lead reads the files and runs the tests. |
+| "The tests are slow, I'll skip running them" | Unrun tests are not verified criteria. Run them — that's the entire point of named test cases in the spec. |
+| "I'll skip the pre-build drift check to save time" | If the plan drifts from the design, everything built from it is wrong. Catching it before spawning saves more time than it costs. |
+| "The post-build drift check is probably fine, we followed the plan" | "Probably" is not confirmed. Run `/team-drift`. CONFIRMED is the only acceptable outcome. |
+| "Context checkpoints slow the build down" | Without checkpoints, context compression silently erases validation results. The recovery cost is higher than the write cost. |
+| "All groups can run in parallel — dependencies don't matter here" | Sequential groups exist because they depend on outputs from blocking groups. Spawning early produces builds from incomplete inputs. |
+| "I'll fix this one criterion myself instead of sending it back to the builder" | Lead writing code breaks context isolation and role boundaries. Send the fix back to the builder. |
+| "The rollback is overkill — I'll patch around the issue" | Patches that contradict the design accumulate. Rollback is the mechanism for surfacing a real constraint the plan missed. |
