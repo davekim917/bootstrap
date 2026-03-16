@@ -79,7 +79,8 @@ Group changed files by type for targeted routing:
 - **Config:** env files, build config, package changes
 - **Tests:** new or modified test files
 - **Docs:** README, API docs, changelogs
-- **AI/LLM integration:** `*_client.py`, `anthropic*.py`, `openai*.py`, agent config YAML, prompt template files, `evals/`, `*.eval.py`, evaluation harnesses
+- **LLM integration:** `*_client.py`, `anthropic*.py`, `openai*.py`, prompt template files, `evals/`, `*.eval.py`, evaluation harnesses — route to `llm-engineering`
+- **Agentic systems:** agent loop files, `mcp_server.py`, MCP tool definitions, orchestrator/worker patterns, multi-agent config YAML — route to `agentic-systems`
 - **Financial models:** GL tables, chart-of-accounts models, reconciliation scripts, period-close queries, regulatory report outputs, billing models
 - **Mobile screens/components:** `.tsx` files in `app/`, `screens/`, `components/` with React Native imports
 - **Native modules:** `*.podspec`, Android bridge files, native module wrappers
@@ -361,9 +362,10 @@ QA pipeline clear. Ready to ship.
 | GL model / financial SQL | ✓ | ✓ | ✓ | ✓ (PII: salary/comp data, access controls) | ✓ (full-table scans on multi-year transaction tables) |
 | Reconciliation script | ✓ | ✓ | ✓ | — | ✓ (control total query cost) |
 | Regulatory / report output config | ✓ | — | ✓ | ✓ (audit trail, data access) | — |
-| LLM client / API wrapper | ✓ | ✓ | ✓ | ✓ (API key exposure, prompt injection) | ✓ (token cost, model tier) |
-| Prompt template / agent config | ✓ | ✓ | ✓ | ✓ (system prompt leakage) | ✓ (context window usage) |
-| Eval harness / eval script | ✓ | ✓ | ✓ | — | ✓ (live API in unit tests) |
+| LLM client / API wrapper | ✓ | ✓ (llm-engineering) | ✓ | ✓ (API key exposure, prompt injection) | ✓ (token cost, model tier) |
+| Prompt template / eval harness | ✓ | ✓ (llm-engineering) | ✓ | ✓ (system prompt leakage, key in eval scripts) | ✓ (token budget, live API in unit tests) |
+| Agent loop / orchestrator | ✓ | ✓ (agentic-systems) | ✓ | ✓ (prompt injection via tool results, inter-agent trust) | ✓ (unbounded loops, cost per run) |
+| MCP server / tool definition | ✓ | ✓ (agentic-systems) | ✓ | ✓ (auth on tool endpoints, scope creep) | ✓ (tool error handling, retry behavior) |
 | Mobile screen / component | ✓ | ✓ (vercel-react-native-skills) | ✓ | ✓ (deep links, API keys in config) | ✓ (list perf, re-renders, animation) |
 | Native module bridge | ✓ | ✓ | ✓ | ✓ (permissions, native API misuse) | ✓ |
 | Mobile config (app.json, eas.json) | ✓ | — | ✓ | ✓ (secrets, permissions) | — |

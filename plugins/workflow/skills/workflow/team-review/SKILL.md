@@ -54,8 +54,21 @@ first."
    # Write design content to .claude/tmp/review-input.md
    ```
 
-4. Identify the 2-3 project skills most relevant to this design area (from CLAUDE.md Workflow Hints
-   or skill names). Note them — each reviewer will be told to load them.
+4. Identify the 2-3 project skills most relevant to this design. Start from `.claude/project-scope.md`
+   if it exists (`relevant_global_skills` field), then cross-reference the design content using this
+   domain-to-skill mapping:
+
+   | Design content signals | Skill to load |
+   |---|---|
+   | dbt models, SQL transforms, marts, staging, schema.yml | `analytics-engineering` |
+   | LLM API calls, RAG, prompts, evals, token cost, structured output | `llm-engineering` |
+   | Agent loops, MCP tools/servers, multi-agent, memory, HITL | `agentic-systems` |
+   | Airflow/Dagster/Prefect DAGs, ETL pipelines, ingestion, CDC, streaming | `data-engineering` |
+   | ML training, notebooks, feature engineering, MLflow, model evaluation | `data-science` |
+   | GL models, ARR/MRR/NRR, revenue recognition, budget vs actuals, reconciliation | `financial-analytics` |
+   | TypeScript/React, REST/GraphQL APIs, auth, Node.js, AWS/GCP services | `software-engineering` |
+
+   Select the 2-3 skills whose signals appear most prominently. Note them — each reviewer will be told to load them.
 
 5. **Pre-fetch library documentation** for any library the design references. Include the
    pre-fetched docs in reviewer prompts so reviewers don't make wrong assumptions about
@@ -111,6 +124,10 @@ Your lens: STRUCTURAL INTEGRITY
 - What risks are understated or unacknowledged?
 
 Also load these relevant project skills: [skill names from Step 1]
+Use the loaded domain skills to check domain-specific anti-patterns (e.g., for analytics-engineering:
+check grain consistency and test coverage; for llm-engineering: check for prompt injection risks
+and token budget; for agentic-systems: check for unbounded loops and missing tool contracts;
+for data-science: check for data leakage and missing eval gates).
 
 For each finding, state:
 - What the issue is (specific, not vague)

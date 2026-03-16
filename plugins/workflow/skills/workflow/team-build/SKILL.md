@@ -223,6 +223,20 @@ Task(
 - [ ] Every acceptance criterion verifies as true (not self-reported — actually check)
 - [ ] No regressions: existing test suite still passes
 - [ ] For frontend groups with render-check acceptance criteria: after functional criteria pass, the **lead** (not the builder) performs visual verification — start the dev server, use `mcp__chrome-devtools__navigate_page` + `mcp__chrome-devtools__take_screenshot` if devtools MCP is available; or if devtools MCP is unavailable, pause and tell the user explicitly: "Render-check required — [specific decision from the acceptance criterion, e.g., 'text-accent on bg-primary logo color']. Please verify in the browser and confirm to continue." Do not ask the builder for visual confirmation — builder agents cannot render or observe visual output. Do not self-approve render-checks.
+- [ ] Domain-specific completion gate passes (see table below)
+
+**Domain-specific completion gates** — apply when a task group includes any of these artifact types:
+
+| Task type | Required before marking group complete |
+|---|---|
+| **dbt model** (analytics-engineering) | `dbt test --select <model_name>` passes — unique, not_null, relationships, and any custom tests defined in the spec |
+| **Airflow / Dagster / Prefect DAG** (data-engineering) | `airflow dags test <dag_id> <date>` (or framework equivalent) runs without error; idempotency verified if spec asserts it |
+| **ML training script** (data-science) | Eval metric gate logged (e.g., `val_auc ≥ threshold`) — check the spec's ASSERT for the specific threshold; MLflow / W&B run exists |
+| **LLM prompt pipeline / eval** (llm-engineering) | Eval suite passes — `pytest evals/` or equivalent meets the ≥ N/M threshold stated in the spec; token cost within stated budget |
+| **Agent loop / MCP tool** (agentic-systems) | Tool contract tests pass; verify structured error returns (no raw Python exceptions propagated); MAX_ITERATIONS cap present in agent loops |
+| **Financial GL model** (financial-analytics) | Reconciliation check passes within stated tolerance (typically ≤ $0.01 variance); accepted_values tests for categorical columns pass |
+
+These gates supplement (not replace) the standard criteria checks. A group with a dbt model must pass both the general acceptance criteria AND `dbt test`. If no domain-specific gate applies, skip this row.
 
 ### Two-Stage Implementation Review
 

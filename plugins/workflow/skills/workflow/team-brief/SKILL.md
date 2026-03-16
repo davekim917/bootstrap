@@ -59,11 +59,12 @@ Do not ask questions yet. Just build your internal map.
 | `dagster_cloud.yaml` / `workspace.yaml` | `data-engineering` (Dagster) |
 | `prefect.yaml` | `data-engineering` (Prefect) |
 | `*.ipynb` (count ≥ 1) | `data-science` |
-| `requirements.txt` / `pyproject.toml` | Parse for: `scikit-learn`, `torch`, `tensorflow`, `xgboost` → `data-science`; `fastapi`, `django`, `flask` → `web-app`; `airflow`, `dagster`, `prefect` → `data-engineering`; `anthropic`, `openai`, `langchain` → `ai-integration`; `openpyxl`, `xlrd`, `xlsxwriter`, `quantlib`, `pandas-finance` → hint toward `financial-analytics` |
-| `package.json` | `react`, `next` → `web-app`; `expo`, `react-native` → `mobile-app`; `@anthropic-ai/sdk`, `openai` → `ai-integration` |
+| `requirements.txt` / `pyproject.toml` | Parse for: `scikit-learn`, `torch`, `tensorflow`, `xgboost` → `data-science`; `fastapi`, `django`, `flask` → `web-app`; `airflow`, `dagster`, `prefect` → `data-engineering`; `anthropic`, `openai`, `langchain`, `litellm`, `google-generativeai` → `llm-engineering`; `langgraph`, `crewai`, `autogen`, `mcp` → `agentic-systems` (in addition to `llm-engineering` if LLM packages also present); `openpyxl`, `xlrd`, `xlsxwriter`, `quantlib`, `pandas-finance` → hint toward `financial-analytics` |
+| `package.json` | `react`, `next` → `web-app`; `expo`, `react-native` → `mobile-app`; `@anthropic-ai/sdk`, `openai`, `ai` (Vercel AI SDK) → `llm-engineering`; `@modelcontextprotocol/sdk` → `agentic-systems` |
 | `pubspec.yaml` | `mobile-app` |
 | `Cargo.toml` | `cli-tool` (or `web-app` if axum/actix present) |
-| `evals/` directory or `*.eval.py` files | `ai-integration` |
+| `evals/` directory or `*.eval.py` files | `llm-engineering` |
+| `tools/` directory with MCP server patterns or `server.py` with `mcp` import | `agentic-systems` |
 | `finance/`, `accounting/`, `gl_`, `coa_`, or `ledger` directory with any SQL or Python indicators | `financial-analytics` (auto-write; no prompt needed — compound signal is unambiguous) |
 
 **Union accumulation (collect all fired signals):**
