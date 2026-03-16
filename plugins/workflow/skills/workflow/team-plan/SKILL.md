@@ -85,6 +85,8 @@ For each group:
 For every task in every group, write a full spec. No placeholders. No "follow the existing pattern"
 without showing the pattern.
 
+**Domain-specific task spec patterns:** See [`references/domain-task-patterns.md`](references/domain-task-patterns.md) for canonical templates covering analytics-engineering (dbt), data-engineering (DAGs), data-science (ML), llm-engineering (prompt pipelines), agentic-systems (agents/MCP), and financial-analytics (GL models). Transcribe the relevant pattern directly into the task spec — do not link to it.
+
 **Each task spec must contain:**
 
 **a) File path (exact)**
@@ -447,3 +449,13 @@ Accepts rollback from `/team-build` when the plan is under-specified or structur
 
 **Tier:** Opus (current session)
 **Rationale:** Task decomposition requires architectural judgment — identifying seams, catching file conflicts, writing complete specs. Opus-level reasoning ensures the plan is detailed enough that builders never have to guess.
+
+---
+
+## Resource Files
+
+### [references/plan-template.md](references/plan-template.md)
+Complete plan document template. Used in Step 6 to write and save the final plan.
+
+### [references/domain-task-patterns.md](references/domain-task-patterns.md)
+Canonical task spec examples for all 6 supported domains: analytics-engineering, data-engineering, data-science, llm-engineering, agentic-systems, financial-analytics. Transcribe the relevant pattern directly into task specs in Step 4.

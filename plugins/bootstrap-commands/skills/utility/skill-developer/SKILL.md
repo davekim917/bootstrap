@@ -403,6 +403,9 @@ Ready-to-use pattern collection: intent patterns, file path patterns, content pa
 ### [ADVANCED.md](references/ADVANCED.md)
 Future enhancements: dynamic rule updates, skill dependencies, conditional enforcement, skill analytics.
 
+### [SKILLS-DEVELOPMENT-GUIDE.md](references/SKILLS-DEVELOPMENT-GUIDE.md)
+Source-grounded authoring guide covering the agentskills.io open standard, platform-specific behavior (Claude/Codex/Copilot/Cursor/Gemini), description-writing standard, folder structure patterns, testing harnesses (trigger/non-trigger suites, functional tests), troubleshooting playbook, and the §15 de facto authoring checklist (before dev → required → during dev → before release → after release → portability guardrails → Anthropic-specific constraints). **Consult this before writing or substantially updating any skill.**
+
 ---
 
 **Skill Status**: RESTRUCTURED — aligns with official skill-creator standard + hook architecture ✅
