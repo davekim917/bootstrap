@@ -29,6 +29,18 @@ Transforms fuzzy user intent into a validated, structured brief through conversa
 - Tasks where requirements are already fully specified
 - Do NOT auto-trigger — the user consciously enters this workflow by typing `/team-brief`
 
+## Selective Mode (`--scope-only`)
+
+To generate `.claude/project-scope.md` without running requirements extraction:
+
+```
+/team-brief --scope-only
+```
+
+When `--scope-only` is present: **run Step 1b only** (discovery scan + write project-scope.md), then stop. Skip Steps 1, 2, 3, 4, and 5 entirely.
+
+Use this when the project is already understood and you just need the scope file for downstream skills (`/team-plan`, `/team-review`, `/team-qa`).
+
 ---
 
 ## Process
