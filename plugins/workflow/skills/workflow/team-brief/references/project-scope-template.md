@@ -7,8 +7,8 @@ domains:
   - web-app        # primary
   - ml-inference   # secondary
   # Common values: web-app, mobile-app, data-engineering, analytics-engineering,
-  # data-science, ml-inference, analytics, financial-analytics, content-generation,
-  # cli-tool, [any free-form label for novel domains]
+  # data-science, ml-inference, analytics, financial-analytics, llm-engineering,
+  # agentic-systems, content-generation, cli-tool, [any free-form label for novel domains]
 
 primary_language: python
 framework: FastAPI          # optional
@@ -63,21 +63,29 @@ description: >
 #              Tests via Jest + React Native Testing Library.
 
 ---
-# Mobile app + AI integration:
-# domains: [mobile-app, ai-integration]
-# relevant_global_skills: [vercel-react-native-skills, ai-integration]
+# Mobile app + LLM features:
+# domains: [mobile-app, llm-engineering]
+# relevant_global_skills: [vercel-react-native-skills, llm-engineering]
 # description: React Native app with on-device or API-backed LLM features.
 
 ---
-# AI/LLM integration (standalone):
-# domains: [ai-integration]
-# relevant_global_skills: [ai-integration]
-# description: Claude/OpenAI API integration, agent loops, or LLM pipeline.
+# LLM engineering (standalone — APIs, RAG, evals):
+# domains: [llm-engineering]
+# relevant_global_skills: [llm-engineering]
+# description: Claude/OpenAI API integration, RAG, prompt engineering, eval harnesses.
+#              No agentic decision loops — use agentic-systems for those.
 
 ---
-# Data engineering + AI (orchestrated LLM pipeline):
-# domains: [data-engineering, ai-integration]
-# relevant_global_skills: [data-engineering, ai-integration]
+# Agentic systems (autonomous agents, MCP, multi-agent):
+# domains: [agentic-systems, llm-engineering]
+# relevant_global_skills: [agentic-systems, llm-engineering]
+# description: Autonomous agents with tool use, MCP server/client, multi-agent orchestration.
+#              Includes llm-engineering for the LLM API calls within the agent loop.
+
+---
+# Data engineering + LLM (orchestrated LLM pipeline):
+# domains: [data-engineering, llm-engineering]
+# relevant_global_skills: [data-engineering, llm-engineering]
 # description: Orchestrated pipeline with LLM steps (e.g., Airflow DAG calling Claude API).
 
 ---
