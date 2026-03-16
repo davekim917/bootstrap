@@ -96,6 +96,8 @@ Guidance from spec:
 - keep references one level from `SKILL.md`
 - keep `SKILL.md` under ~500 lines (recommendation)
 
+**Why 500 lines?** The SKILL.md body loads in full on skill invocation — the platform budget for this is ~5,000 tokens. At typical prose density (~10 tokens/line), 500 lines ≈ 5,000 tokens. Both the [Anthropic platform docs checklist](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices#token-budgets) and this spec use 500 lines as the practical proxy. Lines and tokens are not the same unit — a file of 490 dense prose lines may exceed the budget while a file of 510 short checklist lines may not — but 500 lines is the official checkable rule. Move detailed content to `references/` to stay under it.
+
 ### 1.5 Reference validator (Confirmed)
 
 Use `skills-ref`:
