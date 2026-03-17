@@ -8,25 +8,25 @@
       "name": "bootstrap",
       "source": "./",
       "description": "Everything: team workflow, domain skills, bootstrap commands, hooks, and agents",
-      "version": "1.0.0"
+      "version": "1.0.1"
     },
     {
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Structured team workflow: brief → design → review → plan → build → qa → ship",
-      "version": "1.0.0"
+      "version": "1.0.1"
     },
     {
       "name": "bootstrap-domain",
       "source": "./plugins/domain",
       "description": "Domain expertise skills for software, data, analytics, AI, and finance",
-      "version": "1.0.0"
+      "version": "1.0.1"
     },
     {
       "name": "bootstrap-commands",
       "source": "./plugins/bootstrap-commands",
       "description": "Codebase analysis and AI development setup generation",
-      "version": "1.0.0"
+      "version": "1.0.1"
     }
   ]
 }

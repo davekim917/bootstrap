@@ -1,6 +1,6 @@
 {
   "name": "bootstrap",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Complete portable agent environment: team workflow skills, domain expertise, safety hooks, quality hooks, specialized agents, and project bootstrap commands.",
   "author": {
     "name": "David Kim"
