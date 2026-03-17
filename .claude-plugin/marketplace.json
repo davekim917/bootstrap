@@ -5,12 +5,6 @@
   },
   "plugins": [
     {
-      "name": "bootstrap",
-      "source": "./",
-      "description": "Everything: team workflow, domain skills, bootstrap commands, hooks, and agents",
-      "version": "1.0.1"
-    },
-    {
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Structured team workflow: brief → design → review → plan → build → qa → ship",
