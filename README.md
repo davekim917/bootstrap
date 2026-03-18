@@ -78,9 +78,6 @@ Specialized subagents invoked by workflow skills:
 - Prettier formatting after file edits
 - Edited file tracking for session-end review
 
-**Workflow** (UserPromptSubmit):
-- Skill suggestion based on prompt keywords
-
 **Lifecycle** (SessionStart):
 - Session timestamp injection
 - Cloud MCP connector management

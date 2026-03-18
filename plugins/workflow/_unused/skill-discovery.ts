@@ -1,7 +1,7 @@
 /**
  * Auto-discovery of skills from SKILL.md frontmatter.
- * Scans global (~/.claude/skills/) and project (.claude/skills/) directories,
- * parses YAML frontmatter, extracts trigger keywords, and caches results.
+ * Scans skills directories, parses YAML frontmatter, extracts trigger
+ * keywords and intent patterns, and caches results.
  * Cache is invalidated when any SKILL.md mtime changes.
  */
 
@@ -12,17 +12,14 @@ import type { SkillTriggers } from './types';
 
 const GLOBAL_STATE_DIR = join(process.env.HOME || '/root', '.claude', 'hooks', 'state');
 
-export interface DiscoveredSkillEntry {
-    type: 'domain';
-    enforcement: 'suggest';
-    priority: 'medium';
+export interface DiscoveredSkill {
     promptTriggers: SkillTriggers;
 }
 
-export interface DiscoveredSkillCache {
+interface DiscoveredSkillCache {
     hash: string;
     timestamp: number;
-    skills: Record<string, DiscoveredSkillEntry>;
+    skills: Record<string, DiscoveredSkill>;
 }
 
 /**
@@ -65,17 +62,15 @@ function parseFrontmatter(content: string): { name: string; description: string 
                 description = parts.join(joiner).trim();
             } else if (val.startsWith('"')) {
                 // YAML double-quoted string: \" → ", \\ → \
-                // Walk char by char to find the closing unescaped "
-                const chars = val.slice(1); // strip opening quote
+                const chars = val.slice(1);
                 let result = '';
                 let j = 0;
                 while (j < chars.length) {
                     if (chars[j] === '\\' && j + 1 < chars.length) {
-                        // Escape sequence — preserve the escaped char literally
                         result += chars[j + 1];
                         j += 2;
                     } else if (chars[j] === '"') {
-                        break; // Closing quote
+                        break;
                     } else {
                         result += chars[j];
                         j++;
@@ -83,7 +78,6 @@ function parseFrontmatter(content: string): { name: string; description: string 
                 }
                 description = result;
             } else if (val.startsWith("'")) {
-                // YAML single-quoted string: '' → '
                 const inner = val.slice(1);
                 const closeIdx = inner.indexOf("'");
                 description = closeIdx >= 0 ? inner.slice(0, closeIdx) : inner;
@@ -189,11 +183,6 @@ function computeDirHash(skillsDir: string): string {
     }
 }
 
-/**
- * Get cache file path for a given cacheKey.
- * 'global' → discovered-skills-global.json
- * project path → discovered-skills-<hash>.json in per-project subdir
- */
 function getCachePath(cacheKey: string): string {
     if (cacheKey === 'global') {
         return join(GLOBAL_STATE_DIR, 'discovered-skills-global.json');
@@ -203,15 +192,13 @@ function getCachePath(cacheKey: string): string {
 }
 
 /**
- * Scan a skills directory and return discovered SkillRule entries.
+ * Scan a skills directory and return discovered skills with their triggers.
  * Uses mtime-based caching. cacheKey is 'global' or the project directory path.
- * Skills already listed in manualSkills (from skill-rules.json) are skipped.
  */
 export function discoverSkillsInDir(
     skillsDir: string,
     cacheKey: string,
-    manualSkills: Set<string> = new Set()
-): Record<string, DiscoveredSkillEntry> {
+): Record<string, DiscoveredSkill> {
     if (!existsSync(skillsDir)) return {};
 
     const cachePath = getCachePath(cacheKey);
@@ -222,14 +209,7 @@ export function discoverSkillsInDir(
         try {
             const cached: DiscoveredSkillCache = JSON.parse(readFileSync(cachePath, 'utf-8'));
             if (cached.hash === currentHash) {
-                // Filter out any skills that are now in manualSkills
-                const result: Record<string, DiscoveredSkillEntry> = {};
-                for (const [name, entry] of Object.entries(cached.skills)) {
-                    if (!manualSkills.has(name)) {
-                        result[name] = entry;
-                    }
-                }
-                return result;
+                return cached.skills;
             }
         } catch {
             // Cache corrupt — rebuild below
@@ -237,17 +217,16 @@ export function discoverSkillsInDir(
     }
 
     // Cache miss: scan directory
-    const skills: Record<string, DiscoveredSkillEntry> = {};
+    const skills: Record<string, DiscoveredSkill> = {};
 
     try {
         const entries = readdirSync(skillsDir);
         for (const entry of entries) {
-            // Skip non-directories and skip skill-rules.json
             const skillPath = join(skillsDir, entry);
             try {
                 if (!statSync(skillPath).isDirectory()) continue;
             } catch {
-                continue; // Broken symlink or permission error
+                continue;
             }
 
             const skillMd = join(skillPath, 'SKILL.md');
@@ -257,7 +236,7 @@ export function discoverSkillsInDir(
             try {
                 content = readFileSync(skillMd, 'utf-8');
             } catch {
-                continue; // Unreadable
+                continue;
             }
 
             const parsed = parseFrontmatter(content);
@@ -274,19 +253,13 @@ export function discoverSkillsInDir(
             if (keywords.length > 0) triggers.keywords = keywords;
             if (intentPatterns.length > 0) triggers.intentPatterns = intentPatterns;
 
-            skills[name] = {
-                type: 'domain',
-                enforcement: 'suggest',
-                priority: 'medium',
-                promptTriggers: triggers,
-            };
+            skills[name] = { promptTriggers: triggers };
         }
     } catch {
-        // Directory unreadable
         return {};
     }
 
-    // Write cache (with all skills, before manualSkills filtering)
+    // Write cache
     const cache: DiscoveredSkillCache = {
         hash: currentHash,
         timestamp: Date.now(),
@@ -295,16 +268,7 @@ export function discoverSkillsInDir(
     try {
         mkdirSync(join(cachePath, '..'), { recursive: true });
         writeFileSync(cachePath, JSON.stringify(cache, null, 2));
-    } catch {
-        // Cache write failure is non-fatal
-    }
+    } catch {}
 
-    // Return filtered result (exclude manual skills)
-    const result: Record<string, DiscoveredSkillEntry> = {};
-    for (const [name, entry] of Object.entries(skills)) {
-        if (!manualSkills.has(name)) {
-            result[name] = entry;
-        }
-    }
-    return result;
+    return skills;
 }
