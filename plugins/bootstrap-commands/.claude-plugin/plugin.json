@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-commands",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Bootstrap commands: analyze any codebase and generate CLAUDE.md, project skills, and AI-assisted development setup.",
   "author": {
     "name": "David Kim"
@@ -8,5 +8,5 @@
   "repository": "https://github.com/davekim917/bootstrap",
   "license": "MIT",
   "keywords": ["bootstrap", "setup", "commands", "scaffold"],
-  "skills": ["./skills/utility"]
+  "skills": ["./skills"]
 }

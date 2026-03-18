@@ -98,7 +98,7 @@
 
 ## Decision Record Updates
 
-*Appended to `.context/specs/<feature>/decisions.yaml` — see `skills/workflow/shared/decision-record-schema.md`*
+*Appended to `.context/specs/<feature>/decisions.yaml` — see `skills/shared/decision-record-schema.md`*
 
 **Decisions:**
 - **D[N]:** Chose [Option X]. Rejected: [Option Y] because [reason]; [Option Z] because [reason].
