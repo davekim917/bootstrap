@@ -5,7 +5,8 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "check": "bun run --bun tsc --noEmit"
+        "check": "bun run --bun tsc --noEmit",
+        "test": "bun test"
     },
     "dependencies": {
         "minimatch": "^10.1.1"

@@ -81,7 +81,7 @@ const GATED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
       reason: 'Destructive SQLite SQL detected (DROP/DELETE).' },
 
     // MongoDB — shell methods are the destructive surface
-    { pattern: /\b(?:mongosh|mongo)\b.*\b(?:dropDatabase|\.drop\s*\(|deleteMany\s*\(|remove\s*\()\b/i,
+    { pattern: /\b(?:mongosh|mongo)\b.*(?:\bdropDatabase\b|\.drop\s*\(|\.deleteMany\s*\(|\.remove\s*\()/i,
       reason: 'Destructive MongoDB command detected (drop/deleteMany/remove).' },
 
     // Redis — flush and mass-delete
@@ -137,7 +137,7 @@ const GATED_LEAD_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
     // ── Platform CLIs ─────────────────────────────────────────────────────────
     { pattern: /^render\s+.*\b(?:delete|down|destroy)\b/, reason: 'Destructive Render CLI command.' },
     { pattern: /^railway\s+.*\b(?:delete|down|destroy|remove)\b/, reason: 'Destructive Railway CLI command.' },
-    { pattern: /^flyctl?\s+.*\b(?:delete|destroy)\b/, reason: 'Destructive Fly.io CLI command.' },
+    { pattern: /^fly(?:ctl)?\s+.*\b(?:delete|destroy)\b/, reason: 'Destructive Fly.io CLI command.' },
     { pattern: /^heroku\s+.*\b(?:destroy|pg:reset)\b/, reason: 'Destructive Heroku CLI command.' },
     { pattern: /^vercel\s+(?:remove|rm)\b/, reason: 'Destructive Vercel CLI command.' },
     { pattern: /^netlify\s+.*\bsites:delete\b/, reason: 'Destructive Netlify CLI command.' },
