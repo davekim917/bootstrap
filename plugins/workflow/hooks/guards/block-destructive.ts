@@ -12,8 +12,23 @@
  *                     rm inside subshells, shell -c/here-string wrappers, eval,
  *                     env/command/builtin/nohup/nice/timeout//bin/ rm wrappers
  *
+ * Infrastructure gates (require user approval, then allow on retry):
+ *   Databases: Snowflake, PostgreSQL, MySQL, DuckDB, MongoDB, SQLite, Redis
+ *   Cloud: AWS, GCP/gcloud, Azure, DigitalOcean
+ *   IaC: Terraform, Pulumi, CDK
+ *   Containers: Docker, kubectl, Helm
+ *   Platforms: Render, Railway, Fly.io, Heroku, Vercel, Netlify, Supabase
+ *   Services: GitHub CLI, Cloudflare/wrangler, Firebase
+ *   Data: dbt --full-refresh
+ *   System: dd with if=
+ *
  * Exit code 2 blocks the tool (Claude Code semantics)
  * Message written to stderr is shown to Claude as the reason for the block
+ *
+ * Gate mechanism: Infrastructure patterns use a one-time approval file in
+ * /tmp/.claude-destructive-gate/<hash>. On first attempt, the hook blocks and
+ * instructs Claude to get user approval. If approved, Claude creates the file,
+ * retries, and the hook consumes (deletes) it to allow the command through.
  *
  * Fail-open on parse errors (exit 0) — tradeoff: a broken hook silently allows all commands.
  * This is intentional to avoid blocking legitimate work due to hook bugs.
@@ -24,7 +39,8 @@
  *   - ANSI-C quoting ($'\x7e') in paths is not expanded
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
-import { readFileSync, realpathSync } from 'fs';
+import { readFileSync, realpathSync, existsSync, unlinkSync } from 'fs';
+import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { resolve as pathResolve } from 'path';
 import type { ToolUseInput } from '../lib/types';
@@ -48,6 +64,54 @@ const ALWAYS_BLOCKED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
     { pattern: /\(\s*(?:sudo\s+)?rm\b/, reason: 'rm inside subshell is not allowed. Run commands directly.' },
 ];
 
+// Gated full-command patterns — matched against the full command string.
+// These block with instructions to get user approval, then allow on retry.
+const GATED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+    // ── Databases ─────────────────────────────────────────────────────────────
+    // Destructive SQL keywords shared across SQL-based CLIs
+    { pattern: /\bsnow\s+sql\b.*\b(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION)|TRUNCATE\s|DELETE\s+FROM)\b/i,
+      reason: 'Destructive Snowflake SQL detected (DROP/TRUNCATE/DELETE).' },
+    { pattern: /\bpsql\b.*\b(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW|OWNED)|TRUNCATE\s|DELETE\s+FROM)\b/i,
+      reason: 'Destructive PostgreSQL SQL detected (DROP/TRUNCATE/DELETE).' },
+    { pattern: /\bmysql\b.*\b(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW)|TRUNCATE\s|DELETE\s+FROM)\b/i,
+      reason: 'Destructive MySQL SQL detected (DROP/TRUNCATE/DELETE).' },
+    { pattern: /\bduckdb\b.*\b(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW)|TRUNCATE\s|DELETE\s+FROM)\b/i,
+      reason: 'Destructive DuckDB SQL detected (DROP/TRUNCATE/DELETE).' },
+    { pattern: /\bsqlite3?\b.*\b(?:DROP\s+(?:TABLE|VIEW|TRIGGER|INDEX)|DELETE\s+FROM)\b/i,
+      reason: 'Destructive SQLite SQL detected (DROP/DELETE).' },
+
+    // MongoDB — shell methods are the destructive surface
+    { pattern: /\b(?:mongosh|mongo)\b.*\b(?:dropDatabase|\.drop\s*\(|deleteMany\s*\(|remove\s*\()\b/i,
+      reason: 'Destructive MongoDB command detected (drop/deleteMany/remove).' },
+
+    // Redis — flush and mass-delete
+    { pattern: /\bredis-cli\b.*\b(?:FLUSHDB|FLUSHALL)\b/i,
+      reason: 'Destructive Redis command detected (FLUSHDB/FLUSHALL).' },
+
+    // ── Cloud providers ───────────────────────────────────────────────────────
+    // AWS — s3 rm/rb and any service terminate/delete
+    { pattern: /\baws\s+s3\s+(?:rm|rb)\b/, reason: 'Destructive AWS S3 command (rm/rb).' },
+    { pattern: /\baws\s+\S+\s+(?:terminate|delete)\S*\b/, reason: 'Destructive AWS CLI command detected.' },
+
+    // GCP/gcloud — any delete subcommand across all services
+    { pattern: /\bgcloud\s+\S+\s+\S+\s+delete\b/, reason: 'Destructive gcloud command detected.' },
+    { pattern: /\bgsutil\s+(?:rm|rb)\b/, reason: 'Destructive gsutil command (rm/rb).' },
+
+    // Azure — any delete subcommand
+    { pattern: /\baz\s+\S+\s+delete\b/, reason: 'Destructive Azure CLI command detected.' },
+
+    // DigitalOcean
+    { pattern: /\bdoctl\s+.*\b(?:delete|destroy)\b/, reason: 'Destructive DigitalOcean CLI command detected.' },
+
+    // ── Infrastructure as Code ────────────────────────────────────────────────
+    { pattern: /\bterraform\s+(?:destroy|apply\s+.*-auto-approve)\b/, reason: 'Destructive Terraform command (destroy/auto-approve).' },
+    { pattern: /\bpulumi\s+destroy\b/, reason: 'Pulumi destroy detected.' },
+    { pattern: /\bcdk\s+destroy\b/, reason: 'CDK destroy detected.' },
+
+    // ── dbt ───────────────────────────────────────────────────────────────────
+    { pattern: /\bdbt\s+(?:run|build)\b.*--full-refresh\b/, reason: 'dbt --full-refresh drops and recreates tables.' },
+];
+
 // Per-segment lead-command patterns (checked after normalizeCommand).
 // Kept as a precompiled array to avoid constructing RegExp objects in a hot loop.
 const BLOCKED_LEAD_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
@@ -60,6 +124,32 @@ const BLOCKED_LEAD_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
     { pattern: /^unlink(?:\s|$)/, reason: 'unlink permanently deletes files. Use: trash <path>' },
     { pattern: /^shred(?:\s|$)/, reason: 'shred permanently destroys file content. Use: trash <path>' },
     { pattern: /^truncate(?:\s|$)/, reason: 'truncate destroys file content.' },
+];
+
+// Gated per-segment lead-command patterns (checked after normalizeCommand).
+// These block with instructions to get user approval, then allow on retry.
+const GATED_LEAD_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+    // ── Container / orchestration ─────────────────────────────────────────────
+    { pattern: /^kubectl\s+(?:delete|drain|cordon)\b/, reason: 'Destructive kubectl command.' },
+    { pattern: /^docker\s+(?:rm|rmi|system\s+prune|volume\s+rm|container\s+rm|image\s+rm)\b/, reason: 'Destructive Docker command.' },
+    { pattern: /^helm\s+(?:uninstall|delete)\b/, reason: 'Destructive Helm command.' },
+
+    // ── Platform CLIs ─────────────────────────────────────────────────────────
+    { pattern: /^render\s+.*\b(?:delete|down|destroy)\b/, reason: 'Destructive Render CLI command.' },
+    { pattern: /^railway\s+.*\b(?:delete|down|destroy|remove)\b/, reason: 'Destructive Railway CLI command.' },
+    { pattern: /^flyctl?\s+.*\b(?:delete|destroy)\b/, reason: 'Destructive Fly.io CLI command.' },
+    { pattern: /^heroku\s+.*\b(?:destroy|pg:reset)\b/, reason: 'Destructive Heroku CLI command.' },
+    { pattern: /^vercel\s+(?:remove|rm)\b/, reason: 'Destructive Vercel CLI command.' },
+    { pattern: /^netlify\s+.*\bsites:delete\b/, reason: 'Destructive Netlify CLI command.' },
+    { pattern: /^supabase\s+(?:.*\bdelete\b|db\s+reset)\b/, reason: 'Destructive Supabase CLI command.' },
+
+    // ── Service CLIs ──────────────────────────────────────────────────────────
+    { pattern: /^gh\s+repo\s+delete\b/, reason: 'Destructive GitHub CLI command (repo delete).' },
+    { pattern: /^wrangler\s+(?:delete|d1\s+delete|r2\s+.*delete|kv:.*delete)\b/, reason: 'Destructive Cloudflare Wrangler command.' },
+    { pattern: /^firebase\s+.*\b(?:projects:delete|firestore:delete|hosting:disable)\b/, reason: 'Destructive Firebase CLI command.' },
+
+    // ── dd (disk overwrite) ───────────────────────────────────────────────────
+    { pattern: /^dd\s+.*\bif=/, reason: 'dd with input file — potential disk overwrite.' },
 ];
 
 // Protected home subdirectories — rm targeting anything inside these is blocked
@@ -225,6 +315,43 @@ function parseRmArgs(normalizedSegment: string): { flags: string[]; paths: strin
     return { flags, paths };
 }
 
+// ── Gate mechanism ────────────────────────────────────────────────────────────
+// Gated commands are blocked on first attempt with instructions for Claude to
+// ask the user for approval. If approved, Claude creates a one-time approval
+// file keyed by command hash. On retry, the hook finds the approval, consumes
+// it (deletes), and allows the command through.
+
+const GATE_DIR = '/tmp/.claude-destructive-gate';
+
+function computeGateHash(command: string): string {
+    return createHash('sha256').update(command).digest('hex').slice(0, 16);
+}
+
+function consumeGateApproval(command: string): boolean {
+    const hash = computeGateHash(command);
+    const approvalPath = `${GATE_DIR}/${hash}`;
+    try {
+        if (!existsSync(approvalPath)) return false;
+        unlinkSync(approvalPath);  // one-time use — consume on check
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function gateBlock(command: string, reason: string): void {
+    const hash = computeGateHash(command);
+    console.error(
+        `GATED: ${reason}\n\n` +
+        `This command requires explicit user approval before execution.\n` +
+        `1. Show the user the exact command and explain what it will do\n` +
+        `2. Ask for their explicit approval\n` +
+        `3. If approved, run: mkdir -p ${GATE_DIR} && echo approved > ${GATE_DIR}/${hash}\n` +
+        `4. Then retry the original command unchanged`
+    );
+    process.exit(2);
+}
+
 function main(): void {
     try {
         const rawInput = readFileSync(0, 'utf-8');
@@ -248,6 +375,29 @@ function main(): void {
                 if (pattern.test(n)) {
                     console.error(`BLOCKED: '${seg}' — ${reason}`);
                     process.exit(2);
+                }
+            }
+        }
+
+        // --- Gated checks (approval bypass) ---
+        // Check once — a single approval covers all gated patterns for this command.
+        const gateApproved = consumeGateApproval(command);
+
+        if (!gateApproved) {
+            // Full-command gated patterns
+            for (const { pattern, reason } of GATED_PATTERNS) {
+                if (pattern.test(command)) {
+                    gateBlock(command, reason);
+                }
+            }
+
+            // Per-segment gated lead-command patterns
+            for (const seg of splitSegments(command)) {
+                const n = normalizeCommand(seg);
+                for (const { pattern, reason } of GATED_LEAD_PATTERNS) {
+                    if (pattern.test(n)) {
+                        gateBlock(command, reason);
+                    }
                 }
             }
         }
