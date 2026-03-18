@@ -289,3 +289,98 @@ describe('safe commands pass through', () => {
         expect(exitCode).toBe(0);
     });
 });
+
+// ── AST precision: no false positives from strings/heredocs ──────────────────
+
+describe('AST precision: destructive keywords in non-command contexts are allowed', () => {
+    test.each([
+        // Quoted strings — destructive keywords are arguments, not commands
+        ['echo "DROP TABLE users"', 'SQL in echo string'],
+        ['echo "terraform destroy"', 'terraform in echo string'],
+        ['echo "kubectl delete pod"', 'kubectl in echo string'],
+        // Git commit messages
+        ['git commit -m "delete old tables"', 'delete in commit msg'],
+        ['git commit -m "drop unused columns"', 'drop in commit msg'],
+        // Grep/cat/log searches — destructive keywords are search terms
+        ['grep "DROP TABLE" migrations/', 'SQL in grep pattern'],
+        ['grep -r "TRUNCATE" *.sql', 'TRUNCATE in grep pattern'],
+    ])('%s → allowed (%s)', async (cmd) => {
+        const { exitCode } = await runHook(cmd);
+        expect(exitCode).toBe(0);
+    });
+
+    test('heredoc content with destructive SQL is not treated as a command', async () => {
+        const cmd = 'cat <<EOF\nDROP TABLE users\nEOF';
+        const { exitCode } = await runHook(cmd);
+        expect(exitCode).toBe(0);
+    });
+
+    test('heredoc content with destructive keywords is not treated as a command', async () => {
+        const cmd = 'cat <<EOF\nterraform destroy\nEOF';
+        const { exitCode } = await runHook(cmd);
+        expect(exitCode).toBe(0);
+    });
+});
+
+// ── AST precision: destructive commands inside subshells ARE caught ───────────
+
+describe('AST precision: commands inside subshells/pipelines are still checked', () => {
+    test('destructive command in subshell is caught', async () => {
+        const cmd = '(kubectl delete namespace prod)';
+        const { exitCode, stderr } = await runHook(cmd);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('GATED');
+    });
+
+    test('destructive command in pipeline is caught', async () => {
+        const cmd = 'echo yes | terraform destroy';
+        const { exitCode, stderr } = await runHook(cmd);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('GATED');
+    });
+
+    test('rm in subshell applies normal tier logic', async () => {
+        const cmd = '(rm src/index.ts)';
+        const { exitCode, stderr } = await runHook(cmd);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('trash');
+    });
+
+    test('rm of ephemeral path in subshell is allowed', async () => {
+        const cmd = '(rm -rf /tmp/test-output)';
+        const { exitCode } = await runHook(cmd);
+        expect(exitCode).toBe(0);
+    });
+});
+
+// ── Wrapper resolution via AST ───────────────────────────────────────────────
+
+describe('wrapper resolution', () => {
+    test('sudo wrapper is stripped', async () => {
+        const cmd = 'sudo kubectl delete pod my-pod';
+        const { exitCode, stderr } = await runHook(cmd);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('GATED');
+    });
+
+    test('sudo with -u flag is handled', async () => {
+        const cmd = 'sudo -u root terraform destroy';
+        const { exitCode, stderr } = await runHook(cmd);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('GATED');
+    });
+
+    test('env wrapper is stripped', async () => {
+        const cmd = 'env AWS_PROFILE=prod aws rds delete-db-instance --db-instance-identifier test';
+        const { exitCode, stderr } = await runHook(cmd);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('GATED');
+    });
+
+    test('nohup wrapper is stripped', async () => {
+        const cmd = 'nohup docker system prune';
+        const { exitCode, stderr } = await runHook(cmd);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('GATED');
+    });
+});
