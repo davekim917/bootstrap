@@ -2,15 +2,17 @@
 /**
  * PreToolUse hook: Blocks destructive bash commands
  *
+ * Uses unbash AST parser for accurate command boundary detection — eliminates
+ * false positives from heredoc content, quoted strings, and comments. Falls
+ * back to regex splitting if the parser fails (fail-open design).
+ *
  * Three-tier rm protection:
  *   1. Always allow: rm targeting ephemeral dirs (tmp, node_modules, build caches) — checked first
  *   2. Always block: rm targeting /, ~, $HOME, or protected home directories
  *   3. Redirect: all other rm → instructs Claude to use `trash` instead (recoverable)
  *
- * Also always blocks: unlink, shred, truncate, find -exec rm, find -delete,
- *                     xargs rm, rm inside $() or backtick substitution,
- *                     rm inside subshells, shell -c/here-string wrappers, eval,
- *                     env/command/builtin/nohup/nice/timeout//bin/ rm wrappers
+ * Also always blocks: unlink, shred, truncate, eval, shell -c wrappers,
+ *                     find -exec rm, find -delete, xargs rm
  *
  * Infrastructure gates (require user approval, then allow on retry):
  *   Databases: Snowflake, PostgreSQL, MySQL, DuckDB, MongoDB, SQLite, Redis
@@ -33,17 +35,18 @@
  * Fail-open on parse errors (exit 0) — tradeoff: a broken hook silently allows all commands.
  * This is intentional to avoid blocking legitimate work due to hook bugs.
  *
- * Known limitations (inherent to static shell analysis):
+ * Known limitations:
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
- *   - Process substitution <(rm ...) is not detected
- *   - ANSI-C quoting ($'\x7e') in paths is not expanded
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
-import { readFileSync, realpathSync, existsSync, unlinkSync } from 'fs';
+import { readFileSync, realpathSync, unlinkSync } from 'fs';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { resolve as pathResolve } from 'path';
+import { parse } from 'unbash';
 import type { ToolUseInput } from '../lib/types';
+
+// ── Types ────────────────────────────────────────────────────────────────────
 
 interface BashToolInput extends ToolUseInput {
     tool_input: {
@@ -51,106 +54,24 @@ interface BashToolInput extends ToolUseInput {
     };
 }
 
+/** A command extracted from the AST with wrapper commands (sudo, env, etc.) resolved */
+interface ResolvedCommand {
+    name: string;               // resolved command name (e.g., "rm", "aws", "kubectl")
+    args: string[];             // argument values after wrapper stripping
+    raw: string;                // original text for error messages
+    hasInputRedirect: boolean;  // true if command has << or <<< redirects
+}
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
 const HOME = homedir();
 
-// Multi-word patterns checked against the full command string.
-const ALWAYS_BLOCKED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
-    { pattern: /\bfind\b.*\s-exec\s+(?:sudo\s+)?rm\s/, reason: 'find -exec rm is not allowed. Use trash for file deletion.' },
-    { pattern: /\bfind\b.*\s-delete\b/, reason: 'find -delete permanently deletes files. Use trash instead.' },
-    { pattern: /\bxargs\s+(?:sudo\s+)?rm\b/, reason: 'xargs rm is not allowed. Use trash for file deletion.' },
-    // rm inside $() or backtick runs even when the outer command looks harmless (e.g. echo $(rm ...))
-    { pattern: /(?:\$\([^)]*|`[^`]*)\brm\b/, reason: 'rm inside command substitution is not allowed. Use explicit paths.' },
-    // rm inside subshell (rm ...) bypasses segment extraction
-    { pattern: /\(\s*(?:sudo\s+)?rm\b/, reason: 'rm inside subshell is not allowed. Run commands directly.' },
-];
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 
-// Gated full-command patterns — matched against the full command string.
-// These block with instructions to get user approval, then allow on retry.
-const GATED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
-    // ── Databases ─────────────────────────────────────────────────────────────
-    // Destructive SQL keywords shared across SQL-based CLIs
-    { pattern: /\bsnow\s+sql\b.*\b(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION)|TRUNCATE\s|DELETE\s+FROM)\b/i,
-      reason: 'Destructive Snowflake SQL detected (DROP/TRUNCATE/DELETE).' },
-    { pattern: /\bpsql\b.*\b(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW|OWNED)|TRUNCATE\s|DELETE\s+FROM)\b/i,
-      reason: 'Destructive PostgreSQL SQL detected (DROP/TRUNCATE/DELETE).' },
-    { pattern: /\bmysql\b.*\b(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW)|TRUNCATE\s|DELETE\s+FROM)\b/i,
-      reason: 'Destructive MySQL SQL detected (DROP/TRUNCATE/DELETE).' },
-    { pattern: /\bduckdb\b.*\b(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW)|TRUNCATE\s|DELETE\s+FROM)\b/i,
-      reason: 'Destructive DuckDB SQL detected (DROP/TRUNCATE/DELETE).' },
-    { pattern: /\bsqlite3?\b.*\b(?:DROP\s+(?:TABLE|VIEW|TRIGGER|INDEX)|DELETE\s+FROM)\b/i,
-      reason: 'Destructive SQLite SQL detected (DROP/DELETE).' },
-
-    // MongoDB — shell methods are the destructive surface
-    { pattern: /\b(?:mongosh|mongo)\b.*(?:\bdropDatabase\b|\.drop\s*\(|\.deleteMany\s*\(|\.remove\s*\()/i,
-      reason: 'Destructive MongoDB command detected (drop/deleteMany/remove).' },
-
-    // Redis — flush and mass-delete
-    { pattern: /\bredis-cli\b.*\b(?:FLUSHDB|FLUSHALL)\b/i,
-      reason: 'Destructive Redis command detected (FLUSHDB/FLUSHALL).' },
-
-    // ── Cloud providers ───────────────────────────────────────────────────────
-    // AWS — s3 rm/rb and any service terminate/delete
-    { pattern: /\baws\s+s3\s+(?:rm|rb)\b/, reason: 'Destructive AWS S3 command (rm/rb).' },
-    { pattern: /\baws\s+\S+\s+(?:terminate|delete)\S*\b/, reason: 'Destructive AWS CLI command detected.' },
-
-    // GCP/gcloud — any delete subcommand across all services
-    { pattern: /\bgcloud\s+\S+\s+\S+\s+delete\b/, reason: 'Destructive gcloud command detected.' },
-    { pattern: /\bgsutil\s+(?:rm|rb)\b/, reason: 'Destructive gsutil command (rm/rb).' },
-
-    // Azure — any delete subcommand
-    { pattern: /\baz\s+\S+\s+delete\b/, reason: 'Destructive Azure CLI command detected.' },
-
-    // DigitalOcean
-    { pattern: /\bdoctl\s+.*\b(?:delete|destroy)\b/, reason: 'Destructive DigitalOcean CLI command detected.' },
-
-    // ── Infrastructure as Code ────────────────────────────────────────────────
-    { pattern: /\bterraform\s+(?:destroy|apply\s+.*-auto-approve)\b/, reason: 'Destructive Terraform command (destroy/auto-approve).' },
-    { pattern: /\bpulumi\s+destroy\b/, reason: 'Pulumi destroy detected.' },
-    { pattern: /\bcdk\s+destroy\b/, reason: 'CDK destroy detected.' },
-
-    // ── dbt ───────────────────────────────────────────────────────────────────
-    { pattern: /\bdbt\s+(?:run|build)\b.*--full-refresh\b/, reason: 'dbt --full-refresh drops and recreates tables.' },
-];
-
-// Per-segment lead-command patterns (checked after normalizeCommand).
-// Kept as a precompiled array to avoid constructing RegExp objects in a hot loop.
-const BLOCKED_LEAD_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
-    // Shell wrappers: -c flag and here-strings both hide arbitrary commands
-    {
-        pattern: /^(?:bash|sh|zsh|dash|ksh|fish)\s+(?:-\S+\s+)*(?:-c|<<<?)\s/,
-        reason: 'Shell inline execution (shell -c, here-strings) is not allowed. Run commands directly.',
-    },
-    { pattern: /^eval(?:\s|$)/, reason: 'eval is not allowed. Run commands directly.' },
-    { pattern: /^unlink(?:\s|$)/, reason: 'unlink permanently deletes files. Use: trash <path>' },
-    { pattern: /^shred(?:\s|$)/, reason: 'shred permanently destroys file content. Use: trash <path>' },
-    { pattern: /^truncate(?:\s|$)/, reason: 'truncate destroys file content.' },
-];
-
-// Gated per-segment lead-command patterns (checked after normalizeCommand).
-// These block with instructions to get user approval, then allow on retry.
-const GATED_LEAD_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
-    // ── Container / orchestration ─────────────────────────────────────────────
-    { pattern: /^kubectl\s+(?:delete|drain|cordon)\b/, reason: 'Destructive kubectl command.' },
-    { pattern: /^docker\s+(?:rm|rmi|system\s+prune|volume\s+rm|container\s+rm|image\s+rm)\b/, reason: 'Destructive Docker command.' },
-    { pattern: /^helm\s+(?:uninstall|delete)\b/, reason: 'Destructive Helm command.' },
-
-    // ── Platform CLIs ─────────────────────────────────────────────────────────
-    { pattern: /^render\s+.*\b(?:delete|down|destroy)\b/, reason: 'Destructive Render CLI command.' },
-    { pattern: /^railway\s+.*\b(?:delete|down|destroy|remove)\b/, reason: 'Destructive Railway CLI command.' },
-    { pattern: /^fly(?:ctl)?\s+.*\b(?:delete|destroy)\b/, reason: 'Destructive Fly.io CLI command.' },
-    { pattern: /^heroku\s+.*\b(?:destroy|pg:reset)\b/, reason: 'Destructive Heroku CLI command.' },
-    { pattern: /^vercel\s+(?:remove|rm)\b/, reason: 'Destructive Vercel CLI command.' },
-    { pattern: /^netlify\s+.*\bsites:delete\b/, reason: 'Destructive Netlify CLI command.' },
-    { pattern: /^supabase\s+(?:.*\bdelete\b|db\s+reset)\b/, reason: 'Destructive Supabase CLI command.' },
-
-    // ── Service CLIs ──────────────────────────────────────────────────────────
-    { pattern: /^gh\s+repo\s+delete\b/, reason: 'Destructive GitHub CLI command (repo delete).' },
-    { pattern: /^wrangler\s+(?:delete|d1\s+delete|r2\s+.*delete|kv:.*delete)\b/, reason: 'Destructive Cloudflare Wrangler command.' },
-    { pattern: /^firebase\s+.*\b(?:projects:delete|firestore:delete|hosting:disable)\b/, reason: 'Destructive Firebase CLI command.' },
-
-    // ── dd (disk overwrite) ───────────────────────────────────────────────────
-    { pattern: /^dd\s+.*\bif=/, reason: 'dd with input file — potential disk overwrite.' },
-];
+// Command wrappers that should be stripped to find the real command
+const WRAPPERS = new Set([
+    'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout',
+]);
 
 // Protected home subdirectories — rm targeting anything inside these is blocked
 const PROTECTED_HOME_DIRS = [
@@ -187,26 +108,45 @@ const SAFE_PATH_PATTERNS = [
     /(?:^|\/)\.codex\/skills(?:\/|$)/,       // optional legacy Codex mirror
 ];
 
-// Handles ~, $HOME, and ${HOME}
+// Destructive SQL pattern (shared across SQL CLIs)
+const DESTRUCTIVE_SQL = /(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION|OWNED|TRIGGER|INDEX)|TRUNCATE\s|DELETE\s+FROM)/i;
+
+// MongoDB destructive methods
+const DESTRUCTIVE_MONGO = /(?:\bdropDatabase\b|\.drop\s*\(|\.deleteMany\s*\(|\.remove\s*\()/i;
+
+// SQL CLI name → display label (checked against DESTRUCTIVE_SQL in argument values)
+const SQL_CLIS: Record<string, string> = {
+    psql: 'PostgreSQL', mysql: 'MySQL', duckdb: 'DuckDB',
+    sqlite3: 'SQLite', sqlite: 'SQLite',
+};
+
+// Platform CLIs → destructive subcommand verbs
+const PLATFORM_DESTRUCTIVE: Record<string, Set<string>> = {
+    render:  new Set(['delete', 'down', 'destroy']),
+    railway: new Set(['delete', 'down', 'destroy', 'remove']),
+    fly:     new Set(['delete', 'destroy']),
+    flyctl:  new Set(['delete', 'destroy']),
+    doctl:   new Set(['delete', 'destroy']),
+};
+
+// ── Path helpers ─────────────────────────────────────────────────────────────
+
 function expandPath(p: string): string {
     return p
         .replace(/^~(?=\/|$)/, HOME)
         .replace(/^\$\{?HOME\}?(?=\/|$)/, HOME);
 }
 
-// Normalize a path: expand ~/$HOME, resolve .. components, then follow symlinks.
-// Falls back gracefully at each step if the path does not exist on disk.
 function normalizePath(p: string): string {
     const expanded = expandPath(p);
-    const resolved = pathResolve(expanded);  // normalize .. and . (no FS access)
+    const resolved = pathResolve(expanded);
     try {
-        return realpathSync(resolved);        // follow symlinks (requires FS access)
+        return realpathSync(resolved);
     } catch {
-        return resolved;                      // path doesn't exist — use normalized form
+        return resolved;
     }
 }
 
-// Check if an absolute, fully-expanded path is in a protected location.
 function isProtectedAbsolutePath(abs: string): boolean {
     if (/^\/+$/.test(abs)) return true;
     if (/^\/(?:usr|etc|System|private\/etc|bin|sbin|opt\/homebrew|var|Library|Applications)(?:\/|$)/.test(abs)) return true;
@@ -219,36 +159,151 @@ function isProtectedAbsolutePath(abs: string): boolean {
 }
 
 function isProtectedPath(p: string): boolean {
-    // Check bare/symbolic forms on the original path string first (fast path, no FS access)
     if (/^~\/?$/.test(p) || /^\$\{?HOME\}?\/?$/.test(p) || /^\/+$/.test(p)) return true;
     if (/^~\/\*$/.test(p) || /^\$\{?HOME\}?\/\*$/.test(p)) return true;
-    // /^\/\*/ catches root-level wildcards; /^\.\.(?:\/|$)/ catches ../ without false-matching ..foo
     if (/^\/\*/.test(p) || /^\.\.(?:\/|$)/.test(p)) return true;
-
-    // Check the fully normalized path — catches .. traversal and symlinks into protected dirs
     return isProtectedAbsolutePath(normalizePath(p));
 }
 
 function isSafePath(p: string): boolean {
-    // Check the normalized path only — prevents path traversal tricks like node_modules/../../
     const normalized = normalizePath(p);
     return SAFE_PATH_PATTERNS.some(pat => pat.test(normalized));
 }
 
-// Strip all leading command wrappers that don't change the underlying command.
-// Loops until stable to handle chains like `sudo nohup env rm` or `timeout 10 sudo rm`.
-function normalizeCommand(s: string): string {
+// ── AST helpers ──────────────────────────────────────────────────────────────
+
+/** Recursively walk an unbash AST node, accumulating all Command nodes into `out` */
+function walkCommandNodes(node: any, out: any[] = []): any[] {
+    if (!node) return out;
+
+    if (node.type === 'Command') {
+        out.push(node);
+        // Recurse into command substitutions embedded in suffix values
+        for (const s of (node.suffix || [])) {
+            walkPartsForSubstitutions(s, out);
+        }
+        return out;
+    }
+
+    // Recurse into all known container types
+    for (const child of (node.commands || [])) {
+        walkCommandNodes(child, out);
+    }
+    if (node.body) walkCommandNodes(node.body, out);
+    if (node.command) walkCommandNodes(node.command, out);
+    if (node.then) walkCommandNodes(node.then, out);
+    if (node.else) walkCommandNodes(node.else, out);
+    if (node.condition) walkCommandNodes(node.condition, out);
+    for (const clause of (node.clauses || [])) {
+        walkCommandNodes(clause, out);
+    }
+
+    return out;
+}
+
+/** Walk into suffix parts to find CommandSubstitution nodes */
+function walkPartsForSubstitutions(node: any, commands: any[]): void {
+    if (!node) return;
+    if (node.type === 'CommandSubstitution' || node.type === 'Backtick') {
+        commands.push(...walkCommandNodes(node.body || node.command));
+    }
+    for (const part of (node.parts || [])) {
+        walkPartsForSubstitutions(part, commands);
+    }
+}
+
+/** Resolve a Command AST node: strip wrapper commands, extract name + args */
+function resolveCommand(node: any): ResolvedCommand | null {
+    if (!node.name) return null;
+
+    let name = node.name.value || '';
+    let args = (node.suffix || []).map((s: any) => s.value ?? s.text ?? '');
+
+    // Strip path prefix (e.g., /usr/bin/rm → rm)
+    name = name.replace(/^\/(?:usr\/(?:local\/)?)?(?:s?bin)\//, '');
+
+    // Resolve through wrapper commands
+    while (WRAPPERS.has(name) && args.length > 0) {
+        let skip = 0;
+
+        if (name === 'sudo') {
+            // Skip flags; handle -u/-g/-C which take an argument
+            while (skip < args.length && args[skip].startsWith('-')) {
+                if (['-u', '-g', '-C'].includes(args[skip]) && skip + 1 < args.length) {
+                    skip += 2;
+                } else {
+                    skip += 1;
+                }
+            }
+        } else if (name === 'env') {
+            // Skip flags and VAR=val assignments
+            while (skip < args.length && (args[skip].startsWith('-') || /^\w+=/.test(args[skip]))) {
+                skip += 1;
+            }
+        } else if (name === 'nice') {
+            if (args[skip] === '-n' && skip + 1 < args.length) skip = 2;
+        } else if (name === 'timeout' || name === 'gtimeout') {
+            skip = 1; // skip duration argument
+        }
+        // nohup, time, command, builtin: just skip the wrapper word
+
+        if (skip >= args.length) break;
+
+        name = args[skip].replace(/^\/(?:usr\/(?:local\/)?)?(?:s?bin)\//, '');
+        args = args.slice(skip + 1);
+    }
+
+    // Check for input redirects (<<, <<<) on the original Command node
+    const hasInputRedirect = (node.redirects || []).some((r: any) =>
+        ['<<', '<<<', '<<-'].includes(r.operator)
+    );
+
+    // Reconstruct raw text for error messages
+    const rawParts = [node.name.text || node.name.value, ...(node.suffix || []).map((s: any) => s.text || s.value)];
+
+    return { name, args, raw: rawParts.join(' '), hasInputRedirect };
+}
+
+/** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */
+function extractCommands(command: string): ResolvedCommand[] {
+    try {
+        const ast = parse(command);
+        const nodes = walkCommandNodes(ast);
+        return nodes.map(resolveCommand).filter((c): c is ResolvedCommand => c !== null);
+    } catch {
+        return fallbackExtract(command);
+    }
+}
+
+/** Regex-based fallback for when the AST parser fails */
+function fallbackExtract(command: string): ResolvedCommand[] {
+    return command
+        .split(/(?:;|&&|\|\||\||\n)\s*/)
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(seg => {
+            const normalized = normalizeCommandFallback(seg);
+            const parts = normalized.split(/\s+/);
+            return {
+                name: parts[0] || '',
+                args: parts.slice(1),
+                raw: seg,
+                hasInputRedirect: /<<<?\s/.test(seg),
+            };
+        });
+}
+
+/** Fallback wrapper stripping (regex-based, used only when parser fails) */
+function normalizeCommandFallback(s: string): string {
     let prev = '';
     let curr = s;
     while (prev !== curr) {
         prev = curr;
         curr = curr
             .replace(/^sudo\s+/, '')
-            // env accepts flags (-i, -u VAR) before VAR=VALUE pairs — handle both
             .replace(/^env(?:\s+(?:-\S+|\w+=\S+))*\s+/, '')
             .replace(/^(?:command|builtin)\s+/, '')
             .replace(/^\/(?:usr\/(?:local\/)?)?bin\//, '')
-            // Process scheduling wrappers — strip before checking the underlying command
             .replace(/^(?:nohup|time)\s+/, '')
             .replace(/^nice(?:\s+-n\s+\S+)?\s+/, '')
             .replace(/^(?:timeout|gtimeout)\s+\S+\s+/, '');
@@ -256,70 +311,233 @@ function normalizeCommand(s: string): string {
     return curr;
 }
 
-// Split a compound command into individual segments on shell operators.
-function splitSegments(command: string): string[] {
-    return command
-        .split(/(?:;|&&|\|\||\||\n)\s*/)
-        .map(s => s.trim())
-        .filter(Boolean);
-}
+// ── Hard block checks ────────────────────────────────────────────────────────
 
-// Extract segments that invoke rm — directly or via sudo/env/command/nohup/full path.
-function extractRmSegments(command: string): string[] {
-    return splitSegments(command)
-        .filter(s => /^rm\b/.test(normalizeCommand(s)));
-}
-
-// Quote-aware tokenizer — handles "path with spaces" and 'single quoted paths'.
-// Strips enclosing quotes so downstream checks see the raw path.
-// Note: backslash escaping is intentionally unsupported (errs toward more tokens = more checks).
-function tokenize(input: string): string[] {
-    const tokens: string[] = [];
-    let current = '';
-    let inSingle = false;
-    let inDouble = false;
-
-    for (let i = 0; i < input.length; i++) {
-        const c = input[i];
-        if (c === "'" && !inDouble) {
-            inSingle = !inSingle;
-        } else if (c === '"' && !inSingle) {
-            inDouble = !inDouble;
-        } else if (c === ' ' && !inSingle && !inDouble) {
-            if (current) { tokens.push(current); current = ''; }
-        } else {
-            current += c;
+/** Returns block reason if the command is unconditionally blocked, null otherwise */
+function checkHardBlock(cmd: ResolvedCommand): string | null {
+    // find -exec rm / find -delete
+    if (cmd.name === 'find') {
+        for (let i = 0; i < cmd.args.length; i++) {
+            if ((cmd.args[i] === '-exec' || cmd.args[i] === '-execdir') &&
+                (cmd.args[i + 1] === 'rm' || cmd.args[i + 1] === 'sudo')) {
+                return 'find -exec rm is not allowed. Use trash for file deletion.';
+            }
+        }
+        if (cmd.args.includes('-delete')) {
+            return 'find -delete permanently deletes files. Use trash instead.';
         }
     }
-    if (current) tokens.push(current);
-    return tokens;
+
+    // xargs rm
+    if (cmd.name === 'xargs') {
+        if (cmd.args[0] === 'rm' || (cmd.args[0] === 'sudo' && cmd.args[1] === 'rm')) {
+            return 'xargs rm is not allowed. Use trash for file deletion.';
+        }
+    }
+
+    // Shell -c / here-string wrappers — bypass vectors for all other checks
+    if (SHELLS.has(cmd.name)) {
+        if (cmd.args.includes('-c') || cmd.hasInputRedirect) {
+            return 'Shell inline execution (shell -c, here-strings) is not allowed. Run commands directly.';
+        }
+    }
+
+    // Simple dangerous commands
+    if (cmd.name === 'eval') return 'eval is not allowed. Run commands directly.';
+    if (cmd.name === 'unlink') return 'unlink permanently deletes files. Use: trash <path>';
+    if (cmd.name === 'shred') return 'shred permanently destroys file content. Use: trash <path>';
+    if (cmd.name === 'truncate') return 'truncate destroys file content.';
+
+    return null;
 }
 
-function parseRmArgs(normalizedSegment: string): { flags: string[]; paths: string[] } {
-    const rest = normalizedSegment.replace(/^rm\s*/, '').trim();
-    const tokens = tokenize(rest);
+// ── Gated checks ─────────────────────────────────────────────────────────────
+
+/** Returns gate reason if the command requires approval, null otherwise */
+function checkGatedCommand(cmd: ResolvedCommand): string | null {
+    const { name, args } = cmd;
+
+    // ── Databases ────────────────────────────────────────────────────────
+
+    // SQL CLIs: check argument values for destructive SQL keywords
+    const sqlLabel = SQL_CLIS[name];
+    if (sqlLabel && args.some(a => DESTRUCTIVE_SQL.test(a))) {
+        return `Destructive ${sqlLabel} SQL detected (DROP/TRUNCATE/DELETE).`;
+    }
+    // Snowflake: `snow sql -q "DROP TABLE ..."`
+    if (name === 'snow' && args[0] === 'sql' && args.some(a => DESTRUCTIVE_SQL.test(a))) {
+        return 'Destructive Snowflake SQL detected (DROP/TRUNCATE/DELETE).';
+    }
+
+    // MongoDB
+    if ((name === 'mongosh' || name === 'mongo') && args.some(a => DESTRUCTIVE_MONGO.test(a))) {
+        return 'Destructive MongoDB command detected (drop/deleteMany/remove).';
+    }
+
+    // Redis
+    if (name === 'redis-cli' && args.some(a => /^(?:FLUSHDB|FLUSHALL)$/i.test(a))) {
+        return 'Destructive Redis command detected (FLUSHDB/FLUSHALL).';
+    }
+
+    // ── Cloud providers ──────────────────────────────────────────────────
+
+    if (name === 'aws') {
+        if (args[0] === 's3' && ['rm', 'rb'].includes(args[1])) {
+            return 'Destructive AWS S3 command (rm/rb).';
+        }
+        if (args.length >= 2 && /^(?:terminate|delete)/.test(args[1] || '')) {
+            return 'Destructive AWS CLI command detected.';
+        }
+    }
+    if (name === 'gcloud' && args.includes('delete')) {
+        return 'Destructive gcloud command detected.';
+    }
+    if (name === 'gsutil' && ['rm', 'rb'].includes(args[0])) {
+        return 'Destructive gsutil command (rm/rb).';
+    }
+    if (name === 'az' && args.includes('delete')) {
+        return 'Destructive Azure CLI command detected.';
+    }
+    if (name === 'doctl' && args.some(a => a === 'delete' || a === 'destroy')) {
+        return 'Destructive DigitalOcean CLI command detected.';
+    }
+
+    // ── Infrastructure as Code ───────────────────────────────────────────
+
+    if (name === 'terraform') {
+        if (args[0] === 'destroy') return 'Destructive Terraform command (destroy).';
+        if (args[0] === 'apply' && args.includes('-auto-approve')) {
+            return 'Destructive Terraform command (apply -auto-approve).';
+        }
+    }
+    if (name === 'pulumi' && args[0] === 'destroy') return 'Pulumi destroy detected.';
+    if (name === 'cdk' && args[0] === 'destroy') return 'CDK destroy detected.';
+
+    // ── Containers / orchestration ───────────────────────────────────────
+
+    if (name === 'kubectl' && ['delete', 'drain', 'cordon'].includes(args[0])) {
+        return 'Destructive kubectl command.';
+    }
+    if (name === 'docker') {
+        if (['rm', 'rmi'].includes(args[0])) return 'Destructive Docker command.';
+        if (args[0] === 'system' && args[1] === 'prune') return 'Destructive Docker command.';
+        if (['volume', 'container', 'image'].includes(args[0]) && args[1] === 'rm') {
+            return 'Destructive Docker command.';
+        }
+    }
+    if (name === 'helm' && ['uninstall', 'delete'].includes(args[0])) {
+        return 'Destructive Helm command.';
+    }
+
+    // ── Platform CLIs ────────────────────────────────────────────────────
+
+    // Data-driven platform CLIs (shared verb-set lookup)
+    const platformVerbs = PLATFORM_DESTRUCTIVE[name];
+    if (platformVerbs && args.some(a => platformVerbs.has(a))) {
+        return `Destructive ${name} CLI command.`;
+    }
+
+    // Platform CLIs with custom logic
+    if (name === 'heroku' && args.some(a => a === 'destroy' || a === 'pg:reset' || a.includes(':destroy'))) {
+        return 'Destructive Heroku CLI command.';
+    }
+    if (name === 'vercel' && ['remove', 'rm'].includes(args[0])) {
+        return 'Destructive Vercel CLI command.';
+    }
+    if (name === 'netlify' && args.some(a => a === 'sites:delete')) {
+        return 'Destructive Netlify CLI command.';
+    }
+    if (name === 'supabase') {
+        if (args.includes('delete')) return 'Destructive Supabase CLI command.';
+        if (args[0] === 'db' && args[1] === 'reset') return 'Destructive Supabase CLI command.';
+    }
+
+    // ── Service CLIs ─────────────────────────────────────────────────────
+
+    if (name === 'gh' && args[0] === 'repo' && args[1] === 'delete') {
+        return 'Destructive GitHub CLI command (repo delete).';
+    }
+    if (name === 'wrangler' && args.includes('delete')) {
+        return 'Destructive Cloudflare Wrangler command.';
+    }
+    if (name === 'firebase' && args.some(a => ['projects:delete', 'firestore:delete', 'hosting:disable'].includes(a))) {
+        return 'Destructive Firebase CLI command.';
+    }
+
+    // ── dbt ──────────────────────────────────────────────────────────────
+
+    if (name === 'dbt' && ['run', 'build'].includes(args[0]) && args.includes('--full-refresh')) {
+        return 'dbt --full-refresh drops and recreates tables.';
+    }
+
+    // ── dd (disk overwrite) ──────────────────────────────────────────────
+
+    if (name === 'dd' && args.some(a => a.startsWith('if='))) {
+        return 'dd with input file — potential disk overwrite.';
+    }
+
+    return null;
+}
+
+// ── rm checks ────────────────────────────────────────────────────────────────
+
+/** Apply three-tier rm protection. Calls process.exit(2) if blocked. */
+function checkRm(cmd: ResolvedCommand): void {
+    // Separate flags from paths using AST-parsed args
     const flags: string[] = [];
     const paths: string[] = [];
     let endOfFlags = false;
 
-    for (const token of tokens) {
-        if (token === '--') {
+    for (const arg of cmd.args) {
+        if (arg === '--') {
             endOfFlags = true;
-        } else if (!endOfFlags && token.startsWith('-')) {
-            flags.push(token);
+        } else if (!endOfFlags && arg.startsWith('-')) {
+            flags.push(arg);
         } else {
-            paths.push(token);
+            paths.push(arg);
         }
     }
 
-    return { flags, paths };
+    const isRecursive = flags.some(f => /^-[^-]*r/i.test(f) || f === '--recursive');
+    const isForce = flags.some(f => /^-[^-]*f/.test(f) || f === '--force');
+
+    if (paths.length === 0) {
+        console.error(`BLOCKED: '${cmd.raw}' — rm requires an explicit path. Use: trash <path>`);
+        process.exit(2);
+    }
+
+    // Dangerous wildcards — bare *, ., .. always blocked; ./* and ../* when -r or -f
+    const hasDangerousWildcard = paths.some(p => {
+        if (p === '*' || p === '.' || p === '..') return true;
+        if (isRecursive || isForce) {
+            if (p === './*' || p === '../*') return true;
+        }
+        return false;
+    });
+    if (hasDangerousWildcard) {
+        console.error(`BLOCKED: '${cmd.raw}' — rm with bare wildcard/dot is not allowed. Be explicit about which paths to delete.`);
+        process.exit(2);
+    }
+
+    // Tier 1: protected paths → hard block (safe ephemeral paths take priority)
+    for (const p of paths) {
+        if (!isSafePath(p) && isProtectedPath(p)) {
+            console.error(`BLOCKED: '${cmd.raw}' — '${p}' is a protected path.`);
+            process.exit(2);
+        }
+    }
+
+    // Tier 2: safe ephemeral paths → allow
+    // Tier 3: everything else → redirect to trash (flag only the unsafe paths)
+    const unsafePaths = paths.filter(p => !isSafePath(p));
+    if (unsafePaths.length > 0) {
+        const trashCmd = `trash ${unsafePaths.join(' ')}`;
+        console.error(`BLOCKED: rm is not allowed for non-ephemeral paths. Re-run your command using trash instead:\n\n  ${trashCmd}\n\ntrash moves files to macOS Trash (recoverable). Ephemeral paths (tmp, node_modules, dist, build, .cache, coverage, __pycache__, etc.) are allowed with rm.`);
+        process.exit(2);
+    }
 }
 
-// ── Gate mechanism ────────────────────────────────────────────────────────────
-// Gated commands are blocked on first attempt with instructions for Claude to
-// ask the user for approval. If approved, Claude creates a one-time approval
-// file keyed by command hash. On retry, the hook finds the approval, consumes
-// it (deletes), and allows the command through.
+// ── Gate mechanism ───────────────────────────────────────────────────────────
 
 const GATE_DIR = '/tmp/.claude-destructive-gate';
 
@@ -331,11 +549,10 @@ function consumeGateApproval(command: string): boolean {
     const hash = computeGateHash(command);
     const approvalPath = `${GATE_DIR}/${hash}`;
     try {
-        if (!existsSync(approvalPath)) return false;
-        unlinkSync(approvalPath);  // one-time use — consume on check
+        unlinkSync(approvalPath);  // atomic: delete = consume approval in one syscall
         return true;
     } catch {
-        return false;
+        return false;  // ENOENT or any other error → no approval
     }
 }
 
@@ -352,109 +569,43 @@ function gateBlock(command: string, reason: string): void {
     process.exit(2);
 }
 
+// ── Main ─────────────────────────────────────────────────────────────────────
+
 function main(): void {
     try {
         const rawInput = readFileSync(0, 'utf-8');
         const input: BashToolInput = JSON.parse(rawInput);
         const command = input.tool_input?.command || '';
 
-        // --- Full-command pattern checks ---
-        for (const { pattern, reason } of ALWAYS_BLOCKED_PATTERNS) {
-            if (pattern.test(command)) {
+        // Extract all commands from AST (or fallback to regex splitting)
+        const commands = extractCommands(command);
+
+        // --- Hard block checks (no bypass, ever) ---
+        for (const cmd of commands) {
+            const reason = checkHardBlock(cmd);
+            if (reason) {
                 console.error(`BLOCKED: ${reason}`);
                 process.exit(2);
             }
         }
 
-        // --- Per-segment lead-command checks ---
-        // Checked per-segment (not full-string) to avoid false positives on
-        // `grep unlink file.ts`, `man shred`, `echo "bash -c example"`, etc.
-        for (const seg of splitSegments(command)) {
-            const n = normalizeCommand(seg);
-            for (const { pattern, reason } of BLOCKED_LEAD_PATTERNS) {
-                if (pattern.test(n)) {
-                    console.error(`BLOCKED: '${seg}' — ${reason}`);
-                    process.exit(2);
-                }
-            }
-        }
-
         // --- Gated checks (approval bypass) ---
-        // Check once — a single approval covers all gated patterns for this command.
         const gateApproved = consumeGateApproval(command);
 
         if (!gateApproved) {
-            // Full-command gated patterns
-            for (const { pattern, reason } of GATED_PATTERNS) {
-                if (pattern.test(command)) {
+            for (const cmd of commands) {
+                const reason = checkGatedCommand(cmd);
+                if (reason) {
                     gateBlock(command, reason);
-                }
-            }
-
-            // Per-segment gated lead-command patterns
-            for (const seg of splitSegments(command)) {
-                const n = normalizeCommand(seg);
-                for (const { pattern, reason } of GATED_LEAD_PATTERNS) {
-                    if (pattern.test(n)) {
-                        gateBlock(command, reason);
-                    }
                 }
             }
         }
 
-        // --- rm-specific checks ---
-        const rmSegments = extractRmSegments(command);
-        if (rmSegments.length === 0) process.exit(0);
-
-        for (const segment of rmSegments) {
-            const normalized = normalizeCommand(segment);
-
-            // Block rm with shell substitution — paths can't be statically evaluated
-            if (/\$\(|\$\{|`/.test(segment)) {
-                console.error(`BLOCKED: '${segment}' — rm with shell substitution is not allowed. Use explicit paths.`);
-                process.exit(2);
+        // --- rm-specific checks (three-tier protection) ---
+        for (const cmd of commands) {
+            if (cmd.name === 'rm') {
+                checkRm(cmd);
             }
-
-            const { flags, paths } = parseRmArgs(normalized);
-            const isRecursive = flags.some(f => /^-[^-]*r/i.test(f) || f === '--recursive');
-            const isForce = flags.some(f => /^-[^-]*f/.test(f) || f === '--force');
-
-            if (paths.length === 0) {
-                console.error(`BLOCKED: '${segment}' — rm requires an explicit path. Use: trash <path>`);
-                process.exit(2);
-            }
-
-            // Dangerous wildcards — bare *, ., .. always blocked; ./* and ../* when -r or -f
-            const hasDangerousWildcard = paths.some(p => {
-                if (p === '*' || p === '.' || p === '..') return true;
-                if (isRecursive || isForce) {
-                    if (p === './*' || p === '../*') return true;
-                }
-                return false;
-            });
-            if (hasDangerousWildcard) {
-                console.error(`BLOCKED: '${segment}' — rm with bare wildcard/dot is not allowed. Be explicit about which paths to delete.`);
-                process.exit(2);
-            }
-
-            // Tier 1: protected paths → hard block (safe ephemeral paths take priority)
-            for (const p of paths) {
-                if (!isSafePath(p) && isProtectedPath(p)) {
-                    console.error(`BLOCKED: '${segment}' — '${p}' is a protected path.`);
-                    process.exit(2);
-                }
-            }
-
-            // Tier 2: safe ephemeral paths → allow
-            // Tier 3: everything else → redirect to trash (flag only the unsafe paths)
-            const unsafePaths = paths.filter(p => !isSafePath(p));
-            if (unsafePaths.length > 0) {
-                const trashCmd = `trash ${unsafePaths.join(' ')}`;
-                console.error(`BLOCKED: rm is not allowed for non-ephemeral paths. Re-run your command using trash instead:\n\n  ${trashCmd}\n\ntrash moves files to macOS Trash (recoverable). Ephemeral paths (tmp, node_modules, dist, build, .cache, coverage, __pycache__, etc.) are allowed with rm.`);
-                process.exit(2);
-            }
-
-            // All paths are ephemeral — allow
         }
 
         process.exit(0);
