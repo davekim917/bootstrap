@@ -334,7 +334,7 @@ Save the review report to disk:
 3. Write the report to `.context/specs/<feature>/review.md`
 4. Update the decision record at `.context/specs/<feature>/decisions.yaml`:
    - Append each waived MUST-FIX finding with its stated reason and risk level
-   - Format: see `skills/workflow/shared/decision-record-schema.md`
+   - Format: see `skills/shared/decision-record-schema.md`
 
 Include the save path in the gate message so downstream skills (`/team-plan`) know where to find it.
 

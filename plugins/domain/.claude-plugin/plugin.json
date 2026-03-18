@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-domain",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Domain expertise skills: software engineering, data engineering, analytics, data science, AI/LLM integration, financial analytics, and UI/UX design.",
   "author": {
     "name": "David Kim"
@@ -8,5 +8,5 @@
   "repository": "https://github.com/davekim917/bootstrap",
   "license": "MIT",
   "keywords": ["domain", "skills", "software-engineering", "data", "analytics"],
-  "skills": ["./skills/domain"]
+  "skills": ["./skills"]
 }

@@ -3,8 +3,8 @@
  * UserPromptSubmit hook: Suggests relevant skills based on user prompt
  * Global hook that works across all projects with skill systems
  */
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs';
-import { join } from 'path';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } from 'fs';
+import { join, resolve } from 'path';
 import { createHash } from 'crypto';
 import type { UserPromptSubmitInput, SkillTriggers } from '../lib/types';
 import { getProjectDir, getSkillRulesPath, getGlobalSkillRulesPath } from '../lib/project-detection';
@@ -99,21 +99,53 @@ async function main() {
         const globalDiscovered = discoverSkillsInDir(globalSkillsDir, 'global', manualSkillNames);
         const projectDiscovered = discoverSkillsInDir(projectSkillsDir, projectDir, manualSkillNames);
 
-        // Also discover skills from plugin directories (scan all subdirs dynamically)
+        // Discover skills from plugin directories
+        // Strategy: read plugin.json for explicit skill paths, fall back to scanning plugins/*/skills/
         const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || '';
         let pluginDiscovered: Record<string, any> = {};
+        let pluginNamePrefix = '';
         if (pluginRoot) {
-            const pluginSkillsRoot = join(pluginRoot, 'skills');
-            try {
-                const subdirs = readdirSync(pluginSkillsRoot).filter(entry => {
-                    try { return statSync(join(pluginSkillsRoot, entry)).isDirectory(); } catch { return false; }
-                });
-                for (const subdir of subdirs) {
-                    const pluginSkillsDir = join(pluginSkillsRoot, subdir);
-                    const discovered = discoverSkillsInDir(pluginSkillsDir, `plugin-${subdir}`, manualSkillNames);
+            const pluginJsonPath = join(pluginRoot, '.claude-plugin', 'plugin.json');
+            let skillsDirs: string[] = [];
+
+            if (existsSync(pluginJsonPath)) {
+                try {
+                    const pluginJson = JSON.parse(readFileSync(pluginJsonPath, 'utf-8'));
+                    pluginNamePrefix = pluginJson.name ? pluginJson.name + ':' : '';
+                    if (Array.isArray(pluginJson.skills)) {
+                        skillsDirs = pluginJson.skills.map((s: string) => resolve(pluginRoot, s));
+                    }
+                } catch {}
+            }
+
+            // Fallback: scan plugins/*/skills/ for directories containing SKILL.md
+            if (skillsDirs.length === 0) {
+                try {
+                    const pluginsDir = join(pluginRoot, 'plugins');
+                    const subPlugins = readdirSync(pluginsDir).filter(entry => {
+                        try { return statSync(join(pluginsDir, entry)).isDirectory(); } catch { return false; }
+                    });
+                    for (const sub of subPlugins) {
+                        const skillsPath = join(pluginsDir, sub, 'skills');
+                        if (existsSync(skillsPath)) {
+                            skillsDirs.push(skillsPath);
+                        }
+                    }
+                } catch {}
+            }
+
+            // Discover skills from each resolved skills directory
+            for (const skillsDir of skillsDirs) {
+                const discovered = discoverSkillsInDir(skillsDir, `plugin-${skillsDir}`, manualSkillNames);
+                // Prefix plugin-discovered skill names with plugin name
+                if (pluginNamePrefix) {
+                    for (const [name, entry] of Object.entries(discovered)) {
+                        pluginDiscovered[pluginNamePrefix + name] = entry;
+                    }
+                } else {
                     pluginDiscovered = { ...pluginDiscovered, ...discovered };
                 }
-            } catch {}
+            }
         }
 
         // Exit silently if no skill sources at all

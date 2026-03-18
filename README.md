@@ -134,17 +134,17 @@ bootstrap/
 ├── plugins/
 │   ├── workflow/               # bootstrap-workflow plugin
 │   │   ├── .claude-plugin/plugin.json
-│   │   ├── skills/workflow/    # 13 team-* skills
+│   │   ├── skills/             # 13 team-* skills
 │   │   ├── hooks/              # safety, quality, lifecycle hooks
 │   │   ├── agents/             # 6 specialized subagents
 │   │   └── tests/              # workflow validation specs
 │   ├── domain/                 # bootstrap-domain plugin
 │   │   ├── .claude-plugin/plugin.json
-│   │   └── skills/domain/      # 8 domain expertise skills
+│   │   └── skills/             # 8 domain expertise skills
 │   └── bootstrap-commands/     # bootstrap-commands plugin
 │       ├── .claude-plugin/plugin.json
 │       ├── commands/           # 7 bootstrap commands
-│       ├── skills/utility/     # skill-developer
+│       ├── skills/             # skill-developer
 │       └── scripts/            # helper scripts
 ```
 
@@ -152,7 +152,7 @@ bootstrap/
 
 ### Adding Domain Skills
 
-Create a new skill in `plugins/domain/skills/domain/your-domain/SKILL.md`.
+Create a new skill in `plugins/domain/skills/your-domain/SKILL.md`.
 
 ### Disabling Hooks
 

@@ -133,7 +133,7 @@ Save the design to disk:
    - Append each rejected option with its rejection reason (these become REJECTION claims in drift detection)
    - Append HARD/SOFT constraint classifications from Step 2 (if new constraints were identified beyond the brief's)
    - Append all `[ASSUMPTION]` items from the Assumptions Log with validation method
-   - Format: see `skills/workflow/shared/decision-record-schema.md`
+   - Format: see `skills/shared/decision-record-schema.md`
 
 Then STOP. Display exactly this gate:
 

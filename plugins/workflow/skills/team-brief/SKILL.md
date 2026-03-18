@@ -158,7 +158,7 @@ Save the brief to disk:
    - Record all constraints from Step 2 (with HARD/SOFT classification)
    - Record all decisions from Step 3 Q&A (what was asked, what the user chose, what alternatives were considered)
    - Record all forced defaults from Step 4 (what was defaulted, what the alternative was)
-   - Format: see `skills/workflow/shared/decision-record-schema.md`
+   - Format: see `skills/shared/decision-record-schema.md`
 
 Then STOP. Display exactly this gate:
 
