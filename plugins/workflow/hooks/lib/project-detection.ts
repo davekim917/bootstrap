@@ -45,27 +45,3 @@ export function getProjectDir(input: { cwd?: string }): string {
     return startDir;
 }
 
-/**
- * Get the path to skill-rules.json if it exists in the project
- * Returns null if the project has no skill system configured
- */
-export function getSkillRulesPath(projectDir: string): string | null {
-    const rulesPath = join(projectDir, '.claude', 'skills', 'skill-rules.json');
-    return existsSync(rulesPath) ? rulesPath : null;
-}
-
-/**
- * Check if a project has the skill system configured
- */
-export function hasSkillSystem(projectDir: string): boolean {
-    return getSkillRulesPath(projectDir) !== null;
-}
-
-/**
- * Get the path to global skill-rules.json if it exists
- * Returns null if no global skill system is configured
- */
-export function getGlobalSkillRulesPath(): string | null {
-    const globalRulesPath = join(process.env.HOME || '/root', '.claude', 'skills', 'skill-rules.json');
-    return existsSync(globalRulesPath) ? globalRulesPath : null;
-}
