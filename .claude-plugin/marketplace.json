@@ -21,6 +21,12 @@
       "source": "./plugins/bootstrap-commands",
       "description": "Codebase analysis and AI development setup generation",
       "version": "1.0.5"
+    },
+    {
+      "name": "bootstrap-tools",
+      "source": "./plugins/tools",
+      "description": "Tool integration skills for CLI tools — Cortex Code, and more",
+      "version": "1.0.0"
     }
   ]
 }

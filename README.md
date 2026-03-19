@@ -1,6 +1,6 @@
 # bootstrap
 
-A portable agent environment for Claude Code. Three independent plugins — install what you need.
+A portable agent environment for Claude Code. Four independent plugins — install what you need.
 
 Built for my own use, shared in case it's useful to others.
 
@@ -11,6 +11,7 @@ Built for my own use, shared in case it's useful to others.
 | `bootstrap-workflow` | Team workflow skills (brief → design → review → plan → build → qa → ship), safety/quality hooks, specialized agents |
 | `bootstrap-domain` | Domain expertise skills for software engineering, data, analytics, AI, and finance |
 | `bootstrap-commands` | Codebase analysis commands that generate CLAUDE.md, project skills, and AI dev setup |
+| `bootstrap-tools` | Tool integration skills for CLI tools (Cortex Code, and more) |
 
 ## Install
 
@@ -25,6 +26,7 @@ Install only what you need:
 /plugin install bootstrap-workflow@davekim917-bootstrap     # team workflow + hooks + agents
 /plugin install bootstrap-domain@davekim917-bootstrap       # domain skills only
 /plugin install bootstrap-commands@davekim917-bootstrap     # bootstrap commands only
+/plugin install bootstrap-tools@davekim917-bootstrap        # tool integration skills
 ```
 
 ### Prerequisites
