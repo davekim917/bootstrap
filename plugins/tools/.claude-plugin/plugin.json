@@ -1,0 +1,12 @@
+{
+  "name": "bootstrap-tools",
+  "version": "1.0.0",
+  "description": "Tool integration skills for CLI tools with specialized invocation patterns — Cortex Code, and more.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": ["tools", "cli", "cortex", "snowflake"],
+  "skills": ["./skills"]
+}
