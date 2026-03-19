@@ -8,7 +8,7 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Structured team workflow: brief → design → review → plan → build → qa → ship",
-      "version": "1.0.5"
+      "version": "1.0.8"
     },
     {
       "name": "bootstrap-domain",
