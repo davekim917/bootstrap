@@ -217,7 +217,7 @@ INCOMPLETE:      [skill-name] — missing workflow questions: [list]
 
 ## 2.1c: Degrees of Freedom Validation
 
-**Why:** Skills must match instruction specificity to task fragility. Over-specifying flexible tasks causes agent paralysis; under-specifying fragile tasks causes dangerous errors. (See skill-development/SKILLS-DEVELOPMENT-GUIDE.md for framework details.)
+**Why:** Skills must match instruction specificity to task fragility. Over-specifying flexible tasks causes agent paralysis; under-specifying fragile tasks causes dangerous errors. (See skill-developer/references/SKILLS-DEVELOPMENT-GUIDE.md for framework details.)
 
 For EACH existing skill, classify and validate:
 
@@ -238,7 +238,7 @@ MISMATCH:    [skill-name] — currently [level] but task is [type], recommend [n
 
 ## 2.1d: Security Audit
 
-**Why:** Skills with side effects, executable scripts, or network access need security controls — without explicit restrictions, side-effect skills can be invoked autonomously with unintended consequences. (See skill-development/SKILLS-DEVELOPMENT-GUIDE.md, Section 12: Security model for skills)
+**Why:** Skills with side effects, executable scripts, or network access need security controls — without explicit restrictions, side-effect skills can be invoked autonomously with unintended consequences. (See skill-developer/references/SKILLS-DEVELOPMENT-GUIDE.md, Section 12: Security model for skills)
 
 For EACH existing skill, check:
 
@@ -503,16 +503,13 @@ RENAMED: [skill-name] (.claude and/or .agents) — 'resources/' → 'references/
 
 **Why:** Skills generated from an earlier analysis may no longer reflect the codebase. Reconciliation ensures every skill still maps to a real pattern — outdated skills erode trust and add noise to activation decisions.
 
-**If `skill-rules.json` does not exist, skip trigger-related checks in Steps 2.2 and 2.3.**
-
 **For EACH existing skill, compare against `analysis.yaml`:**
 
 | Skill Status | Condition | Action |
 |--------------|-----------|--------|
-| **CURRENT** | Pattern still in analysis.yaml with similar consistency | Keep, update triggers if keywords changed |
+| **CURRENT** | Pattern still in analysis.yaml with similar consistency | Keep, update description if terminology changed |
 | **EVOLVED** | Pattern in analysis.yaml but consistency/approach changed | Update SKILL.md content to match new patterns |
 | **STALE** | Pattern no longer found in analysis.yaml | Mark as deprecated OR delete if no longer relevant |
-| **UNREGISTERED** | Critical skill (review gate, safety) exists but not in `.claude/skills/skill-rules.json` AND not classified LAYERED in the deduplication report | Add trigger configuration (critical skills only) |
 
 **Reconciliation checklist for each skill:**
 
@@ -526,7 +523,7 @@ Skill: [skill-name]
 2. **Has the pattern consistency changed significantly?**
    - Was: [X]% → Now: [Y]%
    - If dropped >20%: Pattern may be deprecated, review
-   - If increased: Pattern is more established, strengthen triggers
+   - If increased: Pattern is more established, strengthen description
 
 3. **Have canonical examples changed?**
    - Old example: [file:line]
@@ -537,10 +534,10 @@ Skill: [skill-name]
    - New failures in analysis.yaml related to this skill?
    - Add to "Common Pitfalls" section
 
-5. **Are triggers still accurate?**
+5. **Is the skill description still accurate?**
    - Do keywords match current terminology in codebase?
-   - Do file patterns match current directory structure?
-   - Update `.claude/skills/skill-rules.json` if needed
+   - Does the description reflect the skill's current scope?
+   - Update SKILL.md frontmatter description if needed
 
 6. **Are critical rules extracted to CLAUDE.md?**
    - Check if skill contains "must never miss" rules
@@ -557,7 +554,7 @@ Skill: [skill-name]
 ## 2.3: Handle Each Skill Category
 
 ### CURRENT Skills (Pattern still valid)
-- Verify trigger keywords match current analysis terminology
+- Verify skill description keywords match current analysis terminology
 - Update consistency percentages in SKILL.md
 - Add any new failure modes discovered
 
@@ -565,7 +562,7 @@ Skill: [skill-name]
 ```bash
 # Update consistency percentage in SKILL.md header
 # Add any new pitfalls from analysis.yaml
-# Verify triggers in skill-rules.json match current codebase terms
+# Verify description keywords match current codebase terms
 ```
 
 ---
@@ -579,7 +576,7 @@ Skill: [skill-name]
 - New failure modes discovered
 
 **Action:** Content update required
-- **Minor changes** (proceed autonomously): update consistency percentages, add new failure modes, fix stale file:line references, update trigger keywords
+- **Minor changes** (proceed autonomously): update consistency percentages, add new failure modes, fix stale file:line references, update description keywords
 - **Major changes** (stop and confirm first): rewrite the Implementation Guide, change the Philosophy section, or replace all canonical examples
 
 **Quantitative fallback:** When uncertain whether a change is major or minor, use this heuristic — if the net change to SKILL.md would exceed 20% of the file's current line count, treat it as major and stop for confirmation before applying.
@@ -588,7 +585,7 @@ For major changes:
 - **Rewrite** the Implementation Guide section with new examples
 - Update the Philosophy section if architectural approach changed
 - Update canonical examples to match analysis.yaml
-- Review and update triggers
+- Review and update description
 
 ```markdown
 # Checklist for EVOLVED skills:
@@ -597,7 +594,7 @@ For major changes:
 - [ ] All code examples updated to current patterns
 - [ ] New failure modes added to Pitfalls section
 - [ ] Verification checklist updated
-- [ ] Triggers updated in skill-rules.json
+- [ ] Description updated in SKILL.md frontmatter if terminology changed
 - [ ] Re-sync mirror: `cp .claude/skills/[skill-name]/SKILL.md .agents/skills/[skill-name]/SKILL.md && perl -pi -e 's/CLAUDE\.md/AGENTS.md/g' .agents/skills/[skill-name]/SKILL.md` and verify with `grep -r "CLAUDE.md" .agents/skills/[skill-name]/ || echo "clean"`
 ```
 
@@ -617,11 +614,9 @@ Skill [name] appears stale - pattern not found in new analysis.
 Options:
 A) DELETE - Pattern is obsolete, remove skill entirely
    → rm -rf .claude/skills/[skill-name]
-   → Remove entry from skill-rules.json
 
 B) DEPRECATE - Keep but mark as legacy (add "DEPRECATED" to description)
    → Update SKILL.md description: "DEPRECATED: [reason]. [migration path]"
-   → Lower trigger priority or remove auto-triggers
 
 C) KEEP - Pattern still relevant but wasn't detected (manual override)
    → Document why it's still needed despite not appearing in analysis
@@ -631,50 +626,6 @@ Recommendation: [A/B/C] because [reasoning]
 ```
 
 After filling in the recommendation, record it in the reconciliation report (Step 2.5) and **wait for user approval before executing** any deletion or deprecation. Do not act autonomously on STALE skills.
-
----
-
-### UNREGISTERED Critical Skills (Critical skill missing from skill-rules.json)
-
-**Note:** Most skills use description-based LLM activation and do NOT need entries in `skill-rules.json`. Only **critical skills** (review gates, safety gates) should have deterministic hook triggers.
-
-**Check:** For each skill NOT in `skill-rules.json`, determine if it's critical:
-- Review gate skills (`review-gates`, `security-review-gates`, `performance-review-gates`) → should have deterministic triggers **unless classified `LAYERED` in `.claude/discovery/deduplication-report.txt`** (meaning a global review agent covers the same domain; description-based activation is sufficient for the thin-checklist role in that case). Check the deduplication report before adding a trigger entry.
-- Safety/compliance skills → **SHOULD** have triggers
-- All other skills → **SKIP** — description-based activation is sufficient
-
-**Action (for critical skills only):** Add trigger configuration
-
-1. Read SKILL.md to understand purpose:
-   ```bash
-   cat .claude/skills/[skill-name]/SKILL.md | head -20
-   ```
-
-2. Create trigger configuration:
-   ```json
-   "[skill-name]": {
-     "type": "domain",
-     "enforcement": "suggest",
-     "priority": "high",
-     "description": "[From SKILL.md description field]",
-     "promptTriggers": {
-       "keywords": ["[relevant keywords from skill content]"],
-       "intentPatterns": ["[patterns based on skill purpose]"]
-     },
-     "fileTriggers": {
-       "pathPatterns": ["[file patterns skill applies to]"]
-     }
-   }
-   ```
-
-3. Add to skill-rules.json:
-   ```bash
-   # Edit .claude/skills/skill-rules.json
-   # Add the entry, ensure valid JSON syntax
-   jq . .claude/skills/skill-rules.json  # Validate
-   ```
-
-**For non-critical skills not activating reliably:** Improve description quality first (see Step 2.1b). Only escalate to hook-based triggers if description optimization fails.
 
 ---
 
@@ -713,7 +664,6 @@ echo "Compare above lists to identify missing skills"
 - **Domain/pattern skills** (codebase-overview, [pattern]-patterns, [failure-type]-prevention): return to Stage 4 (`/bootstrap-domain`) and generate it
 - Use `init_skill.py` to create the structure. If `init_skill.py` is not available, create skills manually following the appropriate template.
 - Populate content from analysis.yaml
-- Add trigger to `skill-rules.json` only if the missing skill is critical (review gates/safety) and NOT classified LAYERED
 - **After returning from Stage 3 or Stage 4:** Apply Steps 2.1b–2.1e to each newly generated skill before proceeding to Step 2.5. The first-bootstrap note in Step 1 does not exempt this return trip — all newly generated skills must pass the full audit.
 
   **Return path:** After generating missing skills in Stage 3 or Stage 4, re-enter Stage 5 at Step 2.1a. Apply 2.1a through 2.1g to each newly generated skill. Append the new audit findings (PASS/REWRITE_DESC/etc.) to the existing audit results from the original pass. Proceed to Step 2.5 only after all newly generated skills have completed the full audit sub-steps.
@@ -730,7 +680,7 @@ echo "Compare above lists to identify missing skills"
 === Skill Reconciliation Report ===
 
 CURRENT (no changes needed): [count]
-  - [skill-name]: triggers verified ✓
+  - [skill-name]: description and content verified ✓
 
 EVOLVED MINOR (autonomous — no confirmation needed): [count]
   - [skill-name]: updated consistency % and 2 stale file:line refs
@@ -741,9 +691,6 @@ STALE (decision required): [count]
   - [skill-name]: pattern not found in analysis
     → Recommendation: [DELETE/DEPRECATE/KEEP] because [reason]
 
-UNREGISTERED CRITICAL (adding triggers): [count]
-  - [skill-name]: critical skill, adding to skill-rules.json
-
 MISSING (need to generate in Stage 3): [count]
   - [skill-name]: recommended by analysis, not yet created
 
@@ -751,8 +698,7 @@ MISSING (need to generate in Stage 3): [count]
 
 Summary:
 - Skills to update: [count]
-- Skills to potentially remove: [count]  
-- Critical skills to add triggers: [count]
+- Skills to potentially remove: [count]
 - Skills to create: [count]
 
 Proceed with reconciliation? (Review above before continuing)
@@ -768,10 +714,10 @@ Proceed with reconciliation? (Review above before continuing)
 
 After user approval, make changes for each skill category:
 
-- **CURRENT:** Verify triggers still match current codebase terminology. Update `skill-rules.json` keywords if they've drifted.
-- **EVOLVED:** Edit `SKILL.md` to reflect updated patterns, new failure modes, or changed canonical examples. Update `skill-rules.json` triggers if needed. For significant content changes, confirm with user before applying.
+- **CURRENT:** Verify skill descriptions still match current codebase terminology. Update SKILL.md frontmatter description if keywords have drifted.
+- **EVOLVED:** Edit `SKILL.md` to reflect updated patterns, new failure modes, or changed canonical examples. Update description if scope changed. For significant content changes, confirm with user before applying.
 - **EVOLVED (mirror update):** After editing `.claude/skills/[name]/SKILL.md`, re-sync `.agents/skills/[name]/SKILL.md` by running `cp .claude/skills/[name]/SKILL.md .agents/skills/[name]/SKILL.md && perl -pi -e 's/CLAUDE\.md/AGENTS.md/g' .agents/skills/[name]/SKILL.md` and verify clean.
-- **STALE (DELETE approved):** Remove the skill directory from all locations, delete its entry from `skill-rules.json`, and clean up side effects:
+- **STALE (DELETE approved):** Remove the skill directory from all locations and clean up side effects:
   ```bash
   trash .claude/skills/[name]
   rm -rf .agents/skills/[name]
@@ -779,16 +725,7 @@ After user approval, make changes for each skill category:
 
   # Remove skill's guardrail lines from CLAUDE.md and AGENTS.md
   perl -pi -e '/^#\s+\Q[name]\E:/ && next' CLAUDE.md AGENTS.md
-
-  # Remove skill's entry from skill-rules.json (if present)
-  if [ -f ".claude/skills/skill-rules.json" ] && command -v jq >/dev/null 2>&1; then
-      jq 'del(.skills["[name]"])' .claude/skills/skill-rules.json > /tmp/_sr_clean.json && \
-      mv /tmp/_sr_clean.json .claude/skills/skill-rules.json
-      # Validate JSON syntax after removal
-      jq . .claude/skills/skill-rules.json > /dev/null 2>&1 || echo "ERROR: skill-rules.json is invalid JSON after removing [name]"
-  fi
   ```
-- **UNREGISTERED critical:** Add a trigger entry to `.claude/skills/skill-rules.json` following the format in Stage 3 (see review-gates example).
 
 ---
 

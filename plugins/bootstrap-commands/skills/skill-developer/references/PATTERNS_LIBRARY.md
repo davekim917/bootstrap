@@ -1,6 +1,6 @@
 # Common Patterns Library
 
-Ready-to-use regex and glob patterns for skill triggers. Copy and customize for your skills.
+Ready-to-use regex and glob patterns for skill descriptions and trigger design. Reference these when writing skill descriptions to ensure the right keywords and patterns are included.
 
 ---
 
@@ -121,54 +121,8 @@ useState|useEffect              # React hooks
 
 ---
 
-## Escaping Reference
-
-When using patterns in `skill-rules.json`, remember to double-escape:
-
-| Pattern | In Regex | In JSON |
-|---------|----------|---------|
-| Literal dot | `\.` | `\\.` |
-| Literal paren | `\(` | `\\(` |
-| Literal bracket | `\[` | `\\[` |
-| Whitespace | `\s` | `\\s` |
-
-**Example:**
-```regex
-# In regex tester:
-\.findMany\(
-
-# In skill-rules.json:
-"\\.findMany\\("
-```
-
----
-
-## Usage Example
-
-```json
-{
-  "my-skill": {
-    "promptTriggers": {
-      "intentPatterns": [
-        "(create|add|build).*?(component|UI|page)"
-      ]
-    },
-    "fileTriggers": {
-      "pathPatterns": [
-        "frontend/src/**/*.tsx"
-      ],
-      "contentPatterns": [
-        "export.*React\\.FC",
-        "useState|useEffect"
-      ]
-    }
-  }
-}
-```
-
 ---
 
 **Related Files:**
 - [SKILL.md](../SKILL.md) - Main skill guide
-- [TRIGGER_TYPES.md](TRIGGER_TYPES.md) - Detailed trigger documentation
-- [SKILL_RULES_REFERENCE.md](SKILL_RULES_REFERENCE.md) - Complete schema
+- [TRIGGER_TYPES.md](TRIGGER_TYPES.md) - Trigger type concepts

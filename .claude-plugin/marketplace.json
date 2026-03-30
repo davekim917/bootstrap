@@ -8,7 +8,7 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Structured team workflow: brief → design → review → plan → build → qa → ship",
-      "version": "1.0.9"
+      "version": "1.0.10"
     },
     {
       "name": "bootstrap-domain",
@@ -20,7 +20,7 @@
       "name": "bootstrap-commands",
       "source": "./plugins/bootstrap-commands",
       "description": "Codebase analysis and AI development setup generation",
-      "version": "1.0.6"
+      "version": "1.0.7"
     },
     {
       "name": "bootstrap-tools",

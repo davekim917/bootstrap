@@ -1,21 +1,19 @@
 ---
 name: skill-developer
-description: Create and manage Claude Code skills with deterministic hook-based activation. Use when creating new skills, configuring skill-rules.json, understanding trigger patterns, debugging skill activation, or implementing progressive disclosure. Covers skill structure, YAML frontmatter, trigger types (keywords, intent patterns, file paths, content patterns), enforcement levels (block, suggest, warn), hook mechanisms, session tracking, and the 500-line rule.
+description: Create and manage Claude Code skills with description-based activation. Use when creating new skills, writing skill descriptions, understanding trigger patterns, debugging skill activation, or implementing progressive disclosure. Covers skill structure, YAML frontmatter, description writing (WHAT/WHEN/NOT patterns), structural patterns (workflow, task, reference, capabilities), the 500-line rule, and cross-platform portability.
 ---
 
 # Skill Developer Guide
 
 ## Purpose
 
-Comprehensive guide for creating skills in Claude Code. Covers both the standard skill content quality guidance (applicable across platforms) and the optional Claude Code activation layer (hook-based deterministic triggering).
+Comprehensive guide for creating skills in Claude Code. Covers standard skill content quality guidance applicable across platforms.
 
 ## Core Principles
 
 **Context window is a public good.** Every token in SKILL.md is loaded on every invocation. Write lean: only add context Claude doesn't already have, skip common knowledge, eliminate redundancy between SKILL.md and reference files.
 
 **Description-first architecture.** The description is the *only* content read before triggering. All "when to use" logic must live in the description. SKILL.md content loads only after triggering — it is not part of activation. Treat description quality as the highest-leverage control.
-
-**Hooks are an additive Claude Code layer.** Deterministic hook-based activation extends description-based activation. Most skills need only a good description. Add hooks for review-gates, guardrails, and safety-critical skills where missed activation is unacceptable.
 
 ---
 
@@ -25,8 +23,8 @@ Comprehensive guide for creating skills in Claude Code. Covers both the standard
 
 **Purpose:** Enforce critical best practices that prevent errors
 
-- Type: `"guardrail"`, Enforcement: `"block"`, Priority: `"critical"` or `"high"`
-- Block file edits until skill used; session-aware (don't repeat nag in same session)
+- Enforcement: block — prevents action until skill is consulted
+- Session-aware (don't repeat nag in same session)
 - **Use For:** Mistakes that cause runtime errors, data integrity, critical compatibility
 
 **Examples:** `database-verification`, `schema-validation`
@@ -35,8 +33,8 @@ Comprehensive guide for creating skills in Claude Code. Covers both the standard
 
 **Purpose:** Provide comprehensive guidance for specific areas
 
-- Type: `"domain"`, Enforcement: `"suggest"`, Priority: `"high"` or `"medium"`
-- Advisory; topic or domain-specific; comprehensive documentation
+- Enforcement: suggest — advisory, not enforced
+- Topic or domain-specific; comprehensive documentation
 - **Use For:** Complex systems requiring deep knowledge, best practices, architectural patterns
 
 **Examples:** `backend-dev-guidelines`, `frontend-dev-guidelines`
@@ -45,7 +43,7 @@ Comprehensive guide for creating skills in Claude Code. Covers both the standard
 
 **Purpose:** Guardrails that apply across multiple workflow stages, not bound to a single skill
 
-- Subtype of guardrail. Type: `"guardrail"`, Enforcement: `"suggest"`, Priority: `"critical"`
+- Subtype of guardrail, but advisory rather than blocking
 - Triggered by behavioral signals (e.g., completion claims) rather than domain context
 - **Use For:** Verification discipline, process compliance that spans /team-build, /team-qa, /team-ship, /team-debug, /team-tdd
 
@@ -222,89 +220,7 @@ Verify your skill does NOT fall into these patterns before shipping:
 
 ---
 
-## Claude Code Activation Layer (Optional)
-
-Steps 6-9 configure deterministic hook-based activation — a Claude Code enhancement beyond standard skill format. **Most skills need only Steps 0-5.** Add the activation layer when:
-
-- The skill is a review gate or guardrail where missed activation is unacceptable
-- Description-based activation fails trigger/non-trigger evaluations
-- The skill needs enforcement levels (BLOCK/SUGGEST) beyond advisory
-
-**Architecture:** Two hooks work together:
-- **UserPromptSubmit** — runs BEFORE Claude sees the prompt; injects skill reminder as context
-- **Stop hook** — runs AFTER Claude responds; for gentle post-response reminders (e.g., error handling)
-
-### Auto-Discovery (No skill-rules.json required)
-
-Any skill installed at `~/.claude/skills/` (global) or `<project>/.claude/skills/` (project) is **automatically discovered** by the hook system via SKILL.md frontmatter parsing. No manual `skill-rules.json` entry needed for basic suggestion-level activation.
-
-**How it works:**
-1. The hook scans all installed skill directories on each prompt
-2. Parses YAML frontmatter (`name`, `description`) from each SKILL.md
-3. Extracts trigger keywords: quoted strings, file extensions, tool/framework names
-4. Extracts intent patterns from `"Use when..."` and `"Trigger when..."` clauses
-5. Results are mtime-cached — re-parsed only when SKILL.md files change
-
-**Keyword extraction rules** (applied to description text):
-- Quoted strings → `"Word doc"`, `".docx"`, `"deck"` become keywords
-- File extensions → `.docx`, `.pptx`, `.xlsx`, `.csv`, `.json`, etc.
-- Known tool names → `React`, `Next.js`, `dbt`, `Airflow`, `Kafka`, etc.
-
-**Auto-discovery defaults:** `type: domain`, `enforcement: suggest`, `priority: medium`
-
-**Skip conditions:**
-- `user-invocable: false` in frontmatter — opts out of auto-discovery
-- Broken symlinks or missing/malformed SKILL.md
-- Skills already in `skill-rules.json` — manual entries override auto-discovered
-
-Manual `skill-rules.json` entries remain the mechanism for `block` enforcement, `high` priority, file triggers, or fine-tuning triggers that extraction misses.
-
-### Step 6: Add to skill-rules.json (for guardrails and fine-tuning)
-
-See [SKILL_RULES_REFERENCE.md](references/SKILL_RULES_REFERENCE.md) for complete schema.
-
-**Basic Template:**
-```json
-{
-  "my-new-skill": {
-    "type": "domain",
-    "enforcement": "suggest",
-    "priority": "medium",
-    "promptTriggers": {
-      "keywords": ["keyword1", "keyword2"],
-      "intentPatterns": ["(create|add).*?something"]
-    }
-  }
-}
-```
-
-### Step 7: Test Triggers
-
-**Test UserPromptSubmit:**
-```bash
-echo '{"session_id":"test","prompt":"your test prompt"}' | \
-  npx tsx .claude/hooks/skill-activation-prompt.ts
-```
-
-**Test PreToolUse:**
-```bash
-cat <<'EOF' | npx tsx .claude/hooks/skill-verification-guard.ts
-{"session_id":"test","tool_name":"Edit","tool_input":{"file_path":"test.ts"}}
-EOF
-```
-
-### Step 8: Refine Patterns
-
-Based on testing:
-- Add missing keywords for false negatives
-- Narrow intent patterns to reduce false positives
-- Adjust file path and content patterns
-
-### Step 9: Iterate
-
-Use on real tasks, observe where it struggles or triggers incorrectly, and refine. Continue the observe-refine-test cycle.
-
-### Step 10: Pressure-Test Compliance (Required for Workflow and Guardrail Skills)
+### Step 6: Pressure-Test Compliance (Required for Workflow and Guardrail Skills)
 
 Activation testing (trigger/non-trigger suites) only confirms the skill fires. It does not confirm the skill changes behavior. A skill that loads but doesn't change what the agent does is documentation, not a skill.
 
@@ -322,36 +238,6 @@ Activation testing (trigger/non-trigger suites) only confirms the skill fires. I
 - Skill passes both activation test (trigger/non-trigger) AND compliance test (RED-GREEN).
 
 **If the skill passes activation but fails compliance:** The skill describes what to do but doesn't prevent not doing it. Add an explicit `## Rationalization Resistance` row for each observed failure mode and re-test.
-
----
-
-## Enforcement Levels
-
-### BLOCK (Critical Guardrails)
-
-- Physically prevents Edit/Write tool execution
-- Exit code 2 from hook, stderr → Claude
-- Claude sees message and must use skill to proceed
-- **Use For**: Critical mistakes, data integrity, security issues
-
-### SUGGEST (Recommended)
-
-- Reminder injected before Claude sees prompt
-- Not enforced, just advisory
-- **Use For**: Domain guidance, best practices, how-to guides
-
-### WARN (Optional)
-
-- Low priority suggestions, advisory only
-- **Rarely used** — most skills are either BLOCK or SUGGEST
-
----
-
-## Skip Conditions
-
-- **Session tracking**: Automatic (prevents repeated nags in same session)
-- **File markers**: `// @skip-validation` (permanent skip for specific files)
-- **Env vars**: `SKIP_SKILL_GUARDRAILS=true` (emergency disable)
 
 ---
 
@@ -374,40 +260,24 @@ Activation testing (trigger/non-trigger suites) only confirms the skill fires. I
 - [ ] 5+ specific trigger keywords from real user workflows
 - [ ] Uses "Use when..." and "Do not use for..." patterns
 
-**Activation (if using Claude Code hooks):**
-- [ ] Entry added to `skill-rules.json`
-- [ ] Keywords tested with real prompts
-- [ ] Intent patterns tested for false positives/negatives
-- [ ] Block message is clear and actionable (if guardrail)
-- [ ] JSON syntax validated: `jq . skill-rules.json`
-
 ---
 
 ## Resource Files
 
 ### [TRIGGER_TYPES.md](references/TRIGGER_TYPES.md)
-Keyword triggers, intent patterns, file path triggers, content patterns — with examples and testing strategies.
-
-### [SKILL_RULES_REFERENCE.md](references/SKILL_RULES_REFERENCE.md)
-Complete skill-rules.json schema: TypeScript interfaces, field explanations, complete guardrail and domain examples.
-
-### [HOOK_MECHANISMS.md](references/HOOK_MECHANISMS.md)
-Hook internals: UserPromptSubmit and PreToolUse flows, exit code behavior, session state management.
-
-### [TROUBLESHOOTING.md](references/TROUBLESHOOTING.md)
-Debugging guide: skill not triggering, false positives, hook not executing, performance issues.
+Conceptual guide to trigger patterns: keywords, intent patterns, file paths, content patterns — useful for writing effective descriptions.
 
 ### [PATTERNS_LIBRARY.md](references/PATTERNS_LIBRARY.md)
 Ready-to-use pattern collection: intent patterns, file path patterns, content patterns — organized by use case.
 
 ### [ADVANCED.md](references/ADVANCED.md)
-Future enhancements: dynamic rule updates, skill dependencies, conditional enforcement, skill analytics.
+Future enhancements: skill versioning, multi-language support.
 
 ### [SKILLS-DEVELOPMENT-GUIDE.md](references/SKILLS-DEVELOPMENT-GUIDE.md)
 Source-grounded authoring guide covering the agentskills.io open standard, platform-specific behavior (Claude/Codex/Copilot/Cursor/Gemini), description-writing standard, folder structure patterns, testing harnesses (trigger/non-trigger suites, functional tests), troubleshooting playbook, and the §15 de facto authoring checklist (before dev → required → during dev → before release → after release → portability guardrails → Anthropic-specific constraints). **Consult this before writing or substantially updating any skill.**
 
 ---
 
-**Skill Status**: RESTRUCTURED — aligns with official skill-creator standard + hook architecture ✅
+**Skill Status**: RESTRUCTURED — aligns with official skill-creator standard ✅
 **Line Count**: < 500 (following 500-line rule) ✅
 **Progressive Disclosure**: Resource files for detailed information ✅

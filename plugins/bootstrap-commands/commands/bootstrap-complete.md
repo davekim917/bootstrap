@@ -78,49 +78,6 @@ elif [ "$SKILL_COUNT" -lt 4 ]; then
     echo "   ⚠️  Only $SKILL_COUNT skills found — expected at least 4 core skills (review-gates, security-review-gates, performance-review-gates, code-conventions)"
 fi
 
-# Check skill-rules.json
-if [ -f ".claude/skills/skill-rules.json" ]; then
-    if command -v jq >/dev/null 2>&1; then
-        if jq . .claude/skills/skill-rules.json > /dev/null 2>&1; then
-            RULE_COUNT=$(jq '.skills | length' .claude/skills/skill-rules.json)
-            echo "   ✅ skill-rules.json valid ($RULE_COUNT entries)"
-        else
-            echo "   ❌ skill-rules.json has invalid JSON"
-        fi
-    else
-        echo "   ⚠️  jq not found — cannot validate skill-rules.json (install jq or use python3 -m json.tool)"
-    fi
-else
-    echo "   ℹ️  skill-rules.json not found (valid if no critical skills require deterministic triggers)"
-fi
-
-# Check critical skills have triggers (review gates, safety)
-# LAYERED exception: skills classified LAYERED in Stage 3 intentionally omit skill-rules.json entries.
-# This check consults deduplication-report.txt and emits ℹ️ (not ❌) for correctly LAYERED skills.
-CRITICAL_SKILLS=("review-gates" "security-review-gates" "performance-review-gates")
-MISSING_CRITICAL=0
-if ! command -v jq >/dev/null 2>&1; then
-    echo "   ⚠️  jq not found — skipping critical skill trigger checks"
-else
-for critical in "${CRITICAL_SKILLS[@]}"; do
-    if [ -d ".claude/skills/$critical" ] && [ -f ".claude/skills/$critical/SKILL.md" ]; then
-        if [ ! -f ".claude/skills/skill-rules.json" ] || ! jq -e ".skills[\"$critical\"]" .claude/skills/skill-rules.json > /dev/null 2>&1; then
-            # Check if intentionally classified LAYERED in the deduplication report
-            if grep -qE "^LAYERED: ${critical}( |$)" .claude/discovery/deduplication-report.txt 2>/dev/null; then
-                echo "   ℹ️  LAYERED: $critical — classified LAYERED (complements global agent; no skill-rules.json entry expected)"
-            else
-                echo "   ❌ MISSING TRIGGER: $critical (critical skill — add to skill-rules.json, or re-run Stage 3 to classify as LAYERED if a global agent covers this domain)"
-                MISSING_CRITICAL=$((MISSING_CRITICAL + 1))
-            fi
-        fi
-    fi
-done
-if [ "$MISSING_CRITICAL" -eq 0 ]; then
-    echo "   ✅ All critical skills have triggers (or are intentionally LAYERED)"
-else
-    echo "   ❌ $MISSING_CRITICAL critical skills missing triggers"
-fi
-fi  # end jq guard
 echo ""
 
 # 5. Frontmatter Validation
@@ -279,9 +236,15 @@ else
     echo "   ✅ No deprecated hooks.json"
 fi
 
+if [ -f ".claude/skills/skill-rules.json" ]; then
+    echo "   ⚠️  .claude/skills/skill-rules.json exists (deprecated — skill activation is now description-based; remove this file)"
+else
+    echo "   ✅ No deprecated skill-rules.json"
+fi
+
 LEFTOVER=$(find .claude/skills -name "_skill-rules-entry.json" 2>/dev/null | wc -l)
 if [ "$LEFTOVER" -gt 0 ]; then
-    echo "   ⚠️  $LEFTOVER leftover _skill-rules-entry.json files"
+    echo "   ⚠️  $LEFTOVER leftover _skill-rules-entry.json files (deprecated — remove these files)"
 else
     echo "   ✅ No leftover artifact files"
 fi
@@ -421,8 +384,6 @@ Generated Files:
    - [domain-specific skills] (domain skills, if any)
    (run `ls .claude/skills/` for the complete list)
 ✅ .agents/skills/ ([N] skills; behaviorally aligned with .claude/skills for Codex)
-✅ .claude/skills/skill-rules.json (if present; required when critical skills need deterministic triggers)
-
 ℹ️  .claude/agents/ (not generated — project agents are discouraged; domain knowledge belongs in skills)
 
 Architecture (skills-first, dual-tool):
@@ -438,7 +399,7 @@ Architecture (skills-first, dual-tool):
 │ • Level 1 (Discovery): name + description (~100 tokens/skill) │
 │ • Level 2 (Activation): SKILL.md body (<5,000 tokens)         │
 │ • Level 3 (Execution): references/, scripts/ (on-demand)      │
-│ • Claude Code: .claude/skills + skill-rules.json            │
+│ • Claude Code: .claude/skills                                │
 │ • Codex:      .agents/skills                                  │
 │ • SKILL.md bodies load only when invoked                    │
 │ • references/ load only when explicitly read                │
@@ -524,7 +485,7 @@ Codex:
    *Example for `project_domains: [software, ml-ds]`:*
    *2a. "What patterns should I follow to add an API endpoint?" (software)*
    *2b. "What patterns should I follow to add a new training experiment?" (ml-ds)*
-   Expected: loads skills automatically, shows step-by-step. If wrong: check `.claude/skills/skill-rules.json` (Claude Code) or invoke skill explicitly with `$code-conventions` (Codex).
+   Expected: loads skills automatically, shows step-by-step. If wrong: check skill description quality (Claude Code) or invoke skill explicitly with `$code-conventions` (Codex).
 3. **[Domain-specific implementation test]** — Generate one item per detected domain from `project_domains`. For N detected domains, this produces N items numbered 3a–3N. For each domain, ask the agent to implement a minimal example of the domain's core artifact. Examples:
    - software → "Add a simple health check endpoint at /api/health"
    - data-analytics → "Add a staging model for a new source table"
@@ -535,14 +496,13 @@ Codex:
    *3a. "Add a staging model for a new source table" (data-analytics)*
    *3b. "Add a new DAG that runs a simple Python task daily" (data-engineering)*
    Expected: follows patterns from CLAUDE.md (Claude Code) or AGENTS.md (Codex).
-4. **Try `/review-gates`** — Expected: skill content loads and displays review checklist. If wrong: check skill-rules.json JSON syntax.
+4. **Try `/review-gates`** — Expected: skill content loads and displays review checklist. If wrong: check skill description quality.
 5. **"What time is it?" (negative test)** — Expected: no skills activate. If wrong: description too generic (Everything Bagel).
 
 **Cross-model testing (recommended for critical skills):** Test across Haiku, Sonnet, and Opus — what works for Opus may need more detail for Haiku.
 
 Troubleshooting:
-- If skills don't activate: Check description quality first (WHAT + WHEN + Do-not-use boundary + trigger keywords). Good descriptions are the primary activation mechanism
-- If critical skills don't activate: Run `jq . .claude/skills/skill-rules.json` to validate JSON triggers
+- If skills don't activate: Check description quality first (WHAT + WHEN + Do-not-use boundary + trigger keywords). Good descriptions are the activation mechanism
 - If skills don't load (Codex): Ensure `.agents/skills/*/SKILL.md` exists (and enable skills if your Codex build gates them)
 - If workflow not followed: Ensure CLAUDE.md is present; for Codex, ensure `AGENTS.md` exists
 - If patterns wrong: Re-run Stage 1 discovery targeting the specific patterns that were incorrect

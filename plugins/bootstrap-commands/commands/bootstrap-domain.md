@@ -532,7 +532,6 @@ From Stage 4 (generated here):
 - ✅ Degrees of freedom appropriate for each skill (high/medium/low based on task fragility)
 - ✅ Four Failure Modes check passed (no Encyclopedia, Everything Bagel, Secret Handshake, or Fragile Skill)
 - ✅ Invocation control set where needed (`disable-model-invocation`, `user-invocable`, `context: fork`)
-- ✅ Claude Code triggers registered in `.claude/skills/skill-rules.json` for any critical domain skills generated here (review-gate triggers were registered in Stage 3; only new safety-critical domain skills added in Stage 4 need entries here)
 - ✅ Skills generated under `.agents/skills/` for Codex (optional `.codex/skills/` mirror only for compatibility)
 - ✅ CLAUDE.md references replaced with AGENTS.md in .agents/skills/ copies (substitution applied and verified)
 - ✅ Critical guardrails from skills extracted to CLAUDE.md/AGENTS.md
