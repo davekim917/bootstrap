@@ -6,10 +6,6 @@
           {
             "type": "command",
             "command": "bash ${CLAUDE_PLUGIN_ROOT}/plugins/workflow/hooks/lifecycle/session-start-datetime.sh"
-          },
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/plugins/workflow/hooks/lifecycle/disable-cloudai-mcps.sh"
           }
         ]
       }
