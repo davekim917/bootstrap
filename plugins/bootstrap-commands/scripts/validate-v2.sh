@@ -227,23 +227,6 @@ if [ -d ".codex/skills" ]; then
 fi
 echo ""
 
-# Check skill-rules.json configuration (required for skill triggers)
-echo "Checking skill trigger configuration..."
-if [ -f ".claude/skills/skill-rules.json" ]; then
-    # Validate JSON syntax
-    if jq . .claude/skills/skill-rules.json > /dev/null 2>&1; then
-        SKILL_COUNT=$(jq '.skills | length' .claude/skills/skill-rules.json)
-        echo -e "${GREEN}✅ skill-rules.json valid (${SKILL_COUNT} skills configured)${NC}"
-    else
-        echo -e "${RED}❌ skill-rules.json has invalid JSON syntax${NC}"
-        ERRORS=$((ERRORS + 1))
-    fi
-else
-    echo -e "${YELLOW}⚠️  skill-rules.json not found (deterministic triggers unavailable; description-based activation still works)${NC}"
-    WARNINGS=$((WARNINGS + 1))
-fi
-echo ""
-
 # Check discovery analysis
 echo "Checking discovery analysis..."
 if [ -f ".claude/discovery/analysis.yaml" ]; then

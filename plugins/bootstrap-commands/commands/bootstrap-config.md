@@ -164,7 +164,6 @@ Pre-existing files without markers likely contain outdated information. For each
    ```bash
    [ -f CLAUDE.md ] && cp CLAUDE.md CLAUDE.md.bak
    [ -f AGENTS.md ] && cp AGENTS.md AGENTS.md.bak
-   [ -f .claude/hooks.json ] && cp .claude/hooks.json .claude/hooks.json.bak
    ```
 
 2. Read existing file, identify marked vs unmarked sections
@@ -185,28 +184,15 @@ Generate fresh from template.
 Previous bootstrap versions created files that are no longer used. Remove them (these are `.claude/` files only; no equivalent cleanup is needed for `.agents/`):
 
 ```bash
-# Remove deprecated hooks.json (triggers are now in skill-rules.json)
+# Remove deprecated hooks.json (hook-based skill activation has been removed)
 if [ -f ".claude/hooks.json" ]; then
-    echo "Removing deprecated .claude/hooks.json (triggers now in skill-rules.json)"
+    echo "Removing deprecated .claude/hooks.json (skills now activate via description-based matching)"
     trash .claude/hooks.json
-fi
-
-# Remove any _skill-rules-entry.json files left behind by previous bootstrap cycles.
-# Only safe at the START of a fresh bootstrap — skip if Stage 3 has already started
-# (Stage 3 Step 7 sub-step 4 "Delete Artifacts" is the authoritative cleanup for mid-cycle runs).
-# Guard: skip if any SKILL.md already exists (means Stage 3 has started or completed).
-if find .claude/skills -name "SKILL.md" -mindepth 2 -maxdepth 2 2>/dev/null | grep -q .; then
-    echo "Skipping _skill-rules-entry.json cleanup — Stage 3 appears to have started (SKILL.md files found). Stage 3 Step 7 sub-step 4 will clean up these files."
-else
-    for f in .claude/skills/*/_skill-rules-entry.json; do [ -f "$f" ] && trash "$f"; done 2>/dev/null
-    echo "Cleaned up leftover _skill-rules-entry.json files (pre-Stage 3 state confirmed)."
 fi
 
 # Remove skill README.md files (these are temporary artifacts from init_skill.py)
 for f in .claude/skills/*/README.md; do [ -f "$f" ] && trash "$f"; done 2>/dev/null
 ```
-
-**Note:** `skill-rules.json` is an optional Claude Code extension for deterministic skill activation via hooks. It is generated in Stage 3 for critical skills (review gates, safety). Most skills use description-based activation and do not need entries here.
 
 **Why:** Old files will confuse users and cause inconsistencies. All workflow content is now in CLAUDE.md.
 
@@ -218,7 +204,7 @@ for f in .claude/skills/*/README.md; do [ -f "$f" ] && trash "$f"; done 2>/dev/n
 - No "Available Skills" or "Key Skills" table — CLAUDE.md and AGENTS.md are loaded on every task regardless of topic; listing skills that auto-trigger wastes context budget on tasks where those skills are irrelevant, and the list goes stale
 - No "Available Agents" or "Project Agents" section — agents are task-specific constructs; their domain knowledge belongs in skills, not in an always-on file that is loaded unconditionally
 - No verbose code examples — examples consume disproportionate tokens in an always-on file; the concise rule goes here, the full example goes in the skill where it is loaded on demand
-- No "Workflow Hints" or skill routing hints — skills activate via descriptions (primary) and `skill-rules.json` hooks (critical skills); embedding routing in always-on files duplicates these mechanisms, goes stale, and creates race conditions when skills are provisioned after CLAUDE.md
+- No "Workflow Hints" or skill routing hints — skills activate via description-based matching; embedding routing in always-on files duplicates this mechanism, goes stale, and creates race conditions when skills are provisioned after CLAUDE.md
 - No Workflow, Behavioral Rules, or General Guardrails sections — these are repo-agnostic and live in the global `~/.claude/CLAUDE.md`. Project files contain only project-specific content.
 
 **AUTO-GENERATED markers are required on all auto-generated sections:**

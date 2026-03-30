@@ -180,40 +180,6 @@ description: [TODO: Write a clear description. Include WHAT this skill covers, W
 {pattern_content}'''
 
 
-SKILL_RULES_TEMPLATE = '''
-// Add this entry to .claude/skills/skill-rules.json:
-
-"{skill_name}": {{
-  "type": "domain",
-  "enforcement": "suggest",
-  "priority": "medium",
-  "promptTriggers": {{
-    "keywords": [
-      // TODO: Add keywords that should trigger this skill
-    ],
-    "intentPatterns": [
-      // TODO: Add regex patterns for intent detection
-      // Example: "(create|add|implement).*?(feature|endpoint)"
-    ]
-  }},
-  "fileTriggers": {{
-    "pathPatterns": [
-      // TODO: Add glob patterns for file paths
-      // Example: "src/services/**/*.ts"
-    ],
-    "pathExclusions": [
-      "**/*.test.ts",
-      "**/*.spec.ts"
-    ],
-    "contentPatterns": [
-      // TODO: Add regex patterns for file content
-      // Example: "import.*SomeLibrary"
-    ]
-  }}
-}}
-'''
-
-
 EXAMPLE_REFERENCE = '''# Reference Document
 
 This file contains detailed reference information for the {skill_title} skill.
@@ -345,11 +311,6 @@ def create_skill(skill_name: str, output_path: Path, pattern: str) -> bool:
             )
         )
 
-        # Create skill-rules entry template
-        (skill_dir / '_skill-rules-entry.json').write_text(
-            SKILL_RULES_TEMPLATE.format(skill_name=skill_name)
-        )
-
         # Create example reference
         (skill_dir / 'references' / 'reference.md').write_text(
             EXAMPLE_REFERENCE.format(skill_title=skill_title)
@@ -376,9 +337,7 @@ def create_skill(skill_name: str, output_path: Path, pattern: str) -> bool:
         print("Next steps:")
         print(f"  1. Edit {skill_dir}/SKILL.md — write description (WHAT + WHEN + NOT) and content")
         print(f"  2. Run Four Failure Modes check (Encyclopedia / Everything Bagel / Secret Handshake / Fragile Skill)")
-        print(f"  3. For Claude Code hooks: copy {skill_dir}/_skill-rules-entry.json to skill-rules.json")
-        print(f"  4. Delete example files you don't need (scripts/example.py, references/reference.md)")
-        print(f"  5. Mirror to .agents/skills/{skill_name}/ for Codex")
+        print(f"  3. Delete example files you don't need (scripts/example.py, references/reference.md)")
         print()
 
         return True

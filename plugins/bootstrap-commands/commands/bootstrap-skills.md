@@ -33,7 +33,7 @@ cat ~/.claude/skills/skill-developer/SKILL.md 2>/dev/null || echo "skill-develop
 > - `name`: kebab-case, 1-64 chars, must match directory name
 > - `description`: WHAT + WHEN + "Do not use for" boundary, under 1024 chars, third person
 >
-> For the full specification including Claude Code extensions (`context`, `agent`, `hooks`, `model`, `disable-model-invocation`, `allowed-tools`), see [SKILLS-DEVELOPMENT-GUIDE.md](skill-development/SKILLS-DEVELOPMENT-GUIDE.md).
+> For the full specification including Claude Code extensions (`context`, `agent`, `hooks`, `model`, `disable-model-invocation`, `allowed-tools`), see [SKILLS-DEVELOPMENT-GUIDE.md](skill-developer/references/SKILLS-DEVELOPMENT-GUIDE.md).
 
 ---
 
@@ -193,7 +193,7 @@ mkdir -p .agents/skills
 
 | Tool | Activation Method |
 |------|-------------------|
-| **Claude Code** | Description-based activation by default; optional deterministic hooks via `.claude/skills/skill-rules.json` for critical skills |
+| **Claude Code** | Description-based activation — the skill's `description` field in SKILL.md frontmatter determines when the model activates it |
 | **Codex** | Selected by model via description matching, or explicitly invoked with `$skill-name` syntax (e.g., `$code-conventions`, `$review-gates`) |
 
 **Codex users**: To explicitly invoke a skill, use the `$skill-name` syntax in prompts:
@@ -280,7 +280,7 @@ For EACH skill you are about to generate, apply these rules:
 | A global skill covers the **same domain** (e.g., global `next-best-practices` vs project `nextjs-patterns`) | **DUPLICATE** — do not generate the project skill |
 | A global skill covers a **superset** (e.g., global `software-engineering` covers React/Node/APIs) | **SUBSET** — do not generate the generic project skill; only generate if the project skill adds project-specific patterns not in the global |
 | A global skill **partially overlaps** (e.g., global `vercel-react-best-practices` vs project `component-patterns`) | **COMPLEMENT** — generate the project skill but scope it to project-specific patterns only, and add a note: "For general React best practices, see the global `vercel-react-best-practices` skill" |
-| A global **agent** covers the same review domain (e.g., `security-reviewer` agent vs `security-review-gates` skill) | **LAYERED** — keep the skill as a thin checklist; review gate skills complement agents using the layered review pattern (see below) |
+| A global **agent** covers the same review domain (e.g., `security-reviewer` agent vs `security-review-gates` skill) | **LAYERED** — keep the skill as a thin checklist that complements the agent using the layered review pattern (see below) |
 | No global overlap | **CLEAN** — generate normally |
 
 **Coverage threshold guidance:**
@@ -398,7 +398,7 @@ Do not proceed to sub-step 1 until the suite is defined. The suite will be inser
    ```bash
    python3 ~/.claude/skills/skill-developer/scripts/init_skill.py [skill-name] --path .claude/skills
    ```
-   *(This creates the directory structure, template SKILL.md, and trigger entry)*
+   *(This creates the directory structure and template SKILL.md)*
 
 **Sub-step 1b — Insert evaluation suite (immediately after file creation):**
 Add the trigger/non-trigger suite defined in sub-step 0 as an HTML comment block in `.claude/skills/[skill-name]/SKILL.md`, immediately after the closing `---` of the YAML frontmatter, before the first `#` heading:
@@ -415,57 +415,19 @@ NON-TRIGGERS:
 2. **Populate Content:**
    Overwrite the generated `.claude/skills/[skill-name]/SKILL.md` with the specific content derived from analysis.
 
-3. **Register Triggers (Claude Code only, OPTIONAL for most skills):**
-   Well-written descriptions are usually sufficient for activation. Use deterministic hooks for **review-gate and safety-critical skills** where missed activation is unacceptable.
+3. **Ensure Description Quality (all skills):**
+   Skills activate purely through description-based matching — the `description` field in SKILL.md frontmatter is the only activation mechanism. A well-written description is critical.
 
-   **For critical skills** (review-gates, security-review-gates, performance-review-gates):
-   Add to `skill-rules.json` **only if** the deduplication report (Step 6b) classified this skill as CLEAN or COMPLEMENT — **not LAYERED**. If classified LAYERED (a global review agent covers the same domain), skip the `skill-rules.json` entry; the thin-checklist skill activates via description matching only, which is sufficient for its passive-reference role.
+   **For all skills, verify the description:**
+   - Follows the WHAT + WHEN + "Do not use for" template
+   - Contains 5+ real trigger keywords that users would naturally type
+   - Uses "Use when..." phrasing to specify activation context
+   - Sets clear boundaries with "Do not use for..." to prevent false activations
 
-   If adding to `skill-rules.json` using `init_skill.py`, read `_skill-rules-entry.json` and merge into `.claude/skills/skill-rules.json`:
-   ```bash
-   # Merge new entry into skill-rules.json
-   ENTRY=$(cat .claude/skills/[skill-name]/_skill-rules-entry.json)
-   if [ -f ".claude/skills/skill-rules.json" ]; then
-       jq --argjson new "$ENTRY" '.skills += $new' .claude/skills/skill-rules.json \
-           > /tmp/_merged_skill_rules.json && \
-       mv /tmp/_merged_skill_rules.json .claude/skills/skill-rules.json
-   else
-       echo '{"skills":{}}' | jq --argjson new "$ENTRY" '.skills += $new' \
-           > .claude/skills/skill-rules.json
-   fi
-
-   # Validate
-   jq . .claude/skills/skill-rules.json > /dev/null 2>&1 && echo "✅ skill-rules.json valid" \
-       || echo "❌ skill-rules.json invalid — check JSON syntax"
-   ```
-
-   **For all other skills:** Rely on description-based activation. Only add to `skill-rules.json` after failing trigger/non-trigger evaluations.
-
-   **`skill-rules.json` entry schema** (applies when a critical skill is classified CLEAN or COMPLEMENT — skip for LAYERED skills):
-   ```json
-   {
-     "skills": {
-       "review-gates": {
-         "type": "domain",
-         "enforcement": "suggest",
-         "priority": "high",
-         "description": "Run implementation review gates before declaring work complete",
-         "promptTriggers": {
-           "keywords": ["review", "done", "complete", "finish", "commit", "ready"],
-           "intentPatterns": ["declaring work complete", "finishing implementation"]
-         },
-         "fileTriggers": {
-           "pathPatterns": []
-         }
-       }
-     }
-   }
-   ```
+   **For critical skills** (review-gates, security-review-gates, performance-review-gates): pay extra attention to keyword coverage. If trigger/non-trigger evaluations (Step 4) show the skill is not activating reliably, expand the description with additional domain-specific keywords rather than shortening it.
 
 4. **Delete Artifacts:**
-   Remove the temporary `_skill-rules-entry.json` and `README.md` from the new skill directory.
-
-   **Note:** Stage 2 Step 2 also contains cleanup for `_skill-rules-entry.json` files. This Stage 3 step is the authoritative cleanup location. If running Stage 2 during a re-bootstrap mid-cycle (after Stage 3 has partially run), be aware that Stage 2's cleanup may remove these files prematurely — this is why Stage 2 re-bootstrap should only be run at the start of a fresh bootstrap cycle.
+   Remove any temporary files (e.g., `README.md`) from the new skill directory.
 
 5. **Mirror for Codex:**
    Create the skill under `.agents/skills/` with equivalent behavior (and any needed `references/`, `assets/`, `scripts/` subfolders).
@@ -501,7 +463,7 @@ NON-TRIGGERS:
 1. `mkdir -p .claude/skills/[skill-name]` and create `.claude/skills/[skill-name]/SKILL.md` using the templates below
 1b. Immediately insert the evaluation suite as an HTML comment (`<!-- EVALUATION SUITE ... -->`) after the closing `---` of the YAML frontmatter, before the first `#` heading
 2. Create subdirectories as needed: `references/`, `assets/`, `scripts/`
-3. For critical skills (review gates, safety), add a trigger entry to `.claude/skills/skill-rules.json` using the `skill-rules.json` entry schema shown above in Step 7's Register Triggers section — unless classified LAYERED in the deduplication report (Step 6b), in which case description-based activation is sufficient
+3. For all skills, verify the description follows WHAT + WHEN + "Do not use for" with 5+ trigger keywords (see Step 7 sub-step 3 above)
 4. Mirror for Codex: `cp -R .claude/skills/[skill-name] .agents/skills/[skill-name]`
 5. Apply substitution: `perl -pi -e 's/CLAUDE\.md/AGENTS.md/g' .agents/skills/[skill-name]/SKILL.md && grep -r "CLAUDE.md" .agents/skills/[skill-name]/ || echo "clean"`
 6. Validate if available: `skills-ref validate .claude/skills/[skill-name] 2>/dev/null || true`
@@ -769,6 +731,6 @@ For extended examples beyond what fits in this SKILL.md:
 # Stage 3 (Core Skills) Complete
 
 **Generated:** review-gates (+ security/performance variants), code-conventions
-**Verified:** Descriptions pass checklist · Trigger suites defined · Four Failure Modes check passed · Claude Code triggers registered · Codex mirrors in sync · Critical guardrails extracted · No global duplication
+**Verified:** Descriptions pass checklist · Trigger suites defined · Four Failure Modes check passed · Codex mirrors in sync · Critical guardrails extracted · No global duplication
 
 **Next:** Run Stage 4 (Domain Skills) to generate pattern-specific and domain skills.
