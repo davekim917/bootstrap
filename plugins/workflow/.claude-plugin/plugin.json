@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-workflow",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Structured team workflow: brief → design → review → plan → build → qa → ship. Includes safety hooks, quality hooks, and specialized agents.",
   "author": {
     "name": "David Kim"
@@ -9,6 +9,6 @@
   "license": "MIT",
   "keywords": ["workflow", "team", "skills", "hooks", "agents"],
   "skills": ["./skills"],
-  "agents": ["./agents"],
+  "agents": "./agents",
   "hooks": "./hooks/workflow-hooks.json"
 }
