@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-ts-hook.sh guards/block-destructive.ts"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/dist/block-destructive.js"
           }
         ]
       },
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-ts-hook.sh guards/file-protection.ts"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/dist/file-protection.js"
           }
         ]
       },
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-ts-hook.sh guards/workflow-gate-enforcement.ts"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/dist/workflow-gate-enforcement.js"
           }
         ]
       }
@@ -57,7 +57,7 @@
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-ts-hook.sh quality/tsc-check.ts"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/dist/tsc-check.js"
           }
         ]
       }
@@ -67,7 +67,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-ts-hook.sh quality/error-handling-reminder.ts"
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/dist/error-handling-reminder.js"
           }
         ]
       }
