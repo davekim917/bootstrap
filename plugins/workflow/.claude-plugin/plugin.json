@@ -9,5 +9,6 @@
   "license": "MIT",
   "keywords": ["workflow", "team", "skills", "hooks", "agents"],
   "skills": ["./skills"],
-  "agents": ["./agents"]
+  "agents": ["./agents"],
+  "hooks": "./hooks/workflow-hooks.json"
 }

@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/plugins/workflow/hooks/lifecycle/session-start-datetime.sh"
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/lifecycle/session-start-datetime.sh"
           }
         ]
       }
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/plugins/workflow/hooks/dist/block-destructive.js"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/block-destructive.js"
           }
         ]
       },
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/plugins/workflow/hooks/dist/file-protection.js"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/file-protection.js"
           }
         ]
       },
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/plugins/workflow/hooks/dist/workflow-gate-enforcement.js"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/workflow-gate-enforcement.js"
           }
         ]
       }
@@ -45,15 +45,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/plugins/workflow/hooks/tracking/post-tool-use-tracker.sh"
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/tracking/post-tool-use-tracker.sh"
           },
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/plugins/workflow/hooks/quality/post-format-prettier.sh"
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/quality/post-format-prettier.sh"
           },
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/plugins/workflow/hooks/dist/tsc-check.js"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh quality/tsc-check.js"
           }
         ]
       }
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/plugins/workflow/hooks/dist/error-handling-reminder.js"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh quality/error-handling-reminder.js"
           }
         ]
       }
