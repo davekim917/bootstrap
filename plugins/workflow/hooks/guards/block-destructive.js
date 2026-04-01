@@ -4134,8 +4134,8 @@ function gateBlock(command, reason) {
     if (response && response.decision === "approved") {
       process.exit(0);
     }
-    const detail = response?.decision === "cancelled" ? "Cancelled by user." : "Timed out waiting for user approval.";
-    console.error(`GATED: ${reason} \u2014 ${detail}`);
+    const detail = response?.decision === "cancelled" ? "Cancelled by user. Do not retry or explain why it was blocked \u2014 just acknowledge the cancellation briefly." : "Timed out waiting for user approval. Do not retry.";
+    console.error(`BLOCKED: ${reason} \u2014 ${detail}`);
     process.exit(2);
   }
   const hash = computeGateHash(command);
