@@ -39,7 +39,7 @@
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, unlinkSync, renameSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, unlinkSync, renameSync } from 'fs';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { resolve as pathResolve, join as pathJoin } from 'path';
@@ -587,16 +587,16 @@ function writeIpcQuery(data: Record<string, unknown>): string {
 /** Poll for an IPC response file. Returns parsed response or null on timeout. */
 function pollIpcResponse(requestId: string, timeoutMs: number): Record<string, unknown> | null {
     const responsesDir = pathJoin(NANOCLAW_IPC_DIR!, 'query_responses');
-    mkdirSync(responsesDir, { recursive: true });
+    mkdirSync(responsesDir, { recursive: true }); // once, before polling
     const responseFile = pathJoin(responsesDir, `${requestId}.json`);
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-        if (existsSync(responseFile)) {
-            try {
-                const content = JSON.parse(readFileSync(responseFile, 'utf-8'));
-                try { unlinkSync(responseFile); } catch { /* ok */ }
-                return content;
-            } catch { return null; }
+        try {
+            const content = JSON.parse(readFileSync(responseFile, 'utf-8'));
+            try { unlinkSync(responseFile); } catch { /* ok */ }
+            return content;
+        } catch {
+            // ENOENT or parse error — keep polling
         }
         sleepSync(500);
     }
