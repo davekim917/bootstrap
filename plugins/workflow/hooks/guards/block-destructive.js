@@ -2,10 +2,10 @@
 // @bun
 
 // guards/block-destructive.ts
-import { readFileSync, realpathSync, unlinkSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, unlinkSync, renameSync } from "fs";
 import { createHash } from "crypto";
 import { homedir } from "os";
-import { resolve as pathResolve } from "path";
+import { resolve as pathResolve, join as pathJoin } from "path";
 
 // node_modules/unbash/dist/chars.js
 var CH_TAB = 9;
@@ -3680,6 +3680,10 @@ class Parser {
 }
 
 // guards/block-destructive.ts
+var NANOCLAW_IPC_DIR = process.env.NANOCLAW_IPC_DIR;
+var NANOCLAW_CHAT_JID = process.env.NANOCLAW_CHAT_JID;
+var NANOCLAW_THREAD_ID = process.env.NANOCLAW_THREAD_ID;
+var IS_NANOCLAW = Boolean(NANOCLAW_IPC_DIR);
 var HOME = homedir();
 var SHELLS = new Set(["bash", "sh", "zsh", "dash", "ksh", "fish"]);
 var WRAPPERS = new Set([
@@ -4084,7 +4088,59 @@ function consumeGateApproval(command) {
     return false;
   }
 }
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+function writeIpcQuery(data) {
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const queriesDir = pathJoin(NANOCLAW_IPC_DIR, "queries");
+  mkdirSync(queriesDir, { recursive: true });
+  const queryFile = pathJoin(queriesDir, `${requestId}.json`);
+  const tmpFile = `${queryFile}.tmp`;
+  writeFileSync(tmpFile, JSON.stringify({ ...data, requestId }));
+  renameSync(tmpFile, queryFile);
+  return requestId;
+}
+function pollIpcResponse(requestId, timeoutMs) {
+  const responsesDir = pathJoin(NANOCLAW_IPC_DIR, "query_responses");
+  mkdirSync(responsesDir, { recursive: true });
+  const responseFile = pathJoin(responsesDir, `${requestId}.json`);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(responseFile)) {
+      try {
+        const content = JSON.parse(readFileSync(responseFile, "utf-8"));
+        try {
+          unlinkSync(responseFile);
+        } catch {}
+        return content;
+      } catch {
+        return null;
+      }
+    }
+    sleepSync(500);
+  }
+  return null;
+}
 function gateBlock(command, reason) {
+  if (IS_NANOCLAW && NANOCLAW_CHAT_JID) {
+    const requestId = writeIpcQuery({
+      type: "request_gate",
+      chatJid: NANOCLAW_CHAT_JID,
+      threadId: NANOCLAW_THREAD_ID,
+      label: reason,
+      summary: reason,
+      command,
+      timestamp: new Date().toISOString()
+    });
+    const response = pollIpcResponse(requestId, 300000);
+    if (response && response.decision === "approved") {
+      process.exit(0);
+    }
+    const detail = response?.decision === "cancelled" ? "Cancelled by user." : "Timed out waiting for user approval.";
+    console.error(`GATED: ${reason} \u2014 ${detail}`);
+    process.exit(2);
+  }
   const hash = computeGateHash(command);
   console.error(`GATED: ${reason}
 

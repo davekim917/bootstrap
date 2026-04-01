@@ -39,12 +39,21 @@
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
-import { readFileSync, realpathSync, unlinkSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, unlinkSync, renameSync } from 'fs';
 import { createHash } from 'crypto';
 import { homedir } from 'os';
-import { resolve as pathResolve } from 'path';
+import { resolve as pathResolve, join as pathJoin } from 'path';
 import { parse } from 'unbash';
 import type { ToolUseInput } from '../lib/types';
+
+// ── NanoClaw IPC detection ──────────────────────────────────────────────────
+// When running inside a NanoClaw container, gated commands use IPC to request
+// approval from the user via their chat channel instead of asking the agent
+// to write a gate file.
+const NANOCLAW_IPC_DIR = process.env.NANOCLAW_IPC_DIR;
+const NANOCLAW_CHAT_JID = process.env.NANOCLAW_CHAT_JID;
+const NANOCLAW_THREAD_ID = process.env.NANOCLAW_THREAD_ID;
+const IS_NANOCLAW = Boolean(NANOCLAW_IPC_DIR);
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -556,7 +565,73 @@ function consumeGateApproval(command: string): boolean {
     }
 }
 
+// ── NanoClaw IPC helpers ─────────────────────────────────────────────────────
+
+/** Synchronous sleep using Atomics.wait (no busy loop). */
+function sleepSync(ms: number): void {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Write an IPC query file and return the requestId. */
+function writeIpcQuery(data: Record<string, unknown>): string {
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const queriesDir = pathJoin(NANOCLAW_IPC_DIR!, 'queries');
+    mkdirSync(queriesDir, { recursive: true });
+    const queryFile = pathJoin(queriesDir, `${requestId}.json`);
+    const tmpFile = `${queryFile}.tmp`;
+    writeFileSync(tmpFile, JSON.stringify({ ...data, requestId }));
+    renameSync(tmpFile, queryFile);
+    return requestId;
+}
+
+/** Poll for an IPC response file. Returns parsed response or null on timeout. */
+function pollIpcResponse(requestId: string, timeoutMs: number): Record<string, unknown> | null {
+    const responsesDir = pathJoin(NANOCLAW_IPC_DIR!, 'query_responses');
+    mkdirSync(responsesDir, { recursive: true });
+    const responseFile = pathJoin(responsesDir, `${requestId}.json`);
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (existsSync(responseFile)) {
+            try {
+                const content = JSON.parse(readFileSync(responseFile, 'utf-8'));
+                try { unlinkSync(responseFile); } catch { /* ok */ }
+                return content;
+            } catch { return null; }
+        }
+        sleepSync(500);
+    }
+    return null;
+}
+
+// ── Gate blocking ───────────────────────────────────────────────────────────
+
 function gateBlock(command: string, reason: string): void {
+    // NanoClaw mode: IPC-based gate. Block here until user approves via chat.
+    if (IS_NANOCLAW && NANOCLAW_CHAT_JID) {
+        const requestId = writeIpcQuery({
+            type: 'request_gate',
+            chatJid: NANOCLAW_CHAT_JID,
+            threadId: NANOCLAW_THREAD_ID,
+            label: reason,
+            summary: reason,
+            command,
+            timestamp: new Date().toISOString(),
+        });
+
+        const response = pollIpcResponse(requestId, 300_000); // 5 min
+
+        if (response && response.decision === 'approved') {
+            process.exit(0); // allow — no gate file needed
+        }
+
+        const detail = response?.decision === 'cancelled'
+            ? 'Cancelled by user.'
+            : 'Timed out waiting for user approval.';
+        console.error(`GATED: ${reason} — ${detail}`);
+        process.exit(2);
+    }
+
+    // Local CC mode: exit with gate file instructions
     const hash = computeGateHash(command);
     console.error(
         `GATED: ${reason}\n\n` +
