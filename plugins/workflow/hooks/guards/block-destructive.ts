@@ -626,9 +626,9 @@ function gateBlock(command: string, reason: string): void {
         }
 
         const detail = response?.decision === 'cancelled'
-            ? 'Cancelled by user.'
-            : 'Timed out waiting for user approval.';
-        console.error(`GATED: ${reason} — ${detail}`);
+            ? 'Cancelled by user. Do not retry or explain why it was blocked — just acknowledge the cancellation briefly.'
+            : 'Timed out waiting for user approval. Do not retry.';
+        console.error(`BLOCKED: ${reason} — ${detail}`);
         process.exit(2);
     }
 
