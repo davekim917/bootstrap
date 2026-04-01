@@ -2,7 +2,7 @@
 // @bun
 
 // guards/block-destructive.ts
-import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, unlinkSync, renameSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, unlinkSync, renameSync } from "fs";
 import { createHash } from "crypto";
 import { homedir } from "os";
 import { resolve as pathResolve, join as pathJoin } from "path";
@@ -4107,17 +4107,13 @@ function pollIpcResponse(requestId, timeoutMs) {
   const responseFile = pathJoin(responsesDir, `${requestId}.json`);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (existsSync(responseFile)) {
+    try {
+      const content = JSON.parse(readFileSync(responseFile, "utf-8"));
       try {
-        const content = JSON.parse(readFileSync(responseFile, "utf-8"));
-        try {
-          unlinkSync(responseFile);
-        } catch {}
-        return content;
-      } catch {
-        return null;
-      }
-    }
+        unlinkSync(responseFile);
+      } catch {}
+      return content;
+    } catch {}
     sleepSync(500);
   }
   return null;
