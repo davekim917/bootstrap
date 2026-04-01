@@ -568,8 +568,9 @@ function consumeGateApproval(command: string): boolean {
 // ── NanoClaw IPC helpers ─────────────────────────────────────────────────────
 
 /** Synchronous sleep using Atomics.wait (no busy loop). */
+const SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 function sleepSync(ms: number): void {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    Atomics.wait(SLEEP_BUFFER, 0, 0, ms);
 }
 
 /** Write an IPC query file and return the requestId. */
