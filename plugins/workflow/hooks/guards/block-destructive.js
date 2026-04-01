@@ -4088,8 +4088,9 @@ function consumeGateApproval(command) {
     return false;
   }
 }
+var SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
 function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  Atomics.wait(SLEEP_BUFFER, 0, 0, ms);
 }
 function writeIpcQuery(data) {
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
