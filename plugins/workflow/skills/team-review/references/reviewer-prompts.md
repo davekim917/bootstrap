@@ -4,13 +4,14 @@ Reference for the team lead when constructing prompts for each reviewer in Step 
 
 ---
 
-## Reviewer A: Claude (architecture-advisor subagent)
+## Reviewer A: Architecture (architecture-advisor subagent)
 
-Passed via Task tool `prompt` parameter. The architecture-advisor has its own system prompt and
-tools (Read, Grep, Glob, Bash, Exa, Serena) — this prompt scopes its review lens.
+Passed via Task tool `prompt` parameter with `subagent_type: architecture-advisor`. The
+architecture-advisor has its own system prompt and tools (Read, Grep, Glob, Bash, Exa, Serena) —
+this prompt scopes its review lens.
 
 Reviewer A has direct access to Context7 and Exa MCP tools — it can independently verify
-library capabilities using the Research Fallback Chain.
+library capabilities.
 
 ```
 Review the design document at .claude/tmp/review-input.md as a critical architecture reviewer.
@@ -22,6 +23,7 @@ Your lens: STRUCTURAL INTEGRITY
 - Are the constraint classifications (HARD/SOFT) correct?
 - What's missing that should be there?
 - What risks are understated or unacknowledged?
+- What assumptions does the design make that might not hold?
 
 For any library the design references, verify it can do what the design claims:
 1. Context7 first: resolve-library-id → query-docs
@@ -39,184 +41,77 @@ For each finding:
 End with a numbered list of findings only. No prose summary.
 ```
 
----
-
-## Reviewer B: Codex (adversarial perspective)
-
-Passed via `codex exec -s read-only "PROMPT"`. Codex has filesystem read access.
-
-```
-You are performing an adversarial design review. Your job is to find flaws, not validate.
-
-Read the design document:
-  cat .claude/tmp/review-input.md
-
-Read the project context:
-  cat CLAUDE.md
-
-Your lens: ASSUMPTION CHALLENGE & BLIND SPOTS
-- What assumptions is this design making that might be wrong?
-- What simpler approach would solve the same problem?
-- What would cause this design to fail in production?
-- What's being optimized for that shouldn't be?
-- What's NOT being optimized for that should be?
-- What would a skeptical senior engineer object to?
-
-Do NOT validate — find problems. Be specific: cite the section of the design you are critiquing.
-
-For each finding:
-- What the assumption or problem is
-- Why it could be wrong or risky
-- What a better alternative might look like
-
-End with a numbered list of findings only. No prose summary.
-```
+**Fill in before sending:**
+- `[LIST SKILL NAMES]`: replace with the actual skill names identified in Step 1
+  (e.g., "code-conventions, review-gates, security-review-gates")
 
 ---
 
-## Reviewer C: Gemini / Cursor (implementation feasibility)
+## Reviewer B: Best Practices (forwarder for /best-practice-check)
 
-**Primary:** Gemini — passed via `gemini -p "PROMPT"` (add `--model <model>` if the user specified one; omit for Gemini CLI's default).
-**Secondary:** Cursor — passed via `agent -p "PROMPT"` (add `--model <model>` if the user specified one).
-Both have filesystem access. Use the same prompt for either CLI.
+Passed via Task tool `prompt` parameter with `subagent_type: general-purpose`. The subagent's
+only job is to invoke the `/best-practice-check` skill via the Skill tool with the design
+document as scope, then return the skill's output verbatim.
+
+Why a forwarder pattern: the lead spawns a subagent so the skill's external research (which
+produces hundreds of search results) runs in an isolated context and doesn't pollute the lead's
+context. The lead receives only the structured assessment.
 
 ```
-You are reviewing a design document for implementation feasibility.
+You are Reviewer B for a team-review of a design document. Your ONLY job is to invoke the
+/best-practice-check skill on the design and return its output.
 
-Read the design document:
-  cat .claude/tmp/review-input.md
+Step 1: Read the design document at .claude/tmp/review-input.md and the project context at CLAUDE.md.
 
-Read the project context:
-  cat CLAUDE.md
+Step 2: Invoke the /best-practice-check skill via the Skill tool:
 
-Your lens: IMPLEMENTATION RISK & UNDERSPECIFICATION
-- Where will builders have to guess? (underspecified areas)
-- What will be genuinely hard to implement as described?
-- What edge cases aren't handled by the design?
-- What integration risks exist between this design and the existing codebase?
-- Where does the design contradict what's actually in the codebase?
-- What's missing from the Assumptions Log that should be there?
+  Skill({ skill: "best-practice-check" })
 
-Be concrete: cite the specific section or line of the design you are flagging.
+When the skill asks for scope, give it the design document as a "described subsystem":
+- Problem being solved: extract from the design's problem statement / requirements section
+- Approach taken: extract from the design's recommendation / chosen option
+- Technology context: extract from CLAUDE.md and the design's tech stack references
 
-For each finding:
-- What is underspecified or risky
-- What a builder would have to guess or discover on their own
-- What should be added to the design to resolve it
+The skill will research established patterns externally (via Context7, DeepWiki, Exa) with
+rigorous source-tier discipline (T1/T2/T3 corroboration), then produce a structured pattern
+assessment.
 
-End with a numbered list of findings only. No prose summary.
+Step 3: Return the skill's complete structured output to the lead. Do not summarize, paraphrase,
+or add commentary — return it exactly as the skill produces it.
+
+CRITICAL — do not approximate the skill:
+- Do NOT do your own pattern research using Exa or WebSearch
+- Do NOT cite sources you found yourself
+- Do NOT write your own assessment
+- Use the Skill tool to invoke /best-practice-check. The skill has source-tier classification,
+  corroboration rules, and recency filters that you cannot replicate manually.
+
+If the skill returns no findings (the design conforms to known patterns with no drift), return
+that result verbatim. "No drift" is a valid finding.
+
+End with the skill's structured output. No prose summary, no commentary.
 ```
 
 ---
 
 ## Notes on Prompt Delivery
 
-**For Codex, Gemini, and Cursor via here-doc:**
+**For both reviewers:**
 
-When building the shell invocation in practice, use a here-doc to avoid quoting issues:
+- Both prompts are passed via the Task tool's `prompt` parameter
+- Reviewer A uses `subagent_type: architecture-advisor`
+- Reviewer B uses `subagent_type: general-purpose` (it's a thin forwarder, not a specialized reviewer)
+- Both subagents have access to the Skill tool and can invoke skills in their own isolated contexts
 
-```bash
-PROMPT=$(cat <<'EOF'
-[prompt text here]
-EOF
-)
-# Add --config model_reasoning_effort="<effort>" if user specified one; omit for Codex's default
-codex exec -s read-only "$PROMPT"
+**Pre-fetched library docs (optional):**
 
-# Add --model <model> if user specified one; omit for Gemini CLI's default
-gemini -p "$PROMPT"
-
-# Cursor (secondary): add --model <model> if user specified one; omit for Cursor's default
-agent -p "$PROMPT"
+If the design references specific libraries that the lead has already pre-fetched docs for,
+inline them in Reviewer A's prompt as:
 ```
-
-**Fill in before sending:**
-- `[LIST SKILL NAMES]` in Reviewer A's prompt: replace with the actual skill names identified in
-  Step 1 (e.g., "code-conventions, review-gates, security-review-gates")
-- For Reviewers B (Codex) and C (Gemini or Cursor): include pre-fetched library documentation
-  inline in the prompt (as text). Reviewers B/C run via CLI tools and cannot call MCP tools. The
-  team lead fetches the docs in Step 1 and pastes the relevant sections as:
-  `---\nLibrary docs (pre-fetched):\n[content]\n---` before the reviewer's lens instructions.
-
 ---
-
-## Fallback Prompts
-
-Used when the corresponding CLI tool is unavailable. The team lead checks availability in Step 1.5
-and uses these prompts with the Task tool instead.
-
+Library docs (pre-fetched):
+[content]
 ---
-
-### Reviewer B Fallback (Claude general-purpose subagent)
-
-Activated when `codex` CLI is unavailable. Passed via Task tool `prompt` parameter.
-
-```
-You are performing an adversarial design review. Your job is to find flaws, not validate.
-
-Read the design document using the Read tool: .claude/tmp/review-input.md
-Read the project context using the Read tool: CLAUDE.md
-
-Your lens: ASSUMPTION CHALLENGE & BLIND SPOTS
-- What assumptions is this design making that might be wrong?
-- What simpler approach would solve the same problem?
-- What would cause this design to fail in production?
-- What's being optimized for that shouldn't be?
-- What's NOT being optimized for that should be?
-- What would a skeptical senior engineer object to?
-
-Do NOT validate — find problems. Be specific: cite the section of the design you are critiquing.
-
-Note at the start of your findings: "⚠ Running as Claude general-purpose fallback (Codex CLI unavailable). Cross-model diversity reduced."
-
-For each finding:
-- What the assumption or problem is
-- Why it could be wrong or risky
-- What a better alternative might look like
-
-End with a numbered list of findings only. No prose summary.
 ```
 
----
-
-### Reviewer C Fallback (Claude code-review-specialist subagent)
-
-Activated when both `gemini` (Gemini CLI) and `agent` (Cursor CLI) are unavailable. Passed via Task tool `prompt` parameter.
-
-```
-You are reviewing a design document for implementation feasibility.
-
-Read the design document using the Read tool: .claude/tmp/review-input.md
-Read the project context using the Read tool: CLAUDE.md
-
-Your lens: IMPLEMENTATION RISK & UNDERSPECIFICATION
-- Where will builders have to guess? (underspecified areas)
-- What will be genuinely hard to implement as described?
-- What edge cases aren't handled by the design?
-- What integration risks exist between this design and the existing codebase?
-- Where does the design contradict what's actually in the codebase?
-- What's missing from the Assumptions Log that should be there?
-- Are there [RENDER-CHECK NEEDED] flags on visual decisions (color combinations, layout structure, spacing, typography)? If visual decisions appear in the design without a render-check flag, note it as an underspecification risk.
-
-Be concrete: cite the specific section or line of the design you are flagging.
-
-Note at the start of your findings: "⚠ Running as Claude code-review-specialist fallback (Gemini and Cursor CLIs unavailable). Cross-model diversity reduced."
-
-For each finding:
-- What is underspecified or risky
-- What a builder would have to guess or discover on their own
-- What should be added to the design to resolve it
-
-End with a numbered list of findings only. No prose summary.
-```
-
----
-
-### When fallbacks activate
-
-| Reviewer | CLI check | Fallback subagent_type |
-|----------|-----------|------------------------|
-| B (Codex) | `command -v codex` fails | `general-purpose` (model: sonnet) |
-| C (Gemini/Cursor) | both `command -v gemini` and `command -v agent` fail | `code-review-specialist` |
-
-Reviewer A (Claude architecture-advisor) always runs via Task tool — no fallback needed.
+Reviewer B does not need pre-fetched docs — `/best-practice-check` does its own research.
