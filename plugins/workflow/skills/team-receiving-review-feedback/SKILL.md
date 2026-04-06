@@ -6,6 +6,7 @@ description: >
   implementation — no performative agreement, no blind compliance. Covers code reviews, SQL model
   reviews, methodology reviews, pipeline architecture reviews, and data model reviews.
   Use when processing any review feedback. Do not use for self-review or generating review findings.
+user-invocable: false
 version: 1.0.0
 ---
 

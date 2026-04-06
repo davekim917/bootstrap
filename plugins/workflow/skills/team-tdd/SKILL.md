@@ -6,6 +6,7 @@ description: >
   tests, dbt schema and data tests, data quality checks (Great Expectations, Soda, custom assertions),
   ML evaluation metrics, and analytics query assertions. Includes rationalization resistance table
   to counter common excuses for skipping TDD. Apply during /team-build, bug fixes, and refactoring.
+user-invocable: false
 version: 1.0.0
 ---
 
