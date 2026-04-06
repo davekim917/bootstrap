@@ -1,10 +1,9 @@
 ---
 name: team-review
 description: >
-  Adversarial multi-model design review. Spawns 3 independent reviewers (Claude architecture-advisor,
-  Codex, Gemini/Cursor) with separate contexts and complementary lenses. Deduplicates and
-  fact-checks findings. Invoke after /team-design is approved and before /team-plan.
-  BOUNDARY: Reviews design documents only, not implementation code. Output is a structured findings report.
+  Invoke after /team-design is approved. Produces a review report at .context/specs/<feature>/review.md.
+  Do NOT write review docs manually — this skill spawns independent reviewers and has deduplication
+  logic that only loads when invoked.
 version: 1.0.0
 ---
 

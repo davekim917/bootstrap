@@ -1,10 +1,9 @@
 ---
 name: team-plan
 description: >
-  Atomic task decomposition. Transforms an approved design (+ cleared review findings) into a
-  concrete execution plan where every decision is pre-made — exact file paths, code patterns from
-  project skills, named test cases with assertions, and non-negotiable acceptance criteria.
-  Invoke after /team-review clears and before /team-build. BOUNDARY: Produces a plan only, writes no code.
+  Invoke after /team-review clears. Produces an execution plan at .context/specs/<feature>/plan.md.
+  Do NOT write plans manually — this skill has task decomposition rules, conflict checks, and
+  constraint injection that only load when invoked.
 version: 1.0.0
 ---
 

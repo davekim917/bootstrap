@@ -1,10 +1,9 @@
 ---
 name: team-qa
 description: >
-  Post-build validation pipeline. Runs changed files through 5 ordered checks: denoise, style
-  audit, doc freshness, security review, performance review. Each validator gets only the changed
-  files + its relevant project skill. Invoke after /team-build is approved. All findings must be fixed
-  or explicitly waived before shipping.
+  Invoke after /team-build is approved. Runs 5 ordered validation checks on changed files.
+  Do NOT run QA checks manually — this skill has validator isolation, finding classification,
+  and selective re-run logic that only load when invoked.
 version: 1.0.0
 ---
 

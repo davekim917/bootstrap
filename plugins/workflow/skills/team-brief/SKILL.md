@@ -1,9 +1,9 @@
 ---
 name: team-brief
 description: >
-  Transform fuzzy thoughts into structured requirements through conversational extraction.
-  Invoke when starting a non-trivial feature or change where requirements are unclear.
-  BOUNDARY: Does not design solutions, does not read code. Output is a structured requirements brief only.
+  Invoke to crystallize requirements for a non-trivial feature. Produces a structured brief
+  at .context/specs/<feature>/brief.md. Do NOT write briefs manually — this skill has a
+  specific process, file structure, and approval gate that only load when invoked.
 version: 1.0.0
 ---
 

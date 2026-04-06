@@ -1,11 +1,9 @@
 ---
 name: team-build
 description: >
-  Team-coordinated parallel build. Lead agent (current session) runs a pre-build drift check
-  (design vs. plan), creates a team, spawns one Sonnet builder per independent task group, assigns
-  work from the approved plan, monitors progress, validates acceptance criteria, and runs a
-  post-build drift check (plan vs. implementation). Invoke after /team-plan is approved.
-  BOUNDARY: Lead never writes code. Builders never see other groups' files. Context isolation per agent.
+  Invoke after /team-plan is approved. Spawns parallel builder agents from the approved plan.
+  Do NOT coordinate builds manually — this skill has drift checks, context isolation, and
+  validation gates that only load when invoked.
 version: 1.1.0
 ---
 

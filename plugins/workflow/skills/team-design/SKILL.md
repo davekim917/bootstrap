@@ -1,9 +1,9 @@
 ---
 name: team-design
 description: >
-  Transform an approved brief into a grounded, first-principles design with constraint analysis
-  and evaluated options. Invoke after /team-brief is approved and before planning or implementation.
-  BOUNDARY: Does not implement code, does not decompose into tasks. Output is a design document only.
+  Invoke after /team-brief is approved. Produces a design document at .context/specs/<feature>/design.md.
+  Do NOT write design docs manually — this skill has constraint analysis, option evaluation, and
+  a research process that only load when invoked.
 version: 1.0.0
 ---
 
