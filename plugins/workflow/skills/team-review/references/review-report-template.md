@@ -12,9 +12,9 @@
 | SHOULD-FIX | [N] | [N open, N addressed, N waived] |
 | WON'T-FIX | [N] | Logged |
 
-**Reviewers:** Claude (architecture-advisor) · Codex (or Claude general-purpose fallback) · Cursor/Composer 1.5 (or Claude code-review-specialist fallback)
-
-> ⚠ If any reviewer fell back to a Claude subagent (CLI tool unavailable), note it here: "Reviewer B/C ran as Claude fallback — cross-model diversity reduced."
+**Reviewers:**
+- **A — Architecture** (Claude architecture-advisor): structural integrity, internal pattern fit
+- **B — Best Practices** (`/best-practice-check` via subagent forwarder): external pattern validation against established industry practice
 
 ---
 
@@ -22,7 +22,7 @@
 
 ### [M1] [Finding Title]
 
-- **Raised by:** Reviewer A / B / C / Multiple (list which)
+- **Raised by:** Reviewer A / Reviewer B / Both
 - **Finding:** [Specific description — cite the section of the design being flagged]
 - **Effort to Fix:** Low / Medium / High
 - **Impact if Ignored:** High (blocking)
@@ -43,7 +43,7 @@
 
 ### [S1] [Finding Title]
 
-- **Raised by:** Reviewer A / B / C / Multiple
+- **Raised by:** Reviewer A / Reviewer B / Both
 - **Finding:** [Description — cite design section]
 - **Effort to Fix:** Low / Medium / High
 - **Impact if Ignored:** Medium (significant risk, non-blocking)
@@ -61,7 +61,7 @@ future reviewers have the context.
 
 | # | Finding | Raised by | Reason for WON'T-FIX |
 |---|---------|-----------|----------------------|
-| W1 | [brief description] | A / B / C | [explicit reason — cost > benefit, out of scope, etc.] |
+| W1 | [brief description] | A / B / Both | [explicit reason — cost > benefit, out of scope, etc.] |
 
 ---
 
@@ -69,7 +69,7 @@ future reviewers have the context.
 
 - [Finding X from Reviewer A and Finding Y from Reviewer B were merged into M1 — same root cause,
   different framing]
-- [Finding Z from Reviewer C was contradicted by `[file:line]` — dropped as false positive]
+- [Finding Z from Reviewer A was contradicted by `[file:line]` — dropped as false positive]
 
 ---
 

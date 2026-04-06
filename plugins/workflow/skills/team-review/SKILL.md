@@ -4,20 +4,26 @@ description: >
   Invoke after /team-design is approved. Produces a review report at .context/specs/<feature>/review.md.
   Do NOT write review docs manually — this skill spawns independent reviewers and has deduplication
   logic that only loads when invoked.
-version: 1.0.0
+version: 2.0.0
 ---
 
-# /team-review — Adversarial Multi-Model Design Review
+# /team-review — Design Review (Architecture + Best Practice)
 
 ## What This Skill Does
 
-Runs an approved design document through 3 independent reviewers, each using a different model and
-lens. Findings are deduplicated, fact-checked against the actual codebase, and classified into
-MUST-FIX / SHOULD-FIX / WON'T-FIX. The design cannot proceed to `/team-plan` until MUST-FIX items are
-resolved or explicitly waived.
+Runs an approved design document through 2 independent reviewers, each with a different evidence
+base and lens. Findings are deduplicated, fact-checked against the actual codebase, and classified
+into MUST-FIX / SHOULD-FIX / WON'T-FIX. The design cannot proceed to `/team-plan` until MUST-FIX
+items are resolved or explicitly waived.
 
-**Key principle:** "Audit the auditor" — the agent that writes cannot validate. Separate contexts,
-separate models, no shared state between reviewers.
+**Key principle:** The reviewers complement each other.
+- **Reviewer A (architecture-advisor)** judges *internal* fit — does this design work within the
+  project's constraints, patterns, and existing code?
+- **Reviewer B (best-practice-check)** judges *external* fit — does this approach match established
+  industry patterns for this problem class, with rigorous source-tier discipline?
+
+Together they answer: "Is this design self-consistent AND aligned with how the world actually
+solves this problem?"
 
 **Output:** Structured review report (see `references/review-report-template.md`)
 **NOT output:** Revised design (that's the user's job, then re-run `/team-review`)
@@ -42,12 +48,12 @@ first."
 ### Step 1: Setup
 
 1. Get the design document. Check in order:
-   - `.context/specs/<feature>/design.md` (standard location from architecture-advisor)
+   - `.context/specs/<feature>/design.md` (standard location from `/team-design`)
    - Ask user to paste it if not found
 
 2. Read `CLAUDE.md` — extract tech stack, conventions, critical guardrails, and relevant skill names.
 
-3. Write the design to `.claude/tmp/review-input.md` so CLI reviewers can access it:
+3. Write the design to `.claude/tmp/review-input.md` so reviewers can read it from a stable path:
    ```bash
    mkdir -p .claude/tmp
    # Write design content to .claude/tmp/review-input.md
@@ -67,225 +73,77 @@ first."
    | GL models, ARR/MRR/NRR, revenue recognition, budget vs actuals, reconciliation | `financial-analytics` |
    | TypeScript/React, REST/GraphQL APIs, auth, Node.js, AWS/GCP services | `software-engineering` |
 
-   Select the 2-3 skills whose signals appear most prominently. Note them — each reviewer will be told to load them.
+   Select the 2-3 skills whose signals appear most prominently. Note them — Reviewer A will be told to load them.
 
-5. **Pre-fetch library documentation** for any library the design references. Include the
-   pre-fetched docs in reviewer prompts so reviewers don't make wrong assumptions about
-   library capabilities.
+### Step 2: Spawn 2 Independent Reviewers in Parallel
 
-   Use the **Research Fallback Chain**:
-   - **Context7 first** — `resolve-library-id` → `query-docs`. Fast, structured, high-signal.
-   - **Exa fallback** — if Context7 has insufficient coverage:
-     - `mcp__exa__get_code_context_exa` — real usage patterns in public repos
-     - `mcp__exa__web_search_exa` — official docs, known pitfalls
-     - `mcp__exa__crawling_exa` — fetch specific doc URLs directly
-   - **WebSearch last resort** — if both Context7 and Exa fail
-
-   For Reviewer B (Codex) and Reviewer C (Gemini): include pre-fetched docs as inline text in
-   the prompt since they cannot call MCP tools. See `references/reviewer-prompts.md`.
-
-### Step 1.5: Pre-Flight CLI Check
-
-Before spawning reviewers, check external tool availability:
-
-```bash
-codex_available=$(command -v codex >/dev/null 2>&1 && echo "yes" || echo "no")
-gemini_available=$(command -v gemini >/dev/null 2>&1 && echo "yes" || echo "no")
-cursor_available=$(command -v agent >/dev/null 2>&1 && echo "yes" || echo "no")
-```
-
-Log availability to the user:
-- If codex unavailable: `⚠ Codex CLI unavailable — Reviewer B falling back to Claude general-purpose. Cross-model diversity reduced.`
-- If gemini AND cursor both unavailable: `⚠ Gemini and Cursor CLIs unavailable — Reviewer C falling back to Claude code-review-specialist. Cross-model diversity reduced.`
-
-### Step 2: Spawn 3 Independent Reviewers in Parallel
-
-Launch all three simultaneously. Do not wait for one to finish before starting the next.
-
-**Fallback tracking:** Maintain a running count of Claude fallbacks as reviewers are spawned. If a reviewer falls back (unavailability or timeout), increment the count. Record which reviewer and why (unavailable / timeout). This count is used in the Step 5 gate message.
+Launch both simultaneously via the Task tool. Do not wait for one to finish before starting the next.
+Each reviewer runs in an isolated context — no shared state, no awareness of the other reviewer's findings.
 
 ---
 
-#### Reviewer A: Claude (architecture-advisor)
+#### Reviewer A: Architecture (architecture-advisor subagent)
 
-Use the Task tool with `subagent_type: architecture-advisor`.
+Use the Task tool with `subagent_type: architecture-advisor`. See `references/reviewer-prompts.md`
+for the full prompt template. Fill in `[LIST SKILL NAMES]` with the 2-3 skills identified in Step 1.
 
-**Prompt template:**
-```
-Review the design document at .claude/tmp/review-input.md as a critical architecture reviewer.
+Reviewer A's lens: **STRUCTURAL INTEGRITY**
+- Internal consistency of constraints, options, and recommendation
+- Fit with project patterns in CLAUDE.md
+- Hidden coupling risks and dependency problems
+- Constraint classification correctness (HARD vs SOFT)
+- What's missing or understated
+- Risks not acknowledged
 
-Your lens: STRUCTURAL INTEGRITY
-- Is the design internally consistent? Do the constraints, options, and recommendation align?
-- Does the recommended approach fit the project patterns in CLAUDE.md?
-- Are there hidden coupling risks or dependency problems?
-- Are the constraint classifications (HARD/SOFT) correct?
-- What's missing that should be there?
-- What risks are understated or unacknowledged?
-
-Also load these relevant project skills: [skill names from Step 1]
-Use the loaded domain skills to check domain-specific anti-patterns (e.g., for analytics-engineering:
-check grain consistency and test coverage; for llm-engineering: check for prompt injection risks
-and token budget; for agentic-systems: check for unbounded loops and missing tool contracts;
-for data-science: check for data leakage and missing eval gates).
-
-For each finding, state:
-- What the issue is (specific, not vague)
-- Why it matters (consequence if ignored)
-- Suggested resolution
-- Your confidence: High / Medium / Low
-
-End with a numbered list of findings. No prose summary needed.
-```
+Reviewer A has direct access to Context7, Exa, Read, Grep, Glob, Bash. It can verify library
+capabilities and read codebase files to ground its findings.
 
 ---
 
-#### Reviewer B: Codex (OpenAI model — adversarial perspective)
+#### Reviewer B: Best Practices (forwarder for /best-practice-check)
 
-If `codex_available` is "yes", run via Bash:
-```bash
-# If the user specified a reasoning effort (medium/high/xhigh), append:
-#   --config model_reasoning_effort="<effort>"
-# If omitted, Codex uses its own default reasoning effort.
-codex exec -s read-only "$(cat <<'PROMPT'
-You are performing an adversarial design review. Your job is to find flaws, not validate.
+Use the Task tool with `subagent_type: general-purpose`. The subagent's only job is to invoke
+`/best-practice-check` via the Skill tool with the design document as scope, then return the
+skill's full structured output. See `references/reviewer-prompts.md` for the full prompt template.
 
-Read the design document: cat .claude/tmp/review-input.md
-Read the project context: cat CLAUDE.md
+Reviewer B's lens: **EXTERNAL PATTERN VALIDATION**
+- Does the approach match established industry patterns for this problem class?
+- Are there better-known patterns that solve the same problem?
+- Has the chosen pattern been superseded or deprecated?
+- Is the design drifting from current best practices?
+- Are there anti-patterns present?
 
-Your lens: ASSUMPTION CHALLENGE & BLIND SPOTS
-- What assumptions is this design making that might be wrong?
-- What simpler approach would solve the same problem?
-- What would cause this design to fail in production?
-- What's being optimized for that shouldn't be?
-- What's NOT being optimized for that should be?
-- What would a skeptical senior engineer object to?
-
-Do NOT validate — find problems. Be specific: cite the section of the design you're critiquing.
-
-For each finding, state:
-- What the assumption or problem is
-- Why it could be wrong or risky
-- What a better alternative might look like
-
-End with a numbered list of findings. No prose summary needed.
-PROMPT
-)"
-```
-
-If `codex_available` is "no", use the Task tool instead:
-```
-Task(
-  subagent_type: "general-purpose",
-  model: "sonnet",
-  prompt: [Reviewer B Fallback Prompt from references/reviewer-prompts.md]
-)
-```
+Reviewer B is a forwarder — it MUST invoke `/best-practice-check` via the Skill tool, NOT do
+its own pattern research. The Skill has rigorous research discipline (T1/T2/T3 source tiers,
+2-source corroboration, recency filters) that cannot be approximated.
 
 ---
 
-#### Reviewer C: Gemini / Cursor (implementation feasibility)
+#### Why two reviewers, not three
 
-**Priority order:** Gemini (primary) → Cursor (secondary) → Claude code-review-specialist (fallback).
+This is a design review — not a code review. The two evidence bases that matter at design time
+are *internal fit* (architecture-advisor) and *external pattern validity* (best-practice-check).
 
-If `gemini_available` is "yes", run via Bash:
-```bash
-# If the user specified a Gemini model, add: --model <model>
-# If omitted, Gemini CLI uses its own default model.
-gemini -p "$(cat <<'PROMPT'
-You are reviewing a design document for implementation feasibility.
-
-Read the design document: cat .claude/tmp/review-input.md
-Read the project context: cat CLAUDE.md
-
-Your lens: IMPLEMENTATION RISK & UNDERSPECIFICATION
-- Where will builders have to guess? (underspecified areas)
-- What will be genuinely hard to implement as described?
-- What edge cases aren't handled by the design?
-- What integration risks exist between this design and the existing codebase?
-- Where does the design contradict what's actually in the codebase?
-- What's missing from the Assumptions Log that should be there?
-- Are there [RENDER-CHECK NEEDED] flags on visual decisions (color combinations, layout structure, spacing, typography)? If visual decisions appear in the design without a render-check flag, note it as an underspecification risk.
-
-Be concrete: cite the specific section or line of the design you're flagging.
-
-For each finding, state:
-- What is underspecified or risky
-- What a builder would have to guess or discover on their own
-- What should be added to the design to resolve it
-
-End with a numbered list of findings. No prose summary needed.
-PROMPT
-)"
-```
-
-Else if `cursor_available` is "yes", run via Bash:
-```bash
-# If the user specified a Cursor model, add: --model <model>
-# If omitted, Cursor CLI uses its own default model.
-agent -p "$(cat <<'PROMPT'
-You are reviewing a design document for implementation feasibility.
-
-Read the design document: cat .claude/tmp/review-input.md
-Read the project context: cat CLAUDE.md
-
-Your lens: IMPLEMENTATION RISK & UNDERSPECIFICATION
-- Where will builders have to guess? (underspecified areas)
-- What will be genuinely hard to implement as described?
-- What edge cases aren't handled by the design?
-- What integration risks exist between this design and the existing codebase?
-- Where does the design contradict what's actually in the codebase?
-- What's missing from the Assumptions Log that should be there?
-- Are there [RENDER-CHECK NEEDED] flags on visual decisions (color combinations, layout structure, spacing, typography)? If visual decisions appear in the design without a render-check flag, note it as an underspecification risk.
-
-Be concrete: cite the specific section or line of the design you're flagging.
-
-For each finding, state:
-- What is underspecified or risky
-- What a builder would have to guess or discover on their own
-- What should be added to the design to resolve it
-
-End with a numbered list of findings. No prose summary needed.
-PROMPT
-)"
-```
-
-If neither is available, use the Task tool instead:
-```
-Task(
-  subagent_type: "code-review-specialist",
-  prompt: [Reviewer C Fallback Prompt from references/reviewer-prompts.md]
-)
-```
-
----
-
-#### Reviewer Timeout Handling
-
-If any CLI reviewer (Codex, Gemini, Cursor) times out (exits non-zero, produces stderr output, or exceeds 120 seconds wall-clock), or produces an error:
-
-1. **Fall back** using the same Task call defined in the unavailability fallback for that reviewer in Step 2 (the `If ... unavailable` block for Reviewer B or C respectively). The subagent_type, prompt reference, and lens are identical.
-2. **Document the fallback** in the review report header: "Reviewer [B/C]: [tool] timed out — fell back to Claude [subagent_type]."
-3. **Do not retry** the same CLI tool with a different model — fall back immediately to preserve review throughput.
-
-Note: a reviewer returning zero findings is not a timeout — legitimate "no findings" results should not trigger this fallback.
+Adversarial code-level critique (assumption challenges grounded in actual line numbers, race
+conditions, idempotency gaps, rollback safety) belongs in `/team-qa`, where there is real code
+to attack. Running adversarial review on a design doc produces speculation; running it on
+implemented code produces actionable findings.
 
 ---
 
 ### Step 3: Collect All Findings
 
-Wait for all three reviewers to complete. Compile their raw findings into a working list. At this
+Wait for both reviewers to complete. Compile their raw findings into a working list. At this
 stage, do not classify or deduplicate — just enumerate everything found.
 
 ### Step 4: Team Lead — Deduplicate, Fact-Check, Classify
 
 This is the most important step. Work through each finding:
 
-**Fallback note:** If Reviewer B or C fell back to a Claude subagent (due to unavailable CLI tools or timeout), note this in the report header. The classification and deduplication process is unchanged — but the reader should know cross-model diversity was reduced.
-
 **Deduplication:**
-- Same finding from multiple reviewers = stronger signal; merge and note which reviewers raised it
-- Near-duplicate findings = merge with a note (e.g., "Reviewer A and B both flag X but with
-  different framings — treating as one finding")
+- Same finding from both reviewers = stronger signal; merge and note both raised it
+- Near-duplicate findings = merge with a note (e.g., "Reviewer A flags structural coupling that
+  Reviewer B classifies as drift from the layered-architecture pattern — treating as one finding")
 - Genuinely different findings = keep separate
 
 **Fact-checking:**
@@ -293,6 +151,7 @@ For each finding, verify it against the actual codebase:
 - Read the relevant source files (scoped — only what's needed to validate the finding)
 - If a reviewer says "the project uses X pattern" — verify it exists
 - If a reviewer says "this conflicts with Y" — read Y and confirm the conflict
+- If Reviewer B cites a best-practice source, sanity-check that the source tier (T1/T2) is justified
 - Mark each finding as: Verified / Unverified / Contradicted (reviewer was wrong)
 
 Drop findings that are contradicted by the codebase. Do not include false positives in the report.
@@ -318,7 +177,9 @@ For each finding, assign two dimensions before classifying:
 - Contradicts a HARD constraint → MUST-FIX
 - Would cause builder to make a wrong guess that affects correctness → MUST-FIX
 - Significant unacknowledged risk with no mitigation → MUST-FIX
+- Pattern superseded by current best practice (Reviewer B with T1/T2 sources) → MUST-FIX or SHOULD-FIX depending on impact
 - Pattern misalignment that creates technical debt → SHOULD-FIX
+- Drift from best practice but pattern is still valid → SHOULD-FIX
 - Missing but recoverable during implementation → SHOULD-FIX
 - Style/preference with no correctness impact → WON'T-FIX
 - Valid but out of scope for this design → WON'T-FIX
@@ -353,8 +214,6 @@ Or explicitly waive any finding with a stated reason — waived findings are log
 
 [If MUST-FIX == 0:]
 No blocking issues. Say "approved" to proceed to `/team-plan`.
-[If 2 or more reviewers ran as Claude fallbacks:]
-Note: cross-model diversity was reduced ([N] of 3 reviewers ran as Claude fallbacks).
 ---
 ```
 
@@ -366,24 +225,21 @@ Note: cross-model diversity was reduced ([N] of 3 reviewers ran as Claude fallba
 
 ## Reviewer Lenses (Summary)
 
-| Reviewer | Model | Lens | Tools |
-|----------|-------|------|-------|
-| A: architecture-advisor | Claude Opus | Structural integrity, pattern alignment | Read, Grep, Glob, Bash, Exa, Serena |
-| B: Codex | OpenAI (o-series, default reasoning effort) | Adversarial — challenge assumptions, blind spots | Filesystem (read-only sandbox) |
-| B: fallback | Claude Sonnet (general-purpose) | Same adversarial lens, if Codex unavailable | All Claude tools |
-| C: Gemini (primary) | Google (Gemini CLI default, or user-specified) | Implementation feasibility, underspecification | Filesystem |
-| C: Cursor (secondary) | Cursor default model (or user-specified) | Same feasibility lens, if Gemini unavailable | Filesystem |
-| C: fallback | Claude (code-review-specialist) | Same feasibility lens, if both Gemini and Cursor unavailable | Read, Grep, Glob, Bash |
+| Reviewer | Implementation | Lens | Evidence base |
+|----------|---------------|------|---------------|
+| A: architecture-advisor | Task subagent (Claude) | Structural integrity, internal pattern fit | Codebase + CLAUDE.md + Context7/Exa for library verification |
+| B: best-practice-check | Task subagent forwarder → Skill tool | External pattern validation, drift from established practice | Mandatory external research via Exa/Context7/DeepWiki with T1/T2/T3 source tiers |
 
-Each reviewer gets: design document + CLAUDE.md + relevant project skills
-Each reviewer works in isolation: no shared state, no awareness of other reviewers' findings
+Each reviewer gets: design document at `.claude/tmp/review-input.md` + CLAUDE.md
+Each reviewer works in isolation: no shared state, no awareness of the other reviewer's findings
 
 ---
 
 ## Anti-Patterns (Do Not Do These)
 
-- **Don't let reviewers see each other's output.** Independent contexts are the point. Cross-contamination defeats the adversarial model.
-- **Don't skip fact-checking.** A finding that contradicts the actual codebase is a false positive that wastes the user's time.
+- **Don't let reviewers see each other's output.** Independent contexts are the point. Cross-contamination defeats the multi-lens model.
+- **Don't approximate /best-practice-check.** Reviewer B MUST invoke the skill via the Skill tool. Doing your own pattern research instead skips the source-tier discipline that makes the skill credible.
+- **Don't skip fact-checking.** A finding that contradicts the actual codebase is a false positive that wastes the user's time. This applies to both reviewers — verify claims against the code before propagating them.
 - **Don't inflate MUST-FIX.** If everything is MUST-FIX, nothing is. Reserve it for genuine blockers.
 - **Don't silently drop WON'T-FIX items.** Log them. They may become important later.
 - **Don't let users waive MUST-FIX without a stated reason.** The reason is auditable context for the next reviewer.
@@ -399,7 +255,8 @@ Each reviewer works in isolation: no shared state, no awareness of other reviewe
 | "Not worth raising" | If you noticed it, log it. Classify WON'T-FIX if cost outweighs benefit. |
 | "I trust the design" | Trust is not verification. Check claims against the actual implementation. |
 | "Minor issue" | Classify ADVISORY and log. Minor issues accumulate into major debt. |
-| "Reviewer already caught the important stuff" | Each reviewer has blind spots. Find what they missed. |
+| "best-practice-check is slow, I'll skip it" | The whole point of Reviewer B is the external research discipline. Skipping it removes the skill's value. |
+| "I'll just do the research myself instead of invoking the skill" | Approximation. The skill has tier classification, corroboration rules, and recency filters. You cannot replicate them in an ad-hoc Exa search. |
 
 ---
 
@@ -421,6 +278,7 @@ The review report is a point-in-time assessment. A changed design requires a fre
 - Scoped source files relevant to each finding — only what's needed to validate
 
 **Write:**
+- `.claude/tmp/review-input.md` — design content for reviewers (Step 1)
 - `.context/specs/<feature>/review.md` — the completed review report (Step 5)
 - `.context/specs/<feature>/decisions.yaml` — updated decision record with waivers (Step 5)
 

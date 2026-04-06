@@ -1,22 +1,27 @@
 ---
 name: team-qa
 description: >
-  Invoke after /team-build is approved. Runs 5 ordered validation checks on changed files.
-  Do NOT run QA checks manually — this skill has validator isolation, finding classification,
-  and selective re-run logic that only load when invoked.
-version: 1.0.0
+  Invoke after /team-build is approved. Runs validation checks on changed files (denoise + parallel
+  validators including Codex adversarial cross-model review). Do NOT run QA checks manually — this
+  skill has validator isolation, finding classification, and selective re-run logic that only load
+  when invoked.
+version: 2.0.0
 ---
 
 # /team-qa — Post-Build Validation Pipeline
 
 ## What This Skill Does
 
-Runs the built implementation through a structured validation pipeline. Five checks in two phases:
-denoise first (sequential), then style + doc + security + performance (parallel). Each check is
-scoped — only changed files + the one relevant skill. No full codebase sweeps.
+Runs the built implementation through a structured validation pipeline. Six checks in two phases:
+denoise first (sequential), then style + doc + security + performance + Codex adversarial (parallel).
+Each Claude validator is scoped — only changed files + the one relevant skill. The Codex adversarial
+pass attacks the git diff with cross-model framing focused on auth/data-loss/race-condition failure modes.
 
-**Key principle:** "Each validator gets ONLY the changed files + its relevant project skill."
-Less context per validator = fewer false positives, higher signal.
+**Key principle:** "Each validator gets ONLY what it needs." Claude validators get changed files +
+one project skill. Codex gets the git diff. Less context per validator = fewer false positives.
+
+**Cross-model coverage:** Validators A-D run on Claude. Validator E runs on Codex (OpenAI). The
+adversarial cross-model pass catches failure modes Claude validators tend to miss (or rationalize away).
 
 **Output:** QA report classifying all findings (see `references/qa-report-template.md`)
 **NOT output:** The fixes themselves — findings go back to the user or loop to a fix pass
@@ -43,6 +48,7 @@ After fixing one finding, you don't need to re-run the entire pipeline. Use `--o
 /team-qa --only docs         # Validator B only
 /team-qa --only security     # Validator C only
 /team-qa --only perf         # Validator D only
+/team-qa --only codex        # Validator E only (Codex adversarial)
 ```
 
 When `--only` is present: **skip to the named validator directly** (still read the changed files list from Step 1 first). All other validators are skipped for this run.
@@ -156,8 +162,9 @@ Wait for user to approve/deny each item before proceeding to Phase 2.
 
 ### Phase 2: Parallel Validators
 
-Launch all applicable validators simultaneously. Skip validators with no relevant changed files
-(e.g., skip performance DB checks if no data-layer files changed).
+Launch all applicable validators simultaneously (A, B, C, D, E — five validators in parallel).
+Skip validators with no relevant changed files (e.g., skip performance DB checks if no data-layer
+files changed). Skip Validator E (Codex) only if Codex is unavailable or the diff has no code changes.
 
 ---
 
@@ -274,6 +281,63 @@ Task(
 
 ---
 
+#### Validator E: Codex Adversarial Review (Cross-Model)
+
+**Context:** Git diff (the actual code changes — not files in isolation)
+
+**Purpose:** Cross-model adversarial pass on the implementation. Codex (OpenAI) attacks the diff
+with framing focused on the failure modes Claude tends to miss or rationalize: auth/permission
+boundaries, data loss, race conditions, rollback safety, idempotency gaps, schema drift,
+observability gaps. This is the only validator that runs on a non-Claude model.
+
+**Pre-flight check:** Verify Codex is available. If `command -v codex` fails or the
+`codex:adversarial-review` slash command is not loaded, **skip this validator** with a warning:
+
+> ⚠ Codex CLI unavailable — Validator E (cross-model adversarial) skipped. Cross-model coverage reduced.
+
+Continue with Validators A-D. Do not block QA on Codex unavailability.
+
+**Invocation:** Use the Skill tool to invoke `/codex:adversarial-review` with `--wait` so it runs
+synchronously and returns the structured findings:
+
+```
+Skill({
+  skill: "codex:adversarial-review",
+  args: "--wait --base main"
+})
+```
+
+Replace `main` with the project's actual base branch (check via `git symbolic-ref refs/remotes/origin/HEAD`
+or fall back to `main` / `master` / `develop` based on what exists).
+
+The Codex adversarial command runs through its companion runtime, which handles the diff
+extraction, prompt construction, and structured JSON output. The skill returns Codex's output
+verbatim — a JSON document with findings, each containing:
+- `file` — the affected file path
+- `line_start`, `line_end` — line range of the issue
+- `confidence` — score from 0 to 1
+- `recommendation` — concrete fix
+- A summary verdict: `approve` or `needs-attention`
+
+**Mapping Codex findings to team-qa classification:**
+
+| Codex finding | team-qa class |
+|---|---|
+| High confidence (≥0.7) + auth/data loss/race condition/rollback safety | MUST-FIX |
+| High confidence + observability gap, schema drift, idempotency violation | MUST-FIX |
+| Medium confidence (0.4-0.7) on material risk | SHOULD-FIX |
+| Low confidence (<0.4) or speculative | ADVISORY |
+| Codex returns `approve` with no findings | No findings — note in report |
+
+**Anti-pattern:** Do NOT re-prompt Codex with custom instructions or run `codex exec` directly.
+The `/codex:adversarial-review` skill has a tuned adversarial prompt template that you cannot
+replicate manually. Use the Skill tool.
+
+**If Codex returns errors or times out:** Log "Codex adversarial review failed — Validator E
+skipped this run" in the report and continue. Do not retry mid-run.
+
+---
+
 ### Step 3: Collect and Classify All Findings
 
 Wait for all Phase 2 validators to complete. Compile findings into one unified list.
@@ -313,11 +377,12 @@ Then STOP. Display exactly this gate:
 ---
 **QA complete.**
 
-Denoise:     [N fixed, N waived]
-Style:       [N violations — N MUST-FIX, N SHOULD-FIX, N ADVISORY (M introduced, P pre-existing)]
-Doc freshness: [N stale items]
-Security:    [N findings — N MUST-FIX]
-Performance: [N findings — N MUST-FIX, N SHOULD-FIX]
+Denoise:        [N fixed, N waived]
+Style:          [N violations — N MUST-FIX, N SHOULD-FIX, N ADVISORY (M introduced, P pre-existing)]
+Doc freshness:  [N stale items]
+Security:       [N findings — N MUST-FIX]
+Performance:    [N findings — N MUST-FIX, N SHOULD-FIX]
+Codex (cross-model): [N findings — N MUST-FIX, N SHOULD-FIX, N ADVISORY]   [or: skipped — Codex unavailable]
 
 MUST-FIX total: [N]
 
@@ -371,6 +436,11 @@ QA pipeline clear. Ready to ship.
 
 **Note:** When `vercel-react-native-skills` is in `relevant_global_skills`, Validator A loads it for mobile screen/component files.
 
+**Validator E (Codex) routing:** Codex operates on the git diff as a whole, not on individual file types. It runs on **every QA invocation** that has any code changes, regardless of file type — its adversarial framing applies broadly (auth, data, race conditions, observability gaps appear everywhere). Skip Validator E only when:
+- The diff contains pure docs (`.md`, `README`) and no code at all
+- The diff is empty (no changed files)
+- Codex CLI is unavailable (pre-flight skip with warning)
+
 ---
 
 ## Anti-Patterns (Do Not Do These)
@@ -411,5 +481,6 @@ When QA clears with no MUST-FIX items remaining, add to the "all clear" gate mes
 | Validator A: Style Audit | Sonnet | Mechanical: convention matching against a loaded skill |
 | Validator C: Security Review | security-reviewer agent | Specialized agent — inherits that agent's model |
 | Validator D: Performance Review | performance-analyzer agent | Specialized agent — inherits that agent's model |
+| Validator E: Codex Adversarial | Codex (OpenAI) | Cross-model adversarial pass — runs through `/codex:adversarial-review` skill |
 
-**Rationale:** Validators are mechanical checks — convention matching, known-bad-pattern detection. Sonnet is appropriate for individual validators. Reserve Opus for denoise (inline), finding classification, and the final gate judgment.
+**Rationale:** Validators A-D are mechanical Claude checks (convention matching, known-bad-pattern detection). Validator E adds a non-Claude perspective on the same diff to catch failure modes Claude tends to miss. Reserve Opus for denoise (inline), finding classification, and the final gate judgment.
