@@ -30,6 +30,15 @@
         ]
       },
       {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/workflow-artifact-path.js"
+          }
+        ]
+      },
+      {
         "matcher": "TeamCreate",
         "hooks": [
           {
