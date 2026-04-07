@@ -5,7 +5,7 @@ description: >
   validators including Codex adversarial cross-model review). Do NOT run QA checks manually — this
   skill has validator isolation, finding classification, and selective re-run logic that only load
   when invoked.
-version: 2.1.0
+version: 2.1.1
 ---
 
 # /team-qa — Post-Build Validation Pipeline
@@ -344,23 +344,29 @@ The template uses three placeholders:
 - {{USER_FOCUS}} → "general adversarial review"
 - {{REVIEW_INPUT}} → the git diff content
 
-Use Node for the substitution to avoid sed escaping issues with diff content:
+Use Node for the substitution — sed breaks on diff content with special chars.
+Pass the paths as command-line arguments (via `node -`) so you don't have to
+deal with environment-variable export semantics:
 
 ```bash
 cd "<REPO_ROOT>"  # the git repo root the lead gave you
 git diff "<BASE_BRANCH>..HEAD" > /tmp/codex-diff.txt
 
-node -e "
-  const fs = require('fs');
-  const tpl = fs.readFileSync(process.env.PROMPT_FILE, 'utf8');
-  const diff = fs.readFileSync('/tmp/codex-diff.txt', 'utf8');
-  const prompt = tpl
-    .replace('{{TARGET_LABEL}}', 'branch diff against <BASE_BRANCH>')
-    .replace('{{USER_FOCUS}}', 'general adversarial review')
-    .replace('{{REVIEW_INPUT}}', diff);
-  fs.writeFileSync('/tmp/codex-prompt.md', prompt);
-" PROMPT_FILE="$PROMPT_FILE"
+node - "$PROMPT_FILE" /tmp/codex-diff.txt /tmp/codex-prompt.md <<'NODE_EOF'
+const fs = require('fs');
+const [, , tplPath, diffPath, outPath] = process.argv;
+const tpl = fs.readFileSync(tplPath, 'utf8');
+const diff = fs.readFileSync(diffPath, 'utf8');
+const prompt = tpl
+  .replace('{{TARGET_LABEL}}', 'branch diff against <BASE_BRANCH>')
+  .replace('{{USER_FOCUS}}', 'general adversarial review')
+  .replace('{{REVIEW_INPUT}}', diff);
+fs.writeFileSync(outPath, prompt);
+NODE_EOF
 ```
+
+The `<<'NODE_EOF'` (quoted heredoc) prevents shell expansion inside the Node
+script, so you can use `$`, backticks, or quotes freely in the JavaScript.
 
 STEP 3 — Run codex exec with --yolo and the output schema.
 
