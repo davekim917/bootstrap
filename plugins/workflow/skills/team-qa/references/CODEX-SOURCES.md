@@ -6,12 +6,27 @@ adversarial reviews via `codex exec --yolo --output-schema` without depending
 on the codex plugin being mounted or bypassing its `disable-model-invocation: true`
 constraint.
 
-| Local file | Upstream source |
-|---|---|
-| `codex-adversarial-prompt.md` | `plugins/codex/prompts/adversarial-review.md` |
-| `codex-review-output.schema.json` | `plugins/codex/schemas/review-output.schema.json` |
-
 Upstream: https://github.com/openai/codex-plugin-cc
+
+## Pinned upstream SHAs
+
+The `/update-container` Discord command and the `task-container-package-updates`
+scheduled task both read this table to detect drift against upstream. When you
+resync, update the SHA and `Last synced` columns to match.
+
+| Local file | Upstream path | Pinned SHA | Last synced |
+|---|---|---|---|
+| `codex-adversarial-prompt.md` | `plugins/codex/prompts/adversarial-review.md` | `c69527e` | 2026-04-07 |
+| `codex-review-output.schema.json` | `plugins/codex/schemas/review-output.schema.json` | `c69527e` | 2026-04-07 |
+
+To check the latest upstream SHA for any of these paths:
+
+```bash
+gh api "repos/openai/codex-plugin-cc/commits?path=<upstream-path>&per_page=1" \
+  --jq '.[0].sha[0:7]'
+```
+
+If it differs from the pinned SHA above, the file has drifted.
 
 ## Resyncing
 
@@ -26,9 +41,16 @@ cp ~/plugins/codex/plugins/codex/schemas/review-output.schema.json \
 git diff plugins/workflow/skills/team-qa/references/
 ```
 
-Review the diff and commit if the changes are desired. The files are kept
-verbatim so Codex's behavior matches exactly what the upstream plugin would
-produce — do not edit the content directly.
+After copying:
+1. Verify the prompt still contains all template placeholders
+   (`{{TARGET_LABEL}}`, `{{USER_FOCUS}}`, `{{REVIEW_INPUT}}`) — Validator E
+   depends on these markers.
+2. Update the **Pinned SHA** and **Last synced** columns above with the new
+   values.
+3. Bump `plugin.json` version (patch bump for resync).
+
+The files are kept verbatim so Codex's behavior matches exactly what the
+upstream plugin would produce — do not edit the content directly.
 
 ## Template placeholders
 
