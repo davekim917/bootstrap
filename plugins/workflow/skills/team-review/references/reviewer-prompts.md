@@ -47,11 +47,11 @@ End with a numbered list of findings only. No prose summary.
 
 ---
 
-## Reviewer B: Best Practices (forwarder for /best-practice-check)
+## Reviewer B: Best Practices (forwarder for /bootstrap-workflow:best-practice-check)
 
 Passed via Task tool `prompt` parameter with `subagent_type: general-purpose`. The subagent's
-only job is to invoke the `/best-practice-check` skill via the Skill tool with the design
-document as scope, then return the skill's output verbatim.
+only job is to invoke the `/bootstrap-workflow:best-practice-check` skill via the Skill tool
+with the design document as scope, then return the skill's output verbatim.
 
 Why a forwarder pattern: the lead spawns a subagent so the skill's external research (which
 produces hundreds of search results) runs in an isolated context and doesn't pollute the lead's
@@ -59,13 +59,13 @@ context. The lead receives only the structured assessment.
 
 ```
 You are Reviewer B for a team-review of a design document. Your ONLY job is to invoke the
-/best-practice-check skill on the design and return its output.
+/bootstrap-workflow:best-practice-check skill on the design and return its output.
 
 Step 1: Read the design document at .claude/tmp/review-input.md and the project context at CLAUDE.md.
 
-Step 2: Invoke the /best-practice-check skill via the Skill tool:
+Step 2: Invoke the skill via the Skill tool:
 
-  Skill({ skill: "best-practice-check" })
+  Skill({ skill: "bootstrap-workflow:best-practice-check" })
 
 When the skill asks for scope, give it the design document as a "described subsystem":
 - Problem being solved: extract from the design's problem statement / requirements section
@@ -83,8 +83,8 @@ CRITICAL — do not approximate the skill:
 - Do NOT do your own pattern research using Exa or WebSearch
 - Do NOT cite sources you found yourself
 - Do NOT write your own assessment
-- Use the Skill tool to invoke /best-practice-check. The skill has source-tier classification,
-  corroboration rules, and recency filters that you cannot replicate manually.
+- Use the Skill tool to invoke /bootstrap-workflow:best-practice-check. The skill has source-tier
+  classification, corroboration rules, and recency filters that you cannot replicate manually.
 
 If the skill returns no findings (the design conforms to known patterns with no drift), return
 that result verbatim. "No drift" is a valid finding.

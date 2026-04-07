@@ -100,11 +100,16 @@ capabilities and read codebase files to ground its findings.
 
 ---
 
-#### Reviewer B: Best Practices (forwarder for /best-practice-check)
+#### Reviewer B: Best Practices (forwarder for /bootstrap-workflow:best-practice-check)
 
 Use the Task tool with `subagent_type: general-purpose`. The subagent's only job is to invoke
-`/best-practice-check` via the Skill tool with the design document as scope, then return the
-skill's full structured output. See `references/reviewer-prompts.md` for the full prompt template.
+`/bootstrap-workflow:best-practice-check` via the Skill tool with the design document as scope,
+then return the skill's full structured output. See `references/reviewer-prompts.md` for the
+full prompt template.
+
+Note: `best-practice-check` ships inside this same plugin (`bootstrap-workflow`), so the dependency
+is closed — wherever `/team-review` is installed, `/bootstrap-workflow:best-practice-check` is
+guaranteed to be available.
 
 Reviewer B's lens: **EXTERNAL PATTERN VALIDATION**
 - Does the approach match established industry patterns for this problem class?
@@ -113,9 +118,9 @@ Reviewer B's lens: **EXTERNAL PATTERN VALIDATION**
 - Is the design drifting from current best practices?
 - Are there anti-patterns present?
 
-Reviewer B is a forwarder — it MUST invoke `/best-practice-check` via the Skill tool, NOT do
-its own pattern research. The Skill has rigorous research discipline (T1/T2/T3 source tiers,
-2-source corroboration, recency filters) that cannot be approximated.
+Reviewer B is a forwarder — it MUST invoke `/bootstrap-workflow:best-practice-check` via the
+Skill tool, NOT do its own pattern research. The Skill has rigorous research discipline
+(T1/T2/T3 source tiers, 2-source corroboration, recency filters) that cannot be approximated.
 
 ---
 
@@ -228,7 +233,7 @@ No blocking issues. Say "approved" to proceed to `/team-plan`.
 | Reviewer | Implementation | Lens | Evidence base |
 |----------|---------------|------|---------------|
 | A: architecture-advisor | Task subagent (Claude) | Structural integrity, internal pattern fit | Codebase + CLAUDE.md + Context7/Exa for library verification |
-| B: best-practice-check | Task subagent forwarder → Skill tool | External pattern validation, drift from established practice | Mandatory external research via Exa/Context7/DeepWiki with T1/T2/T3 source tiers |
+| B: bootstrap-workflow:best-practice-check | Task subagent forwarder → Skill tool | External pattern validation, drift from established practice | Mandatory external research via Exa/Context7/DeepWiki with T1/T2/T3 source tiers |
 
 Each reviewer gets: design document at `.claude/tmp/review-input.md` + CLAUDE.md
 Each reviewer works in isolation: no shared state, no awareness of the other reviewer's findings
@@ -238,7 +243,7 @@ Each reviewer works in isolation: no shared state, no awareness of the other rev
 ## Anti-Patterns (Do Not Do These)
 
 - **Don't let reviewers see each other's output.** Independent contexts are the point. Cross-contamination defeats the multi-lens model.
-- **Don't approximate /best-practice-check.** Reviewer B MUST invoke the skill via the Skill tool. Doing your own pattern research instead skips the source-tier discipline that makes the skill credible.
+- **Don't approximate /bootstrap-workflow:best-practice-check.** Reviewer B MUST invoke the skill via the Skill tool. Doing your own pattern research instead skips the source-tier discipline that makes the skill credible.
 - **Don't skip fact-checking.** A finding that contradicts the actual codebase is a false positive that wastes the user's time. This applies to both reviewers — verify claims against the code before propagating them.
 - **Don't inflate MUST-FIX.** If everything is MUST-FIX, nothing is. Reserve it for genuine blockers.
 - **Don't silently drop WON'T-FIX items.** Log them. They may become important later.
@@ -255,7 +260,7 @@ Each reviewer works in isolation: no shared state, no awareness of the other rev
 | "Not worth raising" | If you noticed it, log it. Classify WON'T-FIX if cost outweighs benefit. |
 | "I trust the design" | Trust is not verification. Check claims against the actual implementation. |
 | "Minor issue" | Classify ADVISORY and log. Minor issues accumulate into major debt. |
-| "best-practice-check is slow, I'll skip it" | The whole point of Reviewer B is the external research discipline. Skipping it removes the skill's value. |
+| "bootstrap-workflow:best-practice-check is slow, I'll skip it" | The whole point of Reviewer B is the external research discipline. Skipping it removes the skill's value. |
 | "I'll just do the research myself instead of invoking the skill" | Approximation. The skill has tier classification, corroboration rules, and recency filters. You cannot replicate them in an ad-hoc Exa search. |
 
 ---
