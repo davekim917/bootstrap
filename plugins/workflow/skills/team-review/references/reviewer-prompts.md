@@ -94,14 +94,96 @@ End with the skill's structured output. No prose summary, no commentary.
 
 ---
 
+## Reviewer C: Adversarial (Codex, design-focused)
+
+Passed via Task tool `prompt` parameter with `subagent_type: general-purpose`. The subagent's
+only job is to run `codex exec --yolo` with the verbatim adversarial design prompt at
+`references/codex-adversarial-design-prompt.md`, substitute three placeholders, capture the
+output, and return it verbatim to the lead.
+
+Why a forwarder pattern: Codex is a CLI that produces substantial output. Running it in the
+lead's context would pollute the review state with Codex's reasoning traces. Isolating it in
+a subagent keeps the lead clean for finding merge + classification.
+
+```
+You are Reviewer C for a team-review of a design document. Your ONLY job is to run Codex
+with the verbatim adversarial design prompt and return its output. Do NOT do your own
+adversarial review.
+
+STEP 0 — Pre-flight. Verify Codex is available:
+
+    command -v codex && test -r /home/node/.codex/auth.json
+
+If either check fails, return exactly this string and stop:
+    REVIEWER_C_SKIPPED: Codex unavailable — <reason (no binary / no auth file)>
+
+STEP 1 — Locate the verbatim design-adversarial prompt template. It ships as a reference
+alongside this team-review skill. Find it:
+
+    PROMPT_FILE=$(find / -path '*/team-review/references/codex-adversarial-design-prompt.md' 2>/dev/null | head -1)
+    if [ -z "$PROMPT_FILE" ]; then
+      echo "REVIEWER_C_SKIPPED: prompt template not found"
+      exit 2
+    fi
+
+STEP 2 — Build the substituted prompt. The template uses three placeholders:
+- {{TARGET_LABEL}} → "design document for <feature name>" (extract from the design title)
+- {{USER_FOCUS}} → "general adversarial design review" (unless the user supplied a specific focus)
+- {{REVIEW_INPUT}} → the full contents of .claude/tmp/review-input.md
+
+Use Node with argv (NOT env vars — those don't inherit cleanly into child processes):
+
+    node - "$PROMPT_FILE" .claude/tmp/review-input.md /tmp/codex-design-prompt.md "<TARGET_LABEL>" "<USER_FOCUS>" <<'NODE_EOF'
+    const fs = require('fs');
+    const [, , tplPath, designPath, outPath, targetLabel, userFocus] = process.argv;
+    const tpl = fs.readFileSync(tplPath, 'utf8');
+    const design = fs.readFileSync(designPath, 'utf8');
+    const prompt = tpl
+      .replace('{{TARGET_LABEL}}', targetLabel)
+      .replace('{{USER_FOCUS}}', userFocus)
+      .replace('{{REVIEW_INPUT}}', design);
+    fs.writeFileSync(outPath, prompt);
+    NODE_EOF
+
+The quoted heredoc `<<'NODE_EOF'` prevents shell expansion inside the Node script so you can
+use `$`, backticks, or quotes freely in the JavaScript.
+
+STEP 3 — Run codex exec with --yolo. Design review does NOT use --output-schema (the schema
+in team-qa/references is code-diff-shaped with required line_start/line_end fields; design
+findings don't have line numbers). Free-form output is correct here:
+
+    codex exec --yolo --ephemeral - < /tmp/codex-design-prompt.md 2>&1 | tee /tmp/codex-design-output.log
+
+STEP 4 — Return the Codex output verbatim to the lead. Do not summarize, reformat, or add
+commentary. If Codex returned "NO MATERIAL OBJECTIONS — design is defensible as written."
+return that exactly. The lead will parse it and merge with Reviewers A and B.
+
+CRITICAL — do NOT do any of these:
+- Do NOT write your own adversarial prompt. Use the verbatim template file.
+- Do NOT invoke /codex:adversarial-review or /codex:review via the Skill tool — both are
+  blocked by `disable-model-invocation: true` in their frontmatter.
+- Do NOT call the codex plugin's companion script — same block.
+- Do NOT run codex with a sandbox mode other than --yolo — bwrap will fail in containers.
+- Do NOT fall back to your own Claude review if Codex fails — just report
+  REVIEWER_C_SKIPPED and let the lead decide whether to proceed with A+B only.
+
+If codex exec errors out mid-run (timeout, network, unknown error), return:
+    REVIEWER_C_FAILED: <error summary>
+
+so the lead can note it in the report header.
+```
+
+---
+
 ## Notes on Prompt Delivery
 
-**For both reviewers:**
+**For all three reviewers:**
 
-- Both prompts are passed via the Task tool's `prompt` parameter
+- All prompts are passed via the Task tool's `prompt` parameter
 - Reviewer A uses `subagent_type: architecture-advisor`
-- Reviewer B uses `subagent_type: general-purpose` (it's a thin forwarder, not a specialized reviewer)
-- Both subagents have access to the Skill tool and can invoke skills in their own isolated contexts
+- Reviewers B and C use `subagent_type: general-purpose` (they're forwarders, not specialized reviewers)
+- All subagents have access to the Skill tool (B invokes /bootstrap-workflow:best-practice-check)
+  and Bash (C runs codex exec --yolo)
 
 **Pre-fetched library docs (optional):**
 
@@ -115,3 +197,5 @@ Library docs (pre-fetched):
 ```
 
 Reviewer B does not need pre-fetched docs — `/best-practice-check` does its own research.
+Reviewer C does not need pre-fetched docs either — it's an assumption-challenge pass on the
+design document itself, not a library-specific verification.

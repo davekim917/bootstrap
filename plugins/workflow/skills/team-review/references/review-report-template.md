@@ -15,6 +15,7 @@
 **Reviewers:**
 - **A — Architecture** (Claude architecture-advisor): structural integrity, internal pattern fit
 - **B — Best Practices** (`/best-practice-check` via subagent forwarder): external pattern validation against established industry practice
+- **C — Adversarial** (Codex via `codex exec --yolo` with verbatim prompt): assumption challenge, blind spots, simpler-approach alternatives *[or: SKIPPED — Codex unavailable]*
 
 ---
 
@@ -22,7 +23,7 @@
 
 ### [M1] [Finding Title]
 
-- **Raised by:** Reviewer A / Reviewer B / Both
+- **Raised by:** Reviewer A / Reviewer B / Reviewer C / Multiple (list which)
 - **Finding:** [Specific description — cite the section of the design being flagged]
 - **Effort to Fix:** Low / Medium / High
 - **Impact if Ignored:** High (blocking)
@@ -43,7 +44,7 @@
 
 ### [S1] [Finding Title]
 
-- **Raised by:** Reviewer A / Reviewer B / Both
+- **Raised by:** Reviewer A / Reviewer B / Reviewer C / Multiple (list which)
 - **Finding:** [Description — cite design section]
 - **Effort to Fix:** Low / Medium / High
 - **Impact if Ignored:** Medium (significant risk, non-blocking)
@@ -61,7 +62,7 @@ future reviewers have the context.
 
 | # | Finding | Raised by | Reason for WON'T-FIX |
 |---|---------|-----------|----------------------|
-| W1 | [brief description] | A / B / Both | [explicit reason — cost > benefit, out of scope, etc.] |
+| W1 | [brief description] | A / B / C / Multiple | [explicit reason — cost > benefit, out of scope, etc.] |
 
 ---
 
