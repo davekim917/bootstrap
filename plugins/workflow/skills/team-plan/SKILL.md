@@ -259,6 +259,38 @@ Save the plan to disk:
 2. `mkdir -p .context/specs/<feature>/`
 3. Write the plan to `.context/specs/<feature>/plan.md`
 
+**CRITICAL — how to write the plan file:**
+
+Plans with 3+ task groups routinely exceed 400 lines. A single monolithic `Write` tool call
+for a long plan risks hitting the per-turn output-token ceiling mid-generation, producing a
+silently truncated file. Worse, attempting to "append the rest" via a second `Write` call to
+the same path will **overwrite** the first write entirely — `Write` never appends.
+
+**DO use the Write-skeleton-then-Edit pattern for any plan with more than 3 task groups or
+where the expected length exceeds ~300 lines:**
+
+1. **First `Write`** — skeleton only: header, overview, dependency graph, and empty section
+   stubs for each group (e.g. `## Group A: Data Layer\n\n_To be filled._`). Keep this
+   skeleton under ~150 lines. It should fit comfortably in one turn.
+2. **Subsequent `Edit` calls** — one per group, replacing each `_To be filled._` stub with
+   that group's full task spec. Each Edit is scoped to a single group, so per-turn output
+   stays well under the ceiling even for large groups.
+3. **Final verification** — after all Edits, `grep '^## Group' <plan-file>` to confirm every
+   group you intended is present. If any are missing, you hit a partial write — re-run the
+   Edit for that specific group, do not re-Write the whole file.
+
+**DO NOT** do back-to-back `Write` calls to the same file thinking the second will append.
+`Write` always overwrites. If you find yourself about to do a second `Write` to the same
+path, stop and use `Edit` with a specific `old_string` anchor instead.
+
+**DO NOT** attempt a single monster `Write` for plans > ~500 lines. Output-token budgets
+deplete mid-tool-call and the tool call can be emitted with empty or truncated input,
+producing either an InputValidationError or a silently incomplete file. Neither failure mode
+is reliably surfaced to you in the same turn.
+
+Both failure modes have been observed in production on large-context plan sessions. The
+skeleton-then-Edit pattern avoids both entirely.
+
 Then STOP. Display exactly this gate:
 
 ```

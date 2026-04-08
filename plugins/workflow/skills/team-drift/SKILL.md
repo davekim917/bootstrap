@@ -190,8 +190,16 @@ Format each verdict as:
 
 Be exhaustive. Missing a claim is a false negative. Flag uncertainty rather than guessing.
 PROMPT
-)"
+)" </dev/null
 ```
+
+**CRITICAL: the `</dev/null` redirect is not optional.** `codex exec` inspects its own stdin
+and, if the pipe is open (which it is when spawned from a harness Bash tool), treats stdin as
+an "append additional input to the prompt" stream and blocks reading it forever. The prompt
+passed as the command argument is NOT enough on its own — codex will still wait on stdin and
+hang indefinitely, emitting only `Reading additional input from stdin...` to its output file.
+Confirmed failure mode from NanoClaw session `6379a5d8-99ca-4e7e-a2c0-f17adf26f1cc` at
+2026-04-08T12:07:23Z — codex hung 16 minutes before being force-killed. `</dev/null` fixes it.
 
 If `codex_available` is "no", use the Task tool instead:
 ```
