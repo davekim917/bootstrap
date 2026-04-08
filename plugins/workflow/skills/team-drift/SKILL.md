@@ -371,21 +371,60 @@ SOT: [document name]
 Target: [document name]
 
 MISSING:  [N] — blocking
-DIVERGED: [N] — blocking
+DIVERGED: [N] — blocking ([M] acked, [N-M] effective if drift-acks.json is in use)
 PARTIAL:  [N] — review required
 CONFIRMED:[N]
 
-[If blocking > 0:]
+[If MISSING > 0 or effective DIVERGED > 0:]
 [N] blocking mismatches found. The target must be updated to resolve them before proceeding.
-Or explicitly accept each with a stated reason — accepted mismatches are logged, not dropped.
+DIVERGED entries that are intentional and justified can be acknowledged in
+.context/specs/<feature>/drift-acks.json (see "DIVERGED Acknowledgments" below).
+MISSING entries cannot be acked — address them in the target document.
 
-[If blocking == 0 and PARTIAL == 0:]
+[If MISSING == 0 and effective DIVERGED == 0 and PARTIAL == 0:]
 No drift detected. The target faithfully reflects the SOT. Proceed.
 
-[If blocking == 0 and PARTIAL > 0:]
+[If MISSING == 0 and effective DIVERGED == 0 and PARTIAL > 0:]
 No blocking drift. [N] partial matches need your review — address, accept, or log each.
 ---
 ```
+
+### DIVERGED Acknowledgments — Justifying Intentional Divergences
+
+**The problem this solves:** A drift report with `DIVERGED > 0` blocks `/team-build`. But sometimes a divergence is **intentional and correct** — for example, a Stage-3 review finding required removing a feature from the plan that was in the design. The plan correctly diverges from the design. The gate cannot evaluate justifications, and historically agents have **reverted valid review findings** just to make the gate pass. That's the gate working against good work.
+
+**The escape hatch:** Each DIVERGED entry in the drift report can be acknowledged in a per-feature `drift-acks.json` file. Acknowledged entries are subtracted from the effective DIVERGED count. The gate passes when `MISSING == 0 && effective_DIVERGED == 0`.
+
+**Schema** (see `references/drift-acks-template.json` for a worked example):
+
+```json
+{
+  "acknowledgments": [
+    {
+      "id": "B1",
+      "reason": "Why this divergence is correct (required, non-empty, specific)",
+      "expires_at": "2026-07-01"
+    }
+  ]
+}
+```
+
+**Validation rules** (enforced by the `workflow-gate-enforcement` hook):
+
+1. `id` must match a `[B<n>]` entry header in the same feature's `pre-build-drift.md`
+2. The matching entry's `**Class:**` line must be `DIVERGED` (acks for MISSING entries are NOT honored)
+3. `reason` must be a non-empty string
+4. `expires_at`, if present, must be a valid ISO 8601 date in the future
+
+**Stale acks** (id no longer present in the report) are **reported as errors** in the gate's block message — the gate ignores them for ack-counting purposes but tells you which entries are stale so you can clean them up.
+
+> **ID-shift footgun:** Entry IDs (`B1`, `B2`, ...) are **positional** — they are reassigned sequentially when the drift report is regenerated. If a new claim appears or claim ordering changes, an existing ack for `B2` may now refer to a completely different finding. **Always cross-check each ack's `reason` against the current report's entry text** before committing the acks file. The gate cannot detect this — it only checks that the id exists and the class is DIVERGED.
+
+**Anti-pattern (forbidden):** Reverting valid changes from the plan or target document **to make the gate pass**. If a DIVERGED entry exists because the plan correctly fixed a design issue, **acknowledge it** — do not unwind the fix. Reverting good work to satisfy a binary gate is the failure mode this escape hatch exists to prevent.
+
+**Why per-entry, not per-run:** A run-level waiver would auto-accept new DIVERGED entries that appear after the waiver is written, hiding regressions. Per-entry acks fail closed on new divergences — exactly what you want.
+
+**Why MISSING is not eligible:** `MISSING` means the SOT requires something the target does not have. That's an incomplete plan or implementation, not a justified disagreement. Address it in the target.
 
 ---
 

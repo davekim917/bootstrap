@@ -78,12 +78,16 @@ Then invoke `/team-drift`:
 - **Target:** The approved plan document (`.context/specs/<feature>/plan.md`)
 - **Save report to:** `.context/specs/<feature>/pre-build-drift.md`
 
-<!-- GATE: pre-build-drift — MISSING=0, DIVERGED=0 -->
+<!-- GATE: pre-build-drift — MISSING=0, effective_DIVERGED=0 -->
 **Gate:**
-- If **MISSING > 0 or DIVERGED > 0:** STOP. The plan doesn't faithfully reflect the design. Display the blocking findings and tell the user to reconcile the plan with the design before proceeding. Do not create the team or spawn builders.
-- If **MISSING == 0 and DIVERGED == 0:** Proceed to Step 3 (team creation). Log any PARTIAL findings as known risks carried into the build.
+- If **MISSING > 0:** STOP. The plan is incomplete relative to the design. Reconcile the plan with the design — MISSING entries are not eligible for acknowledgment. Do not create the team or spawn builders.
+- If **DIVERGED > 0 and not all DIVERGED entries are acknowledged:** STOP. For each DIVERGED entry, choose one of:
+   1. Fix the plan to match the design (the plan was wrong), OR
+   2. Acknowledge the divergence in `.context/specs/<feature>/drift-acks.json` with a non-empty `reason` (the divergence is intentional and correct — for example, a Stage-3 review finding that required the plan to deviate). See `team-drift/references/drift-acks-template.json` for the schema.
+   - **Do not revert valid changes from the plan to satisfy the gate.** If the plan is intentionally diverging because of a justified decision, acknowledge it. Reverting good work to make a binary gate pass is the failure mode this escape hatch exists to prevent.
+- If **MISSING == 0 and effective_DIVERGED == 0** (all DIVERGED entries acknowledged or zero to begin with): Proceed to Step 3 (team creation). Log any PARTIAL findings as known risks carried into the build.
 
-**Why before team creation:** Spawning builders costs tokens and time. If the plan drifts from the design, everything built from it is wrong. Catch it before spending anything.
+**Why before team creation:** Spawning builders costs tokens and time. If the plan drifts from the design, everything built from it is wrong. Catch it before spending anything. The ack escape hatch ensures the gate blocks **unintentional** drift while not punishing **intentional, justified** divergence.
 
 ### Optional: Worktree Isolation
 
@@ -180,6 +184,12 @@ The user can override path selection. If uncertain, default to Path A (team-coor
 
 ### Step 3: Create Team and Register Tasks
 
+**Team naming convention (REQUIRED — gate-enforced):**
+
+The team name MUST match `<feature-name>-build` where `feature-name` is `^[a-z0-9][a-z0-9_-]{0,63}$` (lowercase alphanumeric, hyphens, underscores; starts with alphanumeric; max 64 chars). The workflow gate hook (`workflow-gate-enforcement`) uses the feature name to locate the drift report at `.context/specs/<feature-name>/pre-build-drift.md` and the acks file at `.context/specs/<feature-name>/drift-acks.json`. The strict allowlist prevents path traversal in the gate hook.
+
+If the team name does not match the convention, the gate fails closed with a `BLOCKED: Build teams must use the naming convention "<feature-name>-build"` message — even if a passing drift report exists for a different feature. Do NOT try to work around this by renaming after the fact; pick the correct name up front.
+
 **Create the team:**
 ```
 TeamCreate(
@@ -263,6 +273,66 @@ overlapping groups — one follows its assignment correctly while another unilat
 expands into adjacent groups, producing duplicate work and requiring manual merge
 reconciliation downstream. Observed failure mode: a builder assigned only Group D built
 Groups A+B+D, overlapping with the builder that was correctly working on Group A.
+
+**Spawn verification (REQUIRED — do NOT proceed to Step 5 until verified):**
+
+The spawn loop above can fail silently in several modes — `TaskCreate` unavailable
+in the current tool registry, container EACCES on the team workspace, the harness
+returning a success code for an enqueue that never picks up. A lead that trusts the
+spawn tool's return value alone will then post "build team is live" and wait for
+status messages from builders that never started. Observed failure mode: 30+ minutes
+of silent inactivity before the user asked for status and the lead discovered that
+none of the builders had ever begun work.
+
+**Procedure (do not skip any step):**
+
+1. **Wait 60 seconds** after the last spawn call returns. Use the Bash tool:
+   ```bash
+   sleep 60
+   ```
+   60s sits in the middle of mature-orchestrator launch-verification windows: Kubernetes
+   `startupProbe` defaults to ~30s, systemd `Type=notify` `TimeoutStartSec` defaults to
+   90s, Prefect's zombie-detection window is 90s. 60s is long enough to let real
+   builders pick up the work and short enough to fail fast on a broken spawn mechanism.
+   Do not skip the wait — polling immediately after spawn will report `pending` for
+   builders that are about to start normally, producing false STUCK signals.
+2. **Call `TaskList(team_name: "<feature-name>-build")`** and inspect each spawned
+   builder's status. For each entry in `builder_assignments`:
+   - **PASS:** the corresponding task exists in TaskList AND its status is `running` or
+     `completed`.
+   - **STUCK:** the task is missing from TaskList entirely, OR the task exists but its
+     status is `pending`.
+3. **If ALL builders PASS:** log `Spawn verified: N/N builders running` and proceed to
+   Step 5.
+4. **If ANY builder is STUCK:**
+   1. **Capture both signals before retrying.** Log the spawn tool's original return
+      value alongside the polled state for that builder. Do not discard the original
+      return — it may contain the failure cause.
+   2. **Re-spawn that builder ONCE** with the same prompt and assignment.
+   3. **Wait another 60 seconds** (`sleep 60` via Bash, same as step 1).
+   4. **Re-poll** with `TaskList`. If the builder is now PASS, log `Spawn verified
+      after one retry` and proceed.
+   5. **If still STUCK after the retry: STOP. Fail loud.** Surface to the user:
+      - Which builder(s) failed to start
+      - The original spawn return value
+      - The re-spawn return value
+      - The polled `TaskList` state for each
+      - A statement that the spawn mechanism is broken and the build cannot continue
+        until the user investigates (likely causes: tool registry missing TaskCreate,
+        container/permissions issue, harness misconfiguration).
+      Do **not** silently continue with a partially-spawned team. Do **not** "build
+      around" missing builders by reassigning their groups to others — the failure is
+      structural and reassigning hides it.
+
+**Why:** Trusting a spawn call's synchronous return is the universally-warned
+anti-pattern across mature orchestrators. Kubernetes Job controller polls Pod status
+to confirm `Running`; Airflow's scheduler tracks task heartbeats and marks missing
+ones as zombies; systemd `Type=notify` requires the child to signal `READY=1` and
+treats `TimeoutStartSec` as fatal; Erlang OTP `supervisor:start_link/3` is synchronous
+and surfaces `init/1` failures immediately. Every system that has been around long
+enough to encounter the "looks-launched-but-isn't" failure mode has built explicit
+verification. The bootstrap workflow is no exception — verifying spawn cheaply
+prevents the most expensive build-failure mode (silent inactivity).
 
 ### Step 5: Monitor, Unblock, and Validate
 
