@@ -96,6 +96,28 @@ full path. If modifying an existing file, confirm it exists first with a quick r
 One of: CREATE (new file), MODIFY (change existing file), DELETE (remove file).
 For MODIFY: state which functions/sections change and which must stay untouched.
 
+**b.5) Test file path (required unless task produces non-testable artifact)**
+
+Every task producing testable code MUST include an exact test file path in the task spec,
+formatted as `**Test file:** exact/path/to/file.test.ts`. Use the project's test convention
+from CLAUDE.md (co-located `.test.ts`, `__tests__/file.spec.ts`, top-level `tests/`, etc.).
+
+**The test file is a first-class owned file** — it must also appear in the File Ownership
+Map at the top of the plan as a separate row, with the same Group/Task assignment as the
+production file. Builders own BOTH files and are responsible for producing BOTH. A task
+that ships without its test file is a `/team-build` acceptance failure (see
+`/team-build` Step 5 named-test-cases pre-flight gate).
+
+**Omission is allowed ONLY for tasks with no testable code** — e.g. a pure SQL migration
+(tested end-to-end at integration level), a static JSON data file, a docs-only edit. In
+these cases, write `**Test file:** none — reason: [specific reason]` in place of the path,
+and carry the reason forward into the Integration Checklist so `/team-build` knows this
+task is legitimately test-less rather than missing tests by oversight.
+
+**Do NOT omit the test file for tasks that COULD have unit tests but "seem small".** If
+the code has branching logic, input validation, error paths, or any behavior the plan
+specifies in ASSERT lines, it has testable code and requires a test file.
+
 **c) Implementation approach**
 2-4 sentences describing what to build. Cite the project skill or CLAUDE.md section this
 follows. Do not describe the obvious — describe the non-obvious decisions.
@@ -220,6 +242,22 @@ File conflict check:
 - Merge point: explicitly designate a merge task that runs after both groups finish
 
 No unresolved file conflicts in the final plan.
+
+**Test file coverage check:** In the same pass, verify every task has a `**Test file:**`
+field populated — either with an exact test file path OR with an explicit
+`none — reason: [specific reason]` for legitimately non-testable tasks (migrations tested
+via integration, static data files, docs-only edits). Tasks with neither are plan defects.
+
+```
+Test file coverage:
+  Task A1 (migration 001)         — Test file: none — reason: integration-tested ✓
+  Task A2 (validateUser function) — Test file: src/auth/validateUser.test.ts     ✓
+  Task B1 (visit log service)     — Test file: **MISSING** ⚠ DEFECT
+```
+
+Do not proceed with a missing test file field silently. Either add the path, or add the
+explicit "none — reason: [X]" note and carry the reason into the Integration Checklist so
+`/team-build`'s named-test-cases pre-flight knows this task is legitimately test-less.
 
 **Render-check coverage check:** If the design contained `[RENDER-CHECK NEEDED]` flags (collected in Step 1), verify that every flag appears in at least one task's acceptance criteria. List the results:
 

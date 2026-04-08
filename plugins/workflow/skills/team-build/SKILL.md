@@ -304,7 +304,24 @@ Task(
 **Lead validation checklist per group (before marking complete):**
 - [ ] Each file listed in the group exists at the exact path specified
 - [ ] For MODIFY tasks: read the file, confirm the specified changes are present
-- [ ] Run each named test case: `[test command from CLAUDE.md]`
+- [ ] **Named test cases exist in the codebase (BLOCKING pre-flight).** For every test
+  name listed in each task's `Test cases:` section of the plan (e.g. `test_create_visit_log`,
+  `test_create_visit_log_cross_tenant_isolation`), grep the codebase for that exact name:
+  ```bash
+  grep -rn "<test_name>" src/ test/ tests/ __tests__/ 2>/dev/null
+  ```
+  If ANY named test from the plan returns zero matches, **the task CANNOT be marked
+  complete**. Send an acceptance-failure message to the builder citing the missing test
+  by name and demanding the test file be written before the next completion report.
+  **A green full-test-suite run is NOT evidence that the named tests exist** — a
+  pre-existing test suite can report 100% pass while the new tests are entirely absent.
+  Verify each named test by name, not by aggregate pass count. **This is the single most
+  common failure mode of builder self-reports.**
+- [ ] Run each named test case individually by name (not just the full suite):
+  `[test command from CLAUDE.md] -t "<test_name>"` or the equivalent name filter for
+  the project's test runner. Each named test must report PASS individually. If the
+  runner doesn't support name filters, run the specific test file and grep its output
+  for each named test's pass line.
 - [ ] Every acceptance criterion verifies as true (not self-reported — actually check)
 - [ ] No regressions: existing test suite still passes
 - [ ] For frontend groups with render-check acceptance criteria: after functional criteria pass, the **lead** (not the builder) performs visual verification — start the dev server, use `mcp__chrome-devtools__navigate_page` + `mcp__chrome-devtools__take_screenshot` if devtools MCP is available; or if devtools MCP is unavailable, pause and tell the user explicitly: "Render-check required — [specific decision from the acceptance criterion, e.g., 'text-accent on bg-primary logo color']. Please verify in the browser and confirm to continue." Do not ask the builder for visual confirmation — builder agents cannot render or observe visual output. Do not self-approve render-checks.

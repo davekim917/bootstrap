@@ -39,9 +39,15 @@
 | File | Group | Task | Operation |
 |------|-------|------|-----------|
 | `path/to/file.ts` | Group A | A1 | CREATE |
+| `path/to/file.test.ts` | Group A | A1 | CREATE |
 | `path/to/other.ts` | Group B | B2 | MODIFY |
+| `path/to/other.test.ts` | Group B | B2 | CREATE |
 
-*(Every file appears exactly once — no cross-group conflicts)*
+*(Every file appears exactly once — no cross-group conflicts. **Test files are first-class
+owned files** — they must appear in this map just like production files. A task whose
+`**Test file:**` field is set has ownership of both the production file and its test file;
+both must be listed as separate rows. Tasks with "no tests — reason: X" omit the test row
+and carry the reason into Known Risks.)*
 
 ---
 
@@ -57,6 +63,7 @@
 
 **File:** `exact/path/to/file.ts`
 **Operation:** CREATE / MODIFY / DELETE
+**Test file:** `exact/path/to/file.test.ts` *(or `path/__tests__/file.spec.ts` — follow the project's test convention from CLAUDE.md. **Required** for any task producing testable code. Omit only with an explicit "no tests — reason: [X]" note for tasks producing purely non-testable artifacts, e.g. a migration SQL file tested end-to-end via integration tests, a static JSON data file, or a pure docs edit. If omitted, the reason must appear here in place of the path.)*
 
 **Approach:**
 [2-4 sentences. What to build, why this approach, which convention it follows. Cite the skill or
