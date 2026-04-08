@@ -1,9 +1,9 @@
 # Security Baseline Checklist
 
 Used when no project `security-review-gates` skill exists, or as a quick inline check for
-non-security-critical files before deciding whether to invoke the `security-reviewer` agent.
+non-security-critical files before deciding whether to invoke the `bootstrap-workflow:security-reviewer` agent.
 
-If the changed files touch auth, user data, or external APIs — always invoke `security-reviewer`
+If the changed files touch auth, user data, or external APIs — always invoke `bootstrap-workflow:security-reviewer`
 agent regardless of this baseline. This checklist is for quick triage, not deep analysis.
 
 ---
@@ -118,9 +118,9 @@ metric definitions. These supplement (not replace) the checks above.
 
 ---
 
-## When to Escalate to `security-reviewer` Agent
+## When to Escalate to `bootstrap-workflow:security-reviewer` Agent
 
-Invoke the `security-reviewer` agent (not this checklist) when changed files include:
+Invoke the `bootstrap-workflow:security-reviewer` agent (not this checklist) when changed files include:
 - Authentication or session management code
 - Authorization / permissions / role checks
 - Payment processing or financial data

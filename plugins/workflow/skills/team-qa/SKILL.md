@@ -234,13 +234,13 @@ Run inline (Claude reads files directly):
 
 **Context:** Changed files + security-review-gates project skill (if it exists)
 
-**Decision:** Use the `security-reviewer` agent for all auth-touching, user-data, or API changes.
+**Decision:** Use the `bootstrap-workflow:security-reviewer` agent for all auth-touching, user-data, or API changes.
 For pure config or styling changes, run the baseline checklist inline.
 
 For security-relevant files, spawn via Task tool:
 ```
 Task(
-  subagent_type: "security-reviewer",
+  subagent_type: "bootstrap-workflow:security-reviewer",
   prompt: "Review these changed files for security issues: [list].
            Load project security skill if it exists: .claude/skills/security-review-gates/SKILL.md
            Focus on: auth checks, input validation, secrets exposure, injection risks, access control,
@@ -261,13 +261,13 @@ For non-security-relevant files (pure styling, pure docs):
 
 **Context:** Changed files + performance-review-gates project skill (if it exists)
 
-**Decision:** Use the `performance-analyzer` agent for data-layer, API, or component changes.
+**Decision:** Use the `bootstrap-workflow:performance-analyzer` agent for data-layer, API, or component changes.
 For pure styling or doc changes, skip this validator.
 
 For performance-relevant files, spawn via Task tool:
 ```
 Task(
-  subagent_type: "performance-analyzer",
+  subagent_type: "bootstrap-workflow:performance-analyzer",
   prompt: "Review these changed files for performance issues: [list].
            Load project performance skill if it exists: .claude/skills/performance-review-gates/SKILL.md
            Focus on: N+1 queries, missing indexes on queried fields, unbounded queries, cache
@@ -506,7 +506,7 @@ QA pipeline clear. Ready to ship.
 ---
 ```
 
-**Note:** The `(M introduced, P pre-existing)` breakdown appears only on the Style line. Validators C (security-reviewer) and D (performance-analyzer) are specialized subagents that report findings by severity only — they do not classify findings by origin, so origin breakdowns do not appear in their lines.
+**Note:** The `(M introduced, P pre-existing)` breakdown appears only on the Style line. Validators C (bootstrap-workflow:security-reviewer) and D (bootstrap-workflow:performance-analyzer) are specialized subagents that report findings by severity only — they do not classify findings by origin, so origin breakdowns do not appear in their lines.
 
 **Loop:** Fix MUST-FIX items → re-run `/team-qa` on the changed files → until clear.
 
@@ -586,8 +586,8 @@ When QA clears with no MUST-FIX items remaining, add to the "all clear" gate mes
 |------|------|-----------|
 | Lead (current session, orchestrates) | Opus (current session) | Denoise runs inline, finding classification requires judgment, gate decisions need care |
 | Validator A: Style Audit | Sonnet | Mechanical: convention matching against a loaded skill |
-| Validator C: Security Review | security-reviewer agent | Specialized agent — inherits that agent's model |
-| Validator D: Performance Review | performance-analyzer agent | Specialized agent — inherits that agent's model |
+| Validator C: Security Review | bootstrap-workflow:security-reviewer agent | Specialized agent — inherits that agent's model |
+| Validator D: Performance Review | bootstrap-workflow:performance-analyzer agent | Specialized agent — inherits that agent's model |
 | Validator E: Codex Adversarial | Codex (OpenAI) | Cross-model adversarial pass — runs via `codex exec --yolo` with the verbatim prompt from `references/codex-adversarial-prompt.md` |
 
 **Rationale:** Validators A-D are mechanical Claude checks (convention matching, known-bad-pattern detection). Validator E adds a non-Claude perspective on the same diff to catch failure modes Claude tends to miss. Reserve Opus for denoise (inline), finding classification, and the final gate judgment.

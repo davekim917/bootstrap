@@ -4,10 +4,10 @@ Reference for the team lead when constructing prompts for each reviewer in Step 
 
 ---
 
-## Reviewer A: Architecture (architecture-advisor subagent)
+## Reviewer A: Architecture (bootstrap-workflow:architecture-advisor subagent)
 
-Passed via Task tool `prompt` parameter with `subagent_type: architecture-advisor`. The
-architecture-advisor has its own system prompt and tools (Read, Grep, Glob, Bash, Exa, Serena) —
+Passed via Task tool `prompt` parameter with `subagent_type: bootstrap-workflow:architecture-advisor`. The
+bootstrap-workflow:architecture-advisor has its own system prompt and tools (Read, Grep, Glob, Bash, Exa, Serena) —
 this prompt scopes its review lens.
 
 Reviewer A has direct access to Context7 and Exa MCP tools — it can independently verify
@@ -180,7 +180,7 @@ so the lead can note it in the report header.
 **For all three reviewers:**
 
 - All prompts are passed via the Task tool's `prompt` parameter
-- Reviewer A uses `subagent_type: architecture-advisor`
+- Reviewer A uses `subagent_type: bootstrap-workflow:architecture-advisor`
 - Reviewers B and C use `subagent_type: general-purpose` (they're forwarders, not specialized reviewers)
 - All subagents have access to the Skill tool (B invokes /bootstrap-workflow:best-practice-check)
   and Bash (C runs codex exec --yolo)

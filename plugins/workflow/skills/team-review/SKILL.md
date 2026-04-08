@@ -17,7 +17,7 @@ into MUST-FIX / SHOULD-FIX / WON'T-FIX. The design cannot proceed to `/team-plan
 items are resolved or explicitly waived.
 
 **Key principle:** The reviewers complement each other along three axes.
-- **Reviewer A (architecture-advisor, Claude)** judges *internal* fit — does this design work
+- **Reviewer A (bootstrap-workflow:architecture-advisor, Claude)** judges *internal* fit — does this design work
   within the project's constraints, patterns, and existing code?
 - **Reviewer B (best-practice-check)** judges *external* fit — does this approach match established
   industry patterns for this problem class, with rigorous source-tier discipline?
@@ -91,9 +91,9 @@ diversity was reduced.
 
 ---
 
-#### Reviewer A: Architecture (architecture-advisor subagent)
+#### Reviewer A: Architecture (bootstrap-workflow:architecture-advisor subagent)
 
-Use the Task tool with `subagent_type: architecture-advisor`. See `references/reviewer-prompts.md`
+Use the Task tool with `subagent_type: bootstrap-workflow:architecture-advisor`. See `references/reviewer-prompts.md`
 for the full prompt template. Fill in `[LIST SKILL NAMES]` with the 2-3 skills identified in Step 1.
 
 Reviewer A's lens: **STRUCTURAL INTEGRITY**
@@ -290,7 +290,7 @@ re-running with Codex once available if the design touches high-stakes areas.
 
 | Reviewer | Model | Implementation | Lens | Evidence base |
 |----------|-------|---------------|------|---------------|
-| A: architecture-advisor | Claude | Task subagent | Structural integrity, internal pattern fit | Codebase + CLAUDE.md + Context7/Exa for library verification |
+| A: bootstrap-workflow:architecture-advisor | Claude | Task subagent | Structural integrity, internal pattern fit | Codebase + CLAUDE.md + Context7/Exa for library verification |
 | B: bootstrap-workflow:best-practice-check | Claude | Task subagent forwarder → Skill tool | External pattern validation, drift from established practice | Mandatory external research via Exa/Context7/DeepWiki with T1/T2/T3 source tiers |
 | C: codex-adversarial-design | Codex (GPT) | Task subagent runs `codex exec --yolo` with verbatim prompt from `references/codex-adversarial-design-prompt.md` | Assumption challenge, blind spots, simpler-approach alternatives | Design document only — no codebase access, no external research |
 
