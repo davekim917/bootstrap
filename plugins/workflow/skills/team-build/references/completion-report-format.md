@@ -99,7 +99,15 @@ After receiving each completion report, before marking task complete:
 
 - [ ] Read each file listed in the group at its exact path — does it exist?
 - [ ] For MODIFY tasks: confirm the changed functions are present, unchanged functions untouched
-- [ ] Run each named test case: `[test command] [test name]` — confirm PASS
+- [ ] **BLOCKING pre-flight — named test cases exist in code.** For every test name
+  in the task's `Test cases:` section of the plan, `grep -rn "<test_name>" src/ test/ tests/ __tests__/ 2>/dev/null`.
+  Any zero-match is a blocking failure — send acceptance-failure, do NOT mark complete.
+  A green full-suite run does NOT prove named tests exist; the pre-existing suite can
+  pass while new tests are entirely absent. This check is the single most common
+  failure mode of optimistic builder self-reports and MUST NOT be skipped.
+- [ ] Run each named test case individually by name: `[test command] -t "<test_name>"`
+  (or the equivalent name filter for the runner). Each must PASS individually, not
+  just in aggregate.
 - [ ] Run full test suite: confirm no regressions
 - [ ] Check every acceptance criterion — read the code, don't trust the report
 - [ ] Review any "decisions not in spec" — are they consistent with the plan's intent?
