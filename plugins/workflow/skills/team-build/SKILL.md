@@ -46,6 +46,19 @@ in parallel, each isolated to their own task group and files.
 
 ### Step 1: Read and Parse the Plan
 
+**Resolve the feature name FIRST (single source of truth):**
+
+The feature name is the **directory name** under `.context/specs/`. It was chosen at `/team-brief` time and recorded in `decisions.yaml` under `feature:`. You **MUST** use this exact name for the rest of the workflow — including the team name in Step 3 (which is `<feature>-build` exactly).
+
+1. List `.context/specs/` and identify the active feature directory (e.g., `streets-frontend`).
+2. If multiple directories exist, ask the user which feature this build is for.
+3. If `.context/specs/<feature>/decisions.yaml` exists, read its `feature:` field and verify it matches the directory name. They MUST match — if they don't, STOP and ask the user to reconcile.
+4. Record the chosen feature name. Do NOT add prefixes (`xzo-crm-<feature>`) or suffixes; do NOT pick a different "more descriptive" name. The directory name is the canonical name and is used by the gate hook to locate `pre-build-drift.md` and `drift-acks.json`.
+
+> **Why:** Past failure mode — agent generated artifacts at `.context/specs/xzo-crm-streets-frontend/` but named the team `streets-frontend-build`. The gate looked for `.context/specs/streets-frontend/pre-build-drift.md` (derived from the team name minus `-build`) and didn't find it. Agent had to manually copy files to satisfy both paths. The feature name MUST come from a single source — the directory you're working in.
+
+**Then read the artifacts:**
+
 1. Read the approved plan — either from `.context/specs/<feature>/plan.md` or ask user to provide it
 2. Read the decision record — `.context/specs/<feature>/decisions.yaml` (constraints, rejected options, waivers, assumptions). This record informs builder prompt construction and sequential group context refresh.
 3. Read `CLAUDE.md` — extract:
@@ -186,9 +199,11 @@ The user can override path selection. If uncertain, default to Path A (team-coor
 
 **Team naming convention (REQUIRED — gate-enforced):**
 
-The team name MUST match `<feature-name>-build` where `feature-name` is `^[a-z0-9][a-z0-9_-]{0,63}$` (lowercase alphanumeric, hyphens, underscores; starts with alphanumeric; max 64 chars). The workflow gate hook (`workflow-gate-enforcement`) uses the feature name to locate the drift report at `.context/specs/<feature-name>/pre-build-drift.md` and the acks file at `.context/specs/<feature-name>/drift-acks.json`. The strict allowlist prevents path traversal in the gate hook.
+The team name MUST be exactly `<feature-name>-build` where `<feature-name>` is the **same value you resolved in Step 1** (the `.context/specs/<feature-name>/` directory name). It must also match the regex `^[a-z0-9][a-z0-9_-]{0,63}$` (lowercase alphanumeric, hyphens, underscores; starts with alphanumeric; max 64 chars).
 
-If the team name does not match the convention, the gate fails closed with a `BLOCKED: Build teams must use the naming convention "<feature-name>-build"` message — even if a passing drift report exists for a different feature. Do NOT try to work around this by renaming after the fact; pick the correct name up front.
+**Derive, do not invent.** Compute the team name as a literal string concatenation: `<feature-name-from-Step-1>` + `-build`. Do not add prefixes, do not "improve" the name, do not use a more descriptive variant. The workflow gate hook (`workflow-gate-enforcement`) uses the team name to locate the drift report at `.context/specs/<feature-name>/pre-build-drift.md` and the acks file at `.context/specs/<feature-name>/drift-acks.json`. If the team name and the directory name disagree, the gate cannot find the artifacts and fails closed.
+
+If the team name does not match the convention or does not match the Step 1 feature directory, the gate fails with `BLOCKED: Build teams must use the naming convention "<feature-name>-build"` — even if a passing drift report exists for a different feature. The strict allowlist also prevents path traversal in the gate hook.
 
 **Create the team:**
 ```
