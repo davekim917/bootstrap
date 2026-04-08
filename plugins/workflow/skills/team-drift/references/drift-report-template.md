@@ -77,8 +77,10 @@
 
 ## Gate
 
-- [ ] All MISSING mismatches resolved or explicitly accepted with stated reason
-- [ ] All DIVERGED mismatches resolved or explicitly accepted with stated reason
+- [ ] All MISSING mismatches resolved (MISSING is **not** eligible for acknowledgment — the target must address it)
+- [ ] All DIVERGED mismatches either resolved OR acknowledged in `drift-acks.json` with a non-empty `reason`
 - [ ] All PARTIAL matches reviewed (addressed, accepted, or logged)
 
 **Proceed only when the gate above is clear.**
+
+> **DIVERGED escape hatch:** intentional, justified divergences (e.g., a Stage-3 review finding that required the plan to deviate from the design) can be acknowledged in `.context/specs/<feature>/drift-acks.json` rather than reverted. Each ack references a `[B<n>]` id from this report and supplies a non-empty `reason`. See `team-drift/references/drift-acks-template.json` for the schema and a worked example. **Do not revert valid changes to make the gate pass.**
