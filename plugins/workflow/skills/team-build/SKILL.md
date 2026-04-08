@@ -111,6 +111,51 @@ Do not ask again.
 
 ---
 
+### Working Directory Discipline (NanoClaw & sandboxed harnesses)
+
+Before doing any git clone, `gh repo clone`, `mkdir`, or `cp` for build-orchestration
+state (the lead's branch clone, drift-check workspaces, scratch notes, builder
+coordination files), verify you are writing to a **persistent, harness-writable** path.
+
+**Rules:**
+
+1. **Clone to the harness-provided working dir, not `/tmp/`.** On NanoClaw and similar
+   sandboxed harnesses, `/tmp/` is ephemeral per-container and **invisible to sub-agent
+   builders spawned in separate contexts**. Work you place in `/tmp/` will be silently
+   lost between builder spawns and between message turns — the lead will then try to
+   "rebuild" state it cannot see, producing phantom reconstructions of work that already
+   exists in the actual persistent location.
+
+2. **On NanoClaw containers:** `/workspace/group/` is the persistent writable mount for
+   the current group. `/workspace/group/<REPO-NAME>/` (if present) is the existing
+   thread worktree — prefer it over a fresh clone. If you need a separate clone for a
+   drift check, put it at `/workspace/group/<REPO-NAME>-drift-<feature>` (same writable
+   mount, different subdirectory). Never clone to `/workspace/` (read-only parent mount),
+   `/home/`, `/opt/`, or `/tmp/`.
+
+3. **Probe before cloning anywhere you're not sure about.** If you get an EACCES or
+   "Permission denied" on a `mkdir` or `git clone`, **do not silently fall back to
+   `/tmp/`**. Surface the error to the user and ask where to work, or retry inside
+   `/workspace/group/`. A `/tmp/` fallback will mask the real problem and cause silent
+   data loss downstream when builders can't see your work.
+
+4. **When running `codex exec` for drift checks:** codex requires `cwd` to be inside a
+   git repo (or it will bail with "not in a git repo"). `cd` into the cloned repo
+   first. Do not assume the process started inside one.
+
+5. **Pass the persistent path to builders in their spawn messages.** If the lead is
+   working in `/workspace/group/XZO-BACKEND`, the builder prompt must explicitly state
+   the same path so builders write to the same persistent location.
+
+**Observed failure mode (for context):** Lead agents that fall back to `/tmp/` for a
+branch clone after a `/workspace/` EACCES typically lose ~30 minutes of builder output
+per failure, because sub-agent builders spawn in fresh contexts and write to the real
+persistent path while the lead is still reading/writing its phantom `/tmp/` copy. The
+lead then reports "Builder X's worktree is gone" and tries to reconstruct. It is not
+gone — the lead is looking in the wrong place.
+
+---
+
 ### Build Path Selection
 
 Before creating the team, determine which execution path fits this build:
@@ -158,6 +203,23 @@ builders will read it from the task list to know what to do.
 Spawn one builder per **independent** task group simultaneously (parallel Task tool calls).
 Sequential groups are spawned after their dependencies complete (Step 5 handles this).
 
+**Builder assignment discipline — REQUIRED before spawning:**
+
+Maintain an explicit `builder_assignments` map in working memory (and in the plan record if
+you're saving state), keyed by builder name, valued by the single group the builder owns:
+
+```
+builder_assignments:
+  builder-A: { group: "A", files: ["src/.../foo.ts", ...] }
+  builder-B: { group: "B", files: ["src/.../bar.ts", ...] }
+  builder-C: { group: "C", files: [...] }
+```
+
+Each builder is assigned **exactly one group**. File ownership lists must not overlap across
+builders. Before spawning, verify no two entries share any file path — if they do, the plan
+has a file conflict that should have been caught in `/team-plan` Step 5, and you must STOP
+and reconcile before spawning.
+
 **For each independent group**, launch a background Task with `run_in_background: true`:
 
 ```
@@ -176,6 +238,31 @@ The builder prompt (see `references/builder-prompt-template.md`) must contain:
 2. CLAUDE.md excerpts: tech stack, test/lint commands, critical guardrails
 3. The team name and their task ID (so they can TaskUpdate and SendMessage)
 4. Clear instructions: read only owned files, report via SendMessage, don't load external skills
+5. **An explicit scope contract:** the prompt must state `YOUR GROUP: <letter>` and
+   `FILES YOU OWN (exclusive):` with the full list, and must require the builder's first
+   status message to echo back `ACK: Builder <name> claiming Group <letter>, files: [...]`
+6. **An out-of-scope prohibition:** the prompt must include:
+   *"You are forbidden from creating, modifying, or even reading files outside your
+   ownership list. If the spec seems to require work outside your list, STOP and message
+   the lead — do not silently expand your scope. Another builder owns that work."*
+
+**Lead-side verification after spawn:**
+
+When each builder sends its first status message, verify the echo-back matches the
+assignment map. Specifically:
+- The builder's claimed group letter MUST match `builder_assignments[builder-name].group`
+- The builder's claimed file list MUST be a subset of the assigned files (exact match or fewer — never more)
+
+If a builder's echo-back reports a different group or reports files not in its assignment,
+SendMessage to the builder: *"Scope mismatch. Your assignment is Group X, files [list].
+Do not work on any other group. Confirm and proceed."* If the same builder reports
+out-of-scope work a second time, terminate it (TaskStop) and respawn with a tighter prompt.
+
+**Why:** Without explicit scope echo-back and verification, two builders can silently claim
+overlapping groups — one follows its assignment correctly while another unilaterally
+expands into adjacent groups, producing duplicate work and requiring manual merge
+reconciliation downstream. Observed failure mode: a builder assigned only Group D built
+Groups A+B+D, overlapping with the builder that was correctly working on Group A.
 
 ### Step 5: Monitor, Unblock, and Validate
 
