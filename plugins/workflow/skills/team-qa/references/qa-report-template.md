@@ -11,8 +11,7 @@
 | Denoise | [N] | — | — | [N] | Clear / [N outstanding] |
 | Style | [N] | [N] | [N] | [N] | Clear / [N outstanding] |
 | Doc freshness | [N] | — | [N] | [N] | Clear / [N outstanding] |
-| Security | [N] | [N] | [N] | — | Clear / [N outstanding] |
-| Performance | [N] | [N] | [N] | [N] | Clear / [N outstanding] |
+| Code review (swarm) | [N] | [N] | [N] | — | Clear / [N outstanding] / Skipped — no code changes / Failed — swarm error |
 | **Total** | **[N]** | **[N]** | **[N]** | **[N]** | |
 
 ---
@@ -74,44 +73,39 @@
 
 ---
 
-## Security Findings
+## Code Review (Swarm) Findings
+
+Delegated to `/review-swarm`. Findings are returned as BUG or SUGGESTION and translated to
+MUST-FIX / SHOULD-FIX per the team-qa classification mapping. Reviewers selected dynamically by
+review-swarm based on the diff (e.g., `security-reviewer`, `performance-reviewer`, `arch-reviewer`,
+`data-reviewer`, plus `adversarial-reviewer` + `domain-reviewer` always).
 
 ### MUST-FIX
 
-#### [SEC-M1] [Brief description] — Severity: Critical / High
+#### [CR-M1] [Brief description] — Flagged by: [reviewer-name(s)]
 - **File:** `[path:line]`
-- **Issue:** [What the vulnerability is]
-- **Risk:** [What an attacker could do]
-- **Fix:** [Specific remediation]
-- **Status:** Open / Fixed / Waived (`[stated reason — note: waiving security findings requires explicit acknowledgment of accepted risk]`)
+- **Issue:** [What the problem is — correctness, security, performance, architecture, convention, etc.]
+- **Impact / Risk:** [What breaks, what an attacker could do, or what degrades at scale]
+- **Fix:** [Specific remediation recommended by the swarm]
+- **Status:** Open / Fixed / Waived (`[stated reason — note: waiving security-category findings requires explicit acknowledgment of accepted risk]`)
 
 ### SHOULD-FIX
 
-#### [SEC-S1] [Brief description] — Severity: Medium
-[Same structure]
-
----
-
-## Performance Findings
-
-### MUST-FIX
-
-#### [PERF-M1] [Brief description] — Impact: High
+#### [CR-S1] [Brief description] — Flagged by: [reviewer-name(s)]
 - **File:** `[path:line]`
-- **Issue:** [What the performance problem is — e.g., "N+1 query in user listing loop"]
-- **Impact:** [Estimated degradation at scale]
-- **Fix:** [Specific remediation]
+- **Issue:** [description]
+- **Suggested change:** [reviewer's recommendation]
 - **Status:** Open / Fixed / Waived (`[stated reason]`)
 
-### SHOULD-FIX
+### Reviewers Spawned
+| Reviewer | Role | Findings (BUG / SUGGESTION) |
+|----------|------|-----------------------------|
+| adversarial-reviewer | required | [N] / [N] |
+| domain-reviewer | required | [N] / [N] |
+| [dynamic reviewer 1] | selected: [criterion] | [N] / [N] |
+| [dynamic reviewer 2] | selected: [criterion] | [N] / [N] |
 
-#### [PERF-S1] [Brief description] — Impact: Medium
-[Same structure]
-
-### ADVISORY
-| Location | Issue | Impact | Status |
-|----------|-------|--------|--------|
-| `[file:line]` | [issue] | Low | Open / Fixed / Waived |
+(If swarm skipped — "Skipped — no code changes in this diff." If swarm failed — "Failed — [error summary]. Codex Validator E still covers a subset of adversarial ground.")
 
 ---
 
