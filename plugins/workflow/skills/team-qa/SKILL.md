@@ -243,63 +243,39 @@ Run inline (Claude reads files directly):
 **Context:** Full branch diff — delegated to `/review-swarm`, which does its own file reading,
 CLAUDE.md parsing, domain detection, and research.
 
-**Purpose:** The broad code-review lane. Covers code correctness, project conventions, security,
+**Purpose:** The broad code-review lane. Covers correctness, project conventions, security,
 performance, architecture, and domain-specific idioms through dynamic reviewer selection. Unlike
-scoped validators A and B, this validator deliberately receives rich context so its reviewers can
-research current best practices (context7, deepwiki, Exa) and collaborate (SendMessage) before
-reporting.
-
-**Why this is one validator, not many:** Security and performance used to be separate validators
-(C + D) invoking `bootstrap-workflow:security-reviewer` and `bootstrap-workflow:performance-analyzer`
-subagents in isolation. Review-swarm's dynamic reviewer selection already picks the relevant
-specialists based on the diff (security-reviewer on auth/credentials, performance-reviewer on
-data-layer/hot-paths, plus adversarial-reviewer and domain-reviewer always) — and its reviewers
-collaborate with each other before reporting, catching cross-cutting issues the isolated subagents
-miss. Collapsing C + D into CD also fills team-qa's previous gap: no pure code-review lane for
-correctness, idioms, and framework best practices.
+scoped validators A and B, this validator receives the full diff + CLAUDE.md + research tools so
+its reviewers can check current best practices (context7, deepwiki, Exa) and collaborate
+(SendMessage) before reporting. Replaces the previous isolated C (security) and D (performance)
+validators.
 
 **When to skip:** Pure docs or pure config diffs with no code changes. Otherwise always run.
 
-**Pre-flight check:** Verify review-swarm's mandatory research tools are available before
-invoking. Review-swarm requires Exa as its research floor (`review-swarm/SKILL.md:107`); if
-context7, deepwiki, AND all Exa tools are unavailable, the swarm will hard-fail mid-run.
-Pre-flight test:
-
-```bash
-# At least one of these MCP tool families must be present in the current session's tool list:
-#   mcp__exa__web_search_exa
-#   mcp__exa__get_code_context_exa
-#   mcp__exa__web_search_advanced_exa
-# (context7 and deepwiki are preferred but optional; Exa is the floor.)
-```
-
-If no Exa tool is present in the tool list, **skip this validator** with the warning:
+**Pre-flight check:** Verify at least one `mcp__exa__*` tool is in the session's tool list.
+Review-swarm hard-fails without Exa (`review-swarm/SKILL.md:107`). If none present, **skip
+this validator** with the warning:
 
 > ⚠ Code review swarm research tools unavailable (no mcp__exa__* present) — Validator CD skipped. Code review coverage reduced.
 
 **Invocation:** Skill-invoke `bootstrap-workflow:review-swarm` with the branch scope and
-domain hints. Review-swarm runs standalone — team-qa does NOT pre-compute file lists, domain,
-or CLAUDE.md for it. Review-swarm does its own Step 1 discovery. Team-qa passes only the git
-scope, the domain hints from Step 2, and waits for the combined report.
+domain hints from Step 2. Review-swarm does its own Step 1 discovery — team-qa passes only the
+git scope and the `<DOMAIN_HINTS>` block, then waits for the combined report.
 
 ```
 Skill(
   skill: "bootstrap-workflow:review-swarm",
   args: "Review the branch diff against <BASE_BRANCH>.
 
-         CRITICAL — diff scope override: Use exactly this command for your Step 1
-         diff gathering, instead of your default 'git diff HEAD':
+         CRITICAL diff scope override: Use exactly this command for your Step 1 diff
+         gathering, instead of your default 'git diff HEAD':
              git diff <BASE_BRANCH>...HEAD
 
-         This is a standalone invocation from team-qa post-build validation.
-         The invoking team-qa lead has identified changed files but is NOT pre-computing
-         domain detection — do your own Step 1 discovery against the diff above.
+         Standalone invocation from team-qa post-build validation. Do your own Step 1
+         discovery against the diff above.
 
          <DOMAIN_HINTS>
-           [team-qa lead inserts the 'Domain hints to forward to swarm' content here —
-            see the team-qa Validator CD section. Includes file-type → security/perf
-            annotations and any project-specific *-review-gates skills discovered at
-            team-qa Step 2.]
+         [see §'Domain Hints to Forward to Swarm' — lead inserts the built block here]
          </DOMAIN_HINTS>
 
          Return the combined review report with BUG and SUGGESTION findings classified
@@ -307,8 +283,7 @@ Skill(
 )
 ```
 
-Replace `<BASE_BRANCH>` with the project's actual base branch (`main`, `staging`, etc.) — the
-same base used in Step 1 to identify changed files.
+Replace `<BASE_BRANCH>` with the project's base branch (same as Step 1).
 
 **Timeout:** Review-swarm has its own per-reviewer 3min+1min timeout discipline, but the swarm
 as a whole (collaboration rounds + research) can run 10+ minutes. Team-qa's Phase 2 lead is
@@ -323,8 +298,7 @@ review-swarm fails" below) and continue. Do not retry mid-run.
 | BUG                | MUST-FIX      |
 | SUGGESTION         | SHOULD-FIX    |
 
-Review-swarm's collaboration step already filters low-value noise, so the ADVISORY tier from other
-validators does not apply to swarm findings.
+No ADVISORY tier for swarm findings — review-swarm's collaboration step filters noise upstream.
 
 **Ensure cleanup:** Review-swarm's Step 6 deletes its team (`TeamDelete`) after reporting, but
 this is best-effort and may be skipped if the swarm crashes mid-run. Explicitly verify and
@@ -336,13 +310,12 @@ TeamList()    # check whether team "code-review" still exists
 TeamDelete(team_name: "code-review")
 ```
 
-A leaked team will persist across QA runs, eventually causing TeamCreate failures on the next
-`/team-qa` invocation when review-swarm tries to create a team that already exists.
+A leaked team causes TeamCreate failures on the next `/team-qa` run.
 
 **If review-swarm fails (research tools down, swarm timeout > 15min, mid-run error):** Log
 "Code review swarm failed — Validator CD skipped this run" in the report, run the cleanup
-above (the failed run may have left a leaked team), and continue. Do not retry mid-run. The
-Codex adversarial pass (Validator E) still covers a subset of the same ground.
+above, and continue. Do not retry mid-run. Codex (Validator E) still covers a subset of the
+same ground.
 
 ---
 
@@ -554,15 +527,10 @@ Doc freshness:  [N stale items]
 Code review (swarm): [N findings — N MUST-FIX (BUG), N SHOULD-FIX (SUGGESTION)]   [or: skipped — no code changes | skipped — Exa unavailable | failed — swarm error]
 Codex (cross-model): [N findings — N MUST-FIX, N SHOULD-FIX, N ADVISORY]   [or: skipped — Codex unavailable]
 
-[If Validator CD was skipped or failed for any reason:]
-⚠ COVERAGE DEGRADED: code review lane unavailable this run.
-   The MUST-FIX total below does NOT include findings the swarm would have produced.
-   Read this gate as "all checks that ran are clear", NOT "all coverage is clear".
-   If this is post-build pre-ship, consider re-running `/team-qa --only swarm` once tools recover.
-
-[If Validator E was skipped:]
-⚠ COVERAGE DEGRADED: cross-model adversarial lane unavailable this run.
-   No non-Claude pass on this diff. Re-run `/team-qa --only codex` if Codex recovers.
+[If CD or E was skipped/failed:]
+⚠ COVERAGE DEGRADED: [code review swarm | cross-model adversarial] unavailable this run.
+   MUST-FIX total below excludes findings that lane would produce.
+   Re-run `/team-qa --only [swarm|codex]` once tools recover.
 
 MUST-FIX total: [N]
 
@@ -590,11 +558,8 @@ QA pipeline clear. Ready to ship.
 
 ## Validator Routing by File Type
 
-Validator CD (code review swarm) decides its own reviewer mix internally via review-swarm's
-dynamic selection — team-qa only decides "swarm or not" per file type. The table below shows
-when CD applies; when it does, review-swarm picks the relevant specialists (security-reviewer
-on auth/credentials, performance-reviewer on data-layer/hot-paths, arch-reviewer on structural
-changes, data-reviewer on dbt/SQL, etc.) based on its own Step 2 selection rules.
+Team-qa decides "swarm or not" per file type below; review-swarm picks its own reviewer mix
+internally (`review-swarm/SKILL.md:71-78`).
 
 | Changed file type | Denoise | Style | Doc | Code Review (CD) |
 |-------------------|---------|-------|-----|------------------|
@@ -634,11 +599,8 @@ changes, data-reviewer on dbt/SQL, etc.) based on its own Step 2 selection rules
 
 ## Domain Hints to Forward to Swarm
 
-Validator CD's invocation passes a `<DOMAIN_HINTS>` block to review-swarm so the swarm's
-dynamic reviewer selection benefits from team-qa's institutional knowledge about specific
-file types and from any project-specific gate skills that exist in `.claude/skills/`. This
-preserves coverage that the file-type routing table used to encode directly when team-qa
-spawned Validators C and D.
+Build the `<DOMAIN_HINTS>` block for the Validator CD invocation from Parts 1 and 2 below.
+Part 1 is always included; Part 2 is conditional on project skills.
 
 ### Part 1: File-type concern annotations (always included)
 
@@ -700,23 +662,6 @@ already-flagged style issues — focus on convention violations that A's mechani
 No project-specific gate skills present. Use your built-in reviewer focus areas + CLAUDE.md.
 ```
 
-This matches the team-* skills' standard graceful-degradation pattern: forward what exists,
-skip what doesn't, never hard-fail on missing project skills.
-
-### Why this matters
-
-Without `<DOMAIN_HINTS>`, review-swarm's dynamic selection rules (`review-swarm/SKILL.md:71-78`)
-would still pick `security-reviewer` on auth flows and `performance-reviewer` on data-layer
-hot paths, but it would miss the long tail of domain-specific concerns the file-type routing
-table used to enforce: PII in notebook cell outputs, credentials in DAG configs, full-table
-scans on financial GL models, prompt injection via agent tool results, etc. These are not in
-review-swarm's built-in selection criteria. Forwarding them as hints lets the swarm spawn the
-right reviewers AND prompt them with the right concerns.
-
-It also lets `/bootstrap-skills`-generated `security-review-gates` and `performance-review-gates`
-project skills continue to feed project-specific rules into the QA pipeline — preserving the
-feature that those skills exist to provide.
-
 ---
 
 ## Anti-Patterns (Do Not Do These)
@@ -758,16 +703,8 @@ When QA clears with no MUST-FIX items remaining, add to the "all clear" gate mes
 | Validator CD: Code Review Swarm | `/review-swarm` (team agents, model per reviewer) | Delegated to review-swarm's own model selection. Covers correctness, security, performance, architecture, and domain idioms with research backing and reviewer collaboration. Replaces the isolated specialist subagents (security-reviewer, performance-analyzer) previously used as Validators C and D. |
 | Validator E: Codex Adversarial | Codex (OpenAI) | Cross-model adversarial pass — runs via `codex exec --yolo` with the verbatim prompt from `references/codex-adversarial-prompt.md` |
 
-**Rationale:** Validator A is a mechanical Claude check (convention matching). Validator CD does
-the broad code-review lane with research-backed findings and reviewer collaboration. Validator E
-adds the only non-Claude perspective on the same diff to catch failure modes Claude tends to miss.
 Reserve Opus for denoise (inline), finding classification, and the final gate judgment.
 
-**Token cost note:** Validator CD is materially more expensive per QA run than the old C+D
-combined. Old C+D were two scoped subagent calls reading only changed files. CD spawns 2-5
-team agents that each read all changed files in full, run mandatory research tools
-(context7/deepwiki/Exa), and exchange `SendMessage` collaboration rounds before reporting.
-Expect 5-15× the token cost of old C+D, in exchange for current-best-practice grounding,
-cross-cutting issue detection, and the previously-missing pure code-review lane. Worth it for
-post-build validation; not worth it for trivial changes (denoise + style + Codex E often
-suffice — use `--only` flags accordingly).
+**Token cost:** Validator CD is ~5-15× the old C+D per run (team agents read full files, run
+research tools, exchange collaboration messages). Worth it post-build; skip for trivial
+changes via `--only` flags.
