@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-workflow",
-  "version": "1.8.3",
+  "version": "1.9.0",
   "description": "Structured team workflow: brief → design → review → plan → build → qa → ship. Includes safety hooks, quality hooks, and specialized agents.",
   "author": {
     "name": "David Kim"

@@ -2,25 +2,28 @@
 name: team-qa
 description: >
   Invoke after /team-build is approved. Runs validation checks on changed files (denoise + parallel
-  validators including Codex adversarial cross-model review). Do NOT run QA checks manually — this
-  skill has validator isolation, finding classification, and selective re-run logic that only load
-  when invoked.
-version: 2.1.1
+  validators: style, docs, code review swarm, Codex adversarial cross-model). Do NOT run QA checks
+  manually — this skill has validator isolation, finding classification, and selective re-run logic
+  that only load when invoked.
+version: 2.2.0
 ---
 
 # /team-qa — Post-Build Validation Pipeline
 
 ## What This Skill Does
 
-Runs the built implementation through a structured validation pipeline. Six checks in two phases:
-denoise first (sequential), then style + doc + security + performance + Codex adversarial (parallel).
-Each Claude validator is scoped — only changed files + the one relevant skill. The Codex adversarial
-pass attacks the git diff with cross-model framing focused on auth/data-loss/race-condition failure modes.
+Runs the built implementation through a structured validation pipeline. Five checks in two phases:
+denoise first (sequential), then style + doc + code review swarm + Codex adversarial (parallel).
+Scoped Claude validators (style, doc) get only changed files + one relevant skill. The code review
+swarm delegates to `/review-swarm` for rich, research-backed code review — covering security,
+performance, architecture, domain idioms, and adversarial correctness dynamically based on the diff.
+Codex attacks the git diff with cross-model framing focused on auth/data-loss/race-condition failure modes.
 
-**Key principle:** "Each validator gets ONLY what it needs." Claude validators get changed files +
-one project skill. Codex gets the git diff. Less context per validator = fewer false positives.
+**Key principle:** Scoped validators (A, B) stay tight — changed files + one skill — to minimize
+false positives. The code review swarm (CD) deliberately gets the full diff + CLAUDE.md + research
+tools because its job is the broad correctness check that scoped validators can't do.
 
-**Cross-model coverage:** Validators A-D run on Claude. Validator E runs on Codex (OpenAI). The
+**Cross-model coverage:** Validators A, B, CD run on Claude. Validator E runs on Codex (OpenAI). The
 adversarial cross-model pass catches failure modes Claude validators tend to miss (or rationalize away).
 
 **Output:** QA report classifying all findings (see `references/qa-report-template.md`)
@@ -46,12 +49,13 @@ After fixing one finding, you don't need to re-run the entire pipeline. Use `--o
 /team-qa --only denoise      # Phase 1 only
 /team-qa --only style        # Validator A only
 /team-qa --only docs         # Validator B only
-/team-qa --only security     # Validator C only
-/team-qa --only perf         # Validator D only
+/team-qa --only swarm        # Validator CD only (code review swarm)
 /team-qa --only codex        # Validator E only (Codex adversarial)
 ```
 
 When `--only` is present: **skip to the named validator directly** (still read the changed files list from Step 1 first). All other validators are skipped for this run.
+
+`--only swarm` is a **full re-invocation** of review-swarm — it spawns fresh reviewers and re-runs the research protocol from scratch. There is no delta mode. Use it after fixing a swarm-flagged finding to confirm the finding is gone, accepting that other findings (and reviewer selection) may change between runs as the swarm re-discovers the diff.
 
 Use `--only` after fixing a specific MUST-FIX finding to confirm it's resolved without re-running the entire pipeline.
 
@@ -101,13 +105,17 @@ ls .claude/skills/
 ```
 
 Look for:
-- `code-conventions` — project style and convention rules (load this into Validator A)
+- `code-conventions` — project style and convention rules (load this into Validator A; also forwarded to Validator CD's domain-reviewer via Domain Hints)
 - `review-gates` — general quality gates
-- `security-review-gates` — project-specific security rules
-- `performance-review-gates` — project-specific performance rules
+- `security-review-gates` — project-specific security rules (forwarded to Validator CD's security-reviewer via Domain Hints)
+- `performance-review-gates` — project-specific performance rules (forwarded to Validator CD's performance-reviewer via Domain Hints)
 
 Note which exist and which are missing. For missing skills, fall back to the baseline checklists
-in this skill's `references/` directory.
+in this skill's `references/` directory. **Record which gate skills exist** — Validator CD's
+invocation will forward their paths to the swarm via the `<DOMAIN_HINTS>` block (see "Domain
+Hints to Forward to Swarm" subsection below the routing table). Bootstrapped repos get their
+project-specific rules into the swarm; non-bootstrapped repos still get the file-type
+annotations that team-qa bakes in regardless.
 
 ### Project Scope Routing
 
@@ -162,9 +170,9 @@ Wait for user to approve/deny each item before proceeding to Phase 2.
 
 ### Phase 2: Parallel Validators
 
-Launch all applicable validators simultaneously (A, B, C, D, E — five validators in parallel).
-Skip validators with no relevant changed files (e.g., skip performance DB checks if no data-layer
-files changed). Skip Validator E (Codex) only if Codex is unavailable or the diff has no code changes.
+Launch all applicable validators simultaneously (A, B, CD, E — four validators in parallel).
+Skip Validator CD only if the diff is pure docs/config with no code changes. Skip Validator E
+(Codex) only if Codex is unavailable or the diff has no code changes.
 
 ---
 
@@ -230,54 +238,111 @@ Run inline (Claude reads files directly):
 
 ---
 
-#### Validator C: Security Review
+#### Validator CD: Code Review Swarm
 
-**Context:** Changed files + security-review-gates project skill (if it exists)
+**Context:** Full branch diff — delegated to `/review-swarm`, which does its own file reading,
+CLAUDE.md parsing, domain detection, and research.
 
-**Decision:** Use the `bootstrap-workflow:security-reviewer` agent for all auth-touching, user-data, or API changes.
-For pure config or styling changes, run the baseline checklist inline.
+**Purpose:** The broad code-review lane. Covers code correctness, project conventions, security,
+performance, architecture, and domain-specific idioms through dynamic reviewer selection. Unlike
+scoped validators A and B, this validator deliberately receives rich context so its reviewers can
+research current best practices (context7, deepwiki, Exa) and collaborate (SendMessage) before
+reporting.
 
-For security-relevant files, spawn via Task tool:
+**Why this is one validator, not many:** Security and performance used to be separate validators
+(C + D) invoking `bootstrap-workflow:security-reviewer` and `bootstrap-workflow:performance-analyzer`
+subagents in isolation. Review-swarm's dynamic reviewer selection already picks the relevant
+specialists based on the diff (security-reviewer on auth/credentials, performance-reviewer on
+data-layer/hot-paths, plus adversarial-reviewer and domain-reviewer always) — and its reviewers
+collaborate with each other before reporting, catching cross-cutting issues the isolated subagents
+miss. Collapsing C + D into CD also fills team-qa's previous gap: no pure code-review lane for
+correctness, idioms, and framework best practices.
+
+**When to skip:** Pure docs or pure config diffs with no code changes. Otherwise always run.
+
+**Pre-flight check:** Verify review-swarm's mandatory research tools are available before
+invoking. Review-swarm requires Exa as its research floor (`review-swarm/SKILL.md:107`); if
+context7, deepwiki, AND all Exa tools are unavailable, the swarm will hard-fail mid-run.
+Pre-flight test:
+
+```bash
+# At least one of these MCP tool families must be present in the current session's tool list:
+#   mcp__exa__web_search_exa
+#   mcp__exa__get_code_context_exa
+#   mcp__exa__web_search_advanced_exa
+# (context7 and deepwiki are preferred but optional; Exa is the floor.)
 ```
-Task(
-  subagent_type: "bootstrap-workflow:security-reviewer",
-  prompt: "Review these changed files for security issues: [list].
-           Load project security skill if it exists: .claude/skills/security-review-gates/SKILL.md
-           Focus on: auth checks, input validation, secrets exposure, injection risks, access control,
-           PII in query results and cell outputs, credentials in config/notebooks/DAGs,
-           data access controls (row-level security, column masking).
-           If no project security skill exists, use the baseline checklist including the Data Domain section.
-           Report findings with file:line, severity (Critical/High/Medium/Low), and fix recommendation."
+
+If no Exa tool is present in the tool list, **skip this validator** with the warning:
+
+> ⚠ Code review swarm research tools unavailable (no mcp__exa__* present) — Validator CD skipped. Code review coverage reduced.
+
+**Invocation:** Skill-invoke `bootstrap-workflow:review-swarm` with the branch scope and
+domain hints. Review-swarm runs standalone — team-qa does NOT pre-compute file lists, domain,
+or CLAUDE.md for it. Review-swarm does its own Step 1 discovery. Team-qa passes only the git
+scope, the domain hints from Step 2, and waits for the combined report.
+
+```
+Skill(
+  skill: "bootstrap-workflow:review-swarm",
+  args: "Review the branch diff against <BASE_BRANCH>.
+
+         CRITICAL — diff scope override: Use exactly this command for your Step 1
+         diff gathering, instead of your default 'git diff HEAD':
+             git diff <BASE_BRANCH>...HEAD
+
+         This is a standalone invocation from team-qa post-build validation.
+         The invoking team-qa lead has identified changed files but is NOT pre-computing
+         domain detection — do your own Step 1 discovery against the diff above.
+
+         <DOMAIN_HINTS>
+           [team-qa lead inserts the 'Domain hints to forward to swarm' content here —
+            see the team-qa Validator CD section. Includes file-type → security/perf
+            annotations and any project-specific *-review-gates skills discovered at
+            team-qa Step 2.]
+         </DOMAIN_HINTS>
+
+         Return the combined review report with BUG and SUGGESTION findings classified
+         per your standard format."
 )
 ```
 
-For non-security-relevant files (pure styling, pure docs):
-- Apply the OWASP baseline from `references/security-checks.md` inline
-- This takes 2 minutes and catches obvious issues without invoking the full agent
+Replace `<BASE_BRANCH>` with the project's actual base branch (`main`, `staging`, etc.) — the
+same base used in Step 1 to identify changed files.
 
----
+**Timeout:** Review-swarm has its own per-reviewer 3min+1min timeout discipline, but the swarm
+as a whole (collaboration rounds + research) can run 10+ minutes. Team-qa's Phase 2 lead is
+blocked on whichever validator is slowest, so cap CD at **15 minutes wall-clock**. If the swarm
+hasn't returned a final report by 15 minutes after invocation, treat CD as failed (see "If
+review-swarm fails" below) and continue. Do not retry mid-run.
 
-#### Validator D: Performance Review
+**Mapping review-swarm output to team-qa classification:**
 
-**Context:** Changed files + performance-review-gates project skill (if it exists)
+| Review-swarm class | team-qa class |
+|--------------------|---------------|
+| BUG                | MUST-FIX      |
+| SUGGESTION         | SHOULD-FIX    |
 
-**Decision:** Use the `bootstrap-workflow:performance-analyzer` agent for data-layer, API, or component changes.
-For pure styling or doc changes, skip this validator.
+Review-swarm's collaboration step already filters low-value noise, so the ADVISORY tier from other
+validators does not apply to swarm findings.
 
-For performance-relevant files, spawn via Task tool:
+**Ensure cleanup:** Review-swarm's Step 6 deletes its team (`TeamDelete`) after reporting, but
+this is best-effort and may be skipped if the swarm crashes mid-run. Explicitly verify and
+clean up:
+
 ```
-Task(
-  subagent_type: "bootstrap-workflow:performance-analyzer",
-  prompt: "Review these changed files for performance issues: [list].
-           Load project performance skill if it exists: .claude/skills/performance-review-gates/SKILL.md
-           Focus on: N+1 queries, missing indexes on queried fields, unbounded queries, cache
-           invalidation gaps, unnecessary re-renders, synchronous blocking in async paths,
-           full table scans in joins, non-incremental materializations on large tables,
-           query cost (warehouse compute), unnecessary recomputation in pipelines/DAGs,
-           memory-intensive operations in notebooks without chunking.
-           Report findings with file:line, impact (High/Medium/Low), and fix recommendation."
-)
+TeamList()    # check whether team "code-review" still exists
+# If the team is still present after review-swarm reported its findings:
+TeamDelete(team_name: "code-review")
 ```
+
+A leaked team will persist across QA runs, eventually causing TeamCreate failures on the next
+`/team-qa` invocation when review-swarm tries to create a team that already exists.
+
+**If review-swarm fails (research tools down, swarm timeout > 15min, mid-run error):** Log
+"Code review swarm failed — Validator CD skipped this run" in the report, run the cleanup
+above (the failed run may have left a leaked team), and continue. Do not retry mid-run. The
+Codex adversarial pass (Validator E) still covers a subset of the same ground.
 
 ---
 
@@ -291,7 +356,7 @@ boundaries, data loss, race conditions, rollback safety, idempotency gaps, schem
 observability gaps. This is the only validator that runs on a non-Claude model.
 
 **Pre-flight check:** Verify Codex is available and authenticated. If `command -v codex` fails,
-**skip this validator** with a warning and continue with Validators A–D:
+**skip this validator** with a warning and continue with Validators A, B, and CD:
 
 > ⚠ Codex CLI unavailable — Validator E (cross-model adversarial) skipped. Cross-model coverage reduced.
 
@@ -458,21 +523,20 @@ Classify each finding:
 | **ADVISORY** | Minor style issue, preference, or low-impact suggestion | No |
 
 **Classification heuristics:**
-- Security finding (any severity) → MUST-FIX
-- N+1 query or missing index on a queried field → MUST-FIX
+- Review-swarm BUG → MUST-FIX
+- Review-swarm SUGGESTION → SHOULD-FIX
 - Stale docs on a changed public API → SHOULD-FIX
 - Convention violation (naming, imports, structure, signatures, error handling, doc style), INTRODUCED (in diff's added lines) → SHOULD-FIX
 - Convention violation, PRE-EXISTING (in unchanged lines) → ADVISORY
 - Stale docs on internal function → ADVISORY
 - Style preference (no convention backing) → ADVISORY
-- Data leakage (train/test contamination, feature leakage) → MUST-FIX
-- Hardcoded credentials in DAG, pipeline config, or notebook → MUST-FIX
-- PII in notebook output cells or query results committed to repo → MUST-FIX
-- Missing dbt test on primary/foreign key → SHOULD-FIX
-- Non-incremental materialization on large table (>1M rows) → SHOULD-FIX
-- Missing source freshness check on critical source → SHOULD-FIX
 - SQL style preference (no convention backing) → ADVISORY
 - Missing model/column description in schema.yml → ADVISORY
+
+The substantive categories previously classified here (security, performance, data leakage,
+credential leaks, PII in outputs, dbt test coverage, materialization sizing, source freshness)
+are now classified inside review-swarm and surface as BUG or SUGGESTION — the lead translates
+those per the table above.
 
 ### Step 4: STOP — Present QA Report and Gate
 
@@ -487,9 +551,18 @@ Then STOP. Display exactly this gate:
 Denoise:        [N fixed, N waived]
 Style:          [N violations — N MUST-FIX, N SHOULD-FIX, N ADVISORY (M introduced, P pre-existing)]
 Doc freshness:  [N stale items]
-Security:       [N findings — N MUST-FIX]
-Performance:    [N findings — N MUST-FIX, N SHOULD-FIX]
+Code review (swarm): [N findings — N MUST-FIX (BUG), N SHOULD-FIX (SUGGESTION)]   [or: skipped — no code changes | skipped — Exa unavailable | failed — swarm error]
 Codex (cross-model): [N findings — N MUST-FIX, N SHOULD-FIX, N ADVISORY]   [or: skipped — Codex unavailable]
+
+[If Validator CD was skipped or failed for any reason:]
+⚠ COVERAGE DEGRADED: code review lane unavailable this run.
+   The MUST-FIX total below does NOT include findings the swarm would have produced.
+   Read this gate as "all checks that ran are clear", NOT "all coverage is clear".
+   If this is post-build pre-ship, consider re-running `/team-qa --only swarm` once tools recover.
+
+[If Validator E was skipped:]
+⚠ COVERAGE DEGRADED: cross-model adversarial lane unavailable this run.
+   No non-Claude pass on this diff. Re-run `/team-qa --only codex` if Codex recovers.
 
 MUST-FIX total: [N]
 
@@ -498,15 +571,18 @@ MUST-FIX total: [N]
 [N] blocking findings must be addressed before shipping.
 Fix them and re-run `/team-qa`, or explicitly waive each with a stated reason.
 
-[If MUST-FIX == 0 and SHOULD-FIX > 0:]
+[If MUST-FIX == 0 and SHOULD-FIX > 0 and no degradation banners above:]
 No blockers. [N] SHOULD-FIX items for your review — address, accept, or waive each.
 
-[If all clear:]
+[If MUST-FIX == 0 and SHOULD-FIX == 0 and no degradation banners above:]
 QA pipeline clear. Ready to ship.
+
+[If all checks ran cleanly OR with documented degradation:]
+[For "ready to ship" the user must explicitly acknowledge any degradation banner above.]
 ---
 ```
 
-**Note:** The `(M introduced, P pre-existing)` breakdown appears only on the Style line. Validators C (bootstrap-workflow:security-reviewer) and D (bootstrap-workflow:performance-analyzer) are specialized subagents that report findings by severity only — they do not classify findings by origin, so origin breakdowns do not appear in their lines.
+**Note:** The `(M introduced, P pre-existing)` breakdown appears only on the Style line. Validator CD (code review swarm) reports findings by BUG/SUGGESTION class only — it does not classify by introduced-vs-pre-existing origin, so origin breakdowns do not appear in its line.
 
 **Loop:** Fix MUST-FIX items → re-run `/team-qa` on the changed files → until clear.
 
@@ -514,32 +590,38 @@ QA pipeline clear. Ready to ship.
 
 ## Validator Routing by File Type
 
-| Changed file type | Denoise | Style | Doc | Security | Performance |
-|-------------------|---------|-------|-----|----------|-------------|
-| API route / controller | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Data layer / queries | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Auth / middleware | ✓ | ✓ | ✓ | ✓ | — |
-| Frontend component | ✓ | ✓ | ✓ | ✓ (XSS) | ✓ (re-renders) |
-| Config / env | ✓ | — | ✓ | ✓ (secrets) | — |
-| Tests | ✓ | ✓ | — | — | — |
-| Docs / README | — | — | ✓ | — | — |
-| Migrations / schema | ✓ | ✓ | ✓ | — | ✓ (indexes) |
-| dbt model / SQL transformation | ✓ | ✓ | ✓ | ✓ (PII) | ✓ (query cost) |
-| Pipeline / DAG definition | ✓ | ✓ | ✓ | ✓ (credentials) | ✓ (idempotency) |
-| Notebook (.ipynb) | ✓ | ✓ | ✓ | ✓ (PII in output) | ✓ (memory) |
-| ML / feature code | ✓ | ✓ | ✓ | ✓ (data leakage) | ✓ (compute) |
-| Metric / dashboard definition | ✓ | ✓ | ✓ | — | — |
-| Schema / quality definition | ✓ | ✓ | ✓ | — | — |
-| GL model / financial SQL | ✓ | ✓ | ✓ | ✓ (PII: salary/comp data, access controls) | ✓ (full-table scans on multi-year transaction tables) |
-| Reconciliation script | ✓ | ✓ | ✓ | — | ✓ (control total query cost) |
-| Regulatory / report output config | ✓ | — | ✓ | ✓ (audit trail, data access) | — |
-| LLM client / API wrapper | ✓ | ✓ (llm-engineering) | ✓ | ✓ (API key exposure, prompt injection) | ✓ (token cost, model tier) |
-| Prompt template / eval harness | ✓ | ✓ (llm-engineering) | ✓ | ✓ (system prompt leakage, key in eval scripts) | ✓ (token budget, live API in unit tests) |
-| Agent loop / orchestrator | ✓ | ✓ (agentic-systems) | ✓ | ✓ (prompt injection via tool results, inter-agent trust) | ✓ (unbounded loops, cost per run) |
-| MCP server / tool definition | ✓ | ✓ (agentic-systems) | ✓ | ✓ (auth on tool endpoints, scope creep) | ✓ (tool error handling, retry behavior) |
-| Mobile screen / component | ✓ | ✓ (vercel-react-native-skills) | ✓ | ✓ (deep links, API keys in config) | ✓ (list perf, re-renders, animation) |
-| Native module bridge | ✓ | ✓ | ✓ | ✓ (permissions, native API misuse) | ✓ |
-| Mobile config (app.json, eas.json) | ✓ | — | ✓ | ✓ (secrets, permissions) | — |
+Validator CD (code review swarm) decides its own reviewer mix internally via review-swarm's
+dynamic selection — team-qa only decides "swarm or not" per file type. The table below shows
+when CD applies; when it does, review-swarm picks the relevant specialists (security-reviewer
+on auth/credentials, performance-reviewer on data-layer/hot-paths, arch-reviewer on structural
+changes, data-reviewer on dbt/SQL, etc.) based on its own Step 2 selection rules.
+
+| Changed file type | Denoise | Style | Doc | Code Review (CD) |
+|-------------------|---------|-------|-----|------------------|
+| API route / controller | ✓ | ✓ | ✓ | ✓ |
+| Data layer / queries | ✓ | ✓ | ✓ | ✓ |
+| Auth / middleware | ✓ | ✓ | ✓ | ✓ |
+| Frontend component | ✓ | ✓ | ✓ | ✓ |
+| Config / env | ✓ | — | ✓ | — (no code) |
+| Tests | ✓ | ✓ | — | ✓ |
+| Docs / README | — | — | ✓ | — (no code) |
+| Migrations / schema | ✓ | ✓ | ✓ | ✓ |
+| dbt model / SQL transformation | ✓ | ✓ | ✓ | ✓ |
+| Pipeline / DAG definition | ✓ | ✓ | ✓ | ✓ |
+| Notebook (.ipynb) | ✓ | ✓ | ✓ | ✓ |
+| ML / feature code | ✓ | ✓ | ✓ | ✓ |
+| Metric / dashboard definition | ✓ | ✓ | ✓ | ✓ |
+| Schema / quality definition | ✓ | ✓ | ✓ | ✓ |
+| GL model / financial SQL | ✓ | ✓ | ✓ | ✓ |
+| Reconciliation script | ✓ | ✓ | ✓ | ✓ |
+| Regulatory / report output config | ✓ | — | ✓ | ✓ |
+| LLM client / API wrapper | ✓ | ✓ (llm-engineering) | ✓ | ✓ |
+| Prompt template / eval harness | ✓ | ✓ (llm-engineering) | ✓ | ✓ |
+| Agent loop / orchestrator | ✓ | ✓ (agentic-systems) | ✓ | ✓ |
+| MCP server / tool definition | ✓ | ✓ (agentic-systems) | ✓ | ✓ |
+| Mobile screen / component | ✓ | ✓ (vercel-react-native-skills) | ✓ | ✓ |
+| Native module bridge | ✓ | ✓ | ✓ | ✓ |
+| Mobile config (app.json, eas.json) | ✓ | — | ✓ | — (no code) |
 
 **Note:** When `vercel-react-native-skills` is in `relevant_global_skills`, Validator A loads it for mobile screen/component files.
 
@@ -547,6 +629,93 @@ QA pipeline clear. Ready to ship.
 - The diff contains pure docs (`.md`, `README`) and no code at all
 - The diff is empty (no changed files)
 - Codex CLI is unavailable (pre-flight skip with warning)
+
+---
+
+## Domain Hints to Forward to Swarm
+
+Validator CD's invocation passes a `<DOMAIN_HINTS>` block to review-swarm so the swarm's
+dynamic reviewer selection benefits from team-qa's institutional knowledge about specific
+file types and from any project-specific gate skills that exist in `.claude/skills/`. This
+preserves coverage that the file-type routing table used to encode directly when team-qa
+spawned Validators C and D.
+
+### Part 1: File-type concern annotations (always included)
+
+Build the annotation block from the changed files identified in Step 1. For each file type
+present in the diff, include the matching line below. Send to review-swarm verbatim — these
+are hints, not directives; review-swarm's dynamic selection still decides which reviewers
+to spawn.
+
+```
+File-type concerns to consider when selecting and prompting reviewers:
+
+- API route / controller       → security (auth, input validation), performance (N+1)
+- Data layer / queries         → security (injection, access control), performance (indexes, unbounded fetches)
+- Auth / middleware            → security (priority — permission boundaries, session handling)
+- Frontend component           → security (XSS), performance (re-renders, bundle size)
+- Config / env                 → security (secret exposure)
+- Migrations / schema          → performance (index coverage, lock duration), data correctness (backfill safety)
+- dbt model / SQL              → security (PII exposure), performance (query cost, materialization sizing)
+- Pipeline / DAG               → security (credentials in config), correctness (idempotency, late arrivals)
+- Notebook (.ipynb)            → security (PII in cell outputs), performance (memory, chunking)
+- ML / feature code            → security (data leakage, train/test contamination), performance (compute)
+- Metric / dashboard           → security (PII in dashboard exposure), correctness (metric definition drift)
+- GL model / financial SQL     → security (salary/comp PII, row-level access controls), performance (full-table scans on multi-year transaction tables)
+- Reconciliation script        → correctness (control totals), performance (query cost)
+- Regulatory / report config   → security (audit trail, data access controls)
+- LLM client / API wrapper     → security (API key exposure, prompt injection), performance (token cost, model tier)
+- Prompt template / eval       → security (system prompt leakage, key in eval scripts), performance (token budget, live API in unit tests)
+- Agent loop / orchestrator    → security (prompt injection via tool results, inter-agent trust), performance (unbounded loops, cost per run)
+- MCP server / tool definition → security (auth on tool endpoints, scope creep), performance (tool error handling, retry behavior)
+- Mobile screen / component    → security (deep links, API keys in config), performance (list perf, animation)
+- Native module bridge         → security (permissions, native API misuse), performance
+- Mobile config (app.json)     → security (secrets, permissions)
+```
+
+### Part 2: Project-specific gate skills (conditional)
+
+At Step 2, team-qa already discovers `.claude/skills/` and notes which exist. If any of the
+following project-specific gate skills are present, append the corresponding load instruction
+to the `<DOMAIN_HINTS>` block. If absent, skip silently — review-swarm operates fine without
+them via its built-in reviewer focus areas.
+
+```
+[If .claude/skills/security-review-gates/SKILL.md exists:]
+Project-specific security rules: load `.claude/skills/security-review-gates/SKILL.md` in your
+security-reviewer prompt (in addition to your built-in focus areas).
+
+[If .claude/skills/performance-review-gates/SKILL.md exists:]
+Project-specific performance rules: load `.claude/skills/performance-review-gates/SKILL.md` in your
+performance-reviewer prompt (in addition to your built-in focus areas).
+
+[If .claude/skills/code-conventions/SKILL.md exists:]
+Project-specific conventions: load `.claude/skills/code-conventions/SKILL.md` in your domain-reviewer
+prompt for naming/structure/idiom checks (in addition to CLAUDE.md). Note: Validator A also loads
+this skill for its own scoped style audit, so domain-reviewer should avoid duplicating
+already-flagged style issues — focus on convention violations that A's mechanical pass would miss
+(judgment-dependent idioms, framework-specific patterns).
+
+[If none of the above exist:]
+No project-specific gate skills present. Use your built-in reviewer focus areas + CLAUDE.md.
+```
+
+This matches the team-* skills' standard graceful-degradation pattern: forward what exists,
+skip what doesn't, never hard-fail on missing project skills.
+
+### Why this matters
+
+Without `<DOMAIN_HINTS>`, review-swarm's dynamic selection rules (`review-swarm/SKILL.md:71-78`)
+would still pick `security-reviewer` on auth flows and `performance-reviewer` on data-layer
+hot paths, but it would miss the long tail of domain-specific concerns the file-type routing
+table used to enforce: PII in notebook cell outputs, credentials in DAG configs, full-table
+scans on financial GL models, prompt injection via agent tool results, etc. These are not in
+review-swarm's built-in selection criteria. Forwarding them as hints lets the swarm spawn the
+right reviewers AND prompt them with the right concerns.
+
+It also lets `/bootstrap-skills`-generated `security-review-gates` and `performance-review-gates`
+project skills continue to feed project-specific rules into the QA pipeline — preserving the
+feature that those skills exist to provide.
 
 ---
 
@@ -586,8 +755,19 @@ When QA clears with no MUST-FIX items remaining, add to the "all clear" gate mes
 |------|------|-----------|
 | Lead (current session, orchestrates) | Opus (current session) | Denoise runs inline, finding classification requires judgment, gate decisions need care |
 | Validator A: Style Audit | Sonnet | Mechanical: convention matching against a loaded skill |
-| Validator C: Security Review | bootstrap-workflow:security-reviewer agent | Specialized agent — inherits that agent's model |
-| Validator D: Performance Review | bootstrap-workflow:performance-analyzer agent | Specialized agent — inherits that agent's model |
+| Validator CD: Code Review Swarm | `/review-swarm` (team agents, model per reviewer) | Delegated to review-swarm's own model selection. Covers correctness, security, performance, architecture, and domain idioms with research backing and reviewer collaboration. Replaces the isolated specialist subagents (security-reviewer, performance-analyzer) previously used as Validators C and D. |
 | Validator E: Codex Adversarial | Codex (OpenAI) | Cross-model adversarial pass — runs via `codex exec --yolo` with the verbatim prompt from `references/codex-adversarial-prompt.md` |
 
-**Rationale:** Validators A-D are mechanical Claude checks (convention matching, known-bad-pattern detection). Validator E adds a non-Claude perspective on the same diff to catch failure modes Claude tends to miss. Reserve Opus for denoise (inline), finding classification, and the final gate judgment.
+**Rationale:** Validator A is a mechanical Claude check (convention matching). Validator CD does
+the broad code-review lane with research-backed findings and reviewer collaboration. Validator E
+adds the only non-Claude perspective on the same diff to catch failure modes Claude tends to miss.
+Reserve Opus for denoise (inline), finding classification, and the final gate judgment.
+
+**Token cost note:** Validator CD is materially more expensive per QA run than the old C+D
+combined. Old C+D were two scoped subagent calls reading only changed files. CD spawns 2-5
+team agents that each read all changed files in full, run mandatory research tools
+(context7/deepwiki/Exa), and exchange `SendMessage` collaboration rounds before reporting.
+Expect 5-15× the token cost of old C+D, in exchange for current-best-practice grounding,
+cross-cutting issue detection, and the previously-missing pure code-review lane. Worth it for
+post-build validation; not worth it for trivial changes (denoise + style + Codex E often
+suffice — use `--only` flags accordingly).
