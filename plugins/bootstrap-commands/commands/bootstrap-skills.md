@@ -552,9 +552,9 @@ For full workflow work (`/brief` → `/design` → `/review` → `/plan` → `/b
 **Feedback loop:** If any check fails → fix the issue → re-run the check → repeat until passing. Do not skip failed checks.
 
 ### Step 4: Flag for deeper review (if applicable)
-- If changes touch security-sensitive areas ([GENERAL_SECURITY_FLAGS from Step 3b]): note for `/qa` Validator C or `security-reviewer` agent.
-- If changes touch performance-sensitive areas ([GENERAL_PERF_FLAGS from Step 3b]): note for `/qa` Validator D or `performance-analyzer` agent.
-- Do NOT attempt deep analysis here — that's the agent's job.
+- If changes touch security-sensitive areas ([GENERAL_SECURITY_FLAGS from Step 3b]): note for `/qa` Validator CD (code review swarm), which forwards to its dynamically-selected `security-reviewer`.
+- If changes touch performance-sensitive areas ([GENERAL_PERF_FLAGS from Step 3b]): note for `/qa` Validator CD (code review swarm), which forwards to its dynamically-selected `performance-reviewer`.
+- Do NOT attempt deep analysis here — that's the swarm's job.
 
 ## Common Pitfalls
 
@@ -576,8 +576,8 @@ Before declaring complete:
 ## References
 
 - `CLAUDE.md` "Commands" section
-- Global agents: `code-review-specialist`, `security-reviewer`, `performance-analyzer` (for deep review)
-- `/qa` skill — post-build validation pipeline (loads security/performance-review-gates as project context)
+- Global agents: `code-review-specialist`, `security-reviewer`, `performance-analyzer` (for deep review — invoked dynamically by Validator CD's review-swarm)
+- `/qa` skill — post-build validation pipeline (Validator CD forwards security/performance-review-gates to its swarm via Domain Hints)
 ```
 
 ### 7b: security-review-gates (Security Variant)
@@ -585,10 +585,10 @@ Before declaring complete:
 Create using the same structure as review-gates (Step 7a). Differences:
 
 - **Frontmatter `name`:** `security-review-gates`
-- **Frontmatter `description`:** `Project-specific security review checklist encoding auth patterns, historical security failures, and domain security rules. Serves as context for /qa Validator C (security review) and as a lightweight self-check for trivial security-touching fixes. Use when changes touch [SECURITY_DESCRIPTION_KEYWORDS from Step 3b — union of all matched domain rows]. Do not use for general code review, performance analysis, or comprehensive security audits.`
-- **Tagline:** `> Project-specific security checklist. Loaded by /qa Validator C; also a self-check for trivial security-touching fixes. For deep security analysis, invoke the security-reviewer global agent.`
-- **Philosophy:** Primary role: project-specific context loaded by `/qa` Validator C during post-build validation. Secondary role: first-pass self-check for trivial fixes before the `security-reviewer` agent — a linter, not an audit.
-- **Layered review line:** `implement → security self-check (this skill) OR /qa Validator C (loads this skill) → security-reviewer agent (deep analysis)`
+- **Frontmatter `description`:** `Project-specific security review checklist encoding auth patterns, historical security failures, and domain security rules. Forwarded to /qa Validator CD (code review swarm) via Domain Hints, where the swarm loads it into its security-reviewer prompt. Also serves as a lightweight self-check for trivial security-touching fixes. Use when changes touch [SECURITY_DESCRIPTION_KEYWORDS from Step 3b — union of all matched domain rows]. Do not use for general code review, performance analysis, or comprehensive security audits.`
+- **Tagline:** `> Project-specific security checklist. Forwarded to /qa Validator CD's security-reviewer; also a self-check for trivial security-touching fixes. For deep security analysis, invoke the security-reviewer global agent or run /qa.`
+- **Philosophy:** Primary role: project-specific context forwarded by `/qa` Validator CD to review-swarm's security-reviewer during post-build validation (via the Domain Hints block). Secondary role: first-pass self-check for trivial fixes before the `security-reviewer` agent — a linter, not an audit.
+- **Layered review line:** `implement → security self-check (this skill) OR /qa Validator CD → review-swarm forwards this skill → security-reviewer (deep analysis)`
 
 **Data source filters (override review-gates defaults):**
 - Step 1 content: pull from `critical_patterns[].patterns[]` where `review_gate_variant == "security"` OR `category` matches "Auth", "Security", "Secrets", "Input Validation", "Permissions", "PII", "Warehouse Access", "Pipeline Security", "Data Leakage", "Prompt Injection". Fallback: `"TBD — populate after first security incident"`.
@@ -597,21 +597,21 @@ Create using the same structure as review-gates (Step 7a). Differences:
 
 **Implementation Guide differences (replace review-gates `### Step 3` and `### Step 4` — use the same heading format):**
 - **Step 3:** [SECURITY_IMPL_STEPS from Step 3b — first sentence per matched domain: boundary/access check]
-- **Step 4:** [SECURITY_IMPL_STEPS from Step 3b — second sentence per matched domain: input/output check]; flag for `security-reviewer` agent or `/qa` Validator C if changes affect the security surface
+- **Step 4:** [SECURITY_IMPL_STEPS from Step 3b — second sentence per matched domain: input/output check]; flag for `security-reviewer` agent or `/qa` Validator CD (code review swarm) if changes affect the security surface
 
 - **Common Pitfall:** [From analysis.yaml — project-specific pattern] → [domain-appropriate consequence — e.g., "unintended data access" for software, "PII exposure" for data domains, "prompt injection" for ai-llm] → follow the canonical security pattern for the detected domain(s)
-- **Verification checklist:** Contains at least one project-specific security pattern (not just baseline from Step 3b fallback); domain-appropriate security checks enforced (per Step 3b resolved parameters); no secrets in repo/logs; tests pass; flagged for `security-reviewer` agent or `/qa` Validator C if security-sensitive
-- **References:** `CLAUDE.md` "Known Pitfalls" (if present); global `security-reviewer` agent; `/qa` skill (Validator C)
+- **Verification checklist:** Contains at least one project-specific security pattern (not just baseline from Step 3b fallback); domain-appropriate security checks enforced (per Step 3b resolved parameters); no secrets in repo/logs; tests pass; flagged for `security-reviewer` agent or `/qa` Validator CD (code review swarm) if security-sensitive
+- **References:** `CLAUDE.md` "Known Pitfalls" (if present); global `security-reviewer` agent; `/qa` skill (Validator CD — code review swarm)
 
 ### 7c: performance-review-gates (Performance Variant)
 
 Create using the same structure as review-gates (Step 7a). Differences:
 
 - **Frontmatter `name`:** `performance-review-gates`
-- **Frontmatter `description`:** `Project-specific performance review checklist encoding data access patterns, historical performance failures, and domain performance rules. Serves as context for /qa Validator D (performance review) and as a lightweight self-check for trivial performance-touching fixes. Use when changes touch [PERF_DESCRIPTION_KEYWORDS from Step 3b — union of all matched domain rows]. Do not use for security review or general code quality checks.`
-- **Tagline:** `> Project-specific performance checklist. Loaded by /qa Validator D; also a self-check for trivial performance-touching fixes. For deep performance analysis, invoke the performance-analyzer global agent.`
-- **Philosophy:** Primary role: project-specific context loaded by `/qa` Validator D during post-build validation. Secondary role: first-pass self-check for trivial fixes before the `performance-analyzer` agent — a sanity check, not a benchmark.
-- **Layered review line:** `implement → performance self-check (this skill) OR /qa Validator D (loads this skill) → performance-analyzer agent (deep analysis)`
+- **Frontmatter `description`:** `Project-specific performance review checklist encoding data access patterns, historical performance failures, and domain performance rules. Forwarded to /qa Validator CD (code review swarm) via Domain Hints, where the swarm loads it into its performance-reviewer prompt. Also serves as a lightweight self-check for trivial performance-touching fixes. Use when changes touch [PERF_DESCRIPTION_KEYWORDS from Step 3b — union of all matched domain rows]. Do not use for security review or general code quality checks.`
+- **Tagline:** `> Project-specific performance checklist. Forwarded to /qa Validator CD's performance-reviewer; also a self-check for trivial performance-touching fixes. For deep performance analysis, invoke the performance-analyzer global agent or run /qa.`
+- **Philosophy:** Primary role: project-specific context forwarded by `/qa` Validator CD to review-swarm's performance-reviewer during post-build validation (via the Domain Hints block). Secondary role: first-pass self-check for trivial fixes before the `performance-analyzer` agent — a sanity check, not a benchmark.
+- **Layered review line:** `implement → performance self-check (this skill) OR /qa Validator CD → review-swarm forwards this skill → performance-reviewer (deep analysis)`
 
 **Data source filters (override review-gates defaults):**
 - Step 1 content: pull from `critical_patterns[].patterns[]` where `review_gate_variant == "performance"` OR `category` matches "Database", "Performance", "Caching", "Query", "Data Access", "Materialization", "Incremental", "Partition", "DAG", "Memory", "Token Cost", "Agent Loop", "Context Window". Fallback: `"TBD — populate after first performance incident"`.
@@ -620,11 +620,11 @@ Create using the same structure as review-gates (Step 7a). Differences:
 
 **Implementation Guide differences (replace review-gates `### Step 3` and `### Step 4` — use the same heading format):**
 - **Step 3:** [PERF_IMPL_STEPS from Step 3b — first sentence per matched domain: data access / resource check]
-- **Step 4:** [PERF_IMPL_STEPS from Step 3b — second sentence per matched domain: complexity / limits check]; flag for `performance-analyzer` agent or `/qa` Validator D if changes touch performance-sensitive paths
+- **Step 4:** [PERF_IMPL_STEPS from Step 3b — second sentence per matched domain: complexity / limits check]; flag for `performance-analyzer` agent or `/qa` Validator CD (code review swarm) if changes touch performance-sensitive paths
 
 - **Common Pitfall:** [From analysis.yaml — project-specific pattern] → [domain-appropriate consequence — e.g., "latency spikes" for software, "full table scans" for data-analytics, "token budget exhaustion" for ai-llm] → follow the canonical performance pattern for the detected domain(s)
-- **Verification checklist:** Contains at least one project-specific performance pattern (not just baseline from Step 3b fallback); domain-appropriate performance checks enforced (per Step 3b resolved parameters); tests pass; flagged for `performance-analyzer` agent or `/qa` Validator D if performance-sensitive
-- **References:** Relevant `[pattern]-patterns` skills; global `performance-analyzer` agent; `/qa` skill (Validator D)
+- **Verification checklist:** Contains at least one project-specific performance pattern (not just baseline from Step 3b fallback); domain-appropriate performance checks enforced (per Step 3b resolved parameters); tests pass; flagged for `performance-analyzer` agent or `/qa` Validator CD (code review swarm) if performance-sensitive
+- **References:** Relevant `[pattern]-patterns` skills; global `performance-analyzer` agent; `/qa` skill (Validator CD — code review swarm)
 
 ---
 
