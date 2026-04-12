@@ -4130,7 +4130,7 @@ function gateBlock(command, reason) {
       command,
       timestamp: new Date().toISOString()
     });
-    const response = pollIpcResponse(requestId, 300000);
+    const response = pollIpcResponse(requestId, 3600000);
     if (response && response.decision === "approved") {
       process.exit(0);
     }
