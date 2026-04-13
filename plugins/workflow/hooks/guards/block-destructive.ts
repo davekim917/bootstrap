@@ -619,7 +619,7 @@ function gateBlock(command: string, reason: string): void {
             timestamp: new Date().toISOString(),
         });
 
-        const response = pollIpcResponse(requestId, 300_000); // 5 min
+        const response = pollIpcResponse(requestId, 1_800_000); // 30 min (matches IDLE_TIMEOUT)
 
         if (response && response.decision === 'approved') {
             process.exit(0); // allow — no gate file needed

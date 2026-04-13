@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/block-destructive.js"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/block-destructive.ts"
           }
         ]
       },
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/file-protection.js"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/file-protection.ts"
           }
         ]
       },
@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/workflow-artifact-path.js"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/workflow-artifact-path.ts"
           }
         ]
       },
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/workflow-gate-enforcement.js"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/workflow-gate-enforcement.ts"
           }
         ]
       }
@@ -62,7 +62,7 @@
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh quality/tsc-check.js"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh quality/tsc-check.ts"
           }
         ]
       }
@@ -72,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh quality/error-handling-reminder.js"
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh quality/error-handling-reminder.ts"
           }
         ]
       }
