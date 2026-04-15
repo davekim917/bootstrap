@@ -16,7 +16,7 @@ resync, update the SHA and `Last synced` columns to match.
 
 | Local file | Upstream path | Pinned SHA | Last synced |
 |---|---|---|---|
-| `codex-adversarial-prompt.md` | `plugins/codex/prompts/adversarial-review.md` | `c69527e` | 2026-04-07 |
+| `codex-adversarial-prompt.md` | `plugins/codex/prompts/adversarial-review.md` | `bc8fa66` | 2026-04-15 |
 | `codex-review-output.schema.json` | `plugins/codex/schemas/review-output.schema.json` | `c69527e` | 2026-04-07 |
 
 To check the latest upstream SHA for any of these paths:
