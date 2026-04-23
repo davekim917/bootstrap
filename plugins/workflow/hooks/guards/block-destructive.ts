@@ -39,21 +39,28 @@
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
-import { readFileSync, writeFileSync, mkdirSync, realpathSync, unlinkSync, renameSync } from 'fs';
-import { createHash } from 'crypto';
+import { readFileSync, realpathSync, unlinkSync, existsSync } from 'fs';
+import { createHash, randomBytes } from 'crypto';
 import { homedir } from 'os';
-import { resolve as pathResolve, join as pathJoin } from 'path';
+import { resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import type { ToolUseInput } from '../lib/types';
 
-// ── NanoClaw IPC detection ──────────────────────────────────────────────────
-// When running inside a NanoClaw container, gated commands use IPC to request
-// approval from the user via their chat channel instead of asking the agent
-// to write a gate file.
-const NANOCLAW_IPC_DIR = process.env.NANOCLAW_IPC_DIR;
-const NANOCLAW_CHAT_JID = process.env.NANOCLAW_CHAT_JID;
-const NANOCLAW_THREAD_ID = process.env.NANOCLAW_THREAD_ID;
-const IS_NANOCLAW = Boolean(NANOCLAW_IPC_DIR);
+// ── NanoClaw detection ──────────────────────────────────────────────────────
+// When running inside a NanoClaw v2 container, gated commands request approval
+// via the session DBs mounted at /workspace/{inbound,outbound}.db — the same
+// request_bash_gate primitive the email gate uses. The host's bash-gate module
+// picks up the outbound system action, delivers an ask_question approval card
+// to the configured admin, and writes the decision back to inbound.db's
+// `delivered` table. We poll that table here.
+//
+// v1 used file IPC (NANOCLAW_IPC_DIR/queries/{id}.json + query_responses/);
+// v2 deleted that surface. Don't detect via env vars — detect via the DB files
+// themselves, since their paths are load-bearing constants in v2's agent-runner
+// (see container/agent-runner/src/db/connection.ts).
+const NANOCLAW_OUTBOUND_DB = '/workspace/outbound.db';
+const NANOCLAW_INBOUND_DB = '/workspace/inbound.db';
+const IS_NANOCLAW = existsSync(NANOCLAW_OUTBOUND_DB) && existsSync(NANOCLAW_INBOUND_DB);
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -565,7 +572,11 @@ function consumeGateApproval(command: string): boolean {
     }
 }
 
-// ── NanoClaw IPC helpers ─────────────────────────────────────────────────────
+// ── NanoClaw DB-IPC helpers ──────────────────────────────────────────────────
+// Direct writes to /workspace/outbound.db and polling reads from
+// /workspace/inbound.db (both host-managed mounts). Schema stays in sync with
+// container/agent-runner/src/db/{connection,messages-out,delivery-acks}.ts in
+// the nanoclaw-v2 repo — any schema change there needs a matching change here.
 
 /** Synchronous sleep using Atomics.wait (no busy loop). */
 const SLEEP_BUFFER = new Int32Array(new SharedArrayBuffer(4));
@@ -573,59 +584,131 @@ function sleepSync(ms: number): void {
     Atomics.wait(SLEEP_BUFFER, 0, 0, ms);
 }
 
-/** Write an IPC query file and return the requestId. */
-function writeIpcQuery(data: Record<string, unknown>): string {
-    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const queriesDir = pathJoin(NANOCLAW_IPC_DIR!, 'queries');
-    mkdirSync(queriesDir, { recursive: true });
-    const queryFile = pathJoin(queriesDir, `${requestId}.json`);
-    const tmpFile = `${queryFile}.tmp`;
-    writeFileSync(tmpFile, JSON.stringify({ ...data, requestId }));
-    renameSync(tmpFile, queryFile);
+/**
+ * Write a request_bash_gate system action to outbound.db. requestId === id,
+ * so the container side can poll `delivered` with that same string to learn
+ * whether the admin approved. seq must be odd (container-side convention —
+ * host uses even). We compute seq under BEGIN IMMEDIATE to serialize against
+ * any concurrent writeMessageOut from the agent-runner process.
+ */
+function writeGateRequest(
+    label: string,
+    summary: string,
+    command: string,
+): string {
+    // Dynamic import so non-NanoClaw environments (plain Claude Code) never
+    // touch bun:sqlite — the module is only present under bun runtime.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+
+    const requestId = `gate-${Date.now()}-${randomBytes(4).toString('hex')}`;
+    const content = JSON.stringify({
+        action: 'request_destructive_gate',
+        requestId,
+        label,
+        summary,
+        command: command.slice(0, 500),
+    });
+
+    const outbound = new Database(NANOCLAW_OUTBOUND_DB);
+    outbound.exec('PRAGMA busy_timeout = 5000');
+    const inbound = new Database(NANOCLAW_INBOUND_DB, { readonly: true });
+    inbound.exec('PRAGMA busy_timeout = 5000');
+    try {
+        outbound.exec('BEGIN IMMEDIATE');
+        try {
+            const maxOut = (outbound
+                .prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_out')
+                .get() as { m: number }).m;
+            const maxIn = (inbound
+                .prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_in')
+                .get() as { m: number }).m;
+            const max = Math.max(maxOut, maxIn);
+            const seq = max % 2 === 0 ? max + 1 : max + 2; // next odd
+
+            outbound
+                .prepare(
+                    `INSERT INTO messages_out (id, seq, timestamp, kind, content)
+                     VALUES ($id, $seq, datetime('now'), 'system', $content)`,
+                )
+                .run({ $id: requestId, $seq: seq, $content: content });
+            outbound.exec('COMMIT');
+        } catch (err) {
+            try { outbound.exec('ROLLBACK'); } catch { /* ignore */ }
+            throw err;
+        }
+    } finally {
+        outbound.close();
+        inbound.close();
+    }
+
     return requestId;
 }
 
-/** Poll for an IPC response file. Returns parsed response or null on timeout. */
-function pollIpcResponse(requestId: string, timeoutMs: number): Record<string, unknown> | null {
-    const responsesDir = pathJoin(NANOCLAW_IPC_DIR!, 'query_responses');
-    mkdirSync(responsesDir, { recursive: true }); // once, before polling
-    const responseFile = pathJoin(responsesDir, `${requestId}.json`);
+type GateDecision = 'approved' | 'denied' | 'timeout';
+
+/**
+ * Poll inbound.db's `delivered` table for the host's decision on our
+ * requestId. delivered writes come from:
+ *   - admin click-through → bash-gate handler writes status='delivered'
+ *   - admin rejects / 60-min timeout on the host → status='failed'
+ *
+ * Opening a fresh connection per poll (instead of persisting one) sidesteps
+ * cross-mount visibility issues where a long-held SQLite reader can freeze
+ * on an early snapshot and never see host writes — the same reason
+ * inbound.db forces journal_mode=DELETE.
+ */
+function pollDeliveredTable(requestId: string, timeoutMs: number): GateDecision {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
     const deadline = Date.now() + timeoutMs;
+
     while (Date.now() < deadline) {
+        const db = new Database(NANOCLAW_INBOUND_DB, { readonly: true });
+        db.exec('PRAGMA busy_timeout = 2000');
         try {
-            const content = JSON.parse(readFileSync(responseFile, 'utf-8'));
-            try { unlinkSync(responseFile); } catch { /* ok */ }
-            return content;
+            const row = db
+                .prepare('SELECT status FROM delivered WHERE message_out_id = ?')
+                .get(requestId) as { status?: string } | undefined;
+            if (row && row.status === 'delivered') return 'approved';
+            if (row && row.status === 'failed') return 'denied';
         } catch {
-            // ENOENT or parse error — keep polling
+            // Schema mismatch (old session DB, table missing) — treat as
+            // denied rather than busy-loop forever against a broken surface.
+            db.close();
+            return 'denied';
+        } finally {
+            db.close();
         }
         sleepSync(500);
     }
-    return null;
+    return 'timeout';
 }
 
 // ── Gate blocking ───────────────────────────────────────────────────────────
 
 function gateBlock(command: string, reason: string): void {
-    // NanoClaw mode: IPC-based gate. Block here until user approves via chat.
-    if (IS_NANOCLAW && NANOCLAW_CHAT_JID) {
-        const requestId = writeIpcQuery({
-            type: 'request_gate',
-            chatJid: NANOCLAW_CHAT_JID,
-            threadId: NANOCLAW_THREAD_ID,
-            label: reason,
-            summary: reason,
-            command,
-            timestamp: new Date().toISOString(),
-        });
-
-        const response = pollIpcResponse(requestId, 1_800_000); // 30 min (matches IDLE_TIMEOUT)
-
-        if (response && response.decision === 'approved') {
-            process.exit(0); // allow — no gate file needed
+    // NanoClaw mode: DB-IPC gate. Block here until user approves via chat.
+    if (IS_NANOCLAW) {
+        let requestId: string;
+        try {
+            requestId = writeGateRequest(reason, reason, command);
+        } catch (err) {
+            // If we can't even stage the request, the session DBs are in a
+            // broken state. Deny the command rather than silently allowing —
+            // the destructive gate is fail-closed.
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`BLOCKED: ${reason} — could not stage approval request (${msg.slice(0, 200)}).`);
+            process.exit(2);
         }
 
-        const detail = response?.decision === 'cancelled'
+        const decision = pollDeliveredTable(requestId, 60 * 60 * 1000); // 60 min, matches host BASH_GATE_TIMEOUT_MS
+
+        if (decision === 'approved') {
+            process.exit(0); // allow
+        }
+
+        const detail = decision === 'denied'
             ? 'Cancelled by user. Do not retry or explain why it was blocked — just acknowledge the cancellation briefly.'
             : 'Timed out waiting for user approval. Do not retry.';
         console.error(`BLOCKED: ${reason} — ${detail}`);
