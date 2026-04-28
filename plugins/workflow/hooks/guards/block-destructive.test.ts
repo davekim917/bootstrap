@@ -322,6 +322,142 @@ describe('AST precision: destructive keywords in non-command contexts are allowe
     });
 });
 
+// ── SQL: destructive keywords in string literals / comments are NOT gated ────
+
+describe('SQL gate: false positives from string literals and comments are allowed', () => {
+    test.each([
+        // The original report: querying query_history for past DROP statements.
+        [`snow sql -q "SELECT * FROM snowflake.account_usage.query_history WHERE query_text LIKE '%DROP TABLE foo%'"`, 'snow query_history search'],
+        [`psql -c "SELECT query FROM pg_stat_statements WHERE query LIKE '%TRUNCATE%'"`, 'psql pg_stat_statements search'],
+        [`mysql -e "SELECT event_name FROM audit_log WHERE event_name = 'DROP TABLE'"`, 'mysql audit search'],
+        // Comments mentioning destructive keywords
+        [`psql -c "-- DROP TABLE comment\\nSELECT 1"`, 'psql line comment'],
+        [`psql -c "/* DROP TABLE block comment */ SELECT 1"`, 'psql block comment'],
+        // Double-quoted identifier that happens to share a keyword name
+        [`psql -c 'SELECT * FROM "DROP TABLE archive"'`, 'identifier named like keyword'],
+    ])('%s → allowed (%s)', async (cmd) => {
+        const { exitCode } = await runHook(cmd);
+        expect(exitCode).toBe(0);
+    });
+});
+
+describe('SQL gate: leading destructive statement is gated even after non-destructive prefix', () => {
+    test('multi-statement: SELECT then DROP TABLE is gated', async () => {
+        const cmd = `psql -c "SELECT 1; DROP TABLE foo"`;
+        const { exitCode, stderr } = await runHook(cmd);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('GATED');
+        expect(stderr.toLowerCase()).toContain('drop table');
+    });
+
+    test('gate message includes pattern label and the matched statement', async () => {
+        const cmd = `snow sql -q "DROP TABLE inventory.daily_snapshot"`;
+        const { stderr } = await runHook(cmd);
+        expect(stderr).toContain('(DROP)');
+        expect(stderr).toContain('DROP TABLE inventory.daily_snapshot');
+    });
+});
+
+// ── Expanded destructive patterns: gated ─────────────────────────────────────
+
+describe('SQL gate: expanded destructive patterns are gated', () => {
+    test.each([
+        // CTE-wrapped DML — destructive verb is inside a CTE body, not at the
+        // top of the statement. Postgres-style.
+        [`psql -c "WITH d AS (DELETE FROM foo RETURNING *) SELECT * FROM d"`, 'CTE-wrapped DELETE FROM'],
+        [`psql -c "WITH t AS (TRUNCATE foo) SELECT 1"`, 'CTE-wrapped TRUNCATE'],
+        [`psql -c "WITH x AS (SELECT 1), d AS (DELETE FROM target USING x WHERE x.id = target.id) SELECT 1"`, 'multi-CTE with destructive second body'],
+
+        // CREATE OR REPLACE — Snowflake/Postgres idiomatic drop+recreate.
+        [`snow sql -q "CREATE OR REPLACE TABLE foo (id INT)"`, 'CREATE OR REPLACE TABLE'],
+        [`snow sql -q "CREATE OR REPLACE VIEW v AS SELECT 1"`, 'CREATE OR REPLACE VIEW'],
+        [`snow sql -q "CREATE OR REPLACE MATERIALIZED VIEW mv AS SELECT 1"`, 'CREATE OR REPLACE MATERIALIZED VIEW'],
+
+        // INSERT OVERWRITE — Snowflake/Spark/Hive bulk overwrite.
+        [`snow sql -q "INSERT OVERWRITE INTO foo SELECT 1"`, 'INSERT OVERWRITE INTO'],
+        [`snow sql -q "INSERT OVERWRITE foo SELECT 1"`, 'INSERT OVERWRITE bare'],
+
+        // MERGE — gate all forms; destructive clauses are too varied to whitelist.
+        [`psql -c "MERGE INTO foo USING bar ON foo.id = bar.id WHEN MATCHED THEN DELETE"`, 'MERGE with DELETE'],
+        [`snow sql -q "MERGE INTO foo USING bar ON foo.id = bar.id WHEN MATCHED THEN UPDATE SET foo.x = bar.x"`, 'MERGE with UPDATE'],
+
+        // ALTER ... DROP — drops columns, constraints, etc.
+        [`psql -c "ALTER TABLE foo DROP COLUMN bar"`, 'ALTER TABLE DROP COLUMN'],
+        [`psql -c "ALTER TABLE foo DROP CONSTRAINT pk_foo"`, 'ALTER TABLE DROP CONSTRAINT'],
+        [`psql -c "ALTER SCHEMA s DROP FUNCTION f()"`, 'ALTER SCHEMA DROP'],
+
+        // UPDATE without WHERE — rewrites every row.
+        [`psql -c "UPDATE foo SET col = 1"`, 'UPDATE without WHERE'],
+        [`mysql -e "UPDATE users SET email = NULL"`, 'UPDATE without WHERE (mysql)'],
+
+        // EXECUTE IMMEDIATE — destructive verb is inside the literal.
+        [`snow sql -q "EXECUTE IMMEDIATE 'DROP TABLE foo'"`, 'EXECUTE IMMEDIATE DROP'],
+        [`snow sql -q "EXECUTE IMMEDIATE 'TRUNCATE foo'"`, 'EXECUTE IMMEDIATE TRUNCATE'],
+        [`snow sql -q "EXECUTE IMMEDIATE $$DELETE FROM foo$$"`, 'EXECUTE IMMEDIATE dollar-quoted'],
+    ])('%s → GATED (%s)', async (cmd) => {
+        const { exitCode, stderr } = await runHook(cmd);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('GATED');
+    });
+
+    test('CTE-wrapped pattern is labeled in gate message', async () => {
+        const cmd = `psql -c "WITH d AS (DELETE FROM foo RETURNING *) SELECT * FROM d"`;
+        const { stderr } = await runHook(cmd);
+        expect(stderr).toContain('CTE-wrapped DELETE FROM');
+        expect(stderr.toLowerCase()).toContain('delete from foo');
+    });
+
+    test('UPDATE without WHERE pattern is labeled in gate message', async () => {
+        const cmd = `psql -c "UPDATE foo SET col = 1"`;
+        const { stderr } = await runHook(cmd);
+        expect(stderr).toContain('UPDATE without WHERE');
+    });
+
+    test('EXECUTE IMMEDIATE recursion is reflected in gate message', async () => {
+        const cmd = `snow sql -q "EXECUTE IMMEDIATE 'DROP TABLE foo'"`;
+        const { stderr } = await runHook(cmd);
+        expect(stderr).toContain('EXECUTE IMMEDIATE');
+        expect(stderr).toContain('DROP');
+    });
+});
+
+// ── Expanded patterns: false-positive guards ─────────────────────────────────
+
+describe('SQL gate: non-destructive constructs are still allowed after expansion', () => {
+    test.each([
+        // CTEs with non-destructive bodies
+        [`psql -c "WITH x AS (SELECT 1) SELECT * FROM x"`, 'CTE with SELECT'],
+        [`psql -c "WITH RECURSIVE r AS (SELECT 1 UNION SELECT n+1 FROM r WHERE n < 10) SELECT * FROM r"`, 'recursive CTE with SELECT'],
+
+        // Plain CREATE — not OR REPLACE, so allowed.
+        [`psql -c "CREATE TABLE foo (id INT)"`, 'plain CREATE TABLE'],
+        [`psql -c "CREATE VIEW v AS SELECT 1"`, 'plain CREATE VIEW'],
+        [`psql -c "CREATE INDEX idx_foo ON foo(id)"`, 'plain CREATE INDEX'],
+
+        // UPDATE with WHERE — bounded mutation, allowed.
+        [`psql -c "UPDATE foo SET col = 1 WHERE id = 5"`, 'UPDATE with WHERE'],
+        [`psql -c "UPDATE foo SET col = 1 FROM bar WHERE foo.bar_id = bar.id"`, 'UPDATE ... FROM ... WHERE'],
+
+        // Plain INSERT — not OVERWRITE, allowed.
+        [`psql -c "INSERT INTO foo VALUES (1, 2)"`, 'plain INSERT'],
+        [`psql -c "INSERT INTO foo SELECT * FROM staging"`, 'INSERT ... SELECT'],
+
+        // ALTER without DROP — additive, allowed.
+        [`psql -c "ALTER TABLE foo ADD COLUMN bar TEXT"`, 'ALTER TABLE ADD COLUMN'],
+        [`psql -c "ALTER TABLE foo RENAME COLUMN old_name TO new_name"`, 'ALTER TABLE RENAME COLUMN'],
+
+        // Snowflake's UNDROP — restores from time travel, NOT destructive.
+        [`snow sql -q "UNDROP TABLE foo"`, 'UNDROP'],
+
+        // Pattern names that appear inside a string literal — the literal-strip
+        // covers all expanded patterns the same way, so one case is enough.
+        [`psql -c "SELECT 'CREATE OR REPLACE' AS phrase"`, 'expanded pattern label in string literal'],
+    ])('%s → allowed (%s)', async (cmd) => {
+        const { exitCode } = await runHook(cmd);
+        expect(exitCode).toBe(0);
+    });
+});
+
 // ── AST precision: destructive commands inside subshells ARE caught ───────────
 
 describe('AST precision: commands inside subshells/pipelines are still checked', () => {
