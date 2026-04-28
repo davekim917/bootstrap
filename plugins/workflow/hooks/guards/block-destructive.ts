@@ -124,17 +124,287 @@ const SAFE_PATH_PATTERNS = [
     /(?:^|\/)\.codex\/skills(?:\/|$)/,       // optional legacy Codex mirror
 ];
 
-// Destructive SQL pattern (shared across SQL CLIs)
-const DESTRUCTIVE_SQL = /(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION|OWNED|TRIGGER|INDEX)|TRUNCATE\s|DELETE\s+FROM)/i;
+// Destructive SQL patterns, anchored to statement-leading. Each pattern fires
+// only after string literals, comments, and CTE preambles are stripped (see
+// findDestructiveSqlStatement) — so substrings inside `'%DROP TABLE%'` and
+// keyword-like identifiers in `"DROP TABLE archive"` do not match.
+const DDL_DROP_TARGETS =
+    '(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION|OWNED|TRIGGER|INDEX|MATERIALIZED\\s+VIEW)';
+const DDL_REPLACE_TARGETS =
+    '(?:TABLE|VIEW|MATERIALIZED\\s+VIEW|TEMP(?:ORARY)?\\s+TABLE|EXTERNAL\\s+TABLE|FUNCTION|PROCEDURE|TRIGGER)';
+
+const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
+    { rx: new RegExp(`^DROP\\s+${DDL_DROP_TARGETS}\\b`, 'i'), label: 'DROP' },
+    { rx: /^TRUNCATE\b/i, label: 'TRUNCATE' },
+    { rx: /^DELETE\s+FROM\b/i, label: 'DELETE FROM' },
+    { rx: new RegExp(`^CREATE\\s+OR\\s+REPLACE\\s+${DDL_REPLACE_TARGETS}\\b`, 'i'), label: 'CREATE OR REPLACE' },
+    { rx: /^INSERT\s+OVERWRITE\b/i, label: 'INSERT OVERWRITE' },
+    { rx: /^MERGE\s+INTO\b/i, label: 'MERGE' },
+    // After string-strip, a DROP keyword inside a string literal cannot reach
+    // this check, so anywhere-in-statement matching is safe.
+    { rx: /^ALTER\b[\s\S]*\bDROP\b/i, label: 'ALTER ... DROP' },
+];
+
+const UPDATE_LEADING = /^UPDATE\b/i;
+const HAS_WHERE = /\bWHERE\b/i;
+
+// Cheap superset prefilter — if none of these verbs appear anywhere in the
+// SQL arg, no destructive pattern can match. Skips the full strip+scan
+// pipeline on SELECT-only queries (the common case).
+const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE)\b/i;
+
+// Hoisted to module scope — these regexes are matched per-segment / per-call
+// inside the SQL scanner; defining them inline would recompile on every
+// invocation.
+const WITH_LEADING = /^WITH\b/i;
+const WITH_PREFIX = /^WITH\s+(?:RECURSIVE\s+)?/i;
+const CTE_NAME_AS = /^(?:"\s*"|"[^"]*"|`[^`]*`|[A-Za-z_][\w$]*)\s*(?:\([^)]*\))?\s+AS\s+/i;
+const EXECUTE_IMMEDIATE = /EXECUTE\s+IMMEDIATE\s+/gi;
+const DOLLAR_TAG = /^\$([A-Za-z0-9_]*)\$/;
+
+const STATEMENT_PREVIEW_CHARS = 200;
+const SQL_RECURSION_LIMIT = 3;
 
 // MongoDB destructive methods
 const DESTRUCTIVE_MONGO = /(?:\bdropDatabase\b|\.drop\s*\(|\.deleteMany\s*\(|\.remove\s*\()/i;
 
-// SQL CLI name → display label (checked against DESTRUCTIVE_SQL in argument values)
+// SQL CLI name → display label
 const SQL_CLIS: Record<string, string> = {
     psql: 'PostgreSQL', mysql: 'MySQL', duckdb: 'DuckDB',
     sqlite3: 'SQLite', sqlite: 'SQLite',
 };
+
+// ── SQL parsing helpers ──────────────────────────────────────────────────────
+
+/**
+ * Strip SQL string literals and comments out of `sql`, replacing their
+ * contents with spaces of equal length. Length-preserving so the output
+ * shares offsets with the input — the caller can split on `;` and trust the
+ * boundaries to match the original source.
+ *
+ * Handles:
+ *   - line comments (`-- ...`)
+ *   - block comments (`/* ... *\/`, non-nested)
+ *   - single-quoted strings with `''` escape
+ *   - double-quoted identifiers (Postgres/Snowflake) with `""` escape
+ *   - backtick identifiers (MySQL)
+ *   - dollar-quoted strings (`$$...$$`, `$tag$...$tag$` — Postgres/Snowflake)
+ *
+ * Not a real SQL parser. Constructs that produce destructive effects from
+ * inside a string literal — the most realistic being EXECUTE IMMEDIATE —
+ * are handled separately by findExecuteImmediateLiterals + recursion in
+ * findDestructiveSqlStatement.
+ */
+function stripSqlLiteralsAndComments(sql: string): string {
+    const out: string[] = [];
+    let i = 0;
+    while (i < sql.length) {
+        const c = sql[i];
+        const c2 = sql.slice(i, i + 2);
+
+        if (c2 === '--') {
+            const nl = sql.indexOf('\n', i);
+            const end = nl < 0 ? sql.length : nl;
+            out.push(' '.repeat(end - i));
+            i = end;
+            continue;
+        }
+        if (c2 === '/*') {
+            const close = sql.indexOf('*/', i + 2);
+            const end = close < 0 ? sql.length : close + 2;
+            out.push(' '.repeat(end - i));
+            i = end;
+            continue;
+        }
+        if (c === "'" || c === '"' || c === '`') {
+            const quote = c;
+            const start = i;
+            i += 1;
+            while (i < sql.length) {
+                if (sql[i] === quote && sql[i + 1] === quote) {
+                    i += 2; // SQL doubled-quote escape
+                    continue;
+                }
+                if (sql[i] === quote) {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            // Replace whole literal (quotes included) with spaces, length-preserving
+            out.push(quote + ' '.repeat(Math.max(0, i - start - 2)) + quote);
+            continue;
+        }
+        if (c === '$') {
+            const m = sql.slice(i).match(DOLLAR_TAG);
+            if (m) {
+                const tag = m[0];
+                const start = i + tag.length;
+                const close = sql.indexOf(tag, start);
+                if (close >= 0) {
+                    const end = close + tag.length;
+                    out.push(tag + ' '.repeat(close - start) + tag);
+                    i = end;
+                    continue;
+                }
+                // Unclosed dollar-quote — stop parsing as code from here, replace rest with spaces
+                out.push(' '.repeat(sql.length - i));
+                i = sql.length;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    return out.join('');
+}
+
+/**
+ * Split a `;`-separated SQL segment (already string-stripped) into the list
+ * of bodies that need to be destructiveness-checked. For non-CTE statements
+ * this is `[{body: segment, isCTE: false}]`; for CTE-prefixed statements
+ * (`WITH x AS (...) [, y AS (...)]* <body>`) it returns each CTE body plus
+ * the trailing body, so a Postgres-style destructive CTE like `WITH d AS
+ * (DELETE FROM foo RETURNING *) SELECT * FROM d` cannot hide its DELETE
+ * behind a SELECT trailer.
+ */
+function decomposeSqlSegment(skel: string): Array<{ body: string; isCTE: boolean }> {
+    const trimmed = skel.trim();
+    if (!WITH_LEADING.test(trimmed)) return [{ body: trimmed, isCTE: false }];
+
+    const bodies: Array<{ body: string; isCTE: boolean }> = [];
+    let s = trimmed.replace(WITH_PREFIX, '');
+
+    while (s.length > 0) {
+        const nameMatch = s.match(CTE_NAME_AS);
+        if (!nameMatch) break;
+        s = s.slice(nameMatch[0].length);
+
+        if (s[0] !== '(') break;
+        let depth = 1;
+        let i = 1;
+        while (i < s.length && depth > 0) {
+            if (s[i] === '(') depth++;
+            else if (s[i] === ')') depth--;
+            if (depth > 0) i++;
+        }
+        if (depth !== 0) break; // unbalanced — bail rather than mis-classify
+        bodies.push({ body: s.slice(1, i).trim(), isCTE: true });
+        s = s.slice(i + 1).trimStart();
+
+        if (s[0] === ',') {
+            s = s.slice(1).trimStart();
+            continue;
+        }
+        break;
+    }
+
+    if (s.length > 0) bodies.push({ body: s.trim(), isCTE: false });
+    return bodies;
+}
+
+interface DestructiveMatch {
+    pattern: string;
+    statement: string;
+}
+
+function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | null {
+    const trimmed = body.trim();
+    if (!trimmed) return null;
+    const preview = trimmed.slice(0, STATEMENT_PREVIEW_CHARS);
+
+    for (const { rx, label } of DESTRUCTIVE_SQL_PATTERNS) {
+        if (rx.test(trimmed)) {
+            return { pattern: isCTE ? `CTE-wrapped ${label}` : label, statement: preview };
+        }
+    }
+
+    // A WHERE inside a subquery still counts as having WHERE — rare false-allow,
+    // acceptable since the gate is meant to catch obvious accidents.
+    if (UPDATE_LEADING.test(trimmed) && !HAS_WHERE.test(trimmed)) {
+        return {
+            pattern: isCTE ? 'CTE-wrapped UPDATE without WHERE' : 'UPDATE without WHERE',
+            statement: preview,
+        };
+    }
+
+    return null;
+}
+
+/**
+ * Find every `EXECUTE IMMEDIATE '...'` literal and return its contents. The
+ * keyword scan runs against `skeleton` (already stripped, offsets preserved)
+ * so an EXECUTE IMMEDIATE appearing inside a string or comment doesn't
+ * trigger recursion. The returned bodies come from `originalSql` so the
+ * literal contents are real SQL the recursion can scan.
+ */
+function findExecuteImmediateLiterals(originalSql: string, skeleton: string): string[] {
+    const literals: string[] = [];
+    EXECUTE_IMMEDIATE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = EXECUTE_IMMEDIATE.exec(skeleton)) !== null) {
+        const litStart = m.index + m[0].length;
+        if (litStart >= originalSql.length) continue;
+        const c = originalSql[litStart];
+        let body: string | null = null;
+
+        if (c === "'" || c === '"' || c === '`') {
+            let i = litStart + 1;
+            while (i < originalSql.length) {
+                if (originalSql[i] === c && originalSql[i + 1] === c) { i += 2; continue; }
+                if (originalSql[i] === c) break;
+                i++;
+            }
+            body = originalSql.slice(litStart + 1, i);
+        } else if (c === '$') {
+            const tagMatch = originalSql.slice(litStart).match(DOLLAR_TAG);
+            if (tagMatch) {
+                const tag = tagMatch[0];
+                const tagStart = litStart + tag.length;
+                const close = originalSql.indexOf(tag, tagStart);
+                if (close >= 0) body = originalSql.slice(tagStart, close);
+            }
+        }
+
+        if (body !== null) literals.push(body);
+    }
+    return literals;
+}
+
+/**
+ * Scan `sql` for a destructive statement and return what tripped the gate,
+ * or null. Coverage maps to DESTRUCTIVE_SQL_PATTERNS plus UPDATE-without-WHERE,
+ * CTE-wrapped DML, and EXECUTE IMMEDIATE recursion.
+ *
+ * Known residual gaps (out of scope for syntactic checking):
+ *   - destructive verbs inside CREATE PROCEDURE / FUNCTION bodies — creation
+ *     is non-destructive; CALL is the dangerous moment, but we can't tell
+ *     what a procedure does
+ *   - dynamic SQL via PREPARE / EXECUTE bind vars
+ *   - `UPDATE ... WHERE 1=1` — syntactically has WHERE; semantically rewrites
+ *     everything
+ */
+function findDestructiveSqlStatement(sql: string, depth: number = 0): DestructiveMatch | null {
+    if (depth > SQL_RECURSION_LIMIT) return null;
+    if (!SQL_PREFILTER.test(sql)) return null;
+
+    const skeleton = stripSqlLiteralsAndComments(sql);
+    for (const segment of skeleton.split(';')) {
+        for (const { body, isCTE } of decomposeSqlSegment(segment)) {
+            const match = checkSqlBody(body, isCTE);
+            if (match) return match;
+        }
+    }
+
+    for (const literal of findExecuteImmediateLiterals(sql, skeleton)) {
+        const inner = findDestructiveSqlStatement(literal, depth + 1);
+        if (inner) {
+            return { pattern: `EXECUTE IMMEDIATE → ${inner.pattern}`, statement: inner.statement };
+        }
+    }
+
+    return null;
+}
 
 // Platform CLIs → destructive subcommand verbs
 const PLATFORM_DESTRUCTIVE: Record<string, Set<string>> = {
@@ -375,14 +645,16 @@ function checkGatedCommand(cmd: ResolvedCommand): string | null {
 
     // ── Databases ────────────────────────────────────────────────────────
 
-    // SQL CLIs: check argument values for destructive SQL keywords
-    const sqlLabel = SQL_CLIS[name];
-    if (sqlLabel && args.some(a => DESTRUCTIVE_SQL.test(a))) {
-        return `Destructive ${sqlLabel} SQL detected (DROP/TRUNCATE/DELETE).`;
-    }
-    // Snowflake: `snow sql -q "DROP TABLE ..."`
-    if (name === 'snow' && args[0] === 'sql' && args.some(a => DESTRUCTIVE_SQL.test(a))) {
-        return 'Destructive Snowflake SQL detected (DROP/TRUNCATE/DELETE).';
+    // SQL CLIs: scan each arg for the realistic destructive paths an agent can
+    // emit. Coverage and false-positive guards live in findDestructiveSqlStatement.
+    const sqlDialect = SQL_CLIS[name] ?? (name === 'snow' && args[0] === 'sql' ? 'Snowflake' : null);
+    if (sqlDialect) {
+        for (const a of args) {
+            const matched = findDestructiveSqlStatement(a);
+            if (matched) {
+                return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
+            }
+        }
     }
 
     // MongoDB
