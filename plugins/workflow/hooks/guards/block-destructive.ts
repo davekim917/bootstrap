@@ -124,17 +124,133 @@ const SAFE_PATH_PATTERNS = [
     /(?:^|\/)\.codex\/skills(?:\/|$)/,       // optional legacy Codex mirror
 ];
 
-// Destructive SQL pattern (shared across SQL CLIs)
-const DESTRUCTIVE_SQL = /(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION|OWNED|TRIGGER|INDEX)|TRUNCATE\s|DELETE\s+FROM)/i;
+// Destructive SQL pattern, anchored to statement-leading. The check applies
+// only after string literals and comments are stripped (see findDestructiveSqlStatement),
+// so substrings like `WHERE query_text LIKE '%DROP TABLE%'` don't match.
+const DESTRUCTIVE_SQL_LEADING = /^(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION|OWNED|TRIGGER|INDEX)\b|TRUNCATE\b|DELETE\s+FROM\b)/i;
 
 // MongoDB destructive methods
 const DESTRUCTIVE_MONGO = /(?:\bdropDatabase\b|\.drop\s*\(|\.deleteMany\s*\(|\.remove\s*\()/i;
 
-// SQL CLI name → display label (checked against DESTRUCTIVE_SQL in argument values)
+// SQL CLI name → display label (checked against DESTRUCTIVE_SQL_LEADING in argument values)
 const SQL_CLIS: Record<string, string> = {
     psql: 'PostgreSQL', mysql: 'MySQL', duckdb: 'DuckDB',
     sqlite3: 'SQLite', sqlite: 'SQLite',
 };
+
+// ── SQL parsing helpers ──────────────────────────────────────────────────────
+
+/**
+ * Strip SQL string literals and comments out of `sql`, replacing their
+ * contents with spaces of equal length. Length-preserving so the output
+ * shares offsets with the input — the caller can split on `;` and trust the
+ * boundaries to match the original source.
+ *
+ * Handles:
+ *   - line comments (`-- ...`)
+ *   - block comments (`/* ... *\/`, non-nested)
+ *   - single-quoted strings with `''` escape
+ *   - double-quoted identifiers (Postgres/Snowflake) with `""` escape
+ *   - backtick identifiers (MySQL)
+ *   - dollar-quoted strings (`$$...$$`, `$tag$...$tag$` — Postgres/Snowflake)
+ *
+ * Not a real SQL parser. Multi-line block comments wrapping a destructive
+ * statement, or dynamic SQL via EXECUTE IMMEDIATE, can still slip past the
+ * leading-statement check below — that's acceptable because this gate is
+ * defense-in-depth against accidental drops, not a security boundary.
+ */
+function stripSqlLiteralsAndComments(sql: string): string {
+    const out: string[] = [];
+    let i = 0;
+    while (i < sql.length) {
+        const c = sql[i];
+        const c2 = sql.slice(i, i + 2);
+
+        if (c2 === '--') {
+            const nl = sql.indexOf('\n', i);
+            const end = nl < 0 ? sql.length : nl;
+            out.push(' '.repeat(end - i));
+            i = end;
+            continue;
+        }
+        if (c2 === '/*') {
+            const close = sql.indexOf('*/', i + 2);
+            const end = close < 0 ? sql.length : close + 2;
+            out.push(' '.repeat(end - i));
+            i = end;
+            continue;
+        }
+        if (c === "'" || c === '"' || c === '`') {
+            const quote = c;
+            const start = i;
+            i += 1;
+            while (i < sql.length) {
+                if (sql[i] === quote && sql[i + 1] === quote) {
+                    i += 2; // SQL doubled-quote escape
+                    continue;
+                }
+                if (sql[i] === quote) {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            // Replace whole literal (quotes included) with spaces, length-preserving
+            out.push(quote + ' '.repeat(Math.max(0, i - start - 2)) + quote);
+            continue;
+        }
+        if (c === '$') {
+            const m = sql.slice(i).match(/^\$([A-Za-z0-9_]*)\$/);
+            if (m) {
+                const tag = m[0];
+                const start = i + tag.length;
+                const close = sql.indexOf(tag, start);
+                if (close >= 0) {
+                    const end = close + tag.length;
+                    out.push(tag + ' '.repeat(close - start) + tag);
+                    i = end;
+                    continue;
+                }
+                // Unclosed dollar-quote — stop parsing as code from here, replace rest with spaces
+                out.push(' '.repeat(sql.length - i));
+                i = sql.length;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    return out.join('');
+}
+
+/**
+ * Scan `sql` for a destructive top-level statement. Returns the matched
+ * statement (truncated to 200 chars) for the gate message, or null if no
+ * destructive statement is present at the start of any `;`-separated chunk.
+ *
+ * Non-destructive uses of the same keywords inside string literals or
+ * comments — e.g. a SELECT against query_history filtering for past DROP
+ * commands — will not match.
+ */
+function findDestructiveSqlStatement(sql: string): string | null {
+    const skeleton = stripSqlLiteralsAndComments(sql);
+    let cursor = 0;
+    for (const segment of skeleton.split(';')) {
+        const startInSegment = segment.length - segment.trimStart().length;
+        const trimmedSkel = segment.trim();
+        if (DESTRUCTIVE_SQL_LEADING.test(trimmedSkel)) {
+            // Slice the corresponding range out of the *original* sql so the
+            // gate message shows the user the real statement (with original
+            // identifiers and whitespace).
+            const absStart = cursor + startInSegment;
+            const absEnd = cursor + segment.length;
+            const original = sql.slice(absStart, absEnd).trim();
+            return (original || trimmedSkel).slice(0, 200);
+        }
+        cursor += segment.length + 1; // +1 for the ';'
+    }
+    return null;
+}
 
 // Platform CLIs → destructive subcommand verbs
 const PLATFORM_DESTRUCTIVE: Record<string, Set<string>> = {
@@ -375,14 +491,26 @@ function checkGatedCommand(cmd: ResolvedCommand): string | null {
 
     // ── Databases ────────────────────────────────────────────────────────
 
-    // SQL CLIs: check argument values for destructive SQL keywords
+    // SQL CLIs: scan each arg for a destructive top-level statement. Strings
+    // and comments are stripped before matching so a SELECT against query
+    // history (e.g. WHERE query_text LIKE '%DROP TABLE%') does not trip the gate.
     const sqlLabel = SQL_CLIS[name];
-    if (sqlLabel && args.some(a => DESTRUCTIVE_SQL.test(a))) {
-        return `Destructive ${sqlLabel} SQL detected (DROP/TRUNCATE/DELETE).`;
+    if (sqlLabel) {
+        for (const a of args) {
+            const matched = findDestructiveSqlStatement(a);
+            if (matched) {
+                return `Destructive ${sqlLabel} SQL detected — leading statement: ${matched}`;
+            }
+        }
     }
     // Snowflake: `snow sql -q "DROP TABLE ..."`
-    if (name === 'snow' && args[0] === 'sql' && args.some(a => DESTRUCTIVE_SQL.test(a))) {
-        return 'Destructive Snowflake SQL detected (DROP/TRUNCATE/DELETE).';
+    if (name === 'snow' && args[0] === 'sql') {
+        for (const a of args) {
+            const matched = findDestructiveSqlStatement(a);
+            if (matched) {
+                return `Destructive Snowflake SQL detected — leading statement: ${matched}`;
+            }
+        }
     }
 
     // MongoDB
