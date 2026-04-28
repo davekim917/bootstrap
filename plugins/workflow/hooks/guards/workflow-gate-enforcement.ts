@@ -9,7 +9,7 @@
  * Gate logic (1.8.2):
  *   Team name format: "<feature-name>-build" (REQUIRED for build teams)
  *     - feature-name must match /^[a-z0-9][a-z0-9_-]{0,63}$/
- *   Required artifact: .context/specs/<feature-name>/pre-build-drift.md
+ *   Required artifact: docs/specs/<feature-name>/pre-build-drift.md
  *   Passing condition: parsed_MISSING == 0 AND (parsed_DIVERGED - validAcks) == 0
  *
  *   Counts are derived from parsed `### [B<n>]` entries with `**Class:**` lines.
@@ -18,7 +18,7 @@
  *   real DIVERGED entries below. Only parsed entries count.
  *
  * Acknowledgments (1.8.2):
- *   .context/specs/<feature-name>/drift-acks.json may contain
+ *   docs/specs/<feature-name>/drift-acks.json may contain
  *   { "acknowledgments": [{ "id": "B1", "reason": "...", "expires_at": "YYYY-MM-DD" }] }
  *   Each ack must reference an existing [B<n>] entry in the drift report
  *   whose Class is DIVERGED, with a non-empty reason and (if expires_at
@@ -314,7 +314,7 @@ function formatBlockMessage(
     }
 
     if (!result) {
-        lines.push(`Drift report missing or unparseable: .context/specs/${featureName}/pre-build-drift.md`);
+        lines.push(`Drift report missing or unparseable: docs/specs/${featureName}/pre-build-drift.md`);
         lines.push('');
         lines.push(
             `Run /team-drift with the design as SOT and plan as target first, as specified in /team-build Step 2.`
@@ -322,7 +322,7 @@ function formatBlockMessage(
         return lines.join('\n');
     }
 
-    lines.push(`Drift report: .context/specs/${featureName}/pre-build-drift.md`);
+    lines.push(`Drift report: docs/specs/${featureName}/pre-build-drift.md`);
     lines.push(`  MISSING:  ${result.missing} (parsed from [B<n>] entries with Class: MISSING)`);
     lines.push(
         `  DIVERGED: ${result.divergedTotal} total, ${result.divergedAcked} acked, ${result.divergedEffective} effective`
@@ -336,7 +336,7 @@ function formatBlockMessage(
     if (result.divergedEffective > 0) {
         lines.push(
             `DIVERGED entries that are intentional and justified can be acknowledged in ` +
-                `.context/specs/${featureName}/drift-acks.json:`
+                `docs/specs/${featureName}/drift-acks.json:`
         );
         lines.push('');
         lines.push('  {');
@@ -407,7 +407,7 @@ function main(): void {
     // The allowlist guarantees featureName cannot escape via `..` or `/`,
     // but the join below is still the only place where featureName meets
     // the filesystem.
-    const featureDir = join(cwd, '.context', 'specs', featureName);
+    const featureDir = join(cwd, 'docs', 'specs', featureName);
     const reportPath = join(featureDir, 'pre-build-drift.md');
     const acksPath = join(featureDir, 'drift-acks.json');
 

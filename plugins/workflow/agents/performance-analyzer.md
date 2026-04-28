@@ -68,7 +68,7 @@ CPO-Advisor → CTO-Advisor → Architecture-Advisor → [Code Written] → Code
 
 ## Performance Artifacts
 
-Reference performance decisions in `.context/steering/`:
+Reference performance decisions in `docs/steering/`:
 - `performance-standards.md`: Performance requirements and budgets
 - `caching-strategy.md`: Caching patterns and TTLs
 - `query-patterns.md`: Approved data access patterns
@@ -78,9 +78,6 @@ Reference performance decisions in `.context/steering/`:
 ### 1. Load Project Performance Patterns (FIRST)
 
 ```bash
-# Project skills
-ls .claude/skills/ 2>/dev/null | grep -i "database\|query\|cache"
-
 # Performance conventions
 grep -i "database\|query\|cache\|performance" CLAUDE.md 2>/dev/null
 

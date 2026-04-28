@@ -14,13 +14,13 @@ version: 1.0.0
 
 Analyzes the artifacts from a completed feature's workflow to extract what worked, what was missed, and what should change in the process. Produces a structured retro document with actionable recommendations.
 
-**Output:** `.context/retros/<feature>/retro.md`
+**Output:** `docs/retros/<feature>/retro.md`
 **NOT output:** Code changes, skill rewrites, or CLAUDE.md edits (those are recommendations for the user to act on)
 
 ## Prerequisites
 
 1. `/team-ship` has completed for this feature
-2. `.context/specs/<feature>/` artifacts are accessible (brief.md, design.md, review.md, plan.md)
+2. `docs/specs/<feature>/` artifacts are accessible (brief.md, design.md, review.md, plan.md)
 
 **If artifacts are missing:** Note what's missing and work with what's available. Partial retros are better than no retros.
 
@@ -35,10 +35,10 @@ Analyzes the artifacts from a completed feature's workflow to extract what worke
 ### Step 1: Gather Artifacts
 
 Read the following (skip any that don't exist):
-- `.context/specs/<feature>/brief.md`
-- `.context/specs/<feature>/design.md`
-- `.context/specs/<feature>/review.md`
-- `.context/specs/<feature>/plan.md`
+- `docs/specs/<feature>/brief.md`
+- `docs/specs/<feature>/design.md`
+- `docs/specs/<feature>/review.md`
+- `docs/specs/<feature>/plan.md`
 - Drift reports (if any were generated during /team-build)
 - `git log --oneline` for the feature branch
 
@@ -82,8 +82,8 @@ Be concrete: "Add to CLAUDE.md § Critical Guardrails: 'Always validate X before
 
 Using `references/retro-template.md`, write the retro document.
 
-1. `mkdir -p .context/retros/<feature>/`
-2. Write to `.context/retros/<feature>/retro.md`
+1. `mkdir -p docs/retros/<feature>/`
+2. Write to `docs/retros/<feature>/retro.md`
 
 Present the summary to the user with the save path.
 
@@ -97,7 +97,7 @@ Present the summary to the user with the save path.
 ## Context Discipline
 
 **READ:**
-- `.context/specs/<feature>/*` — all workflow artifacts
+- `docs/specs/<feature>/*` — all workflow artifacts
 - Drift reports (if any)
 - Git log for the feature branch
 - `CLAUDE.md` — to understand what rules exist that may need updating

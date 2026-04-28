@@ -24,7 +24,7 @@ Single-file bug fixes, config changes, typos, simple queries, research, conversa
 
 ## Common mistakes
 
-- Writing a brief-like document yourself instead of invoking `/team-brief`. The skill has specific file paths (`.context/specs/<feature>/`), a Q&A process, and output templates that only load when invoked.
+- Writing a brief-like document yourself instead of invoking `/team-brief`. The skill has specific file paths (`docs/specs/<feature>/`), a Q&A process, and output templates that only load when invoked.
 - Chatting through requirements and jumping to implementation. That skips the brief and design.
 - Creating plan or design files ad-hoc. The `/team-design` and `/team-plan` skills produce those.
 

@@ -75,7 +75,7 @@ CPO-Advisor ←→ YOU (CTO-Advisor) → Architecture-Advisor → [Code Written]
 
 ## Decision Artifacts
 
-Store decisions in `.context/steering/`:
+Store decisions in `docs/steering/`:
 - `tech-stack.md`: Approved technologies, frameworks, and tools
 - `architecture-principles.md`: System design standards and patterns
 - `team-structure.md`: Engineering organization and responsibilities

@@ -36,7 +36,7 @@
 
 #### [STY-M1] [Brief description]
 - **File:** `[path:line]`
-- **Convention violated:** [Which rule from code-conventions skill]
+- **Convention violated:** [Which rule from CLAUDE.md / language convention]
 - **Current:** `[what's there]`
 - **Required:** `[what it should be]`
 - **Status:** Open / Fixed / Waived (`[stated reason]`)
