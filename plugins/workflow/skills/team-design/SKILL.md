@@ -1,7 +1,7 @@
 ---
 name: team-design
 description: >
-  Invoke after /team-brief is approved. Produces a design document at .context/specs/<feature>/design.md.
+  Invoke after /team-brief is approved. Produces a design document at docs/specs/<feature>/design.md.
   Do NOT write design docs manually — this skill has constraint analysis, option evaluation, and
   a research process that only load when invoked.
 version: 1.0.0
@@ -36,14 +36,14 @@ An approved brief — either from `/team-brief` or user-provided.
 ### Step 1: Read Brief and Project Context
 
 1. Read the approved brief. Check in order:
-   - `.context/specs/<feature>/brief.md` (standard location from `/team-brief`)
+   - `docs/specs/<feature>/brief.md` (standard location from `/team-brief`)
    - Ask user to paste it if not found at the standard location
 2. Read `CLAUDE.md` — extract:
    - Tech stack (what libraries/frameworks are available)
    - Code conventions (patterns to follow)
    - Workflow hints (what skills are most relevant)
    - Critical guardrails (non-negotiables)
-3. Read `.claude/project-scope.md` if it exists — extract `domains`, `relevant_global_skills`, `quality_gates`, `security_surface`. This determines which domain skills to load in Step 3.
+3. Read `docs/project-scope.md` if it exists — extract `domains`, `relevant_global_skills`, `quality_gates`, `security_surface`. This determines which domain skills to load in Step 3. **If it does not exist** (the user skipped `/team-brief` and provided requirements directly), run the 6-file discovery scan from `/team-brief` Step 1b inline and **write `docs/project-scope.md`** before proceeding to Step 2. This is the second-layer fallback for the brief-skipped path; downstream stages (`/team-plan`, `/team-qa`, `/team-tdd`) will read the file from here on.
 4. Note any relevant behavioral rules that constrain the design
 
 ### Step 2: Constraint Analysis
@@ -71,7 +71,7 @@ See `references/constraint-analysis.md` for detailed classification guidance.
 
 Load ONLY what's relevant to this specific design:
 
-1. **Project skills:** Load the skills listed in `relevant_global_skills` from `.claude/project-scope.md` (read in Step 1). If `relevant_global_skills` is empty, use `quality_gates` and `description` from the scope file to frame constraints. If no scope file exists, run the 6-file discovery scan inline (see `/team-brief` Step 1b) before proceeding — do not write a scope file from here; that belongs to `/team-brief`.
+1. **Project skills:** Load the skills listed in `relevant_global_skills` from `docs/project-scope.md` (read or written in Step 1). If `relevant_global_skills` is empty, use `quality_gates` and `description` from the scope file to frame constraints.
 2. **Source files:** Read files directly related to the change area. Scope to ~5-10 files max. Do NOT read the entire codebase.
 3. **Library documentation:** Use the **Research Fallback Chain** (see below) for any library the design will use. Check live docs, not assumptions.
 4. **Web search:** Included in the Research Fallback Chain — use `mcp__exa__web_search_exa` or WebSearch for unfamiliar patterns and known pitfalls.
@@ -126,9 +126,9 @@ Using `references/design-template.md`, write the complete design document.
 
 Save the design to disk:
 1. Derive the feature name from the design title (kebab-case, matching the brief's feature name)
-2. `mkdir -p .context/specs/<feature>/`
-3. Write the design to `.context/specs/<feature>/design.md`
-4. Update the decision record at `.context/specs/<feature>/decisions.yaml`:
+2. `mkdir -p docs/specs/<feature>/`
+3. Write the design to `docs/specs/<feature>/design.md`
+4. Update the decision record at `docs/specs/<feature>/decisions.yaml`:
    - Append the chosen option with rationale, citing constraint refs
    - Append each rejected option with its rejection reason (these become REJECTION claims in drift detection)
    - Append HARD/SOFT constraint classifications from Step 2 (if new constraints were identified beyond the brief's)
@@ -141,7 +141,7 @@ Then STOP. Display exactly this gate:
 ---
 **Design ready for review.**
 
-**Saved to:** `.context/specs/<feature>/design.md`
+**Saved to:** `docs/specs/<feature>/design.md`
 
 If this looks right, say "approved" to proceed to `/team-review`.
 If anything needs adjusting, tell me what to change and I'll revise.
@@ -218,17 +218,18 @@ Accepts rollback from `/team-review` (MUST-FIX requiring design revision) and `/
 
 **Read:**
 - `CLAUDE.md` — always (project context, conventions, guardrails)
-- `.context/specs/<feature>/brief.md` — the approved brief (Step 1)
-- `.context/specs/<feature>/decisions.yaml` — existing decision record from brief (Step 1)
-- `.claude/project-scope.md` — if it exists; determines which domain skills to load (Step 1)
+- `docs/specs/<feature>/brief.md` — the approved brief (Step 1)
+- `docs/specs/<feature>/decisions.yaml` — existing decision record from brief (Step 1)
+- `docs/project-scope.md` — if it exists; determines which domain skills to load (Step 1)
 - Relevant project skills — loaded from `relevant_global_skills` in scope file (Step 3)
 - ~5-10 source files — scoped to the change area
 - Context7 docs — for libraries involved in the design
 - Web search — for unfamiliar patterns and known pitfalls
 
 **Write:**
-- `.context/specs/<feature>/design.md` — the completed design document (Step 7)
-- `.context/specs/<feature>/decisions.yaml` — updated decision record (Step 7)
+- `docs/specs/<feature>/design.md` — the completed design document (Step 7)
+- `docs/specs/<feature>/decisions.yaml` — updated decision record (Step 7)
+- `docs/project-scope.md` — second-layer write only when `/team-brief` was skipped and the file does not yet exist (Step 1)
 
 **Do NOT read:**
 - Every file in the codebase

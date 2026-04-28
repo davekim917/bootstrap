@@ -1,7 +1,7 @@
 ---
 name: team-review
 description: >
-  Invoke after /team-design is approved. Produces a review report at .context/specs/<feature>/review.md.
+  Invoke after /team-design is approved. Produces a review report at docs/specs/<feature>/review.md.
   Do NOT write review docs manually — this skill spawns independent reviewers and has deduplication
   logic that only loads when invoked.
 version: 2.2.0
@@ -48,10 +48,43 @@ first."
 
 ## Process
 
+### Step 0: Cycle Cap Check
+
+Before doing anything else, count how many review cycles have already run for this feature.
+
+1. Read `docs/specs/<feature>/decisions.yaml`. Look for the `review_cycles` array.
+2. Let `N` = number of entries in that array. Edge cases:
+   - File missing or `review_cycles` array missing → `N = 0`.
+   - File present but malformed YAML, or `review_cycles` is not an array → STOP. Tell the user
+     the decision record is corrupt and ask whether to repair or treat as `N = 0`. Do not
+     silently overwrite.
+3. If `N >= 3`, **STOP** and emit this gate verbatim — do not run reviewers, do not write a new
+   report:
+
+   ```
+   ---
+   **Review cycle cap reached (3/3).**
+
+   This design has been through 3 review cycles. The remaining MUST-FIX findings either need
+   human judgment or indicate the design needs to be reworked from `/team-design`, not patched
+   through another review pass.
+
+   Options:
+   1. **Waive remaining MUST-FIX** — explicitly accept each with a stated reason. They will be
+      logged in `docs/specs/<feature>/decisions.yaml` under `waivers`.
+   2. **Rework the design** — return to `/team-design` with the unresolved findings as new input.
+   3. **Escalate** — the user (you) makes the call on each finding. State the call and the reason.
+
+   No 4th review cycle. Tell me which path you want.
+   ---
+   ```
+
+4. If `N < 3`, proceed to Step 1. (You will append a new entry to `review_cycles` in Step 5.)
+
 ### Step 1: Setup
 
 1. Get the design document. Check in order:
-   - `.context/specs/<feature>/design.md` (standard location from `/team-design`)
+   - `docs/specs/<feature>/design.md` (standard location from `/team-design`)
    - Ask user to paste it if not found
 
 2. Read `CLAUDE.md` — extract tech stack, conventions, critical guardrails, and relevant skill names.
@@ -62,7 +95,7 @@ first."
    # Write design content to .claude/tmp/review-input.md
    ```
 
-4. Identify the 2-3 project skills most relevant to this design. Start from `.claude/project-scope.md`
+4. Identify the 2-3 project skills most relevant to this design. Start from `docs/project-scope.md`
    if it exists (`relevant_global_skills` field), then cross-reference the design content using this
    domain-to-skill mapping:
 
@@ -246,10 +279,11 @@ Write the complete review report using `references/review-report-template.md`.
 
 Save the review report to disk:
 1. Derive the feature name from the design document title (kebab-case, e.g., "User Authentication" → "user-authentication")
-2. `mkdir -p .context/specs/<feature>/`
-3. Write the report to `.context/specs/<feature>/review.md`
-4. Update the decision record at `.context/specs/<feature>/decisions.yaml`:
+2. `mkdir -p docs/specs/<feature>/`
+3. Write the report to `docs/specs/<feature>/review.md`
+4. Update the decision record at `docs/specs/<feature>/decisions.yaml`:
    - Append each waived MUST-FIX finding with its stated reason and risk level
+   - Append a new `review_cycles` entry with `iteration` = N+1 (where N is the cycle count from Step 0), the MUST-FIX / SHOULD-FIX / WON'T-FIX counts from this run, and `completed_at` = current ISO 8601 timestamp
    - Format: see `skills/shared/decision-record-schema.md`
 
 Include the save path in the gate message so downstream skills (`/team-plan`) know where to find it.
@@ -258,7 +292,7 @@ Then STOP. Display exactly this gate:
 
 ```
 ---
-**Review complete.**
+**Review complete.** (Cycle [N+1]/3)
 
 Reviewers run: A (architecture) · B (best-practice) · C (codex adversarial)
 [If C was skipped: replace "C (codex adversarial)" with "C: skipped — <reason>"]
@@ -267,9 +301,14 @@ MUST-FIX: [N] findings
 SHOULD-FIX: [N] findings
 WON'T-FIX: [N] findings (logged)
 
-[If MUST-FIX > 0:]
+[If MUST-FIX > 0 and cycle < 3:]
 The design has [N] blocking issues. Address them in the design document, then re-run `/team-review`.
 Or explicitly waive any finding with a stated reason — waived findings are logged, not dropped.
+Cycles remaining: [3 - (N+1)].
+
+[If MUST-FIX > 0 and cycle == 3:]
+⚠ Final review cycle (3/3). The next `/team-review` invocation will refuse to run another cycle.
+Either waive remaining MUST-FIX with stated reasons, or return to `/team-design` to rework.
 
 [If MUST-FIX == 0:]
 No blocking issues. Say "approved" to proceed to `/team-plan`.
@@ -281,8 +320,9 @@ re-running with Codex once available if the design touches high-stakes areas.
 ```
 
 <!-- GATE: review-clearance — All MUST-FIX resolved or waived before /team-plan -->
-**Loop:** If the user revises the design to address MUST-FIX items, re-run from Step 1.
-**Exit:** When no MUST-FIX items remain (all addressed or explicitly waived with reason).
+**Loop:** If the user revises the design to address MUST-FIX items, re-run from Step 0.
+**Exit:** When no MUST-FIX items remain (all addressed or explicitly waived with reason),
+OR when the 3-cycle cap is reached (see Step 0 — escalation required).
 
 ---
 
@@ -338,7 +378,7 @@ The review report is a point-in-time assessment. A changed design requires a fre
 ## Context Discipline
 
 **Read (for setup):**
-- `.context/specs/<feature>/design.md` — the subject of the review
+- `docs/specs/<feature>/design.md` — the subject of the review
 - `CLAUDE.md` — project context and conventions
 - `references/codex-adversarial-design-prompt.md` — the verbatim prompt Reviewer C's subagent uses
 
@@ -348,8 +388,8 @@ The review report is a point-in-time assessment. A changed design requires a fre
 **Write:**
 - `.claude/tmp/review-input.md` — design content for reviewers (Step 1)
 - `/tmp/codex-design-prompt.md` — Reviewer C's substituted prompt (temporary)
-- `.context/specs/<feature>/review.md` — the completed review report (Step 5)
-- `.context/specs/<feature>/decisions.yaml` — updated decision record with waivers (Step 5)
+- `docs/specs/<feature>/review.md` — the completed review report (Step 5)
+- `docs/specs/<feature>/decisions.yaml` — updated decision record with waivers (Step 5)
 
 **Do NOT read:**
 - Entire codebase

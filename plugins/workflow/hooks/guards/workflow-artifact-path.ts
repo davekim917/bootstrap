@@ -4,10 +4,10 @@
  *
  * Catches the "approximation" anti-pattern: writing workflow artifacts
  * (briefs, designs, plans, decisions, drift reports) outside the canonical
- * .context/specs/<feature>/ directory structure.
+ * docs/specs/<feature>/ directory structure.
  *
  * This fires when the agent writes a file whose name matches workflow artifact
- * patterns but whose path is NOT under .context/specs/. It does NOT block the
+ * patterns but whose path is NOT under docs/specs/. It does NOT block the
  * write (exit 0) — it prints a warning to stderr that Claude sees, prompting
  * it to check whether it actually invoked the skill or is approximating.
  *
@@ -44,10 +44,10 @@ const EMBEDDED_NAME_PATTERNS = [
 /** Paths where artifacts are expected */
 function isCanonicalPath(filePath: string, cwd: string): boolean {
     const rel = relative(cwd, filePath);
-    // .context/specs/<feature>/<artifact> is the canonical location
-    if (rel.startsWith('.context/specs/')) return true;
-    // .claude/project-scope.md is written by /team-brief
-    if (rel === '.claude/project-scope.md') return true;
+    // docs/specs/<feature>/<artifact> is the canonical location
+    if (rel.startsWith('docs/specs/')) return true;
+    // docs/project-scope.md is written by /team-brief
+    if (rel === 'docs/project-scope.md') return true;
     // .claude/tmp/ is scratch space used by /team-review and /team-drift
     if (rel.startsWith('.claude/tmp/')) return true;
     return false;
@@ -89,7 +89,7 @@ function main(): void {
             console.error(
                 `WARNING: You are writing "${rel}" which looks like a workflow artifact ` +
                 `with a feature name embedded in the filename.\n\n` +
-                `The team workflow skills save artifacts to .context/specs/<feature>/<type>.md — ` +
+                `The team workflow skills save artifacts to docs/specs/<feature>/<type>.md — ` +
                 `not as flat files with the feature name in the filename.\n\n` +
                 `Did you invoke the skill via the Skill tool (e.g., Skill({ skill: "team-brief" }))? ` +
                 `If not, you are approximating the skill from its description. ` +
@@ -98,8 +98,8 @@ function main(): void {
         } else {
             console.error(
                 `WARNING: You are writing "${rel}" which looks like a workflow artifact ` +
-                `but is not under .context/specs/.\n\n` +
-                `The team workflow skills save artifacts to .context/specs/<feature>/<type>.md.\n\n` +
+                `but is not under docs/specs/.\n\n` +
+                `The team workflow skills save artifacts to docs/specs/<feature>/<type>.md.\n\n` +
                 `Did you invoke the skill via the Skill tool? ` +
                 `If not, you may be approximating the workflow. ` +
                 `Consider invoking the actual skill (e.g., /team-brief, /team-design, /team-plan) instead.`

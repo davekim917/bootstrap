@@ -31,7 +31,7 @@ in parallel, each isolated to their own task group and files.
 
 1. An approved plan document (from `/team-plan`)
 2. All plan task groups have: exact file paths, code patterns, named test cases, acceptance criteria
-3. An approved design document (from `/team-design`) — required for the pre-build drift check (Step 2). Standard location: `.context/specs/<feature>/design.md`. If not at the standard location, Step 2 will ask for it before proceeding.
+3. An approved design document (from `/team-design`) — required for the pre-build drift check (Step 2). Standard location: `docs/specs/<feature>/design.md`. If not at the standard location, Step 2 will ask for it before proceeding.
 
 **If the plan is missing any of these:** Stop and tell the user to run `/team-plan` first.
 
@@ -48,19 +48,19 @@ in parallel, each isolated to their own task group and files.
 
 **Resolve the feature name FIRST (single source of truth):**
 
-The feature name is the **directory name** under `.context/specs/`. It was chosen at `/team-brief` time and recorded in `decisions.yaml` under `feature:`. You **MUST** use this exact name for the rest of the workflow — including the team name in Step 3 (which is `<feature>-build` exactly).
+The feature name is the **directory name** under `docs/specs/`. It was chosen at `/team-brief` time and recorded in `decisions.yaml` under `feature:`. You **MUST** use this exact name for the rest of the workflow — including the team name in Step 3 (which is `<feature>-build` exactly).
 
-1. List `.context/specs/` and identify the active feature directory (e.g., `streets-frontend`).
+1. List `docs/specs/` and identify the active feature directory (e.g., `streets-frontend`).
 2. If multiple directories exist, ask the user which feature this build is for.
-3. If `.context/specs/<feature>/decisions.yaml` exists, read its `feature:` field and verify it matches the directory name. They MUST match — if they don't, STOP and ask the user to reconcile.
+3. If `docs/specs/<feature>/decisions.yaml` exists, read its `feature:` field and verify it matches the directory name. They MUST match — if they don't, STOP and ask the user to reconcile.
 4. Record the chosen feature name. Do NOT add prefixes (`xzo-crm-<feature>`) or suffixes; do NOT pick a different "more descriptive" name. The directory name is the canonical name and is used by the gate hook to locate `pre-build-drift.md` and `drift-acks.json`.
 
-> **Why:** Past failure mode — agent generated artifacts at `.context/specs/xzo-crm-streets-frontend/` but named the team `streets-frontend-build`. The gate looked for `.context/specs/streets-frontend/pre-build-drift.md` (derived from the team name minus `-build`) and didn't find it. Agent had to manually copy files to satisfy both paths. The feature name MUST come from a single source — the directory you're working in.
+> **Why:** Past failure mode — agent generated artifacts at `docs/specs/xzo-crm-streets-frontend/` but named the team `streets-frontend-build`. The gate looked for `docs/specs/streets-frontend/pre-build-drift.md` (derived from the team name minus `-build`) and didn't find it. Agent had to manually copy files to satisfy both paths. The feature name MUST come from a single source — the directory you're working in.
 
 **Then read the artifacts:**
 
-1. Read the approved plan — either from `.context/specs/<feature>/plan.md` or ask user to provide it
-2. Read the decision record — `.context/specs/<feature>/decisions.yaml` (constraints, rejected options, waivers, assumptions). This record informs builder prompt construction and sequential group context refresh.
+1. Read the approved plan — either from `docs/specs/<feature>/plan.md` or ask user to provide it
+2. Read the decision record — `docs/specs/<feature>/decisions.yaml` (constraints, rejected options, waivers, assumptions). This record informs builder prompt construction and sequential group context refresh.
 3. Read `CLAUDE.md` — extract:
    - Tech stack and key commands (test runner, lint, build)
    - Critical guardrails (must-never-miss rules)
@@ -80,23 +80,23 @@ Sequential (wait for A+B):       Group C
 ### Step 2: Pre-Build Drift Check (Design vs. Plan)
 
 Locate the approved design document. Check in order:
-- `.context/specs/<feature>/design.md` (standard location from `/team-design`)
+- `docs/specs/<feature>/design.md` (standard location from `/team-design`)
 - Ask the user: "I need the design document for the pre-build drift check. Where is it, or can you paste it?"
 
 Do not proceed to the drift check or team creation until the design document is found, or the user explicitly waives the check (log the waiver as a known risk in the build record).
 
 Then invoke `/team-drift`:
 
-- **SOT:** The approved design document (`.context/specs/<feature>/design.md` or provided path)
-- **Target:** The approved plan document (`.context/specs/<feature>/plan.md`)
-- **Save report to:** `.context/specs/<feature>/pre-build-drift.md`
+- **SOT:** The approved design document (`docs/specs/<feature>/design.md` or provided path)
+- **Target:** The approved plan document (`docs/specs/<feature>/plan.md`)
+- **Save report to:** `docs/specs/<feature>/pre-build-drift.md`
 
 <!-- GATE: pre-build-drift — MISSING=0, effective_DIVERGED=0 -->
 **Gate:**
 - If **MISSING > 0:** STOP. The plan is incomplete relative to the design. Reconcile the plan with the design — MISSING entries are not eligible for acknowledgment. Do not create the team or spawn builders.
 - If **DIVERGED > 0 and not all DIVERGED entries are acknowledged:** STOP. For each DIVERGED entry, choose one of:
    1. Fix the plan to match the design (the plan was wrong), OR
-   2. Acknowledge the divergence in `.context/specs/<feature>/drift-acks.json` with a non-empty `reason` (the divergence is intentional and correct — for example, a Stage-3 review finding that required the plan to deviate). See `team-drift/references/drift-acks-template.json` for the schema.
+   2. Acknowledge the divergence in `docs/specs/<feature>/drift-acks.json` with a non-empty `reason` (the divergence is intentional and correct — for example, a Stage-3 review finding that required the plan to deviate). See `team-drift/references/drift-acks-template.json` for the schema.
    - **Do not revert valid changes from the plan to satisfy the gate.** If the plan is intentionally diverging because of a justified decision, acknowledge it. Reverting good work to make a binary gate pass is the failure mode this escape hatch exists to prevent.
 - If **MISSING == 0 and effective_DIVERGED == 0** (all DIVERGED entries acknowledged or zero to begin with): Proceed to Step 3 (team creation). Log any PARTIAL findings as known risks carried into the build.
 
@@ -199,9 +199,9 @@ The user can override path selection. If uncertain, default to Path A (team-coor
 
 **Team naming convention (REQUIRED — gate-enforced):**
 
-The team name MUST be exactly `<feature-name>-build` where `<feature-name>` is the **same value you resolved in Step 1** (the `.context/specs/<feature-name>/` directory name). It must also match the regex `^[a-z0-9][a-z0-9_-]{0,63}$` (lowercase alphanumeric, hyphens, underscores; starts with alphanumeric; max 64 chars).
+The team name MUST be exactly `<feature-name>-build` where `<feature-name>` is the **same value you resolved in Step 1** (the `docs/specs/<feature-name>/` directory name). It must also match the regex `^[a-z0-9][a-z0-9_-]{0,63}$` (lowercase alphanumeric, hyphens, underscores; starts with alphanumeric; max 64 chars).
 
-**Derive, do not invent.** Compute the team name as a literal string concatenation: `<feature-name-from-Step-1>` + `-build`. Do not add prefixes, do not "improve" the name, do not use a more descriptive variant. The workflow gate hook (`workflow-gate-enforcement`) uses the team name to locate the drift report at `.context/specs/<feature-name>/pre-build-drift.md` and the acks file at `.context/specs/<feature-name>/drift-acks.json`. If the team name and the directory name disagree, the gate cannot find the artifacts and fails closed.
+**Derive, do not invent.** Compute the team name as a literal string concatenation: `<feature-name-from-Step-1>` + `-build`. Do not add prefixes, do not "improve" the name, do not use a more descriptive variant. The workflow gate hook (`workflow-gate-enforcement`) uses the team name to locate the drift report at `docs/specs/<feature-name>/pre-build-drift.md` and the acks file at `docs/specs/<feature-name>/drift-acks.json`. If the team name and the directory name disagree, the gate cannot find the artifacts and fails closed.
 
 If the team name does not match the convention or does not match the Step 1 feature directory, the gate fails with `BLOCKED: Build teams must use the naming convention "<feature-name>-build"` — even if a passing drift report exists for a different feature. The strict allowlist also prevents path traversal in the gate hook.
 
@@ -368,9 +368,9 @@ The lead stays active as the message hub. Builders send two types of messages:
 
 **Context refresh (required before spawning):**
 Before constructing the builder prompt for a sequential group, re-read:
-1. `.context/specs/<feature>/decisions.yaml` — extract decisions and constraints where `affects_groups` includes this group
-2. `.context/specs/<feature>/design.md` — re-read the constraint analysis and recommendation sections
-3. `.context/specs/<feature>/build-state.md` — re-read your own checkpoint to recover any compressed context
+1. `docs/specs/<feature>/decisions.yaml` — extract decisions and constraints where `affects_groups` includes this group
+2. `docs/specs/<feature>/design.md` — re-read the constraint analysis and recommendation sections
+3. `docs/specs/<feature>/build-state.md` — re-read your own checkpoint to recover any compressed context
 
 Do not rely on conversation context for constraint details — it may have been compressed during earlier group validation.
 
@@ -461,7 +461,7 @@ Gate: both stages clear before marking group complete.
 ### Lead Context Checkpoint
 
 After marking each group complete (and before spawning the next sequential group), write or update
-`.context/specs/<feature>/build-state.md`:
+`docs/specs/<feature>/build-state.md`:
 
 ```
 ## Build State Checkpoint
@@ -551,13 +551,13 @@ After the team is shut down, run `/team-drift`. This is the implementation drift
 
 - **SOT:** The approved plan document
 - **Target:** The implementation (all files listed in the plan's file ownership map)
-- **Save report to:** `.context/specs/<feature>/post-build-drift.md`
+- **Save report to:** `docs/specs/<feature>/post-build-drift.md`
 
 ```
 /team-drift
-SOT: .context/specs/[feature]/plan.md
+SOT: docs/specs/[feature]/plan.md
 Target: [list of built files from plan's file ownership map]
-Save report to: .context/specs/[feature]/post-build-drift.md
+Save report to: docs/specs/[feature]/post-build-drift.md
 ```
 
 <!-- GATE: post-build-drift — Implementation matches plan -->
@@ -594,8 +594,8 @@ Track drift fix-and-recheck cycles. After **3 cycles** where the drift check sti
 
 Before proceeding to Step 8, verify both drift report artifacts exist on disk:
 
-1. **Pre-build drift report:** Read `.context/specs/<feature>/pre-build-drift.md`
-2. **Post-build drift report:** Read `.context/specs/<feature>/post-build-drift.md`
+1. **Pre-build drift report:** Read `docs/specs/<feature>/pre-build-drift.md`
+2. **Post-build drift report:** Read `docs/specs/<feature>/post-build-drift.md`
 
 For each report, extract the summary line (MISSING/DIVERGED/PARTIAL/CONFIRMED counts).
 Paste the **actual summary lines from the files** into the Step 8 template.

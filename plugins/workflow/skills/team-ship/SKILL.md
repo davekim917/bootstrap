@@ -119,7 +119,7 @@ Test suite: PASS ([N] tests)
 
 **Next step (optional):** Run `/team-retro` to capture learnings from this feature's workflow.
 
-The retro analyzes brief → design → review → plan → build → qa → ship artifacts to extract what worked, what was missed, and what should change. It takes 5-10 minutes and produces `.context/retros/<feature>/retro.md`.
+The retro analyzes brief → design → review → plan → build → qa → ship artifacts to extract what worked, what was missed, and what should change. It takes 5-10 minutes and produces `docs/retros/<feature>/retro.md`.
 
 ## Red Flags
 

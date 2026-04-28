@@ -68,7 +68,7 @@ CPO-Advisor → CTO-Advisor → Architecture-Advisor → [Code Written] → Code
 
 ## Security Artifacts
 
-Reference security decisions in `.context/steering/`:
+Reference security decisions in `docs/steering/`:
 - `security-standards.md`: Security requirements and policies
 - `auth-patterns.md`: Approved authentication patterns
 - `threat-model.md`: Known threats and mitigations
@@ -78,9 +78,6 @@ Reference security decisions in `.context/steering/`:
 ### 1. Load Project Security Patterns (FIRST)
 
 ```bash
-# Project security skills
-ls .claude/skills/ 2>/dev/null | grep -i security
-
 # Security conventions
 grep -i "security\|auth\|RLS\|validation" CLAUDE.md 2>/dev/null
 

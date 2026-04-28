@@ -71,9 +71,6 @@ CPO-Advisor → CTO-Advisor → Architecture-Advisor → [Code Written] → YOU 
 
 **Check for project-level conventions:**
 ```bash
-# Project skills
-ls .claude/skills/ 2>/dev/null
-
 # Project conventions
 head -100 CLAUDE.md 2>/dev/null
 

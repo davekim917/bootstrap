@@ -42,8 +42,8 @@ End with a numbered list of findings only. No prose summary.
 ```
 
 **Fill in before sending:**
-- `[LIST SKILL NAMES]`: replace with the actual skill names identified in Step 1
-  (e.g., "code-conventions, review-gates, security-review-gates")
+- `[LIST SKILL NAMES]`: replace with the actual domain skill names identified in Step 1
+  (e.g., "software-engineering, llm-engineering" — names match the bootstrap-domain skill set)
 
 ---
 

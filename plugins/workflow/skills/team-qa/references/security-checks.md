@@ -1,7 +1,7 @@
 # Security Baseline Checklist
 
-Used when no project `security-review-gates` skill exists, or as a quick inline check for
-non-security-critical files before deciding whether to invoke the `bootstrap-workflow:security-reviewer` agent.
+Used as a quick inline check for non-security-critical files before deciding whether to invoke
+the `bootstrap-workflow:security-reviewer` agent.
 
 If the changed files touch auth, user data, or external APIs — always invoke `bootstrap-workflow:security-reviewer`
 agent regardless of this baseline. This checklist is for quick triage, not deep analysis.
