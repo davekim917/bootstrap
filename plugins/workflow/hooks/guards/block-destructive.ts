@@ -97,7 +97,7 @@ const PROTECTED_HOME_DIRS = [
     // Security / credentials
     '.ssh', '.gnupg', '.aws', '.kube', '.docker', '.1password',
     // AI / agent tooling
-    '.claude', '.codex', '.agents', '.gemini', '.cursor',
+    '.claude', '.codex', '.agents', '.cursor',
     // Dev environment (painful to rebuild)
     '.nvm', '.cargo', '.npm',
     // App config

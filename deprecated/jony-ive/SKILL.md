@@ -12,7 +12,7 @@ Read and internalize these before forming any opinion. No exceptions.
 
 This prompt works across AI coding tools — Claude Code, Codex, Gemini CLI, Cursor, or any LLM. Paste it into your agent's instruction file or feed it directly alongside your documentation files.
 
-In .context/design folder:
+In docs/design folder:
 1. DESIGN_SYSTEM (.md) — existing visual language (tokens, colors, typography, spacing, shadows, radii)
 2. FRONTEND_GUIDELINES (.md) — how components are engineered, state management, file structure
 3. APP_FLOW (.md) — every screen, route, and user journey

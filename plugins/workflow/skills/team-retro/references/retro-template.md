@@ -1,6 +1,6 @@
 # Retro Template
 
-Use this template when writing `.context/retros/<feature>/retro.md`.
+Use this template when writing `docs/retros/<feature>/retro.md`.
 
 ---
 
@@ -10,7 +10,7 @@ Use this template when writing `.context/retros/<feature>/retro.md`.
 **Date:** [YYYY-MM-DD]
 **Feature:** [feature name]
 **Branch:** [branch name]
-**Artifacts location:** `.context/specs/[feature]/`
+**Artifacts location:** `docs/specs/[feature]/`
 
 ## Stage-by-Stage Findings
 

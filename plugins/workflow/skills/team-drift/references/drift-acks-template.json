@@ -2,7 +2,7 @@
   "acknowledgments": [
     {
       "id": "B1",
-      "reason": "Removed legacy role X from access role-gate per Stage-3 review finding S3-002. Role X does not exist in the production RBAC table; gating against it would cause runtime authorization failures. Decision recorded in .context/specs/<feature>/decisions.yaml under decision_id S3-002.",
+      "reason": "Removed legacy role X from access role-gate per Stage-3 review finding S3-002. Role X does not exist in the production RBAC table; gating against it would cause runtime authorization failures. Decision recorded in docs/specs/<feature>/decisions.yaml under decision_id S3-002.",
       "expires_at": "2026-07-01"
     },
     {

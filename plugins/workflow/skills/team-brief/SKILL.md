@@ -2,7 +2,7 @@
 name: team-brief
 description: >
   Invoke to crystallize requirements for a non-trivial feature. Produces a structured brief
-  at .context/specs/<feature>/brief.md. Do NOT write briefs manually — this skill has a
+  at docs/specs/<feature>/brief.md. Do NOT write briefs manually — this skill has a
   specific process, file structure, and approval gate that only load when invoked.
 version: 1.0.0
 ---
@@ -31,7 +31,7 @@ Transforms fuzzy user intent into a validated, structured brief through conversa
 
 ## Selective Mode (`--scope-only`)
 
-To generate `.claude/project-scope.md` without running requirements extraction:
+To generate `docs/project-scope.md` without running requirements extraction:
 
 ```
 /team-brief --scope-only
@@ -57,7 +57,7 @@ Do not ask questions yet. Just build your internal map.
 ### Step 1b: Project Scope Discovery
 
 **Check for existing scope file first:**
-- If `.claude/project-scope.md` exists:
+- If `docs/project-scope.md` exists:
   - Check `generated_at` timestamp vs. modification date of key indicator files (`dbt_project.yml`, `package.json`, `requirements.txt`).
   - If any indicator file is newer: warn "project-scope.md may be stale. Refresh recommended." Offer: refresh now (re-run discovery, overwrite) or proceed as-is.
   - If not stale: read and proceed to Step 2.
@@ -95,7 +95,7 @@ Only use AND-logic for disambiguation: when a file pattern matches multiple doma
 - If no indicators match any known domain: set `relevant_global_skills: []`
 - Prompt user: "No standard domain detected. Describe the project in 1-2 sentences for the scope file." Use their answer to populate `description`, `quality_gates`, and `security_surface`.
 
-**Write `.claude/project-scope.md`** using schema from `references/project-scope-template.md`. Set `generated_at: <today's date>`.
+**Write `docs/project-scope.md`** using schema from `references/project-scope-template.md`. Set `generated_at: <today's date>`.
 
 **Context Discipline:** Scan reads indicator files only — no source code, no implementation files.
 
@@ -152,9 +152,9 @@ Using `references/brief-template.md`, write the complete structured brief.
 
 Save the brief to disk:
 1. Derive the feature name from the brief title (kebab-case, e.g., "User Authentication" → "user-authentication")
-2. `mkdir -p .context/specs/<feature>/`
-3. Write the brief to `.context/specs/<feature>/brief.md`
-4. Initialize the decision record at `.context/specs/<feature>/decisions.yaml`:
+2. `mkdir -p docs/specs/<feature>/`
+3. Write the brief to `docs/specs/<feature>/brief.md`
+4. Initialize the decision record at `docs/specs/<feature>/decisions.yaml`:
    - Record all constraints from Step 2 (with HARD/SOFT classification)
    - Record all decisions from Step 3 Q&A (what was asked, what the user chose, what alternatives were considered)
    - Record all forced defaults from Step 4 (what was defaulted, what the alternative was)
@@ -166,7 +166,7 @@ Then STOP. Display exactly this gate:
 ---
 **Brief ready for review.**
 
-**Saved to:** `.context/specs/<feature>/brief.md`
+**Saved to:** `docs/specs/<feature>/brief.md`
 
 If this looks right, say "approved" to proceed to `/team-design`.
 If anything needs adjusting, tell me what to change.
@@ -213,9 +213,9 @@ Brief does not accept rollbacks. If later stages invalidate the brief, re-run `/
 - `CLAUDE.md` — for project context (tech stack, conventions, existing patterns)
 
 **Write:**
-- `.context/specs/<feature>/brief.md` — the completed brief (Step 5)
-- `.context/specs/<feature>/decisions.yaml` — initialized decision record (Step 5)
-- `.claude/project-scope.md` — scope file written or refreshed in Step 1b
+- `docs/specs/<feature>/brief.md` — the completed brief (Step 5)
+- `docs/specs/<feature>/decisions.yaml` — initialized decision record (Step 5)
+- `docs/project-scope.md` — scope file written or refreshed in Step 1b
 
 **Do NOT read:**
 - Source code (irrelevant to requirements). Exception: `layout.tsx` files in Step 2b (structural constraints only — route segment layout files only, see that step for full scope limits).

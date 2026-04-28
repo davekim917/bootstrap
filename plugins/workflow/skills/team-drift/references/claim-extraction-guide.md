@@ -62,7 +62,7 @@ These are REJECTION claims — they define what the target must NOT contain.
 - Design options that were evaluated and rejected (with stated reasons)
 - Constraints that forbid specific approaches ("must not add dependencies")
 - Explicit exclusions ("do not use server-side sessions")
-- Decision record entries with `rejected` options (from `.context/specs/<feature>/decisions.yaml`)
+- Decision record entries with `rejected` options (from `docs/specs/<feature>/decisions.yaml`)
 
 **Example:**
 - SOT says: "Rejected Option A (server-side sessions) because horizontal scaling requires statelessness."

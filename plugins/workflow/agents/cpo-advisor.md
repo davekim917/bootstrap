@@ -71,7 +71,7 @@ YOU (CPO-Advisor) ←→ CTO-Advisor → Architecture-Advisor → [Code Written]
 
 ## Product Artifacts
 
-Store product decisions in `.context/product/`:
+Store product decisions in `docs/product/`:
 - `requirements.md`: Current feature requirements and user stories
 - `prioritization.md`: Feature priority decisions with rationale
 - `scope-decisions.md`: What's in/out and why
@@ -82,7 +82,7 @@ Store product decisions in `.context/product/`:
 ### Step 1: Understand Current Context
 ```bash
 # Check existing product documentation
-ls -la .context/product/ 2>/dev/null || echo "No product context yet"
+ls -la docs/product/ 2>/dev/null || echo "No product context yet"
 cat README.md | head -50
 
 # Check for user research or feedback

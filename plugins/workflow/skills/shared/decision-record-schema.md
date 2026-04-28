@@ -3,7 +3,7 @@
 Cross-cutting artifact that accumulates decisions, rejections, constraints, waivers, and assumptions
 across all workflow stages. Each stage **appends** to this file; no stage overwrites previous entries.
 
-**Written to:** `.context/specs/<feature>/decisions.yaml`
+**Written to:** `docs/specs/<feature>/decisions.yaml`
 
 ---
 
@@ -47,6 +47,24 @@ assumptions:
     validation: "How to validate this assumption"
     validated: true | false
     invalidated_at: null | <stage>
+
+review_cycles:
+  - iteration: 1
+    must_fix_count: 5
+    should_fix_count: 3
+    wont_fix_count: 1
+    completed_at: 2026-04-28T20:00:00Z
+  - iteration: 2
+    must_fix_count: 1
+    should_fix_count: 2
+    wont_fix_count: 1
+    completed_at: 2026-04-28T20:30:00Z
+
+auto_qa_cycles:
+  - iteration: 1
+    must_fix_count: 3
+    should_fix_count: 2
+    completed_at: 2026-04-28T21:00:00Z
 ```
 
 ---
@@ -57,9 +75,10 @@ assumptions:
 |-------|-------|--------|
 | `/team-brief` | — | Initialize: `constraints` (from Step 2), `decisions` (from Steps 3-4 Q&A and forced defaults) |
 | `/team-design` | Full record | Append: `decisions` (chosen option + rejected options), `constraints` (new HARD/SOFT from constraint analysis), `assumptions` (from Assumptions Log) |
-| `/team-review` | Full record | Append: `waivers` (waived MUST-FIX findings with stated reasons) |
+| `/team-review` | Full record | Append: `waivers` (waived MUST-FIX findings with stated reasons), `review_cycles` (one entry per invocation; hard cap at 3) |
 | `/team-plan` | Full record | Update: `affects_groups` on constraints and decisions. Append: `decisions` (interpretation calls, file conflict resolutions) |
 | `/team-build` | Full record | Append: `decisions` (lead interpretation calls during build), `waivers` (escalated criteria accepted by user) |
+| `/team-auto` | Full record | Append: `auto_qa_cycles` (one entry per QA fix pass; hard cap at 3). Reads `review_cycles` for cycle-cap evaluation. |
 
 ---
 

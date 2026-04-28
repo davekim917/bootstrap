@@ -35,7 +35,7 @@ Enforces test-first development discipline. Iron law: **NO PRODUCTION CODE WITHO
 
 ## Cross-Domain Application
 
-Read `.claude/project-scope.md`. The active rows in the table below are those matching the
+Read `docs/project-scope.md`. The active rows in the table below are those matching the
 project's `domains` list. If `relevant_global_skills` is empty and no row matches your domain,
 use `quality_gates` and `description` from the scope file to define what "a failing test" means
 for this project. For financial analytics specifically: if `financial-analytics` is in domains,

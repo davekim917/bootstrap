@@ -1,7 +1,7 @@
 ---
 name: team-plan
 description: >
-  Invoke after /team-review clears. Produces an execution plan at .context/specs/<feature>/plan.md.
+  Invoke after /team-review clears. Produces an execution plan at docs/specs/<feature>/plan.md.
   Do NOT write plans manually — this skill has task decomposition rules, conflict checks, and
   constraint injection that only load when invoked.
 version: 1.0.0
@@ -40,12 +40,12 @@ anything beyond their task group.
 ### Step 1: Read All Inputs
 
 Load in order:
-1. **Design document** — check `.context/specs/<feature>/design.md` first (standard location from `/team-design`); ask user to provide it if not found
-2. **Review report** — check `.context/specs/<feature>/review.md` first (standard location from `/team-review`); ask user to provide it if not found. Carry forward any waived MUST-FIX items as known risks in the plan. Also carry forward any reviewer fallback notes (e.g., "Reviewer B timed out — fell back to Claude") as known risks: note that adversarial blind-spot coverage may be reduced.
+1. **Design document** — check `docs/specs/<feature>/design.md` first (standard location from `/team-design`); ask user to provide it if not found
+2. **Review report** — check `docs/specs/<feature>/review.md` first (standard location from `/team-review`); ask user to provide it if not found. Carry forward any waived MUST-FIX items as known risks in the plan. Also carry forward any reviewer fallback notes (e.g., "Reviewer B timed out — fell back to Claude") as known risks: note that adversarial blind-spot coverage may be reduced.
 
    **Render-check flag scan:** After reading the design document, scan it for `[RENDER-CHECK NEEDED]` flags and note each flagged decision. Task assignment for these flags happens in Step 2 (once task boundaries are identified) — complete the flag-to-task mapping after Step 2, then use it in Step 4f to add render-check acceptance criteria to the relevant tasks.
 3. **CLAUDE.md** — tech stack, conventions, critical guardrails
-4. **Project scope** — read `.claude/project-scope.md` if it exists. Determines which domain skills to load and provides implementation conventions (primary language, framework, test framework). If not present, proceed without it.
+4. **Project scope** — read `docs/project-scope.md` if it exists. Determines which domain skills to load and provides implementation conventions (primary language, framework, test framework). If not present, proceed without it.
 5. **Relevant project skills** — load the skills listed in `relevant_global_skills` from the scope file (or 2-4 most applicable skills if no scope file). Read them now — you will transcribe patterns directly into task specs so builders don't need to load skills themselves.
 
 ### Step 2: Identify Task Boundaries
@@ -199,7 +199,7 @@ be complete — `requireAuth` middleware must exist at `src/auth/middleware/requ
 
 ### Step 4.5: Constraint Injection
 
-Read `.context/specs/<feature>/decisions.yaml`. For each HARD constraint and each rejected option:
+Read `docs/specs/<feature>/decisions.yaml`. For each HARD constraint and each rejected option:
 
 1. Identify which task group's files could violate this constraint or reintroduce the rejected approach
 2. Encode the constraint as a negative ASSERT line or acceptance criterion in that group's task spec
@@ -273,7 +273,7 @@ Unassigned flags are plan defects. Either assign each to the closest owning task
 
 After writing all task specs, verify constraint coverage against the decision record:
 
-1. Read `.context/specs/<feature>/decisions.yaml`
+1. Read `docs/specs/<feature>/decisions.yaml`
 2. For each entry:
 
 | Entry type | Required traceability |
@@ -294,8 +294,8 @@ Write the complete plan using `references/plan-template.md`.
 
 Save the plan to disk:
 1. Derive the feature name from the design title (kebab-case, matching the design's feature name)
-2. `mkdir -p .context/specs/<feature>/`
-3. Write the plan to `.context/specs/<feature>/plan.md`
+2. `mkdir -p docs/specs/<feature>/`
+3. Write the plan to `docs/specs/<feature>/plan.md`
 
 **CRITICAL — how to write the plan file:**
 
@@ -335,7 +335,7 @@ Then STOP. Display exactly this gate:
 ---
 **Plan ready for review.**
 
-**Saved to:** `.context/specs/<feature>/plan.md`
+**Saved to:** `docs/specs/<feature>/plan.md`
 
 Groups: [N]
 Total tasks: [N]
@@ -378,10 +378,9 @@ File: src/auth/middleware/requireAuth.ts [CREATE]
 Approach: JWT validation middleware. Reads Authorization header, verifies with
   jsonwebtoken using JWT_SECRET env var. On failure: returns 401 with
   { error: "Unauthorized" }. On success: attaches decoded payload to req.user
-  and calls next(). Follows the middleware pattern in code-conventions skill §4.
+  and calls next(). Follows the Express middleware pattern documented in CLAUDE.md.
 
 Interface / signature:
-  // From: code-conventions — §4 Express Middleware Pattern
   export const requireAuth: RequestHandler = (req, res, next) => { ... }
   // req.user: { id: string; email: string } (decoded JWT payload)
 
@@ -496,16 +495,16 @@ Accepts rollback from `/team-build` when the plan is under-specified or structur
 ## Context Discipline
 
 **Read:**
-- `.context/specs/<feature>/design.md` — always (standard location)
-- `.context/specs/<feature>/review.md` — always (standard location; carry waived MUST-FIX as known risks)
-- `.context/specs/<feature>/decisions.yaml` — always (constraint injection and traceability check)
+- `docs/specs/<feature>/design.md` — always (standard location)
+- `docs/specs/<feature>/review.md` — always (standard location; carry waived MUST-FIX as known risks)
+- `docs/specs/<feature>/decisions.yaml` — always (constraint injection and traceability check)
 - `CLAUDE.md` — always (conventions, guardrails)
 - 2-4 relevant project skills — transcribe patterns into task specs
 - Specific source files — only to confirm exact paths and existing function signatures for MODIFY tasks
 
 **Write:**
-- `.context/specs/<feature>/plan.md` — the completed plan (Step 6)
-- `.context/specs/<feature>/decisions.yaml` — updated with `affects_groups` mappings (Step 4.5)
+- `docs/specs/<feature>/plan.md` — the completed plan (Step 6)
+- `docs/specs/<feature>/decisions.yaml` — updated with `affects_groups` mappings (Step 4.5)
 
 **Do NOT read:**
 - Entire codebase

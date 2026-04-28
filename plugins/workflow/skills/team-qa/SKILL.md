@@ -97,35 +97,24 @@ Group changed files by type for targeted routing:
 
 This grouping determines which validators are relevant. A pure frontend change skips DB performance checks. A pure config change skips most validators.
 
-### Step 2: Load Project Skills
+### Step 2: Load Baseline Checklists
 
-Identify which project-level QA skills exist. Check:
-```bash
-ls .claude/skills/
-```
-
-Look for:
-- `code-conventions` — project style and convention rules (load this into Validator A; also forwarded to Validator CD's domain-reviewer via Domain Hints)
-- `review-gates` — general quality gates
-- `security-review-gates` — project-specific security rules (forwarded to Validator CD's security-reviewer via Domain Hints)
-- `performance-review-gates` — project-specific performance rules (forwarded to Validator CD's performance-reviewer via Domain Hints)
-
-Note which exist and which are missing. For missing skills, fall back to the baseline checklists
-in this skill's `references/` directory. **Record which gate skills exist** — Validator CD's
-invocation will forward their paths to the swarm via the `<DOMAIN_HINTS>` block (see "Domain
-Hints to Forward to Swarm" subsection below the routing table). Bootstrapped repos get their
-project-specific rules into the swarm; non-bootstrapped repos still get the file-type
-annotations that team-qa bakes in regardless.
+Validators use the baseline checklists in this skill's `references/` directory and the
+conventions encoded in `CLAUDE.md`. There are no project-specific gate skills to discover —
+project-specific rules belong in `CLAUDE.md` (where every validator reads them) and the
+file-type routing table below.
 
 ### Project Scope Routing
 
-1. Read `.claude/project-scope.md` if it exists.
-   - If not found: run the 6-file discovery scan inline (see `/team-brief` Step 1b).
-     Write scope file for future use.
-2. Load all skills in `relevant_global_skills`.
-3. If `relevant_global_skills` is empty: calibrate validators using `quality_gates`
-   and `security_surface` fields from scope file (not free-form description alone).
-   Each validator receives the relevant fields as its domain context.
+1. Read `docs/project-scope.md` if it exists. team-qa is a **read-only consumer** of this
+   file — do NOT write it. The file is created by `/team-brief` Step 1b (primary) or
+   `/team-design` Step 1 (second-layer fallback when brief was skipped).
+2. If the file is present: load all skills in `relevant_global_skills`. If
+   `relevant_global_skills` is empty, calibrate validators using `quality_gates` and
+   `security_surface` fields (not free-form description alone). Each validator receives the
+   relevant fields as its domain context.
+3. If the file is missing: skip scope-based routing. Validators rely on the file-type routing
+   table below plus `CLAUDE.md`. Note "scope file absent" in the QA report so it's auditable.
 
 ### Multi-Domain File-Type Resolution
 
@@ -178,15 +167,15 @@ Skip Validator CD only if the diff is pure docs/config with no code changes. Ski
 
 #### Validator A: Style Audit
 
-**Context:** Changed files + `code-conventions` project skill (or equivalent)
+**Context:** Changed files + `CLAUDE.md` conventions + language defaults
 
 Spawn via Task tool (`model: "sonnet"`):
 
 ```
 You are performing a style audit on recently changed files.
 
-Load the project conventions skill: .claude/skills/code-conventions/SKILL.md
-(If it doesn't exist, apply general conventions for the project's primary language)
+Load `CLAUDE.md` for project-specific conventions, then apply general conventions for
+the project's primary language for anything CLAUDE.md doesn't cover.
 
 Changed files to audit: [list from Step 1]
 
@@ -635,32 +624,12 @@ File-type concerns to consider when selecting and prompting reviewers:
 - Mobile config (app.json)     → security (secrets, permissions)
 ```
 
-### Part 2: Project-specific gate skills (conditional)
+### Part 2: Project conventions from CLAUDE.md
 
-At Step 2, team-qa already discovers `.claude/skills/` and notes which exist. If any of the
-following project-specific gate skills are present, append the corresponding load instruction
-to the `<DOMAIN_HINTS>` block. If absent, skip silently — review-swarm operates fine without
-them via its built-in reviewer focus areas.
-
-```
-[If .claude/skills/security-review-gates/SKILL.md exists:]
-Project-specific security rules: load `.claude/skills/security-review-gates/SKILL.md` in your
-security-reviewer prompt (in addition to your built-in focus areas).
-
-[If .claude/skills/performance-review-gates/SKILL.md exists:]
-Project-specific performance rules: load `.claude/skills/performance-review-gates/SKILL.md` in your
-performance-reviewer prompt (in addition to your built-in focus areas).
-
-[If .claude/skills/code-conventions/SKILL.md exists:]
-Project-specific conventions: load `.claude/skills/code-conventions/SKILL.md` in your domain-reviewer
-prompt for naming/structure/idiom checks (in addition to CLAUDE.md). Note: Validator A also loads
-this skill for its own scoped style audit, so domain-reviewer should avoid duplicating
-already-flagged style issues — focus on convention violations that A's mechanical pass would miss
-(judgment-dependent idioms, framework-specific patterns).
-
-[If none of the above exist:]
-No project-specific gate skills present. Use your built-in reviewer focus areas + CLAUDE.md.
-```
+Project-specific conventions, security rules, and performance rules live in `CLAUDE.md`. The
+swarm's reviewers read `CLAUDE.md` directly as part of their built-in setup — no extra hint
+needed beyond Part 1's file-type concerns. If a project documents specific patterns or
+guardrails in CLAUDE.md, the swarm picks them up automatically.
 
 ---
 

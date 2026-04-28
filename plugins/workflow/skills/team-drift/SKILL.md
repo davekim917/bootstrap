@@ -2,7 +2,7 @@
 name: team-drift
 description: >
   Mechanized drift detection between two documents. Extracts all claims from a source-of-truth,
-  verifies each claim against a target using up to three independent agents (Claude, Codex, Gemini),
+  verifies each claim against a target using two independent agents (Claude, Codex),
   classifies mismatches by severity. Use after /team-build (plan vs implementation), between workflow
   stages (design vs brief), or whenever a document claims to reflect another. BOUNDARY: Only the
   two documents under comparison — no external context, no CLAUDE.md, no project skills.
@@ -14,9 +14,9 @@ version: 1.0.0
 ## What This Skill Does
 
 Compares two documents by extracting every claim from the source-of-truth (SOT) and verifying
-each claim against the target. Up to three independent agents (Claude, Codex, Gemini) do the
-extraction and verification separately; the team lead merges results, resolves disagreements,
-and classifies mismatches.
+each claim against the target. Two independent agents (Claude, Codex) do the extraction and
+verification separately; the team lead merges results, resolves disagreements, and classifies
+mismatches.
 
 **The standard:** Every claim in the SOT either exists in the target (CONFIRMED), partially exists
 (PARTIAL), contradicts the target (DIVERGED), or is absent entirely (MISSING).
@@ -73,22 +73,16 @@ Before spawning agents, check CLI availability:
 
 ```bash
 codex_available=$(command -v codex >/dev/null 2>&1 && echo "yes" || echo "no")
-gemini_available=$(command -v gemini >/dev/null 2>&1 && echo "yes" || echo "no")
 ```
 
 If `codex_available` is "no":
 - Agent B will use Claude (general-purpose subagent, model: sonnet) instead of Codex
 - Log to the user: `⚠ Codex CLI unavailable — Agent B falling back to Claude Sonnet. Cross-model diversity reduced for this run.`
 
-If `gemini_available` is "no":
-- Agent C will be skipped entirely (2-agent mode: Claude + Codex only)
-- Log to the user: `⚠ Gemini CLI unavailable — running 2-agent mode (Claude + Codex only).`
-- No Claude fallback for Agent C — drift already has 2 families; a 3rd Claude adds noise, not diversity.
+### Step 2: Spawn Two Independent Claim Extractors in Parallel
 
-### Step 2: Spawn Up to Three Independent Claim Extractors in Parallel
-
-Launch all available agents simultaneously — Agent A via Task tool (Claude Sonnet), Agent B via
-Bash (`codex exec -s read-only`), Agent C via Bash (`gemini -p`) if available.
+Launch both agents simultaneously — Agent A via Task tool (Claude Sonnet), Agent B via
+Bash (`codex exec -s read-only`).
 
 **Context discipline:** Give each agent ONLY the two documents. No CLAUDE.md. No project skills.
 No other files. The accuracy of drift detection degrades with additional context — extra context
@@ -250,86 +244,18 @@ Be exhaustive. Missing a claim is a false negative. Flag uncertainty rather than
 
 ---
 
-#### Agent C — Gemini (cross-model extractor):
-
-If `gemini_available` is "yes", launch via Bash:
-```bash
-# If the user specified a Gemini model, add: --model <model>
-# If omitted, Gemini CLI uses its own default model.
-gemini -p "$(cat <<'PROMPT'
-You are performing an independent drift analysis between two documents.
-
-Read the source of truth: cat .claude/tmp/drift-sot.md
-Read the target: cat .claude/tmp/drift-target.md
-
-Your job has two parts:
-
-PART 1 — EXTRACT ALL CLAIMS FROM THE SOT
-A "claim" is any statement in the SOT that implies something must be true in the target.
-Work independently. Do not try to match another agent's numbering.
-
-Claim types to look for:
-- REQUIREMENT: Something that must be implemented or present
-- DECISION: A choice made that the target must reflect
-- CONSTRAINT: A limit that must be respected
-- ACCEPTANCE: A named acceptance criterion that must pass
-- BEHAVIOR: A specific behavior that must exist
-- REJECTION: Something explicitly excluded or forbidden (rejected alternatives, "must not" statements)
-
-For REJECTION claims: the target must NOT contain the rejected thing. Absence is the expected state.
-
-Format each claim as:
-  Claim #N | Type | [Exact quote or precise paraphrase from SOT] | Source: [section/line]
-
-PART 2 — VERIFY EACH CLAIM AGAINST THE TARGET
-For each claim you extracted, look for evidence in the target document.
-
-Verdict options:
-  CONFIRMED — Target clearly satisfies this claim (for REJECTION claims: the rejected thing is absent)
-  PARTIAL   — Target partially addresses this claim (note what's missing)
-  DIVERGED  — Target contradicts this claim (for REJECTION claims: the rejected thing IS present)
-  MISSING   — Target has no correspondence in this claim
-
-Format each verdict as:
-  Claim #N | VERDICT | [Evidence from target, or "no evidence found"] | [Gap if PARTIAL/DIVERGED]
-
-Be exhaustive. Missing a claim is a false negative. Flag uncertainty rather than guessing.
-PROMPT
-)"
-```
-
-If `gemini_available` is "no": Skip Agent C entirely. Do not use a Claude fallback — the 2-agent
-mode (Agent A + Agent B) already provides cross-model diversity. A third Claude agent adds noise,
-not signal.
-
----
-
 ### Step 3: Merge Claim Lists
 
-Combine Agent A, Agent B, and Agent C's extracted claims into one unified list (or Agent A + B
-only if Gemini was unavailable):
+Combine Agent A and Agent B's extracted claims into one unified list:
 
 1. **Deduplicate:** Claims covering the same SOT statement → merge into one canonical claim
 2. **Union:** Claims found by only one agent → keep (one agent's miss is still a claim)
-3. **Note disagreements:** Same SOT statement extracted differently by A, B, and/or C → keep all
+3. **Note disagreements:** Same SOT statement extracted differently by A and B → keep both
    framings and flag for review
 
 Number the unified claims sequentially (C1, C2, C3...).
 
 ### Step 4: Reconcile Verdicts
-
-**3-way reconciliation** (when all three agents ran):
-
-For each unified claim, compare verdicts from Agent A, Agent B, and Agent C:
-
-| Pattern | Resolution |
-|---------|------------|
-| All three agree | Use that verdict |
-| 2 agree, 1 disagrees | Use majority verdict (note the dissent) |
-| All three disagree | Flag as DISPUTED — team lead reads the target and rules |
-| Any agent says DIVERGED | Use DIVERGED (conservative — contradictions take priority) |
-
-**2-way reconciliation** (when Gemini was skipped — existing behavior):
 
 For each unified claim, compare Agent A's verdict with Agent B's verdict:
 
@@ -378,7 +304,7 @@ CONFIRMED:[N]
 [If MISSING > 0 or effective DIVERGED > 0:]
 [N] blocking mismatches found. The target must be updated to resolve them before proceeding.
 DIVERGED entries that are intentional and justified can be acknowledged in
-.context/specs/<feature>/drift-acks.json (see "DIVERGED Acknowledgments" below).
+docs/specs/<feature>/drift-acks.json (see "DIVERGED Acknowledgments" below).
 MISSING entries cannot be acked — address them in the target document.
 
 [If MISSING == 0 and effective DIVERGED == 0 and PARTIAL == 0:]
@@ -451,8 +377,8 @@ claims. Do not read unrelated files.
 
 - **Don't load CLAUDE.md or project skills.** This is the one skill where they actively hurt accuracy.
 - **Don't summarize claims.** "The plan specifies auth requirements" is not a claim. "Task A2 creates `src/auth/middleware/requireAuth.ts` with three exports" is a claim.
-- **Don't ignore rejected alternatives.** If the SOT explicitly rejected an approach, that rejection is a REJECTION claim. The target must not reintroduce the rejected approach. Check the decision record (`.context/specs/<feature>/decisions.yaml`) for `rejected` entries if it exists.
-- **Don't skip the multi-agent step.** Single-agent extraction has systematic blind spots. Additional agents catch what others missed — especially implicit claims. Cross-model extraction (Claude + Codex + Gemini) catches claims that same-family models may both miss systematically.
+- **Don't ignore rejected alternatives.** If the SOT explicitly rejected an approach, that rejection is a REJECTION claim. The target must not reintroduce the rejected approach. Check the decision record (`docs/specs/<feature>/decisions.yaml`) for `rejected` entries if it exists.
+- **Don't skip the multi-agent step.** Single-agent extraction has systematic blind spots. The second agent catches what the first missed — especially implicit claims. Cross-model extraction (Claude + Codex) catches claims that same-family models may both miss systematically.
 - **Don't leave DISPUTED verdicts.** The team lead reads the source and rules. Every claim gets a final verdict.
 - **Don't silently drop PARTIAL findings.** Log them. The user decides whether to address them.
 - **Don't conflate "not mentioned" with "contradicted."** MISSING ≠ DIVERGED. Be precise.
@@ -466,4 +392,3 @@ claims. Do not read unrelated files.
 | Team lead (merge + verdict) | Opus (current session) | N/A | Judgment-heavy: resolving DISPUTED verdicts, classifying severity, making the final call |
 | Agent A (extractor) | Sonnet (general-purpose) | N/A | Mechanical extraction + Claude perspective |
 | Agent B (extractor) | Codex (OpenAI, read-only sandbox; default reasoning effort) | Claude Sonnet general-purpose (if `codex` unavailable) | Mechanical extraction + different training data, different blind spots |
-| Agent C (extractor) | Gemini (Google, CLI default or user-specified) | Skipped if unavailable (2-agent mode) | Google training data perspective — adds a third extraction lens when available |

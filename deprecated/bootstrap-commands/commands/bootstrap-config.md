@@ -237,8 +237,8 @@ This repository uses a **skills-first** workflow.
 
 **Sources of Truth:**
 - `.claude/skills/`: detailed implementation guides (progressive disclosure)
-[Only include the next line if `.context/` exists in the project:]
-- `.context/steering/` for global docs, `.context/specs/<feature>/` for feature docs
+[Only include the next line if `docs/` exists in the project:]
+- `docs/steering/` for global docs, `docs/specs/<feature>/` for feature docs
 <!-- END AUTO-GENERATED -->
 
 <!-- AUTO-GENERATED: Tech Stack -->
@@ -336,8 +336,8 @@ This repository uses a **skills-first** workflow.
 
 **Sources of Truth:**
 - `.agents/skills/`: detailed implementation guides (progressive disclosure)
-[Only include the next line if `.context/` exists in the project:]
-- `.context/steering/` for global docs, `.context/specs/<feature>/` for feature docs
+[Only include the next line if `docs/` exists in the project:]
+- `docs/steering/` for global docs, `docs/specs/<feature>/` for feature docs
 <!-- END AUTO-GENERATED -->
 
 <!-- AUTO-GENERATED: Tech Stack -->

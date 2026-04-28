@@ -71,7 +71,7 @@ CPO-Advisor ←→ CTO-Advisor → YOU (Architecture-Advisor) → [Code Written]
 
 ## Design Artifacts
 
-Store designs in `.context/specs/<feature>/`:
+Store designs in `docs/specs/<feature>/`:
 - `design.md`: Architecture document
 - `schema.sql`: Database migrations (if applicable)
 - `api.md`: API specifications (if applicable)
@@ -307,7 +307,7 @@ Recommendation: Option A because [specific reason]
 - [ ] User approved high-level approach
 - [ ] Open questions resolved
 - [ ] Scope is manageable (<500 lines or phased)
-- [ ] Design doc written to `.context/specs/`
+- [ ] Design doc written to `docs/specs/`
 
 **When to escalate:**
 - `cto-advisor`: Strategic tech questions arise
@@ -318,7 +318,7 @@ Recommendation: Option A because [specific reason]
 When complete, summarize for parent process:
 
 ```
-Design review complete. Document: .context/specs/[feature]/design.md
+Design review complete. Document: docs/specs/[feature]/design.md
 
 SUMMARY:
 - Approach: [one sentence]
