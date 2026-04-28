@@ -322,6 +322,49 @@ describe('AST precision: destructive keywords in non-command contexts are allowe
     });
 });
 
+// ── SQL: destructive keywords in string literals / comments are NOT gated ────
+
+describe('SQL gate: false positives from string literals and comments are allowed', () => {
+    test.each([
+        // The original report: querying query_history for past DROP statements.
+        [`snow sql -q "SELECT * FROM snowflake.account_usage.query_history WHERE query_text LIKE '%DROP TABLE foo%'"`, 'snow query_history search'],
+        [`psql -c "SELECT query FROM pg_stat_statements WHERE query LIKE '%TRUNCATE%'"`, 'psql pg_stat_statements search'],
+        [`mysql -e "SELECT event_name FROM audit_log WHERE event_name = 'DROP TABLE'"`, 'mysql audit search'],
+        // Comments mentioning destructive keywords
+        [`psql -c "-- DROP TABLE comment\\nSELECT 1"`, 'psql line comment'],
+        [`psql -c "/* DROP TABLE block comment */ SELECT 1"`, 'psql block comment'],
+        // Double-quoted identifier that happens to share a keyword name
+        [`psql -c 'SELECT * FROM "DROP TABLE archive"'`, 'identifier named like keyword'],
+    ])('%s → allowed (%s)', async (cmd) => {
+        const { exitCode } = await runHook(cmd);
+        expect(exitCode).toBe(0);
+    });
+});
+
+describe('SQL gate: leading destructive statement is gated even after non-destructive prefix', () => {
+    test('multi-statement: DROP TABLE before SELECT is gated', async () => {
+        const cmd = `psql -c "DROP TABLE foo; SELECT 1"`;
+        const { exitCode, stderr } = await runHook(cmd);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('GATED');
+        expect(stderr.toLowerCase()).toContain('drop table');
+    });
+
+    test('multi-statement: SELECT then DROP TABLE is gated', async () => {
+        const cmd = `psql -c "SELECT 1; DROP TABLE foo"`;
+        const { exitCode, stderr } = await runHook(cmd);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('GATED');
+    });
+
+    test('gate message includes the matched statement', async () => {
+        const cmd = `snow sql -q "DROP TABLE inventory.daily_snapshot"`;
+        const { stderr } = await runHook(cmd);
+        expect(stderr).toContain('leading statement');
+        expect(stderr).toContain('DROP TABLE inventory.daily_snapshot');
+    });
+});
+
 // ── AST precision: destructive commands inside subshells ARE caught ───────────
 
 describe('AST precision: commands inside subshells/pipelines are still checked', () => {
