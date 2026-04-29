@@ -8,8 +8,6 @@
   "repository": "https://github.com/davekim917/bootstrap",
   "license": "MIT",
   "keywords": ["workflow", "team", "skills", "hooks", "agents"],
-  "commands": ["./commands"],
-  "agents": ["./agents"],
   "skills": ["./skills"],
   "hooks": "./hooks/workflow-hooks.json"
 }
