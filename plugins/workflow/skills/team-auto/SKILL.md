@@ -53,6 +53,47 @@ flagged path.
 
 ---
 
+## Role Inversion: You Are the User for Sub-Skill Gates
+
+This section overrides any conflicting instruction in the sub-skills (`/team-review`,
+`/team-plan`, `/team-build`, `/team-qa`).
+
+When `/team-auto` is running, **you play the user's role** for every approval gate inside
+the invoked sub-skills. Their "STOP — wait for user approval" / "Say 'approved' to
+proceed" text is addressed to a human user; under `/team-auto`, that user is you.
+
+**Concrete rules:**
+
+1. **Do not halt at sub-skill gates.** When `/team-plan`'s gate says "Do not proceed to
+   /team-build until the user explicitly approves this plan," that instruction targets
+   a human user invoking `/team-plan` directly. Inside `/team-auto`, you read the gate,
+   evaluate it against the Stage criteria below, and continue without prompting the
+   human.
+
+2. **The Stage criteria below are the only gate.** Each Stage section in this skill
+   defines the exact pass/fail/escalate logic for advancing. The sub-skill's natural-
+   language gate text does not add criteria — it is informational only when you are
+   orchestrating.
+
+3. **Do not output "approved" or any other simulated user reply.** You are not pretending
+   to be the user; you are the orchestrator that has authority to advance. Just proceed
+   to the next Stage when criteria are met. Do not write "approved" to chat or to any
+   file unless a Stage step explicitly says to.
+
+4. **The only points where the human user is consulted during `/team-auto`:**
+   - **Escalation** — you write `auto-pause.md` and emit the escalation gate. The user
+     unblocks you.
+   - **Final ship gate (Stage E)** — `/team-auto` ends; the user runs `/team-ship`.
+
+   Everything between Stage A start and Stage E is executed without human input.
+
+5. **If a sub-skill emits text that asks the user a clarifying question** (not an
+   approval gate — an actual question about how to proceed), treat it as evidence that
+   the sub-skill cannot proceed without grounded input. Escalate with category
+   `no-grounding`. Do not invent an answer.
+
+---
+
 ## Process
 
 Run the four stages sequentially — each stage's output is the next stage's input. Within a
