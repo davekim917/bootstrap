@@ -150,9 +150,14 @@ use `$`, backticks, or quotes freely in the JavaScript.
 
 STEP 3 — Run codex exec with --yolo. Design review does NOT use --output-schema (the schema
 in team-qa/references is code-diff-shaped with required line_start/line_end fields; design
-findings don't have line numbers). Free-form output is correct here:
+findings don't have line numbers). Free-form output is correct here.
 
-    codex exec --yolo --ephemeral - < /tmp/codex-design-prompt.md 2>&1 | tee /tmp/codex-design-output.log
+Adversarial design review is a deep analytical task: assumption challenge, blind-spot
+detection, and simpler-approach exploration benefit from maximum reasoning. Default to
+`xhigh`. Only drop to `high` or `medium` if a human operator explicitly asked for a
+faster/cheaper run on a small/simple design.
+
+    codex exec --yolo --ephemeral --config model_reasoning_effort="xhigh" - < /tmp/codex-design-prompt.md 2>&1 | tee /tmp/codex-design-output.log
 
 STEP 4 — Return the Codex output verbatim to the lead. Do not summarize, reformat, or add
 commentary. If Codex returned "NO MATERIAL OBJECTIONS — design is defensible as written."
