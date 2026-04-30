@@ -8,7 +8,7 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Structured team workflow: brief → design → review → plan → build → qa → ship. Includes /team-auto autonomous runner.",
-      "version": "2.0.1"
+      "version": "2.0.2"
     },
     {
       "name": "bootstrap-domain",
