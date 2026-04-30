@@ -143,14 +143,17 @@ Then STOP. Display exactly this gate:
 
 **Saved to:** `docs/specs/<feature>/design.md`
 
-If this looks right, say "approved" to proceed to `/team-review`.
+If this looks right, say "approved" — then choose how to proceed:
+- `/team-review` — manual stage-by-stage (review → plan → build → qa, gates between each).
+- `/team-auto` — autonomous runner that does review → plan → build → qa unattended and stops at the `/team-ship` gate. Pauses for hard-constraint violations and decisions that would require guessing.
+
 If anything needs adjusting, tell me what to change and I'll revise.
 ---
 ```
 
 Iterate with user feedback until they explicitly say "approved."
 
-<!-- GATE: design-approval — Design approved, options evaluated before /team-review -->
+<!-- GATE: design-approval — Design approved, options evaluated before /team-review or /team-auto -->
 **Do not proceed to planning, task decomposition, or implementation until the user explicitly approves this design.**
 
 ---
