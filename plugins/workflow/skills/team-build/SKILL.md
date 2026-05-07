@@ -402,6 +402,13 @@ Task(
   pre-existing test suite can report 100% pass while the new tests are entirely absent.
   Verify each named test by name, not by aggregate pass count. **This is the single most
   common failure mode of builder self-reports.**
+- [ ] **Behavioral, not source-grep.** Tests of the form `expect(src).toContain(...)`,
+  regex-on-source, or AST-snapshot of the implementation file are flagged suspect: they
+  verify the implementation was *written*, not that it *works*. When behavior is
+  exercisable (function output, state mutation, event emission, log assertion), the
+  test must assert behavior. Suspect tests count as missing tests for the named-test-cases
+  pre-flight gate above — send back to the builder for a behavioral rewrite (typically
+  with an injection seam — fixture DB, in-memory queue, fake clock, etc.).
 - [ ] Run each named test case individually by name (not just the full suite):
   `[test command from CLAUDE.md] -t "<test_name>"` or the equivalent name filter for
   the project's test runner. Each named test must report PASS individually. If the
@@ -409,6 +416,14 @@ Task(
   for each named test's pass line.
 - [ ] Every acceptance criterion verifies as true (not self-reported — actually check)
 - [ ] No regressions: existing test suite still passes
+- [ ] **Contract-change caller coverage.** When a lead-directed fix changes a function's
+  contract (sync→async, signature change, return-type change, throwing semantics), the fix
+  is incomplete until caller coverage is proven via a language-aware reference search
+  (LSP, ts-morph, IDE "find references", or `grep -rn '<symbol>' --include='*.<ext>'` if no
+  better tool available). Record the search command and result in build-state.md. A single
+  caller is acceptable only if the search confirms it is the only caller — "I only saw one
+  call site" without a search is not coverage. Same iteration costs nothing; surfacing
+  uncovered callers in /team-qa costs an entire QA cycle.
 - [ ] For frontend groups with render-check acceptance criteria: after functional criteria pass, the **lead** (not the builder) performs visual verification — start the dev server, use `mcp__chrome-devtools__navigate_page` + `mcp__chrome-devtools__take_screenshot` if devtools MCP is available; or if devtools MCP is unavailable, pause and tell the user explicitly: "Render-check required — [specific decision from the acceptance criterion, e.g., 'text-accent on bg-primary logo color']. Please verify in the browser and confirm to continue." Do not ask the builder for visual confirmation — builder agents cannot render or observe visual output. Do not self-approve render-checks.
 - [ ] Domain-specific completion gate passes — see [`references/domain-completion-gates.md`](references/domain-completion-gates.md) for gates by artifact type (dbt, DAG, ML, LLM eval, agent/MCP, GL model)
 
