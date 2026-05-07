@@ -102,6 +102,21 @@ Wait for user selection. Do not proceed without explicit choice.
 4. Delete branch: `git branch -D [branch-name]`
 5. Report: "Branch [name] deleted."
 
+### Step 4.5: Live Verification of Headline Path (User-Observable Features)
+
+For features with an observable user-facing behavior (UI, API, deployable service, scheduled job, integration), exercise the headline path once after the chosen ship action **only if that action results in a runnable/live surface in the current environment** — capture the actual user-facing output (screenshot, API response, log line showing the feature firing) before declaring done. Tests pass ≠ feature works.
+
+| Ship action | When 4.5 fires |
+|-------------|----------------|
+| **Option 1: Merge locally** | Fires *if* the merge triggers a service restart / redeploy / cron pickup that makes the change live in the current environment. If merge is pure code-only with no live deploy yet, treat as deferred and record "merged but not yet live; verify at next deploy." |
+| **Option 2: Push for PR** | Defers — the feature is not live in the current environment. Record "PR open, not yet live; verify post-merge or on preview deployment." The verification fires when the PR merges. |
+| **Option 3: Keep branch** | Not applicable. |
+| **Option 4: Discard** | Not applicable. |
+
+**Skip and document the reason** for pure refactors, internal-only library changes, or features with no observable user-facing behavior. The skip note goes in the Step 5 summary so the next reader knows the headline check was considered, not forgotten.
+
+**Why this exists:** A feature can pass every test, every drift check, every QA gate, and still ship 0% functional in production — the test suite asserts the units, not the integrated user-observable behavior. Surfacing failures at this step is hours; surfacing them via user complaint days later is a regression. A 5-second screenshot or curl is the cheapest insurance available.
+
 ### Step 5: STOP — Confirm Completion
 
 Present a structured summary:
