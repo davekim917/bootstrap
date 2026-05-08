@@ -239,7 +239,7 @@ its reviewers can check current best practices (context7, deepwiki, Exa) and col
 (SendMessage) before reporting. Replaces the previous isolated C (security) and D (performance)
 validators.
 
-**When to skip:** Pure docs or pure config diffs with no code changes. Otherwise always run. If the lead is considering skipping CD for any other reason (context budget, time pressure, redundancy with other validators, "Codex E covers it"), the skip MUST be approved by the user before /team-qa runs. Lead may NOT unilaterally skip CD on judgment grounds — Validator E (Codex) is cross-model, not a substitute for swarm coverage; the two lanes catch different classes of issue.
+**When to skip:** Pure docs or pure config diffs with no code changes. Otherwise always run. Any other CD skip reason (context budget, time pressure, validator overlap, "Codex E covers it") MUST be user-approved before /team-qa. Lead may NOT skip CD on judgment grounds.
 
 **Pre-flight check:** Verify at least one `mcp__exa__*` tool is in the session's tool list.
 Review-swarm hard-fails without Exa (`review-swarm/SKILL.md:107`). If none present, **skip
@@ -501,7 +501,7 @@ Classify each finding:
 - SQL style preference (no convention backing) → ADVISORY
 - Missing model/column description in schema.yml → ADVISORY
 
-**Deferral discipline:** Any finding tagged "out of scope, defer to follow-up" by any validator (review-swarm, Codex, or any future deferral mechanism) is re-scoped immediately to MUST-FIX if it would prevent the feature's primary acceptance path from working. Scope discipline is valuable; correctness blockers are not scope creep. The lead applies a stricter rule than any single validator's scoping — a feature that ships with its headline path broken did not actually ship, even if the validator was technically correct that the fix is "out of scope for cleanup."
+**Deferral discipline:** Immediately re-scope any validator finding tagged "out of scope, defer to follow-up" to MUST-FIX if it would block the feature's primary acceptance path. The lead applies this stricter rule across review-swarm, Codex, and future deferral mechanisms.
 
 The substantive categories previously classified here (security, performance, data leakage,
 credential leaks, PII in outputs, dbt test coverage, materialization sizing, source freshness)

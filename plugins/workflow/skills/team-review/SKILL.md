@@ -74,11 +74,10 @@ Before doing anything else, count how many review cycles have already run for th
       logged in `docs/specs/<feature>/decisions.yaml` under `waivers`.
    2. **Rework the design** — return to `/team-design` with the unresolved findings as new input.
    3. **Escalate** — the user (you) makes the call on each finding. State the call and the reason.
-   4. **Simplify the design** — request a "cut to MVP" pass that supersedes earlier additions.
-      Often the right call when cycle-2 fixes introduce new MUST-FIX in cycle 3 (a
-      "gold-plating across cycles" signal). Reset to the MVP scope boundary from /team-design
-      Step 6c and let the supersession evaporate the additions that produced new findings.
-      This is a /team-design re-entry, not a /team-review re-run.
+   4. **Simplify the design** — request a "cut to MVP" pass that supersedes earlier
+      additions. Appropriate when cycle-2 fixes introduce new MUST-FIX in cycle 3; reset
+      to the /team-design Step 6c MVP scope boundary. This is a /team-design re-entry,
+      not a /team-review re-run.
 
    No 4th review cycle. Tell me which path you want.
    ---
@@ -293,7 +292,7 @@ Save the review report to disk:
 
 Include the save path in the gate message so downstream skills (`/team-plan`) know where to find it.
 
-**Cycle-3 close gate — `[NEEDS SPEC]` tags:** On the final review cycle (cycle 3 / cap-reached), any reviewer "recommendation" not yet promoted to concrete spec text in the design becomes a `[NEEDS SPEC]` tag carried into review.md. Recommendations cannot ship as un-resolved design text — they become task-level open decisions the planner must resolve. Tag format: `[NEEDS SPEC: <one-line summary>]`, listed under a "Carry-forward to /team-plan" section at the end of review.md. /team-plan reads these in Step 1.
+**Cycle-3 close gate — `[NEEDS SPEC]` tags:** On cycle 3 / cap-reached, any reviewer recommendation not promoted to concrete design spec becomes `[NEEDS SPEC: <one-line summary>]` in review.md under a final "Carry-forward to /team-plan" section.
 
 Then STOP. Display exactly this gate:
 

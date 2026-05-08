@@ -109,7 +109,7 @@ From the user's input, extract:
 - **Non-goals:** What this explicitly should NOT do
 - **Key concepts:** Domain terms that need shared definitions
 - **Style preferences:** How the user thinks about quality
-- **Coverage matrix (closed sets only):** If the brief enumerates a closed set of required integrations, inputs, surfaces, or capabilities (e.g., "ingest from Slack + Discord + Linear + GitHub", "the four supported metric backends are X/Y/Z/W"), produce an explicit coverage matrix in the brief — table or checkbox list, one row per item with name + role/purpose. Without an explicit matrix, items enumerated in prose risk dropping silently between brief → design → plan → build → ship; the matrix exists so downstream stages can mechanically check each item is covered. Optional for briefs that do not enumerate a closed set.
+- **Coverage matrix (closed sets only):** If the brief enumerates a closed set of required integrations, inputs, surfaces, or capabilities, add a coverage matrix — table or checkbox list, one row per item with name + role/purpose. Optional when no closed set is enumerated.
 
 ### Step 2b: Feasibility Check for Reuse Requirements
 
