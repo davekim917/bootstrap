@@ -65,7 +65,7 @@ For EACH constraint in the brief, classify it:
 
 **Upstream [HARD] labels:** Constraints pre-labeled `[HARD]` by the brief (e.g., from a Step 2b layout feasibility check) are treated as authoritative — carry them forward as HARD without reclassification. The "flag soft constraints the brief treats as hard" heuristic does not apply to constraints validated through code inspection upstream.
 
-**Numeric HARD constraints — empirical evidence required:** Every numeric HARD constraint must cite empirical evidence from the most representative executable path available, in a unit appropriate to the constraint type (ms for latency, MB/GB for memory, RPS for throughput, %/p99 for accuracy, $/call for cost, count for capacity). A budget benchmarked against a single component (e.g., embedding-only timing) is not evidence for an end-to-end budget. If the constraint is unmeasured or current measurements exceed budget, mark it provisional and add an explicit reconciliation gate before build/ship.
+**Numeric HARD constraints — empirical evidence required:** Every numeric HARD constraint must cite evidence from the most representative executable path available, using the constraint's unit (ms, MB/GB, RPS, %/p99, $/call, count). Single-component benchmarks do not prove end-to-end budgets. If unmeasured or over budget, mark provisional and add a reconciliation gate before build/ship.
 
 See `references/constraint-analysis.md` for detailed classification guidance.
 
@@ -124,9 +124,7 @@ Note: if a visual decision was the **primary axis of comparison** between option
 
 ### Step 6c: MVP Scope Boundary
 
-Before exiting design, list explicitly what is IN scope for the first ship and what is OUT of scope (deferred to v2). Include a one-line rationale per deferred item. The MVP boundary is normative and supersedes any later-cycle additions.
-
-This step exists because cycle-2 and cycle-3 review fixes accumulate by *adding* — auto-revert circuit breakers, queue caps, daily limits, additional metrics, etc. Without an explicit "what's deferred" boundary set in cycle 1, every reviewer addition reads as in-scope and the design gold-plates across cycles. A first-cycle MVP boundary forces the gold-plating decision up front: an addition either (a) fits inside the IN-scope set or (b) goes to OUT-of-scope with a one-line rationale.
+Before exiting design, list what is IN scope for the first ship and what is OUT of scope (deferred to v2). One-line rationale per deferred item. The MVP boundary is normative and supersedes later-cycle additions.
 
 If a later cycle proposes adding scope, it must either revise the MVP boundary explicitly (treated as a new option in Step 5) or place the addition under OUT-of-scope.
 
@@ -177,7 +175,7 @@ Every claim in the design must be grounded:
 | Pattern recommendation | Cite CLAUDE.md section or project skill by name |
 | Library recommendation | Verified against Context7 docs or web search (include source) |
 | Codebase assumption | Cite the specific file and line number you read |
-| Implementation primitive (function/file/interface in pseudocode) | Verified via Read/Grep/index, OR tagged `[NEW]` with owner + creation step |
+| Pseudocode primitive (function/file/interface) | Verified via Read/Grep/index, OR tagged `[NEW]` with owner + creation step |
 | Unknown | Mark as ASSUMPTION explicitly |
 
 **Red flags in your own writing:**
@@ -191,7 +189,7 @@ If you cannot ground a claim, write:
 [ASSUMPTION: {claim} — needs validation: {how to validate}]
 ```
 
-**Pseudocode primitives:** Pseudocode without grounding is rejected back to design. The lead may not pass a design with un-tagged un-verified primitives to /team-plan — every named function, file path, or interface in pseudocode either resolves in the repo/index, or carries a `[NEW]` tag naming the owner and the creation step.
+**Pseudocode primitives:** Reject ungrounded pseudocode before /team-plan; apply the Grounding Rules row above.
 
 ---
 
@@ -228,7 +226,7 @@ Accepts rollback from `/team-review` (MUST-FIX requiring design revision) and `/
 
 **Trigger:** Lead or reviewer identifies that the design assumption is wrong, not just that the implementation needs adjustment.
 
-**SOT consolidation on re-entry:** When re-entering after a /team-review MUST-FIX, update the design body to reflect the resolution OR explicitly mark the superseded text stale. A resolution table at the top alongside contradictory unchanged prose blocks /team-plan until consolidated — the planner cannot tell which version is authoritative when the resolution table and the body disagree.
+**SOT consolidation on re-entry:** After a /team-review MUST-FIX, update the design body to reflect the resolution OR mark superseded text stale. Do not proceed to /team-plan while a resolution table contradicts unchanged body prose.
 
 ---
 

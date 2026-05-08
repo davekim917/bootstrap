@@ -41,7 +41,7 @@ anything beyond their task group.
 
 Load in order:
 1. **Design document** — check `docs/specs/<feature>/design.md` first (standard location from `/team-design`); ask user to provide it if not found
-2. **Review report** — check `docs/specs/<feature>/review.md` first (standard location from `/team-review`); ask user to provide it if not found. Carry forward any waived MUST-FIX items as known risks in the plan. Also carry forward any reviewer fallback notes (e.g., "Reviewer B timed out — fell back to Claude") as known risks: note that adversarial blind-spot coverage may be reduced. Also scan review.md for `[NEEDS SPEC]` tags from team-review's cycle-3 close gate; treat each tag as a task-level open decision that must be resolved in this plan (resolved to concrete spec text on a specific task) or escalated as a Known Risk before /team-build. Recommendations cannot enter /team-build as un-resolved design text.
+2. **Review report** — check `docs/specs/<feature>/review.md` first (standard location from `/team-review`); ask user to provide it if not found. Carry forward any waived MUST-FIX items as known risks in the plan. Also carry forward any reviewer fallback notes (e.g., "Reviewer B timed out — fell back to Claude") as known risks: note that adversarial blind-spot coverage may be reduced. Scan review.md for `[NEEDS SPEC]` tags; resolve each to concrete spec text on a specific task or escalate as a Known Risk before /team-build.
 
    **Render-check flag scan:** After reading the design document, scan it for `[RENDER-CHECK NEEDED]` flags and note each flagged decision. Task assignment for these flags happens in Step 2 (once task boundaries are identified) — complete the flag-to-task mapping after Step 2, then use it in Step 4f to add render-check acceptance criteria to the relevant tasks.
 3. **CLAUDE.md** — tech stack, conventions, critical guardrails
@@ -137,7 +137,7 @@ Specify the observable contract for this artifact. Format depends on artifact ty
 | Jupyter notebook cell | Kernel namespace in/out: inputs (type, columns) → outputs (type, shape, nulls handled) |
 | SQL query / analytics view | Column names + grain + filters |
 
-**LLM-consumer tasks:** When a task spec includes an LLM consumer (judge prompt, eval prompt, classifier prompt, summarizer, retrieval-grader), specify the prompt's input shape and trace each input field back to either (a) a column in a touched schema, or (b) an explicit runtime computation. Tasks that send empty strings to LLM inputs (e.g., a `content: ''` placeholder because the underlying schema only persists an `id`) are spec defects — surface them at plan time, not after the judge silently scores zeros for everyone.
+**LLM-consumer tasks:** If a task includes any LLM call, specify the prompt input shape and trace each input field to (a) a touched schema column or (b) an explicit runtime computation. Empty-string LLM inputs (e.g., `content: ''` because schema only has `id`) are spec defects; surface at plan time.
 
 **ASSERT annotations** — state each invariant the builder must satisfy:
 ```
@@ -245,7 +245,7 @@ File conflict check:
 
 No unresolved file conflicts in the final plan.
 
-**Symbol dependency check (parallel groups only):** For each parallel group, list any symbols (functions, constants, types, exports) it imports from another parallel group. If a parallel-group dependency exists, resolve it at plan time — either (a) sequence the dependent group after the dependency, or (b) move the shared symbol into a sequentially-earlier group (typically Group A) or a shared module loaded before both. Builders cannot resort to runtime fallbacks or temporary coupling workarounds for parallel siblings — the plan must resolve the dependency, because the dependency will be unresolved when both builders run in parallel and the workaround code that gets written tends to leak past the fix.
+**Symbol dependency check (parallel groups only):** For each parallel group, list symbols (functions, constants, types, exports) imported from another parallel group. Resolve any dependency at plan time — either (a) sequence the dependent group after the provider, or (b) move the shared symbol into a sequentially-earlier group (typically Group A) or shared module loaded before both. No runtime fallbacks or temporary coupling workarounds for parallel siblings.
 
 ```
 Symbol dependency check:
