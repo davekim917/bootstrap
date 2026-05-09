@@ -4,7 +4,7 @@ description: >
   Invoke after /team-review clears. Produces an execution plan at docs/specs/<feature>/plan.md.
   Do NOT write plans manually — this skill has task decomposition rules, conflict checks, and
   constraint injection that only load when invoked.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # /team-plan — Atomic Task Decomposition
@@ -169,7 +169,9 @@ If unable to verify at all, write:
 `[NO SKILL PATTERN — builder uses judgment, cite reasoning in commit message]` and note as a risk.
 
 **e) Named test cases**
-Write test cases by name before the code exists. Format:
+Write test cases by name before the code exists. These are the RED-side artifact for the cross-cutting `team-tdd` protocol that builders apply during implementation — the names and assertions you write here become the failing tests builders run before writing production code. If you can't name the test now, the task is underspecified.
+
+Format:
 
 ```
 test_[descriptive_name]:
@@ -370,111 +372,23 @@ If anything needs adjusting, tell me what to change.
 
 ## What Makes a Good Plan vs. a Bad Plan
 
-### Bad plan (builder has to guess)
+A bad plan describes intent ("add user authentication"); a good plan describes the *interface, invariants (ASSERTs), test cases, and acceptance criteria* the builder needs to satisfy. Builders execute, don't design — design happened during `/team-design`.
 
-```
-Task: Add user authentication
-Files: auth module
-Approach: Follow the existing auth pattern
-Tests: Write tests for the auth flow
-Acceptance: Authentication works
-```
-
-### Good plan (builder executes, doesn't design)
-
-```
-Task A2: Add requireAuth middleware
-File: src/auth/middleware/requireAuth.ts [CREATE]
-Approach: JWT validation middleware. Reads Authorization header, verifies with
-  jsonwebtoken using JWT_SECRET env var. On failure: returns 401 with
-  { error: "Unauthorized" }. On success: attaches decoded payload to req.user
-  and calls next(). Follows the Express middleware pattern documented in CLAUDE.md.
-
-Interface / signature:
-  export const requireAuth: RequestHandler = (req, res, next) => { ... }
-  // req.user: { id: string; email: string } (decoded JWT payload)
-
-ASSERT: returns { error: "Unauthorized" } with status 401 when token is missing
-ASSERT: returns { error: "Unauthorized" } with status 401 when token is expired or invalid
-ASSERT: attaches decoded payload to req.user and calls next() when token is valid
-
-Test cases:
-  test_requireAuth_valid_token:
-    Setup:  valid JWT signed with JWT_SECRET
-    Action: GET /api/protected with Authorization: Bearer <token>
-    Assert: next() called, req.user.id === token payload id
-    Teardown: none
-
-  test_requireAuth_missing_token:
-    Setup:  no Authorization header
-    Action: GET /api/protected
-    Assert: status 401, body.error === "Unauthorized"
-
-  test_requireAuth_expired_token:
-    Setup:  expired JWT (exp in the past)
-    Action: GET /api/protected with Authorization: Bearer <expired-token>
-    Assert: status 401, body.error === "Unauthorized"
-
-Acceptance criteria:
-  - [ ] Middleware exported from src/auth/middleware/requireAuth.ts
-  - [ ] Returns 401 { error: "Unauthorized" } when token is missing
-  - [ ] Returns 401 { error: "Unauthorized" } when token is expired or invalid
-  - [ ] Attaches decoded payload to req.user when token is valid
-  - [ ] All 3 test cases pass
-
-Pre-conditions: JWT_SECRET documented in .env.example (Task A1 complete)
-```
-
-### Good plan (data domain — dbt model)
-
-**Bad:**
-```
-Task B1: Add weekly revenue model
-File: models/marts/fct_user_revenue_weekly.sql [CREATE]
-Code pattern:
-  WITH source AS (SELECT * FROM {{ ref('stg_payments') }}),
-  agg AS (
-    SELECT user_id, DATE_TRUNC('week', paid_at) AS week_start,
-           SUM(COALESCE(amount, 0)) AS revenue_usd
-    FROM source GROUP BY 1, 2
-  )
-  SELECT * FROM agg
-```
-
-**Good:**
-```
-Task B1: Add weekly revenue model
-File: models/marts/fct_user_revenue_weekly.sql [CREATE]
-Approach: Aggregate payments to user-week grain. Follows analytics-engineering skill §3 mart conventions.
-
-Interface / signature (schema.yml):
-  - name: fct_user_revenue_weekly
-    columns:
-      - name: user_id        # FK to dim_users
-      - name: week_start     # grain: one row per user per week (Monday)
-      - name: revenue_usd    # null-safe: source nulls → 0.00
-
-ASSERT: aggregation is at user-week grain (no duplicate user_id + week_start combinations)
-ASSERT: revenue_usd is NULL-safe (source nulls → 0.00, not dropped)
-ASSERT: no rows from before project launch date 2023-01-01
-
-Acceptance criteria:
-  - [ ] dbt test: unique user_id + week_start passes
-  - [ ] dbt test: not_null revenue_usd passes
-  - [ ] Row count matches control total from stg_payments
-```
+Concrete bad-vs-good examples for both software (auth middleware) and data (dbt model) domains live in [`references/plan-examples.md`](references/plan-examples.md). Read it when you're checking whether a task spec is ready to hand to a builder.
 
 ---
 
-## Anti-Patterns (Do Not Do These)
+## Anti-Patterns
 
-- **Don't use vague file paths.** "The users module" is not a path. `src/api/users/route.ts` is.
-- **Don't transcribe implementation bodies.** Write the interface + invariants (ASSERT lines). Full code bodies waste context budget and crowd out builder reasoning. The builder infers how to implement from the contract + scope file + domain skills.
-- **Don't write acceptance criteria you can't verify.** "Works correctly" fails this test. Exception: render-check criteria (from `[RENDER-CHECK NEEDED]` design flags) are lead-verified via visual inspection — see Step 4f.
-- **Don't define tests after the plan.** Tests are part of the plan. If you can't name the tests now, the task is underspecified.
-- **Don't leave file conflicts.** Even one unresolved conflict can cause a mid-build merge disaster.
-- **Don't make groups too large.** A group a builder can't finish in one focused session is too large.
-- **Don't ignore waived review findings.** They belong in the plan as known risks with explicit mitigations.
+Each pattern below leads with the failure mode the rule is preventing. Read these as the cost of the shortcut, not as commandments.
+
+- **Vague file paths cause ownership ambiguity, file conflicts, and builders guessing where to put things** — and when two builders guess differently, you get a mid-build merge disaster. "The users module" is not a path; `src/api/users/route.ts` is. Use exact paths.
+- **Full code bodies in task specs waste context budget and crowd out builder reasoning** — the builder ends up transcribing your code rather than thinking about the contract. Write the interface plus invariants (ASSERT lines); let the builder infer the implementation from the contract, scope file, and domain skills.
+- **Acceptance criteria you can't verify don't actually accept anything** — "works correctly" passes any output, including broken ones. Every criterion must be objectively checkable. Render-check criteria (from `[RENDER-CHECK NEEDED]` design flags) are the one exception: lead-verified via visual inspection — see Step 4f.
+- **Tests defined after the plan are tests defined under build pressure** — they end up shaped to whatever was convenient to write, not what the spec actually requires. If you can't name the tests during planning, the task is underspecified. Define tests as part of the plan.
+- **An unresolved file conflict between groups becomes a merge disaster mid-build** — and the longer it goes undetected, the more rework downstream. Resolve conflicts in the plan, not during build.
+- **A group too large for one builder session leads to mid-task context compression and silent dropped work** — symptoms surface late, often as missed acceptance criteria. Size groups so a focused builder can finish in one session.
+- **Waived review findings that don't appear in the plan become invisible risks** — the build proceeds as if they were resolved. Capture every waived finding in the plan as a known risk with explicit mitigation.
 
 ---
 
