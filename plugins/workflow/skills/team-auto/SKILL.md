@@ -6,7 +6,7 @@ description: >
   /team-qa, then STOPS at the /team-ship gate for user decision. Pauses for destructive
   actions, hard-constraint violations, and any decision that would require guessing rather
   than evidence. Do NOT auto-trigger — user types /team-auto to invoke.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # /team-auto — Autonomous Workflow Runner
@@ -31,25 +31,70 @@ in `/team-ship` only, with explicit user input.
 If a prerequisite is missing, STOP and tell the user which skill to run first. Do not pre-check
 any other artifact — each stage validates its own remaining prerequisites.
 
-## The Two Hard Rules
+## Three Foundational Principles
 
-These supersede everything else in this skill.
+The whole skill turns on these three. Read them first; the stage logic below is mechanical execution of what they imply.
 
-### Rule 1: Never guess
+### Principle 1: Decisions without grounding are guesses, but engineering judgment with grounding is the work
 
-Apply the global "Truth-Grounded Responses" rule from `~/.claude/CLAUDE.md`. Inside
-`/team-auto`, "decision required but not grounded" is **escalation trigger #1**. Examples
-specific to this skill:
+`/team-auto` runs without a human-in-the-loop, so any ungrounded decision becomes part of the artifact with no review. The global "Truth-Grounded Responses" rule from `~/.claude/CLAUDE.md` applies absolutely. But not every decision is a guess — frontier-model judgment grounded in citable evidence (sub-skill findings, brief excerpts, project docs) is exactly the kind of work that justifies running autonomously in the first place.
+
+Inside `/team-auto`:
+
+**Guessing (escalate as `truly-ambiguous`):**
 - "I think this library has X feature" → verify via Context7, or escalate
 - "The user probably wants Y" → only if Y is in the brief, or escalate
-- "Both options seem fine" → not a decision; escalate as `no-grounding`
+- "I'm not sure what the codebase convention is here" → check via the sub-skill that already read it, or escalate
+- "Both options seem fine" without grounding → not a decision; escalate
 
-### Rule 2: Never bypass safety hooks
+**Engineering judgment (apply, record under `auto_judgments`):**
+- "Both options A and B exist in the codebase; A is more consistent with this module's pattern (per finding `<file:line>`)"
+- "Library docs surfaced by the sub-skill show two valid approaches; the simpler one fits the brief's complexity budget"
+- "This QA finding can be addressed by extracting a helper — the cited code already has 3 similar helpers, I'll match their shape"
 
-The destructive-action hook (`block-destructive`), the file-protection hook, and the
-workflow-gate-enforcement hook stay active during `/team-auto`. If any blocks or warns,
-escalate with category `hook-blocked`. Do not retry, do not work around, do not edit a
-flagged path.
+The dividing line is **named, citable grounding**. Acceptable grounding sources:
+- A code reference surfaced by a sub-skill finding (`file:line`)
+- A doc citation surfaced by a sub-skill (Context7, README, design.md excerpt the sub-skill quoted)
+- A brief excerpt the sub-skill quoted
+- An established codebase convention — must cite either a project doc / `CLAUDE.md` line, or **at least two** code references in the same area, that the sub-skill surfaced
+
+Training data is **not** an acceptable grounding source (per `~/.claude/CLAUDE.md` truth-source rule). If the only thing supporting a decision is "this is generally how it's done," that is guessing — escalate.
+
+### Principle 2: Safety hooks are the only thing standing between autonomous work and irreversible damage
+
+`block-destructive`, file-protection, and workflow-gate-enforcement exist precisely because the human is not in the loop on every action. When one fires, it has caught something the orchestrator was about to miss — that is signal, not noise. Working around a hook block defeats the safety model.
+
+The hooks stay active throughout `/team-auto`. If any blocks or warns, escalate with category `hook-blocked`. Don't retry, don't work around, don't edit a flagged path.
+
+### Principle 3: Escalating every judgment call defeats the purpose of running autonomously
+
+Earlier versions of this skill escalated on almost any non-mechanical decision — and the result was that nearly every run paused for human input on choices the model had clear grounding for. That collapsed the autonomous workflow back into a manual one with extra ceremony. The orthogonal rule to Principle 1: when a decision is required and falls within established engineering practice with citable grounding, *make the decision* and record it.
+
+**Escalate when a decision would change:**
+- User-facing product intent (what the system does for the user, not how)
+- A HARD constraint declared in the design
+- Product scope (adding or removing capabilities)
+- A safety or correctness invariant the design or codebase relies on
+
+**Apply judgment (record under `auto_judgments`, do not escalate) when the decision is:**
+- Choosing between approaches with similar grounding (e.g. two valid patterns in the codebase, both surfaced by a sub-skill finding)
+- Resolving scope ambiguity in a way consistent with the brief's intent
+- Adding a code-quality fix, refactor, or test that doesn't change observable behavior
+- Filling a documentation gap (rejected-option rationale, design assumption)
+- Picking the more conservative option when both are correct
+- Applying an established codebase convention over a less-established alternative
+
+**Grounding-and-scope check — run before applying judgment:**
+
+1. **Cite grounding** the sub-skill already surfaced: `file:line`, doc citation, brief excerpt, or convention evidence. A convention requires either a project doc / `CLAUDE.md` citation or at least two code references in the same area. Training data is not acceptable.
+2. **Negative scope check** — answer all four explicitly:
+   - Does this add or remove a user-facing capability? If yes → escalate `hard-constraint`.
+   - Does this change API / schema / UI / CLI output / error behavior visible to a user? If yes → escalate `hard-constraint`.
+   - Does this change a HARD constraint? If yes → escalate `hard-constraint`.
+   - Does this weaken a safety or correctness invariant? If yes → escalate `hard-constraint`.
+3. If grounding cannot be cited or any scope answer is "unknown," escalate `truly-ambiguous`.
+
+Record the citations and the four scope answers in the `auto_judgments` entry — that is the audit trail.
 
 ---
 
@@ -90,7 +135,7 @@ proceed" text is addressed to a human user; under `/team-auto`, that user is you
 5. **If a sub-skill emits text that asks the user a clarifying question** (not an
    approval gate — an actual question about how to proceed), treat it as evidence that
    the sub-skill cannot proceed without grounded input. Escalate with category
-   `no-grounding`. Do not invent an answer.
+   `truly-ambiguous`. Do not invent an answer.
 
 ---
 
@@ -121,22 +166,24 @@ still runs with two reviewers.
 | Correct HARD/SOFT constraint misclassification | Yes |
 | Acknowledge an implicit assumption | Yes |
 | Add rejected-option rationale | Yes |
+| Pick between approaches with similar codebase/brief grounding (after grounding-and-scope check) | Yes — record under `auto_judgments` |
+| Resolve scope ambiguity consistent with brief intent (after grounding-and-scope check) | Yes — record under `auto_judgments` |
+| Apply an established codebase convention over a less-established one (after grounding-and-scope check) | Yes — record under `auto_judgments` |
 | Change a HARD constraint value | No — escalate `hard-constraint` |
-| Add a requirement not in the brief | No — escalate `hard-constraint` |
-| Pick between equally-grounded approaches | No — escalate `no-grounding` |
-| Resolve a brief-vs-design contradiction | No — escalate `hard-constraint` |
+| Add a requirement that expands product scope | No — escalate `hard-constraint` |
+| Resolve a brief-vs-design contradiction that changes user-facing behavior | No — escalate `hard-constraint` |
+| Decision required with no codebase / brief / convention grounding | No — escalate `truly-ambiguous` |
 
 ### Stage B: Plan
 
 Invoke `/team-plan`. Read the gate:
 
 - Plan written, no errors → Stage C.
-- Constraint conflict, missing decision-record entry, or feature-name mismatch → escalate
-  `hard-constraint`.
-- Missing tests for HARD constraints (warning only, plan still produced) → proceed; QA
-  catches it.
+- Plan has a fixable issue (missing decision-record entry, feature-name mismatch, ambiguous task scope, minor sequencing issue) **and `revision-cycle == 0`** → revise inline (run grounding-and-scope check; record any judgment calls under `auto_judgments`) and re-invoke `/team-plan`.
+- Plan would require changing a HARD constraint, brief requirement, or product scope → escalate `hard-constraint`.
+- Missing tests for HARD constraints (warning only, plan still produced) → proceed; QA catches it.
 
-No plan-revision loop. A wrong plan is an upstream signal — escalate, don't patch.
+Revision cap: 1. A second revision is evidence of upstream design instability — escalate `cap-reached`, don't keep patching. (Plan revision is a deterministic repair of the artifact, not iterative validation like Review/QA — one pass is enough.)
 
 ### Stage C: Build
 
@@ -145,10 +192,8 @@ post-build drift gate. Read the gate:
 
 - Build completes, drift gates pass → Stage D.
 - Pre-build or post-build drift gate fails → escalate `drift-gate`.
-- Builder fails on a test or compile error → invoke `/team-debug` once. If `/team-debug`
-  produces a fix verifiable by passing tests, apply and continue. If it cannot find a root
-  cause in one pass, escalate `test-failure-unresolved`. Do not loop on `/team-debug`.
-- Hook block → escalate `hook-blocked` (Rule 2).
+- Builder fails on a test or compile error → invoke `/team-debug`. If it produces a fix verifiable by passing tests, apply and continue. If the first pass narrows the problem with new evidence but does not fully resolve it, invoke `/team-debug` once more with that evidence. After 2 passes without a verified fix (not just a hypothesized root cause — the fix must pass the previously-failing test), escalate `test-failure-unresolved`. Do not loop further.
+- Hook block → escalate `hook-blocked` (Principle 2).
 
 team-build owns its own internal drift retry policy; do not impose a different cap from
 team-auto.
@@ -158,11 +203,11 @@ team-auto.
 Invoke `/team-qa`. Read the gate:
 
 - **MUST-FIX == 0** → Stage E.
-- **MUST-FIX > 0 and fix-cycle < 3** → for each finding, decide:
-  - Mechanical fix (the finding tells you what to change, no judgment) → apply, then
-    `/team-qa --only <validator>` to re-validate just the affected lane.
-  - Fix requires a design change → escalate `hard-constraint`.
-  - Fix requires guessing → escalate `no-grounding`.
+- **MUST-FIX > 0 and fix-cycle < 3** → for each finding, apply the cross-cutting `team-receiving-review-feedback` protocol (verify the finding, then evaluate: correct? necessary? complete? in scope?), then decide:
+  - **Mechanical fix** (the finding tells you what to change, no judgment) — after the four-question evaluation passes, apply, then `/team-qa --only <validator>` to re-validate the affected lane.
+  - **Judgment-grounded fix** (engineering choice with citable codebase / brief / convention grounding — picking a pattern, naming a helper, choosing how to split a function, applying a refactor that doesn't change observable behavior) — run the grounding-and-scope check, apply, append to `auto_judgments` in `decisions.yaml`, then re-validate.
+  - **User-facing change** (fix would change observable behavior, a HARD constraint, or product scope) → escalate `hard-constraint`.
+  - **Truly ambiguous** (decision required with no citable grounding) → escalate `truly-ambiguous`.
 - **MUST-FIX > 0 and fix-cycle == 3** → escalate `cap-reached`.
 
 After each completed fix-cycle, append to `docs/specs/<feature>/decisions.yaml`:
@@ -175,7 +220,27 @@ auto_qa_cycles:
     completed_at: <ISO 8601 timestamp>
 ```
 
-Schema is also documented at `skills/shared/decision-record-schema.md`.
+Whenever a judgment call is applied at any stage (Review, Plan, Build, QA), also append:
+
+```yaml
+auto_judgments:
+  - stage: <Review|Plan|Build|QA>
+    iteration: <N>
+    decision: <one-line summary of what was decided>
+    alternatives_considered: [<option-A>, <option-B>]
+    grounding:
+      - <"file.ts:42 — finding from /team-qa">
+      - <"docs/specs/<feature>/design.md §3 quoted by /team-review">
+      - <"established convention in <area>: file-a.ts:10, file-b.ts:25">
+    scope_check:
+      adds_user_facing_capability: false
+      changes_external_behavior: false
+      changes_hard_constraint: false
+      weakens_safety_invariant: false
+    recorded_at: <ISO 8601 timestamp>
+```
+
+Both schemas are also documented at `skills/shared/decision-record-schema.md`.
 
 ### Stage E: Ship Gate
 
@@ -187,9 +252,11 @@ When all four stages clear, STOP. Display:
 
 Feature: <name>
 Review:  <N>/3 cycle(s) — final MUST-FIX: 0
-Plan:    written
+Plan:    written (<N>/1 revision pass(es))
 Build:   completed (<files-changed> files, <tests-added> tests)
 QA:      <N>/3 fix-cycle(s) — final MUST-FIX: 0
+
+Auto judgments recorded: <N> — review `docs/specs/<feature>/decisions.yaml` (`auto_judgments`) before `/team-ship`.
 
 Codex availability: review=<ok|skipped> qa=<ok|skipped>
 Notes: <any non-blocking warnings>
@@ -246,12 +313,12 @@ When you escalate, do all four in order:
 
 | Category | Meaning |
 |----------|---------|
-| `cap-reached` | 3-cycle limit hit on review or QA |
+| `cap-reached` | 3-cycle limit hit on Review or QA, or 1-revision limit hit on Plan |
 | `hook-blocked` | Destructive-action / file-protection / workflow-gate hook fired |
-| `hard-constraint` | Finding requires changing a HARD constraint, brief, or rejected-option |
-| `no-grounding` | Decision required but not derivable from code, docs, or user input |
+| `hard-constraint` | Finding requires changing a HARD constraint, brief, product scope, or user-facing behavior |
+| `truly-ambiguous` | Decision required with no citable codebase / brief / convention grounding |
 | `drift-gate` | Pre-build or post-build drift fails and no ack policy fits |
-| `test-failure-unresolved` | Build/QA test failure that `/team-debug` could not root-cause in one pass |
+| `test-failure-unresolved` | Build/QA test failure that `/team-debug` could not produce a verified fix for in 2 passes |
 | `prereq-missing` | Required input file (design, decisions.yaml) not at expected path |
 
 ---
@@ -261,6 +328,8 @@ When you escalate, do all four in order:
 - **Don't run `/team-ship` from inside `/team-auto`.** The whole point is to stop at the ship gate.
 - **Don't run stages in parallel.** Each stage's output is the next stage's input.
 - **Don't waive findings.** Only the user waives, with stated reason. team-auto escalates instead.
+- **Don't dress up scope creep as judgment.** "Apply judgment" means choosing between options with citable grounding (sub-skill finding, doc, brief, named convention). Adding a feature, expanding observable behavior, or making safety/correctness tradeoffs is escalation territory, not judgment territory. If you cannot name the specific grounding, it is not judgment — escalate.
+- **Don't fabricate "convention."** A convention requires an actual citation: a project doc / `CLAUDE.md` line, or at least two code references in the same area surfaced by a sub-skill. "I've seen this pattern before" is not a citation — it's training data, which is not an acceptable grounding source.
 
 ---
 
@@ -268,15 +337,17 @@ When you escalate, do all four in order:
 
 **Read:**
 - `docs/specs/<feature>/decisions.yaml` — at start (seed cycle counters) and before each append
-- The gate text returned by each invoked stage skill
+- The gate text returned by each invoked stage skill (this is your only source of grounding citations)
+- A specific `file:line` cited in a sub-skill finding, **only when applying that exact mechanical or judgment-grounded fix to those exact lines**
 
 **Write:**
-- `docs/specs/<feature>/decisions.yaml` — append `auto_qa_cycles` after each QA fix-cycle
+- `docs/specs/<feature>/decisions.yaml` — append `auto_qa_cycles` after each QA fix-cycle; append `auto_judgments` whenever a judgment call is applied at any stage
 - `docs/specs/<feature>/auto-pause.md` — only on escalation
 
 **Do NOT read:**
-- `design.md`, `brief.md`, `CLAUDE.md`, source files — the invoked stages handle their own
-  reads. team-auto is an orchestrator, not a fact-checker.
+- `design.md`, `brief.md`, `CLAUDE.md`, or the wider source tree to *gather* grounding — the invoked stages handle their own reads. If you need grounding the sub-skill didn't surface, re-invoke the sub-skill (or escalate). team-auto is an orchestrator, not a fact-checker.
+
+The grounding you cite in `auto_judgments` must come from sub-skill output you actually have. Citing a `file:line` you have not seen surfaced is fabrication — escalate `truly-ambiguous` instead.
 
 ---
 

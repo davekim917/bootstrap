@@ -4,7 +4,7 @@ description: >
   Systematic debugging methodology. Iron law: no fixes without root cause investigation first.
   Five-phase process: investigate, analyze patterns, test hypothesis, implement fix, architecture check.
   Includes rationalization resistance and escalation protocol. Apply during /team-build failures and bug reports.
-version: 1.0.0
+version: 1.0.1
 ---
 
 # /team-debug — Systematic Debugging Methodology
@@ -68,6 +68,10 @@ If the test fails for a different reason than predicted:
 2. Run the reproduction test — confirm PASS
 3. Run the full test suite — confirm no regressions
 4. If Phase 2 found multiple instances, fix all of them
+
+Apply the cross-cutting `team-verification-before-completion` protocol before claiming the fix done — fresh test output, read directly. "Should work now" doesn't satisfy the gate.
+
+When the fix originated from review feedback (PR comment, /team-qa finding, peer review), apply the `team-receiving-review-feedback` protocol first: verify the finding, evaluate it, then fix — don't just implement the suggestion verbatim.
 
 **Gate:** Reproduction test passes. Full suite passes. All pattern instances addressed.
 

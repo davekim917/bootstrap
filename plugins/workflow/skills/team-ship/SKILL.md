@@ -4,7 +4,7 @@ description: >
   Branch lifecycle and shipping. Structured branch completion after /team-qa clears.
   Verifies test suite, checks branch status, presents exactly 4 options (merge locally,
   push PR, keep branch, discard), executes the chosen path. No code changes — git operations only.
-version: 1.0.0
+version: 1.0.1
 ---
 
 # /team-ship — Branch Lifecycle and Shipping
@@ -38,11 +38,11 @@ Structured branch completion after `/team-qa` clears. Verifies readiness, presen
 
 ### Step 1: Verify Test Suite
 
-Run the full test suite (test command from CLAUDE.md).
+Run the full test suite (test command from CLAUDE.md). Apply the cross-cutting `team-verification-before-completion` protocol — fresh test output, read directly, before any "ready to ship" claim. A green run from yesterday is not evidence; it has to be from this branch state, this session.
 
-<!-- GATE: ship-tests — ALL tests pass before proceeding -->
+<!-- GATE: ship-tests — All tests pass before proceeding -->
 
-**Gate:** ALL tests pass. If any test fails, STOP. Report the failures. Do not proceed — go back to `/team-build` or `/team-debug`.
+**Gate:** Every test in the suite passes against the current branch state. If any test fails, STOP — report the failures and route back to `/team-build` or `/team-debug`. A passing suite from a previous run does not satisfy this gate; verification is per-session.
 
 ### Step 2: Verify Branch Status
 

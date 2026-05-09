@@ -4,7 +4,7 @@ description: >
   Invoke after /team-design is approved. Produces a review report at docs/specs/<feature>/review.md.
   Do NOT write review docs manually — this skill spawns independent reviewers and has deduplication
   logic that only loads when invoked.
-version: 2.2.0
+version: 2.3.0
 ---
 
 # /team-review — Design Review (Architecture + Best Practice + Adversarial)
@@ -226,15 +226,14 @@ A design that survives all three is meaningfully more defensible than one review
 
 ### Step 3: Collect All Findings
 
-Wait for both reviewers to complete. Compile their raw findings into a working list. At this
-stage, do not classify or deduplicate — just enumerate everything found.
+Wait for all three reviewers to complete (or two, if Reviewer C was skipped via the pre-flight check at Step 2). Compile their raw findings into a working list. At this stage, do not classify or deduplicate — just enumerate everything found.
 
 ### Step 4: Team Lead — Deduplicate, Fact-Check, Classify
 
 This is the most important step. Work through each finding:
 
 **Deduplication:**
-- Same finding from both reviewers = stronger signal; merge and note both raised it
+- Same finding from two or more reviewers = stronger signal; merge and note which reviewers raised it
 - Near-duplicate findings = merge with a note (e.g., "Reviewer A flags structural coupling that
   Reviewer B classifies as drift from the layered-architecture pattern — treating as one finding")
 - Genuinely different findings = keep separate
@@ -345,16 +344,18 @@ Each reviewer works in isolation: no shared state, no awareness of the other rev
 
 ---
 
-## Anti-Patterns (Do Not Do These)
+## Anti-Patterns
 
-- **Don't let reviewers see each other's output.** Independent contexts are the point. Cross-contamination defeats the multi-lens model.
-- **Don't approximate /bootstrap-workflow:best-practice-check.** Reviewer B MUST invoke the skill via the Skill tool. Doing your own pattern research instead skips the source-tier discipline that makes the skill credible.
-- **Don't approximate Reviewer C.** Use the verbatim prompt from `references/codex-adversarial-design-prompt.md`. Do NOT write your own adversarial prompt for Codex. The verbatim prompt has calibrated grounding rules (no inventing design claims) and a specific lens tuned for design-stage review. Claude running an "adversarial lens" on the design is a fallback only when Codex is unavailable — and when that happens, it should be clearly labeled as a Claude fallback, not a true cross-model check.
-- **Don't skip fact-checking.** A finding that contradicts the actual codebase is a false positive that wastes the user's time. This applies to all three reviewers — verify claims against the code before propagating them. For Reviewer C specifically, verify its "what about X simpler approach?" suggestions against actual project constraints before propagating.
-- **Don't inflate MUST-FIX.** If everything is MUST-FIX, nothing is. Reserve it for genuine blockers.
-- **Don't silently drop WON'T-FIX items.** Log them. They may become important later.
-- **Don't let users waive MUST-FIX without a stated reason.** The reason is auditable context for the next reviewer.
-- **Don't skip the loop.** A revised design can introduce new issues. Re-review after significant changes.
+Each pattern below states the *why* first — what fails when the pattern slips — and ends with the rule. Read these as load-bearing reasoning, not commandments.
+
+- **Independent contexts are the entire value proposition of multi-lens review.** When reviewers see each other's output, all three lenses converge on whoever spoke first; you've paid for three reviews and gotten one. Keep each reviewer in isolation — no shared scratchpads, no relayed findings, no peeking.
+- **Reviewer B's credibility comes from the source-tier discipline inside `bootstrap-workflow:best-practice-check`** — T1/T2/T3 corroboration, recency filters, mandatory external research. Hand-rolling pattern research approximates the appearance without any of the discipline, and produces findings the user can't trust. Invoke the skill via the Skill tool; don't do your own pattern research instead.
+- **The verbatim Codex prompt at `references/codex-adversarial-design-prompt.md` is calibrated** — grounding rules that block invented design claims, and an assumption-challenge lens specifically tuned for design-stage review. A hand-written adversarial prompt loses both calibration points. Use the verbatim prompt; if Codex is unavailable, label the fallback explicitly as Claude — running a Claude "adversarial lens" alongside Reviewers A and B is three Claude reviewers with shared blind spots, not a true cross-model check.
+- **A finding that contradicts the actual codebase is a false positive that costs the user time and erodes trust** — including the simpler-approach suggestions Reviewer C surfaces. Fact-check every finding against the code (and against project constraints, for C's suggestions) before propagating it.
+- **MUST-FIX inflation cheapens the signal** — if everything is MUST-FIX, the user can no longer tell what's actually blocking. Reserve MUST-FIX for genuine blockers; route the rest to SHOULD-FIX or WON'T-FIX per the classification table above.
+- **WON'T-FIX items dropped silently become invisible context for the next reviewer** — they may turn out to matter when the design changes. Log every WON'T-FIX with its reasoning, even when you're confident it's the right call now.
+- **Waivers without stated reasons are unfalsifiable later** — a future reviewer can't tell whether the original judgment was sound or careless. Require a stated reason for every MUST-FIX waiver; the reason is the audit trail.
+- **A revised design can reintroduce issues the previous round resolved or surface new ones from the changes themselves** — single-shot review on a moving target misses both. Re-run the full loop after significant revisions.
 
 ---
 
@@ -365,7 +366,7 @@ Each reviewer works in isolation: no shared state, no awareness of the other rev
 | "It looks fine" | "Looks fine" is not a finding. State what you checked and concluded. |
 | "Not worth raising" | If you noticed it, log it. Classify WON'T-FIX if cost outweighs benefit. |
 | "I trust the design" | Trust is not verification. Check claims against the actual implementation. |
-| "Minor issue" | Classify ADVISORY and log. Minor issues accumulate into major debt. |
+| "Minor issue" | Classify SHOULD-FIX or WON'T-FIX with stated reason and log. Minor issues accumulate into major debt. |
 | "bootstrap-workflow:best-practice-check is slow, I'll skip it" | The whole point of Reviewer B is the external research discipline. Skipping it removes the skill's value. |
 | "I'll just do the research myself instead of invoking the skill" | Approximation. The skill has tier classification, corroboration rules, and recency filters. You cannot replicate them in an ad-hoc Exa search. |
 | "Codex is slow, I'll run Claude with the adversarial lens instead" | Running an adversarial lens on Claude when two other Claude reviewers (A, B) already ran removes the cross-model diversity that was the whole point of Reviewer C. That's not a substitute — that's three Claude reviewers with a blind spot in common. Report C as skipped and let the user decide whether to proceed. |

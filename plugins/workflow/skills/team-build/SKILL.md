@@ -4,7 +4,7 @@ description: >
   Invoke after /team-plan is approved. Spawns parallel builder agents from the approved plan.
   Do NOT coordinate builds manually — this skill has drift checks, context isolation, and
   validation gates that only load when invoked.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # /team-build — Team-Coordinated Parallel Build
@@ -425,125 +425,21 @@ Task(
 
 ### Two-Stage Implementation Review
 
-After the validation checklist above passes, the lead performs two sequential reviews
-before marking a group complete.
+After the validation checklist above passes, the lead performs two sequential reviews before marking a group complete: **Stage 1 — Spec Compliance** (each task's output matches its task spec, per-group) and **Stage 2 — Code Quality** (structure, conventions, performance, error handling). Both must clear; same 3-iteration retry limit as the Fix Loop. Builders follow the `/team-receiving-review-feedback` protocol when responding to findings.
 
-**Stage 1: Spec Compliance**
-
-> **Distinction from post-build drift:** Spec compliance (Stage 1, per-group) verifies each
-> task's output matches its task spec — a task-level check. Post-build drift (Step 7) verifies
-> the aggregate implementation matches the plan's file ownership map — a build-level check
-> that catches cross-group issues (e.g., Group A's output file overwritten by Group C).
-> Both checks are needed; they do not overlap.
-
-Re-read the original task spec from the plan for this group.
-
-**Adversarial stance:** Assume the builder's completion report is optimistic. Do not trust self-reported
-criteria status. Read the actual code and run the actual tests — verify everything independently.
-The builder may have misunderstood the spec, implemented something slightly different from what was
-asked, or reported a criterion as passing based on reading code rather than running verification.
-
-For each task in the group:
-1. Check each acceptance criterion by name — not a general impression.
-2. For each `ASSERT:` annotation in the task spec: verify the stated condition holds.
-   (ASSERT checks are active only for tasks written in the contracts format.
-    Tasks without ASSERT lines fall back to the general criteria check.)
-3. Verify each file listed in the spec was created or modified.
-4. Verify no unspecified files were created or modified (over-building check).
-
-Report: ✅ all criteria met, or ❌ list of unmet criteria by task + criterion name.
-Unmet criteria → builder fixes → spec compliance re-run. Do not proceed to Stage 2 until ✅.
-
-- Issues → SendMessage to builder with file:line → builder fixes → re-review
-- Same 3-iteration retry limit as Fix Loop below
-
-**Stage 2: Code Quality**
-After Stage 1 clears: well-structured? follows CLAUDE.md conventions? obvious perf issues?
-adequate error handling at boundaries? hardcoded values that should be configurable?
-- MUST-FIX → builder fixes → re-review (3-iteration limit)
-- SHOULD-FIX → logged for /team-qa phase
-
-Builders follow the `/team-receiving-review-feedback` protocol when processing review findings: evaluate before implementing, verify claims, check necessity.
-
-Gate: both stages clear before marking group complete.
+Full procedure, including the adversarial-stance details and how Stage 1 differs from post-build drift, lives in [`references/lead-handbook.md`](references/lead-handbook.md#two-stage-implementation-review).
 
 <!-- GATE: group-validation — Both review stages clear, all criteria verified -->
 
 ### Lead Context Checkpoint
 
-After marking each group complete (and before spawning the next sequential group), write or update
-`docs/specs/<feature>/build-state.md`:
+After marking each group complete (and before spawning the next sequential group), write or update `docs/specs/<feature>/build-state.md` — the lead's persistent memory across context compression.
 
-```
-## Build State Checkpoint
-Last updated: [timestamp]
-
-### Groups Completed
-- [Group A]: validated [timestamp] — all criteria passed
-- [Group B]: validated [timestamp] — criterion X required 2 fix attempts
-
-### Groups Remaining
-- [Group C]: blocked by [A, B] — ready to spawn
-- [Group D]: blocked by [C] — waiting
-
-### Decisions Made During Build
-- [Interpretation call 1: what the lead decided and why]
-- [Blocker resolution 1: what was resolved and how]
-
-### Escalations
-- [None / criterion text + current status]
-
-### Known Risks (Accumulated)
-- [Pre-build drift PARTIAL findings]
-- [Waived review findings]
-- [Build-time decisions that deviated from plan]
-```
-
-This file is the lead's persistent memory. **If your conversation context has been compressed, re-read
-this file before any coordination action** (spawning builders, validating criteria, running drift checks).
-
-The checkpoint ensures that context compression during long builds does not cause the lead to forget
-validation results, interpretation calls, or accumulated risks.
-
-### Verification Before Completion
-
-Lead verification gate (IDENTIFY → RUN → READ → VERIFY → CLAIM):
-Before marking any group complete, the lead must:
-1. IDENTIFY the specific tests and criteria to verify
-2. RUN the actual commands
-3. READ the actual output
-4. VERIFY actual vs expected
-5. CLAIM only after verification
-
-Forbidden wording (lead and builders):
-- "should work now" / "I'm confident" / "looks correct" / "I believe this passes"
-These indicate unverified claims. Replace with: actual command → actual output → comparison.
+Template and the full rationale (including the IDENTIFY → RUN → READ → VERIFY → CLAIM verification gate that applies to every completion claim) live in [`references/lead-handbook.md`](references/lead-handbook.md#build-state-checkpoint-template). Apply the cross-cutting `team-verification-before-completion` protocol before claiming any group complete.
 
 ### Fix Loop Retry Limit
 
-Track fix attempts per acceptance criterion. After **3 failed attempts** on the same criterion:
-
-1. STOP sending fixes to the builder.
-2. Mark the criterion as `ESCALATED`.
-3. Present to the user:
-
-   ```
-   **Escalation: Acceptance criterion stuck after 3 attempts.**
-
-   Criterion: [exact criterion text]
-   Builder: [builder name]
-   Attempt 1: [what was tried] → [what happened]
-   Attempt 2: [what was tried] → [what happened]
-   Attempt 3: [what was tried] → [what happened]
-
-   This may indicate a flawed criterion, a spec gap, or a genuine implementation blocker.
-   Options:
-   - Revise the criterion and retry
-   - Waive the criterion with a stated reason
-   - Abort the build and revisit the plan
-   ```
-
-4. Do NOT continue the build or mark the group complete until the user responds.
+Track fix attempts per acceptance criterion. After **3 failed attempts** on the same criterion: STOP, mark `ESCALATED`, present the per-attempt summary to the user, and don't proceed until they respond. Escalation template at [`references/lead-handbook.md`](references/lead-handbook.md#fix-loop-retry-limit).
 
 ### Step 6: Shut Down Team
 
@@ -573,33 +469,11 @@ Save report to: docs/specs/[feature]/post-build-drift.md
 
 <!-- GATE: post-build-drift — Implementation matches plan -->
 
-Any MISSING or DIVERGED findings go back for fixes. The builder agents are gone — the lead
-handles these directly (or spawns a targeted fix agent).
+Any MISSING or DIVERGED findings go back for fixes. The builder agents are gone, but the no-code rule for the lead still applies — spawn a targeted fix agent (Task subagent or new builder for the affected file ownership) and validate its output the same way Step 5 validates a builder. The lead orchestrates and validates the fix; it doesn't write the code.
 
 ### Drift Fix Retry Limit
 
-Track drift fix-and-recheck cycles. After **3 cycles** where the drift check still finds MISSING or DIVERGED:
-
-1. STOP fixing.
-2. Present to the user:
-
-   ```
-   **Escalation: Drift not converging after 3 fix cycles.**
-
-   Cycle 1: [N] MISSING, [N] DIVERGED → fixed → re-ran drift
-   Cycle 2: [N] MISSING, [N] DIVERGED → fixed → re-ran drift
-   Cycle 3: [N] MISSING, [N] DIVERGED → still present
-
-   Remaining findings: [list each finding]
-
-   This may indicate the plan has structural issues that can't be resolved by patching code.
-   Options:
-   - Review and fix the remaining findings manually
-   - Waive specific findings with stated reasons
-   - Re-run /team-plan to reconcile the implementation approach
-   ```
-
-3. Do NOT proceed to Step 8 until the user responds.
+Track drift fix-and-recheck cycles. After **3 cycles** where the drift check still finds MISSING or DIVERGED: STOP, present the per-cycle summary to the user, and don't proceed to Step 8 until they respond. Escalation template at [`references/lead-handbook.md`](references/lead-handbook.md#drift-fix-retry-limit).
 
 ### Step 7.5: Pre-Gate Artifact Check
 
@@ -646,6 +520,8 @@ Each builder receives: task group spec (complete, with injected ASSERTs) + CLAUD
 
 Each builder reads only files in their task group's ownership list. Each builder never reads other groups' files, loads project skills, reads the full plan, or writes to files outside their ownership. Cross-group reads introduce mid-build assumptions about unfinished work — isolation eliminates this failure class.
 
+**Builders apply the cross-cutting `team-tdd` protocol** when implementing: write the failing test first, watch it fail for the predicted reason, then write the production code that makes it pass. The test cases in the task spec are the RED-side artifact; builders don't write production code without first running the named test and seeing it fail. This is what makes spec-compliance review meaningful — without TDD, "tests pass" is just "tests written after the fact don't catch what the spec wanted."
+
 ---
 
 ## Lead Responsibilities
@@ -672,17 +548,19 @@ See [`references/rollback-protocol.md`](references/rollback-protocol.md) for the
 
 ---
 
-## Anti-Patterns (Do Not Do These)
+## Anti-Patterns
 
-- **Don't let builders load project skills.** `/team-plan` already transcribed the patterns into task specs. Extra context bloats builder context and risks contradicting the spec.
-- **Don't self-report acceptance criteria.** "Builder says it's done" is not validation. Lead reads the files and runs the tests. Exception: render-check criteria are lead-verified via visual inspection, not builder self-report — see Step 5 checklist.
-- **Don't spawn sequential groups before their dependencies complete.** Verify via TaskList that blocking tasks are `completed` before spawning the next builder.
-- **Don't skip the drift check.** A build that doesn't run `/team-drift` hasn't been validated against the plan — it's assumed correct, not confirmed.
-- **Don't let the lead write code.** If the lead starts writing code, it has lost context isolation and is now operating outside its role.
-- **Don't delete the team before all shutdown confirmations.** TeamDelete on an active team leaves agents in an inconsistent state.
-- **Don't loop indefinitely on failures.** If a criterion fails 3 times or drift doesn't converge after 3 cycles, escalate to the user. Autonomous loops without termination guards waste tokens and delay resolution.
-- **Don't skip context checkpoints.** After each group completion, write `build-state.md`. Context compression during long builds silently erases the lead's working memory. Checkpoints are the recovery mechanism.
-- **Don't spawn sequential groups from memory.** Always re-read the decision record and design before constructing the next builder's prompt. The lead's conversation context may have been compressed since the last group.
+Each pattern below leads with the failure mode, then the rule. Read these as the consequences a build is trading off when the rule slips, not as commandments.
+
+- **`/team-plan` has already transcribed the relevant patterns into the task specs**, calibrated to what each builder actually needs. Loading project skills on top adds context the builder didn't ask for, bloats the working set, and sometimes contradicts the spec. Don't let builders load project skills.
+- **Builder self-report ("it's done") is a claim, not validation** — the failure mode is silent regression that surfaces only when QA or production breaks. The lead reads the files and runs the tests; that's how a criterion goes from claimed to confirmed. Render-check criteria are the one exception (lead verifies via visual inspection, not builder self-report) — see Step 5 checklist.
+- **Sequential groups exist because their inputs depend on outputs from blocking groups** — spawning before dependencies complete produces builds from incomplete inputs, and the symptoms are subtle (missing files, half-applied schemas). Verify via TaskList that blocking tasks are `completed` before spawning the next builder.
+- **A build that doesn't run `/team-drift` is assumed-correct, not confirmed-correct** — and assumed-correct builds ship features that don't match the design until QA or a user catches it. Run the drift check; CONFIRMED is the only acceptable outcome.
+- **The lead's value is context isolation** — a clean view of the plan, the spec, and the builders' outputs. The moment the lead starts writing code, it's inside a builder's context and has lost the bird's-eye view that made it useful. Send fixes back to the builder.
+- **TeamDelete on an active team leaves agents in inconsistent state** — orphaned working trees, half-shutdown processes, ambiguous task status. Wait for all shutdown confirmations before deleting the team.
+- **Autonomous loops without termination guards waste tokens and delay resolution** — and the longer the loop runs, the harder the eventual escalation gets to debug. Cap criterion retries at 3 and drift cycles at 3; escalate to the user past those caps.
+- **Context compression during long builds silently erases the lead's working memory** — without checkpoints, the lead reaches Step 5 with no record of which builders were validated and why. After each group completion, write `build-state.md`; the cost of writing it is far below the cost of recovering from compression mid-build.
+- **The lead's conversation context may have been compressed since the last group spawn** — constructing the next builder's prompt from memory means seeding it with whatever survived compression, which is often wrong. Re-read the decision record and design before each new builder spawn.
 
 ---
 

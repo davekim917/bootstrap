@@ -65,7 +65,26 @@ auto_qa_cycles:
     must_fix_count: 3
     should_fix_count: 2
     completed_at: 2026-04-28T21:00:00Z
+
+auto_judgments:
+  - stage: QA              # Review | Plan | Build | QA
+    iteration: 1
+    decision: "Extract validation helper to match codebase pattern"
+    alternatives_considered:
+      - "Inline the validation in the caller"
+      - "Extract a shared helper"
+    grounding:
+      - "src/foo.ts:42 — finding from /team-qa code-review lane"
+      - "established convention: src/bar.ts:10, src/baz.ts:25"
+    scope_check:
+      adds_user_facing_capability: false
+      changes_external_behavior: false
+      changes_hard_constraint: false
+      weakens_safety_invariant: false
+    recorded_at: 2026-04-28T21:05:00Z
 ```
+
+`auto_judgments` is appended by `/team-auto` whenever it applies an in-flight judgment call. Grounding entries must be citations the sub-skill already surfaced (not direct file reads by `/team-auto`); training data is not an acceptable grounding source. The `scope_check` block must be all `false` — any `true` should have routed to escalation instead. See `team-auto/SKILL.md` Rule 3.
 
 ---
 
@@ -78,7 +97,7 @@ auto_qa_cycles:
 | `/team-review` | Full record | Append: `waivers` (waived MUST-FIX findings with stated reasons), `review_cycles` (one entry per invocation; hard cap at 3) |
 | `/team-plan` | Full record | Update: `affects_groups` on constraints and decisions. Append: `decisions` (interpretation calls, file conflict resolutions) |
 | `/team-build` | Full record | Append: `decisions` (lead interpretation calls during build), `waivers` (escalated criteria accepted by user) |
-| `/team-auto` | Full record | Append: `auto_qa_cycles` (one entry per QA fix pass; hard cap at 3). Reads `review_cycles` for cycle-cap evaluation. |
+| `/team-auto` | Full record | Append: `auto_qa_cycles` (one entry per QA fix pass; hard cap at 3); `auto_judgments` (one entry per in-flight judgment call applied at any stage). Reads `review_cycles` for cycle-cap evaluation. |
 
 ---
 
