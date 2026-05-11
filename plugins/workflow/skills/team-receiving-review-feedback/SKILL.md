@@ -106,6 +106,18 @@ If ANY feedback item is unclear:
 
 Do not implement clear items while waiting for unclear ones to be clarified — the unclear items may change the approach for the clear ones.
 
+### Inside `/team-auto`: this gate routes through escalation, not user prompts
+
+When this skill is invoked from inside `/team-auto` (sentinel `docs/specs/<feature>/.team-auto-active` is fresh), the "Hard Gate: Unclear Items" and the "Need clarification" option under § 5 RESPOND are **not** direct user-prompt paths. The `AskUserQuestion` block hook will refuse them anyway.
+
+The autonomous handling sequence is:
+
+1. **Verify the finding before declaring it unclear.** Most "unclear" findings have a `file:line` citation. Re-read those lines (use Read on the cited range only — do not re-read the whole file). The finding usually becomes clear once the cited code is in front of you.
+2. **If the finding lacks a citation,** check whether the underlying claim can be reconstructed from sub-skill output you already have (the QA validator's full output, design.md, brief.md). If yes, proceed with the four-question evaluation.
+3. **Only if grounding genuinely cannot be reconstructed** — escalate via `auto-pause.md` with category `truly-ambiguous`. This is rare. Most "unclear" findings dissolve at step 1.
+
+Do not collect "unclear items" into a list and ask the user. Inside `/team-auto`, that's the model bailing out instead of doing the verification work the protocol specifies.
+
 ## Necessity Check
 
 Before implementing a suggested addition (new validation, new test, new check, new abstraction):
