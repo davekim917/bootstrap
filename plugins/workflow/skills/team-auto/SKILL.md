@@ -6,7 +6,7 @@ description: >
   /team-qa, then STOPS at the /team-ship gate for user decision. Pauses for destructive
   actions, hard-constraint violations, and any decision that would require guessing rather
   than evidence. Do NOT auto-trigger — user types /team-auto to invoke.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # /team-auto — Autonomous Workflow Runner
@@ -98,6 +98,23 @@ Record the citations and the four scope answers in the `auto_judgments` entry �
 
 ---
 
+## Sentinel: `.team-auto-active`
+
+When Stage A begins, write an empty sentinel file at `docs/specs/<feature>/.team-auto-active`. Touch it (update mtime) at every stage transition (start of B, C, D, E) and after every QA fix-cycle.
+
+**Why:** The `AskUserQuestion` block hook reads this sentinel to enforce no-mid-flight prompts. A fresh sentinel (mtime < 30 min) means the hook will reject any `AskUserQuestion` call — the only way to consult the human is through the escalation protocol (write `auto-pause.md`, display the gate, exit).
+
+**Lifecycle:**
+- Stage A start → create sentinel
+- Stage transitions and fix-cycle completions → `touch` the sentinel
+- Stage E success → delete sentinel
+- Escalation → delete sentinel as Step 0 of the protocol (escalation = team-auto has exited; the human takes over)
+- Stale sentinel (mtime > 30 min) is ignored by the hook, so a crashed `/team-auto` never permanently blocks `AskUserQuestion`
+
+**Do not bypass the hook.** If you find yourself wanting to call `AskUserQuestion`, that is the model drifting toward a manual workflow — re-read Principle 3 and the Stage D rules. The hook is not your adversary; it is the load-bearing enforcement of the principles below.
+
+---
+
 ## Role Inversion: You Are the User for Sub-Skill Gates
 
 This section overrides any conflicting instruction in the sub-skills (`/team-review`,
@@ -146,6 +163,8 @@ stage, the invoked skill handles its own pre-flight checks and parallelism. team
 inspects the gate output and decides go / escalate.
 
 ### Stage A: Review
+
+**First action of Stage A:** create the sentinel `docs/specs/<feature>/.team-auto-active` (empty file). Touch this sentinel at every subsequent stage transition.
 
 Invoke `/team-review` via the Skill tool. team-review's Step 0 enforces the 3-cycle cap and
 emits the cap-reached gate when applicable — team-auto does not re-implement the counter.
@@ -200,15 +219,37 @@ team-auto.
 
 ### Stage D: QA
 
+**Default disposition: iterate. Do not pause.** By the time Stage D runs, the feature has cleared brief + design + up to three review cycles + plan + build. Any QA finding framed as a new "design call" or "architectural choice" is presumptively reviewer noise dressed as a design question — design and review already had ~four passes to settle architecture. Apply judgment, record, move on. Genuine HARD-constraint or user-facing-behavior changes are the rare exception, not the default.
+
+**Iteration scope: MUST-FIX only.**
+
+- SHOULD-FIX and ADVISORY findings are **never touched in Stage D**. They are listed verbatim in the Stage E summary so the user can address them during `/team-ship` review (or defer).
+- Do not estimate effort by severity tier, do not present a fix plan, do not enumerate "phases." Stage D is not a planning stage — it iterates and validates.
+
+Touch the sentinel (`.team-auto-active`) at Stage D start and after every fix-cycle.
+
 Invoke `/team-qa`. Read the gate:
 
 - **MUST-FIX == 0** → Stage E.
-- **MUST-FIX > 0 and fix-cycle < 3** → for each finding, apply the cross-cutting `team-receiving-review-feedback` protocol (verify the finding, then evaluate: correct? necessary? complete? in scope?), then decide:
+- **MUST-FIX > 0 and fix-cycle < 3** → for each **MUST-FIX** finding (ignore SHOULD-FIX/ADVISORY), apply the cross-cutting `team-receiving-review-feedback` protocol (verify the finding, then evaluate: correct? necessary? complete? in scope?), then decide:
   - **Mechanical fix** (the finding tells you what to change, no judgment) — after the four-question evaluation passes, apply, then `/team-qa --only <validator>` to re-validate the affected lane.
   - **Judgment-grounded fix** (engineering choice with citable codebase / brief / convention grounding — picking a pattern, naming a helper, choosing how to split a function, applying a refactor that doesn't change observable behavior) — run the grounding-and-scope check, apply, append to `auto_judgments` in `decisions.yaml`, then re-validate.
-  - **User-facing change** (fix would change observable behavior, a HARD constraint, or product scope) → escalate `hard-constraint`.
-  - **Truly ambiguous** (decision required with no citable grounding) → escalate `truly-ambiguous`.
+  - **"Design call" reframed at QA stage** (finding presents a design tradeoff like "library A vs B", "frontend rewrite vs backend transform", "refactor strategy X vs Y") — **default: apply the more conservative / less-invasive option that is consistent with the existing design**. The design already chose; reviewer noise at QA stage does not re-open it. Cite the design section that authorized the existing approach, apply, record under `auto_judgments`. **Do not present options to the user.** Only escalate `hard-constraint` if the finding proves the existing design violates a user-facing requirement or safety invariant — not because two paths exist.
+  - **User-facing change** (fix would change observable behavior visible to the user, a HARD constraint declared in the design, or product scope) → escalate `hard-constraint`.
+  - **Truly ambiguous** (decision required with no citable grounding *and* the four scope-check answers are not all "no" / unknown) → escalate `truly-ambiguous`.
 - **MUST-FIX > 0 and fix-cycle == 3** → escalate `cap-reached`.
+
+**Forbidden Stage D actions (these patterns are evidence of bail-out, not legitimate escalation):**
+
+- Calling `AskUserQuestion` (the block hook will refuse it — see the Sentinel section)
+- Presenting "two options" or any N-options menu in chat
+- Estimating fix effort by phase / severity tier and asking the user to choose a phase
+- Summarizing planned fixes before iterating ("here's what I'm about to do…")
+- Calling any finding a "design call" or "architectural decision" without first checking whether design.md already settled the underlying question
+- Asking the user whether to also tackle SHOULD-FIX or ADVISORY findings — the answer is always no, by definition of Stage D's scope
+- Stopping after applying a fix to "confirm before continuing" — re-validate via `/team-qa --only <validator>` and move to the next MUST-FIX
+
+If you find yourself drafting any of the above, that is the signal to instead apply Principle 3 and iterate, or (rarely) write `auto-pause.md` and exit. There is no third path.
 
 After each completed fix-cycle, append to `docs/specs/<feature>/decisions.yaml`:
 
@@ -244,7 +285,7 @@ Both schemas are also documented at `skills/shared/decision-record-schema.md`.
 
 ### Stage E: Ship Gate
 
-When all four stages clear, STOP. Display:
+When all four stages clear, delete the sentinel (`docs/specs/<feature>/.team-auto-active`), then STOP. Display:
 
 ```
 ---
@@ -271,8 +312,9 @@ Do **not** invoke `/team-ship`. The user runs it themselves.
 
 ## Escalation Protocol
 
-When you escalate, do all four in order:
+When you escalate, do all five in order:
 
+0. **Delete the sentinel** `docs/specs/<feature>/.team-auto-active`. Escalation means `/team-auto` has exited; the human now drives. Leaving the sentinel in place would keep the `AskUserQuestion` block hook armed against a human-led session.
 1. **STOP** all autonomous activity. No retry, no "one more thing".
 2. **Persist state.** Append the relevant cycle entry to `docs/specs/<feature>/decisions.yaml`
    if a stage was mid-cycle when you stopped.
@@ -330,6 +372,9 @@ When you escalate, do all four in order:
 - **Don't waive findings.** Only the user waives, with stated reason. team-auto escalates instead.
 - **Don't dress up scope creep as judgment.** "Apply judgment" means choosing between options with citable grounding (sub-skill finding, doc, brief, named convention). Adding a feature, expanding observable behavior, or making safety/correctness tradeoffs is escalation territory, not judgment territory. If you cannot name the specific grounding, it is not judgment — escalate.
 - **Don't fabricate "convention."** A convention requires an actual citation: a project doc / `CLAUDE.md` line, or at least two code references in the same area surfaced by a sub-skill. "I've seen this pattern before" is not a citation — it's training data, which is not an acceptable grounding source.
+- **Don't resurrect design questions at Stage D.** By QA, the feature has cleared brief + design + up to three review cycles + plan + build. A QA finding framed as "library A vs B" or "frontend vs backend" is presumptively not a new design call — design already chose. Apply the option consistent with the existing design, cite the design section, record under `auto_judgments`. Only escalate `hard-constraint` when the finding proves the existing design violates a user-facing requirement or safety invariant.
+- **Don't call `AskUserQuestion` mid-flight.** The block hook will refuse it while the sentinel is fresh. If you feel the need to ask, the answer is one of: (a) apply judgment per Principle 3, (b) write `auto-pause.md` and escalate. There is no third path. Calling `AskUserQuestion` and seeing it blocked is wasted tokens and a sign of model drift.
+- **Don't present a Stage D "fix plan" before iterating.** Stage D is not a planning stage. Iterate MUST-FIX findings one at a time, applying judgment with grounding, validating after each. SHOULD-FIX and ADVISORY are deferred to Stage E's summary unconditionally.
 
 ---
 

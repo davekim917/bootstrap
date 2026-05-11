@@ -46,6 +46,15 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/workflow-gate-enforcement.ts"
           }
         ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/block-askuser-during-auto.ts"
+          }
+        ]
       }
     ],
     "PostToolUse": [
