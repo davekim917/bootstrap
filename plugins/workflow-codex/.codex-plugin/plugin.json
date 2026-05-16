@@ -1,0 +1,37 @@
+{
+  "name": "bootstrap-workflow-codex",
+  "version": "0.1.0",
+  "description": "Codex-native team workflow skills for brief, design, review, plan, build, qa, ship, debugging, drift checks, and autonomous delivery.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "workflow",
+    "team",
+    "skills",
+    "review",
+    "qa"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Bootstrap Workflow for Codex",
+    "shortDescription": "Codex-native delivery workflow skills",
+    "longDescription": "Structured Codex workflow skills for turning ambiguous work into scoped briefs, designs, review findings, implementation plans, coordinated builds, QA passes, and shipping evidence.",
+    "developerName": "David Kim",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/davekim917/bootstrap",
+    "defaultPrompt": [
+      "Run the team workflow for this feature.",
+      "Review this design and turn it into a build plan.",
+      "QA the current diff and tell me what is unsafe."
+    ],
+    "brandColor": "#111827"
+  }
+}
