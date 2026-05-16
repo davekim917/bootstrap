@@ -1,0 +1,20 @@
+{
+  "name": "davekim917-bootstrap-codex",
+  "interface": {
+    "displayName": "Dave Kim Bootstrap for Codex"
+  },
+  "plugins": [
+    {
+      "name": "bootstrap-workflow-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/workflow-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    }
+  ]
+}
