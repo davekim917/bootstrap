@@ -65,6 +65,8 @@ Then install or enable `bootstrap-workflow-codex` from that Codex marketplace.
 
 This entry is checked in at `.agents/plugins/marketplace.json`. The same object is also kept at `plugins/workflow-codex/marketplace-entry.json` for copy/paste into another Codex marketplace.
 
+The Codex marketplace uses the same marketplace name, `davekim917-bootstrap`, as the Claude marketplace. The platform-specific plugin entries are what enforce separation.
+
 Codex workflow skills must be installed through the Codex plugin, not copied into `.agents/skills` as standalone mirrors. This keeps same-named skills such as `team-build` and `team-qa` unambiguous:
 
 - Claude sees `plugins/workflow` through `.claude-plugin/marketplace.json`.
