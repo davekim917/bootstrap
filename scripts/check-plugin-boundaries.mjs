@@ -73,6 +73,12 @@ const codexCopyPasteEntry = readJson('plugins/workflow-codex/marketplace-entry.j
 const codexEntries = pluginEntries(codexMarketplace);
 const claudeEntries = pluginEntries(claudeMarketplace);
 
+if (codexMarketplace?.name !== claudeMarketplace?.name) {
+  fail(
+    `.agents/plugins/marketplace.json name must match .claude-plugin/marketplace.json name for Git-backed Codex upgrades (${codexMarketplace?.name} !== ${claudeMarketplace?.name})`,
+  );
+}
+
 const codexWorkflowEntry = codexEntries.find((entry) => entry.name === 'bootstrap-workflow-codex');
 if (!codexWorkflowEntry) {
   fail('.agents/plugins/marketplace.json must register bootstrap-workflow-codex');
