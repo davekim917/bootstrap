@@ -1,0 +1,35 @@
+{
+  "name": "bootstrap-tools",
+  "version": "1.0.0",
+  "description": "Provider-agnostic tool integration skills for CLI tools with specialized invocation patterns, including Cortex Code.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "tools",
+    "cli",
+    "cortex",
+    "snowflake"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Bootstrap Tools",
+    "shortDescription": "Provider-agnostic CLI tool skills",
+    "longDescription": "Tool integration skills that teach Codex how to invoke specialized CLIs and external developer tools with the right workflow and validation patterns.",
+    "developerName": "David Kim",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/davekim917/bootstrap",
+    "defaultPrompt": [
+      "Use the right tool skill for this task.",
+      "Invoke Cortex Code for this Snowflake workflow.",
+      "Check whether a specialized CLI skill applies."
+    ],
+    "brandColor": "#374151"
+  }
+}

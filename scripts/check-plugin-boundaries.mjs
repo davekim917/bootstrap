@@ -69,6 +69,8 @@ const claudeMarketplace = readJson('.claude-plugin/marketplace.json');
 const codexManifest = readJson('plugins/workflow-codex/.codex-plugin/plugin.json');
 const claudeManifest = readJson('plugins/workflow/.claude-plugin/plugin.json');
 const codexCopyPasteEntry = readJson('plugins/workflow-codex/marketplace-entry.json');
+const domainCodexManifest = readJson('plugins/domain/.codex-plugin/plugin.json');
+const toolsCodexManifest = readJson('plugins/tools/.codex-plugin/plugin.json');
 
 const codexEntries = pluginEntries(codexMarketplace);
 const claudeEntries = pluginEntries(claudeMarketplace);
@@ -90,6 +92,38 @@ for (const entry of codexEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
   if (entry.name === 'bootstrap-workflow' || entrySource === './plugins/workflow') {
     fail('.agents/plugins/marketplace.json must not register the Claude bootstrap-workflow plugin');
+  }
+}
+
+const providerAgnosticCodexPlugins = [
+  {
+    name: 'bootstrap-domain',
+    source: './plugins/domain',
+    manifestPath: 'plugins/domain/.codex-plugin/plugin.json',
+    manifest: domainCodexManifest,
+  },
+  {
+    name: 'bootstrap-tools',
+    source: './plugins/tools',
+    manifestPath: 'plugins/tools/.codex-plugin/plugin.json',
+    manifest: toolsCodexManifest,
+  },
+];
+
+for (const plugin of providerAgnosticCodexPlugins) {
+  const entry = codexEntries.find((candidate) => candidate.name === plugin.name);
+  if (!entry) {
+    fail(`.agents/plugins/marketplace.json must register provider-agnostic Codex plugin ${plugin.name}`);
+  } else if (normalizeSource(sourcePath(entry)) !== plugin.source) {
+    fail(`${plugin.name} must source ${plugin.source} in .agents/plugins/marketplace.json`);
+  }
+
+  if (plugin.manifest?.name !== plugin.name) {
+    fail(`${plugin.manifestPath} name must be ${plugin.name}`);
+  }
+
+  if (normalizeSource(plugin.manifest?.skills) !== './skills') {
+    fail(`${plugin.manifestPath} skills must point at ./skills/`);
   }
 }
 

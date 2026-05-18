@@ -10,9 +10,9 @@ Built for my own use, shared in case it's useful to others.
 |--------|-----------------|
 | `bootstrap-workflow` | Claude Code team workflow skills (brief → design → review → plan → build → qa → ship), safety/quality hooks, specialized agents |
 | `bootstrap-workflow-codex` | Codex-native team workflow skills with Codex plugin metadata and no Claude team/hook dependencies |
-| `bootstrap-domain` | Domain expertise skills for software engineering, data, analytics, AI, and finance |
+| `bootstrap-domain` | Provider-agnostic domain expertise skills for software engineering, data, analytics, AI, and finance |
 | `bootstrap-commands` | Codebase analysis commands that generate CLAUDE.md, project skills, and AI dev setup |
-| `bootstrap-tools` | Tool integration skills for CLI tools (Cortex Code, and more) |
+| `bootstrap-tools` | Provider-agnostic tool integration skills for CLI tools (Cortex Code, and more) |
 
 ## Install
 
@@ -34,7 +34,7 @@ Install only what you need:
 
 ### Codex
 
-The Codex workflow lives in a separate plugin so Codex installs Codex-native skill bodies rather than the Claude workflow:
+The Codex workflow lives in a separate plugin so Codex installs Codex-native skill bodies rather than the Claude workflow. The domain and tools plugins are provider-agnostic, so Codex installs those same plugin directories natively through their `.codex-plugin/plugin.json` manifests:
 
 ```
 codex plugin marketplace add davekim917/bootstrap --ref main
@@ -46,24 +46,56 @@ For local development on a host that keeps this repo at `~/plugins/bootstrap`:
 codex plugin marketplace add ~/plugins/bootstrap
 ```
 
-Then install or enable `bootstrap-workflow-codex` from that Codex marketplace.
+Then install or enable the Codex-compatible plugins from that Codex marketplace.
 
 ```json
 {
-  "name": "bootstrap-workflow-codex",
-  "source": {
-    "source": "local",
-    "path": "./plugins/workflow-codex"
+  "name": "davekim917-bootstrap",
+  "interface": {
+    "displayName": "Dave Kim Bootstrap for Codex"
   },
-  "policy": {
-    "installation": "AVAILABLE",
-    "authentication": "ON_INSTALL"
-  },
-  "category": "Coding"
+  "plugins": [
+    {
+      "name": "bootstrap-workflow-codex",
+      "source": {
+        "source": "local",
+        "path": "./plugins/workflow-codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    },
+    {
+      "name": "bootstrap-domain",
+      "source": {
+        "source": "local",
+        "path": "./plugins/domain"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    },
+    {
+      "name": "bootstrap-tools",
+      "source": {
+        "source": "local",
+        "path": "./plugins/tools"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    }
+  ]
 }
 ```
 
-This entry is checked in at `.agents/plugins/marketplace.json`. The same object is also kept at `plugins/workflow-codex/marketplace-entry.json` for copy/paste into another Codex marketplace.
+This marketplace is checked in at `.agents/plugins/marketplace.json`. The workflow-only object is also kept at `plugins/workflow-codex/marketplace-entry.json` for copy/paste into another Codex marketplace.
 
 The Codex marketplace uses the same marketplace name, `davekim917-bootstrap`, as the Claude marketplace. The platform-specific plugin entries are what enforce separation.
 
@@ -172,9 +204,9 @@ For trivial fixes, skip the workflow entirely.
 - `analytics` — dashboards, metrics, BI tools
 - `data-engineering` — pipelines, orchestration, data quality
 - `data-science` — notebooks, ML, feature engineering
-- `ai-integration` — LLM APIs, prompt engineering, RAG, agents
+- `llm-engineering` — LLM APIs, prompt engineering, RAG, evals
+- `agentic-systems` — agent loops, multi-agent systems, MCP, tools
 - `financial-analytics` — GL modeling, reconciliation, regulatory reporting
-- `jony-ive` — premium UI/UX design audit and refinement
 
 ## bootstrap-commands
 
@@ -210,7 +242,12 @@ bootstrap/
 │   │   └── skills/             # Codex-native workflow skills
 │   ├── domain/                 # bootstrap-domain plugin
 │   │   ├── .claude-plugin/plugin.json
+│   │   ├── .codex-plugin/plugin.json
 │   │   └── skills/             # 8 domain expertise skills
+│   ├── tools/                  # bootstrap-tools plugin
+│   │   ├── .claude-plugin/plugin.json
+│   │   ├── .codex-plugin/plugin.json
+│   │   └── skills/             # tool integration skills
 │   └── bootstrap-commands/     # bootstrap-commands plugin
 │       ├── .claude-plugin/plugin.json
 │       ├── commands/           # 7 bootstrap commands
