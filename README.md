@@ -109,6 +109,16 @@ For NanoClaw container agents, install the Codex plugin in the host/per-group Co
 
 When NanoClaw manages `~/plugins/bootstrap`, its host checks pull the repo, refresh local Codex marketplace cache entries, and run Codex marketplace upgrades for Git-backed installs. That keeps version bumps visible to host Codex sessions and to containers that mount the Codex plugin cache.
 
+Codex subagents are currently shipped as a managed TOML bundle under `plugins/workflow-codex/agents/` because Codex supports subagents but plugin manifests do not yet expose an `agents` component. The bundle is generated from `plugins/workflow/agents/*.md`:
+
+```
+node plugins/workflow-codex/scripts/sync-codex-agents.mjs
+node plugins/workflow-codex/scripts/sync-codex-agents.mjs --check
+node plugins/workflow-codex/scripts/sync-codex-agents.mjs --sync-home
+```
+
+The Codex workflow `SessionStart` hook syncs those managed TOML files into `CODEX_HOME/agents` or `~/.codex/agents`, overwriting only files already marked as managed by `bootstrap-workflow-codex agent-sync` or `nanoclaw codex-sync`. If the upstream Claude agent files change, run the generator and commit the updated TOML bundle so plugin upgrades carry the new agents.
+
 ### Prerequisites
 
 Claude workflow:
@@ -130,7 +140,14 @@ Claude workflow: team-* skills, 6 agents, safety/quality hooks.
 
 Codex workflow: Codex-native versions of the workflow skills with shared conventions under `plugins/workflow-codex/skills/shared/`.
 
-The Codex plugin intentionally does not wire the Claude hooks. The current Claude hooks depend on Claude tool names and environment variables, so Codex hook support should be added only after a Codex hook payload smoke test.
+The Codex plugin wires a Codex-specific hook set for safe surfaces only: payload-shape logging, destructive command blocking, protected-file blocking, post-edit tracking, and managed subagent sync. It intentionally does not port Claude-only `TeamCreate` or `AskUserQuestion` gates.
+
+Enable hook payload logging only when debugging hook shape:
+
+```
+BOOTSTRAP_CODEX_HOOK_LOG=summary codex
+BOOTSTRAP_CODEX_HOOK_LOG=full codex
+```
 
 ### Workflow Skills
 
@@ -239,6 +256,9 @@ bootstrap/
 │   │   └── tests/              # workflow validation specs
 │   ├── workflow-codex/         # bootstrap-workflow-codex plugin
 │   │   ├── .codex-plugin/plugin.json
+│   │   ├── agents/             # generated Codex subagent TOML bundle
+│   │   ├── hooks/              # Codex-specific hook manifest and hook runner
+│   │   ├── scripts/            # agent sync/generation tooling
 │   │   └── skills/             # Codex-native workflow skills
 │   ├── domain/                 # bootstrap-domain plugin
 │   │   ├── .claude-plugin/plugin.json
