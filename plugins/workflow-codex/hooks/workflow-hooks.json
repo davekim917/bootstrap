@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc 'for root in \"${BOOTSTRAP_WORKFLOW_CODEX_ROOT:-}\" \"${CODEX_PLUGIN_ROOT:-}\" \"$HOME/.codex/plugins/cache/davekim917-bootstrap/bootstrap-workflow-codex\"/* \"$HOME/plugins/bootstrap/plugins/workflow-codex\"; do if [ -n \"$root\" ] && [ -f \"$root/hooks/codex-workflow-hook.mjs\" ]; then exec node \"$root/hooks/codex-workflow-hook.mjs\"; fi; done; exit 0'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc 'for root in \"${BOOTSTRAP_WORKFLOW_CODEX_ROOT:-}\" \"${CODEX_PLUGIN_ROOT:-}\" \"$HOME/.codex/plugins/cache/davekim917-bootstrap/bootstrap-workflow-codex\"/* \"$HOME/plugins/bootstrap/plugins/workflow-codex\"; do if [ -n \"$root\" ] && [ -f \"$root/hooks/codex-workflow-hook.mjs\" ]; then exec node \"$root/hooks/codex-workflow-hook.mjs\"; fi; done; exit 0'",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -lc 'for root in \"${BOOTSTRAP_WORKFLOW_CODEX_ROOT:-}\" \"${CODEX_PLUGIN_ROOT:-}\" \"$HOME/.codex/plugins/cache/davekim917-bootstrap/bootstrap-workflow-codex\"/* \"$HOME/plugins/bootstrap/plugins/workflow-codex\"; do if [ -n \"$root\" ] && [ -f \"$root/hooks/codex-workflow-hook.mjs\" ]; then exec node \"$root/hooks/codex-workflow-hook.mjs\"; fi; done; exit 0'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

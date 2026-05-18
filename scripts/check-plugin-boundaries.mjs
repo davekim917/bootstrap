@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -64,11 +65,16 @@ function findFiles(root, predicate, results = []) {
   return results;
 }
 
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 const codexMarketplace = readJson('.agents/plugins/marketplace.json');
 const claudeMarketplace = readJson('.claude-plugin/marketplace.json');
 const codexManifest = readJson('plugins/workflow-codex/.codex-plugin/plugin.json');
 const claudeManifest = readJson('plugins/workflow/.claude-plugin/plugin.json');
 const codexCopyPasteEntry = readJson('plugins/workflow-codex/marketplace-entry.json');
+const codexHookManifest = readJson('plugins/workflow-codex/hooks/workflow-hooks.json');
 const domainCodexManifest = readJson('plugins/domain/.codex-plugin/plugin.json');
 const toolsCodexManifest = readJson('plugins/tools/.codex-plugin/plugin.json');
 
@@ -149,8 +155,22 @@ if (normalizeSource(codexManifest?.skills) !== './skills') {
   fail('plugins/workflow-codex/.codex-plugin/plugin.json skills must point at ./skills/');
 }
 
-if (codexManifest?.hooks) {
-  fail('plugins/workflow-codex/.codex-plugin/plugin.json must not wire Claude hooks into Codex');
+if (normalizeSource(codexManifest?.hooks) !== './hooks/workflow-hooks.json') {
+  fail('plugins/workflow-codex/.codex-plugin/plugin.json hooks must point at ./hooks/workflow-hooks.json');
+}
+
+const codexHookManifestPath = path.join(repoRoot, 'plugins/workflow-codex/hooks/workflow-hooks.json');
+const codexHookManifestText = fs.existsSync(codexHookManifestPath)
+  ? fs.readFileSync(codexHookManifestPath, 'utf8')
+  : '';
+for (const token of ['CLAUDE_PLUGIN_ROOT', 'TeamCreate', 'AskUserQuestion']) {
+  if (codexHookManifestText.includes(token)) {
+    fail(`plugins/workflow-codex/hooks/workflow-hooks.json must not reference Claude-only token ${token}`);
+  }
+}
+
+if (!codexHookManifest?.hooks?.SessionStart || !codexHookManifest?.hooks?.PreToolUse || !codexHookManifest?.hooks?.PostToolUse) {
+  fail('plugins/workflow-codex/hooks/workflow-hooks.json must wire SessionStart, PreToolUse, and PostToolUse');
 }
 
 if (claudeManifest?.name !== 'bootstrap-workflow') {
@@ -165,9 +185,52 @@ if (exists('plugins/workflow/.codex-plugin')) {
   fail('plugins/workflow must not contain .codex-plugin metadata');
 }
 
-for (const unexpectedDir of ['agents', 'commands', 'hooks']) {
+for (const unexpectedDir of ['commands']) {
   if (exists(`plugins/workflow-codex/${unexpectedDir}`)) {
     fail(`plugins/workflow-codex must not include Claude-only ${unexpectedDir}/`);
+  }
+}
+
+const codexAgentsRoot = path.join(repoRoot, 'plugins/workflow-codex/agents');
+if (!fs.existsSync(codexAgentsRoot)) {
+  fail('plugins/workflow-codex must include generated Codex agent TOML bundle under agents/');
+} else {
+  const claudeAgentFiles = fs.readdirSync(path.join(repoRoot, 'plugins/workflow/agents'))
+    .filter((file) => file.endsWith('.md'))
+    .sort();
+  const codexAgentFiles = fs.readdirSync(codexAgentsRoot)
+    .filter((file) => file.endsWith('.toml'))
+    .sort();
+
+  if (codexAgentFiles.length !== claudeAgentFiles.length) {
+    fail(`Codex agent bundle count mismatch: ${codexAgentFiles.length} TOML files for ${claudeAgentFiles.length} Claude agents`);
+  }
+
+  for (const sourceFile of claudeAgentFiles) {
+    const sourcePath = path.join(repoRoot, 'plugins/workflow/agents', sourceFile);
+    const source = fs.readFileSync(sourcePath, 'utf8');
+    const nameMatch = source.match(/^name:\s*(.+)$/m);
+    if (!nameMatch) {
+      fail(`plugins/workflow/agents/${sourceFile} is missing name frontmatter`);
+      continue;
+    }
+    const agentName = nameMatch[1].replace(/^["']|["']$/g, '').trim();
+    const expectedToml = path.join(codexAgentsRoot, `${agentName}.toml`);
+    if (!fs.existsSync(expectedToml)) {
+      fail(`plugins/workflow-codex/agents/${agentName}.toml is missing`);
+      continue;
+    }
+    const generated = fs.readFileSync(expectedToml, 'utf8');
+    const expectedHash = sha256(source);
+    if (!generated.includes(`source_sha256: ${expectedHash}`)) {
+      fail(`plugins/workflow-codex/agents/${agentName}.toml is stale; run node plugins/workflow-codex/scripts/sync-codex-agents.mjs`);
+    }
+    if (!generated.includes('managed by bootstrap-workflow-codex agent-sync')) {
+      fail(`plugins/workflow-codex/agents/${agentName}.toml must include the managed marker`);
+    }
+    if (!generated.includes('Codex Runtime Adapter')) {
+      fail(`plugins/workflow-codex/agents/${agentName}.toml must include the Codex runtime adapter`);
+    }
   }
 }
 
