@@ -1,0 +1,35 @@
+{
+  "name": "bootstrap-domain",
+  "version": "1.0.7",
+  "description": "Provider-agnostic domain expertise skills for software engineering, data engineering, analytics, data science, AI/LLM integration, and financial analytics.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "domain",
+    "skills",
+    "software-engineering",
+    "data",
+    "analytics"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Bootstrap Domain",
+    "shortDescription": "Provider-agnostic domain skills",
+    "longDescription": "Domain expertise skills for software engineering, analytics engineering, analytics, data engineering, data science, LLM engineering, agentic systems, and financial analytics.",
+    "developerName": "David Kim",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/davekim917/bootstrap",
+    "defaultPrompt": [
+      "Use the right domain skill for this codebase.",
+      "Review this design with domain-specific judgment.",
+      "Apply data, analytics, or software engineering best practices."
+    ],
+    "brandColor": "#1F2937"
+  }
+}
