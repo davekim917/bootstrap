@@ -19,14 +19,23 @@ Read `../shared/codex-workflow-primitives.md`, project instructions, the plan/de
 6. For database or data work, verify migrations, contracts, and representative data paths.
 7. For external APIs or current libraries, use current official docs when behavior matters.
 
-Use Codex subagents for independent validator passes when the diff is large or risky. Suggested validators:
+## Parallel Validator Dispatch (DEFAULT for medium-or-larger diffs)
 
-- Correctness and contract validator
-- Test quality validator
-- Security and privacy validator
-- Performance and operations validator
-- UX and accessibility validator
-- Adversarial hidden-assumption validator
+When the diff touches >100 LOC OR multiple files OR risk-sensitive surfaces (auth, mounts, migrations, external integrations), **dispatch validators IN PARALLEL as background subagents**. Fire concurrently in one tool turn:
+
+- `security-reviewer` — security / privacy / permissions / data exposure pass
+- `performance-analyzer` — performance and operations pass
+- `code-review-specialist` — correctness and contract pass
+- The **general-purpose worker** subagent (subagent_type = `general-purpose` in Claude/Codex, `general` in OpenCode) — run typecheck, tests, lint, build; report results
+
+Use background dispatch:
+- **OpenCode**: `task({subagent_type: 'security-reviewer', background: true, ...})` etc., all in one tool turn
+- **Claude**: parallel `Agent(...)` calls in one tool block
+- **Codex**: parallel `spawn_task` in one collab block
+
+The lead correlates findings, runs the **adversarial hidden-assumption pass** itself (looking for what the specialists missed), and assembles the final QA verdict. UX/accessibility passes are lead-driven when feasible.
+
+**Solo QA is appropriate ONLY for**: trivial diffs (single small fix, no risk surface) or when the user explicitly asks for a single-pass check.
 
 ## Output
 

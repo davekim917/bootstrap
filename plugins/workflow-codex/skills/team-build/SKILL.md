@@ -23,14 +23,30 @@ The lead Codex agent owns:
 
 Use `update_plan` for visible multi-step work when the task is non-trivial.
 
-## Worker Use
+## Parallel Worker Dispatch (DEFAULT for plans with disjoint tasks)
 
-Use Codex subagents only when delegation is clearly implied by the workflow request or the build has separable work. Give each worker:
+When the plan has 2+ tasks with **disjoint write scopes** (no overlapping files), **dispatch them IN PARALLEL as background subagents** rather than executing sequentially.
 
-- Exact files or modules it owns
+Use the runtime's **general-purpose worker** subagent for each task — this is the runtime's built-in ephemeral worker, not a specialist:
+- **Claude / Codex**: subagent_type = `general-purpose`
+- **OpenCode**: subagent_type = `general` (OpenCode's built-in worker; description: "Use this agent to execute multiple units of work in parallel")
+
+Give each worker:
+
+- **Exact files or modules it owns** (must not overlap with sibling workers — disjoint scope is non-negotiable)
 - A warning that others may be editing and it must not revert outside changes
+- The task brief from `docs/specs/<slug>/plan.md`
 - Required tests or inspections
 - A final response format listing changed files and verification
+
+Use background dispatch — fire all workers in one tool turn, then poll/wait for results.
+- **OpenCode**: `task({subagent_type: 'general', description: 'Build task N', prompt: '...', background: true})`
+- **Claude**: parallel `Agent(...)` calls in one tool block
+- **Codex**: parallel `spawn_task` in one collab block
+
+The lead **does not delegate the integration step** — once workers report, the lead pulls their changes together, resolves conflicts, runs the full suite of project gates, and produces the final completion claim.
+
+**Solo execution is appropriate ONLY for**: single-task plans, linear-dependency tasks, or when the user explicitly asks for serial work. Default to parallel dispatch when scope allows.
 
 Keep blocking work local. Do not wait on a worker until its result is needed.
 
