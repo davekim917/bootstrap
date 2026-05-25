@@ -80,6 +80,21 @@ test('codex normalize: command_execution → toolCall, agent_message → finalOu
   assert.equal(t.finalOutput, 'SMOKE');
 });
 
+test('codex normalize: failed command (status:failed, non-zero exit) ⇒ ok:false', () => {
+  // Real shape captured from `codex exec --json` on a failing command: the item completes but
+  // status flips to "failed" with a non-zero exit_code. Drift guard: even a hypothetical future
+  // codex emitting status:"completed" alongside a non-zero exit must stay ok:false (exit wins).
+  const jsonl = [
+    '{"type":"item.completed","item":{"type":"command_execution","command":"ls /nope","aggregated_output":"No such file","exit_code":2,"status":"failed"}}',
+    '{"type":"item.completed","item":{"type":"command_execution","command":"false","exit_code":1,"status":"completed"}}',
+    '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}',
+  ].join('\n');
+  const t = normalizeCodex(jsonl, '');
+  assert.equal(t.toolCalls.length, 2);
+  assert.equal(t.toolCalls[0].ok, false, 'status:failed + exit 2 ⇒ ok:false');
+  assert.equal(t.toolCalls[1].ok, false, 'non-zero exit is authoritative even if status:completed');
+});
+
 test('codex normalize: -o lastMessage wins for finalOutput; mcp_tool_call classifies research', () => {
   const jsonl = '{"type":"item.completed","item":{"type":"mcp_tool_call","tool":"exa.web_search","status":"completed"}}';
   const t = normalizeCodex(jsonl, 'FINAL');
@@ -158,4 +173,47 @@ test('opencode normalizeFromDb: tool part → toolCall, text part → finalOutpu
   assert.equal(t.toolCalls[0].ok, true);
   assert.equal(t.finalOutput, 'answer');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// parallelism is decided by child execution-window OVERLAP, not child count — so a sequential
+// fan-out (≥2 children, disjoint windows) is NOT falsely marked parallel (would make the
+// review-swarm `parallel` gate unfalsifiable).
+test('opencode normalizeFromDb: overlapping child windows ⇒ parallel; disjoint ⇒ sequential', () => {
+  const run = (childParts) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-par-'));
+    const db = path.join(dir, 'opencode.db');
+    const sql = [
+      'CREATE TABLE session(id TEXT, parent_id TEXT, title TEXT);',
+      'CREATE TABLE message(id TEXT, session_id TEXT, data TEXT, time_created INTEGER);',
+      'CREATE TABLE part(id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);',
+      "INSERT INTO session VALUES('s1',NULL,'root');",
+      "INSERT INTO session VALUES('c1','s1','reviewer A');",
+      "INSERT INTO session VALUES('c2','s1','reviewer B');",
+      `INSERT INTO message VALUES('m1','s1','{"role":"assistant"}',1);`,
+      `INSERT INTO part VALUES('p0','m1','s1',1,'{"type":"text","text":"done"}');`,
+      ...childParts,
+    ].join('\n');
+    execFileSync('sqlite3', [db], { input: sql });
+    const t = normalizeFromDb(db, '');
+    fs.rmSync(dir, { recursive: true, force: true });
+    return t;
+  };
+  // overlap: c1 window [100,300], c2 [200,400] — c2 starts before c1 ends
+  const par = run([
+    `INSERT INTO part VALUES('a1','mx','c1',100,'{"type":"text","text":"x"}');`,
+    `INSERT INTO part VALUES('a2','mx','c1',300,'{"type":"text","text":"x"}');`,
+    `INSERT INTO part VALUES('b1','mx','c2',200,'{"type":"text","text":"x"}');`,
+    `INSERT INTO part VALUES('b2','mx','c2',400,'{"type":"text","text":"x"}');`,
+  ]);
+  assert.equal(par.subagentSpawns.length, 2);
+  assert.ok(par.subagentSpawns.every((s) => s.parallel), 'overlapping child windows ⇒ parallel');
+  // sequential: c1 [100,200], c2 [300,400] — disjoint, c2 starts after c1 ends
+  const seq = run([
+    `INSERT INTO part VALUES('a1','mx','c1',100,'{"type":"text","text":"x"}');`,
+    `INSERT INTO part VALUES('a2','mx','c1',200,'{"type":"text","text":"x"}');`,
+    `INSERT INTO part VALUES('b1','mx','c2',300,'{"type":"text","text":"x"}');`,
+    `INSERT INTO part VALUES('b2','mx','c2',400,'{"type":"text","text":"x"}');`,
+  ]);
+  assert.equal(seq.subagentSpawns.length, 2);
+  assert.ok(seq.subagentSpawns.every((s) => !s.parallel), 'disjoint child windows ⇒ NOT parallel');
 });

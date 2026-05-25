@@ -265,14 +265,43 @@ export function normalizeFromDb(dbPath, stdoutFallback) {
     }
   }
   t.finalOutput = assistantText.join('').trim() || fallback;
-  // subagents = child sessions spawned during this run (parallel heuristic: >1 ⇒ parallel)
+  // subagents = child sessions spawned during this run. Parallelism is decided by execution-window
+  // OVERLAP, not child count: a count-based flag (`kids.length > 1`) can't tell concurrent
+  // (task background:true) fan-out from sequential one-then-next dispatch — both yield ≥2 children —
+  // which makes the review-swarm `parallel` gate (score.mjs) unfalsifiable: it would pass even on a
+  // fully sequential run. Two children whose [min,max] part-time windows intersect ⇒ parallel.
   try {
-    const kids = sqliteJson(dbPath, `SELECT title FROM session WHERE parent_id = '${sid}'`);
-    for (const k of kids) t.subagentSpawns.push({ role: k.title || 'subagent', parallel: kids.length > 1 });
+    const kids = sqliteJson(dbPath, `SELECT id, title FROM session WHERE parent_id = '${sid}'`);
+    const parallel = childWindowsOverlap(dbPath, kids.map((k) => k.id));
+    for (const k of kids) t.subagentSpawns.push({ role: k.title || 'subagent', parallel });
   } catch {
     /* no children */
   }
   return t;
+}
+
+/**
+ * True iff any two child sessions' execution windows overlap in time — the signal that separates
+ * concurrent (background) fan-out from sequential dispatch. Each window is
+ * [MIN(part.time_created), MAX(part.time_created)] for that child; children with no parts are
+ * skipped (no window to place). Classic interval sweep: sort by start, overlap iff some window
+ * starts before the running max-end. Fewer than 2 placeable windows ⇒ not parallel.
+ */
+export function childWindowsOverlap(dbPath, childIds) {
+  if (!childIds || childIds.length < 2) return false;
+  const windows = [];
+  for (const id of childIds) {
+    const span = sqliteJson(dbPath, `SELECT MIN(time_created) AS lo, MAX(time_created) AS hi FROM part WHERE session_id = '${id}'`)[0];
+    if (span && span.lo != null && span.hi != null) windows.push({ lo: Number(span.lo), hi: Number(span.hi) });
+  }
+  if (windows.length < 2) return false;
+  windows.sort((a, b) => a.lo - b.lo);
+  let maxHi = windows[0].hi;
+  for (let i = 1; i < windows.length; i++) {
+    if (windows[i].lo < maxHi) return true; // starts before a prior window ended ⇒ overlap
+    maxHi = Math.max(maxHi, windows[i].hi);
+  }
+  return false;
 }
 
 export default adapter;

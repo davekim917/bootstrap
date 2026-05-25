@@ -128,7 +128,10 @@ export function normalize(jsonl, lastMessage) {
     switch (item.type) {
       case 'command_execution': {
         const name = (item.command || 'command_execution').replace(/^\/bin\/bash\s+-lc\s+/, '').trim();
-        const ok = item.exit_code === 0 || item.status === 'completed';
+        // exit_code is authoritative when present (codex sets status:"failed" + a non-zero
+        // exit_code on a failed command — verified against `codex exec --json`); fall back to
+        // status only when no exit_code is reported.
+        const ok = item.exit_code != null ? item.exit_code === 0 : item.status !== 'failed';
         t.toolCalls.push({ name, args: { command: item.command }, result: item.aggregated_output, ok });
         break;
       }
