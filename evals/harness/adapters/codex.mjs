@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { sh } from '../lib.mjs';
 import { emptyTranscript, researchToolKind, isSubagentTool } from '../transcript.mjs';
 
@@ -27,20 +28,24 @@ const adapter = {
     const blob = out + err;
     const authed = /\blogged in\b/i.test(blob) && !/\bnot logged in\b/i.test(blob);
     if (!authed) missing.push('codex login (run `codex login`)');
-    // MCP is ambient via ~/.codex/config.toml; declared mcp must appear there as an exact
-    // table name (a substring check lets `exa` match `mcp_servers.exact` and misses quoted keys).
+    // MCP is ambient via ~/.codex/config.toml; verify each declared server against codex's
+    // OWN resolved list (`codex mcp list --json`) rather than grepping the TOML — codex parses
+    // its own config (every quoting/table form), and an exact name match avoids substring
+    // false-positives (`exa` ⊄ `exact`).
     if (target.env.mcp?.length) {
-      let toml = '';
+      let names = [];
       try {
-        toml = fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8');
+        const out = execFileSync('codex', ['mcp', 'list', '--json'], {
+          encoding: 'utf8',
+          maxBuffer: 8 * 1024 * 1024,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        const arr = JSON.parse(out);
+        names = Array.isArray(arr) ? arr.map((s) => s.name) : [];
       } catch {
-        /* none */
+        /* codex unavailable → all declared servers report missing below */
       }
-      for (const m of target.env.mcp) {
-        const me = m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const re = new RegExp(`^\\s*\\[mcp_servers\\.(?:"${me}"|${me})\\]`, 'm');
-        if (!re.test(toml)) missing.push(`mcp:${m} (not in ~/.codex/config.toml)`);
-      }
+      for (const m of target.env.mcp) if (!names.includes(m)) missing.push(`mcp:${m} (not in \`codex mcp list\`)`);
     }
     return { ok: missing.length === 0, missing, detail: missing.length ? 'env not provisionable' : 'ok' };
   },

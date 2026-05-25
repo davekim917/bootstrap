@@ -6,33 +6,36 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { normalize as normalizeCodex } from './adapters/codex.mjs';
 import { normalize as normalizeClaude } from './adapters/claude.mjs';
-import { normalizeFromDb, mcpConfigObject, parseCodexMcpToml } from './adapters/opencode.mjs';
+import { normalizeFromDb, mcpConfigObject } from './adapters/opencode.mjs';
 import { isReadTool } from './transcript.mjs';
 
-// ── opencode: MCP config mapping (defs injected; mirrors NanoClaw's converter) ──
-test('mcpConfigObject: url→remote, command+args→local, empty→null, unresolvable→throws', () => {
-  const defs = {
-    exa: { url: 'https://mcp.exa.ai/mcp?exaApiKey=secret' },
-    deepwiki: { url: 'https://mcp.deepwiki.com/mcp' },
-    context7: { command: 'npx', args: ['-y', '@upstash/context7-mcp'] },
-  };
-  assert.equal(mcpConfigObject([], defs), null);
-  assert.equal(mcpConfigObject(undefined, defs), null);
-  const cfg = mcpConfigObject(['exa', 'context7', 'deepwiki'], defs);
+// ── opencode: MCP config mapping from `codex mcp list --json` shape (servers injected) ──
+test('mcpConfigObject: stdio→local, streamable_http→remote, empty→null, unresolvable→throws', () => {
+  const servers = [
+    { name: 'exa', transport: { type: 'streamable_http', url: 'https://mcp.exa.ai/mcp?exaApiKey=secret' } },
+    { name: 'deepwiki', transport: { type: 'streamable_http', url: 'https://mcp.deepwiki.com/mcp' } },
+    { name: 'context7', transport: { type: 'stdio', command: 'npx', args: ['-y', '@upstash/context7-mcp'] } },
+  ];
+  assert.equal(mcpConfigObject([], servers), null);
+  assert.equal(mcpConfigObject(undefined, servers), null);
+  const cfg = mcpConfigObject(['exa', 'context7', 'deepwiki'], servers);
   assert.deepEqual(cfg.exa, { type: 'remote', url: 'https://mcp.exa.ai/mcp?exaApiKey=secret', enabled: true });
   assert.deepEqual(cfg.deepwiki, { type: 'remote', url: 'https://mcp.deepwiki.com/mcp', enabled: true });
   assert.deepEqual(cfg.context7, { type: 'local', command: ['npx', '-y', '@upstash/context7-mcp'], enabled: true });
-  assert.throws(() => mcpConfigObject(['nonexistent'], defs), /not resolvable/);
+  assert.throws(() => mcpConfigObject(['nonexistent'], servers), /not resolvable/);
 });
 
-test('mcpConfigObject: remote carries headers (literal + bearer resolved); local carries env', () => {
+test('mcpConfigObject: remote carries resolved bearer/header; stdio carries env', () => {
   process.env.TEST_MCP_TOKEN = 'sekret';
   try {
-    const defs = {
-      rem: { url: 'https://x', headers: { 'X-Api': 'lit' }, bearer_token_env_var: 'TEST_MCP_TOKEN' },
-      loc: { command: 'npx', args: ['-y', 'pkg'], env: { FOO: 'bar' } },
-    };
-    const cfg = mcpConfigObject(['rem', 'loc'], defs);
+    const servers = [
+      {
+        name: 'rem',
+        transport: { type: 'streamable_http', url: 'https://x', http_headers: { 'X-Api': 'lit' }, bearer_token_env_var: 'TEST_MCP_TOKEN' },
+      },
+      { name: 'loc', transport: { type: 'stdio', command: 'npx', args: ['-y', 'pkg'], env: { FOO: 'bar' } } },
+    ];
+    const cfg = mcpConfigObject(['rem', 'loc'], servers);
     assert.deepEqual(cfg.rem, {
       type: 'remote',
       url: 'https://x',
@@ -43,28 +46,6 @@ test('mcpConfigObject: remote carries headers (literal + bearer resolved); local
   } finally {
     delete process.env.TEST_MCP_TOKEN;
   }
-});
-
-test('parseCodexMcpToml: quoted keys, single-quoted args, nested env/headers tables', () => {
-  const toml = [
-    '[mcp_servers."context7"]', // quoted key
-    "command = 'npx'", // single-quoted scalar
-    "args = ['-y', '@upstash/context7-mcp']", // single-quoted TOML array (invalid JSON)
-    '[mcp_servers.context7.env]', // nested env table (must not clear the server)
-    'API_KEY = "k123"',
-    '[mcp_servers.remote1]',
-    'url = "https://r1"',
-    '[mcp_servers.remote1.http_headers]',
-    'X-Tenant = "acme"',
-    '[other_section]', // unrelated section closes context
-    'foo = "bar"',
-  ].join('\n');
-  const d = parseCodexMcpToml(toml);
-  assert.deepEqual(d.context7.args, ['-y', '@upstash/context7-mcp']);
-  assert.equal(d.context7.command, 'npx');
-  assert.deepEqual(d.context7.env, { API_KEY: 'k123' });
-  assert.equal(d.remote1.url, 'https://r1');
-  assert.deepEqual(d.remote1.headers, { 'X-Tenant': 'acme' });
 });
 
 // ── codex: JSONL item events (shape from real `codex exec --json` capture) ──
