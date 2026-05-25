@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { sh } from '../lib.mjs';
+import { sh, hasBinary } from '../lib.mjs';
 import { emptyTranscript, researchToolKind, isSubagentTool } from '../transcript.mjs';
 
 // Default tools auto-approved for eval runs (override via target.env.allowedTools).
@@ -24,12 +24,13 @@ const adapter = {
 
   async preflight(target) {
     const missing = [];
+    if (!hasBinary('claude')) missing.push('claude CLI not on PATH');
     const creds = path.join(os.homedir(), '.claude', '.credentials.json');
     if (!fs.existsSync(creds) && !process.env.ANTHROPIC_API_KEY) missing.push('claude auth (~/.claude/.credentials.json or ANTHROPIC_API_KEY)');
     // MCP is ambient via Claude Code config; declared tools are auto-approved at
     // run time via --allowedTools. Declared mcp can't be cheaply verified headless.
     const mcpNote = target.env.mcp?.length ? `mcp(ambient):${target.env.mcp.join(',')}` : 'no mcp';
-    return { ok: missing.length === 0, missing, detail: missing.length ? 'no claude auth' : mcpNote };
+    return { ok: missing.length === 0, missing, detail: missing.length ? 'env not provisionable' : mcpNote };
   },
 
   async run(target, { input, fixtureDir, timeoutMs }) {

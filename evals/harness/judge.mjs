@@ -60,14 +60,24 @@ function buildPrompt(expect, transcript) {
 }
 
 export function extractJson(text) {
-  // strip code fences, then take the first balanced {...}. Brace matching is
-  // STRING-AWARE: braces inside JSON string values (common when the judge quotes
-  // code in evidence, e.g. "tool_choice={\"type\":...}") must not move the depth
-  // counter, or a valid reply gets truncated and mis-read as non-JSON.
+  // strip code fences, then return the first balanced {...} that PARSES. Brace matching is
+  // STRING-AWARE: braces inside JSON string values (common when the judge quotes code in
+  // evidence, e.g. "tool_choice={\"type\":...}") must not move the depth counter, or a valid
+  // reply gets truncated and mis-read as non-JSON. If a balanced block fails to parse, keep
+  // scanning from the NEXT `{`: a valid object can follow prose that itself contained braces,
+  // and bailing on the first block would misclassify a valid-but-late reply as non-JSON.
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const body = fenced ? fenced[1] : text;
-  const start = body.indexOf('{');
-  if (start === -1) return null;
+  for (let start = body.indexOf('{'); start !== -1; start = body.indexOf('{', start + 1)) {
+    const obj = parseBalancedFrom(body, start);
+    if (obj !== undefined) return obj;
+  }
+  return null;
+}
+
+// Parse the string-aware balanced {...} beginning at `start`. Returns the parsed object, or
+// undefined when the block is unbalanced or not valid JSON (signal: caller tries the next `{`).
+function parseBalancedFrom(body, start) {
   let depth = 0;
   let inStr = false;
   let esc = false;
@@ -85,11 +95,11 @@ export function extractJson(text) {
       try {
         return JSON.parse(body.slice(start, i + 1));
       } catch {
-        return null;
+        return undefined;
       }
     }
   }
-  return null;
+  return undefined;
 }
 
 /**

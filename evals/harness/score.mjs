@@ -76,8 +76,12 @@ export function evalCheck(check, t) {
  * @returns {{verdict:string, gates:Array<{id,pass,detail}>}}
  */
 export function scoreHardGates(rubric, t) {
+  // Only a real timeout kill is TIMEOUT. Other non-clean exits (CLI launch failure, invalid
+  // flag/model, non-zero exit, empty output with timedOut=false) are execution/config errors —
+  // classify them ENV_ERROR so they're actionable and not misattributed as "model too slow".
+  // Both remain non-quality outcomes (never a behavioral FAIL).
   if (t.timedOut) return { verdict: VERDICT.TIMEOUT, gates: [] };
-  if (!t.exitOk) return { verdict: VERDICT.TIMEOUT, gates: [], note: 'process did not exit cleanly with output' };
+  if (!t.exitOk) return { verdict: VERDICT.ENV_ERROR, gates: [], note: 'process did not exit cleanly with output (launch/exec error, not a timeout)' };
 
   const gates = (rubric.hardGates ?? []).map((g) => {
     const { pass, detail } = evalCheck(g.check, t);

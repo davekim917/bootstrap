@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { sh, sqliteJson, sqliteExec, resolveSkillDir, PLUGINS } from '../lib.mjs';
+import { sh, sqliteJson, sqliteExec, resolveSkillDir, hasBinary, PLUGINS } from '../lib.mjs';
 import { emptyTranscript, researchToolKind } from '../transcript.mjs';
 
 const HARNESS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -160,6 +160,7 @@ const adapter = {
 
   async preflight(target) {
     const missing = [];
+    if (!hasBinary('opencode')) missing.push('opencode CLI not on PATH');
     if (!target.env.auth || !fs.existsSync(target.env.auth)) missing.push('auth.json');
     // Verify every declared MCP server resolves from ~/.codex/config.toml now, so an
     // env gap surfaces as ENV_ERROR before we spend a run. Smoke declares none.
@@ -184,7 +185,9 @@ const adapter = {
     // buffers/hangs headless); stdout is only a fallback, the structured truth
     // is read from opencode.db.
     const cwd = fixtureDir && fs.existsSync(fixtureDir) ? fixtureDir : xdg;
-    const args = ['run', '--dir', cwd, '-m', target.model, input];
+    // Omit -m when the target leaves model unset (let opencode pick its default) — mirrors
+    // ensureWarmTemplate. Always appending `-m undefined` would crash spawn for a valid target.
+    const args = ['run', '--dir', cwd, ...(target.model ? ['-m', target.model] : []), input];
     const { out, code, timedOut } = await sh('opencode', args, { env, timeoutMs });
     const dbPath = path.join(xdg, 'opencode', 'opencode.db');
     const transcript = normalizeFromDb(dbPath, out);

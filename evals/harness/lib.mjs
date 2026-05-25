@@ -32,6 +32,20 @@ export function resolveSkillDir(name, prefer = 'workflow-codex') {
 }
 
 /**
+ * Is `cmd` an executable on PATH? Used by adapter preflights so a missing agent CLI surfaces as
+ * an ENV_ERROR up front, rather than passing preflight and failing mid-run (which would be
+ * misattributed as an execution/result failure). `command -v` is the POSIX builtin for this.
+ */
+export function hasBinary(cmd) {
+  try {
+    execFileSync('sh', ['-c', `command -v ${cmd}`], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Spawn a process, capture stdout/stderr, enforce a timeout.
  *
  * stdin:'ignore' is LOAD-BEARING for headless agent CLIs: both `opencode run`
