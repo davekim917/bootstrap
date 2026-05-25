@@ -1,33 +1,50 @@
 ---
 name: workflow-routing
-description: Route a Codex request to the right bootstrap workflow skill when the user asks for team workflow help, feature delivery, planning, review, QA, drift checks, shipping, or autonomous execution.
+description: >
+  Routes non-trivial feature work to the team-* workflow skills. Use when a request involves new
+  APIs, data models, schemas, multi-file changes, new integrations, or ambiguous requirements —
+  invoke /team-brief instead of writing brief/design/plan documents directly. Triggers on phrases
+  like "build feature X", "add new endpoint/model/integration", "refactor across files", or any
+  request where the requirements are not yet pinned down.
+user-invocable: false
+version: 1.1.0
 ---
 
 # Workflow Routing
 
-Use this skill when the user asks for workflow guidance but does not name a specific team skill.
+## When to invoke `/team-brief` first
 
-Read `../shared/codex-workflow-primitives.md` when you need shared Codex conventions.
+The workflow chain — brief → design → review → plan → build → qa → ship — exists because each stage produces an artifact the next stage depends on. Skipping ahead means designing without crystallized requirements, planning without a committed design, or building without a planned task decomposition. The result is rework, scope creep, or features that don't match what was asked for.
 
-## Route
+Start with `/team-brief` (invoke the `team-brief` skill the way your runtime loads skills) when the request involves any of:
 
-- Fuzzy idea or unclear ask: use `team-brief`.
-- Need architecture, UX, product, or technical design: use `team-design`.
-- Need adversarial critique before planning or building: use `team-review`.
-- Need a buildable task list: use `team-plan`.
-- Need implementation: use `team-build`.
-- Need validation of a diff or finished implementation: use `team-qa`.
-- Need branch, commit, PR, or release prep: use `team-ship`.
-- Need test-first implementation: use `team-tdd`.
-- Need root-cause debugging: use `team-debug`.
-- Need compare artifacts for drift: use `team-drift`.
-- Need process learning after work: use `team-retro`.
-- Need to process review comments: use `team-receiving-review-feedback`.
-- Need an evidence gate before a completion claim: use `team-verification-before-completion`.
-- Need end-to-end autonomous delivery: use `team-auto`.
+- **New API endpoints, data models, or schemas** — anything that creates a new contract.
+- **Changes spanning 3+ files** — multi-file changes need a planned decomposition, not ad-hoc edits.
+- **New subsystems, integrations, or services** — anything introducing a new dependency or surface.
+- **Ambiguous or underspecified requirements** — when "build X" doesn't pin down what done looks like.
 
-When multiple routes apply, start at the earliest missing artifact in this order:
+Each downstream skill (`/team-design`, `/team-review`, `/team-plan`, `/team-build`, `/team-qa`, `/team-ship`) has an explicit approval gate. Don't skip ahead.
 
-`brief -> design -> review -> plan -> build -> qa -> ship`
+## What counts as trivial — skip the workflow
 
-For small, clear fixes, skip directly to `team-build` or `team-debug`.
+The workflow has overhead that's only worth it for genuinely non-trivial work. For these cases, do the work directly:
+
+- Single-file bug fixes
+- Config changes (env vars, package.json, tsconfig, .gitignore)
+- Typo fixes, formatting, comment edits
+- Simple queries against existing data
+- Research, exploration, conversation
+- Reverting a recent commit
+
+If you're unsure, ask the user. "This looks small enough to handle directly — should I skip the brief?" is a valid check.
+
+## Common mistakes
+
+- **Writing a brief-like document yourself instead of invoking `/team-brief`.** The skill has specific file paths (`docs/specs/<feature>/`), a Q&A process, and output templates that only load when invoked. A hand-written brief misses all three.
+- **Chatting through requirements and jumping to implementation.** That skips the brief *and* the design — the two stages that pin down what done looks like and what the architecture should be.
+- **Creating `plan.md` or `design.md` files ad-hoc.** `/team-design` and `/team-plan` produce these with constraint analysis, decision records, and conflict checks the manual version doesn't replicate.
+- **Reading a skill's description and approximating from it.** The descriptions in your context are summaries. The full instructions, file paths, process steps, and gate structure load only when you actually invoke the skill.
+
+## Routing decision in one line
+
+If the user asked for *a feature*, run `/team-brief`. If the user asked for *a fix or a question*, do it directly.
