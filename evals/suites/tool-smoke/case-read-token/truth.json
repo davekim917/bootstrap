@@ -1,0 +1,22 @@
+{
+  "case": "case-read-token",
+  "purpose": "Cross-runtime spine smoke: prove preflight + transcript normalization + deterministic scoring work identically on opencode/codex/claude using only a built-in file-read tool. No external MCP required.",
+  "setup": {
+    "files": [{ "path": "smoke.txt", "content": "CONFIG_TOKEN=SMOKE_a1b2c3\n" }]
+  },
+  "rubric": {
+    "tier": "smoke",
+    "hardGates": [
+      {
+        "id": "called-read-tool",
+        "check": { "type": "tool_called", "read": true },
+        "rationale": "The agent must actually use a file-read tool, not guess — proves tool-call normalization captured the event across runtimes."
+      },
+      {
+        "id": "output-has-token",
+        "check": { "type": "output_contains", "value": "SMOKE_a1b2c3" },
+        "rationale": "The agent read and reported the correct value."
+      }
+    ]
+  }
+}

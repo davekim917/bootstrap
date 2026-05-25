@@ -1,0 +1,69 @@
+{
+  "fixture": "02-dbt-model",
+  "domain": "Analytics Engineering (dbt / SQL)",
+  "expected_reviewers_include": [
+    "adversarial-reviewer",
+    "domain-reviewer",
+    "data-reviewer"
+  ],
+  "findings": [
+    {
+      "id": "payment-fanout-inflates-revenue",
+      "kind": "data-correctness",
+      "severity": "BUG",
+      "must_catch": true,
+      "where": "join payments p on o.order_id = p.order_id, then sum(o.order_total)",
+      "rationale": "Orders join payments 1-to-many (installments). After the fanout, each order row is duplicated per payment, so sum(o.order_total) over-counts total_revenue by the number of payments per order. Revenue must be aggregated at order grain before (or separately from) the payments join."
+    },
+    {
+      "id": "inner-join-drops-unpaid-orders",
+      "kind": "data-correctness",
+      "severity": "BUG",
+      "must_catch": true,
+      "where": "join payments (INNER) following the left join orders",
+      "rationale": "The INNER join to payments silently drops orders with no payment row (and customers with no paid orders), contradicting the LEFT join intent and undercounting/omitting customers. Should be a LEFT join or restructured."
+    },
+    {
+      "id": "null-revenue-not-coalesced",
+      "kind": "data-correctness",
+      "severity": "SUGGESTION",
+      "must_catch": false,
+      "where": "sum(o.order_total) for customers with no orders",
+      "rationale": "Customers with no orders yield NULL total_revenue rather than 0. Coalesce for cleaner downstream semantics. Acceptable as SUGGESTION."
+    }
+  ],
+  "false_positive_traps": [
+    {
+      "where": "CTE naming (customers/orders/payments) and group by 1,2,3 ordinals",
+      "note": "Conventional dbt style; must NOT be reported as a BUG."
+    }
+  ],
+  "notes": "2 must-catch data-correctness BUGs (fanout over-count, inner-join silent drop). Data-correctness must-catch recall required = 1.00.",
+  "rubric": {
+    "tier": "done",
+    "hardGates": [
+      {
+        "id": "dispatched-reviewers",
+        "check": {
+          "type": "subagents_spawned",
+          "min": 2,
+          "parallel": true
+        },
+        "rationale": "Swarm dispatched ≥2 isolated reviewers in parallel (not a solo pass)."
+      },
+      {
+        "id": "used-finding-format",
+        "check": {
+          "type": "output_matches",
+          "regex": "\\[(BUG|SUGGESTION)\\]"
+        },
+        "rationale": "Report classifies findings in the [BUG]/[SUGGESTION] format."
+      }
+    ],
+    "judge": {
+      "minRecall": 1,
+      "maxFalseBugRate": 0.2,
+      "minSeverityAccuracy": 0.8
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "skill": "review-swarm",
+  "required_substrings": [
+    "Detect the domain",
+    "adversarial-reviewer",
+    "domain-reviewer",
+    "Select When",
+    "context7",
+    "deepwiki",
+    "Exa (mandatory",
+    "Rationalization Resistance",
+    "[BUG/SUGGESTION] file:line",
+    "## Dispatch by Runtime"
+  ],
+  "required_references": [
+    "references/review-criteria.md",
+    "references/reviewer-prompt-template.md"
+  ],
+  "dispatch_must_name": ["Codex", "OpenCode"]
+}
