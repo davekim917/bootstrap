@@ -58,6 +58,20 @@ test('tokenLeaks: .claude/ paths are flagged in the body, allowed in the Claude-
   assert.deepEqual(tokenLeaks(confined), []);
 });
 
+test('tokenLeaks: a Claude-reference heading OUTSIDE Dispatch does NOT exempt (no confinement bypass)', () => {
+  const md = [
+    '## Process',
+    '### Claude (reference)', // standalone claude-ref subheading in a non-dispatch section
+    'coordinate via SendMessage', // must STILL be flagged
+    '## Dispatch by Runtime',
+    '### Claude (reference)',
+    'On Claude: TeamCreate + Agent(...)', // exempt — under Dispatch
+  ].join('\n');
+  const leaks = tokenLeaks(md);
+  assert.equal(leaks.length, 1);
+  assert.equal(leaks[0].token, 'SendMessage');
+});
+
 test('tokenLeaks: a non-dispatch ## heading after Dispatch closes the confinement region', () => {
   const md = [
     '## Dispatch by Runtime',

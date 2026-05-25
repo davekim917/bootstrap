@@ -44,9 +44,8 @@ const ORCH_HEADING = /\b(spawn|team|collaborat|deleg|dispatch|parallel|swarm|age
 // dirs, skill paths, global config) are Claude-Code-specific and must be translated to a
 // runtime-neutral path (e.g. .agents/tmp/bootstrap-workflow/) or AGENTS.md.
 const CLAUDE_TOKEN = /\b(TeamCreate|TeamDelete|SendMessage|subagent_type)\b|\bAgent\(|\bTask\(|\.claude\b/;
-// Region where Claude tokens are allowed (the parity-reference / dispatch section).
+// The only region where Claude tokens are allowed: the "## Dispatch by Runtime" section.
 const DISPATCH_HEADING = /^##\s+Dispatch by Runtime\b/i;
-const CLAUDE_REF_HEADING = /^#{2,4}\s+.*\bClaude\b.*\breference/i;
 
 export function headingLines(md) {
   return md.split('\n').filter((l) => /^#{2,4}\s+/.test(l));
@@ -85,7 +84,7 @@ export function hasFrontmatter(md) {
   return { ok: missing.length === 0, missing };
 }
 
-/** Confinement: walk lines tracking whether we're inside a Dispatch/Claude-reference region. */
+/** Confinement: walk lines tracking whether we're inside the "## Dispatch by Runtime" region. */
 export function tokenLeaks(md) {
   const leaks = [];
   let inRegion = false;
@@ -93,10 +92,13 @@ export function tokenLeaks(md) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (/^##\s+/.test(line)) {
-      // A level-2 heading toggles region: enter on Dispatch-by-Runtime, exit on any other ##.
+      // ONLY a level-2 heading toggles the region: enter on "## Dispatch by Runtime", exit on
+      // any other ##. Deeper (###) subheadings — including "### Claude (reference …)" — don't
+      // toggle it, so the Claude-reference block stays exempt *only* while under Dispatch. A
+      // standalone Claude-reference heading elsewhere can no longer enable the exemption (that
+      // was a confinement bypass: a skill could suppress leak detection in any section).
       inRegion = DISPATCH_HEADING.test(line);
     }
-    if (CLAUDE_REF_HEADING.test(line)) inRegion = true; // deeper Claude-reference subsection also counts
     if (!inRegion && CLAUDE_TOKEN.test(line)) {
       const tok = line.match(CLAUDE_TOKEN)[0];
       leaks.push({ line: i + 1, token: tok, text: line.trim().slice(0, 80) });
