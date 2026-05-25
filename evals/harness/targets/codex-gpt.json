@@ -1,0 +1,14 @@
+{
+  "id": "codex-gpt",
+  "adapter": "codex",
+  "model": "gpt-5.5",
+  "env": {
+    "auth": null,
+    "mcp": ["exa", "context7", "deepwiki"],
+    "skills": [],
+    "subagents": [],
+    "systemPromptAppend": null,
+    "repo": null,
+    "_note": "auth + MCP are ambient via ~/.codex/config.toml (exa/context7/deepwiki already configured there); preflight verifies they are model-visible."
+  }
+}
