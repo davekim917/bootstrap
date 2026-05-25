@@ -31,3 +31,13 @@ test('extractJson: braces INSIDE string values do not break matching (the judge-
   // a closing/opening brace literally inside a string value
   assert.deepEqual(extractJson('prefix {"a":"a } b { c"} suffix'), { a: 'a } b { c' });
 });
+
+test('extractJson: skips a non-JSON brace block and finds a valid object after it', () => {
+  // judge prose containing braces BEFORE the real payload must not yield a false "non-JSON"
+  assert.deepEqual(extractJson('Analysis {rough note} then:\n{"matched":[],"reported_bug_count":0}'), {
+    matched: [],
+    reported_bug_count: 0,
+  });
+  // multiple junk brace blocks before the payload
+  assert.deepEqual(extractJson('{nope} {also bad} {"ok":true}'), { ok: true });
+});

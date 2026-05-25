@@ -53,6 +53,8 @@ test('scoreHardGates: PASS when all gates pass, FAIL when one fails', () => {
 });
 
 test('scoreHardGates: infra outcomes never become behavioral FAIL', () => {
+  // A real timeout kill ⇒ TIMEOUT; any other non-clean exit (launch/exec error) ⇒ ENV_ERROR.
+  // Both are non-quality outcomes — the contract is "infra never becomes a behavioral FAIL".
   assert.equal(scoreHardGates({ hardGates: [] }, tx({ timedOut: true })).verdict, VERDICT.TIMEOUT);
-  assert.equal(scoreHardGates({ hardGates: [] }, tx({ exitOk: false })).verdict, VERDICT.TIMEOUT);
+  assert.equal(scoreHardGates({ hardGates: [] }, tx({ exitOk: false })).verdict, VERDICT.ENV_ERROR);
 });
