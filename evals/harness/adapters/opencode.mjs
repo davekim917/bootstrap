@@ -26,14 +26,17 @@ const CACHE = process.env.OPENCODE_EVAL_TEMPLATE || path.join(HARNESS_DIR, '.cac
 const NO_PROXY = '127.0.0.1,localhost,opencode.ai';
 
 /** Ensure a warm (migrated) opencode XDG template exists; create once if not. */
-async function ensureWarmTemplate(authPath) {
+async function ensureWarmTemplate(authPath, model) {
   const db = path.join(CACHE, 'opencode', 'opencode.db');
   if (fs.existsSync(db)) return CACHE;
   fs.mkdirSync(path.join(CACHE, 'opencode'), { recursive: true });
   fs.copyFileSync(authPath, path.join(CACHE, 'opencode', 'auth.json'));
-  // Warm it: a trivial run drives the one-time migration to completion. Generous
-  // ceiling — migration is the slow part and only happens here, once.
-  await sh('opencode', ['run', '-m', 'opencode-go/kimi-k2.6', 'reply with: WARM'], {
+  // Warm it: a trivial run drives the one-time (model-independent) XDG/DB migration to
+  // completion. Use the target's configured model — the one the eval will actually run, so
+  // it's guaranteed reachable in this environment — rather than a hardcoded id that could be
+  // unavailable and fail template creation before any suite runs. Omit -m if none given
+  // (opencode picks its default). Generous ceiling: migration is the slow part, once.
+  await sh('opencode', ['run', ...(model ? ['-m', model] : []), 'reply with: WARM'], {
     env: { ...process.env, XDG_DATA_HOME: CACHE, XDG_CONFIG_HOME: CACHE, NO_PROXY },
     timeoutMs: 600_000,
   });
@@ -171,7 +174,7 @@ const adapter = {
   },
 
   async run(target, { input, fixtureDir, timeoutMs }) {
-    const template = await ensureWarmTemplate(target.env.auth);
+    const template = await ensureWarmTemplate(target.env.auth, target.model);
     const xdg = provisionXdg(template, target);
     const t0 = Date.now();
     const env = { ...process.env, XDG_DATA_HOME: xdg, XDG_CONFIG_HOME: xdg, NO_PROXY };
