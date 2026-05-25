@@ -1,0 +1,25 @@
+{
+  "case": "case-offbyone",
+  "purpose": "Verify the LLM judge (gate 2): the agent must catch the planted off-by-one. Pure reasoning — no MCP/tools/research, so it isolates judge correctness from runtime tooling.",
+  "setup": { "files": [] },
+  "rubric": {
+    "tier": "smoke",
+    "hardGates": [
+      { "id": "used-bug-format", "check": { "type": "output_matches", "regex": "\\[BUG\\]" }, "rationale": "Agent reported at least one BUG in the required format (deterministic)." }
+    ],
+    "judge": { "minRecall": 1.0, "maxFalseBugRate": 0.5, "minSeverityAccuracy": 0.5 }
+  },
+  "findings": [
+    {
+      "id": "off-by-one",
+      "kind": "correctness",
+      "severity": "BUG",
+      "must_catch": true,
+      "where": "for (let i = 0; i <= n; i++)",
+      "rationale": "Loop condition `i <= n` runs n+1 iterations, summing arr[0..n] — one element past the intended first n (reads arr[n], often undefined → NaN). Should be `i < n`."
+    }
+  ],
+  "false_positive_traps": [
+    { "where": "variable naming, let vs const, the comment", "note": "style, not correctness BUGs" }
+  ]
+}

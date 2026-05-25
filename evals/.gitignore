@@ -1,0 +1,6 @@
+# Warm opencode XDG template (machine-specific: contains auth + migrated db)
+harness/.cache/
+# Per-run eval artifacts / results
+.results/
+*.out
+*.log

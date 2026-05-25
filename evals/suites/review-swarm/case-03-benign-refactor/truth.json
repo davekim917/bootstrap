@@ -1,0 +1,35 @@
+{
+  "fixture": "03-benign-refactor",
+  "domain": "SWE / Full-stack (TypeScript)",
+  "benign": true,
+  "expected_reviewers_include": [
+    "adversarial-reviewer",
+    "domain-reviewer"
+  ],
+  "findings": [],
+  "acceptable_suggestions": [
+    {
+      "id": "truncate-off-by-one-edge",
+      "kind": "correctness",
+      "severity": "SUGGESTION",
+      "where": "truncate slices maxLength-1 then appends ellipsis",
+      "rationale": "Arguably the ellipsis means the visible length is maxLength, which is the intended behavior. A reviewer MAY note the edge semantics as a SUGGESTION; it is not a BUG."
+    }
+  ],
+  "false_positive_traps": [
+    {
+      "where": "DEFAULT_LOCALE extraction, text rename, currency formatter",
+      "note": "Pure clarity refactor, no behavior change. Reporting any of these as a BUG is a false positive and fails the precision gate."
+    }
+  ],
+  "notes": "Benign fixture. Expected outcome: zero BUG findings. SUGGESTIONs are allowed. This fixture gates false-BUG rate = 0.",
+  "rubric": {
+    "tier": "done",
+    "hardGates": [],
+    "judge": {
+      "minRecall": 1,
+      "maxFalseBugRate": 0,
+      "minSeverityAccuracy": 0.5
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "fixture": "01-ts-api",
+  "domain": "SWE / Full-stack (TypeScript, Express, SQL)",
+  "expected_reviewers_include": [
+    "adversarial-reviewer",
+    "domain-reviewer",
+    "security-reviewer"
+  ],
+  "findings": [
+    {
+      "id": "sql-injection",
+      "kind": "security",
+      "severity": "BUG",
+      "must_catch": true,
+      "where": "orders.ts SELECT ... WHERE user_id = ${userId}",
+      "rationale": "req.query.userId is interpolated directly into SQL — classic injection. Must be a parameterized query ($1)."
+    },
+    {
+      "id": "idor-missing-authz",
+      "kind": "security",
+      "severity": "BUG",
+      "must_catch": true,
+      "where": "orders.ts handler reads userId from query and returns that user's orders",
+      "rationale": "No authorization check that the caller owns userId. Any authenticated session can read any user's orders (IDOR). Should derive userId from the session, not trust the query param."
+    },
+    {
+      "id": "n-plus-one",
+      "kind": "performance",
+      "severity": "BUG",
+      "must_catch": true,
+      "where": "orders.ts for-loop issuing one order_items query per order",
+      "rationale": "N+1 query pattern. Should fetch line items in a single query (IN / JOIN) instead of per-order."
+    },
+    {
+      "id": "unbounded-fetch",
+      "kind": "performance",
+      "severity": "SUGGESTION",
+      "must_catch": false,
+      "where": "orders.ts SELECT * FROM orders with no LIMIT/pagination",
+      "rationale": "Unbounded result set; pagination would be safer at scale. Acceptable as SUGGESTION, not required."
+    }
+  ],
+  "false_positive_traps": [
+    {
+      "where": "the two explanatory comments / the `result` accumulator variable",
+      "note": "Stylistic; must NOT be reported as a BUG."
+    }
+  ],
+  "notes": "3 must-catch BUGs: 2 security (injection, IDOR), 1 performance (N+1). Security must-catch recall is required to be 1.00.",
+  "rubric": {
+    "tier": "done",
+    "hardGates": [
+      {
+        "id": "dispatched-reviewers",
+        "check": {
+          "type": "subagents_spawned",
+          "min": 2,
+          "parallel": true
+        },
+        "rationale": "Swarm dispatched ≥2 isolated reviewers in parallel (not a solo pass)."
+      },
+      {
+        "id": "used-finding-format",
+        "check": {
+          "type": "output_matches",
+          "regex": "\\[(BUG|SUGGESTION)\\]"
+        },
+        "rationale": "Report classifies findings in the [BUG]/[SUGGESTION] format."
+      }
+    ],
+    "judge": {
+      "minRecall": 1,
+      "maxFalseBugRate": 0.2,
+      "minSeverityAccuracy": 0.8
+    }
+  }
+}

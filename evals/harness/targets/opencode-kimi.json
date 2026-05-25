@@ -1,0 +1,16 @@
+{
+  "id": "opencode-kimi",
+  "adapter": "opencode",
+  "model": "opencode-go/kimi-k2.6",
+  "env": {
+    "auth": "~/.local/share/opencode-illysium-opencode/auth.json",
+    "mcp": ["exa", "context7", "deepwiki"],
+    "skills": [],
+    "skillSource": "workflow-codex",
+    "timeoutMs": 900000,
+    "subagents": [],
+    "systemPromptAppend": null,
+    "repo": null,
+    "_note": "mcp resolved from ~/.codex/config.toml into an ephemeral per-run opencode.json (secrets stay out of source). skillSource=workflow-codex: evaluates the augmented port, same as codex."
+  }
+}
