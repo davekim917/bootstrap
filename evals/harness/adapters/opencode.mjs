@@ -127,18 +127,27 @@ export function mcpConfigObject(mcpNames, servers = readCodexMcpServers()) {
   const byName = new Map((servers || []).map((s) => [s.name, s]));
   const out = {};
   for (const name of mcpNames) {
-    const t = byName.get(name)?.transport || {};
+    const s = byName.get(name);
+    if (!s) throw new Error(`mcp server "${name}" not resolvable from \`codex mcp list\``);
+    // A configured-but-disabled server is not usable — surface it as ENV_ERROR rather than
+    // provisioning a half-working env that fails at runtime.
+    if (s.enabled === false) throw new Error(`mcp server "${name}" is disabled in codex config${s.disabled_reason ? ` (${s.disabled_reason})` : ''}`);
+    const t = s.transport || {};
     if (t.type === 'stdio' && t.command) {
-      const env = t.env && Object.keys(t.env).length ? { environment: t.env } : {};
-      out[name] = { type: 'local', command: [t.command, ...(t.args ?? [])], ...env, enabled: true };
+      const environment = { ...(t.env || {}) };
+      // env_vars = names of parent-process vars to inherit; resolve to values for OpenCode.
+      for (const v of t.env_vars || []) if (process.env[v] !== undefined) environment[v] = process.env[v];
+      out[name] = { type: 'local', command: [t.command, ...(t.args ?? [])], ...(Object.keys(environment).length ? { environment } : {}), enabled: true };
     } else if (t.url) {
       // streamable_http / http transports
       const headers = { ...(t.http_headers || t.headers || {}) };
+      // env_http_headers = header name → env-var name; resolve from this process's env.
+      for (const [h, envVar] of Object.entries(t.env_http_headers || {})) if (process.env[envVar] !== undefined) headers[h] = process.env[envVar];
       if (t.bearer_token_env_var && process.env[t.bearer_token_env_var]) {
         headers['Authorization'] = `Bearer ${process.env[t.bearer_token_env_var]}`;
       }
       out[name] = { type: 'remote', url: t.url, ...(Object.keys(headers).length ? { headers } : {}), enabled: true };
-    } else throw new Error(`mcp server "${name}" not resolvable from \`codex mcp list\``);
+    } else throw new Error(`mcp server "${name}" has no mappable transport in \`codex mcp list\``);
   }
   return out;
 }

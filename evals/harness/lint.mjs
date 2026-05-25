@@ -71,11 +71,14 @@ for (const ref of linkedRefs) {
   else fail(`reference MISSING: ${ref}`);
 }
 
-// 4. Dispatch section names each target runtime
+// 4. Dispatch section names each target runtime — scoped to the section itself (up to the
+// next level-2 heading), so a mention in an unrelated later section can't satisfy the gate.
 const dispatchIdx = body.indexOf('## Dispatch by Runtime');
 if (dispatchIdx === -1) fail('no "## Dispatch by Runtime" section');
 else {
-  const dispatch = body.slice(dispatchIdx);
+  const after = body.slice(dispatchIdx + '## Dispatch by Runtime'.length);
+  const nextH2 = after.search(/\n##\s/);
+  const dispatch = nextH2 === -1 ? after : after.slice(0, nextH2);
   for (const rt of anchors.dispatch_must_name ?? []) {
     if (dispatch.includes(rt)) ok(`dispatch section names runtime: ${rt}`);
     else fail(`dispatch section does not name runtime: ${rt}`);

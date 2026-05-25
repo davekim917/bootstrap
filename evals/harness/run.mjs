@@ -165,7 +165,13 @@ async function runTarget(targetId, suiteDir, caseNames, args, outRoot) {
     // Per-target timeout override: runtimes differ in speed (e.g. opencode/Kimi review
     // swarms run ~2× slower than codex and time out at the default tier ceiling). A target
     // may declare env.timeoutMs to raise its own ceiling without inflating it for everyone.
-    if (targetCfg.env.timeoutMs) tier.timeoutMs = Math.max(tier.timeoutMs, Number(targetCfg.env.timeoutMs));
+    // Validate first — a malformed value would coerce to NaN and disable the kill timer in
+    // sh() (NaN is falsy), letting a run hang indefinitely.
+    if (targetCfg.env.timeoutMs != null) {
+      const ov = Number(targetCfg.env.timeoutMs);
+      if (Number.isFinite(ov) && ov > 0) tier.timeoutMs = Math.max(tier.timeoutMs, ov);
+      else console.error(`[warn] ignoring invalid env.timeoutMs for ${targetId}: ${JSON.stringify(targetCfg.env.timeoutMs)}`);
+    }
     const input = fs.readFileSync(path.join(caseDir, 'input.md'), 'utf8');
 
     const pre = await adapter.preflight(targetCfg);

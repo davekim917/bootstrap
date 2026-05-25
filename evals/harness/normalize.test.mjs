@@ -25,26 +25,43 @@ test('mcpConfigObject: stdio→local, streamable_http→remote, empty→null, un
   assert.throws(() => mcpConfigObject(['nonexistent'], servers), /not resolvable/);
 });
 
-test('mcpConfigObject: remote carries resolved bearer/header; stdio carries env', () => {
+test('mcpConfigObject: remote resolves bearer + env_http_headers; stdio carries env + env_vars; disabled throws', () => {
   process.env.TEST_MCP_TOKEN = 'sekret';
+  process.env.TEST_HDR = 'hval';
+  process.env.TEST_EVAR = 'evalue';
   try {
     const servers = [
       {
         name: 'rem',
-        transport: { type: 'streamable_http', url: 'https://x', http_headers: { 'X-Api': 'lit' }, bearer_token_env_var: 'TEST_MCP_TOKEN' },
+        transport: {
+          type: 'streamable_http',
+          url: 'https://x',
+          http_headers: { 'X-Api': 'lit' },
+          env_http_headers: { 'X-Env': 'TEST_HDR' }, // header name → env var name
+          bearer_token_env_var: 'TEST_MCP_TOKEN',
+        },
       },
-      { name: 'loc', transport: { type: 'stdio', command: 'npx', args: ['-y', 'pkg'], env: { FOO: 'bar' } } },
+      { name: 'loc', transport: { type: 'stdio', command: 'npx', args: ['-y', 'pkg'], env: { FOO: 'bar' }, env_vars: ['TEST_EVAR'] } },
+      { name: 'off', enabled: false, disabled_reason: 'turned off', transport: { type: 'stdio', command: 'x' } },
     ];
     const cfg = mcpConfigObject(['rem', 'loc'], servers);
     assert.deepEqual(cfg.rem, {
       type: 'remote',
       url: 'https://x',
-      headers: { 'X-Api': 'lit', Authorization: 'Bearer sekret' },
+      headers: { 'X-Api': 'lit', 'X-Env': 'hval', Authorization: 'Bearer sekret' },
       enabled: true,
     });
-    assert.deepEqual(cfg.loc, { type: 'local', command: ['npx', '-y', 'pkg'], environment: { FOO: 'bar' }, enabled: true });
+    assert.deepEqual(cfg.loc, {
+      type: 'local',
+      command: ['npx', '-y', 'pkg'],
+      environment: { FOO: 'bar', TEST_EVAR: 'evalue' },
+      enabled: true,
+    });
+    assert.throws(() => mcpConfigObject(['off'], servers), /disabled/);
   } finally {
     delete process.env.TEST_MCP_TOKEN;
+    delete process.env.TEST_HDR;
+    delete process.env.TEST_EVAR;
   }
 });
 

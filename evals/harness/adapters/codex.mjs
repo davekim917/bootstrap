@@ -23,11 +23,13 @@ const adapter = {
   async preflight(target) {
     const missing = [];
     const { out, err } = await sh('codex', ['login', 'status'], { timeoutMs: 20000 });
-    // "logged in" alone also matches the failure text "Not logged in" — require the
-    // positive form AND the absence of the negative, so unauthenticated envs fail closed.
+    // Accept either status form across codex versions — "Logged in using ChatGPT" or
+    // "Authenticated: Yes" — and fail closed on the negatives ("Not logged in",
+    // "Authenticated: No"), so neither the substring-of-negative nor a format change misreads.
     const blob = out + err;
-    const authed = /\blogged in\b/i.test(blob) && !/\bnot logged in\b/i.test(blob);
-    if (!authed) missing.push('codex login (run `codex login`)');
+    const positive = /\blogged in\b/i.test(blob) || /\bauthenticated:\s*yes\b/i.test(blob);
+    const negative = /\bnot logged in\b/i.test(blob) || /\bauthenticated:\s*no\b/i.test(blob);
+    if (!positive || negative) missing.push('codex login (run `codex login`)');
     // MCP is ambient via ~/.codex/config.toml; verify each declared server against codex's
     // OWN resolved list (`codex mcp list --json`) rather than grepping the TOML — codex parses
     // its own config (every quoting/table form), and an exact name match avoids substring
@@ -41,11 +43,13 @@ const adapter = {
           stdio: ['ignore', 'pipe', 'ignore'],
         });
         const arr = JSON.parse(out);
-        names = Array.isArray(arr) ? arr.map((s) => s.name) : [];
+        // Only ENABLED servers count as available — a configured-but-disabled server would
+        // otherwise pass preflight and fail at runtime, misattributed as a model/run issue.
+        names = Array.isArray(arr) ? arr.filter((s) => s.enabled !== false).map((s) => s.name) : [];
       } catch {
         /* codex unavailable → all declared servers report missing below */
       }
-      for (const m of target.env.mcp) if (!names.includes(m)) missing.push(`mcp:${m} (not in \`codex mcp list\`)`);
+      for (const m of target.env.mcp) if (!names.includes(m)) missing.push(`mcp:${m} (not enabled in \`codex mcp list\`)`);
     }
     return { ok: missing.length === 0, missing, detail: missing.length ? 'env not provisionable' : 'ok' };
   },
