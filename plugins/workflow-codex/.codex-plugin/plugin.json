@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-workflow-codex",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Codex-native team workflow skills for brief, design, review, plan, build, qa, ship, debugging, drift checks, and autonomous delivery.",
   "author": {
     "name": "David Kim"
