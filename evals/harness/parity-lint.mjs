@@ -69,7 +69,10 @@ export function covered(reqNorm, codexNorms) {
 function countRefs(dir) {
   const r = path.join(dir, 'references');
   try {
-    return fs.readdirSync(r).filter((f) => f.endsWith('.md')).length;
+    // Count ALL reference artifacts, not just *.md — skills ship .json refs too
+    // (e.g. codex-review-output.schema.json, drift-acks-template.json); a dropped
+    // JSON asset must fail the restoration gate.
+    return fs.readdirSync(r, { withFileTypes: true }).filter((d) => d.isFile()).length;
   } catch {
     return 0;
   }

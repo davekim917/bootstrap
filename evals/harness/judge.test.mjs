@@ -21,3 +21,13 @@ test('extractJson: returns null on no/!invalid JSON', () => {
   assert.equal(extractJson('no json here'), null);
   assert.equal(extractJson('{ not valid json'), null);
 });
+
+test('extractJson: braces INSIDE string values do not break matching (the judge-quotes-code case)', () => {
+  // judge evidence quoting code with braces — naive brace counting would truncate this
+  assert.deepEqual(extractJson('{"evidence":"use tool_choice={\\"type\\":\\"tool\\"} here","n":2}'), {
+    evidence: 'use tool_choice={"type":"tool"} here',
+    n: 2,
+  });
+  // a closing/opening brace literally inside a string value
+  assert.deepEqual(extractJson('prefix {"a":"a } b { c"} suffix'), { a: 'a } b { c' });
+});

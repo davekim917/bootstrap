@@ -60,15 +60,28 @@ function buildPrompt(expect, transcript) {
 }
 
 export function extractJson(text) {
-  // strip code fences, then take the first balanced {...}
+  // strip code fences, then take the first balanced {...}. Brace matching is
+  // STRING-AWARE: braces inside JSON string values (common when the judge quotes
+  // code in evidence, e.g. "tool_choice={\"type\":...}") must not move the depth
+  // counter, or a valid reply gets truncated and mis-read as non-JSON.
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const body = fenced ? fenced[1] : text;
   const start = body.indexOf('{');
   if (start === -1) return null;
   let depth = 0;
+  let inStr = false;
+  let esc = false;
   for (let i = start; i < body.length; i++) {
-    if (body[i] === '{') depth++;
-    else if (body[i] === '}' && --depth === 0) {
+    const ch = body[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) {
       try {
         return JSON.parse(body.slice(start, i + 1));
       } catch {
