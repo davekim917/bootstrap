@@ -15,21 +15,20 @@ export const PLUGINS =
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins');
 
 /**
- * Resolve a skill dir from the bootstrap plugins tree.
- * `prefer` selects which plugin family to try first:
+ * Resolve a skill dir from the bootstrap plugins tree, STRICTLY within the requested
+ * family — no cross-family fallback. `prefer` selects the family:
  *   'workflow-codex' → the augmented codex/opencode port (the thing under test)
  *   'workflow'       → the original Claude skill (parity baseline)
- * Falls back to the other family if the preferred one lacks the skill, so a
- * skill present in only one tree still resolves.
+ * Strict on purpose: a silent fallback to the other family would let a Claude baseline
+ * (prefer='workflow') evaluate the PORT instead of the original, masking a parity
+ * regression — the baseline would "agree" with the port because it IS the port. A skill
+ * missing from the requested family returns null; callers surface it as a provisioning
+ * error rather than quietly comparing a port against itself.
  */
 export function resolveSkillDir(name, prefer = 'workflow-codex') {
-  const order =
-    prefer === 'workflow' ? ['workflow/skills', 'workflow-codex/skills'] : ['workflow-codex/skills', 'workflow/skills'];
-  for (const rel of order) {
-    const d = path.join(PLUGINS, rel, name);
-    if (fs.existsSync(path.join(d, 'SKILL.md'))) return d;
-  }
-  return null;
+  const family = prefer === 'workflow' ? 'workflow/skills' : 'workflow-codex/skills';
+  const d = path.join(PLUGINS, family, name);
+  return fs.existsSync(path.join(d, 'SKILL.md')) ? d : null;
 }
 
 /**
