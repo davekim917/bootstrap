@@ -1,0 +1,14 @@
+{
+  "id": "claude",
+  "adapter": "claude",
+  "model": "claude-sonnet-4-6",
+  "env": {
+    "auth": null,
+    "mcp": ["exa", "context7", "deepwiki"],
+    "skills": [],
+    "subagents": [],
+    "systemPromptAppend": null,
+    "repo": null,
+    "_note": "Parity BASELINE target. auth + MCP are ambient via Claude Code (~/.claude). Pin the baseline model deliberately; re-baseline is a reviewed event (DESIGN.md baseline policy). Default sonnet-4-6 for cost; switch to opus for a stricter baseline."
+  }
+}
