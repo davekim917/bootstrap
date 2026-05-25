@@ -207,10 +207,24 @@ const adapter = {
 export function normalizeFromDb(dbPath, stdoutFallback) {
   const t = emptyTranscript();
   const fallback = (stdoutFallback || '').trim();
+  // Bind to the ROOT session (the lead), not the session of the most-recent part:
+  // in swarm/parallel-review runs a child subagent can write last, and keying on the
+  // latest part would read finalOutput / tool calls / subagent accounting from the
+  // child's conversation instead of the lead's. The lead is the only parent-less
+  // session (children carry parent_id); pick the root with the most recent activity.
   let sid;
   try {
-    const r = sqliteJson(dbPath, 'SELECT session_id FROM part ORDER BY time_created DESC LIMIT 1');
-    sid = r[0]?.session_id;
+    const r = sqliteJson(
+      dbPath,
+      `SELECT s.id AS id FROM session s WHERE s.parent_id IS NULL OR s.parent_id = '' ` +
+        `ORDER BY (SELECT MAX(p.time_created) FROM part p WHERE p.session_id = s.id) DESC LIMIT 1`,
+    );
+    sid = r[0]?.id;
+    // Fallback for older/edge schemas: if no root resolved, use the latest part's session.
+    if (!sid) {
+      const r2 = sqliteJson(dbPath, 'SELECT session_id FROM part ORDER BY time_created DESC LIMIT 1');
+      sid = r2[0]?.session_id;
+    }
   } catch {
     t.finalOutput = fallback;
     return t;

@@ -1,11 +1,18 @@
 /** Shared adapter helpers. */
 import { spawn, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-/** Root of the bootstrap plugins tree (skills + agent defs live here). */
-export const PLUGINS = path.join(os.homedir(), 'plugins', 'bootstrap', 'plugins');
+/**
+ * Root of the bootstrap plugins tree (skills + agent defs live here). Resolved from
+ * THIS file's location (evals/harness/lib.mjs → ../../plugins = <repo>/plugins), so the
+ * harness works in any checkout (CI, /workspace/bootstrap, …), not just a ~/plugins/
+ * home layout. Override with BOOTSTRAP_PLUGINS_DIR if the harness is relocated.
+ */
+export const PLUGINS =
+  process.env.BOOTSTRAP_PLUGINS_DIR ||
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'plugins');
 
 /**
  * Resolve a skill dir from the bootstrap plugins tree.

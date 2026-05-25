@@ -170,42 +170,56 @@ async function runTarget(targetId, suiteDir, caseNames, args, outRoot) {
     const trials = [];
     for (let i = 0; i < tier.trials; i++) {
       const fixtureDir = materializeFixture(truth, outRoot);
-      let transcript, verdict, gates;
+      let transcript, hardVerdict, gates;
       let semantic = null; // {semanticPass, metrics, evidence} when rubric.judge present
+      let semanticPass = null; // null = judge did not run for this trial; else true/false
       try {
         // provisionSkill throws on a missing declared skill → caught as ENV_ERROR below.
         const loader = provisionSkill(fixtureDir, skillUnderTest, skillSource);
         const caseInput = loader + input.replaceAll('{{FIXTURE_DIR}}', fixtureDir);
         transcript = await adapter.run(targetCfg, { input: caseInput, fixtureDir, timeoutMs: tier.timeoutMs });
         assertConformant(transcript, targetCfg.adapter);
-        ({ verdict, gates } = scoreHardGates(truth.rubric, transcript));
+        ({ verdict: hardVerdict, gates } = scoreHardGates(truth.rubric, transcript));
         // Gate 2 (semantic) runs only when hard gates passed and the rubric asks for it.
-        if (verdict === VERDICT.PASS && truth.rubric?.judge) {
+        // It is NOT folded into the per-trial hard verdict — it aggregates as a pass-RATE.
+        if (hardVerdict === VERDICT.PASS && truth.rubric?.judge) {
           semantic = await judgeCase({ expect: truth, transcript, rubric: truth.rubric });
-          if (!semantic.semanticPass) verdict = VERDICT.FAIL;
+          semanticPass = !!semantic.semanticPass;
         }
       } catch (e) {
-        verdict = VERDICT.ENV_ERROR;
+        hardVerdict = VERDICT.ENV_ERROR;
         gates = [];
         transcript = { error: String(e && e.message ? e.message : e) };
       }
-      trials.push({ i, verdict, gates, semantic, error: transcript.error });
-      fs.writeFileSync(path.join(outRoot, `${targetId}.${caseName}.trial${i}.json`), JSON.stringify({ verdict, gates, semantic, transcript }, null, 2));
+      // Per-trial verdict = the deterministic hard-gate result; semanticPass is reported
+      // alongside (the semantic gate is a rate applied at aggregate, not a per-trial pass/fail).
+      trials.push({ i, verdict: hardVerdict, semanticPass, gates, semantic, error: transcript.error });
+      fs.writeFileSync(path.join(outRoot, `${targetId}.${caseName}.trial${i}.json`), JSON.stringify({ hardVerdict, semanticPass, gates, semantic, transcript }, null, 2));
     }
 
-    // Aggregate per tier: hard gates must PASS every trial; if a judge ran, the
-    // semantic pass-RATE must clear tier.semanticMin (stochastic-aware).
-    const passes = trials.filter((t) => t.verdict === VERDICT.PASS).length;
+    // Aggregate per tier (per evals/README.md): HARD gates must PASS every trial; the
+    // SEMANTIC pass-RATE — over the trials where the judge actually ran — must clear
+    // tier.semanticMin (stochastic-aware; a single judge miss does not fail the run).
     const envErr = trials.some((t) => t.verdict === VERDICT.ENV_ERROR);
+    const hardFail = trials.some((t) => t.verdict === VERDICT.FAIL);
     const timeouts = trials.filter((t) => t.verdict === VERDICT.TIMEOUT).length;
+    const hardPasses = trials.filter((t) => t.verdict === VERDICT.PASS).length;
+    const judged = trials.filter((t) => t.semanticPass !== null);
+    const semPasses = judged.filter((t) => t.semanticPass === true).length;
+    const semRate = judged.length ? semPasses / judged.length : 1;
+    const semOk = tier.semanticMin == null || semRate >= tier.semanticMin;
     let agg;
     if (envErr) agg = VERDICT.ENV_ERROR;
-    else if (passes === tier.trials) agg = VERDICT.PASS;
-    else if (timeouts > 0 && passes + timeouts === tier.trials) agg = VERDICT.TIMEOUT;
+    else if (hardFail) agg = VERDICT.FAIL; // hard gates must pass every trial
+    else if (timeouts > 0 && hardPasses + timeouts === tier.trials) agg = VERDICT.TIMEOUT;
+    else if (hardPasses === tier.trials) agg = semOk ? VERDICT.PASS : VERDICT.FAIL;
     else agg = VERDICT.FAIL;
     if (agg !== VERDICT.PASS) failed = true;
-    results[caseName] = { agg, passes, trials: tier.trials };
-    console.log(report(caseName, tierName, agg, trials, provenance, `${passes}/${tier.trials} trials PASS`));
+    results[caseName] = { agg, hardPasses, semRate, trials: tier.trials };
+    const note =
+      `hard ${hardPasses}/${tier.trials}` +
+      (judged.length ? `, semantic ${semPasses}/${judged.length}${tier.semanticMin == null ? '' : ` (min ${tier.semanticMin})`}` : '');
+    console.log(report(caseName, tierName, agg, trials, provenance, note));
   }
   return { results, failed };
 }
@@ -237,7 +251,8 @@ function report(caseName, tier, verdict, trials, provenance, note) {
   lines.push(`   ${provenance.adapter}/${provenance.model}`);
   for (const t of trials) {
     const gateStr = (t.gates || []).map((g) => `${g.pass ? '✓' : '✗'} ${g.id}`).join('  ');
-    lines.push(`   trial ${t.i}: ${t.verdict}  ${gateStr}${t.error ? `  err=${t.error}` : ''}`);
+    const sem = t.semanticPass == null ? '' : `  sem:${t.semanticPass ? '✓' : '✗'}`;
+    lines.push(`   trial ${t.i}: ${t.verdict}${sem}  ${gateStr}${t.error ? `  err=${t.error}` : ''}`);
   }
   return lines.join('\n');
 }
