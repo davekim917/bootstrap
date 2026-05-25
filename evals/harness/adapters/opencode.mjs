@@ -293,7 +293,7 @@ export function normalizeFromDb(dbPath, stdoutFallback) {
  * skipped (no window to place). Classic interval sweep: sort by start, overlap iff some window
  * starts before the running max-end. Fewer than 2 placeable windows ⇒ not parallel.
  */
-export function childWindowsOverlap(dbPath, childIds) {
+function childWindowsOverlap(dbPath, childIds) {
   if (!childIds || childIds.length < 2) return false;
   const windows = [];
   for (const id of childIds) {
