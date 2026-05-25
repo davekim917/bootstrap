@@ -22,8 +22,13 @@ const adapter = {
   async preflight(target) {
     const missing = [];
     const { out, err } = await sh('codex', ['login', 'status'], { timeoutMs: 20000 });
-    if (!/logged in/i.test(out + err)) missing.push('codex login (run `codex login`)');
-    // MCP is ambient via ~/.codex/config.toml; declared mcp must appear there.
+    // "logged in" alone also matches the failure text "Not logged in" — require the
+    // positive form AND the absence of the negative, so unauthenticated envs fail closed.
+    const blob = out + err;
+    const authed = /\blogged in\b/i.test(blob) && !/\bnot logged in\b/i.test(blob);
+    if (!authed) missing.push('codex login (run `codex login`)');
+    // MCP is ambient via ~/.codex/config.toml; declared mcp must appear there as an exact
+    // table name (a substring check lets `exa` match `mcp_servers.exact` and misses quoted keys).
     if (target.env.mcp?.length) {
       let toml = '';
       try {
@@ -31,7 +36,11 @@ const adapter = {
       } catch {
         /* none */
       }
-      for (const m of target.env.mcp) if (!toml.includes(`mcp_servers.${m}`)) missing.push(`mcp:${m} (not in ~/.codex/config.toml)`);
+      for (const m of target.env.mcp) {
+        const me = m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(`^\\s*\\[mcp_servers\\.(?:"${me}"|${me})\\]`, 'm');
+        if (!re.test(toml)) missing.push(`mcp:${m} (not in ~/.codex/config.toml)`);
+      }
     }
     return { ok: missing.length === 0, missing, detail: missing.length ? 'env not provisionable' : 'ok' };
   },

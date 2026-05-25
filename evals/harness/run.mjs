@@ -152,7 +152,16 @@ async function runTarget(targetId, suiteDir, caseNames, args, outRoot) {
     const truth = loadJson(path.join(caseDir, 'truth.json'));
     const tierName = args.tier ?? truth.rubric?.tier ?? 'smoke';
     const tier = { ...TIERS[tierName] };
-    if (args.trials) tier.trials = Number(args.trials);
+    if (args.trials !== undefined) {
+      // Validate: a positive integer. `--trials 0` would otherwise run zero iterations and
+      // the aggregate (hardPasses === tier.trials → 0 === 0) would PASS without executing.
+      const n = Number(args.trials);
+      if (!Number.isInteger(n) || n < 1) {
+        console.error(`--trials must be a positive integer (got ${JSON.stringify(args.trials)})`);
+        process.exit(2);
+      }
+      tier.trials = n;
+    }
     // Per-target timeout override: runtimes differ in speed (e.g. opencode/Kimi review
     // swarms run ~2× slower than codex and time out at the default tier ceiling). A target
     // may declare env.timeoutMs to raise its own ceiling without inflating it for everyone.

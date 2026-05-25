@@ -93,41 +93,75 @@ function resolveAgentMd(name) {
  * Read MCP server defs out of ~/.codex/config.toml (the host's single source of
  * truth for exa/context7/deepwiki — and where the exa apiKey lives). Sourcing from
  * there keeps secrets OUT of committed harness source: they flow into an ephemeral
- * per-run opencode.json that is deleted after the run. Minimal targeted TOML reader
- * for `[mcp_servers.<name>]` blocks (url | command + args); not a general parser.
+ * per-run opencode.json that is deleted after the run. Targeted reader for the codex
+ * `[mcp_servers.<name>]` config shape — not a general TOML parser, but it handles the
+ * variations codex actually emits: quoted or bare table keys, single- or double-quoted
+ * string arrays, and nested `[mcp_servers.<name>.env|http_headers]` tables.
  */
+function unquoteToml(s) {
+  return s.trim().replace(/\s*#.*$/, '').trim().replace(/^["']|["']$/g, '');
+}
+function parseTomlArray(v) {
+  // [ 'a', "b" ] → ['a','b'] — TOML arrays use single OR double quotes (invalid JSON).
+  const inner = v.trim().replace(/\s*#.*$/, '').trim().replace(/^\[/, '').replace(/\]$/, '');
+  if (!inner.trim()) return [];
+  return inner
+    .split(',')
+    .map((e) => e.trim().replace(/^["']|["']$/g, ''))
+    .filter((e) => e.length);
+}
 function readCodexMcpServers() {
-  let toml = '';
   try {
-    toml = fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8');
+    return parseCodexMcpToml(fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8'));
   } catch {
     return {};
   }
+}
+
+/** Parse the `[mcp_servers.*]` blocks of a codex config.toml string → {name: {url|command,args,env,headers,...}}. Exported for tests. */
+export function parseCodexMcpToml(toml) {
+  // Unquoted keys are [A-Za-z0-9_-]; quoted keys (in "...") may contain anything incl. dots.
+  const sectionRe = /^\[mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))\]\s*(?:#.*)?$/;
+  const nestedRe = /^\[mcp_servers\.(?:"([^"]+)"|([A-Za-z0-9_-]+))\.(env|http_headers|env_http_headers)\]\s*(?:#.*)?$/;
+  const subKey = { env: 'env', http_headers: 'headers', env_http_headers: 'env_headers' };
   const out = {};
-  let cur = null;
+  let cur = null; // current server name
+  let sub = null; // nested sub-table key ('env' | 'headers' | 'env_headers') or null
   for (const raw of toml.split('\n')) {
     const line = raw.trim();
-    const sec = line.match(/^\[mcp_servers\.([A-Za-z0-9_-]+)\]/);
+    if (!line || line.startsWith('#')) continue;
+    const nested = line.match(nestedRe); // check nested BEFORE the plain section
+    if (nested) {
+      cur = nested[1] ?? nested[2];
+      sub = subKey[nested[3]];
+      out[cur] = out[cur] || {};
+      out[cur][sub] = out[cur][sub] || {};
+      continue;
+    }
+    const sec = line.match(sectionRe);
     if (sec) {
-      cur = sec[1];
-      out[cur] = {};
+      cur = sec[1] ?? sec[2];
+      sub = null;
+      out[cur] = out[cur] || {};
       continue;
     }
     if (line.startsWith('[')) {
       cur = null;
+      sub = null;
       continue;
     }
     if (!cur) continue;
-    const kv = line.match(/^(\w+)\s*=\s*(.+)$/);
+    // Keys may be bare ([A-Za-z0-9_.-], so header names like `X-Tenant` work) or quoted.
+    const kv = line.match(/^(?:"([^"]+)"|([A-Za-z0-9_.-]+))\s*=\s*(.+)$/);
     if (!kv) continue;
-    const [, key, valRaw] = kv;
-    if (key === 'url' || key === 'command') out[cur][key] = valRaw.replace(/^["']|["']$/g, '');
-    else if (key === 'args') {
-      try {
-        out[cur].args = JSON.parse(valRaw);
-      } catch {
-        /* leave unset */
-      }
+    const key = kv[1] ?? kv[2];
+    const valRaw = kv[3];
+    if (sub) {
+      out[cur][sub][key] = unquoteToml(valRaw); // nested env/header entry
+    } else if (key === 'args') {
+      out[cur].args = parseTomlArray(valRaw);
+    } else if (key === 'url' || key === 'command' || key === 'bearer_token_env_var') {
+      out[cur][key] = unquoteToml(valRaw);
     }
   }
   return out;
@@ -135,19 +169,32 @@ function readCodexMcpServers() {
 
 /**
  * Build the opencode `mcp` config object for target.env.mcp, in OpenCode's schema
- * (remote: {type:'remote',url,enabled}; local: {type:'local',command[],enabled}) —
- * the same mapping NanoClaw's mcpServersToOpenCodeConfig produces. Returns null when
- * no MCP is requested; throws if a requested server can't be resolved (→ ENV_ERROR,
- * never a silent half-provisioned env).
+ * (remote: {type:'remote',url,headers?,enabled}; local: {type:'local',command[],environment?,enabled})
+ * — the mapping NanoClaw's mcpServersToOpenCodeConfig produces. Carries auth/env across so
+ * a server that needs credentials isn't silently provisioned unauthenticated: remote
+ * http_headers (literal) + bearer_token_env_var / env_http_headers (resolved from this
+ * process's env to a value, so no opencode-side env substitution is assumed) → headers;
+ * local nested `env` table → environment. Returns null when no MCP is requested; throws if
+ * a requested server can't be resolved (→ ENV_ERROR, never a silent half-provisioned env).
  */
 export function mcpConfigObject(mcpNames, defs = readCodexMcpServers()) {
   if (!mcpNames?.length) return null;
   const out = {};
   for (const name of mcpNames) {
     const d = defs[name];
-    if (d?.url) out[name] = { type: 'remote', url: d.url, enabled: true };
-    else if (d?.command) out[name] = { type: 'local', command: [d.command, ...(d.args ?? [])], enabled: true };
-    else throw new Error(`mcp server "${name}" not resolvable from ~/.codex/config.toml`);
+    if (d?.url) {
+      const headers = { ...(d.headers || {}) }; // literal http_headers
+      for (const [h, envVar] of Object.entries(d.env_headers || {})) {
+        if (process.env[envVar]) headers[h] = process.env[envVar]; // env_http_headers: header → env var name
+      }
+      if (d.bearer_token_env_var && process.env[d.bearer_token_env_var]) {
+        headers['Authorization'] = `Bearer ${process.env[d.bearer_token_env_var]}`;
+      }
+      out[name] = { type: 'remote', url: d.url, ...(Object.keys(headers).length ? { headers } : {}), enabled: true };
+    } else if (d?.command) {
+      const env = d.env && Object.keys(d.env).length ? { environment: d.env } : {};
+      out[name] = { type: 'local', command: [d.command, ...(d.args ?? [])], ...env, enabled: true };
+    } else throw new Error(`mcp server "${name}" not resolvable from ~/.codex/config.toml`);
   }
   return out;
 }
