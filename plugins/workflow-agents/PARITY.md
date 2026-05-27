@@ -1,11 +1,11 @@
-# workflow-codex parity contract
+# workflow-agents parity contract
 
-`workflow-codex/` is the Codex/OpenCode port of the Claude `workflow/` plugin. The
+`workflow-agents/` is the Codex/OpenCode port of the Claude `workflow/` plugin. The
 **substance is identical**; only the orchestration primitives differ. This file is the
 contract for keeping the two in parity — read it before editing any skill here, and
 before adding a Claude skill that needs a port.
 
-> OpenCode reads these same skills (the OpenCode adapter resolves `workflow-codex/skills`
+> OpenCode reads these same skills (the OpenCode adapter resolves `workflow-agents/skills`
 > first). There is no separate `workflow-opencode/` — one port serves both runtimes via
 > per-runtime sections.
 
@@ -22,8 +22,8 @@ gutting, and the parity-lint will fail it.
 ## How to port a skill (verbatim-baseline + translate)
 
 1. **Verbatim baseline.** Copy the Claude original wholesale:
-   `cp workflow/skills/<s>/SKILL.md workflow-codex/skills/<s>/SKILL.md` and
-   `cp -r workflow/skills/<s>/references workflow-codex/skills/<s>/` (if any). This
+   `cp workflow/skills/<s>/SKILL.md workflow-agents/skills/<s>/SKILL.md` and
+   `cp -r workflow/skills/<s>/references workflow-agents/skills/<s>/` (if any). This
    guarantees substance fidelity and restores the reference files.
 2. **Frontmatter.** Ensure `name`, `version`, `description` are present (gutted ports lost
    `version`). Keep the same `name`; keep `description` unless it names a Claude-only tool.

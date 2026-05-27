@@ -1,8 +1,8 @@
 {
-  "name": "bootstrap-workflow-codex",
+  "name": "bootstrap-workflow-agents",
   "source": {
     "source": "local",
-    "path": "./plugins/workflow-codex"
+    "path": "./plugins/workflow-agents"
   },
   "policy": {
     "installation": "AVAILABLE",

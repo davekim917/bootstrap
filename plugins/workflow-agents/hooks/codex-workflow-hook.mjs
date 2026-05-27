@@ -8,7 +8,7 @@ const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const SHELL_TOOLS = new Set(['exec_command', 'local_shell_call', 'shell', 'Bash']);
 const EDIT_TOOLS = new Set(['apply_patch', 'Edit', 'MultiEdit', 'Write', 'edit', 'write_file', 'create_file']);
 const MANAGED_MARKERS = [
-  'managed by bootstrap-workflow-codex agent-sync',
+  'managed by bootstrap-workflow-agents agent-sync',
   'managed by nanoclaw codex-sync',
 ];
 
@@ -189,16 +189,16 @@ function checkDestructiveCommand(input) {
   if (!command) return;
 
   if (/\b(eval|unlink|shred|truncate)\b/.test(command)) {
-    block('BLOCKED: bootstrap-workflow-codex destructive command guard blocked eval/unlink/shred/truncate.');
+    block('BLOCKED: bootstrap-workflow-agents destructive command guard blocked eval/unlink/shred/truncate.');
   }
   if (/\bfind\b[\s\S]*\s(?:-delete|-exec\s+rm\b)/.test(command)) {
-    block('BLOCKED: bootstrap-workflow-codex destructive command guard blocked find deletion.');
+    block('BLOCKED: bootstrap-workflow-agents destructive command guard blocked find deletion.');
   }
   if (/\bxargs\b[\s\S]*\brm\b/.test(command)) {
-    block('BLOCKED: bootstrap-workflow-codex destructive command guard blocked xargs rm.');
+    block('BLOCKED: bootstrap-workflow-agents destructive command guard blocked xargs rm.');
   }
   if (/\bgit\s+(?:reset\s+--hard|clean\s+-[^\n]*[fd])\b/.test(command)) {
-    block('BLOCKED: bootstrap-workflow-codex destructive command guard blocked destructive git cleanup.');
+    block('BLOCKED: bootstrap-workflow-agents destructive command guard blocked destructive git cleanup.');
   }
 
   for (const segment of splitSegments(command)) {
@@ -211,10 +211,10 @@ function checkDestructiveCommand(input) {
 
     const protectedTarget = targets.find(isProtectedRmTarget);
     if (protectedTarget) {
-      block(`BLOCKED: bootstrap-workflow-codex destructive command guard blocked rm targeting protected path: ${protectedTarget}`);
+      block(`BLOCKED: bootstrap-workflow-agents destructive command guard blocked rm targeting protected path: ${protectedTarget}`);
     }
 
-    block('BLOCKED: bootstrap-workflow-codex destructive command guard blocks rm outside ephemeral directories. Use a recoverable trash command or ask the user.');
+    block('BLOCKED: bootstrap-workflow-agents destructive command guard blocks rm outside ephemeral directories. Use a recoverable trash command or ask the user.');
   }
 }
 
@@ -278,7 +278,7 @@ function checkFileProtection(input) {
 
   for (const filePath of getFilePaths(input)) {
     if (isProtectedPath(filePath)) {
-      block(`BLOCKED: bootstrap-workflow-codex file protection guard blocked protected path: ${filePath}`);
+      block(`BLOCKED: bootstrap-workflow-agents file protection guard blocked protected path: ${filePath}`);
     }
   }
 }
@@ -350,7 +350,7 @@ function main() {
     trackEditedFiles(input);
   } catch (error) {
     if (input.hook_event_name === 'PreToolUse') {
-      process.stderr.write(`[bootstrap-workflow-codex] hook error; failing open: ${error?.message || error}\n`);
+      process.stderr.write(`[bootstrap-workflow-agents] hook error; failing open: ${error?.message || error}\n`);
     }
   }
 }

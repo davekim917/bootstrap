@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Gate 1 — static structure lint for an augmented workflow-codex skill.
+ * Gate 1 — static structure lint for an augmented workflow-agents skill.
  *
  * Verifies the skill was *translated*, not gutted: valid frontmatter, every
  * referenced file exists, the per-runtime dispatch section names its target
@@ -9,7 +9,7 @@
  *
  * Usage:  node harness/lint.mjs <suite>
  *   reads  evals/suites/<suite>/anchors.json  (which names the skill + anchors)
- *   checks plugins/workflow-codex/skills/<skill>/SKILL.md
+ *   checks plugins/workflow-agents/skills/<skill>/SKILL.md
  * Exit:   0 = pass, 1 = fail.
  */
 import fs from 'node:fs';
@@ -33,7 +33,7 @@ if (!fs.existsSync(anchorsPath)) {
 }
 const anchors = JSON.parse(fs.readFileSync(anchorsPath, 'utf8'));
 const skill = anchors.skill || suite;
-const skillDir = path.join(BOOTSTRAP_ROOT, 'plugins', 'workflow-codex', 'skills', skill);
+const skillDir = path.join(BOOTSTRAP_ROOT, 'plugins', 'workflow-agents', 'skills', skill);
 const skillMd = path.join(skillDir, 'SKILL.md');
 
 const failures = [];

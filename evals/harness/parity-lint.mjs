@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Structural parity-lint — Gate 1 for the workflow-codex rollout.
+ * Structural parity-lint — Gate 1 for the workflow-agents rollout.
  *
  *   node parity-lint.mjs <skill> [<skill> ...]
  *   node parity-lint.mjs --all          (every skill present in BOTH trees)
  *
  * Encodes the rollout contract ("augmented, not gutted; behavior unchanged; ONLY
  * orchestration translated") as deterministic checks comparing the augmented
- * `workflow-codex/skills/<skill>` against the Claude original `workflow/skills/<skill>`:
+ * `workflow-agents/skills/<skill>` against the Claude original `workflow/skills/<skill>`:
  *
  *   1. SUBSTANCE PRESERVED — every NON-orchestration heading in the Claude skill
  *      appears (verbatim or as a prefix-equivalent) in the codex skill. Orchestration
@@ -34,7 +34,7 @@ import path from 'node:path';
 import { PLUGINS } from './lib.mjs';
 
 const CLAUDE_ROOT = path.join(PLUGINS, 'workflow', 'skills');
-const CODEX_ROOT = path.join(PLUGINS, 'workflow-codex', 'skills');
+const CODEX_ROOT = path.join(PLUGINS, 'workflow-agents', 'skills');
 
 // Heading text matching any of these is "orchestration" — exempt from must-preserve
 // (it gets translated to native delegation, often renamed or folded into Dispatch-by-Runtime).

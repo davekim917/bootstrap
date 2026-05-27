@@ -75,7 +75,7 @@ function materializeFixture(truth, outRoot) {
  * removes the discovery confound from parity). Returns a loader instruction to
  * prepend to the input, or '' when the suite declares no skill (self-contained
  * cases like tool-smoke). `prefer` routes the baseline (claude → original
- * `workflow/`) vs the ports (codex/opencode → augmented `workflow-codex/`).
+ * `workflow/`) vs the ports (codex/opencode → augmented `workflow-agents/`).
  * Throws if a declared skill is absent from the tree (→ ENV_ERROR, never a
  * silent behavioral FAIL).
  */
@@ -143,7 +143,7 @@ async function runTarget(targetId, suiteDir, caseNames, args, outRoot) {
   // anchors.json are self-contained (no skill provisioned).
   const anchorsPath = path.join(suiteDir, 'anchors.json');
   const skillUnderTest = fs.existsSync(anchorsPath) ? loadJson(anchorsPath).skill : null;
-  const skillSource = targetCfg.env.skillSource ?? (targetCfg.adapter === 'claude' ? 'workflow' : 'workflow-codex');
+  const skillSource = targetCfg.env.skillSource ?? (targetCfg.adapter === 'claude' ? 'workflow' : 'workflow-agents');
 
   const results = {};
   let failed = false;

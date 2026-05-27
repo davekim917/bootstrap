@@ -9,7 +9,7 @@ Built for my own use, shared in case it's useful to others.
 | Plugin | What it provides |
 |--------|-----------------|
 | `bootstrap-workflow` | Claude Code team workflow skills (brief → design → review → plan → build → qa → ship), safety/quality hooks, specialized agents |
-| `bootstrap-workflow-codex` | Codex-native team workflow skills with Codex plugin metadata and no Claude team/hook dependencies |
+| `bootstrap-workflow-agents` | Codex-native team workflow skills with Codex plugin metadata and no Claude team/hook dependencies |
 | `bootstrap-domain` | Provider-agnostic domain expertise skills for software engineering, data, analytics, AI, and finance |
 | `bootstrap-commands` | Codebase analysis commands that generate CLAUDE.md, project skills, and AI dev setup |
 | `bootstrap-tools` | Provider-agnostic tool integration skills for CLI tools (Cortex Code, and more) |
@@ -56,10 +56,10 @@ Then install or enable the Codex-compatible plugins from that Codex marketplace.
   },
   "plugins": [
     {
-      "name": "bootstrap-workflow-codex",
+      "name": "bootstrap-workflow-agents",
       "source": {
         "source": "local",
-        "path": "./plugins/workflow-codex"
+        "path": "./plugins/workflow-agents"
       },
       "policy": {
         "installation": "AVAILABLE",
@@ -95,29 +95,29 @@ Then install or enable the Codex-compatible plugins from that Codex marketplace.
 }
 ```
 
-This marketplace is checked in at `.agents/plugins/marketplace.json`. The workflow-only object is also kept at `plugins/workflow-codex/marketplace-entry.json` for copy/paste into another Codex marketplace.
+This marketplace is checked in at `.agents/plugins/marketplace.json`. The workflow-only object is also kept at `plugins/workflow-agents/marketplace-entry.json` for copy/paste into another Codex marketplace.
 
 The Codex marketplace uses the same marketplace name, `davekim917-bootstrap`, as the Claude marketplace. The platform-specific plugin entries are what enforce separation.
 
 Codex workflow skills must be installed through the Codex plugin, not copied into `.agents/skills` as standalone mirrors. This keeps same-named skills such as `team-build` and `team-qa` unambiguous:
 
 - Claude sees `plugins/workflow` through `.claude-plugin/marketplace.json`.
-- Codex sees `plugins/workflow-codex` through `.agents/plugins/marketplace.json`.
-- Host or container sync jobs should not mirror `plugins/workflow-codex/skills/*` into `~/.agents/skills` or `/home/node/.agents/skills`.
+- Codex sees `plugins/workflow-agents` through `.agents/plugins/marketplace.json`.
+- Host or container sync jobs should not mirror `plugins/workflow-agents/skills/*` into `~/.agents/skills` or `/home/node/.agents/skills`.
 
 For NanoClaw container agents, install the Codex plugin in the host/per-group Codex home before starting the container. NanoClaw preserves Codex `[plugins.*]` config and mounts the Codex plugin cache into the container, so Codex primary and Codex peer sessions load the plugin natively instead of relying on copied workflow skills.
 
 When NanoClaw manages `~/plugins/bootstrap`, its host checks pull the repo, refresh local Codex marketplace cache entries, and run Codex marketplace upgrades for Git-backed installs. That keeps version bumps visible to host Codex sessions and to containers that mount the Codex plugin cache.
 
-Codex subagents are currently shipped as a managed TOML bundle under `plugins/workflow-codex/agents/` because Codex supports subagents but plugin manifests do not yet expose an `agents` component. The bundle is generated from `plugins/workflow/agents/*.md`:
+Codex subagents are currently shipped as a managed TOML bundle under `plugins/workflow-agents/agents/` because Codex supports subagents but plugin manifests do not yet expose an `agents` component. The bundle is generated from `plugins/workflow/agents/*.md`:
 
 ```
-node plugins/workflow-codex/scripts/sync-codex-agents.mjs
-node plugins/workflow-codex/scripts/sync-codex-agents.mjs --check
-node plugins/workflow-codex/scripts/sync-codex-agents.mjs --sync-home
+node plugins/workflow-agents/scripts/sync-codex-agents.mjs
+node plugins/workflow-agents/scripts/sync-codex-agents.mjs --check
+node plugins/workflow-agents/scripts/sync-codex-agents.mjs --sync-home
 ```
 
-The Codex workflow `SessionStart` hook syncs those managed TOML files into `CODEX_HOME/agents` or `~/.codex/agents`, overwriting only files already marked as managed by `bootstrap-workflow-codex agent-sync` or `nanoclaw codex-sync`. If the upstream Claude agent files change, run the generator and commit the updated TOML bundle so plugin upgrades carry the new agents.
+The Codex workflow `SessionStart` hook syncs those managed TOML files into `CODEX_HOME/agents` or `~/.codex/agents`, overwriting only files already marked as managed by `bootstrap-workflow-agents agent-sync` or `nanoclaw codex-sync`. If the upstream Claude agent files change, run the generator and commit the updated TOML bundle so plugin upgrades carry the new agents.
 
 ### Prerequisites
 
@@ -136,9 +136,9 @@ Codex workflow:
 
 Claude workflow: team-* skills, 6 agents, safety/quality hooks.
 
-## bootstrap-workflow-codex
+## bootstrap-workflow-agents
 
-Codex workflow: Codex-native versions of the workflow skills with shared conventions under `plugins/workflow-codex/skills/shared/`.
+Codex workflow: Codex-native versions of the workflow skills with shared conventions under `plugins/workflow-agents/skills/shared/`.
 
 The Codex plugin wires a Codex-specific hook set for safe surfaces only: payload-shape logging, destructive command blocking, protected-file blocking, post-edit tracking, and managed subagent sync. It intentionally does not port Claude-only `TeamCreate` or `AskUserQuestion` gates.
 
@@ -151,7 +151,7 @@ BOOTSTRAP_CODEX_HOOK_LOG=full codex
 
 ### Workflow Skills
 
-The Claude and Codex workflow plugins share the core workflow names. Codex installs the Codex-native bodies from `plugins/workflow-codex`; Claude installs the Claude-native bodies from `plugins/workflow`.
+The Claude and Codex workflow plugins share the core workflow names. Codex installs the Codex-native bodies from `plugins/workflow-agents`; Claude installs the Claude-native bodies from `plugins/workflow`.
 
 | Skill | Purpose |
 |-------|---------|
@@ -254,7 +254,7 @@ bootstrap/
 │   │   ├── hooks/              # safety, quality, lifecycle hooks
 │   │   ├── agents/             # 6 specialized subagents
 │   │   └── tests/              # workflow validation specs
-│   ├── workflow-codex/         # bootstrap-workflow-codex plugin
+│   ├── workflow-agents/         # bootstrap-workflow-agents plugin
 │   │   ├── .codex-plugin/plugin.json
 │   │   ├── agents/             # generated Codex subagent TOML bundle
 │   │   ├── hooks/              # Codex-specific hook manifest and hook runner
