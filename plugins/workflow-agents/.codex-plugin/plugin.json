@@ -1,7 +1,7 @@
 {
-  "name": "bootstrap-workflow-codex",
+  "name": "bootstrap-workflow-agents",
   "version": "0.2.0",
-  "description": "Codex-native team workflow skills for brief, design, review, plan, build, qa, ship, debugging, drift checks, and autonomous delivery.",
+  "description": "Team workflow skills (brief, design, review, plan, build, QA, ship, debug, drift, autonomous delivery) for Codex, OpenCode, and other agent runtimes.",
   "author": {
     "name": "David Kim"
   },
@@ -9,6 +9,8 @@
   "license": "MIT",
   "keywords": [
     "codex",
+    "opencode",
+    "agents",
     "workflow",
     "team",
     "skills",
@@ -18,9 +20,9 @@
   "skills": "./skills/",
   "hooks": "./hooks/workflow-hooks.json",
   "interface": {
-    "displayName": "Bootstrap Workflow for Codex",
-    "shortDescription": "Codex-native delivery workflow skills",
-    "longDescription": "Structured Codex workflow skills for turning ambiguous work into scoped briefs, designs, review findings, implementation plans, coordinated builds, QA passes, and shipping evidence.",
+    "displayName": "Bootstrap Agent Workflow",
+    "shortDescription": "Cross-runtime delivery workflow skills",
+    "longDescription": "Structured team workflow skills for turning ambiguous work into scoped briefs, designs, review findings, implementation plans, coordinated builds, QA passes, and shipping evidence — for Codex, OpenCode, and other agent runtimes.",
     "developerName": "David Kim",
     "category": "Coding",
     "capabilities": [

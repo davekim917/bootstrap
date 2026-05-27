@@ -16,18 +16,18 @@ test('resolveSkillDir: strict to requested family — no cross-family fallback (
     fs.writeFileSync(path.join(d, 'SKILL.md'), '# x');
     return d;
   };
-  const portOnly = mk('workflow-codex', 'only-in-port');
+  const portOnly = mk('workflow-agents', 'only-in-port');
   const bothW = mk('workflow', 'in-both');
-  const bothC = mk('workflow-codex', 'in-both');
+  const bothC = mk('workflow-agents', 'in-both');
   process.env.BOOTSTRAP_PLUGINS_DIR = root;
   try {
     const { resolveSkillDir } = await import('./lib.mjs?strict=' + Date.now());
     // The masking hazard: a baseline asking for the ORIGINAL must NOT silently get the port.
     assert.equal(resolveSkillDir('only-in-port', 'workflow'), null, 'baseline must not fall back to the port');
-    assert.equal(resolveSkillDir('only-in-port', 'workflow-codex'), portOnly, 'port resolves in its own family');
+    assert.equal(resolveSkillDir('only-in-port', 'workflow-agents'), portOnly, 'port resolves in its own family');
     assert.equal(resolveSkillDir('in-both', 'workflow'), bothW, 'baseline resolves the original');
-    assert.equal(resolveSkillDir('in-both', 'workflow-codex'), bothC, 'port resolves the augmented copy');
-    assert.equal(resolveSkillDir('does-not-exist', 'workflow-codex'), null, 'truly-missing skill ⇒ null');
+    assert.equal(resolveSkillDir('in-both', 'workflow-agents'), bothC, 'port resolves the augmented copy');
+    assert.equal(resolveSkillDir('does-not-exist', 'workflow-agents'), null, 'truly-missing skill ⇒ null');
   } finally {
     delete process.env.BOOTSTRAP_PLUGINS_DIR;
     fs.rmSync(root, { recursive: true, force: true });

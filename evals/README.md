@@ -20,14 +20,14 @@ A/B'd against another, or regression-tracked over time.
 node harness/run.mjs --suite <suite> [--case <case>] (--target <t> | --compare a,b,c) \
      [--tier smoke|done|release] [--trials N] [--out <dir>]
 node harness/lint.mjs <suite>           # Gate-1 static lint (suite anchors.json)
-node harness/parity-lint.mjs --all      # structural parity-lint (workflow-codex vs Claude)
+node harness/parity-lint.mjs --all      # structural parity-lint (workflow-agents vs Claude)
 node --test                             # unit tests for the pure scoring/normalize logic
 ```
 
 The skill-under-test is declared by the suite (`anchors.json` `skill`) and provisioned
 from the **working tree** into each run's fixture, so every runtime evaluates the current
 branch's content through one mechanism. Baseline (claude) draws the original `workflow/`
-skill; ports (codex/opencode) draw the augmented `workflow-codex/` skill.
+skill; ports (codex/opencode) draw the augmented `workflow-agents/` skill.
 
 ## Two gates (ordered)
 

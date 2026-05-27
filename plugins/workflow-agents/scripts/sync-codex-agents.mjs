@@ -47,7 +47,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: node plugins/workflow-codex/scripts/sync-codex-agents.mjs [options]
+  console.log(`Usage: node plugins/workflow-agents/scripts/sync-codex-agents.mjs [options]
 
 Generate and sync Codex agent TOML from plugins/workflow/agents/*.md.
 
@@ -123,7 +123,7 @@ Project instruction lookup order:
 
 `;
   const lines = [
-    '# managed by bootstrap-workflow-codex agent-sync',
+    '# managed by bootstrap-workflow-agents agent-sync',
     `# source: ${sourceRelativePath}`,
     `# source_sha256: ${sourceHash}`,
     '',
@@ -182,7 +182,7 @@ function writeBundle(outputs, bundleDir, check) {
 }
 
 function isManaged(content) {
-  return content.includes('managed by bootstrap-workflow-codex agent-sync') ||
+  return content.includes('managed by bootstrap-workflow-agents agent-sync') ||
     content.includes('managed by nanoclaw codex-sync');
 }
 

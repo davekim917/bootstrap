@@ -17,7 +17,7 @@ export const PLUGINS =
 /**
  * Resolve a skill dir from the bootstrap plugins tree, STRICTLY within the requested
  * family — no cross-family fallback. `prefer` selects the family:
- *   'workflow-codex' → the augmented codex/opencode port (the thing under test)
+ *   'workflow-agents' → the augmented codex/opencode port (the thing under test)
  *   'workflow'       → the original Claude skill (parity baseline)
  * Strict on purpose: a silent fallback to the other family would let a Claude baseline
  * (prefer='workflow') evaluate the PORT instead of the original, masking a parity
@@ -25,8 +25,8 @@ export const PLUGINS =
  * missing from the requested family returns null; callers surface it as a provisioning
  * error rather than quietly comparing a port against itself.
  */
-export function resolveSkillDir(name, prefer = 'workflow-codex') {
-  const family = prefer === 'workflow' ? 'workflow/skills' : 'workflow-codex/skills';
+export function resolveSkillDir(name, prefer = 'workflow-agents') {
+  const family = prefer === 'workflow' ? 'workflow/skills' : 'workflow-agents/skills';
   const d = path.join(PLUGINS, family, name);
   return fs.existsSync(path.join(d, 'SKILL.md')) ? d : null;
 }
