@@ -1,0 +1,10 @@
+#!/bin/bash
+# Bootstrap parity drift gate (committed; enabled via `git config core.hooksPath scripts/hooks`).
+#
+# Blocks commits that leave generated/vendored artifacts out of sync with their
+# single source — the enforcement half of the develop-once / deploy-everywhere
+# structure (shared guard cores → vendored; Claude agents → generated codex
+# TOMLs; Claude skills → substance-gated workflow-agents skills).
+#
+# Bypass (rare, deliberate): git commit --no-verify
+exec node "$(git rev-parse --show-toplevel)/scripts/check-parity.mjs"
