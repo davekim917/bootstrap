@@ -27,6 +27,7 @@ import {
   consumeGateApproval,
   IS_NANOCLAW,
 } from './block-destructive-core';
+import { checkEditProtection, EDIT_TOOLS } from './file-protection-core';
 
 // Minimal structural types for the opencode plugin contract (avoids a hard dep
 // on @opencode-ai/plugin, which isn't installed in this repo). Matches the
@@ -87,6 +88,20 @@ export function gateBashOrThrow(command: string): void {
 export const NanoclawGuard = async () => {
   return {
     'tool.execute.before': async (input: ToolBeforeInput, output: ToolBeforeOutput) => {
+      // File-protection: block edits to protected paths (.env, lockfiles, .git,
+      // terraform), at parity with the Claude file-protection hook. Shared core.
+      if (EDIT_TOOLS.has(input.tool)) {
+        if (process.env.SKIP_FILE_PROTECTION !== '1') {
+          const blocked = checkEditProtection(input.tool, (output.args ?? {}) as Record<string, unknown>);
+          if (blocked) {
+            throw new Error(
+              `BLOCKED: file-protection — '${blocked}' is protected from automated edits. Set SKIP_FILE_PROTECTION=1 to bypass.`,
+            );
+          }
+        }
+        return;
+      }
+      // Destructive-command gate (bash).
       if (input.tool !== 'bash') return;
       gateBashOrThrow(bashCommandOf(output.args));
     },

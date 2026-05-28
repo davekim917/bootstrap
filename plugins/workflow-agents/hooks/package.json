@@ -1,0 +1,16 @@
+{
+    "name": "bootstrap-workflow-agents-hooks",
+    "version": "1.0.0",
+    "description": "Codex/OpenCode workflow hooks. Hosts the vendored shared destructive-guard core (source: plugins/workflow/hooks/guards/block-destructive-core.ts) + per-runtime thin adapters.",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "check": "bun run --bun tsc --noEmit"
+    },
+    "dependencies": {
+        "unbash": "^2.2.0"
+    },
+    "devDependencies": {
+        "@types/bun": "latest"
+    }
+}
