@@ -1,11 +1,24 @@
 #!/usr/bin/env node
+// Codex plugin SessionStart + PostToolUse hook (node runtime, wired via
+// workflow-hooks.json). Owns the non-guard responsibilities only:
+//   - SessionStart: sync managed agent TOMLs into ~/.codex/agents
+//   - PostToolUse:  track edited files (telemetry) + optional payload logging
+//
+// The destructive-command + file-protection GUARD is NOT here. It lives in the
+// shared cross-runtime core (guards/block-destructive-core.ts +
+// guards/file-protection-core.ts) behind the thin `codex-guard.ts` adapter,
+// which workflow-hooks.json wires to PreToolUse (via bun). That is the single
+// source of truth shared with the Claude and OpenCode guards — this file used
+// to hand-roll a weaker parallel copy (string/token matching instead of the
+// unbash AST, missing the gated-infra tier), which has been removed to keep the
+// guard develop-once. EDIT_TOOLS / getFilePaths below are retained ONLY for
+// edit telemetry (trackEditedFiles); they are not a protection surface.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SHELL_TOOLS = new Set(['exec_command', 'local_shell_call', 'shell', 'Bash']);
 const EDIT_TOOLS = new Set(['apply_patch', 'Edit', 'MultiEdit', 'Write', 'edit', 'write_file', 'create_file']);
 const MANAGED_MARKERS = [
   'managed by bootstrap-workflow-agents agent-sync',
@@ -55,190 +68,6 @@ function maybeLogPayload(input) {
   appendJsonl(path.join(logDir, `${now.toISOString().slice(0, 10)}.jsonl`), entry);
 }
 
-function commandFromInput(toolInput = {}) {
-  if (typeof toolInput.command === 'string') return toolInput.command;
-  if (Array.isArray(toolInput.command)) return toolInput.command.join(' ');
-  if (typeof toolInput.cmd === 'string') return toolInput.cmd;
-  if (Array.isArray(toolInput.cmd)) return toolInput.cmd.join(' ');
-  return '';
-}
-
-function shellWords(segment) {
-  const words = [];
-  let current = '';
-  let quote = null;
-  let escaped = false;
-
-  for (const ch of segment) {
-    if (escaped) {
-      current += ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (ch === quote) quote = null;
-      else current += ch;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      if (current) {
-        words.push(current);
-        current = '';
-      }
-      continue;
-    }
-    current += ch;
-  }
-
-  if (current) words.push(current);
-  return words;
-}
-
-function splitSegments(command) {
-  const segments = [];
-  let current = '';
-  let quote = null;
-  let escaped = false;
-
-  for (let i = 0; i < command.length; i += 1) {
-    const ch = command[i];
-    const next = command[i + 1];
-    if (escaped) {
-      current += ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === '\\') {
-      current += ch;
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      current += ch;
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      current += ch;
-      quote = ch;
-      continue;
-    }
-    if (ch === ';' || ch === '|' || (ch === '&' && next === '&') || (ch === '|' && next === '|')) {
-      if (current.trim()) segments.push(current.trim());
-      current = '';
-      if ((ch === '&' && next === '&') || (ch === '|' && next === '|')) i += 1;
-      continue;
-    }
-    current += ch;
-  }
-
-  if (current.trim()) segments.push(current.trim());
-  return segments;
-}
-
-function stripWrappers(tokens) {
-  const wrappers = new Set(['sudo', 'command', 'builtin', 'nohup', 'time', 'nice']);
-  let index = 0;
-  while (index < tokens.length && wrappers.has(tokens[index])) index += 1;
-  if (tokens[index] === 'env') {
-    index += 1;
-    while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index])) index += 1;
-  }
-  return tokens.slice(index);
-}
-
-function isSafeRmTarget(target) {
-  return [
-    /(^|\/)tmp(\/|$)/,
-    /(^|\/)node_modules(\/|$)/,
-    /(^|\/)\.next(\/|$)/,
-    /(^|\/)dist(\/|$)/,
-    /(^|\/)build(\/|$)/,
-    /(^|\/)\.cache(\/|$)/,
-    /(^|\/)coverage(\/|$)/,
-    /(^|\/)__pycache__(\/|$)/,
-    /(^|\/)\.pytest_cache(\/|$)/,
-  ].some((rx) => rx.test(target));
-}
-
-function isProtectedRmTarget(target) {
-  if (!target) return false;
-  if (target === '/' || target === '~' || target === '$HOME' || target === os.homedir()) return true;
-  return /(^|\/)(\.git|\.ssh|\.gnupg|\.aws|\.kube|\.docker|\.claude|\.codex|\.agents)(\/|$)/.test(target) ||
-    /(^|\/)(Documents|Desktop|Downloads|Library|Pictures|Music|Movies)(\/|$)/.test(target);
-}
-
-function block(reason) {
-  process.stderr.write(`${reason}\n`);
-  process.exit(2);
-}
-
-function checkDestructiveCommand(input) {
-  if (!SHELL_TOOLS.has(input.tool_name)) return;
-  if (process.env.SKIP_BOOTSTRAP_DESTRUCTIVE_GUARD === '1') return;
-
-  const command = commandFromInput(input.tool_input || {});
-  if (!command) return;
-
-  if (/\b(eval|unlink|shred|truncate)\b/.test(command)) {
-    block('BLOCKED: bootstrap-workflow-agents destructive command guard blocked eval/unlink/shred/truncate.');
-  }
-  if (/\bfind\b[\s\S]*\s(?:-delete|-exec\s+rm\b)/.test(command)) {
-    block('BLOCKED: bootstrap-workflow-agents destructive command guard blocked find deletion.');
-  }
-  if (/\bxargs\b[\s\S]*\brm\b/.test(command)) {
-    block('BLOCKED: bootstrap-workflow-agents destructive command guard blocked xargs rm.');
-  }
-  if (/\bgit\s+(?:reset\s+--hard|clean\s+-[^\n]*[fd])\b/.test(command)) {
-    block('BLOCKED: bootstrap-workflow-agents destructive command guard blocked destructive git cleanup.');
-  }
-
-  for (const segment of splitSegments(command)) {
-    const tokens = stripWrappers(shellWords(segment));
-    if (tokens[0] !== 'rm') continue;
-
-    const targets = tokens.slice(1).filter((token) => !token.startsWith('-'));
-    if (targets.length === 0) continue;
-    if (targets.every(isSafeRmTarget)) continue;
-
-    const protectedTarget = targets.find(isProtectedRmTarget);
-    if (protectedTarget) {
-      block(`BLOCKED: bootstrap-workflow-agents destructive command guard blocked rm targeting protected path: ${protectedTarget}`);
-    }
-
-    block('BLOCKED: bootstrap-workflow-agents destructive command guard blocks rm outside ephemeral directories. Use a recoverable trash command or ask the user.');
-  }
-}
-
-const ALLOWED_FILES = ['.env.example', '.env.sample', '.env.template', '.gitignore', '.dockerignore'];
-const PROTECTED_SEGMENTS = [
-  '.git/',
-  '.git\\',
-  'package-lock.json',
-  'yarn.lock',
-  'pnpm-lock.yaml',
-  '.env',
-  '.env.local',
-  '.env.production',
-  '.env.development',
-];
-const PROTECTED_GLOBS = [/^infra\/terraform\//, /^terraform\//];
-
-function isProtectedPath(filePath) {
-  if (!filePath) return false;
-  if (ALLOWED_FILES.some((allowed) => filePath.endsWith(allowed))) return false;
-  if (PROTECTED_SEGMENTS.some((segment) => filePath.includes(segment))) return true;
-  return PROTECTED_GLOBS.some((rx) => rx.test(filePath));
-}
-
 function filePathsFromPatch(text) {
   if (typeof text !== 'string') return [];
   const paths = [];
@@ -270,17 +99,6 @@ function getFilePaths(input) {
   paths.push(...filePathsFromPatch(toolInput.patch || toolInput.diff || toolInput.input));
 
   return [...new Set(paths.filter(Boolean))];
-}
-
-function checkFileProtection(input) {
-  if (process.env.SKIP_BOOTSTRAP_FILE_PROTECTION === '1') return;
-  if (!EDIT_TOOLS.has(input.tool_name)) return;
-
-  for (const filePath of getFilePaths(input)) {
-    if (isProtectedPath(filePath)) {
-      block(`BLOCKED: bootstrap-workflow-agents file protection guard blocked protected path: ${filePath}`);
-    }
-  }
 }
 
 function trackEditedFiles(input) {
@@ -343,15 +161,9 @@ function main() {
 
   try {
     if (input.hook_event_name === 'SessionStart') syncManagedAgents();
-    if (input.hook_event_name === 'PreToolUse') {
-      checkDestructiveCommand(input);
-      checkFileProtection(input);
-    }
     trackEditedFiles(input);
   } catch (error) {
-    if (input.hook_event_name === 'PreToolUse') {
-      process.stderr.write(`[bootstrap-workflow-agents] hook error; failing open: ${error?.message || error}\n`);
-    }
+    process.stderr.write(`[bootstrap-workflow-agents] hook error: ${error?.message || error}\n`);
   }
 }
 

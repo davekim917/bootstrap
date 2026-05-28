@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash -lc 'for root in \"${BOOTSTRAP_WORKFLOW_CODEX_ROOT:-}\" \"${CODEX_PLUGIN_ROOT:-}\" \"$HOME/.codex/plugins/cache/davekim917-bootstrap/bootstrap-workflow-agents\"/* \"$HOME/plugins/bootstrap/plugins/workflow-agents\"; do if [ -n \"$root\" ] && [ -f \"$root/hooks/codex-workflow-hook.mjs\" ]; then exec node \"$root/hooks/codex-workflow-hook.mjs\"; fi; done; exit 0'",
+            "command": "bash -lc 'for root in \"${BOOTSTRAP_WORKFLOW_CODEX_ROOT:-}\" \"${CODEX_PLUGIN_ROOT:-}\" \"$HOME/.codex/plugins/cache/davekim917-bootstrap/bootstrap-workflow-agents\"/* \"$HOME/plugins/bootstrap/plugins/workflow-agents\"; do if [ -n \"$root\" ] && [ -f \"$root/hooks/codex-guard.ts\" ]; then exec bun \"$root/hooks/codex-guard.ts\" PreToolUse; fi; done; exit 0'",
             "timeout": 5
           }
         ]
