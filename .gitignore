@@ -3,3 +3,5 @@ node_modules/
 bun.lock
 hooks/state/
 *.tmp
+.gitnexus
+.claude/skills/gitnexus/
