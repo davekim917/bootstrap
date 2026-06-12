@@ -110,5 +110,5 @@ Present the summary to the user with the save path.
 
 ## Model Tier
 
-**Tier:** Opus (current session)
+**Tier:** Current session model (inherited)
 **Rationale:** Learning extraction requires judgment — identifying what matters vs. what's noise, connecting findings to actionable changes, and being honest about process failures.

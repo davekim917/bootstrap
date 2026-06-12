@@ -1,6 +1,6 @@
 # managed by bootstrap-workflow-agents agent-sync
 # source: plugins/workflow/agents/cto-advisor.md
-# source_sha256: ef76cf6a2f5ce5dd846f3d4bee324df4c41d12bdb368a27f171911399dd423a1
+# source_sha256: 1c9a4aa7b919953772851c118e438a65a51d191919a4dfc213c156f6c362b615
 
 name = "cto-advisor"
 description = '''MUST BE USED for technology strategy, architectural decisions, and executive-level technical guidance. ALWAYS invoke for tech stack evaluations, strategic planning, and cross-team coordination decisions. Use PROACTIVELY for high-level technical leadership tasks.
@@ -12,7 +12,6 @@ Examples:
 - "Assess technical risks" → cto-advisor
 - "Design team structure" → cto-advisor
 - "Make vs buy decision" → cto-advisor'''
-model_reasoning_effort = "high"
 developer_instructions = '''## Codex Runtime Adapter
 
 You are running as a Codex subagent. Use Codex tools and tool names. If inherited source text mentions Claude-only tools or paths, translate them to the equivalent Codex operation.

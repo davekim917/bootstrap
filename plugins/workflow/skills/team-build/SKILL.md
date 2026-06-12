@@ -250,7 +250,6 @@ and reconcile before spawning.
 ```
 Task(
   subagent_type: "general-purpose",
-  model: "sonnet",
   team_name: "[feature-name]-build",
   name: "builder-[group-name]",
   run_in_background: true,
@@ -378,7 +377,6 @@ Spawn its builder immediately:
 ```
 Task(
   subagent_type: "general-purpose",
-  model: "sonnet",
   team_name: "[feature-name]-build",
   name: "builder-[group-c-name]",
   run_in_background: true,

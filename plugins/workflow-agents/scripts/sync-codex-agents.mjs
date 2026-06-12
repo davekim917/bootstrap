@@ -11,12 +11,6 @@ const REPO_ROOT = path.resolve(PLUGIN_ROOT, '..', '..');
 const DEFAULT_SOURCE_DIR = path.join(REPO_ROOT, 'plugins', 'workflow', 'agents');
 const DEFAULT_BUNDLE_DIR = path.join(PLUGIN_ROOT, 'agents');
 
-const MODEL_TO_REASONING = new Map([
-  ['opus', 'high'],
-  ['sonnet', 'medium'],
-  ['haiku', 'low'],
-]);
-
 function parseArgs(argv) {
   const args = {
     check: false,
@@ -73,7 +67,6 @@ function parseFrontmatter(source, filePath) {
 
   const name = frontmatter.match(/^name:\s*(.+)$/m)?.[1]?.trim();
   const descriptionRaw = frontmatter.match(/^description:\s*(.+)$/m)?.[1]?.trim();
-  const model = frontmatter.match(/^model:\s*(.+)$/m)?.[1]?.trim();
 
   if (!name) throw new Error(`${filePath}: missing name`);
   if (!descriptionRaw) throw new Error(`${filePath}: missing description`);
@@ -81,7 +74,6 @@ function parseFrontmatter(source, filePath) {
   return {
     name: unquote(name),
     description: unquote(descriptionRaw),
-    model: model ? unquote(model) : undefined,
     body,
   };
 }
@@ -131,14 +123,13 @@ Project instruction lookup order:
     `description = ${tomlMultiline(agent.description)}`,
   ];
 
-  const reasoning = MODEL_TO_REASONING.get(agent.model || '');
-  if (reasoning) lines.push(`model_reasoning_effort = ${JSON.stringify(reasoning)}`);
-
+  // No model or reasoning-effort settings are emitted — Codex subagents inherit
+  // the parent session's model configuration, mirroring the Claude agents.
   lines.push(`developer_instructions = ${tomlMultiline(codexInstructions + agent.body)}`, '');
   return lines.join('\n');
 }
 
-function generateBundle(sourceDir, bundleDir) {
+function generateBundle(sourceDir) {
   if (!fs.existsSync(sourceDir)) throw new Error(`Source agents directory not found: ${sourceDir}`);
   const outputs = new Map();
 
@@ -215,7 +206,7 @@ function syncHome(bundleDir, targetDir, force) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const outputs = generateBundle(args.sourceDir, args.bundleDir);
+  const outputs = generateBundle(args.sourceDir);
   const stale = writeBundle(outputs, args.bundleDir, args.check);
 
   if (args.check && stale.length > 0) {

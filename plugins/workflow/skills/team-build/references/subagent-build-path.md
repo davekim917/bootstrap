@@ -21,7 +21,6 @@ For each task group (in dependency order, or any order if all independent):
 ```
 Task(
   subagent_type: "general-purpose",
-  model: "sonnet",
   prompt: [builder prompt from references/builder-prompt-template.md]
 )
 ```

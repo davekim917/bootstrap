@@ -170,5 +170,5 @@ Rollback from /team-ship is rare — it means /team-qa missed something or the m
 
 ## Model Tier
 
-- **Opus** — destructive operations (branch deletion, merge) require careful judgment
+- **Current session model** — destructive operations (branch deletion, merge) require careful judgment
 - This skill is always invoked directly by the user, never delegated to builders

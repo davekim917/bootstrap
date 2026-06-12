@@ -428,10 +428,10 @@ exactly as written above on every runtime.
 ### Claude (reference — for parity, not used on this runtime)
 
 On Claude this skill spawns **Agent A** via the Task tool —
-`Task(subagent_type: "general-purpose", model: "sonnet", prompt: "<Agent A prompt>")` — and
+`Task(subagent_type: "general-purpose", prompt: "<Agent A prompt>")` (no `model` override — inherits the session model) — and
 **Agent B** via Bash as a cross-model Codex extractor (`codex exec -s read-only --config
 model_reasoning_effort="xhigh" "<Agent B prompt>" </dev/null`). If `codex` is unavailable, Agent B
 falls back to a same-runtime Task subagent:
-`Task(subagent_type: "general-purpose", model: "sonnet", prompt: "<Agent B prompt + reduced-diversity note>")`.
+`Task(subagent_type: "general-purpose", prompt: "<Agent B prompt + reduced-diversity note>")`.
 The Codex/OpenCode mapping above is the near-parity equivalent: same two-extractor cross-model
 design, same isolated contexts, same fallback-with-logging when only one model is available.

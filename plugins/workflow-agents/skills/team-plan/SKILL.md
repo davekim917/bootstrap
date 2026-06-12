@@ -439,8 +439,8 @@ Accepts rollback from `/team-build` when the plan is under-specified or structur
 
 ## Model Tier
 
-**Tier:** Opus (current session)
-**Rationale:** Task decomposition requires architectural judgment — identifying seams, catching file conflicts, writing complete specs. Opus-level reasoning ensures the plan is detailed enough that builders never have to guess.
+**Tier:** Current session model (inherited)
+**Rationale:** Task decomposition requires architectural judgment — identifying seams, catching file conflicts, writing complete specs. Frontier-tier reasoning ensures the plan is detailed enough that builders never have to guess.
 
 ---
 

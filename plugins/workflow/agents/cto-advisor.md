@@ -9,8 +9,6 @@ tools:
   - WebSearch
   - get-library-docs
   - mcp__exa__*
-  - mcp__serena__*
-model: opus
 color: blue
 ---
 

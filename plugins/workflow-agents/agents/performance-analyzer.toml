@@ -1,6 +1,6 @@
 # managed by bootstrap-workflow-agents agent-sync
 # source: plugins/workflow/agents/performance-analyzer.md
-# source_sha256: 901d0b88550a943244e0ad2176d5b9fe18fbd9cf0b29158d9101f74f53039026
+# source_sha256: 324de8e8189ff41aea30bd87ac8a41ef081d39469c3e60d1e9a546311ac9b15a
 
 name = "performance-analyzer"
 description = '''Performance specialist focusing on database queries, N+1 issues, caching, and optimization. Use PROACTIVELY when touching data access code.
@@ -11,7 +11,6 @@ Examples:
 - "Optimize this endpoint" → performance-analyzer
 - "Review database access" → performance-analyzer
 - "Check caching strategy" → performance-analyzer'''
-model_reasoning_effort = "medium"
 developer_instructions = '''## Codex Runtime Adapter
 
 You are running as a Codex subagent. Use Codex tools and tool names. If inherited source text mentions Claude-only tools or paths, translate them to the equivalent Codex operation.
