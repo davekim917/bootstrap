@@ -168,7 +168,7 @@ Skip Validator CD only if the diff is pure docs/config with no code changes. Ski
 #### Validator A: Style Audit
 
 **Context:** Changed files + `CLAUDE.md` conventions + language defaults
-**Spawn:** Task tool (`model: "sonnet"`) with the verbatim prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-a-style-audit-prompt). The prompt encodes the pre-existing-vs-introduced classification that the lead's Step 3 classification step depends on — don't paraphrase.
+**Spawn:** Task tool (no `model` override — inherits the session model) with the verbatim prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-a-style-audit-prompt). The prompt encodes the pre-existing-vs-introduced classification that the lead's Step 3 classification step depends on — don't paraphrase.
 
 ---
 
@@ -295,7 +295,7 @@ If the codex binary is present but auth is missing (no `~/.codex/auth.json`), sk
 
 Do not block QA on Codex unavailability.
 
-**Invocation:** Spawn a Task subagent (`subagent_type: general-purpose`, `model: sonnet`) with the verbatim subagent prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-e-codex-adversarial-subagent-prompt). The subagent shells out to `codex exec --yolo`, captures the JSON output, and returns it verbatim — it does not do its own adversarial reasoning. The reference file documents the indirection (why direct CLI, not the slash command; why `--yolo`) and the four-step procedure.
+**Invocation:** Spawn a Task subagent (`subagent_type: general-purpose`, no `model` override — inherits the session model) with the verbatim subagent prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-e-codex-adversarial-subagent-prompt). The subagent shells out to `codex exec --yolo`, captures the JSON output, and returns it verbatim — it does not do its own adversarial reasoning. The reference file documents the indirection (why direct CLI, not the slash command; why `--yolo`) and the four-step procedure.
 
 Fill in `<BASE_BRANCH>` and `<REPO_ROOT>` for the project before spawning.
 
@@ -470,12 +470,12 @@ When QA clears with no MUST-FIX items remaining, add to the "all clear" gate mes
 
 | Role | Tier | Rationale |
 |------|------|-----------|
-| Lead (current session, orchestrates) | Opus (current session) | Denoise runs inline, finding classification requires judgment, gate decisions need care |
-| Validator A: Style Audit | Sonnet | Mechanical: convention matching against a loaded skill |
+| Lead (current session, orchestrates) | Current session model | Denoise runs inline, finding classification requires judgment, gate decisions need care |
+| Validator A: Style Audit | Inherited (session model) | Mechanical: convention matching against a loaded skill — no pin; runs on whatever the session runs |
 | Validator CD: Code Review Swarm | `/review-swarm` (team agents, model per reviewer) | Delegated to review-swarm's own model selection. Covers correctness, security, performance, architecture, and domain idioms with research backing and reviewer collaboration. Replaces the isolated specialist subagents (security-reviewer, performance-analyzer) previously used as Validators C and D. |
 | Validator E: Codex Adversarial | Codex (OpenAI) | Cross-model adversarial pass — runs via `codex exec --yolo` with the verbatim prompt from `references/codex-adversarial-prompt.md` |
 
-Reserve Opus for denoise (inline), finding classification, and the final gate judgment.
+Keep denoise (inline), finding classification, and the final gate judgment on the lead — that is the judgment-heavy work.
 
 **Token cost:** Validator CD is ~5-15× the old C+D per run (team agents read full files, run
 research tools, exchange collaboration messages). Worth it post-build; skip for trivial

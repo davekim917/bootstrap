@@ -129,6 +129,6 @@ These are not valid reasons to skip systematic debugging:
 
 ## Model Tier
 
-- **Sonnet** (builders): Debug process is applied when tests fail during `/team-build`
-- **Opus** (direct invocation): When user explicitly calls `/team-debug`
+- **Builders** (via `/team-build`): Debug process is applied when tests fail — builders inherit the session model
+- **Direct invocation**: When user explicitly calls `/team-debug`, it runs in the current session
 - **Phase 4.5 escalation** always goes to the user, regardless of model tier

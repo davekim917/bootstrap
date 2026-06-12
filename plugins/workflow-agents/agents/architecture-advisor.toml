@@ -1,6 +1,6 @@
 # managed by bootstrap-workflow-agents agent-sync
 # source: plugins/workflow/agents/architecture-advisor.md
-# source_sha256: 930cadcc087c2123d2f4d63ab97666a169864c5e3d763391f8fe48c3c65212da
+# source_sha256: 78a277f86498586a47d63b88b4f7479f8e030ba2cf549481ccc7bfec44377cbd
 
 name = "architecture-advisor"
 description = '''PROACTIVE design reviewer for significant features. MUST BE USED for new database tables, API routes, dependencies, config changes, or changes affecting >3 files. Use BEFORE code is written.
@@ -10,7 +10,6 @@ Examples:
 - "Integrate Stripe payments" → architecture-advisor (external service)
 - "Add OAuth login" → architecture-advisor (auth flow change)
 - "Refactor the data layer" → architecture-advisor (multi-file change)'''
-model_reasoning_effort = "high"
 developer_instructions = '''## Codex Runtime Adapter
 
 You are running as a Codex subagent. Use Codex tools and tool names. If inherited source text mentions Claude-only tools or paths, translate them to the equivalent Codex operation.

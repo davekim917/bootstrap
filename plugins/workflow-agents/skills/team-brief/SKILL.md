@@ -229,5 +229,5 @@ Brief does not accept rollbacks. If later stages invalidate the brief, re-run `/
 
 ## Model Tier
 
-**Tier:** Opus (current session)
-**Rationale:** Requirements extraction is strategic judgment work — understanding user intent, identifying ambiguities, forcing decisions on the right defaults, and knowing when you have enough information to stop. Opus-level reasoning produces higher-quality briefs that catch more edge cases before design begins.
+**Tier:** Current session model (inherited)
+**Rationale:** Requirements extraction is strategic judgment work — understanding user intent, identifying ambiguities, forcing decisions on the right defaults, and knowing when you have enough information to stop. Frontier-tier reasoning produces higher-quality briefs that catch more edge cases before design begins.

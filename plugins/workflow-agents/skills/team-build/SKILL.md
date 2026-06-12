@@ -658,8 +658,9 @@ On Claude this skill uses:
 - `setup_team` + `register_tasks`: `TeamCreate(team_name: "<feature-name>-build", description: …)`
   then one `TaskCreate(subject, description, activeForm)` per group, wiring sequential dependencies
   with `TaskUpdate(addBlockedBy: [...])`. The `description` is the complete task-group spec.
-- `spawn_builders`: parallel background `Task(subagent_type: "general-purpose", model: "sonnet",
+- `spawn_builders`: parallel background `Task(subagent_type: "general-purpose",
   team_name: "<feature-name>-build", name: "builder-<group>", run_in_background: true, prompt: …)`
+  — no `model` override; builders inherit the session model —
   calls — one per independent group; the same call spawns sequential and fix-agent builders.
 - `report_status` / `mark_complete`: builders report via `SendMessage`; the lead validates and calls
   `TaskUpdate(status: "completed")`.

@@ -76,12 +76,12 @@ codex_available=$(command -v codex >/dev/null 2>&1 && echo "yes" || echo "no")
 ```
 
 If `codex_available` is "no":
-- Agent B will use Claude (general-purpose subagent, model: sonnet) instead of Codex
-- Log to the user: `⚠ Codex CLI unavailable — Agent B falling back to Claude Sonnet. Cross-model diversity reduced for this run.`
+- Agent B will use Claude (general-purpose subagent, inherits the session model) instead of Codex
+- Log to the user: `⚠ Codex CLI unavailable — Agent B falling back to Claude. Cross-model diversity reduced for this run.`
 
 ### Step 2: Spawn Two Independent Claim Extractors in Parallel
 
-Launch both agents simultaneously — Agent A via Task tool (Claude Sonnet), Agent B via
+Launch both agents simultaneously — Agent A via Task tool (Claude, inherits the session model), Agent B via
 Bash (`codex exec -s read-only`).
 
 **Context discipline:** Give each agent ONLY the two documents. No CLAUDE.md. No project skills.
@@ -200,7 +200,6 @@ If `codex_available` is "no", use the Task tool instead:
 ```
 Task(
   subagent_type: "general-purpose",
-  model: "sonnet",
   prompt: "You are performing an independent drift analysis between two documents.
 
 Read the source of truth using the Read tool: .claude/tmp/drift-sot.md
@@ -390,6 +389,6 @@ claims. Do not read unrelated files.
 
 | Role | Tier | Fallback | Rationale |
 |------|------|----------|-----------|
-| Team lead (merge + verdict) | Opus (current session) | N/A | Judgment-heavy: resolving DISPUTED verdicts, classifying severity, making the final call |
-| Agent A (extractor) | Sonnet (general-purpose) | N/A | Mechanical extraction + Claude perspective |
-| Agent B (extractor) | Codex (OpenAI, read-only sandbox; default reasoning effort) | Claude Sonnet general-purpose (if `codex` unavailable) | Mechanical extraction + different training data, different blind spots |
+| Team lead (merge + verdict) | Current session model | N/A | Judgment-heavy: resolving DISPUTED verdicts, classifying severity, making the final call |
+| Agent A (extractor) | Inherited session model (general-purpose) | N/A | Mechanical extraction + Claude perspective |
+| Agent B (extractor) | Codex (OpenAI, read-only sandbox; default reasoning effort) | Claude general-purpose, inherits session model (if `codex` unavailable) | Mechanical extraction + different training data, different blind spots |

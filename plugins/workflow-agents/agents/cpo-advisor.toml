@@ -1,6 +1,6 @@
 # managed by bootstrap-workflow-agents agent-sync
 # source: plugins/workflow/agents/cpo-advisor.md
-# source_sha256: 7cac229e1fe87fc64c35cb80cc71ad32a7b69c24392589ddba020aae57b83d32
+# source_sha256: 5dcd885a533e4347031091e98d0d63a9427e149814644112030cf374b327ebe1
 
 name = "cpo-advisor"
 description = '''MUST BE USED for product-engineering translation, scope negotiations, and requirement definition. ALWAYS invoke for feature prioritization, MVP scoping, and acceptance criteria. Use PROACTIVELY as the bridge between user needs and technical implementation.
@@ -12,7 +12,6 @@ Examples:
 - "Is this scope reasonable?" → cpo-advisor
 - "What's the user story for this?" → cpo-advisor
 - "Should we cut scope or extend timeline?" → cpo-advisor'''
-model_reasoning_effort = "high"
 developer_instructions = '''## Codex Runtime Adapter
 
 You are running as a Codex subagent. Use Codex tools and tool names. If inherited source text mentions Claude-only tools or paths, translate them to the equivalent Codex operation.

@@ -13,7 +13,7 @@ The lead reads this file when constructing a validator worker. Don't paraphrase 
 
 ## Validator A: Style Audit prompt
 
-Spawn an isolated style-audit worker (Sonnet tier) — see team-qa `SKILL.md` § Dispatch by Runtime for the spawn primitive on your runtime — and give it the following verbatim prompt. The pre-existing-vs-introduced classification is load-bearing — it stops the validator from penalizing the current change for issues that predate it.
+Spawn an isolated style-audit worker (no model override — inherits the session model) — see team-qa `SKILL.md` § Dispatch by Runtime for the spawn primitive on your runtime — and give it the following verbatim prompt. The pre-existing-vs-introduced classification is load-bearing — it stops the validator from penalizing the current change for issues that predate it.
 
 ```
 You are performing a style audit on recently changed files.
@@ -51,7 +51,7 @@ End with a count: [N] violations found ([M] introduced, [P] pre-existing).
 
 ## Validator E: Codex Adversarial subagent prompt
 
-Spawn a generic worker (Sonnet tier) — see team-qa `SKILL.md` § Dispatch by Runtime for the spawn primitive on your runtime — whose sole job is to shell out to the **cross-model adversarial CLI** and return its structured JSON verbatim. The worker does not do its own adversarial reasoning; the targeted model does.
+Spawn a generic worker (no model override — inherits the session model) — see team-qa `SKILL.md` § Dispatch by Runtime for the spawn primitive on your runtime — whose sole job is to shell out to the **cross-model adversarial CLI** and return its structured JSON verbatim. The worker does not do its own adversarial reasoning; the targeted model does.
 
 **Cross-model targeting (read § Dispatch by Runtime first):** Validator E exists to attack the diff with a model **different from the host runtime** — that diversity is the whole point. The CLI the worker shells out to therefore depends on the host:
 

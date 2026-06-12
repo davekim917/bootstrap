@@ -8,8 +8,6 @@ tools:
   - Bash
   - WebSearch
   - mcp__exa__*
-  - mcp__serena__*
-model: opus
 color: cyan
 ---
 

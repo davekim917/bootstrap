@@ -171,7 +171,7 @@ is declined, or the diff has no code changes.
 #### Validator A: Style Audit
 
 **Context:** Changed files + `AGENTS.md/CLAUDE.md` conventions + language defaults
-**Spawn:** an isolated style-audit worker (Sonnet tier) with the **verbatim** prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-a-style-audit-prompt) — see **§ Dispatch by Runtime** for the spawn primitive on your runtime. The prompt encodes the pre-existing-vs-introduced classification that the lead's Step 3 classification step depends on — don't paraphrase.
+**Spawn:** an isolated style-audit worker (no model override — inherits the session model) with the **verbatim** prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-a-style-audit-prompt) — see **§ Dispatch by Runtime** for the spawn primitive on your runtime. The prompt encodes the pre-existing-vs-introduced classification that the lead's Step 3 classification step depends on — don't paraphrase.
 
 ---
 
@@ -302,7 +302,7 @@ different-from-host adversary and confirm it's reachable. The exact detection co
 
 Do not block QA on cross-model-target unavailability — degrade or skip, and note it in the gate.
 
-**Invocation:** Spawn a generic worker (Sonnet tier) with the verbatim worker prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-e-codex-adversarial-subagent-prompt) — see **§ Dispatch by Runtime** for the spawn primitive AND the cross-model CLI selection on your runtime. The worker shells out to the designated cross-model adversarial CLI (`codex exec --yolo` by default; a non-Codex CLI when the host is Codex), captures the JSON output, and returns it verbatim — it does not do its own adversarial reasoning. This is an **external cross-model call**, not an in-session reviewer: the worker's only job is to drive that CLI and relay its structured output. The reference file documents the indirection (why direct CLI, not the slash command; why `--yolo`), the cross-model targeting, and the four-step procedure.
+**Invocation:** Spawn a generic worker (no model override — inherits the session model) with the verbatim worker prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-e-codex-adversarial-subagent-prompt) — see **§ Dispatch by Runtime** for the spawn primitive AND the cross-model CLI selection on your runtime. The worker shells out to the designated cross-model adversarial CLI (`codex exec --yolo` by default; a non-Codex CLI when the host is Codex), captures the JSON output, and returns it verbatim — it does not do its own adversarial reasoning. This is an **external cross-model call**, not an in-session reviewer: the worker's only job is to drive that CLI and relay its structured output. The reference file documents the indirection (why direct CLI, not the slash command; why `--yolo`), the cross-model targeting, and the four-step procedure.
 
 Fill in `<BASE_BRANCH>` and `<REPO_ROOT>` for the project before spawning.
 
@@ -477,12 +477,12 @@ When QA clears with no MUST-FIX items remaining, add to the "all clear" gate mes
 
 | Role | Tier | Rationale |
 |------|------|-----------|
-| Lead (current session, orchestrates) | Opus (current session) | Denoise runs inline, finding classification requires judgment, gate decisions need care |
-| Validator A: Style Audit | Sonnet | Mechanical: convention matching against a loaded skill |
+| Lead (current session, orchestrates) | Current session model | Denoise runs inline, finding classification requires judgment, gate decisions need care |
+| Validator A: Style Audit | Inherited (session model) | Mechanical: convention matching against a loaded skill — no pin; runs on whatever the session runs |
 | Validator CD: Code Review Swarm | `/review-swarm` (reviewer workers, model per reviewer) | Delegated to review-swarm's own model selection. Covers correctness, security, performance, architecture, and domain idioms with research backing and reviewer convergence. Replaces the isolated specialist reviewers (security-reviewer, performance-analyzer) previously used as Validators C and D. |
 | Validator E: Codex Adversarial | A model **different from the host runtime** (codex via `codex exec --yolo` when the host is not Codex; a non-Codex model such as `claude -p` when the host is Codex). Fallback: same-runtime adversarial pass with a logged "cross-model diversity reduced" note when no second model is reachable. | Cross-model adversarial pass — runs the verbatim prompt from `references/codex-adversarial-prompt.md` against a different-family model so its blind spots don't overlap the host's. See § Dispatch by Runtime for per-runtime CLI selection. |
 
-Reserve Opus for denoise (inline), finding classification, and the final gate judgment.
+Keep denoise (inline), finding classification, and the final gate judgment on the lead — that is the judgment-heavy work.
 
 **Token cost:** Validator CD is ~5-15× the old C+D per run (reviewer workers read full files, run
 research tools, exchange convergence findings). Worth it post-build; skip for trivial
@@ -535,7 +535,7 @@ Subagents). Lead-mediated convergence (workers report to the lead; the lead reco
 
 - **Phase 1 (denoise):** no subagent — the lead reads the changed files inline and gates before Phase 2.
 - **Validator A (style):** one Codex subagent carrying the **verbatim** prompt at
-  `references/qa-validator-prompts.md#validator-a-style-audit-prompt` (Sonnet-equivalent tier).
+  `references/qa-validator-prompts.md#validator-a-style-audit-prompt` (no model override — host session model).
 - **Validator B (doc freshness):** inline on the lead — no subagent.
 - **Validator CD (code review swarm):** invoke the `review-swarm` skill (the §-CD arguments block);
   review-swarm runs its own Codex subagents and teardown. Team-qa waits up to the 15-minute cap.
@@ -574,7 +574,7 @@ key. OpenCode's worker is `general` (NOT `general-purpose`). Lead-mediated conve
 ### Claude (reference — for parity, not used on this runtime)
 
 On Claude this pipeline spawns Validator A and Validator E via `Task(...)` (`subagent_type: general-purpose`,
-`model: sonnet`), Validator CD via the `Skill` tool invoking `bootstrap-workflow:review-swarm`, and
+no `model` override — they inherit the session model), Validator CD via the `Skill` tool invoking `bootstrap-workflow:review-swarm`, and
 Validators B + denoise inline. **Validator E's cross-model target on Claude is genuinely Codex** —
 the Claude-hosted worker shells out to `codex exec --yolo` (OpenAI), so no inversion is needed here;
 the Codex/OpenCode subsections above invert that choice precisely because shelling to codex from a

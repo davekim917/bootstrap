@@ -1,6 +1,6 @@
 # managed by bootstrap-workflow-agents agent-sync
 # source: plugins/workflow/agents/code-review-specialist.md
-# source_sha256: 24c932fa6aad2bb874f4d0cad966b9d5a55fa7153cbd23d356dccff1d604873d
+# source_sha256: 9e0248225fa7f68e3c0ce98f0c93f3953e1b2e7ca1764e1ad4b5d2df18659cbd
 
 name = "code-review-specialist"
 description = '''Expert code review specialist. Reviews code for quality, security, and maintainability. Use PROACTIVELY after writing or modifying code.
@@ -10,7 +10,6 @@ Examples:
 - "Is this code ready to commit?" → code-review-specialist
 - "Check this implementation" → code-review-specialist
 - "Review before I push" → code-review-specialist'''
-model_reasoning_effort = "medium"
 developer_instructions = '''## Codex Runtime Adapter
 
 You are running as a Codex subagent. Use Codex tools and tool names. If inherited source text mentions Claude-only tools or paths, translate them to the equivalent Codex operation.

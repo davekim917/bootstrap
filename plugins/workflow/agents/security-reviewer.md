@@ -7,8 +7,6 @@ tools:
   - Glob
   - Bash
   - mcp__exa__*
-  - mcp__serena__*
-model: opus
 color: red
 ---
 

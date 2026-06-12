@@ -13,7 +13,7 @@ The lead reads this file when constructing a validator subagent. Don't paraphras
 
 ## Validator A: Style Audit prompt
 
-Spawn via Task tool (`model: "sonnet"`) with the following verbatim prompt. The pre-existing-vs-introduced classification is load-bearing — it stops the validator from penalizing the current change for issues that predate it.
+Spawn via Task tool (no `model` override — inherits the session model) with the following verbatim prompt. The pre-existing-vs-introduced classification is load-bearing — it stops the validator from penalizing the current change for issues that predate it.
 
 ```
 You are performing a style audit on recently changed files.
@@ -51,7 +51,7 @@ End with a count: [N] violations found ([M] introduced, [P] pre-existing).
 
 ## Validator E: Codex Adversarial subagent prompt
 
-Spawn a Task subagent (`subagent_type: general-purpose`, `model: sonnet`) whose sole job is to shell out to `codex exec --yolo` with the verbatim adversarial prompt and return the structured JSON output. The subagent does not do its own adversarial reasoning — Codex does.
+Spawn a Task subagent (`subagent_type: general-purpose`, no `model` override — inherits the session model) whose sole job is to shell out to `codex exec --yolo` with the verbatim adversarial prompt and return the structured JSON output. The subagent does not do its own adversarial reasoning — Codex does.
 
 **Why this layer of indirection exists:**
 - `/codex:adversarial-review` has `disable-model-invocation: true` in its frontmatter, so the Skill tool cannot invoke it from a model turn. The companion script path is blocked the same way.

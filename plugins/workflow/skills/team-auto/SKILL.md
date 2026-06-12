@@ -398,6 +398,6 @@ The grounding you cite in `auto_judgments` must come from sub-skill output you a
 
 ## Model Tier
 
-**Opus.** Stage transitions, escalation decisions, and grounding judgments are exactly the
-kind of work where Opus's reasoning matters. Invoked stage skills make their own model
-decisions; team-auto's role is to read their gate output and decide go / no-go / escalate.
+**Current session model.** Stage transitions, escalation decisions, and grounding judgments are
+exactly the kind of work where strong reasoning matters. Invoked stage skills and their subagents
+inherit the session model; team-auto's role is to read their gate output and decide go / no-go / escalate.

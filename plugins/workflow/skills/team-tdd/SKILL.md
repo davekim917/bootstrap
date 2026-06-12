@@ -190,7 +190,7 @@ Follow the spirit. The letter is the mechanism that ensures the spirit is follow
 
 ## Model Tier
 
-- **Sonnet** (builders): TDD cycle is embedded in builder prompts via `/team-build`
-- **Opus** (direct invocation): When user explicitly calls `/team-tdd`
+- **Builders** (via `/team-build`): TDD cycle is embedded in builder prompts — builders inherit the session model
+- **Direct invocation**: When user explicitly calls `/team-tdd`, it runs in the current session
 
 The rationalization resistance table is static content — it is embedded in the skill, not generated at runtime.

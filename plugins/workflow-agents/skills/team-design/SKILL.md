@@ -273,5 +273,5 @@ Never skip straight to assumptions. Exhaust the chain first.
 
 ## Model Tier
 
-**Tier:** Opus (current session)
-**Rationale:** First-principles design requires nuanced judgment — constraint classification, option evaluation, confidence calibration. Opus-level reasoning ensures designs are grounded rather than assumed.
+**Tier:** Current session model (inherited)
+**Rationale:** First-principles design requires nuanced judgment — constraint classification, option evaluation, confidence calibration. Frontier-tier reasoning ensures designs are grounded rather than assumed.

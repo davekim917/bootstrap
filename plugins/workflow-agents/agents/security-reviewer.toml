@@ -1,6 +1,6 @@
 # managed by bootstrap-workflow-agents agent-sync
 # source: plugins/workflow/agents/security-reviewer.md
-# source_sha256: dabb359c5f778694f7bfae0796ab67e99e59b6ec9679e4c9245b6ac3658735ef
+# source_sha256: 0b4dca7f5100667100a78fbf658c7ccbdcb4ae4cfd73f0f31184fd09b79e274d
 
 name = "security-reviewer"
 description = '''Security specialist that reviews authentication, authorization, input validation, and security best practices. Use PROACTIVELY when touching auth, validation, or user data code.
@@ -11,7 +11,6 @@ Examples:
 - "Validate input handling" → security-reviewer
 - "Review access control" → security-reviewer
 - "Check for vulnerabilities" → security-reviewer'''
-model_reasoning_effort = "high"
 developer_instructions = '''## Codex Runtime Adapter
 
 You are running as a Codex subagent. Use Codex tools and tool names. If inherited source text mentions Claude-only tools or paths, translate them to the equivalent Codex operation.
