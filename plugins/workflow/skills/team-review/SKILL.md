@@ -58,14 +58,14 @@ Before doing anything else, count how many review cycles have already run for th
    - File present but malformed YAML, or `review_cycles` is not an array → STOP. Tell the user
      the decision record is corrupt and ask whether to repair or treat as `N = 0`. Do not
      silently overwrite.
-3. If `N >= 3`, **STOP** and emit this gate verbatim — do not run reviewers, do not write a new
+3. If `N >= 5`, **STOP** and emit this gate verbatim — do not run reviewers, do not write a new
    report:
 
    ```
    ---
-   **Review cycle cap reached (3/3).**
+   **Review cycle cap reached (5/5).**
 
-   This design has been through 3 review cycles. The remaining MUST-FIX findings either need
+   This design has been through 5 review cycles. The remaining MUST-FIX findings either need
    human judgment or indicate the design needs to be reworked from `/team-design`, not patched
    through another review pass.
 
@@ -79,11 +79,11 @@ Before doing anything else, count how many review cycles have already run for th
       to the /team-design Step 6c MVP scope boundary. This is a /team-design re-entry,
       not a /team-review re-run.
 
-   No 4th review cycle. Tell me which path you want.
+   No 6th review cycle. Tell me which path you want.
    ---
    ```
 
-4. If `N < 3`, proceed to Step 1. (You will append a new entry to `review_cycles` in Step 5.)
+4. If `N < 5`, proceed to Step 1. (You will append a new entry to `review_cycles` in Step 5.)
 
 ### Step 1: Setup
 
@@ -291,13 +291,13 @@ Save the review report to disk:
 
 Include the save path in the gate message so downstream skills (`/team-plan`) know where to find it.
 
-**Cycle-3 close gate — `[NEEDS SPEC]` tags:** On cycle 3 / cap-reached, any reviewer recommendation not promoted to concrete design spec becomes `[NEEDS SPEC: <one-line summary>]` in review.md under a final "Carry-forward to /team-plan" section.
+**Cycle-5 close gate — `[NEEDS SPEC]` tags:** On cycle 5 / cap-reached, any reviewer recommendation not promoted to concrete design spec becomes `[NEEDS SPEC: <one-line summary>]` in review.md under a final "Carry-forward to /team-plan" section.
 
 Then STOP. Display exactly this gate:
 
 ```
 ---
-**Review complete.** (Cycle [N+1]/3)
+**Review complete.** (Cycle [N+1]/5)
 
 Reviewers run: A (architecture) · B (best-practice) · C (codex adversarial)
 [If C was skipped: replace "C (codex adversarial)" with "C: skipped — <reason>"]
@@ -306,13 +306,13 @@ MUST-FIX: [N] findings
 SHOULD-FIX: [N] findings
 WON'T-FIX: [N] findings (logged)
 
-[If MUST-FIX > 0 and cycle < 3:]
+[If MUST-FIX > 0 and cycle < 5:]
 The design has [N] blocking issues. Address them in the design document, then re-run `/team-review`.
 Or explicitly waive any finding with a stated reason — waived findings are logged, not dropped.
-Cycles remaining: [3 - (N+1)].
+Cycles remaining: [5 - (N+1)].
 
-[If MUST-FIX > 0 and cycle == 3:]
-⚠ Final review cycle (3/3). The next `/team-review` invocation will refuse to run another cycle.
+[If MUST-FIX > 0 and cycle == 5:]
+⚠ Final review cycle (5/5). The next `/team-review` invocation will refuse to run another cycle.
 Either waive remaining MUST-FIX with stated reasons, or return to `/team-design` to rework.
 
 [If MUST-FIX == 0:]
@@ -327,7 +327,7 @@ re-running with Codex once available if the design touches high-stakes areas.
 <!-- GATE: review-clearance — All MUST-FIX resolved or waived before /team-plan -->
 **Loop:** If the user revises the design to address MUST-FIX items, re-run from Step 0.
 **Exit:** When no MUST-FIX items remain (all addressed or explicitly waived with reason),
-OR when the 3-cycle cap is reached (see Step 0 — escalation required).
+OR when the 5-cycle cap is reached (see Step 0 — escalation required).
 
 ---
 
