@@ -166,7 +166,7 @@ inspects the gate output and decides go / escalate.
 
 **First action of Stage A:** create the sentinel `docs/specs/<feature>/.team-auto-active` (empty file). Touch this sentinel at every subsequent stage transition.
 
-Invoke `/team-review` via the Skill tool. team-review's Step 0 enforces the 3-cycle cap and
+Invoke `/team-review` via the Skill tool. team-review's Step 0 enforces the 5-cycle cap and
 emits the cap-reached gate when applicable — team-auto does not re-implement the counter.
 
 Read the gate:
@@ -219,7 +219,7 @@ team-auto.
 
 ### Stage D: QA
 
-**Default disposition: iterate. Do not pause.** By the time Stage D runs, the feature has cleared brief + design + up to three review cycles + plan + build. Any QA finding framed as a new "design call" or "architectural choice" is presumptively reviewer noise dressed as a design question — design and review already had ~four passes to settle architecture. Apply judgment, record, move on. Genuine HARD-constraint or user-facing-behavior changes are the rare exception, not the default.
+**Default disposition: iterate. Do not pause.** By the time Stage D runs, the feature has cleared brief + design + up to five review cycles + plan + build. Any QA finding framed as a new "design call" or "architectural choice" is presumptively reviewer noise dressed as a design question — design and review already had ~six passes to settle architecture. Apply judgment, record, move on. Genuine HARD-constraint or user-facing-behavior changes are the rare exception, not the default.
 
 **Iteration scope: MUST-FIX only.**
 
@@ -231,13 +231,13 @@ Touch the sentinel (`.team-auto-active`) at Stage D start and after every fix-cy
 Invoke `/team-qa`. Read the gate:
 
 - **MUST-FIX == 0** → Stage E.
-- **MUST-FIX > 0 and fix-cycle < 3** → for each **MUST-FIX** finding (ignore SHOULD-FIX/ADVISORY), apply the cross-cutting `team-receiving-review-feedback` protocol (verify the finding, then evaluate: correct? necessary? complete? in scope?), then decide:
+- **MUST-FIX > 0 and fix-cycle < 5** → for each **MUST-FIX** finding (ignore SHOULD-FIX/ADVISORY), apply the cross-cutting `team-receiving-review-feedback` protocol (verify the finding, then evaluate: correct? necessary? complete? in scope?), then decide:
   - **Mechanical fix** (the finding tells you what to change, no judgment) — after the four-question evaluation passes, apply, then `/team-qa --only <validator>` to re-validate the affected lane.
   - **Judgment-grounded fix** (engineering choice with citable codebase / brief / convention grounding — picking a pattern, naming a helper, choosing how to split a function, applying a refactor that doesn't change observable behavior) — run the grounding-and-scope check, apply, append to `auto_judgments` in `decisions.yaml`, then re-validate.
   - **"Design call" reframed at QA stage** (finding presents a design tradeoff like "library A vs B", "frontend rewrite vs backend transform", "refactor strategy X vs Y") — **default: apply the more conservative / less-invasive option that is consistent with the existing design**. The design already chose; reviewer noise at QA stage does not re-open it. Cite the design section that authorized the existing approach, apply, record under `auto_judgments`. **Do not present options to the user.** Only escalate `hard-constraint` if the finding proves the existing design violates a user-facing requirement or safety invariant — not because two paths exist.
   - **User-facing change** (fix would change observable behavior visible to the user, a HARD constraint declared in the design, or product scope) → escalate `hard-constraint`.
   - **Truly ambiguous** (decision required with no citable grounding *and* the four scope-check answers are not all "no" / unknown) → escalate `truly-ambiguous`.
-- **MUST-FIX > 0 and fix-cycle == 3** → escalate `cap-reached`.
+- **MUST-FIX > 0 and fix-cycle == 5** → escalate `cap-reached`.
 
 **Forbidden Stage D actions (these patterns are evidence of bail-out, not legitimate escalation):**
 
@@ -292,10 +292,10 @@ When all four stages clear, delete the sentinel (`docs/specs/<feature>/.team-aut
 **/team-auto complete — ready for ship gate.**
 
 Feature: <name>
-Review:  <N>/3 cycle(s) — final MUST-FIX: 0
+Review:  <N>/5 cycle(s) — final MUST-FIX: 0
 Plan:    written (<N>/1 revision pass(es))
 Build:   completed (<files-changed> files, <tests-added> tests)
-QA:      <N>/3 fix-cycle(s) — final MUST-FIX: 0
+QA:      <N>/5 fix-cycle(s) — final MUST-FIX: 0
 
 Auto judgments recorded: <N> — review `docs/specs/<feature>/decisions.yaml` (`auto_judgments`) before `/team-ship`.
 
@@ -355,7 +355,7 @@ When you escalate, do all five in order:
 
 | Category | Meaning |
 |----------|---------|
-| `cap-reached` | 3-cycle limit hit on Review or QA, or 1-revision limit hit on Plan |
+| `cap-reached` | 5-cycle limit hit on Review or QA, or 1-revision limit hit on Plan |
 | `hook-blocked` | Destructive-action / file-protection / workflow-gate hook fired |
 | `hard-constraint` | Finding requires changing a HARD constraint, brief, product scope, or user-facing behavior |
 | `truly-ambiguous` | Decision required with no citable codebase / brief / convention grounding |
@@ -372,7 +372,7 @@ When you escalate, do all five in order:
 - **Don't waive findings.** Only the user waives, with stated reason. team-auto escalates instead.
 - **Don't dress up scope creep as judgment.** "Apply judgment" means choosing between options with citable grounding (sub-skill finding, doc, brief, named convention). Adding a feature, expanding observable behavior, or making safety/correctness tradeoffs is escalation territory, not judgment territory. If you cannot name the specific grounding, it is not judgment — escalate.
 - **Don't fabricate "convention."** A convention requires an actual citation: a project doc / `CLAUDE.md` line, or at least two code references in the same area surfaced by a sub-skill. "I've seen this pattern before" is not a citation — it's training data, which is not an acceptable grounding source.
-- **Don't resurrect design questions at Stage D.** By QA, the feature has cleared brief + design + up to three review cycles + plan + build. A QA finding framed as "library A vs B" or "frontend vs backend" is presumptively not a new design call — design already chose. Apply the option consistent with the existing design, cite the design section, record under `auto_judgments`. Only escalate `hard-constraint` when the finding proves the existing design violates a user-facing requirement or safety invariant.
+- **Don't resurrect design questions at Stage D.** By QA, the feature has cleared brief + design + up to five review cycles + plan + build. A QA finding framed as "library A vs B" or "frontend vs backend" is presumptively not a new design call — design already chose. Apply the option consistent with the existing design, cite the design section, record under `auto_judgments`. Only escalate `hard-constraint` when the finding proves the existing design violates a user-facing requirement or safety invariant.
 - **Don't call `AskUserQuestion` mid-flight.** The block hook will refuse it while the sentinel is fresh. If you feel the need to ask, the answer is one of: (a) apply judgment per Principle 3, (b) write `auto-pause.md` and escalate. There is no third path. Calling `AskUserQuestion` and seeing it blocked is wasted tokens and a sign of model drift.
 - **Don't present a Stage D "fix plan" before iterating.** Stage D is not a planning stage. Iterate MUST-FIX findings one at a time, applying judgment with grounding, validating after each. SHOULD-FIX and ADVISORY are deferred to Stage E's summary unconditionally.
 
