@@ -30,7 +30,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_DIR = path.join(REPO, 'plugins/workflow/hooks/guards');
 
 // Files vendored verbatim (with a banner) from SOURCE_DIR into each target dir.
-const VENDORED_FILES = ['block-destructive-core.ts', 'file-protection-core.ts'];
+const VENDORED_FILES = ['block-destructive-core.ts', 'file-protection-core.ts', 'email-gate-core.ts'];
 const TARGET_DIRS = [path.join(REPO, 'plugins/workflow-agents/hooks/guards')];
 
 function banner(srcRel) {
