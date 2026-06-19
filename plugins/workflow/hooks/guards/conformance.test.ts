@@ -54,6 +54,7 @@ const GIT_CLONE_BLOCK = [
   'git clone https://github.com/a/b /workspace/agent/b',
   'git clone https://github.com/a/b /workspace/agent/repos/b',
   'git clone https://github.com/a/b /workspace/worktrees/b',
+  'git clone https://github.com/a/b /workspace/workgroup/b',
   'git clone https://github.com/a/b /tmp/x && mv /tmp/x /workspace/agent/stolen',
 ];
 const GIT_CLONE_ALLOW = [
