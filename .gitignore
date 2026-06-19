@@ -5,3 +5,6 @@ hooks/state/
 *.tmp
 .gitnexus
 .claude/skills/gitnexus/
+
+# Impeccable tool cache (per-hooks-dir)
+.impeccable/

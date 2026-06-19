@@ -113,6 +113,57 @@ export function evaluateGitCloneDestination(command: string): GitCloneVerdict {
     return { action: 'allow' };
 }
 
+// ── Self-approval block (ADVISORY → BLOCK) ──
+// Ported verbatim from nanoclaw-v2 claude.ts:462-484 (createSelfApprovalBlockHook).
+// The bootstrap/plugins/workflow plugin's block-destructive hook gates
+// destructive filesystem ops behind a file-based approval at
+// `.claude-destructive-gate`. This evaluator prevents the agent from bypassing
+// that gate by writing the approval file itself via Bash (`touch
+// .claude-destructive-gate`, `echo … > .claude-destructive-gate`, etc.).
+// Admin approval must come through the chat channel, not the agent's own
+// filesystem writes.
+//
+// SINGLE SOURCE OF TRUTH for all provider adapters. Pure — no env/IO,
+// deterministic on `command`. Verdict shape matches evaluateGitCloneDestination.
+export const SELF_APPROVAL_RE = /\.claude-destructive-gate/;
+export const SELF_APPROVAL_BLOCK_REASON =
+    'Self-approval of destructive operation gates is not allowed. Approval must come from the user via the chat channel, not by writing .claude-destructive-gate yourself.';
+
+export function evaluateSelfApproval(command: string): { action: 'allow' | 'block'; reason?: string } {
+    if (!command) return { action: 'allow' };
+    if (SELF_APPROVAL_RE.test(command)) {
+        return { action: 'block', reason: SELF_APPROVAL_BLOCK_REASON };
+    }
+    return { action: 'allow' };
+}
+
+// ── Block ad-hoc Python snowflake.connector (ADVISORY → BLOCK) ──
+// Ported verbatim from nanoclaw-v2 claude.ts:486-512 (createBlockSnowflakeConnectorHook).
+// `snow` CLI is gated by destructive-operation controls (and scoped
+// credential mounts); the Python connector bypasses those. Only blocks
+// direct python execution — grep, echo, pip install, and existing
+// scripts that happen to contain the string are unaffected.
+//
+// This is ADVISORY, not a security boundary. The regex is bypassable
+// with base64-decoded source, heredocs, script files, or point-version
+// binaries (python3.11). The real mitigation is only mounting Snowflake
+// credentials when the snow CLI is actually invoked — a larger arch
+// change. In the current model the guard nudges the agent toward `snow
+// sql` for normal cases and raises the friction for unintended paths.
+//
+// Pure — no env/IO, deterministic on `command`.
+export const SNOWFLAKE_CONNECTOR_EXEC_RE = /\bpython[23]?\b.*\bsnowflake[._]connector\b/i;
+export const SNOWFLAKE_CONNECTOR_BLOCK_REASON =
+    "Direct use of Python snowflake.connector is blocked. Use `snow sql` for ad-hoc queries. If `snow` isn't working, report the error rather than falling back to the Python connector.";
+
+export function evaluateSnowflakeConnector(command: string): { action: 'allow' | 'block'; reason?: string } {
+    if (!command) return { action: 'allow' };
+    if (SNOWFLAKE_CONNECTOR_EXEC_RE.test(command)) {
+        return { action: 'block', reason: SNOWFLAKE_CONNECTOR_BLOCK_REASON };
+    }
+    return { action: 'allow' };
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const HOME = homedir();
@@ -956,6 +1007,7 @@ export function writeGateRequest(
     label: string,
     summary: string,
     command: string,
+    action: 'request_destructive_gate' | 'request_bash_gate' = 'request_destructive_gate',
 ): string {
     // Dynamic import so non-NanoClaw environments (plain Claude Code) never
     // touch bun:sqlite — the module is only present under bun runtime.
@@ -964,7 +1016,7 @@ export function writeGateRequest(
 
     const requestId = `gate-${Date.now()}-${randomBytes(4).toString('hex')}`;
     const content = JSON.stringify({
-        action: 'request_destructive_gate',
+        action,
         requestId,
         label,
         summary,
@@ -1045,32 +1097,83 @@ export function pollDeliveredTable(requestId: string, timeoutMs: number): GateDe
 }
 
 /**
- * NanoClaw session-DB approval gate. Stage an approval request on outbound.db, then poll
- * inbound.db's `delivered` table for the host's decision (60-min window,
- * matching host BASH_GATE_TIMEOUT_MS).
+ * Lower-level NanoClaw session-DB approval gate, parameterized on the gate
+ * `action`. Stage an approval request on outbound.db, then poll inbound.db's
+ * `delivered` table for the host's decision (60-min window, matching host
+ * BASH_GATE_TIMEOUT_MS).
+ *
+ * `opts.action` selects the host-side handler the staged request routes to:
+ *   - 'request_destructive_gate' — the destructive-command gate (default path).
+ *   - 'request_bash_gate'        — the generic bash gate (email gate uses this).
  *
  * Fail-closed: if writeGateRequest throws (session DBs in a broken state),
  * returns 'denied'. The CALLER emits the stderr/exit — this function never
  * touches process.exit so it stays reusable across hooks.
  *
- * `onStageError` (optional) fires with the staging error before the
+ * `opts.onStageError` (optional) fires with the staging error before the
  * fail-closed 'denied' return, so a caller can reproduce the original
  * "could not stage approval request" message distinct from an admin denial.
+ */
+export function runGateRequest(
+    command: string,
+    reason: string,
+    opts: {
+        action: 'request_destructive_gate' | 'request_bash_gate';
+        onStageError?: (err: unknown) => void;
+        // Optional structured card body. When omitted the card shows `reason`
+        // for both label and summary (destructive-gate behavior). The email gate
+        // passes a distinct summary (the from/to/cc/bcc/body card) so the approver
+        // sees structured fields, at parity with Claude's in-tree card (S-QA2).
+        summary?: string;
+    },
+): GateDecision {
+    let requestId: string;
+    try {
+        requestId = writeGateRequest(reason, opts.summary ?? reason, command, opts.action);
+    } catch (err) {
+        // If we can't even stage the request, the session DBs are in a broken
+        // state. Deny rather than silently allowing — the gate is fail-closed.
+        opts.onStageError?.(err);
+        return 'denied';
+    }
+
+    return pollDeliveredTable(requestId, 60 * 60 * 1000); // 60 min, matches host BASH_GATE_TIMEOUT_MS
+}
+
+/**
+ * NanoClaw destructive-command session-DB approval gate. Thin wrapper over
+ * runGateRequest with action='request_destructive_gate'.
+ *
+ * SIGNATURE IS LOAD-BEARING — `(command, reason, onStageError?)`. Existing
+ * callers (block-destructive.ts, opencode-guard.ts) pass the onStageError
+ * callback as the 3rd positional arg. Do NOT add a positional `action` here;
+ * route action selection through runGateRequest instead.
  */
 export function runNanoclawGate(
     command: string,
     reason: string,
     onStageError?: (err: unknown) => void,
 ): GateDecision {
-    let requestId: string;
-    try {
-        requestId = writeGateRequest(reason, reason, command);
-    } catch (err) {
-        // If we can't even stage the request, the session DBs are in a broken
-        // state. Deny rather than silently allowing — the gate is fail-closed.
-        onStageError?.(err);
-        return 'denied';
-    }
+    return runGateRequest(command, reason, { action: 'request_destructive_gate', onStageError });
+}
 
-    return pollDeliveredTable(requestId, 60 * 60 * 1000); // 60 min, matches host BASH_GATE_TIMEOUT_MS
+/**
+ * NanoClaw email session-DB approval gate. Thin wrapper over runGateRequest
+ * with action='request_bash_gate' — the same host-side handler the in-tree
+ * email gate uses (nanoclaw claude.ts createEmailGateHook).
+ *
+ * `(command, reason, onStageError?, summary?)` — the first three positionals
+ * match runNanoclawGate (load-bearing: existing callers/tests pass onStageError
+ * 3rd). The optional 4th `summary` carries evaluateEmailSend's structured card
+ * body (from/to/cc/bcc/body); when omitted, the card falls back to `reason` for
+ * both label and summary. Threading summary gives OpenCode's approval card the
+ * same structured content as Claude's in-tree card (S-QA2 parity).
+ */
+export function runEmailGate(
+    command: string,
+    reason: string,
+    onStageError?: (err: unknown) => void,
+    summary?: string,
+): GateDecision {
+    return runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary });
 }

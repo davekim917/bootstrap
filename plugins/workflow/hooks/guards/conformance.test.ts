@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'bun:test';
-import { evaluateBashCommand, evaluateGitCloneDestination } from './block-destructive-core';
+import {
+  evaluateBashCommand,
+  evaluateGitCloneDestination,
+  evaluateSelfApproval,
+  evaluateSnowflakeConnector,
+} from './block-destructive-core';
+import { evaluateEmailSend } from './email-gate-core';
 import { checkEditProtection } from './file-protection-core';
 
 /**
@@ -68,6 +74,40 @@ const GIT_CLONE_ALLOW = [
 const EDIT_BLOCK = ['.env', 'app/.env.local', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', '.git/config', 'terraform/main.tf', 'infra/terraform/prod.tf'];
 const EDIT_ALLOW = ['src/index.ts', '.env.example', '.gitignore', 'README.md', 'lib/util.js'];
 
+// Self-approval (writing the .claude-destructive-gate marker yourself) is a
+// hard block; everything else allows. Pure on `command`.
+const SELF_APPROVAL_BLOCK = [
+  'touch .claude-destructive-gate',
+  'echo ok > .claude-destructive-gate',
+  'echo /tmp/.claude-destructive-gate/abc',
+];
+const SELF_APPROVAL_ALLOW = ['ls -la', 'git status', 'echo hello'];
+
+// Ad-hoc Python snowflake.connector exec is blocked (steer to `snow sql`);
+// the snow CLI, grep, pip, and bare echoes allow. Pure on `command`.
+const SNOWFLAKE_BLOCK = [
+  "python -c 'import snowflake.connector'",
+  'python3 -c "from snowflake.connector import connect"',
+  'python -c "import snowflake_connector"',
+];
+const SNOWFLAKE_ALLOW = [
+  'snow sql -q "select 1"',
+  'grep snowflake.connector requirements.txt',
+  'pip install snowflake-connector-python',
+  'echo snowflake.connector',
+];
+
+// Outbound email sends via the gws CLI are GATED when interactive; a non-email
+// command allows, and a scheduled-task send bypasses the gate (allow) — both
+// faithful to evaluateEmailSend's policy. The gate verdict depends on the env
+// snapshot, so each row pins the (command, env) pair.
+const EMAIL_GATE = [
+  'gws gmail +send --to a@b.com --subject hi',
+  'gws gmail +reply --to a@b.com',
+  'gws gmail users messages send --json \'{"raw":"x"}\'',
+];
+const EMAIL_ALLOW = ['ls -la', 'git status', 'gws gmail +send --to a@b.com --dry-run'];
+
 describe('parity contract — destructive bash', () => {
   for (const cmd of BASH_BLOCK) {
     it(`blocks: ${cmd}`, () => expect(evaluateBashCommand(cmd).action).toBe('block'));
@@ -95,5 +135,50 @@ describe('parity contract — file-protection edits', () => {
   }
   for (const p of EDIT_ALLOW) {
     it(`allows edit: ${p}`, () => expect(checkEditProtection('Write', { file_path: p })).toBeNull());
+  }
+});
+
+// ── Manifest rows added for the migrated command-guards (Group C / C1). ──
+// These three guards (self-approval, snowflake, email-gate) were ported into the
+// shared cores alongside the destructive + git-clone set above. Pinning their
+// verdicts here keeps the cross-surface contract complete: opencode-guard.ts and
+// the Codex runner both consume these same evaluators, so if this manifest holds,
+// every surface agrees by construction.
+
+describe('parity contract — self-approval', () => {
+  for (const cmd of SELF_APPROVAL_BLOCK) {
+    it(`blocks: ${cmd}`, () => expect(evaluateSelfApproval(cmd).action).toBe('block'));
+  }
+  for (const cmd of SELF_APPROVAL_ALLOW) {
+    it(`allows: ${cmd}`, () => expect(evaluateSelfApproval(cmd).action).toBe('allow'));
+  }
+});
+
+describe('parity contract — snowflake connector', () => {
+  for (const cmd of SNOWFLAKE_BLOCK) {
+    it(`blocks: ${cmd}`, () => expect(evaluateSnowflakeConnector(cmd).action).toBe('block'));
+  }
+  for (const cmd of SNOWFLAKE_ALLOW) {
+    it(`allows: ${cmd}`, () => expect(evaluateSnowflakeConnector(cmd).action).toBe('allow'));
+  }
+});
+
+describe('parity contract — email gate', () => {
+  // Interactive send (isScheduledTask:false) → gate. The scheduled-task bypass is
+  // verified separately below.
+  for (const cmd of EMAIL_GATE) {
+    it(`gates (interactive): ${cmd}`, () =>
+      expect(evaluateEmailSend(cmd, { isScheduledTask: false }).action).toBe('gate'));
+  }
+  // Non-email commands always allow, regardless of schedule context.
+  for (const cmd of EMAIL_ALLOW) {
+    it(`allows: ${cmd}`, () =>
+      expect(evaluateEmailSend(cmd, { isScheduledTask: false }).action).toBe('allow'));
+  }
+  // A real send bypasses (allow) when it originates from a scheduled task —
+  // faithful to evaluateEmailSend's v1-parity policy.
+  for (const cmd of EMAIL_GATE) {
+    it(`allows (scheduled bypass): ${cmd}`, () =>
+      expect(evaluateEmailSend(cmd, { isScheduledTask: true }).action).toBe('allow'));
   }
 });

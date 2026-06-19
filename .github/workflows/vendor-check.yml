@@ -1,0 +1,39 @@
+# Vendor-check CI: guards the shared destructive-guard core against drift.
+#
+# What this enforces:
+#   1. `node scripts/vendor-guards.mjs --check` — fails if any vendored copy
+#      under plugins/workflow-agents/hooks/guards/ is stale relative to the
+#      single source of truth in plugins/workflow/hooks/guards/. A contributor
+#      who edits a *-core.ts file but forgets to re-vendor will fail here.
+#   2. The guard test suite (bun test) over the source-of-truth guards.
+#
+# KNOWN RISK R2 — this workflow is the MECHANISM, not the enforcement. Making it
+# a REQUIRED / non-bypassable status check is a GitHub branch-protection setting
+# (Settings → Branches → branch protection rule → "Require status checks to
+# pass before merging" → select "vendor-check"). That is a repo-admin action,
+# NOT code, and cannot be configured from this file. Until an admin marks this
+# check required, a PR can still be merged while it is red.
+name: vendor-check
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  vendor-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Verify vendored guard copies are up to date
+        run: node scripts/vendor-guards.mjs --check
+
+      - name: Run guard test suite
+        working-directory: plugins/workflow/hooks/guards
+        run: bun test
