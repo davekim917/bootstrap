@@ -117,10 +117,27 @@ const QUOTED_SPAN_SENTINEL = '\x00';
 // A leading `NAME=value` shell assignment (skipped before the command word).
 const LEADING_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
 export function bypassFlagIsRealArgvToken(gwsSegment: string): boolean {
-    const unquoted = gwsSegment
-        .replace(/\$'(?:[^'\\]|\\.)*'/g, QUOTED_SPAN_SENTINEL) // ANSI-C $'…' (escapes, incl. \')
+    // Strip the NON-expanding quote forms first — single-quoted (literal) and
+    // ANSI-C $'…' (C escapes, no expansion). Bash runs NO command/parameter
+    // expansion inside these, so their contents are inert.
+    const safeStripped = gwsSegment
+        .replace(/\$'(?:[^'\\]|\\.)*'/g, QUOTED_SPAN_SENTINEL) // ANSI-C $'…' (escapes, incl. \') — no expansion
+        .replace(/'[^']*'/g, QUOTED_SPAN_SENTINEL); // single-quoted (literal, no escapes)
+    // EXPANDING quotes — "…" and locale $"…" — still run COMMAND SUBSTITUTION
+    // ($(…) and backticks) inside them. A bypass command whose double-quoted value
+    // carries one (e.g. `gws … --dry-run --body "$(gws … +send --to victim)"`)
+    // would shell out a REAL send before the --dry-run/--help no-op takes effect;
+    // the NUL-strip below would otherwise hide it from the metachar check. Inspect
+    // each expanding span's CONTENT (capture group, so the locale `$` prefix itself
+    // isn't counted) and fail closed on a `$(` or backtick. NOTE: only command
+    // substitution executes — bare `$VAR`/`${VAR}`/`$5` is parameter expansion (no
+    // command run), so it must NOT block a legit `--body "cost is $5"`. (codex #126 P1)
+    const expandingQuoteRe = /\$?"((?:[^"\\]|\\.)*)"/g;
+    for (let m = expandingQuoteRe.exec(safeStripped); m !== null; m = expandingQuoteRe.exec(safeStripped)) {
+        if (m[1].includes('$(') || m[1].includes('`')) return false; // command substitution in expanding quotes → don't bypass
+    }
+    const unquoted = safeStripped
         .replace(/\$"(?:[^"\\]|\\.)*"/g, QUOTED_SPAN_SENTINEL) // locale $"…"
-        .replace(/'[^']*'/g, QUOTED_SPAN_SENTINEL) // single-quoted (literal, no escapes)
         .replace(/"(?:[^"\\]|\\.)*"/g, QUOTED_SPAN_SENTINEL); // double-quoted (escape-aware)
     if (unquoted.includes("'") || unquoted.includes('"')) return false; // unbalanced/escaped quoting → don't bypass
     if (unquoted.includes('\\')) return false; // unquoted backslash escape → don't bypass (codex #6)

