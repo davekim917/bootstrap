@@ -31,4 +31,14 @@ describe('opencode-guard gateBashOrThrow', () => {
   test('empty command is a no-op', () => {
     expect(() => gateBashOrThrow('')).not.toThrow();
   });
+
+  test('throws on git clone into a managed dir (parity with Claude/Codex)', () => {
+    expect(() => gateBashOrThrow('git clone https://github.com/a/b /workspace/agent/repos/b')).toThrow(
+      /blocked|clone_repo|create_worktree/,
+    );
+  });
+
+  test('allows git clone into /tmp (no throw)', () => {
+    expect(() => gateBashOrThrow('git clone https://github.com/a/b /tmp/scratch')).not.toThrow();
+  });
 });

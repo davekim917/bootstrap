@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { evaluateBashCommand } from './block-destructive-core';
+import { evaluateBashCommand, evaluateGitCloneDestination } from './block-destructive-core';
 import { checkEditProtection } from './file-protection-core';
 
 /**
@@ -47,6 +47,22 @@ const BASH_GATE = [
 // Allowed: safe / ephemeral.
 const BASH_ALLOW = ['ls -la', 'git status', 'rm -rf node_modules', 'echo hello', 'cat README.md', 'rm -rf dist'];
 
+// git-clone into a managed dir is blocked (must use clone_repo/create_worktree);
+// pure /tmp clones and non-clone commands are allowed. Order-independent: a
+// managed-dir reference ANYWHERE alongside `git clone` blocks the whole command.
+const GIT_CLONE_BLOCK = [
+  'git clone https://github.com/a/b /workspace/agent/b',
+  'git clone https://github.com/a/b /workspace/agent/repos/b',
+  'git clone https://github.com/a/b /workspace/worktrees/b',
+  'git clone https://github.com/a/b /tmp/x && mv /tmp/x /workspace/agent/stolen',
+];
+const GIT_CLONE_ALLOW = [
+  'git clone https://github.com/a/b /tmp/scratch',
+  'git status',
+  'git pull origin main',
+  'echo git clone',
+];
+
 // Edits blocked / allowed by file-protection.
 const EDIT_BLOCK = ['.env', 'app/.env.local', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', '.git/config', 'terraform/main.tf', 'infra/terraform/prod.tf'];
 const EDIT_ALLOW = ['src/index.ts', '.env.example', '.gitignore', 'README.md', 'lib/util.js'];
@@ -60,6 +76,15 @@ describe('parity contract — destructive bash', () => {
   }
   for (const cmd of BASH_ALLOW) {
     it(`allows: ${cmd}`, () => expect(evaluateBashCommand(cmd).action).toBe('allow'));
+  }
+});
+
+describe('parity contract — git-clone destination', () => {
+  for (const cmd of GIT_CLONE_BLOCK) {
+    it(`blocks: ${cmd}`, () => expect(evaluateGitCloneDestination(cmd).action).toBe('block'));
+  }
+  for (const cmd of GIT_CLONE_ALLOW) {
+    it(`allows: ${cmd}`, () => expect(evaluateGitCloneDestination(cmd).action).toBe('allow'));
   }
 });
 

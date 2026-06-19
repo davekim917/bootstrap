@@ -73,6 +73,35 @@ export interface GateEvaluation {
     reason?: string;
 }
 
+// ── git-clone destination guard ──────────────────────────────────────────────
+// Agents must use the create_worktree / clone_repo MCP tools to land a repo
+// inside the managed tree. A direct `git clone` into a managed dir
+// (/workspace/{agent,worktrees,...}) skips credential scoping, auto-commit
+// safety, and index registration. We reject the WHOLE command if it mentions a
+// managed-dir path anywhere alongside `git clone`, regardless of segment order
+// (`git clone … /tmp/x && mv /tmp/x /workspace/agent/stolen` would otherwise
+// slip through). Pure /tmp clones (tool installs, scratch) are allowed. False
+// positives (e.g. `git clone /tmp/x && echo /workspace/agent`) are acceptable —
+// the agent can rephrase.
+//
+// SINGLE SOURCE OF TRUTH for all three provider adapters (Claude SDK hook,
+// OpenCode plugin, Codex runner). The conformance suite pins these verdicts; do
+// not fork the policy into a provider adapter.
+export const GIT_CLONE_RE = /\bgit\s+clone\b/;
+export const GIT_CLONE_MANAGED_DIR_RE = /\/workspace\/(?:agent|worktrees|global|extra|thread|plugins)\b/;
+export const GIT_CLONE_BLOCK_REASON =
+    '`git clone` with any reference to /workspace/{agent,worktrees,...} is blocked. Use the `create_worktree` MCP tool for a managed worktree under /workspace/worktrees/<repo>, or `clone_repo` to add a repo to the agent group (it lands under /workspace/agent/repos/<name>). If the clone is ephemeral, keep the entire command within /tmp.';
+
+/** Returns a block verdict if the command is a `git clone` targeting a managed
+ *  dir, else allow. Pure — no I/O. */
+export function evaluateGitCloneDestination(command: string): GateEvaluation {
+    if (!command || !GIT_CLONE_RE.test(command)) return { action: 'allow' };
+    if (GIT_CLONE_MANAGED_DIR_RE.test(command)) {
+        return { action: 'block', reason: GIT_CLONE_BLOCK_REASON };
+    }
+    return { action: 'allow' };
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const HOME = homedir();
