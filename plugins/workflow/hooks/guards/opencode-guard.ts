@@ -23,6 +23,7 @@
 
 import {
   evaluateBashCommand,
+  evaluateGitCloneDestination,
   runNanoclawGate,
   consumeGateApproval,
   IS_NANOCLAW,
@@ -47,6 +48,13 @@ function bashCommandOf(args: Record<string, unknown> | undefined): string {
  */
 export function gateBashOrThrow(command: string): void {
   if (!command) return;
+
+  // git-clone destination guard (shared core — parity with Claude/Codex).
+  // Block `git clone` into a managed dir; agents must use clone_repo/create_worktree.
+  const cloneVerdict = evaluateGitCloneDestination(command);
+  if (cloneVerdict.action === 'block') {
+    throw new Error(cloneVerdict.reason ?? 'Blocked: git clone into a managed directory.');
+  }
 
   const verdict = evaluateBashCommand(command);
 
