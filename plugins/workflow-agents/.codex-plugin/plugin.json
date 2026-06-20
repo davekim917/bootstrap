@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-workflow-agents",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Team workflow skills (brief, design, review, plan, build, QA, ship, debug, drift, autonomous delivery) for Codex, OpenCode, and other agent runtimes.",
   "author": {
     "name": "David Kim"
