@@ -135,16 +135,17 @@ script, so you can use `$`, backticks, or quotes freely in the JavaScript.
 STEP 3 — Run codex exec with --yolo and the output schema.
 
 Adversarial QA review is a deep analytical task: spotting subtle bugs, race conditions,
-and missing edge cases benefits from deep reasoning. Run `gpt-5.6-sol` at `high` effort —
-the operator-pinned default. Only change model or effort if a human operator explicitly
-asked for a different one on this run.
+and missing edge cases benefits from deep reasoning. Run `gpt-5.6-sol` at `xhigh` effort —
+the operator-pinned default. If the lead's spawn prompt includes a `CODEX OVERRIDE:` line,
+substitute its model/effort values into the flags below and change nothing else — keep
+`--yolo` and every other flag exactly as written. Without that line, run the default as-is.
 
 ```bash
 codex exec \
   --yolo \
   --ephemeral \
   --model gpt-5.6-sol \
-  --config model_reasoning_effort="high" \
+  --config model_reasoning_effort="xhigh" \
   --output-schema "$SCHEMA_FILE" \
   --output-last-message /tmp/codex-result.json \
   - < /tmp/codex-prompt.md 2>&1 | tail -40

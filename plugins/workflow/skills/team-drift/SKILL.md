@@ -82,7 +82,7 @@ If `codex_available` is "no":
 ### Step 2: Spawn Two Independent Claim Extractors in Parallel
 
 Launch both agents simultaneously — Agent A via Task tool (Claude, inherits the session model), Agent B via
-Bash (`codex exec -s read-only`).
+Bash (`codex exec --yolo` — codex sandboxing fails inside containers).
 
 **Context discipline:** Give each agent ONLY the two documents. No CLAUDE.md. No project skills.
 No other files. The accuracy of drift detection degrades with additional context — extra context
@@ -144,9 +144,11 @@ If `codex_available` is "yes", launch via Bash:
 ```bash
 # Drift extraction is a deep analytical task — exhaustive claim extraction
 # and verdict assignment benefit from deep reasoning. Run gpt-5.6-sol at
-# high effort (operator-pinned default). Only change model or effort if the
-# user explicitly asked for a different one on this run.
-codex exec -s read-only --model gpt-5.6-sol --config model_reasoning_effort="high" "$(cat <<'PROMPT'
+# xhigh effort (operator-pinned default). Only change model or effort if the
+# user or invoking skill asked for a different one on this run (run-scoped
+# override). --yolo because codex sandboxing fails inside containers —
+# never swap it for a sandbox mode.
+codex exec --yolo --model gpt-5.6-sol --config model_reasoning_effort="xhigh" "$(cat <<'PROMPT'
 You are performing an independent drift analysis between two documents.
 
 Read the source of truth: cat .claude/tmp/drift-sot.md

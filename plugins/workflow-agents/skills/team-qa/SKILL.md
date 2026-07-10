@@ -306,6 +306,8 @@ Do not block QA on cross-model-target unavailability — degrade or skip, and no
 
 Fill in `<BASE_BRANCH>` and `<REPO_ROOT>` for the project before spawning.
 
+**Run-scoped override:** If the user (or an invoking skill such as `/team-auto`) asked for a different codex model or reasoning effort on this run, append one final line to the worker prompt — `CODEX OVERRIDE: model=<slug> effort=<level>` (either field optional). The worker substitutes those values into the `codex exec` flags and changes nothing else — `--yolo`, `--ephemeral`, and the schema/output flags stay exactly as written. Without that line, the pinned default applies.
+
 **Lead-side parsing:** The subagent returns a JSON document matching
 `references/codex-review-output.schema.json`:
 

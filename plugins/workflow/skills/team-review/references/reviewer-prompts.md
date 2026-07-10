@@ -154,10 +154,12 @@ findings don't have line numbers). Free-form output is correct here.
 
 Adversarial design review is a deep analytical task: assumption challenge, blind-spot
 detection, and simpler-approach exploration benefit from deep reasoning. Run `gpt-5.6-sol`
-at `high` effort — the operator-pinned default. Only change model or effort if a human
-operator explicitly asked for a different one on this run.
+at `xhigh` effort — the operator-pinned default. If the lead's spawn prompt includes a
+`CODEX OVERRIDE:` line, substitute its model/effort values into the command below and change
+nothing else — keep `--yolo` and every other flag exactly as written. Without that line, run
+the default as-is.
 
-    codex exec --yolo --ephemeral --model gpt-5.6-sol --config model_reasoning_effort="high" - < /tmp/codex-design-prompt.md 2>&1 | tee /tmp/codex-design-output.log
+    codex exec --yolo --ephemeral --model gpt-5.6-sol --config model_reasoning_effort="xhigh" - < /tmp/codex-design-prompt.md 2>&1 | tee /tmp/codex-design-output.log
 
 STEP 4 — Return the Codex output verbatim to the lead. Do not summarize, reformat, or add
 commentary. If Codex returned "NO MATERIAL OBJECTIONS — design is defensible as written."

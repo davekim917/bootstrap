@@ -162,6 +162,14 @@ Run the four stages sequentially — each stage's output is the next stage's inp
 stage, the invoked skill handles its own pre-flight checks and parallelism. team-auto only
 inspects the gate output and decides go / escalate.
 
+**Run-scoped codex overrides:** If the user's `/team-auto` invocation asks for a different
+model or reasoning effort for the cross-model codex steps (e.g. "codex steps at max
+reasoning"), forward that requirement in the args of every sub-skill invocation whose stage
+shells to `codex exec` (`/team-review` Reviewer C, `/team-qa` Validator E, `/team-drift`
+Agent B). Each sub-skill lead applies it via its `CODEX OVERRIDE:` instructions. Overrides
+cover model/effort only — the `--yolo` flag is never dropped (codex sandboxing fails in
+containers).
+
 ### Stage A: Review
 
 **First action of Stage A:** create the sentinel `docs/specs/<feature>/.team-auto-active` (empty file). Touch this sentinel at every subsequent stage transition.
