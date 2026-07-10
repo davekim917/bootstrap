@@ -166,13 +166,13 @@ line_start/line_end fields; design findings don't have line numbers). Free-form 
 here.
 
 Adversarial design review is a deep analytical task: assumption challenge, blind-spot
-detection, and simpler-approach exploration benefit from maximum reasoning. Default to maximum
-reasoning effort (when the different model is Codex, that is `--config model_reasoning_effort="xhigh"`).
-Only drop to a lower effort if a human operator explicitly asked for a faster/cheaper run on a
-small/simple design. When the different model is Codex, run it read-only-bypassing with `--yolo`
+detection, and simpler-approach exploration benefit from deep reasoning. When the different
+model is Codex, run the operator-pinned default: `gpt-5.6-sol` at `--config model_reasoning_effort="high"`.
+Only change model or effort if a human operator explicitly asked for a different one on this
+run. When the different model is Codex, run it read-only-bypassing with `--yolo`
 (bwrap can't nest in Docker), e.g.:
 
-    codex exec --yolo --ephemeral --config model_reasoning_effort="xhigh" - < /tmp/codex-design-prompt.md 2>&1 | tee /tmp/codex-design-output.log
+    codex exec --yolo --ephemeral --model gpt-5.6-sol --config model_reasoning_effort="high" - < /tmp/codex-design-prompt.md 2>&1 | tee /tmp/codex-design-output.log
 
 STEP 4 — Return the different model's output verbatim to the lead. Do not summarize, reformat, or
 add commentary. If it returned "NO MATERIAL OBJECTIONS — design is defensible as written." return

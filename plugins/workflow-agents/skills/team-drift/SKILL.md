@@ -353,7 +353,7 @@ claims. Do not read unrelated files.
 |------|------|----------|-----------|
 | Team lead (merge + verdict) | Current session (the runtime you're running on) | N/A | Judgment-heavy: resolving DISPUTED verdicts, classifying severity, making the final call |
 | Agent A (extractor) | Native subagent on the primary runtime | N/A | Mechanical extraction + the primary runtime's model perspective |
-| Agent B (extractor) | A *different* model where available (e.g. `codex exec -s read-only`; read-only sandbox, max reasoning effort) | Same-runtime second pass (if no second model is available) | Mechanical extraction + different training data, different blind spots |
+| Agent B (extractor) | A *different* model where available (e.g. `codex exec -s read-only`; read-only sandbox, `gpt-5.6-sol` at high effort) | Same-runtime second pass (if no second model is available) | Mechanical extraction + different training data, different blind spots |
 
 ---
 
@@ -393,10 +393,10 @@ exactly as written above on every runtime.
 
   ```bash
   # Drift extraction is a deep analytical task — exhaustive claim extraction
-  # and verdict assignment benefit from maximum reasoning. Default to xhigh.
-  # Only drop to "high" or "medium" if the user explicitly asked for a faster
-  # cheaper run on a small/simple document pair.
-  codex exec -s read-only --config model_reasoning_effort="xhigh" "$(cat <<'PROMPT'
+  # and verdict assignment benefit from deep reasoning. Run gpt-5.6-sol at
+  # high effort (operator-pinned default). Only change model or effort if the
+  # user explicitly asked for a different one on this run.
+  codex exec -s read-only --model gpt-5.6-sol --config model_reasoning_effort="high" "$(cat <<'PROMPT'
   <Agent B prompt from Step 2 — reads .agents/tmp/bootstrap-workflow/drift-sot.md and drift-target.md>
   PROMPT
   )" </dev/null
@@ -429,8 +429,8 @@ exactly as written above on every runtime.
 
 On Claude this skill spawns **Agent A** via the Task tool —
 `Task(subagent_type: "general-purpose", prompt: "<Agent A prompt>")` (no `model` override — inherits the session model) — and
-**Agent B** via Bash as a cross-model Codex extractor (`codex exec -s read-only --config
-model_reasoning_effort="xhigh" "<Agent B prompt>" </dev/null`). If `codex` is unavailable, Agent B
+**Agent B** via Bash as a cross-model Codex extractor (`codex exec -s read-only --model gpt-5.6-sol
+--config model_reasoning_effort="high" "<Agent B prompt>" </dev/null`). If `codex` is unavailable, Agent B
 falls back to a same-runtime Task subagent:
 `Task(subagent_type: "general-purpose", prompt: "<Agent B prompt + reduced-diversity note>")`.
 The Codex/OpenCode mapping above is the near-parity equivalent: same two-extractor cross-model
