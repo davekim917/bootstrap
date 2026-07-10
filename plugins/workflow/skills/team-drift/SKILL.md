@@ -143,10 +143,10 @@ Be exhaustive. Missing a claim is a false negative. Flag uncertainty rather than
 If `codex_available` is "yes", launch via Bash:
 ```bash
 # Drift extraction is a deep analytical task — exhaustive claim extraction
-# and verdict assignment benefit from maximum reasoning. Default to xhigh.
-# Only drop to "high" or "medium" if the user explicitly asked for a faster
-# cheaper run on a small/simple document pair.
-codex exec -s read-only --config model_reasoning_effort="xhigh" "$(cat <<'PROMPT'
+# and verdict assignment benefit from deep reasoning. Run gpt-5.6-sol at
+# high effort (operator-pinned default). Only change model or effort if the
+# user explicitly asked for a different one on this run.
+codex exec -s read-only --model gpt-5.6-sol --config model_reasoning_effort="high" "$(cat <<'PROMPT'
 You are performing an independent drift analysis between two documents.
 
 Read the source of truth: cat .claude/tmp/drift-sot.md

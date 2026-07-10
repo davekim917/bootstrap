@@ -153,11 +153,11 @@ in team-qa/references is code-diff-shaped with required line_start/line_end fiel
 findings don't have line numbers). Free-form output is correct here.
 
 Adversarial design review is a deep analytical task: assumption challenge, blind-spot
-detection, and simpler-approach exploration benefit from maximum reasoning. Default to
-`xhigh`. Only drop to `high` or `medium` if a human operator explicitly asked for a
-faster/cheaper run on a small/simple design.
+detection, and simpler-approach exploration benefit from deep reasoning. Run `gpt-5.6-sol`
+at `high` effort — the operator-pinned default. Only change model or effort if a human
+operator explicitly asked for a different one on this run.
 
-    codex exec --yolo --ephemeral --config model_reasoning_effort="xhigh" - < /tmp/codex-design-prompt.md 2>&1 | tee /tmp/codex-design-output.log
+    codex exec --yolo --ephemeral --model gpt-5.6-sol --config model_reasoning_effort="high" - < /tmp/codex-design-prompt.md 2>&1 | tee /tmp/codex-design-output.log
 
 STEP 4 — Return the Codex output verbatim to the lead. Do not summarize, reformat, or add
 commentary. If Codex returned "NO MATERIAL OBJECTIONS — design is defensible as written."
