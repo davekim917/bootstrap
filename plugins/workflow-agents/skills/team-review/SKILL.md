@@ -192,7 +192,11 @@ adversarial design prompt at `references/codex-adversarial-design-prompt.md`, su
 `{{TARGET_LABEL}}`, `{{USER_FOCUS}}`, and `{{REVIEW_INPUT}}` before invoking it. Returns the findings
 verbatim for the lead to merge. The concrete launch — which model to target, and the
 `codex exec --yolo` invocation when the different model is Codex — is in **§ Dispatch by Runtime**,
-along with the same-runtime fallback when no second model is reachable.
+along with the same-runtime fallback when no second model is reachable. If the user (or an
+invoking skill such as `/team-auto`) asked for a different model or reasoning effort for the
+cross-model step on this run, append one final line to the worker prompt —
+`CODEX OVERRIDE: model=<slug> effort=<level>` — which the worker substitutes into the CLI
+flags, keeping `--yolo` and all other flags unchanged.
 
 See `references/reviewer-prompts.md` for the full worker prompt template.
 

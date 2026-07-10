@@ -176,6 +176,10 @@ Use the Task tool with `subagent_type: general-purpose`. The subagent's only job
 `codex exec --yolo` with the verbatim adversarial design prompt at
 `references/codex-adversarial-design-prompt.md`, substituting `{{TARGET_LABEL}}`, `{{USER_FOCUS}}`,
 and `{{REVIEW_INPUT}}` before invoking Codex. Returns the findings verbatim for the lead to merge.
+If the user (or an invoking skill such as `/team-auto`) asked for a different codex model or
+reasoning effort on this run, append one final line to the subagent prompt —
+`CODEX OVERRIDE: model=<slug> effort=<level>` — which the subagent substitutes into the
+`codex exec` flags, keeping `--yolo` and all other flags unchanged.
 
 See `references/reviewer-prompts.md` for the full subagent prompt template.
 
