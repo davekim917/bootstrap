@@ -58,6 +58,7 @@ export interface ResolvedCommand {
     args: string[];             // argument values after wrapper stripping
     raw: string;                // original text for error messages
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
+    pos?: number;               // source offset when produced by the AST parser
 }
 
 export interface DestructiveMatch {
@@ -624,7 +625,13 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     // Reconstruct raw text for error messages
     const rawParts = [node.name.text || node.name.value, ...(node.suffix || []).map((s: any) => s.text || s.value)];
 
-    return { name, args, raw: rawParts.join(' '), hasInputRedirect };
+    return {
+        name,
+        args,
+        raw: rawParts.join(' '),
+        hasInputRedirect,
+        pos: typeof node.pos === 'number' ? node.pos : undefined,
+    };
 }
 
 /** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */
@@ -672,6 +679,146 @@ export function normalizeCommandFallback(s: string): string {
             .replace(/^(?:timeout|gtimeout)\s+\S+\s+/, '');
     }
     return curr;
+}
+
+// ── Provenance for rm of mktemp variables ───────────────────────────────────
+
+const EXACT_VARIABLE_REFERENCE = /^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$/;
+const SAFE_MKTEMP_SENTINEL = '/tmp/.bootstrap-mktemp-provenance';
+
+/** Collect Assignment nodes without assuming a particular unbash container shape. */
+function collectAssignmentNodes(node: unknown, out: any[], seen = new WeakSet<object>()): void {
+    if (!node || typeof node !== 'object') return;
+    if (seen.has(node as object)) return;
+    seen.add(node as object);
+
+    if (Array.isArray(node)) {
+        for (const child of node) collectAssignmentNodes(child, out, seen);
+        return;
+    }
+
+    const record = node as Record<string, unknown>;
+    if (record.type === 'Assignment') out.push(node);
+    for (const child of Object.values(record)) {
+        collectAssignmentNodes(child, out, seen);
+    }
+}
+
+/** True only for the narrow, known-safe assignment form: name=$(mktemp). */
+function isZeroArgumentMktempAssignment(assignment: any): boolean {
+    let parts = assignment?.value?.parts;
+    if (!Array.isArray(parts) || parts.length !== 1) return false;
+
+    // Quoting the substitution does not change its provenance.
+    if (parts[0]?.type === 'DoubleQuoted') parts = parts[0].parts;
+    if (!Array.isArray(parts) || parts.length !== 1) return false;
+
+    const expansion = parts[0];
+    if (expansion?.type !== 'CommandExpansion') return false;
+
+    const nodes = walkCommandNodes(expansion.script);
+    if (nodes.length !== 1 || (nodes[0].prefix || []).length !== 0) return false;
+    const resolved = resolveCommand(nodes[0]);
+    return resolved?.name === 'mktemp' && resolved.args.length === 0;
+}
+
+/**
+ * Shell builtins can mutate a variable without producing an Assignment AST
+ * node. Fail closed for the common mutation forms and for sourced scripts,
+ * whose effects cannot be known statically.
+ */
+function hasPotentialVariableMutation(fragment: string, variable: string): boolean {
+    const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return [
+        new RegExp(`\\b(?:export|declare|typeset|local|readonly)\\b[^\\n;]*\\b${escaped}\\s*=`),
+        new RegExp(`\\b(?:unset|read|readarray|mapfile)\\b[^\\n;]*\\b${escaped}\\b`),
+        new RegExp(`\\bprintf\\b[^\\n;]*\\s-v\\s+${escaped}\\b`),
+        new RegExp(`\\bfor\\s+${escaped}\\b`),
+        new RegExp(`\\$\\{${escaped}(?::?=)`),
+        /(?:^|[;&|]\s*|\n\s*)(?:source|\.)\s+/m,
+    ].some(rx => rx.test(fragment));
+}
+
+/**
+ * Map each top-level rm command's source offset to variables that are proven
+ * to still contain a path created by zero-argument mktemp.
+ *
+ * This is deliberately narrow. The assignment and rm must both be top-level,
+ * the assignment must be exactly `name=$(mktemp)` (optionally quoted), the
+ * default mktemp directory must be ephemeral, and no intervening mutation may
+ * occur. Anything the static analysis cannot prove remains blocked.
+ */
+function findEphemeralMktempVariables(command: string): Map<number, Set<string>> {
+    const result = new Map<number, Set<string>>();
+
+    try {
+        const ast: any = parse(command);
+        const tmpDir = process.env.TMPDIR || '/tmp';
+        if (!isSafePath(tmpDir)) return result;
+
+        const topLevelCommands = (ast.commands || [])
+            .map((entry: any) => entry?.type === 'Statement' ? entry.command : entry)
+            .filter((node: any) => node?.type === 'Command');
+
+        const safeAssignments = new Set<any>();
+        for (const node of topLevelCommands) {
+            const prefix = node.prefix || [];
+            if (!node.name && prefix.length === 1 &&
+                (node.suffix || []).length === 0 && (node.redirects || []).length === 0 &&
+                prefix[0]?.type === 'Assignment' && isZeroArgumentMktempAssignment(prefix[0])) {
+                safeAssignments.add(prefix[0]);
+            }
+        }
+
+        const assignments: any[] = [];
+        collectAssignmentNodes(ast, assignments);
+        assignments.sort((a, b) => (a.pos ?? -1) - (b.pos ?? -1));
+
+        for (const node of topLevelCommands) {
+            const resolved = resolveCommand(node);
+            if (resolved?.name !== 'rm' || typeof resolved.pos !== 'number') continue;
+
+            const proven = new Set<string>();
+            for (const arg of resolved.args) {
+                const match = arg.match(EXACT_VARIABLE_REFERENCE);
+                const variable = match?.[1] || match?.[2];
+                if (!variable) continue;
+
+                const latest = assignments
+                    .filter(a => a.name === variable && typeof a.pos === 'number' && a.pos < resolved.pos!)
+                    .at(-1);
+                if (!latest || !safeAssignments.has(latest)) continue;
+
+                // A command-local TMPDIR override changes where zero-argument
+                // mktemp writes; fail closed rather than trying to execute the
+                // shell's environment semantics statically.
+                if (/\bTMPDIR\s*=/.test(command.slice(0, latest.pos))) continue;
+
+                const between = command.slice(latest.end ?? latest.pos, resolved.pos);
+                if (hasPotentialVariableMutation(between, variable)) continue;
+                proven.add(variable);
+            }
+
+            if (proven.size > 0) result.set(resolved.pos, proven);
+        }
+    } catch {
+        // Parser failure already falls back conservatively for command
+        // extraction; variable provenance must fail closed as well.
+    }
+
+    return result;
+}
+
+function resolveEphemeralRmArgs(cmd: ResolvedCommand, proven: ReadonlySet<string>): ResolvedCommand {
+    if (proven.size === 0) return cmd;
+    return {
+        ...cmd,
+        args: cmd.args.map(arg => {
+            const match = arg.match(EXACT_VARIABLE_REFERENCE);
+            const variable = match?.[1] || match?.[2];
+            return variable && proven.has(variable) ? SAFE_MKTEMP_SENTINEL : arg;
+        }),
+    };
 }
 
 // ── Hard block checks ────────────────────────────────────────────────────────
@@ -927,6 +1074,7 @@ export function evaluateBashCommand(
     opts: { skipGate?: boolean } = {},
 ): GateEvaluation {
     const commands = extractCommands(command);
+    const ephemeralMktempVariables = findEphemeralMktempVariables(command);
 
     // --- Hard block checks (no bypass, ever) ---
     for (const cmd of commands) {
@@ -949,7 +1097,10 @@ export function evaluateBashCommand(
     // --- rm-specific checks (three-tier protection) ---
     for (const cmd of commands) {
         if (cmd.name === 'rm') {
-            const reason = checkRmDecision(cmd);
+            const proven = typeof cmd.pos === 'number'
+                ? ephemeralMktempVariables.get(cmd.pos) ?? new Set<string>()
+                : new Set<string>();
+            const reason = checkRmDecision(resolveEphemeralRmArgs(cmd, proven));
             if (reason) {
                 return { action: 'block', reason };
             }

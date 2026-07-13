@@ -120,6 +120,34 @@ describe('parity contract — destructive bash', () => {
   }
 });
 
+describe('destructive bash — mktemp variable provenance', () => {
+  for (const cmd of [
+    'log=$(mktemp)\nrm -f "$log"',
+    'log="$(mktemp)"\nrm -f "${log}"',
+    'log=$(mktemp)\npnpm test >"$log" 2>&1\nstatus=$?\ncat "$log"\nif [ "$status" -ne 0 ]; then exit "$status"; fi\nrm -f "$log"',
+  ]) {
+    it(`allows rm of an unchanged zero-argument mktemp variable: ${JSON.stringify(cmd)}`, () => {
+      expect(evaluateBashCommand(cmd).action).toBe('allow');
+    });
+  }
+
+  for (const cmd of [
+    'rm -f "$log"',
+    'log=$(mktemp)\nlog=important.txt\nrm -f "$log"',
+    'log=$(mktemp)\nexport log=important.txt\nrm -f "$log"',
+    'log=$(mktemp)\nprintf -v log %s important.txt\nrm -f "$log"',
+    'log=$(mktemp)\nsource ./mutate-log.sh\nrm -f "$log"',
+    'TMPDIR=./artifacts\nlog=$(mktemp)\nrm -f "$log"',
+    'log=$(mktemp ./important.XXXXXX)\nrm -f "$log"',
+    'log=$(mktemp)\nrm -f "$log/suffix"',
+    'log=$(mktemp)\nrm -f "$log" important.txt',
+  ]) {
+    it(`keeps blocking without safe, exclusive mktemp provenance: ${JSON.stringify(cmd)}`, () => {
+      expect(evaluateBashCommand(cmd).action).toBe('block');
+    });
+  }
+});
+
 describe('parity contract — git-clone destination', () => {
   for (const cmd of GIT_CLONE_BLOCK) {
     it(`blocks: ${cmd}`, () => expect(evaluateGitCloneDestination(cmd).action).toBe('block'));

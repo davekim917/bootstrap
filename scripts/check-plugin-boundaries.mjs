@@ -138,6 +138,10 @@ if (!claudeWorkflowEntry) {
   fail('.claude-plugin/marketplace.json must register bootstrap-workflow');
 } else if (normalizeSource(sourcePath(claudeWorkflowEntry)) !== './plugins/workflow') {
   fail('bootstrap-workflow must source ./plugins/workflow in .claude-plugin/marketplace.json');
+} else if (claudeWorkflowEntry.version !== claudeManifest?.version) {
+  fail(
+    `bootstrap-workflow version must match between marketplace and plugin manifest (${claudeWorkflowEntry.version} !== ${claudeManifest?.version})`,
+  );
 }
 
 for (const entry of claudeEntries) {
