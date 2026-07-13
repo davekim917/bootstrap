@@ -34,6 +34,14 @@ jobs:
       - name: Verify vendored guard copies are up to date
         run: node scripts/vendor-guards.mjs --check
 
+      - name: Install workflow hook dependencies
+        working-directory: plugins/workflow/hooks
+        run: bun install --production
+
+      - name: Install workflow-agents hook dependencies
+        working-directory: plugins/workflow-agents/hooks
+        run: bun install --production
+
       - name: Run guard test suite
         working-directory: plugins/workflow/hooks/guards
         run: bun test
