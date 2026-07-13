@@ -50,6 +50,9 @@ const BASH_CORPUS = [
   'echo hello',
   'cat README.md',
   'rm -rf dist',
+  'log=$(mktemp)\nrm -f "$log"',
+  'log=$(mktemp)\nlog=important.txt\nrm -f "$log"',
+  'log=$(mktemp)\nrm -f "$log" important.txt',
   '',
 ];
 
