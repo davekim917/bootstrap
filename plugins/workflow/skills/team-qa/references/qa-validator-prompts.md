@@ -54,7 +54,8 @@ End with a count: [N] violations found ([M] introduced, [P] pre-existing).
 Spawn a Task subagent (`subagent_type: general-purpose`, no `model` override — inherits the session model) whose sole job is to shell out to ephemeral, read-only `codex exec` with the repository-owned adversarial prompt and return the structured JSON output. The subagent does not do its own adversarial reasoning — Codex does.
 
 **Why this layer of indirection exists:** It keeps CLI output out of the lead's review context while
-preserving a separate-model pass. The prompt and schema belong to this workflow plugin.
+preserving a separate-model pass. The prompt and schema are tracked upstream mirrors; see
+[`CODEX-SOURCES.md`](CODEX-SOURCES.md).
 
 **Why read-only:** The reviewer only needs repository reads and a structured final message. Local
 CLI sessions must never inherit a container-specific permission bypass assumption.
@@ -82,9 +83,11 @@ fi
 
 STEP 2 — Build the prompt file with substitutions.
 
-The template uses three placeholders:
+The template uses four placeholders:
 - {{TARGET_LABEL}} → "branch diff against <BASE_BRANCH>"
 - {{USER_FOCUS}} → "general adversarial review"
+- {{REVIEW_COLLECTION_GUIDANCE}} → scope repository reads to the supplied diff and its direct
+  callers/contracts; do not expand into unrelated pre-existing issues
 - {{REVIEW_INPUT}} → the git diff content
 
 Use Node for the substitution — sed breaks on diff content with special chars.
@@ -105,7 +108,13 @@ const diff = fs.readFileSync(diffPath, 'utf8');
 const prompt = tpl
   .replace('{{TARGET_LABEL}}', 'branch diff against <BASE_BRANCH>')
   .replace('{{USER_FOCUS}}', 'general adversarial review')
+  .replace(
+    '{{REVIEW_COLLECTION_GUIDANCE}}',
+    'Review the supplied diff as the complete change scope. Use repository reads only to understand the changed code and its direct callers/contracts; do not expand into unrelated pre-existing issues.',
+  )
   .replace('{{REVIEW_INPUT}}', diff);
+const unresolved = prompt.match(/\{\{[A-Z0-9_]+\}\}/g);
+if (unresolved) throw new Error(`Unresolved Codex prompt markers: ${unresolved.join(', ')}`);
 fs.writeFileSync(outPath, prompt);
 NODE_EOF
 ```
