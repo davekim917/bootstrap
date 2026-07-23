@@ -5,7 +5,8 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "check": "bun run --bun tsc --noEmit"
+        "check": "bun run --bun tsc --noEmit",
+        "test": "bun test"
     },
     "dependencies": {
         "unbash": "2.2.0"

@@ -15,7 +15,7 @@
  * invocation rules are the primary enforcement; this is a safety net.
  */
 import { readFileSync } from 'fs';
-import { basename, relative } from 'path';
+import { basename, isAbsolute, relative, resolve } from 'path';
 import type { ToolUseInput } from '../lib/types';
 
 /** Filename patterns that indicate workflow artifacts */
@@ -42,8 +42,13 @@ const EMBEDDED_NAME_PATTERNS = [
 ];
 
 /** Paths where artifacts are expected */
-function isCanonicalPath(filePath: string, cwd: string): boolean {
-    const rel = relative(cwd, filePath);
+export function relativeArtifactPath(filePath: string, cwd: string): string {
+    const absolutePath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
+    return relative(resolve(cwd), absolutePath).replace(/\\/g, '/');
+}
+
+export function isCanonicalPath(filePath: string, cwd: string): boolean {
+    const rel = relativeArtifactPath(filePath, cwd);
     // docs/specs/<feature>/<artifact> is the canonical location
     if (rel.startsWith('docs/specs/')) return true;
     // docs/project-scope.md is written by /team-brief
@@ -84,7 +89,7 @@ function main(): void {
         }
 
         // Warn — this looks like an approximated workflow artifact
-        const rel = relative(cwd, filePath);
+        const rel = relativeArtifactPath(filePath, cwd);
         if (hasEmbeddedFeatureName) {
             console.error(
                 `WARNING: You are writing "${rel}" which looks like a workflow artifact ` +
@@ -114,4 +119,4 @@ function main(): void {
     }
 }
 
-main();
+if (import.meta.main) main();

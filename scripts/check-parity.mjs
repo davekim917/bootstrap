@@ -7,8 +7,6 @@
  *   - HOOKS  → scripts/vendor-guards.mjs --check
  *       The shared destructive-guard + file-protection cores are authored once
  *       (workflow/hooks/guards/*-core.ts) and vendored into workflow-agents.
- *   - AGENTS → plugins/workflow-agents/scripts/sync-codex-agents.mjs --check
- *       Codex agent TOMLs are generated from the Claude agent .md sources.
  *   - SKILLS → evals/harness/parity-lint.mjs --all
  *       workflow-agents skills must cover the Claude skills' substance and carry
  *       no Claude-only orchestration tokens outside their Dispatch-by-Runtime
@@ -28,7 +26,6 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const CHECKS = [
   { name: 'hooks    (vendor-guards --check)', argv: ['scripts/vendor-guards.mjs', '--check'] },
-  { name: 'agents   (sync-codex-agents --check)', argv: ['plugins/workflow-agents/scripts/sync-codex-agents.mjs', '--check'] },
   { name: 'skills:gen (sync-agent-skills --check)', argv: ['plugins/workflow-agents/scripts/sync-agent-skills.mjs', '--check'] },
   { name: 'skills:lint (parity-lint --all)', argv: ['evals/harness/parity-lint.mjs', '--all'] },
   { name: 'bounds   (check-plugin-boundaries)', argv: ['scripts/check-plugin-boundaries.mjs'] },
@@ -55,4 +52,4 @@ if (failed > 0) {
   console.error(`\n[check-parity] ${failed} drift check(s) FAILED — regenerate the stale artifact(s) and re-commit.`);
   process.exit(1);
 }
-console.log('\n[check-parity] ✓ all artifacts (hooks · agents · skills · boundaries) in sync.');
+console.log('\n[check-parity] ✓ all artifacts (hooks · skills · boundaries) in sync.');

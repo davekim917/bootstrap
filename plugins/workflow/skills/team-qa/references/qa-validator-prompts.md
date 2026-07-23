@@ -24,8 +24,8 @@ the project's primary language for anything CLAUDE.md doesn't cover.
 Changed files to audit: [list from Step 1]
 
 IMPORTANT — Pre-existing vs. introduced classification:
-For files that were MODIFIED (not newly created), run `git diff main...HEAD -- <file>` to get
-the diff (replace `main` with the project's actual base branch if different, e.g., `staging`).
+For files that were MODIFIED (not newly created), run
+`git diff <BASE_BRANCH>...HEAD -- <file>` using the base branch resolved by the lead.
 Only classify a finding as INTRODUCED if the violating code appears in the diff's added lines
 (lines starting with +). If the violation exists in unchanged lines, classify it as PRE-EXISTING.
 Report both categories separately.
@@ -51,14 +51,13 @@ End with a count: [N] violations found ([M] introduced, [P] pre-existing).
 
 ## Validator E: Codex Adversarial subagent prompt
 
-Spawn a Task subagent (`subagent_type: general-purpose`, no `model` override — inherits the session model) whose sole job is to shell out to `codex exec --yolo` with the verbatim adversarial prompt and return the structured JSON output. The subagent does not do its own adversarial reasoning — Codex does.
+Spawn a Task subagent (`subagent_type: general-purpose`, no `model` override — inherits the session model) whose sole job is to shell out to ephemeral, read-only `codex exec` with the repository-owned adversarial prompt and return the structured JSON output. The subagent does not do its own adversarial reasoning — Codex does.
 
-**Why this layer of indirection exists:**
-- `/codex:adversarial-review` has `disable-model-invocation: true` in its frontmatter, so the Skill tool cannot invoke it from a model turn. The companion script path is blocked the same way.
-- A Task subagent calling `codex exec` directly produces equivalent output while remaining invocable from an agent context.
-- See `references/CODEX-SOURCES.md` for the source mapping.
+**Why this layer of indirection exists:** It keeps CLI output out of the lead's review context while
+preserving a separate-model pass. The prompt and schema belong to this workflow plugin.
 
-**Why `--yolo`:** Codex's internal `bwrap` sandbox cannot create nested user namespaces inside Docker (tested). `--yolo` is the documented short alias for `--dangerously-bypass-approvals-and-sandbox`, "intended solely for running in environments that are externally sandboxed". The agent container is the external sandbox.
+**Why read-only:** The reviewer only needs repository reads and a structured final message. Local
+CLI sessions must never inherit a container-specific permission bypass assumption.
 
 Fill in `<BASE_BRANCH>` and `<REPO_ROOT>` for the project before spawning.
 
@@ -114,20 +113,16 @@ NODE_EOF
 The `<<'NODE_EOF'` (quoted heredoc) prevents shell expansion inside the Node
 script, so you can use `$`, backticks, or quotes freely in the JavaScript.
 
-STEP 3 — Run codex exec with --yolo and the output schema.
+STEP 3 — Run codex exec in an ephemeral read-only sandbox with the output schema.
 
-Adversarial QA review is a deep analytical task: spotting subtle bugs, race conditions,
-and missing edge cases benefits from deep reasoning. Run `gpt-5.6-sol` at `xhigh` effort —
-the operator-pinned default. If the lead's spawn prompt includes a `CODEX OVERRIDE:` line,
-substitute its model/effort values into the flags below and change nothing else — keep
-`--yolo` and every other flag exactly as written. Without that line, run the default as-is.
+Adversarial QA review is a deep analytical task. Inherit the operator's configured Codex model
+and reasoning effort. If the lead's spawn prompt includes a `CODEX OVERRIDE:` line, add only those
+explicit model/effort flags.
 
 ```bash
 codex exec \
-  --yolo \
   --ephemeral \
-  --model gpt-5.6-sol \
-  --config model_reasoning_effort="xhigh" \
+  --sandbox read-only \
   --output-schema "$SCHEMA_FILE" \
   --output-last-message /tmp/codex-result.json \
   - < /tmp/codex-prompt.md 2>&1 | tail -40
@@ -147,9 +142,8 @@ parse it and merge the findings into the team-qa report.
 
 ANTI-PATTERNS:
 - Do NOT write your own adversarial prompt — use the verbatim template file.
-- Do NOT call the codex plugin's companion script — it's blocked by disable-model-invocation.
-- Do NOT invoke /codex:adversarial-review or /codex:review via the Skill tool — same block.
-- Do NOT run codex with a sandbox mode other than --yolo — bwrap will fail in containers.
+- Do NOT call another plugin's companion script or review skill; use this workflow's prompt/schema.
+- Do NOT bypass approvals or disable the sandbox. Validator E is read-only.
 - Do NOT split the diff into chunks — pass the full diff in one call. Codex handles large diffs.
 
 If codex exec fails with an error, return the error output so the lead can report it in the

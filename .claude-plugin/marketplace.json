@@ -1,5 +1,6 @@
 {
   "name": "davekim917-bootstrap",
+  "description": "Structured team-delivery workflow plugins for Claude Code and Codex.",
   "owner": {
     "name": "David Kim"
   },
@@ -8,19 +9,7 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Structured team workflow: brief → design → review → plan → build → qa → ship. Includes /team-auto autonomous runner.",
-      "version": "2.5.7"
-    },
-    {
-      "name": "bootstrap-domain",
-      "source": "./plugins/domain",
-      "description": "Domain expertise skills for software, data, analytics, AI, and finance",
-      "version": "1.0.7"
-    },
-    {
-      "name": "bootstrap-tools",
-      "source": "./plugins/tools",
-      "description": "Tool integration skills for CLI tools — Cortex Code, and more",
-      "version": "1.0.0"
+      "version": "3.0.0"
     }
   ]
 }

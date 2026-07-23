@@ -1,13 +1,13 @@
 // NanoClaw guard plugin for the OpenCode runtime.
 //
-// Brings the destructive-action gate to OpenCode siblings, at parity with the
-// Claude Code `block-destructive` hook. Both share the SAME decision core
-// (`block-destructive-core.ts`) so the two runtimes can never drift.
+// Brings the destructive-action and outbound-email gates to OpenCode siblings,
+// at parity with the Claude Code `block-destructive` hook. Both share the SAME
+// decision cores so the runtimes cannot drift.
 //
 // Mechanism (verified against opencode 1.15.7): `tool.execute.before` THROWS to
 // abort a tool call before it runs; the Error message surfaces to the agent as
-// the tool result. We intercept the `bash` tool, evaluate the command, and
-// throw on a hard block or a denied/timed-out approval gate.
+// the tool result. We intercept `bash` commands and native email connector/MCP
+// calls, then throw on a hard block or a denied/timed-out approval gate.
 //
 // OpenCode loads this from the per-spawn config `plugin: [...]` (wired host-side
 // in src/providers/opencode.ts). It runs on Bun — same runtime as the core —
@@ -32,7 +32,7 @@ import {
   consumeGateApproval,
   IS_NANOCLAW,
 } from './block-destructive-core';
-import { evaluateEmailSend } from './email-gate-core';
+import { evaluateEmailSend, evaluateEmailToolCall } from './email-gate-core';
 import * as emailCore from './email-gate-core';
 import { checkEditProtection, EDIT_TOOLS } from './file-protection-core';
 
@@ -68,9 +68,9 @@ export function assertCoreExports(
   for (const fn of REQUIRED_CORE_FNS) {
     if (typeof coreMod[fn] !== 'function') missing.push(`block-destructive-core.${fn}`);
   }
-  // evaluateEmailSend lives in email-gate-core, not block-destructive-core.
-  if (typeof emailMod.evaluateEmailSend !== 'function') {
-    missing.push('email-gate-core.evaluateEmailSend');
+  // Email evaluators live in email-gate-core, not block-destructive-core.
+  for (const fn of ['evaluateEmailSend', 'evaluateEmailToolCall'] as const) {
+    if (typeof emailMod[fn] !== 'function') missing.push(`email-gate-core.${fn}`);
   }
   if (missing.length > 0) {
     throw new Error(
@@ -195,6 +195,25 @@ export function gateBashOrThrow(command: string): void {
   }
 }
 
+/** Gate a native connector/MCP email action before OpenCode executes it. */
+export function gateNativeEmailToolOrThrow(
+  toolName: string,
+  toolInput: Record<string, unknown> | undefined,
+): boolean {
+  const verdict = evaluateEmailToolCall(toolName, toolInput, {
+    isScheduledTask: process.env.NANOCLAW_IS_SCHEDULED_TASK === '1',
+  });
+  if (verdict.action === 'allow') return false;
+
+  const reason = verdict.label ?? verdict.reason ?? 'Outbound email send requires approval.';
+  const decision = runEmailGate(`tool:${toolName}`, reason, undefined, verdict.summary);
+  if (decision === 'approved') return true;
+  const detail = decision === 'denied'
+    ? 'Cancelled by user. Do not retry — acknowledge briefly.'
+    : 'Timed out waiting for admin approval. Do not retry — ask the user.';
+  throw new Error(`BLOCKED: ${reason} — ${detail}`);
+}
+
 export const NanoclawGuard = async () => {
   // Fail-closed: refuse to operate against a malformed core (B3). Throws here so
   // the guard never silently fails-open on a missing evaluator or gate primitive.
@@ -214,6 +233,7 @@ export const NanoclawGuard = async () => {
         }
         return;
       }
+      if (gateNativeEmailToolOrThrow(input.tool, output.args ?? {})) return;
       // Destructive-command gate (bash).
       if (input.tool !== 'bash') return;
       gateBashOrThrow(bashCommandOf(output.args));

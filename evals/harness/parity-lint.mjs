@@ -20,7 +20,7 @@
  *      "## Dispatch by Runtime" / "Claude (reference…)" region. Anywhere else = leakage
  *      of a primitive that doesn't exist on codex/opencode → FAIL.
  *   3. REFERENCES RESTORED — codex references/ count ≥ Claude references/ count.
- *   4. FRONTMATTER intact (name/version/description).
+ *   4. FRONTMATTER intact (name/description, with only OpenAI skill-schema keys).
  *
  * Length ratio is reported and WARNed (<0.7) but not gated on its own — heading
  * coverage already catches gutting, and a faithful translation that delegates to
@@ -80,8 +80,12 @@ export function hasFrontmatter(md) {
   const m = md.match(/^---\n([\s\S]*?)\n---/);
   if (!m) return { ok: false, missing: ['frontmatter block'] };
   const fm = m[1];
-  const missing = ['name', 'version', 'description'].filter((k) => !new RegExp(`^${k}:`, 'm').test(fm));
-  return { ok: missing.length === 0, missing };
+  const missing = ['name', 'description'].filter((k) => !new RegExp(`^${k}:`, 'm').test(fm));
+  const allowed = new Set(['name', 'description', 'allowed-tools', 'license', 'metadata']);
+  const unexpected = [...fm.matchAll(/^([A-Za-z][\w-]*):/gm)]
+    .map((match) => match[1])
+    .filter((key) => !allowed.has(key));
+  return { ok: missing.length === 0 && unexpected.length === 0, missing, unexpected };
 }
 
 /** Confinement: walk lines tracking whether we're inside the "## Dispatch by Runtime" region. */
@@ -127,7 +131,11 @@ function lintSkill(skill, opts) {
 
   // 4. frontmatter
   const fm = hasFrontmatter(codexMd);
-  fm.ok ? ok('frontmatter has name/version/description') : fail(`frontmatter missing: ${fm.missing.join(', ')}`);
+  if (fm.ok) ok('frontmatter has standard name/description fields');
+  else {
+    if (fm.missing.length > 0) fail(`frontmatter missing: ${fm.missing.join(', ')}`);
+    if (fm.unexpected.length > 0) fail(`frontmatter has non-standard field(s): ${fm.unexpected.join(', ')}`);
+  }
 
   // 2. orchestration confinement
   const leaks = tokenLeaks(codexMd);

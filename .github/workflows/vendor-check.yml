@@ -45,3 +45,7 @@ jobs:
       - name: Run guard test suite
         working-directory: plugins/workflow/hooks/guards
         run: bun test
+
+      - name: Run Codex hook test suite
+        working-directory: plugins/workflow-agents/hooks
+        run: bun test

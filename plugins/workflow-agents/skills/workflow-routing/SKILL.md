@@ -6,8 +6,6 @@ description: >
   invoke /team-brief instead of writing brief/design/plan documents directly. Triggers on phrases
   like "build feature X", "add new endpoint/model/integration", "refactor across files", or any
   request where the requirements are not yet pinned down.
-user-invocable: false
-version: 1.1.0
 ---
 
 # Workflow Routing
@@ -16,14 +14,16 @@ version: 1.1.0
 
 The workflow chain — brief → design → review → plan → build → qa → ship — exists because each stage produces an artifact the next stage depends on. Skipping ahead means designing without crystallized requirements, planning without a committed design, or building without a planned task decomposition. The result is rework, scope creep, or features that don't match what was asked for.
 
-Start with `/team-brief` (invoke the `team-brief` skill the way your runtime loads skills) when the request involves any of:
+Start with `/team-brief` through the runtime's native skill invocation when the request involves any of:
 
 - **New API endpoints, data models, or schemas** — anything that creates a new contract.
 - **Changes spanning 3+ files** — multi-file changes need a planned decomposition, not ad-hoc edits.
 - **New subsystems, integrations, or services** — anything introducing a new dependency or surface.
 - **Ambiguous or underspecified requirements** — when "build X" doesn't pin down what done looks like.
 
-Each downstream skill (`/team-design`, `/team-review`, `/team-plan`, `/team-build`, `/team-qa`, `/team-ship`) has an explicit approval gate. Don't skip ahead.
+`/team-brief` is the one stage this router may select automatically. Each downstream skill
+(`/team-design`, `/team-review`, `/team-plan`, `/team-build`, `/team-qa`, `/team-ship`) advances
+only after its explicit approval gate, unless the user has deliberately invoked `/team-auto`.
 
 ## What counts as trivial — skip the workflow
 

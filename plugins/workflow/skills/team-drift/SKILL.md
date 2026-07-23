@@ -6,7 +6,6 @@ description: >
   classifies mismatches by severity. Use after /team-build (plan vs implementation), between workflow
   stages (design vs brief), or whenever a document claims to reflect another. BOUNDARY: Only the
   two documents under comparison — no external context, no CLAUDE.md, no project skills.
-version: 1.0.0
 ---
 
 # /team-drift — Mechanized Drift Detection
@@ -44,7 +43,8 @@ Two documents: a source-of-truth and a target.
 - After `/team-build` completes — check implementation against plan before `/team-qa`
 - After any stage produces a document — verify the next stage reflects it faithfully
 - Anytime the user suspects "did we drift from X?"
-- Do NOT auto-trigger — the user types `/team-drift` to invoke
+- Direct use is user-invoked. It also runs as an internal validation lane inside approved workflow
+  stages such as `/team-build` and `/team-auto`; do not route unrelated work here automatically.
 
 ---
 
@@ -72,7 +72,7 @@ mkdir -p .claude/tmp
 Before spawning agents, check CLI availability:
 
 ```bash
-codex_available=$(command -v codex >/dev/null 2>&1 && echo "yes" || echo "no")
+codex_available=$(command -v codex >/dev/null 2>&1 && codex login status >/dev/null 2>&1 && echo "yes" || echo "no")
 ```
 
 If `codex_available` is "no":
@@ -82,7 +82,7 @@ If `codex_available` is "no":
 ### Step 2: Spawn Two Independent Claim Extractors in Parallel
 
 Launch both agents simultaneously — Agent A via Task tool (Claude, inherits the session model), Agent B via
-Bash (`codex exec --yolo` — codex sandboxing fails inside containers).
+ephemeral, read-only `codex exec`.
 
 **Context discipline:** Give each agent ONLY the two documents. No CLAUDE.md. No project skills.
 No other files. The accuracy of drift detection degrades with additional context — extra context
@@ -142,13 +142,9 @@ Be exhaustive. Missing a claim is a false negative. Flag uncertainty rather than
 
 If `codex_available` is "yes", launch via Bash:
 ```bash
-# Drift extraction is a deep analytical task — exhaustive claim extraction
-# and verdict assignment benefit from deep reasoning. Run gpt-5.6-sol at
-# xhigh effort (operator-pinned default). Only change model or effort if the
-# user or invoking skill asked for a different one on this run (run-scoped
-# override). --yolo because codex sandboxing fails inside containers —
-# never swap it for a sandbox mode.
-codex exec --yolo --model gpt-5.6-sol --config model_reasoning_effort="xhigh" "$(cat <<'PROMPT'
+# Inherit the operator's configured Codex model and reasoning effort. Add model/effort
+# flags only when the user explicitly requested an override for this run.
+codex exec --ephemeral --sandbox read-only "$(cat <<'PROMPT'
 You are performing an independent drift analysis between two documents.
 
 Read the source of truth: cat .claude/tmp/drift-sot.md
@@ -190,13 +186,9 @@ PROMPT
 )" </dev/null
 ```
 
-**CRITICAL: the `</dev/null` redirect is not optional.** `codex exec` inspects its own stdin
-and, if the pipe is open (which it is when spawned from a harness Bash tool), treats stdin as
-an "append additional input to the prompt" stream and blocks reading it forever. The prompt
-passed as the command argument is NOT enough on its own — codex will still wait on stdin and
-hang indefinitely, emitting only `Reading additional input from stdin...` to its output file.
-Confirmed failure mode from NanoClaw session `6379a5d8-99ca-4e7e-a2c0-f17adf26f1cc` at
-2026-04-08T12:07:23Z — codex hung 16 minutes before being force-killed. `</dev/null` fixes it.
+**CRITICAL: the `</dev/null` redirect is not optional.** When invoked from a harness shell,
+`codex exec` can treat an open stdin as an additional prompt stream and wait indefinitely after
+receiving the command argument. Closing stdin makes this non-interactive read-only worker bounded.
 
 If `codex_available` is "no", use the Task tool instead:
 ```
@@ -393,4 +385,4 @@ claims. Do not read unrelated files.
 |------|------|----------|-----------|
 | Team lead (merge + verdict) | Current session model | N/A | Judgment-heavy: resolving DISPUTED verdicts, classifying severity, making the final call |
 | Agent A (extractor) | Inherited session model (general-purpose) | N/A | Mechanical extraction + Claude perspective |
-| Agent B (extractor) | Codex (OpenAI, read-only sandbox; default reasoning effort) | Claude general-purpose, inherits session model (if `codex` unavailable) | Mechanical extraction + different training data, different blind spots |
+| Agent B (extractor) | Codex (OpenAI, ephemeral read-only sandbox; configured model/effort) | Claude general-purpose, inherits session model (if `codex` unavailable) | Mechanical extraction + different training data, different blind spots |

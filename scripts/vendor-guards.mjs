@@ -15,8 +15,7 @@
  * where (e.g.) codex's installed plugin cache does NOT contain the Claude
  * `workflow` plugin. Vendoring keeps every plugin self-contained.
  *
- * Drift is prevented by the `--check` gate (run in CI / pre-commit), the same
- * model as `plugins/workflow-agents/scripts/sync-codex-agents.mjs`.
+ * Drift is prevented by the `--check` gate (run in CI / pre-commit).
  *
  * Usage:
  *   node scripts/vendor-guards.mjs           # write/refresh vendored copies

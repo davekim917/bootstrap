@@ -1,10 +1,7 @@
-import { describe, test, expect, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, rmSync } from 'fs';
+import { describe, test, expect } from 'bun:test';
 import { join } from 'path';
-import { createHash } from 'crypto';
 
 const HOOK_PATH = join(import.meta.dir, 'block-destructive.ts');
-const GATE_DIR = '/tmp/.claude-destructive-gate';
 
 function makeInput(command: string): string {
     return JSON.stringify({
@@ -15,35 +12,57 @@ function makeInput(command: string): string {
     });
 }
 
-function computeGateHash(command: string): string {
-    return createHash('sha256').update(command).digest('hex').slice(0, 16);
+function makeToolInput(toolName: string, toolInput: Record<string, unknown>): string {
+    return JSON.stringify({
+        session_id: 'test',
+        cwd: '/tmp/test',
+        tool_name: toolName,
+        tool_input: toolInput,
+    });
 }
 
-async function runHook(command: string): Promise<{ exitCode: number; stderr: string }> {
+interface HookResult {
+    exitCode: number;
+    stderr: string;
+    stdout: string;
+    permissionDecision?: string;
+    permissionDecisionReason?: string;
+}
+
+async function runHook(command: string): Promise<HookResult> {
+    return runHookInput(makeInput(command));
+}
+
+async function runHookInput(input: string): Promise<HookResult> {
     const proc = Bun.spawn(['bun', 'run', HOOK_PATH], {
-        stdin: new Blob([makeInput(command)]),
+        stdin: new Blob([input]),
         stderr: 'pipe',
         stdout: 'pipe',
     });
     const exitCode = await proc.exited;
     const stderr = await new Response(proc.stderr).text();
-    return { exitCode, stderr };
+    const stdout = await new Response(proc.stdout).text();
+    let parsed: any = {};
+    if (stdout.trim()) parsed = JSON.parse(stdout);
+    return {
+        exitCode,
+        stderr,
+        stdout,
+        permissionDecision: parsed.hookSpecificOutput?.permissionDecision,
+        permissionDecisionReason: parsed.hookSpecificOutput?.permissionDecisionReason,
+    };
 }
 
-function createApproval(command: string): void {
-    mkdirSync(GATE_DIR, { recursive: true });
-    writeFileSync(`${GATE_DIR}/${computeGateHash(command)}`, 'approved');
-}
-
-function cleanupApprovals(): void {
-    try { rmSync(GATE_DIR, { recursive: true }); } catch {}
+function expectNativeAsk(result: HookResult, reason?: RegExp): void {
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.permissionDecision).toBe('ask');
+    if (reason) expect(result.permissionDecisionReason).toMatch(reason);
 }
 
 // ── Hard blocks (no bypass, ever) ────────────────────────────────────────────
 
 describe('hard blocks', () => {
-    afterEach(cleanupApprovals);
-
     test.each([
         ['find . -exec rm {} \\;', 'find -exec rm'],
         ['find . -delete', 'find -delete'],
@@ -59,18 +78,11 @@ describe('hard blocks', () => {
         expect(stderr).toContain('BLOCKED');
     });
 
-    test('hard blocks cannot be bypassed by gate approval', async () => {
-        const cmd = 'eval "echo hello"';
-        createApproval(cmd);
-        const { exitCode, stderr } = await runHook(cmd);
-        expect(exitCode).toBe(2);
-        expect(stderr).toContain('BLOCKED');
-    });
 });
 
 // ── Gated full-command patterns ──────────────────────────────────────────────
 
-describe('gated full-command patterns (first attempt blocks)', () => {
+describe('gated full-command patterns (local native approval)', () => {
     test.each([
         // Databases
         ['snow sql -q "DROP TABLE users"', 'Snowflake'],
@@ -98,15 +110,13 @@ describe('gated full-command patterns (first attempt blocks)', () => {
         ['dbt run --full-refresh', 'dbt full-refresh'],
         ['dbt build --full-refresh', 'dbt build full-refresh'],
     ])('%s → GATED (%s)', async (cmd) => {
-        const { exitCode, stderr } = await runHook(cmd);
-        expect(exitCode).toBe(2);
-        expect(stderr).toContain('GATED');
+        expectNativeAsk(await runHook(cmd));
     });
 });
 
 // ── Gated lead-command patterns ──────────────────────────────────────────────
 
-describe('gated lead patterns (first attempt blocks)', () => {
+describe('gated lead patterns (local native approval)', () => {
     test.each([
         // Containers
         ['kubectl delete pod my-pod', 'kubectl delete'],
@@ -135,90 +145,58 @@ describe('gated lead patterns (first attempt blocks)', () => {
         // System
         ['dd if=/dev/zero of=/dev/sda', 'dd'],
     ])('%s → GATED (%s)', async (cmd) => {
-        const { exitCode, stderr } = await runHook(cmd);
-        expect(exitCode).toBe(2);
-        expect(stderr).toContain('GATED');
+        expectNativeAsk(await runHook(cmd));
     });
 });
 
-// ── Gate approval flow ───────────────────────────────────────────────────────
+// ── Native local approval flow ───────────────────────────────────────────────
 
-describe('gate approval flow', () => {
-    afterEach(cleanupApprovals);
-
-    test('gated command passes after approval file is created', async () => {
-        const cmd = 'aws rds delete-db-instance --db-instance-identifier test';
-
-        // First attempt: blocked
-        const first = await runHook(cmd);
-        expect(first.exitCode).toBe(2);
-        expect(first.stderr).toContain('GATED');
-
-        // Create approval
-        createApproval(cmd);
-
-        // Retry: allowed
-        const second = await runHook(cmd);
-        expect(second.exitCode).toBe(0);
+describe('native local approval flow', () => {
+    test('destructive commands ask through the native hook protocol', async () => {
+        const result = await runHook('kubectl delete namespace production');
+        expectNativeAsk(result, /kubectl/i);
+        expect(result.stdout).not.toContain('.claude-destructive-gate');
     });
 
-    test('approval is one-time use (consumed on allow)', async () => {
-        const cmd = 'terraform destroy';
-
-        createApproval(cmd);
-
-        // First retry: allowed (consumes approval)
-        const first = await runHook(cmd);
-        expect(first.exitCode).toBe(0);
-
-        // Second retry: blocked again
-        const second = await runHook(cmd);
-        expect(second.exitCode).toBe(2);
-        expect(second.stderr).toContain('GATED');
+    test('an agent cannot manufacture an approval marker', async () => {
+        const result = await runHook('touch /tmp/.claude-destructive-gate/abc');
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toMatch(/self-approval/i);
     });
 
-    test('approval is command-specific (different commands have different hashes)', async () => {
-        const cmd1 = 'aws s3 rm s3://bucket-a';
-        const cmd2 = 'aws s3 rm s3://bucket-b';
-
-        createApproval(cmd1);
-
-        const result1 = await runHook(cmd1);
-        expect(result1.exitCode).toBe(0);
-
-        const result2 = await runHook(cmd2);
-        expect(result2.exitCode).toBe(2);
+    test('a combined destructive email command discloses both effects in one approval', async () => {
+        const result = await runHook(
+            'terraform destroy && gws gmail +send --to ops@example.com --subject done',
+        );
+        expectNativeAsk(result, /also requires outbound-email approval/i);
+        expect(result.permissionDecisionReason).toContain('ops@example.com');
     });
 
-    test('gate message includes correct hash and directory', async () => {
-        const cmd = 'kubectl delete namespace production';
-        const { stderr } = await runHook(cmd);
-        const hash = computeGateHash(cmd);
-        expect(stderr).toContain(hash);
-        expect(stderr).toContain(GATE_DIR);
+    test('an email-only send asks for native approval', async () => {
+        const result = await runHook('gws gmail +send --to ops@example.com --subject report');
+        expectNativeAsk(result, /email send to ops@example.com/i);
     });
 
-    test('approval for gated lead pattern works', async () => {
-        const cmd = 'docker system prune';
-
-        const first = await runHook(cmd);
-        expect(first.exitCode).toBe(2);
-
-        createApproval(cmd);
-
-        const second = await runHook(cmd);
-        expect(second.exitCode).toBe(0);
+    test('email dry-runs remain allowed', async () => {
+        const result = await runHook('gws gmail +send --to ops@example.com --dry-run');
+        expect(result.exitCode).toBe(0);
+        expect(result.permissionDecision).toBeUndefined();
     });
-});
 
-// ── Approval file creation passes through hook ───────────────────────────────
+    test('native email tools ask while draft and read-only tools pass', async () => {
+        const send = await runHookInput(makeToolInput('send_email', {
+            to: 'ops@example.com',
+            subject: 'Report',
+            body: 'sensitive body',
+        }));
+        expectNativeAsk(send, /email send to ops@example.com/i);
+        expect(send.permissionDecisionReason).not.toContain('sensitive body');
 
-describe('approval file creation is not blocked', () => {
-    test('mkdir + echo approval command passes through', async () => {
-        const hash = 'abc1234567890abc';
-        const cmd = `mkdir -p ${GATE_DIR} && echo approved > ${GATE_DIR}/${hash}`;
-        const { exitCode } = await runHook(cmd);
-        expect(exitCode).toBe(0);
+        for (const toolName of ['gmail_create_draft_reply', 'gmail_search_emails', 'send_message']) {
+            const result = await runHookInput(makeToolInput(toolName, {}));
+            expect(result.exitCode).toBe(0);
+            expect(result.permissionDecision).toBeUndefined();
+        }
     });
 });
 
@@ -248,6 +226,9 @@ describe('rm: protected paths hard-blocked', () => {
         ['rm -rf ~/.ssh', '.ssh'],
         ['rm -rf ~/.aws', '.aws'],
         ['rm -rf ~/.config', '.config'],
+        ['rm -rf ~/.agents/skills', '.agents/skills'],
+        ['rm -rf ~/.codex/skills', '.codex/skills'],
+        ['rm -rf ~/.claude/discovery', '.claude/discovery'],
     ])('%s → BLOCKED (%s)', async (cmd) => {
         const { exitCode, stderr } = await runHook(cmd);
         expect(exitCode).toBe(2);
@@ -344,17 +325,16 @@ describe('SQL gate: false positives from string literals and comments are allowe
 describe('SQL gate: leading destructive statement is gated even after non-destructive prefix', () => {
     test('multi-statement: SELECT then DROP TABLE is gated', async () => {
         const cmd = `psql -c "SELECT 1; DROP TABLE foo"`;
-        const { exitCode, stderr } = await runHook(cmd);
-        expect(exitCode).toBe(2);
-        expect(stderr).toContain('GATED');
-        expect(stderr.toLowerCase()).toContain('drop table');
+        const result = await runHook(cmd);
+        expectNativeAsk(result, /drop table/i);
     });
 
     test('gate message includes pattern label and the matched statement', async () => {
         const cmd = `snow sql -q "DROP TABLE inventory.daily_snapshot"`;
-        const { stderr } = await runHook(cmd);
-        expect(stderr).toContain('(DROP)');
-        expect(stderr).toContain('DROP TABLE inventory.daily_snapshot');
+        const result = await runHook(cmd);
+        expectNativeAsk(result);
+        expect(result.permissionDecisionReason).toContain('(DROP)');
+        expect(result.permissionDecisionReason).toContain('DROP TABLE inventory.daily_snapshot');
     });
 });
 
@@ -395,29 +375,27 @@ describe('SQL gate: expanded destructive patterns are gated', () => {
         [`snow sql -q "EXECUTE IMMEDIATE 'TRUNCATE foo'"`, 'EXECUTE IMMEDIATE TRUNCATE'],
         [`snow sql -q "EXECUTE IMMEDIATE $$DELETE FROM foo$$"`, 'EXECUTE IMMEDIATE dollar-quoted'],
     ])('%s → GATED (%s)', async (cmd) => {
-        const { exitCode, stderr } = await runHook(cmd);
-        expect(exitCode).toBe(2);
-        expect(stderr).toContain('GATED');
+        expectNativeAsk(await runHook(cmd));
     });
 
     test('CTE-wrapped pattern is labeled in gate message', async () => {
         const cmd = `psql -c "WITH d AS (DELETE FROM foo RETURNING *) SELECT * FROM d"`;
-        const { stderr } = await runHook(cmd);
-        expect(stderr).toContain('CTE-wrapped DELETE FROM');
-        expect(stderr.toLowerCase()).toContain('delete from foo');
+        const result = await runHook(cmd);
+        expect(result.permissionDecisionReason).toContain('CTE-wrapped DELETE FROM');
+        expect(result.permissionDecisionReason?.toLowerCase()).toContain('delete from foo');
     });
 
     test('UPDATE without WHERE pattern is labeled in gate message', async () => {
         const cmd = `psql -c "UPDATE foo SET col = 1"`;
-        const { stderr } = await runHook(cmd);
-        expect(stderr).toContain('UPDATE without WHERE');
+        const result = await runHook(cmd);
+        expect(result.permissionDecisionReason).toContain('UPDATE without WHERE');
     });
 
     test('EXECUTE IMMEDIATE recursion is reflected in gate message', async () => {
         const cmd = `snow sql -q "EXECUTE IMMEDIATE 'DROP TABLE foo'"`;
-        const { stderr } = await runHook(cmd);
-        expect(stderr).toContain('EXECUTE IMMEDIATE');
-        expect(stderr).toContain('DROP');
+        const result = await runHook(cmd);
+        expect(result.permissionDecisionReason).toContain('EXECUTE IMMEDIATE');
+        expect(result.permissionDecisionReason).toContain('DROP');
     });
 });
 
@@ -463,16 +441,12 @@ describe('SQL gate: non-destructive constructs are still allowed after expansion
 describe('AST precision: commands inside subshells/pipelines are still checked', () => {
     test('destructive command in subshell is caught', async () => {
         const cmd = '(kubectl delete namespace prod)';
-        const { exitCode, stderr } = await runHook(cmd);
-        expect(exitCode).toBe(2);
-        expect(stderr).toContain('GATED');
+        expectNativeAsk(await runHook(cmd));
     });
 
     test('destructive command in pipeline is caught', async () => {
         const cmd = 'echo yes | terraform destroy';
-        const { exitCode, stderr } = await runHook(cmd);
-        expect(exitCode).toBe(2);
-        expect(stderr).toContain('GATED');
+        expectNativeAsk(await runHook(cmd));
     });
 
     test('rm in subshell applies normal tier logic', async () => {
@@ -494,29 +468,21 @@ describe('AST precision: commands inside subshells/pipelines are still checked',
 describe('wrapper resolution', () => {
     test('sudo wrapper is stripped', async () => {
         const cmd = 'sudo kubectl delete pod my-pod';
-        const { exitCode, stderr } = await runHook(cmd);
-        expect(exitCode).toBe(2);
-        expect(stderr).toContain('GATED');
+        expectNativeAsk(await runHook(cmd));
     });
 
     test('sudo with -u flag is handled', async () => {
         const cmd = 'sudo -u root terraform destroy';
-        const { exitCode, stderr } = await runHook(cmd);
-        expect(exitCode).toBe(2);
-        expect(stderr).toContain('GATED');
+        expectNativeAsk(await runHook(cmd));
     });
 
     test('env wrapper is stripped', async () => {
         const cmd = 'env AWS_PROFILE=prod aws rds delete-db-instance --db-instance-identifier test';
-        const { exitCode, stderr } = await runHook(cmd);
-        expect(exitCode).toBe(2);
-        expect(stderr).toContain('GATED');
+        expectNativeAsk(await runHook(cmd));
     });
 
     test('nohup wrapper is stripped', async () => {
         const cmd = 'nohup docker system prune';
-        const { exitCode, stderr } = await runHook(cmd);
-        expect(exitCode).toBe(2);
-        expect(stderr).toContain('GATED');
+        expectNativeAsk(await runHook(cmd));
     });
 });

@@ -202,9 +202,6 @@ export const SAFE_PATH_PATTERNS = [
     /(?:^|\/)\.pytest_cache(?:\/|$)/,
     /(?:^|\/)\.mypy_cache(?:\/|$)/,
     /(?:^|\/)storybook-static(?:\/|$)/,
-    /(?:^|\/)\.claude\/discovery(?:\/|$)/,   // bootstrap artifacts (recreated every run)
-    /(?:^|\/)\.agents\/skills(?:\/|$)/,      // Codex mirror (rebuilt from .claude/skills/)
-    /(?:^|\/)\.codex\/skills(?:\/|$)/,       // optional legacy Codex mirror
 ];
 
 // Destructive SQL patterns, anchored to statement-leading. Each pattern fires
@@ -1110,7 +1107,10 @@ export function evaluateBashCommand(
     return { action: 'allow' };
 }
 
-// ── Gate mechanism (local CC gate-file) ───────────────────────────────────────
+// ── Legacy gate-file compatibility ────────────────────────────────────────────
+// Current local Claude and Codex adapters use their native `ask` permission
+// decision, not this agent-writable marker. These exports remain for the
+// NanoClaw runner contract while older container images are phased out.
 
 export const GATE_DIR = '/tmp/.claude-destructive-gate';
 

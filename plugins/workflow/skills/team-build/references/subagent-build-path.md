@@ -11,7 +11,9 @@ If any condition is false, use Path A (team-coordinated).
 
 ## How It Works
 
-Path B executes groups sequentially in the same session using subagents, rather than creating a full team. The lead spawns one subagent per group, waits for completion, validates, then moves to the next.
+Path B executes groups sequentially using ordinary subagents rather than native agent-team
+teammates. The lead spawns one foreground subagent per group, waits for its final response,
+validates, then moves to the next. Fill the builder prompt with `COORDINATION MODE: SUBAGENT`.
 
 ### Execution Flow
 
@@ -70,11 +72,13 @@ If during Path B execution:
 - A group is too complex for a single subagent pass
 - Fix iterations exceed limits on multiple groups
 
-Switch to Path A: create the team, register remaining groups as tasks, spawn builders. Work already completed by Path B subagents is preserved.
+Switch to Path A: register the remaining namespaced tasks and explicitly spawn native teammates.
+The first teammate forms the session team automatically. Work already completed by Path B
+subagents is preserved.
 
 ## Advantages of Path B
 
-- Lower overhead: no team creation, no shutdown protocol, no message passing
+- Lower overhead: no persistent teammates, shutdown protocol, or message passing
 - Simpler coordination: lead directly validates each group before moving on
 - Better for small builds: 1-3 independent groups don't need team infrastructure
 

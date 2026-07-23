@@ -25,7 +25,7 @@
 ## Research Summary
 
 - **Project patterns:** [What AGENTS.md/CLAUDE.md and loaded project skills say about this area — cite sections]
-- **Library docs:** [Relevant findings from Context7/web search — include sources]
+- **Library docs:** [Relevant findings from primary/vendor documentation or live web/docs tools — include sources]
 - **Existing code:** [Key files read and what they reveal — cite file:line]
 
 ---

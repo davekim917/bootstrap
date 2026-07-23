@@ -34,15 +34,17 @@ Team-qa decides "swarm or not" per file type below; review-swarm picks its own r
 | GL model / financial SQL | ✓ | ✓ | ✓ | ✓ |
 | Reconciliation script | ✓ | ✓ | ✓ | ✓ |
 | Regulatory / report output config | ✓ | — | ✓ | ✓ |
-| LLM client / API wrapper | ✓ | ✓ (llm-engineering) | ✓ | ✓ |
-| Prompt template / eval harness | ✓ | ✓ (llm-engineering) | ✓ | ✓ |
-| Agent loop / orchestrator | ✓ | ✓ (agentic-systems) | ✓ | ✓ |
-| MCP server / tool definition | ✓ | ✓ (agentic-systems) | ✓ | ✓ |
-| Mobile screen / component | ✓ | ✓ (vercel-react-native-skills) | ✓ | ✓ |
+| LLM client / API wrapper | ✓ | ✓ (matching installed skill if available) | ✓ | ✓ |
+| Prompt template / eval harness | ✓ | ✓ (matching installed skill if available) | ✓ | ✓ |
+| Agent loop / orchestrator | ✓ | ✓ (matching installed skill if available) | ✓ | ✓ |
+| MCP server / tool definition | ✓ | ✓ (matching installed skill if available) | ✓ | ✓ |
+| Mobile screen / component | ✓ | ✓ (matching installed skill if available) | ✓ | ✓ |
 | Native module bridge | ✓ | ✓ | ✓ | ✓ |
 | Mobile config (app.json, eas.json) | ✓ | — | ✓ | — (no code) |
 
-When `vercel-react-native-skills` is in `relevant_global_skills`, Validator A loads it for mobile screen/component files.
+Validator A loads a listed skill only when that installed skill's declared scope matches the file.
+An empty `relevant_global_skills` list is valid; use project instructions and language/framework
+defaults rather than inventing a domain skill.
 
 ## Validator E (Codex) routing rule
 

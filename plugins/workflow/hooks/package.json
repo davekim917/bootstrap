@@ -1,7 +1,7 @@
 {
-    "name": "claude-global-hooks",
+    "name": "bootstrap-workflow-hooks",
     "version": "1.0.0",
-    "description": "Global Claude Code hooks with project-local skill support",
+    "description": "Claude workflow safety guards and build-artifact gates for the bootstrap workflow plugin",
     "private": true,
     "type": "module",
     "scripts": {

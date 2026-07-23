@@ -1,10 +1,9 @@
 ---
 name: team-review
 description: >
-  Invoke after /team-design is approved. Produces a review report at docs/specs/<feature>/review.md.
+  Invoke after /team-design is approved. Produces a review report at docs/specs/FEATURE/review.md.
   Do NOT write review docs manually — this skill spawns independent reviewers and has deduplication
   logic that only loads when invoked.
-version: 2.3.0
 ---
 
 # /team-review — Design Review (Architecture + Best Practice + Adversarial)
@@ -17,7 +16,7 @@ into MUST-FIX / SHOULD-FIX / WON'T-FIX. The design cannot proceed to `/team-plan
 items are resolved or explicitly waived.
 
 **Key principle:** The reviewers complement each other along three axes.
-- **Reviewer A (bootstrap-workflow:architecture-advisor, Claude)** judges *internal* fit — does this design work
+- **Reviewer A (prompt-defined architecture reviewer, Claude)** judges *internal* fit — does this design work
   within the project's constraints, patterns, and existing code?
 - **Reviewer B (best-practice-check)** judges *external* fit — does this approach match established
   industry patterns for this problem class, with rigorous source-tier discipline?
@@ -42,7 +41,7 @@ first."
 
 - After `/team-design` is approved and before `/team-plan`
 - When re-reviewing a design that had MUST-FIX items addressed
-- Do NOT auto-trigger — the user consciously enters this workflow by typing `/team-review`
+- Enter after explicit design approval, or as the review stage inside a user-invoked `/team-auto` run.
 
 ---
 
@@ -99,21 +98,11 @@ Before doing anything else, count how many review cycles have already run for th
    # Write design content to .claude/tmp/review-input.md
    ```
 
-4. Identify the 2-3 project skills most relevant to this design. Start from `docs/project-scope.md`
-   if it exists (`relevant_global_skills` field), then cross-reference the design content using this
-   domain-to-skill mapping:
-
-   | Design content signals | Skill to load |
-   |---|---|
-   | dbt models, SQL transforms, marts, staging, schema.yml | `analytics-engineering` |
-   | LLM API calls, RAG, prompts, evals, token cost, structured output | `llm-engineering` |
-   | Agent loops, MCP tools/servers, multi-agent, memory, HITL | `agentic-systems` |
-   | Airflow/Dagster/Prefect DAGs, ETL pipelines, ingestion, CDC, streaming | `data-engineering` |
-   | ML training, notebooks, feature engineering, MLflow, model evaluation | `data-science` |
-   | GL models, ARR/MRR/NRR, revenue recognition, budget vs actuals, reconciliation | `financial-analytics` |
-   | TypeScript/React, REST/GraphQL APIs, auth, Node.js, AWS/GCP services | `software-engineering` |
-
-   Select the 2-3 skills whose signals appear most prominently. Note them — Reviewer A will be told to load them.
+4. Identify up to 3 installed project or provider skills relevant to this design. Start from
+   `docs/project-scope.md` if it exists (`relevant_global_skills` field), then inspect the skills
+   actually available in the current session. Select only skills whose declared scope matches the
+   design. Do not assume a particular domain plugin or invent unavailable skill names. Note the
+   selected names — Reviewer A will be told to load them. If none apply, say `none`.
 
 ### Step 2: Spawn 3 Independent Reviewers in Parallel
 
@@ -121,17 +110,19 @@ Launch all three simultaneously via the Task tool. Do not wait for one to finish
 the next. Each reviewer runs in an isolated context — no shared state, no awareness of the other
 reviewers' findings.
 
-**Pre-flight check for Reviewer C (Codex):** Verify `command -v codex` succeeds and
-`~/.codex/auth.json` exists. If either is missing, skip Reviewer C with a warning and continue
+**Pre-flight check for Reviewer C (Codex):** Verify `command -v codex` and
+`codex login status` both succeed. Do not inspect private auth-file paths; current Codex supports
+multiple credential stores. If either command fails, skip Reviewer C with a warning and continue
 with A and B. Document the skip in the review report header so the reader knows cross-model
 diversity was reduced.
 
 ---
 
-#### Reviewer A: Architecture (bootstrap-workflow:architecture-advisor subagent)
+#### Reviewer A: Architecture (prompt-defined reviewer)
 
-Use the Task tool with `subagent_type: bootstrap-workflow:architecture-advisor`. See `references/reviewer-prompts.md`
-for the full prompt template. Fill in `[LIST SKILL NAMES]` with the 2-3 skills identified in Step 1.
+Use the Task tool with `subagent_type: general-purpose`; the prompt defines the architecture role.
+See `references/reviewer-prompts.md` for the full prompt template. Fill in `[LIST SKILL NAMES]`
+with the installed skills identified in Step 1, or `none`.
 
 Reviewer A's lens: **STRUCTURAL INTEGRITY**
 - Internal consistency of constraints, options, and recommendation
@@ -141,8 +132,8 @@ Reviewer A's lens: **STRUCTURAL INTEGRITY**
 - What's missing or understated
 - Risks not acknowledged
 
-Reviewer A has direct access to Context7, Exa, Read, Grep, Glob, Bash. It can verify library
-capabilities and read codebase files to ground its findings.
+Reviewer A can use the runtime's available documentation/web tools plus Read, Grep, Glob, and
+Bash. It can verify library capabilities and read codebase files to ground its findings.
 
 ---
 
@@ -173,13 +164,13 @@ Skill tool, NOT do its own pattern research. The Skill has rigorous research dis
 #### Reviewer C: Adversarial (Codex, design-focused)
 
 Use the Task tool with `subagent_type: general-purpose`. The subagent's only job is to run
-`codex exec --yolo` with the verbatim adversarial design prompt at
+`codex exec --ephemeral --sandbox read-only` with the repository-owned adversarial design prompt at
 `references/codex-adversarial-design-prompt.md`, substituting `{{TARGET_LABEL}}`, `{{USER_FOCUS}}`,
 and `{{REVIEW_INPUT}}` before invoking Codex. Returns the findings verbatim for the lead to merge.
 If the user (or an invoking skill such as `/team-auto`) asked for a different codex model or
 reasoning effort on this run, append one final line to the subagent prompt —
 `CODEX OVERRIDE: model=<slug> effort=<level>` — which the subagent substitutes into the
-`codex exec` flags, keeping `--yolo` and all other flags unchanged.
+`codex exec` flags. Without an override, inherit the operator's configured Codex model and effort.
 
 See `references/reviewer-prompts.md` for the full subagent prompt template.
 
@@ -197,18 +188,17 @@ lens on a different model — same design doc, different underlying weights — 
 that Claude reviewers tend to share. This is the cross-model diversity check at design stage
 (mirroring what `/team-qa` Validator E does at post-build stage for code diffs).
 
-**Why a design-specific prompt, not the code-diff prompt from `/team-qa`:** The codex plugin
-ships a code-focused adversarial prompt whose attack surface enumerates code-level concerns
+**Why a design-specific prompt, not the code-diff prompt from `/team-qa`:** The QA workflow's
+code-focused adversarial prompt enumerates code-level concerns
 (auth, race conditions, schema drift, line-level grounding). Those don't apply to a design
 document — a design doesn't have line numbers to ground against. The prompt at
 `references/codex-adversarial-design-prompt.md` is purpose-built for design-time review, with
 an assumption-challenge lens and relaxed structured-output requirements (free-form numbered
 findings instead of schema-validated JSON, because design findings don't have line ranges).
 
-**Why `--yolo`:** Same reason as Validator E — Codex's inner bwrap sandbox can't create nested
-user namespaces inside Docker. `--yolo` is the documented short alias for
-`--dangerously-bypass-approvals-and-sandbox`, explicitly intended for externally-sandboxed
-environments like our container.
+**Why read-only:** Reviewer C needs to read one prepared prompt and produce text; it does not need
+write access to the repository or permission bypass. The workflow must be safe in local CLI
+sessions as well as containers, so it never assumes external containment or disables approvals.
 
 ---
 
@@ -339,9 +329,9 @@ OR when the 5-cycle cap is reached (see Step 0 — escalation required).
 
 | Reviewer | Model | Implementation | Lens | Evidence base |
 |----------|-------|---------------|------|---------------|
-| A: bootstrap-workflow:architecture-advisor | Claude | Task subagent | Structural integrity, internal pattern fit | Codebase + CLAUDE.md + Context7/Exa for library verification |
-| B: bootstrap-workflow:best-practice-check | Claude | Task subagent forwarder → Skill tool | External pattern validation, drift from established practice | Mandatory external research via Exa/Context7/DeepWiki with T1/T2/T3 source tiers |
-| C: codex-adversarial-design | Codex (GPT) | Task subagent runs `codex exec --yolo` with verbatim prompt from `references/codex-adversarial-design-prompt.md` | Assumption challenge, blind spots, simpler-approach alternatives | Design document only — no codebase access, no external research |
+| A: prompt-defined architecture reviewer | Claude | Generic Task subagent with architecture prompt | Structural integrity, internal pattern fit | Codebase + CLAUDE.md + available documentation/research tools |
+| B: bootstrap-workflow:best-practice-check | Claude | Task subagent forwarder → Skill tool | External pattern validation, drift from established practice | Mandatory live research with T1/T2/T3 source tiers; provider-agnostic |
+| C: codex-adversarial-design | Codex (GPT) | Task subagent runs sandboxed, ephemeral `codex exec` with the repository prompt | Assumption challenge, blind spots, simpler-approach alternatives | Design document only — no codebase access, no external research |
 
 Each reviewer gets: design document at `.claude/tmp/review-input.md` + CLAUDE.md
 Each reviewer works in isolation: no shared state, no awareness of the other reviewers' findings
@@ -372,7 +362,7 @@ Each pattern below states the *why* first — what fails when the pattern slips 
 | "I trust the design" | Trust is not verification. Check claims against the actual implementation. |
 | "Minor issue" | Classify SHOULD-FIX or WON'T-FIX with stated reason and log. Minor issues accumulate into major debt. |
 | "bootstrap-workflow:best-practice-check is slow, I'll skip it" | The whole point of Reviewer B is the external research discipline. Skipping it removes the skill's value. |
-| "I'll just do the research myself instead of invoking the skill" | Approximation. The skill has tier classification, corroboration rules, and recency filters. You cannot replicate them in an ad-hoc Exa search. |
+| "I'll just do the research myself instead of invoking the skill" | Approximation. The skill has tier classification, corroboration rules, and recency filters. Invoke it rather than improvising a looser search. |
 | "Codex is slow, I'll run Claude with the adversarial lens instead" | Running an adversarial lens on Claude when two other Claude reviewers (A, B) already ran removes the cross-model diversity that was the whole point of Reviewer C. That's not a substitute — that's three Claude reviewers with a blind spot in common. Report C as skipped and let the user decide whether to proceed. |
 | "I'll write my own adversarial prompt for Codex instead of using the verbatim one" | Approximation. The verbatim prompt at `references/codex-adversarial-design-prompt.md` has calibrated grounding rules (no inventing design claims) and a specific assumption-challenge lens tuned for design-stage review. A hand-rolled prompt loses both. |
 

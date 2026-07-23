@@ -5,18 +5,20 @@ description: >
   domain-context) plus dynamic reviewers (architecture, concurrency, security, contract,
   data, performance) based on diff and detected domain. Covers TypeScript, Python, React,
   dbt, SQL, Snowflake, Airflow, data pipelines, ML, and full-stack applications. Reviewers
-  collaborate via SendMessage before reporting. Use when reviewing code, checking uncommitted
+  collaborate directly before reporting. Use when reviewing code, checking uncommitted
   changes, auditing a branch or PR, or running pre-commit review. Triggers on "review",
   "review changes", "check my changes", "review this PR", "code review", "review my code".
   Do not use for design document reviews (use /team-review) or single-line typo fixes.
-version: 1.9.1
 ---
 
 # /review-swarm — Code Review Swarm
 
 ## What This Skill Does
 
-Runs uncommitted changes (or a specified scope) through a team of specialized reviewers that collaborate before reporting. Each reviewer operates as a non-local agent session (TeamCreate + Agent with `team_name`), not a subagent. Adapts reviewer selection to the detected domain and technology stack.
+Runs uncommitted changes (or a specified scope) through a native Claude agent team whose
+specialized reviewers collaborate before reporting. Each reviewer is an independent teammate,
+not a fire-and-return subagent. Adapts reviewer selection to the detected domain and technology
+stack.
 
 **Output:** Combined review report with findings classified as BUG or SUGGESTION.
 **NOT output:** Fixed code. Design reviews. The skill identifies problems — fixes are the developer's job.
@@ -87,11 +89,15 @@ Do not spawn reviewers with zero overlap to the changes. Zero dynamic reviewers 
 - React component with async data fetching → + performance + concurrency (2 dynamic)
 - New Airflow DAG with Snowflake queries → + data + performance (2 dynamic)
 
-### Step 3: Create Team and Spawn Reviewers
+### Step 3: Spawn Agent-Team Reviewers
 
-1. `TeamCreate` with team name `code-review`
-2. Spawn all selected reviewers in parallel using the `Agent` tool with `team_name: "code-review"` — **NOT subagents**
-3. Each reviewer's prompt must include:
+Claude agent teams are session-scoped. There is no explicit team-creation step and no named
+per-skill team: the first teammate spawn forms the session's team automatically. Explicitly ask
+for **agent-team teammates**, because Claude may otherwise choose ordinary subagents.
+
+1. Spawn all selected reviewers in parallel as native teammates with the predictable names from
+   Step 2 — **not fire-and-return subagents**. Reuse the current session team if one already exists.
+2. Each reviewer's prompt must include:
    - The full diff and changed file contents
    - Their focus area and criteria from [review-criteria.md](references/review-criteria.md)
    - The [reviewer prompt template](references/reviewer-prompt-template.md)
@@ -99,13 +105,17 @@ Do not spawn reviewers with zero overlap to the changes. Zero dynamic reviewers 
 
 **Research protocol for reviewers — mandatory before flagging unfamiliar libraries or patterns:**
 
-1. **context7** (for libraries/frameworks) — `mcp__plugin_context7_context7__resolve-library-id` then `mcp__plugin_context7_context7__query-docs` to get current official docs. Training data goes stale; context7 does not. If context7 fails (rate limit, empty result), record the failure in output notes AND proceed immediately to the next step.
-2. **deepwiki** (for specific GitHub repos/dependencies) — `mcp__deepwiki__read_wiki_structure` then `mcp__deepwiki__read_wiki_contents` or `mcp__deepwiki__ask_question` for architecture docs. If deepwiki fails (rate limit, timeout), record the failure in output notes AND proceed immediately to the next step.
-3. **Exa (mandatory — always run)** — `mcp__exa__web_search_exa` for official docs and known pitfalls
-4. **Exa code context** — `mcp__exa__get_code_context_exa` for real usage patterns in public repos
-5. **Exa advanced** — `mcp__exa__web_search_advanced_exa` when filtering by recency or domain is needed
+1. Read project-local documentation and the dependency's current official docs.
+2. Use any connected documentation capability available in the runtime.
+3. Use native web search/open against primary sources: official docs, specifications, release
+   notes, and maintainer repositories.
+4. Use maintained public-repository examples only to corroborate the primary sources.
 
-**Fallback discipline:** Steps 1-2 are preferred but may fail due to rate limits or missing coverage. Step 3 (Exa) is the mandatory floor — it must always run. Never fall back to training data as a primary source for pattern claims. If all external research fails (context7, deepwiki, and all Exa calls), stop and tell the user rather than spawning reviewers with no research backing. Do not flag something as wrong without verifying against current docs.
+**Fallback discipline:** Do not require a specific MCP provider. Research is claim-scoped: plain
+logic, control-flow, and project-contract findings can be proven from the diff and repository;
+claims about unfamiliar library behavior or current best practice require a live source. If no live
+source is reachable for such a claim, omit or mark that claim unverified rather than failing the
+entire review or falling back to training data.
 
 **Project docs site:** If CLAUDE.md or project configuration references a documentation site (e.g. a docs URL, llms.txt, or wiki), fetch relevant pages before spawning reviewers. Extract project-specific patterns and conventions, and include them in reviewer prompts alongside CLAUDE.md context.
 
@@ -161,8 +171,9 @@ SUGGESTION: [N] findings
 
 ### Step 6: Cleanup
 
-1. Shut down all reviewers: `SendMessage` with `type: "shutdown_request"` to each
-2. `TeamDelete` to remove team and task list
+Send a shutdown request to every reviewer teammate. Wait for each reviewer to acknowledge or
+otherwise stop before continuing. Claude cleans up the session-scoped team automatically when the
+session exits; there is no separate team deletion step.
 
 ---
 
@@ -187,7 +198,8 @@ You are the lead. You own the timeline. Reviewers work for you, not the other wa
 
 ## Anti-Patterns (Do Not Do These)
 
-- **Spawning subagents instead of team agents.** The whole point is non-local sessions with `SendMessage` collaboration. Use `Agent` with `team_name`, not plain `Agent`.
+- **Spawning subagents instead of agent-team teammates.** The whole point is independent sessions
+  with direct teammate messaging and a shared task list. Explicitly request native teammates.
 - **Spawning all reviewers every time.** Dynamic selection exists for a reason. A one-line fix does not need architecture review.
 - **Inventing findings.** A clean diff is a valid outcome. "No issues found" is a correct review result.
 - **Skipping fact-checking.** A finding that contradicts the actual codebase wastes the user's time. Verify before including.
@@ -212,10 +224,10 @@ You are the lead. You own the timeline. Reviewers work for you, not the other wa
 ## Context Discipline
 
 **Read:** `git diff HEAD`, changed files in full, CLAUDE.md (for reviewer context)
-**Research:** context7 + deepwiki (preferred), Exa (mandatory), WebSearch (fallback). Project docs site if referenced in CLAUDE.md.
+**Research:** Project/vendor docs plus whatever live documentation, web, and repository capabilities the runtime exposes.
 **Write:** Nothing — review produces a report in the conversation, not on disk
 **Do NOT read:** Unchanged files (unless needed to fact-check a specific finding)
-**Do NOT do:** Fall back to training data when research tools fail — Exa is the mandatory floor
+**Do NOT do:** Fall back to training data for current library or best-practice claims
 
 ---
 

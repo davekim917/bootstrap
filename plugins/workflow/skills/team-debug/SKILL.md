@@ -4,7 +4,6 @@ description: >
   Systematic debugging methodology. Iron law: no fixes without root cause investigation first.
   Five-phase process: investigate, analyze patterns, test hypothesis, implement fix, architecture check.
   Includes rationalization resistance and escalation protocol. Apply during /team-build failures and bug reports.
-version: 1.0.1
 ---
 
 # /team-debug — Systematic Debugging Methodology

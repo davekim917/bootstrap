@@ -4,14 +4,13 @@ Reference for the team lead when constructing prompts for each reviewer in Step 
 
 ---
 
-## Reviewer A: Architecture (bootstrap-workflow:architecture-advisor subagent)
+## Reviewer A: Architecture (prompt-defined role)
 
-Passed via Task tool `prompt` parameter with `subagent_type: bootstrap-workflow:architecture-advisor`. The
-bootstrap-workflow:architecture-advisor has its own system prompt and tools (Read, Grep, Glob, Bash, Exa, Serena) —
-this prompt scopes its review lens.
+Passed via the Task tool `prompt` parameter with `subagent_type: general-purpose`. The prompt below
+defines the complete architecture-review role; no registered custom agent is required.
 
-Reviewer A has direct access to Context7 and Exa MCP tools — it can independently verify
-library capabilities.
+Reviewer A uses whichever live documentation and web capabilities the runtime exposes — it can
+independently verify library capabilities without depending on one MCP vendor.
 
 ```
 Review the design document at .claude/tmp/review-input.md as a critical architecture reviewer.
@@ -26,9 +25,9 @@ Your lens: STRUCTURAL INTEGRITY
 - What assumptions does the design make that might not hold?
 
 For any library the design references, verify it can do what the design claims:
-1. Context7 first: resolve-library-id → query-docs
-2. Exa fallback: mcp__exa__get_code_context_exa or mcp__exa__web_search_exa
-3. WebSearch last resort
+1. Project and official vendor documentation first
+2. Any connected documentation/repository tool available in the runtime
+3. Native web search/open against primary sources
 
 Also load these relevant project skills: [LIST SKILL NAMES]
 
@@ -42,8 +41,7 @@ End with a numbered list of findings only. No prose summary.
 ```
 
 **Fill in before sending:**
-- `[LIST SKILL NAMES]`: replace with the actual domain skill names identified in Step 1
-  (e.g., "software-engineering, llm-engineering" — names match the bootstrap-domain skill set)
+- `[LIST SKILL NAMES]`: replace with installed skill names identified in Step 1, or `none`.
 
 ---
 
@@ -72,7 +70,7 @@ When the skill asks for scope, give it the design document as a "described subsy
 - Approach taken: extract from the design's recommendation / chosen option
 - Technology context: extract from CLAUDE.md and the design's tech stack references
 
-The skill will research established patterns externally (via Context7, DeepWiki, Exa) with
+The skill will research established patterns from current live sources with
 rigorous source-tier discipline (T1/T2/T3 corroboration), then produce a structured pattern
 assessment.
 
@@ -80,7 +78,7 @@ Step 3: Return the skill's complete structured output to the lead. Do not summar
 or add commentary — return it exactly as the skill produces it.
 
 CRITICAL — do not approximate the skill:
-- Do NOT do your own pattern research using Exa or WebSearch
+- Do NOT substitute your own ad-hoc research for the skill's source-tier process
 - Do NOT cite sources you found yourself
 - Do NOT write your own assessment
 - Use the Skill tool to invoke /bootstrap-workflow:best-practice-check. The skill has source-tier
@@ -97,7 +95,7 @@ End with the skill's structured output. No prose summary, no commentary.
 ## Reviewer C: Adversarial (Codex, design-focused)
 
 Passed via Task tool `prompt` parameter with `subagent_type: general-purpose`. The subagent's
-only job is to run `codex exec --yolo` with the verbatim adversarial design prompt at
+only job is to run an ephemeral, read-only `codex exec` with the repository-owned adversarial design prompt at
 `references/codex-adversarial-design-prompt.md`, substitute three placeholders, capture the
 output, and return it verbatim to the lead.
 
@@ -112,10 +110,10 @@ adversarial review.
 
 STEP 0 — Pre-flight. Verify Codex is available:
 
-    command -v codex && test -r /home/node/.codex/auth.json
+    command -v codex && codex login status
 
 If either check fails, return exactly this string and stop:
-    REVIEWER_C_SKIPPED: Codex unavailable — <reason (no binary / no auth file)>
+    REVIEWER_C_SKIPPED: Codex unavailable — <reason (no binary / login status failed)>
 
 STEP 1 — Locate the verbatim design-adversarial prompt template. It ships as a reference
 alongside this team-review skill. Find it:
@@ -148,18 +146,15 @@ Use Node with argv (NOT env vars — those don't inherit cleanly into child proc
 The quoted heredoc `<<'NODE_EOF'` prevents shell expansion inside the Node script so you can
 use `$`, backticks, or quotes freely in the JavaScript.
 
-STEP 3 — Run codex exec with --yolo. Design review does NOT use --output-schema (the schema
+STEP 3 — Run codex exec in an ephemeral read-only sandbox. Design review does NOT use --output-schema (the schema
 in team-qa/references is code-diff-shaped with required line_start/line_end fields; design
 findings don't have line numbers). Free-form output is correct here.
 
-Adversarial design review is a deep analytical task: assumption challenge, blind-spot
-detection, and simpler-approach exploration benefit from deep reasoning. Run `gpt-5.6-sol`
-at `xhigh` effort — the operator-pinned default. If the lead's spawn prompt includes a
-`CODEX OVERRIDE:` line, substitute its model/effort values into the command below and change
-nothing else — keep `--yolo` and every other flag exactly as written. Without that line, run
-the default as-is.
+Adversarial design review is a deep analytical task. Inherit the operator's configured Codex model
+and reasoning effort. If the lead's spawn prompt includes a `CODEX OVERRIDE:` line, add only those
+explicit model/effort flags to the command below.
 
-    codex exec --yolo --ephemeral --model gpt-5.6-sol --config model_reasoning_effort="xhigh" - < /tmp/codex-design-prompt.md 2>&1 | tee /tmp/codex-design-output.log
+    codex exec --ephemeral --sandbox read-only - < /tmp/codex-design-prompt.md 2>&1 | tee /tmp/codex-design-output.log
 
 STEP 4 — Return the Codex output verbatim to the lead. Do not summarize, reformat, or add
 commentary. If Codex returned "NO MATERIAL OBJECTIONS — design is defensible as written."
@@ -167,10 +162,9 @@ return that exactly. The lead will parse it and merge with Reviewers A and B.
 
 CRITICAL — do NOT do any of these:
 - Do NOT write your own adversarial prompt. Use the verbatim template file.
-- Do NOT invoke /codex:adversarial-review or /codex:review via the Skill tool — both are
-  blocked by `disable-model-invocation: true` in their frontmatter.
-- Do NOT call the codex plugin's companion script — same block.
-- Do NOT run codex with a sandbox mode other than --yolo — bwrap will fail in containers.
+- Do NOT invoke another installed review skill or companion script; this workflow owns the prompt
+  and output contract it is evaluating.
+- Do NOT bypass approvals or disable the sandbox. Reviewer C is read-only.
 - Do NOT fall back to your own Claude review if Codex fails — just report
   REVIEWER_C_SKIPPED and let the lead decide whether to proceed with A+B only.
 
@@ -187,10 +181,10 @@ so the lead can note it in the report header.
 **For all three reviewers:**
 
 - All prompts are passed via the Task tool's `prompt` parameter
-- Reviewer A uses `subagent_type: bootstrap-workflow:architecture-advisor`
-- Reviewers B and C use `subagent_type: general-purpose` (they're forwarders, not specialized reviewers)
+- All three reviewers use `subagent_type: general-purpose`; their prompts define their roles.
+- Reviewers B and C are forwarders; Reviewer A performs the architecture review directly.
 - All subagents have access to the Skill tool (B invokes /bootstrap-workflow:best-practice-check)
-  and Bash (C runs codex exec --yolo)
+  and Bash (C runs sandboxed `codex exec`)
 
 **Pre-fetched library docs (optional):**
 

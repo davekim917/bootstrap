@@ -27,7 +27,8 @@ Prefer artifact-local `.tmp` folders over global hidden state so resumed agents 
 
 Use subagents only when the user invoked a workflow that clearly implies delegation, review, QA, swarm work, or parallel build work. Keep delegation bounded:
 
-- Give each worker a disjoint write scope.
+- Give each worker a disjoint write scope. Permit minimal read-only access to stable dependencies
+  needed to implement that scope; write isolation is the invariant.
 - Tell workers they are not alone in the codebase and must not revert others' work.
 - Delegate sidecar work that can run while the lead continues useful local work.
 - Do not delegate the next blocking step when the lead needs the result immediately.

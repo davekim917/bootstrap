@@ -1,10 +1,11 @@
 # Security Baseline Checklist
 
-Used as a quick inline check for non-security-critical files before deciding whether to invoke
-the `bootstrap-workflow:security-reviewer` agent.
+Used as a quick inline check for non-security-critical files before deciding whether the
+`review-swarm` needs an explicit security-focused reviewer role.
 
-If the changed files touch auth, user data, or external APIs — always invoke `bootstrap-workflow:security-reviewer`
-agent regardless of this baseline. This checklist is for quick triage, not deep analysis.
+If the changed files touch auth, user data, or external APIs, always include a prompt-defined
+security reviewer in `review-swarm`, regardless of this baseline. This checklist is for quick
+triage, not deep analysis.
 
 ---
 
@@ -118,9 +119,10 @@ metric definitions. These supplement (not replace) the checks above.
 
 ---
 
-## When to Escalate to `bootstrap-workflow:security-reviewer` Agent
+## When to Add a Security Reviewer to `review-swarm`
 
-Invoke the `bootstrap-workflow:security-reviewer` agent (not this checklist) when changed files include:
+Add a prompt-defined security reviewer role to `review-swarm` (do not rely on this checklist alone)
+when changed files include:
 - Authentication or session management code
 - Authorization / permissions / role checks
 - Payment processing or financial data

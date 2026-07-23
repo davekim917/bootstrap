@@ -13,7 +13,7 @@
  *   - 9 skills (the 5 orchestration skills with Dispatch-by-Runtime sections +
  *     4 others) carry JUDGMENT-BASED runtime-neutral translation — re-worded prose,
  *     Skill-tool/`~/.claude` invocation language rephrased to neutral form, inline
- *     TeamCreate/Task blocks lifted into a Dispatch section. That can't be faithfully
+ *     teammate/subagent dispatch blocks lifted into a Dispatch section. That can't be faithfully
  *     reproduced by mechanical rules, so those skills stay hand-authored and are
  *     gated for drift by `evals/harness/parity-lint.mjs` (substance coverage +
  *     no-Claude-token-leak) instead. See PARITY.md.
@@ -49,6 +49,8 @@ const MANAGED = [
 /** Mechanical, runtime-neutral substitutions (Claude → agents). */
 export function transform(text) {
   return text
+    // Claude supports visibility controls that are not part of the OpenAI skill schema.
+    .replace(/^user-invocable:\s*(?:true|false)\s*\n/m, '')
     .replace(/\.claude\/tmp/g, '.agents/tmp/bootstrap-workflow')
     // standalone CLAUDE.md → AGENTS.md/CLAUDE.md (not inside a path like ~/.claude/CLAUDE.md)
     .replace(/(?<![./\w])CLAUDE\.md/g, 'AGENTS.md/CLAUDE.md');

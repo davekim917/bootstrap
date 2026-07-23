@@ -9,19 +9,16 @@ Stage-based command pipeline for codebase analysis and AI development setup
 `/bootstrap-domain`, `/bootstrap-audit`, `/bootstrap-complete`).
 
 Replaced by writing project conventions directly into `CLAUDE.md` and using the
-team workflow (`bootstrap-workflow`) plus global domain skills (`bootstrap-domain`)
-without a discovery/scaffold step.
+team workflow (`bootstrap-workflow`) without a discovery/scaffold step. Domain
+knowledge now comes from separately maintained runtime plugins.
 
 Removed from `.claude-plugin/marketplace.json` so Claude Code does not load it.
 The files remain here for reference and rollback.
 
 ## jony-ive
 
-UI/UX design audit skill modeled on Jony Ive / Steve Jobs sensibilities. Was part
-of `bootstrap-domain`. Moved out because it isn't part of the active workflow
-anymore. Bootstrap-domain's plugin description was updated to drop the "UI/UX
-design" mention.
+UI/UX design audit skill modeled on Jony Ive / Steve Jobs sensibilities. It was
+once part of the retired `bootstrap-domain` plugin and is not part of the active
+workflow distribution.
 
-The files remain here for reference and rollback. To re-enable, move the folder
-back to `plugins/domain/skills/jony-ive/` — `bootstrap-domain` auto-discovers
-skills under `skills/`.
+The files remain here for historical reference only.

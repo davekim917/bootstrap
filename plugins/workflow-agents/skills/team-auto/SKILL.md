@@ -6,7 +6,6 @@ description: >
   /team-qa, then STOPS at the /team-ship gate for user decision. Pauses for destructive
   actions, hard-constraint violations, and any decision that would require guessing rather
   than evidence. Do NOT auto-trigger — user types /team-auto to invoke.
-version: 1.2.0
 ---
 
 # /team-auto — Autonomous Workflow Runner
@@ -42,7 +41,7 @@ The whole skill turns on these three. Read them first; the stage logic below is 
 Inside `/team-auto`:
 
 **Guessing (escalate as `truly-ambiguous`):**
-- "I think this library has X feature" → verify via Context7, or escalate
+- "I think this library has X feature" → verify in primary/vendor documentation through an available live docs or web tool, or escalate
 - "The user probably wants Y" → only if Y is in the brief, or escalate
 - "I'm not sure what the codebase convention is here" → check via the sub-skill that already read it, or escalate
 - "Both options seem fine" without grounding → not a decision; escalate
@@ -54,15 +53,18 @@ Inside `/team-auto`:
 
 The dividing line is **named, citable grounding**. Acceptable grounding sources:
 - A code reference surfaced by a sub-skill finding (`file:line`)
-- A doc citation surfaced by a sub-skill (Context7, README, design.md excerpt the sub-skill quoted)
+- A doc citation surfaced by a sub-skill (vendor documentation, README, or a design.md excerpt the sub-skill quoted)
 - A brief excerpt the sub-skill quoted
 - An established codebase convention — must cite either a project doc / `AGENTS.md/CLAUDE.md` line, or **at least two** code references in the same area, that the sub-skill surfaced
 
 Training data is **not** an acceptable grounding source (per your global agent config's truth-source rule). If the only thing supporting a decision is "this is generally how it's done," that is guessing — escalate.
 
-### Principle 2: Safety hooks are the only thing standing between autonomous work and irreversible damage
+### Principle 2: Safety hooks are a mandatory defense against irreversible damage
 
-`block-destructive`, file-protection, and workflow-gate-enforcement exist precisely because the human is not in the loop on every action. When one fires, it has caught something the orchestrator was about to miss — that is signal, not noise. Working around a hook block defeats the safety model.
+`block-destructive`, file-protection, and workflow-gate-enforcement complement the runtime's own
+permissions, sandbox, and user-approval controls. They exist because the human is not in the loop
+on every action. When one fires, it has caught something the orchestrator was about to miss — that
+is signal, not noise. Working around a hook block defeats the layered safety model.
 
 The hooks stay active throughout `/team-auto`. If any blocks or warns, escalate with category `hook-blocked`. Don't retry, don't work around, don't edit a flagged path.
 
@@ -102,16 +104,16 @@ Record the citations and the four scope answers in the `auto_judgments` entry �
 
 When Stage A begins, write an empty sentinel file at `docs/specs/<feature>/.team-auto-active`. Touch it (update mtime) at every stage transition (start of B, C, D, E) and after every QA fix-cycle.
 
-**Why:** The `AskUserQuestion` block hook reads this sentinel to enforce no-mid-flight prompts. A fresh sentinel (mtime < 30 min) means the hook will reject any `AskUserQuestion` call — the only way to consult the human is through the escalation protocol (write `auto-pause.md`, display the gate, exit).
+**Why:** The Codex `PreToolUse` guard reads this sentinel to enforce no-mid-flight prompts. A fresh sentinel (mtime < 30 min) makes the guard reject native `request_user_input` calls — the only valid way to consult the human is through the escalation protocol (write `auto-pause.md`, display the gate, exit). Codex hooks cannot intercept a plain conversational question emitted as final text, so the workflow instruction is the second enforcement layer: never substitute a chat question when the tool call is blocked.
 
 **Lifecycle:**
 - Stage A start → create sentinel
 - Stage transitions and fix-cycle completions → `touch` the sentinel
 - Stage E success → delete sentinel
 - Escalation → delete sentinel as Step 0 of the protocol (escalation = team-auto has exited; the human takes over)
-- Stale sentinel (mtime > 30 min) is ignored by the hook, so a crashed `/team-auto` never permanently blocks `AskUserQuestion`
+- Stale sentinel (mtime > 30 min) is ignored by the hook, so a crashed `/team-auto` never permanently blocks `request_user_input`
 
-**Do not bypass the hook.** If you find yourself wanting to call `AskUserQuestion`, that is the model drifting toward a manual workflow — re-read Principle 3 and the Stage D rules. The hook is not your adversary; it is the load-bearing enforcement of the principles below.
+**Do not bypass the hook or fall back to a chat question.** If you find yourself wanting to request user input, that is the model drifting toward a manual workflow — re-read Principle 3 and the Stage D rules. Apply grounded judgment or use the escalation protocol.
 
 ---
 
@@ -162,13 +164,10 @@ Run the four stages sequentially — each stage's output is the next stage's inp
 stage, the invoked skill handles its own pre-flight checks and parallelism. team-auto only
 inspects the gate output and decides go / escalate.
 
-**Run-scoped codex overrides:** If the user's `/team-auto` invocation asks for a different
-model or reasoning effort for the cross-model codex steps (e.g. "codex steps at max
-reasoning"), forward that requirement in the args of every sub-skill invocation whose stage
-shells to `codex exec` (`/team-review` Reviewer C, `/team-qa` Validator E, `/team-drift`
-Agent B). Each sub-skill lead applies it via its `CODEX OVERRIDE:` instructions. Overrides
-cover model/effort only — the `--yolo` flag is never dropped (codex sandboxing fails in
-containers).
+**Run-scoped model overrides:** If the user asks for a specific model or reasoning effort for an
+optional second-model pass, forward that requirement to `/team-review`, `/team-qa`, and
+`/team-drift`. Each stage uses the selected runtime's documented safe/read-only invocation. A
+model override never authorizes disabling approvals or sandboxing.
 
 ### Stage A: Review
 
@@ -208,7 +207,8 @@ Invoke `/team-plan`. Read the gate:
 - Plan written, no errors → Stage C.
 - Plan has a fixable issue (missing decision-record entry, feature-name mismatch, ambiguous task scope, minor sequencing issue) **and `revision-cycle == 0`** → revise inline (run grounding-and-scope check; record any judgment calls under `auto_judgments`) and re-invoke `/team-plan`.
 - Plan would require changing a HARD constraint, brief requirement, or product scope → escalate `hard-constraint`.
-- Missing tests for HARD constraints (warning only, plan still produced) → proceed; QA catches it.
+- Missing tests or traceability for HARD constraints → the plan is not valid. Repair once under
+  the revision cap; if it still fails, escalate `cap-reached`. Do not defer a known plan defect to QA.
 
 Revision cap: 1. A second revision is evidence of upstream design instability — escalate `cap-reached`, don't keep patching. (Plan revision is a deterministic repair of the artifact, not iterative validation like Review/QA — one pass is enough.)
 
@@ -249,7 +249,7 @@ Invoke `/team-qa`. Read the gate:
 
 **Forbidden Stage D actions (these patterns are evidence of bail-out, not legitimate escalation):**
 
-- Calling `AskUserQuestion` (the block hook will refuse it — see the Sentinel section)
+- Calling `request_user_input` or substituting a plain chat question (the native tool guard covers the former; the workflow contract forbids both — see the Sentinel section)
 - Presenting "two options" or any N-options menu in chat
 - Estimating fix effort by phase / severity tier and asking the user to choose a phase
 - Summarizing planned fixes before iterating ("here's what I'm about to do…")
@@ -322,7 +322,7 @@ Do **not** invoke `/team-ship`. The user runs it themselves.
 
 When you escalate, do all five in order:
 
-0. **Delete the sentinel** `docs/specs/<feature>/.team-auto-active`. Escalation means `/team-auto` has exited; the human now drives. Leaving the sentinel in place would keep the `AskUserQuestion` block hook armed against a human-led session.
+0. **Delete the sentinel** `docs/specs/<feature>/.team-auto-active`. Escalation means `/team-auto` has exited; the human now drives. Leaving the sentinel in place would keep the `request_user_input` guard armed against a human-led session.
 1. **STOP** all autonomous activity. No retry, no "one more thing".
 2. **Persist state.** Append the relevant cycle entry to `docs/specs/<feature>/decisions.yaml`
    if a stage was mid-cycle when you stopped.
@@ -381,7 +381,7 @@ When you escalate, do all five in order:
 - **Don't dress up scope creep as judgment.** "Apply judgment" means choosing between options with citable grounding (sub-skill finding, doc, brief, named convention). Adding a feature, expanding observable behavior, or making safety/correctness tradeoffs is escalation territory, not judgment territory. If you cannot name the specific grounding, it is not judgment — escalate.
 - **Don't fabricate "convention."** A convention requires an actual citation: a project doc / `AGENTS.md/CLAUDE.md` line, or at least two code references in the same area surfaced by a sub-skill. "I've seen this pattern before" is not a citation — it's training data, which is not an acceptable grounding source.
 - **Don't resurrect design questions at Stage D.** By QA, the feature has cleared brief + design + up to five review cycles + plan + build. A QA finding framed as "library A vs B" or "frontend vs backend" is presumptively not a new design call — design already chose. Apply the option consistent with the existing design, cite the design section, record under `auto_judgments`. Only escalate `hard-constraint` when the finding proves the existing design violates a user-facing requirement or safety invariant.
-- **Don't call `AskUserQuestion` mid-flight.** The block hook will refuse it while the sentinel is fresh. If you feel the need to ask, the answer is one of: (a) apply judgment per Principle 3, (b) write `auto-pause.md` and escalate. There is no third path. Calling `AskUserQuestion` and seeing it blocked is wasted tokens and a sign of model drift.
+- **Don't request user input mid-flight.** The guard refuses `request_user_input` while the sentinel is fresh, and hooks cannot make a plain chat question acceptable. If you feel the need to ask, the answer is one of: (a) apply judgment per Principle 3, (b) write `auto-pause.md` and escalate. There is no third path.
 - **Don't present a Stage D "fix plan" before iterating.** Stage D is not a planning stage. Iterate MUST-FIX findings one at a time, applying judgment with grounding, validating after each. SHOULD-FIX and ADVISORY are deferred to Stage E's summary unconditionally.
 
 ---
@@ -398,7 +398,11 @@ When you escalate, do all five in order:
 - `docs/specs/<feature>/auto-pause.md` — only on escalation
 
 **Do NOT read:**
-- `design.md`, `brief.md`, `AGENTS.md/CLAUDE.md`, or the wider source tree to *gather* grounding — the invoked stages handle their own reads. If you need grounding the sub-skill didn't surface, re-invoke the sub-skill (or escalate). team-auto is an orchestrator, not a fact-checker.
+- The wider source tree to gather new grounding. The invoked stages handle source investigation.
+  `/team-auto` may re-read the approved brief, design, decision record, and project instructions
+  when it must verify a stage handoff or cite the already-approved scope. If additional codebase
+  grounding is needed, re-invoke the owning sub-skill (or escalate). team-auto is an orchestrator,
+  not a substitute reviewer.
 
 The grounding you cite in `auto_judgments` must come from sub-skill output you actually have. Citing a `file:line` you have not seen surfaced is fabrication — escalate `truly-ambiguous` instead.
 

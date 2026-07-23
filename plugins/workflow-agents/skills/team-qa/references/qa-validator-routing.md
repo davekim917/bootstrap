@@ -5,7 +5,7 @@ Which validators run on which file types, and what file-type concerns to forward
 ## Table of contents
 
 - [Validator routing by file type](#validator-routing-by-file-type) — which of A/B/CD/E run for each file type
-- [Validator E (Codex) routing rule](#validator-e-codex-routing-rule)
+- [Validator E (adversarial) routing rule](#validator-e-adversarial-routing-rule)
 - [Domain hints — Part 1: file-type concerns](#domain-hints--part-1-file-type-concerns) — annotation block forwarded verbatim to review-swarm
 - [Domain hints — Part 2: project conventions](#domain-hints--part-2-project-conventions)
 
@@ -34,24 +34,26 @@ Team-qa decides "swarm or not" per file type below; review-swarm picks its own r
 | GL model / financial SQL | ✓ | ✓ | ✓ | ✓ |
 | Reconciliation script | ✓ | ✓ | ✓ | ✓ |
 | Regulatory / report output config | ✓ | — | ✓ | ✓ |
-| LLM client / API wrapper | ✓ | ✓ (llm-engineering) | ✓ | ✓ |
-| Prompt template / eval harness | ✓ | ✓ (llm-engineering) | ✓ | ✓ |
-| Agent loop / orchestrator | ✓ | ✓ (agentic-systems) | ✓ | ✓ |
-| MCP server / tool definition | ✓ | ✓ (agentic-systems) | ✓ | ✓ |
-| Mobile screen / component | ✓ | ✓ (vercel-react-native-skills) | ✓ | ✓ |
+| LLM client / API wrapper | ✓ | ✓ (matching installed skill if available) | ✓ | ✓ |
+| Prompt template / eval harness | ✓ | ✓ (matching installed skill if available) | ✓ | ✓ |
+| Agent loop / orchestrator | ✓ | ✓ (matching installed skill if available) | ✓ | ✓ |
+| MCP server / tool definition | ✓ | ✓ (matching installed skill if available) | ✓ | ✓ |
+| Mobile screen / component | ✓ | ✓ (matching installed skill if available) | ✓ | ✓ |
 | Native module bridge | ✓ | ✓ | ✓ | ✓ |
 | Mobile config (app.json, eas.json) | ✓ | — | ✓ | — (no code) |
 
-When `vercel-react-native-skills` is in `relevant_global_skills`, Validator A loads it for mobile screen/component files.
+Validator A loads a listed skill only when that installed skill's declared scope matches the file.
+An empty `relevant_global_skills` list is valid; use project instructions and language/framework
+defaults rather than inventing a domain skill.
 
-## Validator E (Codex) routing rule
+## Validator E (adversarial) routing rule
 
-Codex operates on the git diff as a whole, not on individual file types. It runs on **every QA invocation that has any code changes**, regardless of file type — its adversarial framing applies broadly (auth, data, race conditions, observability gaps appear everywhere).
+The adversarial worker operates on the git diff as a whole, not on individual file types. It runs on **every QA invocation that has any code changes**, regardless of file type — its framing applies broadly (auth, data, race conditions, observability gaps appear everywhere).
 
 Skip Validator E only when:
 - The diff contains pure docs (`.md`, `README`) and no code at all.
 - The diff is empty (no changed files).
-- Codex CLI is unavailable (pre-flight skip with warning — see `team-qa/SKILL.md`).
+- The runtime cannot create an isolated worker and no explicitly configured safe external adversary is available (skip with a coverage warning — see `team-qa/SKILL.md`).
 
 ---
 

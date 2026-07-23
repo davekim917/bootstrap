@@ -98,7 +98,7 @@ The bad version transcribes the implementation. That wastes context budget and c
 ```
 Task B1: Add weekly revenue model
 File: models/marts/fct_user_revenue_weekly.sql [CREATE]
-Approach: Aggregate payments to user-week grain. Follows analytics-engineering skill §3 mart conventions.
+Approach: Aggregate payments to user-week grain. Follows the project's verified mart conventions.
 
 Interface / signature (schema.yml):
   - name: fct_user_revenue_weekly

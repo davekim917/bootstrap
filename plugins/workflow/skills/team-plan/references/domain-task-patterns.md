@@ -11,7 +11,7 @@ in `/team-plan` Step 4 — transcribe the relevant pattern directly rather than 
 Task B1: Add weekly revenue fact model
 File: models/marts/fct_user_revenue_weekly.sql [CREATE]
 Companion: models/marts/_marts__models.yml [MODIFY — add schema entry]
-Approach: Aggregate payments to user-week grain. Follows analytics-engineering skill mart conventions.
+Approach: Aggregate payments to user-week grain. Follows the project's verified mart conventions.
           Materialization: table (not incremental — <1M rows). Prefix: fct_.
 
 Interface / signature (schema.yml):
@@ -48,7 +48,7 @@ File: pipelines/ingestion/snowflake/orders_dag.py [CREATE]
 Approach: Daily incremental load from source Snowflake → landing zone S3.
           Watermark-based: reads `max(updated_at)` from metadata table, loads newer records only.
           Idempotent: overwrites partition `date=YYYY-MM-DD` on each run.
-          Follows data-engineering skill idempotency pattern.
+          Follows the project's verified orchestration idempotency pattern.
 
 Interface / signature:
   DAG ID: snowflake_orders_daily
@@ -129,28 +129,28 @@ Acceptance criteria:
 
 ---
 
-## llm-engineering (prompt pipelines / evals)
+## LLM integration (prompt pipelines / evals)
 
 ```
 Task E1: Add entity extraction prompt with eval
 File: src/extraction/entity_extractor.py [CREATE]
 Companion: evals/test_entity_extraction.eval.py [CREATE]
-Approach: Anthropic tool_use for structured extraction. Uses tool_choice={"type":"tool","name":"extract"}
-          for guaranteed structured output (no JSON parsing needed).
-          Follows llm-engineering skill structured output pattern.
+Approach: Use the selected provider SDK's currently documented structured-output mechanism.
+          Validate responses against the local ExtractionResult schema and surface provider errors.
+          Cite the verified provider contract in the plan rather than assuming a specific API shape.
 
 Interface / signature:
   def extract_entities(text: str, model: str = DEFAULT_MODEL) -> ExtractionResult
     text:   input document (max 10,000 chars — validate at boundary)
-    model:  default "claude-sonnet-4-6"; override via constant only
+    model:  defaults from project/runtime configuration; explicit overrides must be allowlisted
     returns: ExtractionResult(entities: list[Entity], model_used: str, input_tokens: int, output_tokens: int)
 
   Entity: {name: str, type: Literal["person","org","location","product"], confidence: float}
 
 ASSERT: user-provided text goes in user role message, NEVER interpolated into system prompt
-ASSERT: tool_choice forces structured output — no JSON parsing fallback needed
+ASSERT: provider structured output is schema-validated — no unvalidated JSON fallback
 ASSERT: input_tokens + output_tokens logged for every call (cost tracking)
-ASSERT: eval suite asserts ≥ 3 of 5 test cases pass before feature ships
+ASSERT: eval suite meets the threshold defined in the approved design before feature ships
 
 Test cases (evals/test_entity_extraction.eval.py):
   test_extracts_known_entities:
@@ -181,7 +181,7 @@ Task F1: Add document search MCP tool
 File: mcp_server/tools/document_search.py [CREATE]
 Companion: mcp_server/server.py [MODIFY — register new tool]
 Approach: Vector search over indexed documents. Tool returns top-k chunks with source metadata.
-          Follows agentic-systems skill tool contract pattern.
+          Follows the project's verified tool-contract pattern.
           Error behavior: returns structured error dict (not Python exception) so agent can reason about failure.
 
 Interface / signature:
@@ -229,7 +229,7 @@ Task G1: Add revenue recognition model
 File: models/marts/fct_recognized_revenue.sql [CREATE]
 Companion: models/marts/_finance__models.yml [MODIFY — add schema entry]
 Approach: Daily revenue recognized from active subscriptions. One row per subscription per day.
-          Follows financial-analytics skill reconciliation pattern.
+          Follows the approved reconciliation/control-total requirement.
           Write reconciliation check FIRST (TDD for finance).
 
 Interface / signature (schema.yml):

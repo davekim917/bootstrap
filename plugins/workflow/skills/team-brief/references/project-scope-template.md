@@ -14,11 +14,11 @@ primary_language: python
 framework: FastAPI          # optional
 test_framework: pytest      # optional
 
-# Global domain skills to load. Empty list if no standard domain applies.
-# Drives which ~/.claude/skills/<name>/SKILL.md files workflow skills load.
+# Optional installed skills whose declared scope matches this repository.
+# Populate from the current session's actual skill catalog; never infer availability from domain names.
+# Empty is valid. Downstream stages then use quality_gates + security_surface + project instructions.
 relevant_global_skills:
-  - software-engineering
-  - data-science
+  - <installed-skill-name>
 
 # Required when relevant_global_skills is empty or for novel domains.
 # Workflow skills use these fields when no domain skill is available.
@@ -37,10 +37,11 @@ description: >
   Quality gates: unit tests + model eval metrics.
 
 ---
-# Multi-domain example (web app + ML):
+# Multi-domain example (web app + ML, no matching skill installed):
 # domains: [web-app, ml-inference]
-# relevant_global_skills: [software-engineering, data-science]
-# description: FastAPI serving sklearn predictions. Python files → software-engineering checks. Model/data files → data-science checks.
+# relevant_global_skills: []
+# quality_gates: ["pytest passes", "holdout metric meets the design threshold"]
+# description: FastAPI serving sklearn predictions. Route by file type and project instructions.
 
 ---
 # Novel domain example (creative writing CLI):
@@ -52,44 +53,44 @@ description: >
 # security_surface:
 #   - "API key not logged or exposed in output"
 #   - "user-provided prompts are sanitized"
-# description: CLI tool generating structured creative content via Claude API. No test suite — quality assessed by human review.
+# description: CLI tool generating structured creative content through an LLM provider API. No test suite — quality assessed by human review.
 
 ---
 # Mobile app (React Native / Expo):
 # domains: [mobile-app]
-# relevant_global_skills: [vercel-react-native-skills]
+# relevant_global_skills: []  # or an actually installed React Native skill
 # test_framework: jest
-# description: Expo/React Native app. .tsx component files → vercel-react-native-skills checks.
+# description: Expo/React Native app. Apply project instructions and any matching installed mobile skill.
 #              Tests via Jest + React Native Testing Library.
 
 ---
 # Mobile app + LLM features:
 # domains: [mobile-app, llm-engineering]
-# relevant_global_skills: [vercel-react-native-skills, llm-engineering]
+# relevant_global_skills: []  # populate only from installed matching skills
 # description: React Native app with on-device or API-backed LLM features.
 
 ---
 # LLM engineering (standalone — APIs, RAG, evals):
 # domains: [llm-engineering]
-# relevant_global_skills: [llm-engineering]
-# description: Claude/OpenAI API integration, RAG, prompt engineering, eval harnesses.
+# relevant_global_skills: []  # populate only from installed matching skills
+# description: LLM provider API integration, RAG, prompt engineering, and eval harnesses.
 #              No agentic decision loops — use agentic-systems for those.
 
 ---
 # Agentic systems (autonomous agents, MCP, multi-agent):
 # domains: [agentic-systems, llm-engineering]
-# relevant_global_skills: [agentic-systems, llm-engineering]
+# relevant_global_skills: []  # populate only from installed matching skills
 # description: Autonomous agents with tool use, MCP server/client, multi-agent orchestration.
 #              Includes llm-engineering for the LLM API calls within the agent loop.
 
 ---
 # Data engineering + LLM (orchestrated LLM pipeline):
 # domains: [data-engineering, llm-engineering]
-# relevant_global_skills: [data-engineering, llm-engineering]
-# description: Orchestrated pipeline with LLM steps (e.g., Airflow DAG calling Claude API).
+# relevant_global_skills: []  # populate only from installed matching skills
+# description: Orchestrated pipeline with LLM steps (e.g., an Airflow DAG calling a provider API).
 
 ---
 # Web app + analytics engineering (Next.js + dbt monorepo):
 # domains: [web-app, analytics-engineering]
-# relevant_global_skills: [software-engineering, analytics-engineering]
-# description: Next.js frontend with a dbt project in the same repo. .tsx files → software-engineering. .sql models/ → analytics-engineering.
+# relevant_global_skills: []  # populate only from installed matching skills
+# description: Next.js frontend with a dbt project. Route .tsx and .sql by file type and project instructions.

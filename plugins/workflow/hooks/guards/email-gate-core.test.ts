@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import {
     evaluateEmailSend,
+    evaluateEmailToolCall,
     envelopeFromJsonRaw,
     GWS_EMAIL_SEND_RE,
     EMAIL_BYPASS_FLAGS,
@@ -18,6 +19,42 @@ import {
 
 const INTERACTIVE: { isScheduledTask: boolean } = { isScheduledTask: false };
 const SCHEDULED: { isScheduledTask: boolean } = { isScheduledTask: true };
+
+describe('evaluateEmailToolCall — native connector gate', () => {
+    test('gates native and namespaced send/reply/forward tools with recipient metadata', () => {
+        for (const toolName of [
+            'send_email',
+            'mcp__gmail__reply_email',
+            'gmail.users.messages.forward_email',
+            'gmail_users_messages_send',
+            'gmail_send_draft_email',
+        ]) {
+            const verdict = evaluateEmailToolCall(toolName, {
+                message: {
+                    recipients: ['alice@example.com', 'bob@example.com'],
+                    subject: 'Quarterly report',
+                    body: 'sensitive body is intentionally omitted from the gate summary',
+                },
+            }, INTERACTIVE);
+            expect(verdict.action).toBe('gate');
+            expect(verdict.label).toContain('alice@example.com, bob@example.com');
+            expect(verdict.label).toContain('Quarterly report');
+            expect(verdict.summary).not.toContain('sensitive body');
+        }
+    });
+
+    test('allows drafts, unrelated messaging tools, read-only Gmail tools, and scheduled sends', () => {
+        for (const toolName of [
+            'gmail_create_draft_reply',
+            'send_message',
+            'gmail_search_emails',
+            'read_email_thread',
+        ]) {
+            expect(evaluateEmailToolCall(toolName, {}, INTERACTIVE)).toEqual({ action: 'allow' });
+        }
+        expect(evaluateEmailToolCall('send_email', { to: 'a@b.com' }, SCHEDULED)).toEqual({ action: 'allow' });
+    });
+});
 
 describe('evaluateEmailSend — gate decision', () => {
     test('test_email_send_interactive_gates', () => {

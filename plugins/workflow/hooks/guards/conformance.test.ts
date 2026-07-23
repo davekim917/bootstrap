@@ -21,7 +21,7 @@ import { checkEditProtection } from './file-protection-core';
  * canonical destructive set. If it holds, all surfaces agree by construction;
  * per-adapter wiring tests (opencode-guard.test, runner.test, codex-app-server,
  * block-destructive.test) confirm each adapter maps the core verdict faithfully
- * to its own I/O (exit-2 / throw / stdout-JSON / decision-object).
+ * to its own I/O (native ask or exit-2 / throw / stdout-JSON / decision-object).
  */
 
 // Hard-block (never allowed): file-deletion primitives, shell-wrapper bypass,

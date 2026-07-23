@@ -2,12 +2,11 @@
 name: team-drift
 description: >
   Mechanized drift detection between two documents, for Codex and OpenCode runtimes. Extracts all
-  claims from a source-of-truth, verifies each claim against a target using two independent agents on
-  different models for cross-model diversity, classifies mismatches by severity. Use after /team-build
+  claims from a source-of-truth, verifies each claim against a target using two independent agents,
+  and classifies mismatches by severity. Uses a different model when one is safely available. Use after /team-build
   (plan vs implementation), between workflow stages (design vs brief), or whenever a document claims to
   reflect another. BOUNDARY: Only the two documents under comparison — no external context, no
   AGENTS.md/CLAUDE.md, no project skills.
-version: 1.0.0
 ---
 
 # /team-drift — Mechanized Drift Detection
@@ -23,11 +22,10 @@ version: 1.0.0
 ## What This Skill Does
 
 Compares two documents by extracting every claim from the source-of-truth (SOT) and verifying
-each claim against the target. **Two independent agents on different models** do the extraction
-and verification separately; the team lead merges results, resolves disagreements, and classifies
-mismatches. Cross-model diversity is the point — two agents from the same model family share
-systematic blind spots, so one is backed by the primary runtime and the other by a different
-model where one is available (see **§ Dispatch by Runtime**).
+each claim against the target. **Two independent agents** do the extraction and verification
+separately; the team lead merges results, resolves disagreements, and classifies mismatches.
+Context isolation is required. A different-family model adds useful diversity when explicitly and
+safely available (see **§ Dispatch by Runtime**), but is not required for the second pass.
 
 **The standard:** Every claim in the SOT either exists in the target (CONFIRMED), partially exists
 (PARTIAL), contradicts the target (DIVERGED), or is absent entirely (MISSING).
@@ -55,7 +53,8 @@ Two documents: a source-of-truth and a target.
 - After `/team-build` completes — check implementation against plan before `/team-qa`
 - After any stage produces a document — verify the next stage reflects it faithfully
 - Anytime the user suspects "did we drift from X?"
-- Do NOT auto-trigger — the user types `/team-drift` to invoke
+- Direct use is user-invoked. It also runs as an internal validation lane inside approved workflow
+  stages such as `/team-build` and `/team-auto`; do not route unrelated work here automatically.
 
 ---
 
@@ -78,24 +77,22 @@ mkdir -p .agents/tmp/bootstrap-workflow
 # OR note exact file paths if they already exist on disk
 ```
 
-### Step 1.5: Pre-Flight Second-Model Check
+### Step 1.5: Pre-Flight Second-Context Check
 
-Before spawning agents, determine whether a **second, different model** is available to back
-Agent B. The goal is cross-model diversity: Agent A runs on your runtime's native subagent;
-Agent B should run on a *different* model family so the two extractors don't share blind spots.
+Before spawning agents, confirm the runtime can create two isolated worker contexts. Then determine
+whether an explicitly configured **different-family model** is safely available to back Agent B.
 
-Check for the second-model path your runtime uses — see **§ Dispatch by Runtime** for the exact
-detection command (e.g. probing for a different model's CLI on your `PATH`).
+See **§ Dispatch by Runtime** for the native worker path and any optional external-model adapter.
 
-If no second model is available:
-- Agent B falls back to a **same-runtime second pass** (a second native subagent), kept in an
+If no different-family model is available:
+- Agent B uses a **same-runtime second pass** (a second native subagent), kept in an
   isolated context so its conclusions don't contaminate Agent A's.
-- Log to the user: `⚠ No second model available — Agent B falling back to a same-runtime second pass. Cross-model diversity reduced for this run.`
+- Log to the user: `⚠ No different-family model configured — Agent B is a same-runtime isolated pass. Cross-model diversity reduced for this run.`
 
 ### Step 2: Spawn Two Independent Claim Extractors in Parallel
 
-Launch both agents simultaneously — **Agent A** on your runtime's native subagent, **Agent B** on
-a *different* model where one is available (else a same-runtime second pass, per Step 1.5). The
+Launch both agents simultaneously — **Agent A** and **Agent B** in separate native contexts, using
+a different model for Agent B only where one is safely available (per Step 1.5). The
 exact spawn primitive for each runtime is in **§ Dispatch by Runtime**; the two agent prompts below
 (the claim-extraction method) are identical regardless of which runtime or model backs each agent.
 
@@ -103,9 +100,9 @@ exact spawn primitive for each runtime is in **§ Dispatch by Runtime**; the two
 No other files. The accuracy of drift detection degrades with additional context — extra context
 biases the agent toward confirming what "should" be true rather than what IS true.
 
-**Sandbox note:** Agent B runs with `--yolo` (codex sandboxing fails inside containers), but its
-prompt directs it to read only the files written to `.agents/tmp/bootstrap-workflow/`. The SOT and
-target must be written to disk in Step 1 before spawning Agent B.
+**Sandbox note:** Both native workers are read-only for the compared artifacts. If an explicitly
+configured second-model CLI is used, invoke its documented read-only mode; model diversity never
+authorizes disabling approvals or sandboxing.
 
 ---
 
@@ -153,12 +150,11 @@ Be exhaustive. Missing a claim is a false negative. Flag uncertainty rather than
 
 ---
 
-#### Agent B prompt (cross-model extractor):
+#### Agent B prompt (independent extractor):
 
-Agent B runs the same two-part method as Agent A, on a *different* model for cross-model
-diversity (or a same-runtime second pass when no second model is available, per Step 1.5). The
-concrete launch primitive — including the read-only-sandbox `codex exec` invocation, its
-mandatory `</dev/null` redirect, and the same-runtime fallback — is in **§ Dispatch by Runtime**.
+Agent B runs the same two-part method as Agent A in an isolated context. A safely available
+different-family model may back it; otherwise it is a second native worker (per Step 1.5). The
+concrete launch primitive and fallback are in **§ Dispatch by Runtime**.
 The prompt Agent B receives is:
 
 ```
@@ -201,8 +197,8 @@ Format each verdict as:
 Be exhaustive. Missing a claim is a false negative. Flag uncertainty rather than guessing.
 ```
 
-When Agent B runs as a same-runtime fallback (no second model available), prepend to its prompt:
-`⚠ Running as a same-runtime second pass (no second model available). Cross-model diversity reduced.`
+When Agent B runs as a same-runtime pass, prepend to its prompt:
+`⚠ Running as a same-runtime isolated second pass. Cross-model diversity reduced.`
 
 ---
 
@@ -353,7 +349,7 @@ claims. Do not read unrelated files.
 |------|------|----------|-----------|
 | Team lead (merge + verdict) | Current session (the runtime you're running on) | N/A | Judgment-heavy: resolving DISPUTED verdicts, classifying severity, making the final call |
 | Agent A (extractor) | Native subagent on the primary runtime | N/A | Mechanical extraction + the primary runtime's model perspective |
-| Agent B (extractor) | A *different* model where available (e.g. `codex exec --yolo`; `gpt-5.6-sol` at xhigh effort) | Same-runtime second pass (if no second model is available) | Mechanical extraction + different training data, different blind spots |
+| Agent B (extractor) | A different model when explicitly available; otherwise a second isolated native subagent | Same-runtime second pass | Mechanical extraction from an independent context; cross-model diversity when available |
 
 ---
 
@@ -364,10 +360,10 @@ the **only** runtime-specific part: how the two extractor agents are spawned, an
 backs each. The two agent prompts (the claim-extraction method) and all context discipline stay
 exactly as written above on every runtime.
 
-> **This is a CROSS-MODEL skill by design.** The two extractors exist to cancel out each model
-> family's systematic blind spots — Agent A on the primary runtime, Agent B on a *different*
-> model. When no second model is reachable, fall back to a same-runtime second pass in an
-> isolated context and log that cross-model diversity is reduced (Step 1.5). Either way, give
+> **This is an independent-context skill by design.** The two extractors exist to catch omissions
+> through separate passes. Agent A uses the primary runtime; Agent B uses a second isolated native
+> worker by default or a safely configured different-family model. When both workers share a model
+> family, log that cross-model diversity is reduced (Step 1.5). Either way, give
 > each agent ONLY the two documents — no AGENTS.md/CLAUDE.md, no project skills (that discipline
 > from the body is non-negotiable).
 >
@@ -381,49 +377,20 @@ exactly as written above on every runtime.
 - **Agent A** — delegate one independent Codex subagent following the bounded-delegation rules in
   [`../shared/codex-workflow-primitives.md`](../shared/codex-workflow-primitives.md)
   (§ Codex Subagents). Give it the Agent A prompt verbatim and ONLY the two documents.
-- **Agent B (different model)** — shell out to a different model for cross-model diversity, e.g.
-  `claude -p "<Agent B prompt>"` if the Claude CLI is on `PATH`, or any other available
-  non-Codex model CLI. Detect availability in Step 1.5 with, e.g.,
-  `command -v claude >/dev/null 2>&1 && echo yes || echo no`.
-- **Agent B fallback (same-runtime second pass)** — if no second model is reachable, run a second
-  independent Codex subagent in an isolated context, prepend the reduced-diversity warning to its
-  prompt (Step 1.5), and log the reduced-diversity notice to the user.
-- **Sandbox + stdin gotcha** — if Agent B is itself a `codex exec` second model, launch it
-  read-only and redirect stdin from `/dev/null`:
-
-  ```bash
-  # Drift extraction is a deep analytical task — exhaustive claim extraction
-  # and verdict assignment benefit from deep reasoning. Run gpt-5.6-sol at
-  # xhigh effort (operator-pinned default). Only change model or effort if the
-  # user or invoking skill asked for a different one on this run (run-scoped
-  # override). --yolo because codex sandboxing fails inside containers —
-  # never swap it for a sandbox mode.
-  codex exec --yolo --model gpt-5.6-sol --config model_reasoning_effort="xhigh" "$(cat <<'PROMPT'
-  <Agent B prompt from Step 2 — reads .agents/tmp/bootstrap-workflow/drift-sot.md and drift-target.md>
-  PROMPT
-  )" </dev/null
-  ```
-
-  **CRITICAL: the `</dev/null` redirect is not optional.** `codex exec` inspects its own stdin
-  and, if the pipe is open (which it is when spawned from a harness Bash tool), treats stdin as
-  an "append additional input to the prompt" stream and blocks reading it forever. The prompt
-  passed as the command argument is NOT enough on its own — codex will still wait on stdin and
-  hang indefinitely, emitting only `Reading additional input from stdin...` to its output file.
-  Confirmed failure mode from NanoClaw session `6379a5d8-99ca-4e7e-a2c0-f17adf26f1cc` at
-  2026-04-08T12:07:23Z — codex hung 16 minutes before being force-killed. `</dev/null` fixes it.
-  A read-only-sandboxed Agent B can only read files written to `.agents/tmp/bootstrap-workflow/`,
-  so Step 1 must write the SOT and target to disk first.
+- **Agent B** — delegate a second independent Codex subagent with the Agent B prompt and only the
+  two comparison documents. This is the default self-contained path. Log the reduced-diversity
+  warning because both workers share a model family.
+- **Optional different model** — use one only when the environment explicitly exposes an
+  authenticated second-model capability with a documented read-only mode. Never shell out to
+  `codex exec` from Codex to simulate a second model, and never bypass another CLI's safety controls.
 
 ### OpenCode
 
 - **Agent A** — issue one `task({ subagent_type: 'general', description, prompt })` call for the
   Agent A prompt. OpenCode's general worker is named `general` (NOT `general-purpose`). Pass ONLY
   the two documents in the prompt.
-- **Agent B (different model)** — where a different model is reachable (a non-default OpenCode
-  model, or a shell-out to another model's CLI), run Agent B there for cross-model diversity.
-  Detect availability in Step 1.5 (e.g. probe for the second CLI on `PATH`). Both extractor
-  `task` calls can be issued **in one tool turn** so they run in parallel.
-- **Agent B fallback (same-runtime second pass)** — if no second model is reachable, run a second
+- **Agent B (different model)** — use a different model only when it is explicitly configured and
+  supports safe read-only invocation. Otherwise run a second
   `task({ subagent_type: 'general', ... })` pass in an isolated context, prepend the
   reduced-diversity warning to its prompt (Step 1.5), and log the reduced-diversity notice.
 
@@ -431,9 +398,9 @@ exactly as written above on every runtime.
 
 On Claude this skill spawns **Agent A** via the Task tool —
 `Task(subagent_type: "general-purpose", prompt: "<Agent A prompt>")` (no `model` override — inherits the session model) — and
-**Agent B** via Bash as a cross-model Codex extractor (`codex exec --yolo --model gpt-5.6-sol
---config model_reasoning_effort="xhigh" "<Agent B prompt>" </dev/null`). If `codex` is unavailable, Agent B
+**Agent B** via Bash as a cross-model Codex extractor (`codex exec --ephemeral --sandbox read-only
+"<Agent B prompt>" </dev/null`). If `codex` is unavailable or `codex login status` fails, Agent B
 falls back to a same-runtime Task subagent:
 `Task(subagent_type: "general-purpose", prompt: "<Agent B prompt + reduced-diversity note>")`.
-The Codex/OpenCode mapping above is the near-parity equivalent: same two-extractor cross-model
-design, same isolated contexts, same fallback-with-logging when only one model is available.
+The Codex/OpenCode mapping above is the near-parity equivalent: the same two-extractor design,
+the same isolated contexts, and the same optional diversity with a logged native fallback.

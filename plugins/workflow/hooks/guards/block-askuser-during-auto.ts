@@ -33,7 +33,7 @@ import { getProjectDir } from '../lib/project-detection';
 const SENTINEL_NAME = '.team-auto-active';
 const STALE_AFTER_MS = 30 * 60 * 1000; // 30 minutes
 
-function findFreshSentinel(projectDir: string): string | null {
+export function findFreshSentinel(projectDir: string): string | null {
     const specsRoot = join(projectDir, 'docs', 'specs');
     if (!existsSync(specsRoot)) return null;
 
@@ -114,4 +114,4 @@ Bypass for legitimate debugging only: SKIP_TEAM_AUTO_ASKBLOCK=1
     }
 }
 
-main();
+if (import.meta.main) main();

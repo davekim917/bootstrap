@@ -219,6 +219,7 @@ describe('B3 export validation (present ≠ correct)', () => {
   });
   const completeEmail = (): Record<string, unknown> => ({
     evaluateEmailSend: () => ({ action: 'allow' }),
+    evaluateEmailToolCall: () => ({ action: 'allow' }),
   });
 
   test('test_oc_export_validation_throws_on_missing_evaluator', () => {
@@ -228,6 +229,9 @@ describe('B3 export validation (present ≠ correct)', () => {
 
     // evaluateEmailSend living in email-gate-core is also covered.
     expect(() => assertCoreExports(completeCore(), {})).toThrow(/evaluateEmailSend/);
+    const missingNative = completeEmail();
+    delete missingNative.evaluateEmailToolCall;
+    expect(() => assertCoreExports(completeCore(), missingNative)).toThrow(/evaluateEmailToolCall/);
   });
 
   test('test_oc_export_validation_throws_on_missing_gate_wrapper', () => {

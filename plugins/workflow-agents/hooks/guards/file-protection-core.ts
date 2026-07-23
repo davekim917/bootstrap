@@ -39,8 +39,10 @@ export const PROTECTED_SEGMENTS = [
     '.env.development',
 ];
 
-// Protected glob patterns (IaC state/config).
-export const PROTECTED_GLOBS = [/^infra\/terraform\//, /^terraform\//];
+// Protected glob patterns (IaC state/config). Match path segments rather than
+// only repo-relative paths so absolute and Windows-style tool inputs cannot
+// bypass the guard.
+export const PROTECTED_GLOBS = [/(?:^|\/)infra\/terraform\//, /(?:^|\/)terraform\//];
 
 /** Edit-tool names across runtimes (Claude / OpenCode / Codex). */
 export const EDIT_TOOLS = new Set([
@@ -58,17 +60,19 @@ export const EDIT_TOOLS = new Set([
 export function isProtectedEditPath(path: string): boolean {
     if (!path) return false;
 
+    const normalizedPath = path.replace(/\\/g, '/');
+
     // Allowlist first (template files that look like protected files).
     for (const allowed of ALLOWED_FILES) {
-        if (path.endsWith(allowed)) return false;
+        if (normalizedPath.endsWith(allowed)) return false;
     }
     // Segment-contains.
     for (const segment of PROTECTED_SEGMENTS) {
-        if (path.includes(segment)) return true;
+        if (normalizedPath.includes(segment.replace(/\\/g, '/'))) return true;
     }
     // Glob patterns.
     for (const pattern of PROTECTED_GLOBS) {
-        if (pattern.test(path)) return true;
+        if (pattern.test(normalizedPath)) return true;
     }
     return false;
 }
