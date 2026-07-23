@@ -33,6 +33,9 @@ Before dispatch, the lead reads `codex-adversarial-prompt.md` and substitutes:
 
 - `{{TARGET_LABEL}}` with `branch diff against <BASE_BRANCH>`
 - `{{USER_FOCUS}}` with the user's focus or `general adversarial review`
+- `{{REVIEW_COLLECTION_GUIDANCE}}` with `Review the supplied diff as the complete change scope.
+  Use repository reads only to understand the changed code and its direct callers/contracts; do
+  not expand into unrelated pre-existing issues.`
 - `{{REVIEW_INPUT}}` with the complete three-dot branch diff
 
 Send that fully substituted prompt to one isolated native worker. Require its final response to

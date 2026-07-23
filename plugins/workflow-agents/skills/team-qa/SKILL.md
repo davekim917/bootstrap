@@ -331,9 +331,10 @@ do not pin a model slug in this workflow.
 **If the adversarial worker returns errors or times out:** Log "Adversarial review
 failed — Validator E skipped this run" in the report and continue. Do not retry mid-run.
 
-The adversarial prompt and output schema are owned by this workflow plugin and versioned with it.
-Validate their placeholder/schema contract in this repo when changing either file; do not copy
-runtime plugin internals into this plugin.
+The adversarial prompt and output schema are byte-identical upstream mirrors tracked in
+[`references/CODEX-SOURCES.md`](references/CODEX-SOURCES.md). Keep both runtime copies synchronized,
+validate the four-placeholder/schema contract in this repo, and do not invoke another review skill
+from Validator E.
 
 ---
 

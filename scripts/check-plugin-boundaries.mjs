@@ -25,12 +25,32 @@ function exists(relativePath) {
   return fs.existsSync(path.join(repoRoot, relativePath));
 }
 
+function readText(relativePath) {
+  const absolutePath = path.join(repoRoot, relativePath);
+  try {
+    return fs.readFileSync(absolutePath, 'utf8');
+  } catch (error) {
+    errors.push(`${relativePath}: ${error.message}`);
+    return undefined;
+  }
+}
+
 function fail(message) {
   errors.push(message);
 }
 
 function warn(message) {
   warnings.push(message);
+}
+
+function requireTextTokens(relativePath, tokens, contract) {
+  const content = readText(relativePath);
+  if (content === undefined) return;
+  for (const token of tokens) {
+    if (!content.includes(token)) {
+      fail(`${relativePath}: ${contract} requires ${JSON.stringify(token)}`);
+    }
+  }
 }
 
 function pluginEntries(marketplace) {
@@ -269,6 +289,126 @@ const codexSkillsRoot = path.join(repoRoot, 'plugins/workflow-agents/skills');
 const claudeSkillsRoot = path.join(repoRoot, 'plugins/workflow/skills');
 const codexSkills = skillNames(codexSkillsRoot);
 const claudeSkills = skillNames(claudeSkillsRoot);
+
+const mirroredCodexReferenceFiles = [
+  'CODEX-SOURCES.md',
+  'codex-adversarial-prompt.md',
+  'codex-review-output.schema.json',
+];
+for (const fileName of mirroredCodexReferenceFiles) {
+  const claudePath = `plugins/workflow/skills/team-qa/references/${fileName}`;
+  const codexPath = `plugins/workflow-agents/skills/team-qa/references/${fileName}`;
+  const claudeContent = readText(claudePath);
+  const codexContent = readText(codexPath);
+  if (
+    claudeContent !== undefined
+    && codexContent !== undefined
+    && claudeContent !== codexContent
+  ) {
+    fail(`${fileName}: Claude and Codex workflow mirrors must be byte-identical`);
+  }
+}
+
+for (const promptPath of [
+  'plugins/workflow/skills/team-qa/references/codex-adversarial-prompt.md',
+  'plugins/workflow-agents/skills/team-qa/references/codex-adversarial-prompt.md',
+]) {
+  requireTextTokens(
+    promptPath,
+    [
+      '{{TARGET_LABEL}}',
+      '{{USER_FOCUS}}',
+      '{{REVIEW_COLLECTION_GUIDANCE}}',
+      '{{REVIEW_INPUT}}',
+    ],
+    'the upstream Codex adversarial prompt mirror',
+  );
+}
+
+for (const validatorPromptPath of [
+  'plugins/workflow/skills/team-qa/references/qa-validator-prompts.md',
+  'plugins/workflow-agents/skills/team-qa/references/qa-validator-prompts.md',
+]) {
+  requireTextTokens(
+    validatorPromptPath,
+    [
+      '{{TARGET_LABEL}}',
+      '{{USER_FOCUS}}',
+      '{{REVIEW_COLLECTION_GUIDANCE}}',
+      '{{REVIEW_INPUT}}',
+    ],
+    'Validator E substitution contract',
+  );
+}
+
+requireTextTokens(
+  'plugins/workflow/skills/team-qa/references/qa-validator-prompts.md',
+  [
+    ".replace(\n    '{{REVIEW_COLLECTION_GUIDANCE}}'",
+    'Unresolved Codex prompt markers',
+  ],
+  'the Claude Validator E prompt builder',
+);
+
+const codexSourcesPath = 'plugins/workflow/skills/team-qa/references/CODEX-SOURCES.md';
+const codexSources = readText(codexSourcesPath);
+if (codexSources !== undefined) {
+  const rows = new Map(
+    [...codexSources.matchAll(
+      /^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*`([0-9a-f]{7,40})`\s*\|/gm,
+    )].map((match) => [match[1], { upstream: match[2], sha: match[3] }]),
+  );
+  for (const [local, upstream] of [
+    ['codex-adversarial-prompt.md', 'plugins/codex/prompts/adversarial-review.md'],
+    ['codex-review-output.schema.json', 'plugins/codex/schemas/review-output.schema.json'],
+  ]) {
+    const row = rows.get(local);
+    if (!row) {
+      fail(`${codexSourcesPath}: missing /update-container source row for ${local}`);
+    } else {
+      if (row.upstream !== upstream) {
+        fail(`${codexSourcesPath}: ${local} must track ${upstream}`);
+      }
+      if (row.sha.length !== 40) {
+        fail(`${codexSourcesPath}: ${local} must pin a full 40-character upstream SHA`);
+      }
+    }
+  }
+}
+
+const claudeCrossModelContracts = [
+  {
+    path: 'plugins/workflow/skills/team-qa/SKILL.md',
+    tokens: ['Validator E: Codex Adversarial Review (Cross-Model)', 'codex login status'],
+  },
+  {
+    path: 'plugins/workflow/skills/team-qa/references/qa-validator-prompts.md',
+    tokens: ['codex exec', '--ephemeral', '--sandbox read-only'],
+  },
+  {
+    path: 'plugins/workflow/skills/team-review/SKILL.md',
+    tokens: ['Reviewer C (Codex)', 'codex login status', 'codex exec --ephemeral --sandbox read-only'],
+  },
+  {
+    path: 'plugins/workflow/skills/team-review/references/reviewer-prompts.md',
+    tokens: ['codex exec --ephemeral --sandbox read-only'],
+  },
+  {
+    path: 'plugins/workflow/skills/team-drift/SKILL.md',
+    tokens: ['codex login status', 'codex exec --ephemeral --sandbox read-only'],
+  },
+];
+for (const contract of claudeCrossModelContracts) {
+  requireTextTokens(
+    contract.path,
+    contract.tokens,
+    'the Claude-to-Codex cross-model workflow lane',
+  );
+  const content = readText(contract.path);
+  if (content?.includes('--yolo')) {
+    fail(`${contract.path}: cross-model review must not disable Codex approvals or sandboxing`);
+  }
+}
 
 checkSkillMarkdownLinks(codexSkillsRoot);
 checkSkillMarkdownLinks(claudeSkillsRoot);
