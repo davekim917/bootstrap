@@ -5,7 +5,6 @@ description: >
   validators: style, docs, code review swarm, Codex adversarial cross-model). Do NOT run QA checks
   manually — this skill has validator isolation, finding classification, and selective re-run logic
   that only load when invoked.
-version: 2.3.0
 ---
 
 # /team-qa — Post-Build Validation Pipeline
@@ -20,8 +19,8 @@ performance, architecture, domain idioms, and adversarial correctness dynamicall
 Codex attacks the git diff with cross-model framing focused on auth/data-loss/race-condition failure modes.
 
 **Key principle:** Scoped validators (A, B) stay tight — changed files + one skill — to minimize
-false positives. The code review swarm (CD) deliberately gets the full diff + CLAUDE.md + research
-tools because its job is the broad correctness check that scoped validators can't do.
+false positives. The code review swarm (CD) deliberately gets the full diff + CLAUDE.md + available
+live research capabilities because its job is the broad correctness check that scoped validators can't do.
 
 **Cross-model coverage:** Validators A, B, CD run on Claude. Validator E runs on Codex (OpenAI). The
 adversarial cross-model pass catches failure modes Claude validators tend to miss (or rationalize away).
@@ -39,7 +38,7 @@ A completed build — either from `/team-build` or an implementation the user wa
 
 - After `/team-build` is approved and before shipping/merging
 - When validating any implementation against project standards
-- Do NOT auto-trigger — the user types `/team-qa` to invoke
+- Enter after explicit build approval, or as the QA stage inside a user-invoked `/team-auto` run.
 
 ## Selective Re-run (`--only`)
 
@@ -70,11 +69,13 @@ Get the definitive list of files to validate. Check in order:
 1. **From `/team-build` plan** — the plan's file ownership map is the authoritative list of what changed
 2. **From git** if no plan is available:
    ```bash
-   git diff --name-only main...HEAD   # all changes on this branch vs main
-   # or
-   git diff --name-only HEAD~1        # just the last commit
+   git diff --name-only <BASE_BRANCH>...HEAD
    ```
 3. **From user** if neither is available — ask explicitly
+
+Resolve `<BASE_BRANCH>` once from the approved build metadata, an explicit user scope, or the
+repository's default-branch metadata (`refs/remotes/origin/HEAD` / hosting provider). Do not assume
+`main`, and do not silently shrink a multi-commit feature to `HEAD~1`.
 
 Group changed files by type for targeted routing:
 - **API/backend:** routes, controllers, services, middleware
@@ -118,12 +119,12 @@ file-type routing table at [`references/qa-validator-routing.md`](references/qa-
 
 ### Multi-Domain File-Type Resolution
 
-When multiple domain skills are loaded (e.g., software-engineering + data-science):
+When multiple installed skills are loaded:
 - The scope file determines which skills to load (the candidate set).
 - The file-type routing table in [`references/qa-validator-routing.md`](references/qa-validator-routing.md) determines which
   loaded skill applies to each specific file.
-- A `.py` API handler file: software-engineering checks apply; data-science checks do not.
-- A `.ipynb` notebook: data-science checks apply; software-engineering checks do not.
+- A `.py` API handler uses only loaded skills whose declared scope covers API/backend code.
+- A `.ipynb` notebook uses only loaded skills whose declared scope covers notebooks or analysis.
 - Skills not in the loaded set never apply, even if a file-type pattern matches.
 
 Doc Freshness (B) applies universally — check for stale model descriptions (dbt `schema.yml`),
@@ -149,13 +150,13 @@ Read every changed file directly. Apply `references/denoise-checklist.md`. Flag:
 - **Pipeline test values** — dev connection strings, test schedule intervals, disabled tasks
 - **Hardcoded fiscal year cutoffs in financial SQL** — `WHERE fiscal_year = 2024` or similar absolute fiscal year references in GL models, reconciliation scripts, or period-close queries
 
-Present findings as a list with file:line. For each:
-- **Auto-safe removals** (unused imports, debug logs, temp files): propose removing immediately
-- **Judgment calls** (dead code, commented blocks): show the code, ask user to confirm removal
+Present findings as a list with file:line and carry them into the final QA classification. This
+stage is diagnostic: do not edit files or pause for per-item approval. Classify debug artifacts,
+credential/PII exposure, or behavior-changing debris by impact; ordinary unused imports and
+commented code are SHOULD-FIX/ADVISORY. Phase 2 runs against the same diff so later validators can
+corroborate or contradict the findings.
 
-Wait for user to approve/deny each item before proceeding to Phase 2.
-
-**Gate:** Denoise must complete before Phase 2 starts. A clean codebase produces cleaner validator output.
+**Gate:** Every changed file has been denoise-checked and findings recorded before Phase 2 starts.
 
 ### Phase 2: Parallel Validators
 
@@ -201,18 +202,17 @@ CLAUDE.md parsing, domain detection, and research.
 
 **Purpose:** The broad code-review lane. Covers correctness, project conventions, security,
 performance, architecture, and domain-specific idioms through dynamic reviewer selection. Unlike
-scoped validators A and B, this validator receives the full diff + CLAUDE.md + research tools so
-its reviewers can check current best practices (context7, deepwiki, Exa) and collaborate
+scoped validators A and B, this validator receives the full diff + CLAUDE.md + live research capabilities so
+its reviewers can check current best practices from current primary sources and collaborate
 (SendMessage) before reporting. Replaces the previous isolated C (security) and D (performance)
 validators.
 
 **When to skip:** Pure docs or pure config diffs with no code changes. Otherwise always run. Any other CD skip reason (context budget, time pressure, validator overlap, "Codex E covers it") MUST be user-approved before /team-qa. Lead may NOT skip CD on judgment grounds.
 
-**Pre-flight check:** Verify at least one `mcp__exa__*` tool is in the session's tool list.
-Review-swarm hard-fails without Exa (`review-swarm/SKILL.md:107`). If none present, **skip
-this validator** with the warning:
-
-> ⚠ Code review swarm research tools unavailable (no mcp__exa__* present) — Validator CD skipped. Code review coverage reduced.
+**Research capability:** Review-swarm uses project/repository evidence for concrete findings and
+whichever live documentation or web capability the runtime exposes for current-library claims.
+Absence of a specific MCP provider is not a skip condition. If no live research is reachable,
+reviewers omit unverified external-pattern claims and continue with code-grounded review.
 
 **Invocation:** Skill-invoke `bootstrap-workflow:review-swarm` with the branch scope and
 domain hints from Step 2. Review-swarm does its own Step 1 discovery — team-qa passes only the
@@ -256,21 +256,14 @@ review-swarm fails" below) and continue. Do not retry mid-run.
 
 No ADVISORY tier for swarm findings — review-swarm's collaboration step filters noise upstream.
 
-**Ensure cleanup:** Review-swarm's Step 6 deletes its team (`TeamDelete`) after reporting, but
-this is best-effort and may be skipped if the swarm crashes mid-run. Explicitly verify and
-clean up:
-
-```
-TeamList()    # check whether team "code-review" still exists
-# If the team is still present after review-swarm reported its findings:
-TeamDelete(team_name: "code-review")
-```
-
-A leaked team causes TeamCreate failures on the next `/team-qa` run.
+**Ensure cleanup:** Review-swarm's Step 6 sends shutdown requests to every reviewer teammate.
+There is one session-scoped team and no explicit delete operation. If the swarm crashes mid-run,
+send shutdown requests to any reviewer names it returned or that remain visible in the agent panel;
+do not attempt to create or delete a separate `code-review` team.
 
 **If review-swarm fails (research tools down, swarm timeout > 15min, mid-run error):** Log
-"Code review swarm failed — Validator CD skipped this run" in the report, run the cleanup
-above, and continue. Do not retry mid-run. Codex (Validator E) still covers a subset of the
+"Code review swarm failed — Validator CD skipped this run" in the report, perform the teammate
+shutdown cleanup above, and continue. Do not retry mid-run. Codex (Validator E) still covers a subset of the
 same ground.
 
 ---
@@ -289,17 +282,17 @@ observability gaps. This is the only validator that runs on a non-Claude model.
 
 > ⚠ Codex CLI unavailable — Validator E (cross-model adversarial) skipped. Cross-model coverage reduced.
 
-If the codex binary is present but auth is missing (no `~/.codex/auth.json`), skip with:
+If `codex login status` fails, skip with:
 
 > ⚠ Codex authenticated session not available — Validator E skipped. Run `codex login` on the host.
 
 Do not block QA on Codex unavailability.
 
-**Invocation:** Spawn a Task subagent (`subagent_type: general-purpose`, no `model` override — inherits the session model) with the verbatim subagent prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-e-codex-adversarial-subagent-prompt). The subagent shells out to `codex exec --yolo`, captures the JSON output, and returns it verbatim — it does not do its own adversarial reasoning. The reference file documents the indirection (why direct CLI, not the slash command; why `--yolo`) and the four-step procedure.
+**Invocation:** Spawn a Task subagent (`subagent_type: general-purpose`, no `model` override — inherits the session model) with the verbatim subagent prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-e-codex-adversarial-subagent-prompt). The subagent shells out to ephemeral, read-only `codex exec`, captures the JSON output, and returns it verbatim — it does not do its own adversarial reasoning.
 
 Fill in `<BASE_BRANCH>` and `<REPO_ROOT>` for the project before spawning.
 
-**Run-scoped override:** If the user (or an invoking skill such as `/team-auto`) asked for a different codex model or reasoning effort on this run, append one final line to the subagent prompt — `CODEX OVERRIDE: model=<slug> effort=<level>` (either field optional). The subagent substitutes those values into the `codex exec` flags and changes nothing else — `--yolo`, `--ephemeral`, and the schema/output flags stay exactly as written. Without that line, the pinned default applies.
+**Run-scoped override:** If the user (or an invoking skill such as `/team-auto`) asked for a different codex model or reasoning effort on this run, append one final line to the subagent prompt — `CODEX OVERRIDE: model=<slug> effort=<level>` (either field optional). The subagent adds only those explicit flags. Without that line, Codex inherits the operator's configured model and effort.
 
 **Lead-side parsing:** The subagent returns a JSON document matching
 `references/codex-review-output.schema.json`:
@@ -338,9 +331,9 @@ Fill in `<BASE_BRANCH>` and `<REPO_ROOT>` for the project before spawning.
 **If Codex returns errors or times out:** Log "Codex adversarial review failed — Validator E
 skipped this run" in the report and continue. Do not retry mid-run.
 
-**Resyncing the verbatim prompt:** If upstream `@openai/codex-plugin-cc` updates their
-adversarial prompt or output schema, refresh the copies in `references/` per the instructions
-in `references/CODEX-SOURCES.md`.
+The adversarial prompt and output schema are owned by this workflow plugin and versioned with it.
+Validate their placeholder/schema contract in this repo when changing either file; do not copy
+runtime plugin internals into this plugin.
 
 ---
 
@@ -384,10 +377,10 @@ Then STOP. Display exactly this gate:
 ---
 **QA complete.**
 
-Denoise:        [N fixed, N waived]
+Denoise:        [N findings — N MUST-FIX, N SHOULD-FIX, N ADVISORY]
 Style:          [N violations — N MUST-FIX, N SHOULD-FIX, N ADVISORY (M introduced, P pre-existing)]
 Doc freshness:  [N stale items]
-Code review (swarm): [N findings — N MUST-FIX (BUG), N SHOULD-FIX (SUGGESTION)]   [or: skipped — no code changes | skipped — Exa unavailable | failed — swarm error]
+Code review (swarm): [N findings — N MUST-FIX (BUG), N SHOULD-FIX (SUGGESTION)]   [or: skipped — no code changes | failed — swarm error]
 Codex (cross-model): [N findings — N MUST-FIX, N SHOULD-FIX, N ADVISORY]   [or: skipped — Codex unavailable]
 
 [If CD or E was skipped/failed:]
@@ -474,8 +467,8 @@ When QA clears with no MUST-FIX items remaining, add to the "all clear" gate mes
 |------|------|-----------|
 | Lead (current session, orchestrates) | Current session model | Denoise runs inline, finding classification requires judgment, gate decisions need care |
 | Validator A: Style Audit | Inherited (session model) | Mechanical: convention matching against a loaded skill — no pin; runs on whatever the session runs |
-| Validator CD: Code Review Swarm | `/review-swarm` (team agents, model per reviewer) | Delegated to review-swarm's own model selection. Covers correctness, security, performance, architecture, and domain idioms with research backing and reviewer collaboration. Replaces the isolated specialist subagents (security-reviewer, performance-analyzer) previously used as Validators C and D. |
-| Validator E: Codex Adversarial | Codex (OpenAI) | Cross-model adversarial pass — runs via `codex exec --yolo` with the verbatim prompt from `references/codex-adversarial-prompt.md` |
+| Validator CD: Code Review Swarm | `/review-swarm` (team agents, model per reviewer) | Delegated to review-swarm's own model selection. Covers correctness, security, performance, architecture, and domain idioms with research backing and reviewer collaboration. Replaces the former isolated specialist passes. |
+| Validator E: Codex Adversarial | Codex (OpenAI) | Cross-model adversarial pass — runs via ephemeral read-only `codex exec` with the repository prompt |
 
 Keep denoise (inline), finding classification, and the final gate judgment on the lead — that is the judgment-heavy work.
 

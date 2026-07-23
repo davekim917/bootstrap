@@ -13,9 +13,9 @@
 | WON'T-FIX | [N] | Logged |
 
 **Reviewers:**
-- **A — Architecture** (Claude bootstrap-workflow:architecture-advisor): structural integrity, internal pattern fit
+- **A — Architecture** (prompt-defined reviewer): structural integrity, internal pattern fit
 - **B — Best Practices** (`/best-practice-check` via subagent forwarder): external pattern validation against established industry practice
-- **C — Adversarial** (Codex via `codex exec --yolo` with verbatim prompt): assumption challenge, blind spots, simpler-approach alternatives *[or: SKIPPED — Codex unavailable]*
+- **C — Adversarial** (isolated native worker, or an explicitly available safe second model): assumption challenge, blind spots, simpler-approach alternatives *[or: DEGRADED — same model family]*
 
 ---
 

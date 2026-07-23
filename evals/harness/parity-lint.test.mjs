@@ -85,8 +85,10 @@ test('tokenLeaks: a non-dispatch ## heading after Dispatch closes the confinemen
   assert.equal(leaks[0].token, 'SendMessage');
 });
 
-test('hasFrontmatter: needs name/version/description (the missing-version gutting signal)', () => {
-  assert.equal(hasFrontmatter('---\nname: x\nversion: 1.0\ndescription: y\n---\nbody').ok, true);
-  assert.deepEqual(hasFrontmatter('---\nname: x\ndescription: y\n---\nbody').missing, ['version']);
+test('hasFrontmatter: needs standard name/description and rejects non-standard keys', () => {
+  assert.equal(hasFrontmatter('---\nname: x\ndescription: y\n---\nbody').ok, true);
+  assert.deepEqual(hasFrontmatter('---\nname: x\n---\nbody').missing, ['description']);
+  assert.deepEqual(hasFrontmatter('---\nname: x\nversion: 1.0\ndescription: y\n---\nbody').unexpected, ['version']);
+  assert.deepEqual(hasFrontmatter('---\nname: x\ndescription: y\nuser-invocable: false\n---\nbody').unexpected, ['user-invocable']);
   assert.equal(hasFrontmatter('no frontmatter at all').ok, false);
 });

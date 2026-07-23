@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
-import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,8 +64,62 @@ function findFiles(root, predicate, results = []) {
   return results;
 }
 
-function sha256(value) {
-  return createHash('sha256').update(value).digest('hex');
+function markdownAnchors(filePath) {
+  const anchors = new Set();
+  const seen = new Map();
+  const text = fs.readFileSync(filePath, 'utf8');
+  for (const match of text.matchAll(/^#{1,6}\s+(.+?)\s*#*\s*$/gm)) {
+    const base = match[1]
+      .replace(/<[^>]*>/g, '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s-]/gu, '')
+      .trim()
+      .replace(/\s/g, '-');
+    const duplicateIndex = seen.get(base) ?? 0;
+    seen.set(base, duplicateIndex + 1);
+    anchors.add(duplicateIndex === 0 ? base : `${base}-${duplicateIndex}`);
+  }
+  return anchors;
+}
+
+function checkSkillMarkdownLinks(skillsRoot) {
+  const markdownFiles = findFiles(skillsRoot, (fullPath, entry) =>
+    entry.isFile() && fullPath.endsWith('.md'),
+  );
+
+  for (const filePath of markdownFiles) {
+    const text = fs.readFileSync(filePath, 'utf8');
+    for (const match of text.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+      let target = match[1].trim();
+      if (target.startsWith('<') && target.endsWith('>')) target = target.slice(1, -1);
+      else target = target.split(/\s+["']/)[0];
+
+      if (
+        !target
+        || target.includes('{{')
+        || /^(?:https?:|mailto:|app:)/i.test(target)
+        || target.startsWith('/')
+      ) continue;
+
+      const [relativeTarget, rawAnchor] = target.split('#', 2);
+      const linkedFile = relativeTarget
+        ? path.resolve(path.dirname(filePath), decodeURIComponent(relativeTarget))
+        : filePath;
+      const displayPath = path.relative(repoRoot, filePath);
+
+      if (!fs.existsSync(linkedFile)) {
+        fail(`${displayPath}: broken relative link ${target}`);
+        continue;
+      }
+
+      if (rawAnchor && linkedFile.endsWith('.md')) {
+        const anchor = decodeURIComponent(rawAnchor).toLowerCase();
+        if (!markdownAnchors(linkedFile).has(anchor)) {
+          fail(`${displayPath}: missing markdown anchor #${rawAnchor} in ${path.relative(repoRoot, linkedFile)}`);
+        }
+      }
+    }
+  }
 }
 
 const codexMarketplace = readJson('.agents/plugins/marketplace.json');
@@ -75,8 +128,6 @@ const codexManifest = readJson('plugins/workflow-agents/.codex-plugin/plugin.jso
 const claudeManifest = readJson('plugins/workflow/.claude-plugin/plugin.json');
 const codexCopyPasteEntry = readJson('plugins/workflow-agents/marketplace-entry.json');
 const codexHookManifest = readJson('plugins/workflow-agents/hooks/workflow-hooks.json');
-const domainCodexManifest = readJson('plugins/domain/.codex-plugin/plugin.json');
-const toolsCodexManifest = readJson('plugins/tools/.codex-plugin/plugin.json');
 
 const codexEntries = pluginEntries(codexMarketplace);
 const claudeEntries = pluginEntries(claudeMarketplace);
@@ -96,41 +147,13 @@ if (!codexWorkflowEntry) {
 
 for (const entry of codexEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
-  if (entry.name === 'bootstrap-workflow' || entrySource === './plugins/workflow') {
-    fail('.agents/plugins/marketplace.json must not register the Claude bootstrap-workflow plugin');
+  if (entry.name !== 'bootstrap-workflow-agents' || entrySource !== './plugins/workflow-agents') {
+    fail(`.agents/plugins/marketplace.json contains unsupported plugin entry ${entry.name ?? '<unnamed>'}`);
   }
 }
 
-const providerAgnosticCodexPlugins = [
-  {
-    name: 'bootstrap-domain',
-    source: './plugins/domain',
-    manifestPath: 'plugins/domain/.codex-plugin/plugin.json',
-    manifest: domainCodexManifest,
-  },
-  {
-    name: 'bootstrap-tools',
-    source: './plugins/tools',
-    manifestPath: 'plugins/tools/.codex-plugin/plugin.json',
-    manifest: toolsCodexManifest,
-  },
-];
-
-for (const plugin of providerAgnosticCodexPlugins) {
-  const entry = codexEntries.find((candidate) => candidate.name === plugin.name);
-  if (!entry) {
-    fail(`.agents/plugins/marketplace.json must register provider-agnostic Codex plugin ${plugin.name}`);
-  } else if (normalizeSource(sourcePath(entry)) !== plugin.source) {
-    fail(`${plugin.name} must source ${plugin.source} in .agents/plugins/marketplace.json`);
-  }
-
-  if (plugin.manifest?.name !== plugin.name) {
-    fail(`${plugin.manifestPath} name must be ${plugin.name}`);
-  }
-
-  if (normalizeSource(plugin.manifest?.skills) !== './skills') {
-    fail(`${plugin.manifestPath} skills must point at ./skills/`);
-  }
+if (codexEntries.length !== 1) {
+  fail(`.agents/plugins/marketplace.json must expose exactly one plugin (found ${codexEntries.length})`);
 }
 
 const claudeWorkflowEntry = claudeEntries.find((entry) => entry.name === 'bootstrap-workflow');
@@ -146,9 +169,13 @@ if (!claudeWorkflowEntry) {
 
 for (const entry of claudeEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
-  if (entry.name === 'bootstrap-workflow-agents' || entrySource === './plugins/workflow-agents') {
-    fail('.claude-plugin/marketplace.json must not register the Codex bootstrap-workflow-agents plugin');
+  if (entry.name !== 'bootstrap-workflow' || entrySource !== './plugins/workflow') {
+    fail(`.claude-plugin/marketplace.json contains unsupported plugin entry ${entry.name ?? '<unnamed>'}`);
   }
+}
+
+if (claudeEntries.length !== 1) {
+  fail(`.claude-plugin/marketplace.json must expose exactly one plugin (found ${claudeEntries.length})`);
 }
 
 if (codexManifest?.name !== 'bootstrap-workflow-agents') {
@@ -167,14 +194,30 @@ const codexHookManifestPath = path.join(repoRoot, 'plugins/workflow-agents/hooks
 const codexHookManifestText = fs.existsSync(codexHookManifestPath)
   ? fs.readFileSync(codexHookManifestPath, 'utf8')
   : '';
-for (const token of ['CLAUDE_PLUGIN_ROOT', 'TeamCreate', 'AskUserQuestion']) {
+for (const token of [
+  'CLAUDE_PLUGIN_ROOT',
+  'CODEX_PLUGIN_ROOT',
+  'BOOTSTRAP_WORKFLOW_CODEX_ROOT',
+  '.codex/plugins/cache',
+  'TeamCreate',
+  'AskUserQuestion',
+]) {
   if (codexHookManifestText.includes(token)) {
     fail(`plugins/workflow-agents/hooks/workflow-hooks.json must not reference Claude-only token ${token}`);
   }
 }
 
-if (!codexHookManifest?.hooks?.SessionStart || !codexHookManifest?.hooks?.PreToolUse || !codexHookManifest?.hooks?.PostToolUse) {
-  fail('plugins/workflow-agents/hooks/workflow-hooks.json must wire SessionStart, PreToolUse, and PostToolUse');
+if (!codexHookManifest?.hooks?.PreToolUse) {
+  fail('plugins/workflow-agents/hooks/workflow-hooks.json must wire PreToolUse');
+}
+
+const codexHookEvents = Object.keys(codexHookManifest?.hooks ?? {});
+if (codexHookEvents.some((event) => event !== 'PreToolUse')) {
+  fail(`plugins/workflow-agents/hooks/workflow-hooks.json contains non-safety hook events: ${codexHookEvents.join(', ')}`);
+}
+
+if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
+  fail('plugins/workflow-agents/hooks/workflow-hooks.json must resolve its guard through native ${PLUGIN_ROOT}');
 }
 
 if (claudeManifest?.name !== 'bootstrap-workflow') {
@@ -195,47 +238,24 @@ for (const unexpectedDir of ['commands']) {
   }
 }
 
-const codexAgentsRoot = path.join(repoRoot, 'plugins/workflow-agents/agents');
-if (!fs.existsSync(codexAgentsRoot)) {
-  fail('plugins/workflow-agents must include generated Codex agent TOML bundle under agents/');
-} else {
-  const claudeAgentFiles = fs.readdirSync(path.join(repoRoot, 'plugins/workflow/agents'))
-    .filter((file) => file.endsWith('.md'))
-    .sort();
-  const codexAgentFiles = fs.readdirSync(codexAgentsRoot)
-    .filter((file) => file.endsWith('.toml'))
-    .sort();
-
-  if (codexAgentFiles.length !== claudeAgentFiles.length) {
-    fail(`Codex agent bundle count mismatch: ${codexAgentFiles.length} TOML files for ${claudeAgentFiles.length} Claude agents`);
+for (const retiredPath of [
+  'plugins/domain',
+  'plugins/tools',
+  'plugins/workflow/agents',
+  'plugins/workflow-agents/agents',
+]) {
+  const retiredRoot = path.join(repoRoot, retiredPath);
+  const remainingFiles = findFiles(
+    retiredRoot,
+    (_fullPath, entry) => entry.isFile() || entry.isSymbolicLink(),
+  );
+  if (remainingFiles.length > 0) {
+    fail(`${retiredPath} is retired; keep the active distribution workflow-only and free of copied agent definitions`);
   }
+}
 
-  for (const sourceFile of claudeAgentFiles) {
-    const sourcePath = path.join(repoRoot, 'plugins/workflow/agents', sourceFile);
-    const source = fs.readFileSync(sourcePath, 'utf8');
-    const nameMatch = source.match(/^name:\s*(.+)$/m);
-    if (!nameMatch) {
-      fail(`plugins/workflow/agents/${sourceFile} is missing name frontmatter`);
-      continue;
-    }
-    const agentName = nameMatch[1].replace(/^["']|["']$/g, '').trim();
-    const expectedToml = path.join(codexAgentsRoot, `${agentName}.toml`);
-    if (!fs.existsSync(expectedToml)) {
-      fail(`plugins/workflow-agents/agents/${agentName}.toml is missing`);
-      continue;
-    }
-    const generated = fs.readFileSync(expectedToml, 'utf8');
-    const expectedHash = sha256(source);
-    if (!generated.includes(`source_sha256: ${expectedHash}`)) {
-      fail(`plugins/workflow-agents/agents/${agentName}.toml is stale; run node plugins/workflow-agents/scripts/sync-codex-agents.mjs`);
-    }
-    if (!generated.includes('managed by bootstrap-workflow-agents agent-sync')) {
-      fail(`plugins/workflow-agents/agents/${agentName}.toml must include the managed marker`);
-    }
-    if (!generated.includes('Codex Runtime Adapter')) {
-      fail(`plugins/workflow-agents/agents/${agentName}.toml must include the Codex runtime adapter`);
-    }
-  }
+if (exists('plugins/workflow-agents/scripts/sync-codex-agents.mjs')) {
+  fail('plugins/workflow-agents/scripts/sync-codex-agents.mjs is retired; plugins must not copy agent definitions into user homes');
 }
 
 if (
@@ -249,6 +269,9 @@ const codexSkillsRoot = path.join(repoRoot, 'plugins/workflow-agents/skills');
 const claudeSkillsRoot = path.join(repoRoot, 'plugins/workflow/skills');
 const codexSkills = skillNames(codexSkillsRoot);
 const claudeSkills = skillNames(claudeSkillsRoot);
+
+checkSkillMarkdownLinks(codexSkillsRoot);
+checkSkillMarkdownLinks(claudeSkillsRoot);
 
 for (const skillName of codexSkills) {
   const skillMd = path.join(codexSkillsRoot, skillName, 'SKILL.md');
@@ -293,6 +316,24 @@ if (homeShadowSkills.length > 0) {
   if (unmanaged.length > 0) {
     warn(`unmanaged global skill dirs require manual review before removal: ${unmanaged.join(', ')}`);
   }
+}
+
+const retiredGlobalSkills = [
+  'agentic-systems',
+  'analytics',
+  'analytics-engineering',
+  'cortex-code',
+  'data-engineering',
+  'data-science',
+  'financial-analytics',
+  'llm-engineering',
+  'software-engineering',
+].filter((skillName) => fs.existsSync(path.join(homeAgentsSkillsRoot, skillName, 'SKILL.md')));
+
+if (retiredGlobalSkills.length > 0) {
+  const message = `global ~/.agents/skills still contains retired bootstrap skill copies: ${retiredGlobalSkills.join(', ')}`;
+  if (strictHome) fail(message);
+  else warn(message);
 }
 
 const codexClaudeMetadata = findFiles(

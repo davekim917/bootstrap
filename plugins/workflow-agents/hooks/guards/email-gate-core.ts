@@ -7,10 +7,11 @@
  *
  * This module is PURE LOGIC ONLY. It performs NO I/O: no bun:sqlite, no fs, no
  * writeMessageOut / awaitDeliveryAck, no process.exit. It takes a bash command
- * string plus an env snapshot and returns a verdict (allow | gate) with the
- * pre-built approval-card `label` + `summary`. The provider adapter (Claude SDK
- * hook, OpenCode plugin, Codex runner) owns the staging + delivery-ack round-trip
- * — it stages the verdict via the session-DB `request_bash_gate` primitive
+ * string or native email-tool call plus an env snapshot and returns a verdict
+ * (allow | gate) with the pre-built approval-card `label` + `summary`. The
+ * provider adapter (Claude SDK hook, OpenCode plugin, Codex runner) owns the
+ * staging + delivery-ack round-trip — it stages the verdict via the session-DB
+ * `request_bash_gate` primitive
  * (see runEmailGate in block-destructive-core.ts) and emits the deny message.
  *
  * Ported verbatim from nanoclaw-v2 container/agent-runner/src/providers/claude.ts
@@ -18,9 +19,11 @@
  * createEmailGateHook's parse + card-build). The I/O tail (claude.ts:666-702)
  * is intentionally NOT relocated here — it stays in the adapter.
  *
- * Two send surfaces, both via the gws CLI, both gated:
+ * Gated send surfaces:
  *   1. Helper verbs:   gws gmail +send | +reply | +reply-all | +forward
  *   2. Raw API form:   gws gmail users (messages|drafts) send …
+ *   3. Native connector/MCP tools whose names identify an email send, reply,
+ *      or forward (for example `send_email` or `mcp__gmail__send_email`).
  * The raw form takes the same code path as the helper verbs and produces an
  * identical send — matching only (1) would let an agent reaching for the raw
  * API surface bypass the gate entirely.
@@ -30,7 +33,7 @@
  * sent. The helper-verb `--draft` flag and `--dry-run` likewise bypass.
  *
  * Out of scope (cannot be caught at this layer reliably): direct REST calls,
- * Python/Node SDK calls, SMTP CLIs, eval/alias/base64-decoded subshells. The
+ * Python/Node SDK calls, SMTP CLIs, and eval/alias/base64-decoded subshells. The
  * only sound place to catch all of those is the egress proxy.
  */
 
@@ -171,6 +174,98 @@ export interface EmailGateVerdict {
     label?: string;
     summary?: string;
     reason?: string;
+}
+
+function normalizedToolName(toolName: string): string {
+    return toolName.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
+function nativeEmailAction(toolName: string): 'send' | 'reply-all' | 'reply' | 'forward' | null {
+    const normalized = normalizedToolName(toolName);
+    if (!normalized) return null;
+    if (!/(?:^|_)(?:gmail|email)(?:_|$)/.test(normalized)) return null;
+    // A tool that sends an existing draft still delivers mail and must gate.
+    // Draft-only create/update/save actions remain non-delivering and allowed.
+    if (/(?:^|_)send(?:_|$)/.test(normalized)) return 'send';
+    if (/(?:^|_)draft(?:_|$)/.test(normalized)) return null;
+    if (/(?:^|_)reply_all(?:_|$)/.test(normalized)) return 'reply-all';
+    if (/(?:^|_)reply(?:_|$)/.test(normalized)) return 'reply';
+    if (/(?:^|_)forward(?:_|$)/.test(normalized)) return 'forward';
+    return null;
+}
+
+function toolValueAsString(value: unknown, depth = 0): string | undefined {
+    if (depth > 3 || value === null || value === undefined) return undefined;
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) {
+        const strings = value.filter((item): item is string => typeof item === 'string');
+        if (strings.length > 0) return strings.join(', ');
+        for (const item of value) {
+            const nested = toolValueAsString(item, depth + 1);
+            if (nested) return nested;
+        }
+        return undefined;
+    }
+    if (typeof value !== 'object') return undefined;
+    for (const nestedValue of Object.values(value as Record<string, unknown>)) {
+        const match = toolValueAsString(nestedValue, depth + 1);
+        if (match) return match;
+    }
+    return undefined;
+}
+
+function firstToolInputValue(
+    value: unknown,
+    wantedKeys: Set<string>,
+    depth = 0,
+): string | undefined {
+    if (depth > 3 || value === null || typeof value !== 'object') return undefined;
+    const record = value as Record<string, unknown>;
+    for (const [key, nestedValue] of Object.entries(record)) {
+        const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]+/g, '_');
+        if (!wantedKeys.has(normalizedKey)) continue;
+        const match = toolValueAsString(nestedValue, depth + 1);
+        if (match) return match;
+    }
+    for (const nestedValue of Object.values(record)) {
+        const match = firstToolInputValue(nestedValue, wantedKeys, depth + 1);
+        if (match) return match;
+    }
+    return undefined;
+}
+
+/**
+ * Gate native connector/MCP email actions that do not pass through Bash. Tool
+ * names must contain an email/gmail token plus send/reply/forward. Draft-only
+ * tools remain allowed, but tools that send a saved draft gate. The approval
+ * summary intentionally excludes the message body.
+ */
+export function evaluateEmailToolCall(
+    toolName: string,
+    toolInput: Record<string, unknown> | undefined,
+    env: EnvSnapshot,
+): EmailGateVerdict {
+    const action = nativeEmailAction(toolName);
+    if (!action || env.isScheduledTask) return { action: 'allow' };
+
+    const input = toolInput ?? {};
+    const to = firstToolInputValue(
+        input,
+        new Set(['to', 'to_email', 'recipient', 'recipients', 'recipient_email', 'recipient_emails']),
+    ) ?? 'unknown recipient';
+    const subject = firstToolInputValue(input, new Set(['subject', 'email_subject'])) ?? '';
+    const label = subject
+        ? `Email ${action} to ${to}: "${subject}"`
+        : `Email ${action} to ${to}`;
+    const lines = [`*Tool:* ${toolName}`, `*To:* ${to}`];
+    if (subject) lines.push(`*Subject:* ${subject}`);
+
+    return {
+        action: 'gate',
+        label,
+        reason: label,
+        summary: lines.join('\n'),
+    };
 }
 
 /**

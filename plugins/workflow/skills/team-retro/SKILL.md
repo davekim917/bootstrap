@@ -5,7 +5,6 @@ description: >
   stage-by-stage findings, key learnings, and recommended updates to CLAUDE.md and skills.
   Use after /team-ship completes. User-invoked, suggested by /team-ship completion message.
   Do not use mid-workflow or before shipping.
-version: 1.0.0
 ---
 
 # /team-retro — Post-Ship Learning Capture

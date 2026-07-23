@@ -9,7 +9,6 @@ description: >
   code, checking uncommitted changes, auditing a branch or PR, or running pre-commit review. Triggers on
   "review", "review changes", "check my changes", "review this PR", "code review", "review my code".
   Do not use for design document reviews (use /team-review) or single-line typo fixes.
-version: 1.9.1
 ---
 
 # /review-swarm — Code Review Swarm
@@ -105,13 +104,17 @@ Spawn all selected reviewers **in parallel, as isolated worker passes** — see 
 
 **Research protocol for reviewers — mandatory before flagging unfamiliar libraries or patterns:**
 
-1. **context7** (for libraries/frameworks) — `mcp__plugin_context7_context7__resolve-library-id` then `mcp__plugin_context7_context7__query-docs` to get current official docs. Training data goes stale; context7 does not. If context7 fails (rate limit, empty result), record the failure in output notes AND proceed immediately to the next step.
-2. **deepwiki** (for specific GitHub repos/dependencies) — `mcp__deepwiki__read_wiki_structure` then `mcp__deepwiki__read_wiki_contents` or `mcp__deepwiki__ask_question` for architecture docs. If deepwiki fails (rate limit, timeout), record the failure in output notes AND proceed immediately to the next step.
-3. **Exa (mandatory — always run)** — `mcp__exa__web_search_exa` for official docs and known pitfalls
-4. **Exa code context** — `mcp__exa__get_code_context_exa` for real usage patterns in public repos
-5. **Exa advanced** — `mcp__exa__web_search_advanced_exa` when filtering by recency or domain is needed
+1. Read project-local documentation and the dependency's current official docs.
+2. Use any connected documentation capability available in the runtime.
+3. Use native web search/open against primary sources: official docs, specifications, release
+   notes, and maintainer repositories.
+4. Use maintained public-repository examples only to corroborate the primary sources.
 
-**Fallback discipline:** Steps 1-2 are preferred but may fail due to rate limits or missing coverage. Step 3 (Exa) is the mandatory floor — it must always run. Never fall back to training data as a primary source for pattern claims. If all external research fails (context7, deepwiki, and all Exa calls), stop and tell the user rather than spawning reviewers with no research backing. Do not flag something as wrong without verifying against current docs.
+**Fallback discipline:** Do not require a specific MCP provider. Research is claim-scoped: plain
+logic, control-flow, and project-contract findings can be proven from the diff and repository;
+claims about unfamiliar library behavior or current best practice require a live source. If no live
+source is reachable for such a claim, omit or mark that claim unverified rather than failing the
+entire review or falling back to training data.
 
 **Project docs site:** If AGENTS.md/CLAUDE.md or project configuration references a documentation site (e.g. a docs URL, llms.txt, or wiki), fetch relevant pages before spawning reviewers. Extract project-specific patterns and conventions, and include them in reviewer prompts alongside project-context.
 
@@ -217,10 +220,10 @@ You are the lead. You own the timeline. Reviewers work for you, not the other wa
 ## Context Discipline
 
 **Read:** `git diff HEAD`, changed files in full, AGENTS.md/CLAUDE.md (for reviewer context)
-**Research:** context7 + deepwiki (preferred), Exa (mandatory), WebSearch (fallback). Project docs site if referenced in project instructions.
+**Research:** Project/vendor docs plus whatever live documentation, web, and repository capabilities the runtime exposes.
 **Write:** Nothing — review produces a report in the conversation, not on disk
 **Do NOT read:** Unchanged files (unless needed to fact-check a specific finding)
-**Do NOT do:** Fall back to training data when research tools fail — Exa is the mandatory floor
+**Do NOT do:** Fall back to training data for current library or best-practice claims
 
 ---
 
@@ -277,7 +280,12 @@ bounded-delegation rules in [`../shared/codex-workflow-primitives.md`](../shared
 
 ### Claude (reference — for parity, not used on this runtime)
 
-On Claude this skill uses `TeamCreate` + `Agent(team_name=…)` for `spawn_reviewers`, live `SendMessage` rounds for `cross_check` (reviewers message each other directly), and `SendMessage(type: "shutdown_request")` + `TeamDelete` for `teardown`. The Codex/OpenCode lead-mediated convergence above is the near-parity equivalent of Claude's peer-messaging rounds: same goal (dedupe, challenge, resolve), achieved by the lead because fire-and-return workers have no peer channel.
+On Claude this skill explicitly spawns native agent-team teammates for `spawn_reviewers`. The first
+teammate forms the session-scoped team automatically; reviewers use live `SendMessage` rounds for
+`cross_check`, then receive shutdown requests for `teardown`. Claude cleans up the team when the
+session exits. The Codex/OpenCode lead-mediated convergence above is the near-parity equivalent of
+Claude's peer-messaging rounds: same goal (dedupe, challenge, resolve), achieved by the lead because
+fire-and-return workers have no peer channel.
 
 ---
 

@@ -2,13 +2,12 @@
 name: best-practice-check
 description: >
   Assess whether current implementation follows known patterns and best practices.
-  Researches established approaches via exa before forming opinions. Reports on
+  Researches established approaches from current primary sources before forming opinions. Reports on
   pattern conformance, drift from best practices, and maintainability/scalability
   assessment. Read-only — no code changes.
   Use when user asks "are we following a known pattern", "best practices check",
   "how maintainable is this", "are we drifting", "pattern check", "sanity check".
   Do not use for code review or when the user wants code changes made.
-version: 2.0.0
 ---
 
 # /best-practice-check — Known Pattern Conformance Assessment
@@ -54,21 +53,29 @@ Write a 2-3 sentence summary. Confirm with the user if the scope is ambiguous.
 
 **This step is mandatory. Do not skip it.** Claude's training data is not sufficient — research what the industry actually does for this class of problem.
 
-Use the **research chain** — work top to bottom, but **Exa is always mandatory** regardless of what earlier steps return:
+Use the **capability-based research chain**. Tool names differ across Claude and Codex plugins;
+do not require a particular MCP vendor:
 
-1. **context7** (if libraries/frameworks are involved) — `mcp__plugin_context7_context7__resolve-library-id` then `mcp__plugin_context7_context7__query-docs` to get current official docs for any library, framework, or SDK. Training data goes stale; context7 does not. If context7 fails (rate limit, empty result), record the failure in your output notes AND proceed immediately to the next step.
-2. **deepwiki** (if specific GitHub repos are involved) — `mcp__deepwiki__read_wiki_structure` then `mcp__deepwiki__read_wiki_contents` or `mcp__deepwiki__ask_question` for architecture docs of specific open-source projects. If deepwiki fails (rate limit, timeout), record the failure in your output notes AND proceed immediately to the next step.
-3. **Exa (mandatory — always run this step)** — `mcp__exa__web_search_exa` with queries like:
+1. **Project and vendor documentation** — read project docs first, then current official docs for
+   the relevant library, framework, SDK, protocol, or platform. Use a connected documentation
+   tool when present; otherwise use native web search/open.
+2. **Original sources** — specifications, RFCs, maintainer repositories, release notes, and
+   first-party architecture guides.
+3. **Primary-source web search** through the runtime's available search capability, with queries like:
    - "[problem domain] architecture patterns"
    - "[specific approach] best practices [language/runtime]"
    - "[problem domain] production [language] open source"
-4. **Exa code context** — `mcp__exa__get_code_context_exa` to find how real projects solve this
-5. **Exa advanced** — `mcp__exa__web_search_advanced_exa` when you need filtered results (e.g., domain-specific sources, date ranges, excluding certain sites)
-6. **WebSearch fallback** — if exa returns insufficient results
+4. **Current code examples** — inspect maintained public repositories when official guidance is
+   incomplete; examples corroborate a claim but do not outrank the specification or official docs.
 
-**Fallback discipline:** Steps 1-2 are preferred but may fail due to rate limits or missing coverage. Steps 3-5 (Exa) are the mandatory floor — they must always run. If steps 1-2 both fail, Exa alone must produce sufficient research. Never fall back to training data as a primary source. If all external research fails, stop and tell the user rather than producing an assessment based on training data alone.
+**Fallback discipline:** At least one live research capability must produce current evidence.
+Never fall back to training data as a primary source. If all live research fails, stop and tell the
+user rather than producing an assessment from memory.
 
-**Recency matters.** Prefer sources from the last 1-2 years. Use date filtering (exa advanced) when available. If a pattern appears only in older sources (3+ years), verify it hasn't been superseded — search for "[pattern name] alternatives" or "[pattern name] deprecated". Ecosystems evolve fast; a best practice from a few years ago may be an anti-pattern today.
+**Recency matters.** Prefer sources from the last 1-2 years. Use the search capability's date or
+domain filters when available. If a pattern appears only in older sources (3+ years), verify it
+hasn't been superseded — search for "[pattern name] alternatives" or "[pattern name] deprecated".
+Ecosystems evolve fast; a best practice from a few years ago may be an anti-pattern today.
 
 **Source credibility is mandatory.** Not all search results are equal. Classify every source before using it:
 
@@ -81,7 +88,8 @@ Use the **research chain** — work top to bottom, but **Exa is always mandatory
 
 **Credibility rules:**
 1. **Corroboration required.** Every pattern claim must be supported by **at least 2 independent sources**, with at least one being T1 or T2. A single blog post — no matter how well-written — cannot drive an assessment.
-2. **Domain-first search.** When using `mcp__exa__web_search_advanced_exa`, start with `includeDomains` targeting known-good sources (official docs, major engineering blogs) before broadening to the open web.
+2. **Domain-first search.** Restrict the first search pass to known-good sources (official docs,
+   standards bodies, maintainer repositories, major engineering publications) before broadening.
 3. **Flag suspect content.** If a source lacks author attribution, has generic/boilerplate prose, or comes from an unfamiliar domain with no track record — treat it as T4 regardless of how relevant its content appears. LLM-generated content farms are widespread; don't let them pollute the assessment.
 4. **Disclose tiers in notes.** When recording a source, tag it with its tier (e.g., "React docs (T1)", "Uber eng blog (T2)"). This makes credibility visible during assessment and in the final output.
 
@@ -94,7 +102,7 @@ For each pattern found, note:
 
 Gather **at least 2-3 established patterns** for the problem domain before proceeding. At least one pattern must be backed by a T1 source.
 
-<!-- GATE: research-complete — At least 2 patterns researched via exa, each backed by 2+ sources with at least one T1/T2, before assessment -->
+<!-- GATE: research-complete — At least 2 patterns researched from live sources, each backed by 2+ sources with at least one T1/T2, before assessment -->
 
 ### Step 3: Assess Conformance
 
@@ -187,6 +195,6 @@ Sources:
 ## Context Discipline
 
 **Read:** Code in scope, AGENTS.md/CLAUDE.md (for project constraints and conventions)
-**Research:** context7 + deepwiki (preferred), Exa (mandatory), WebSearch (fallback)
+**Research:** Current project/vendor docs plus primary-source web or repository evidence available in the runtime
 **Write:** Nothing — assessment is presented in conversation only
 **Do NOT:** Make code changes, write files, suggest refactoring implementations, or fall back to training data when research tools fail

@@ -1,10 +1,9 @@
 ---
 name: team-review
 description: >
-  Invoke after /team-design is approved. Produces a review report at docs/specs/<feature>/review.md.
+  Invoke after /team-design is approved. Produces a review report at docs/specs/FEATURE/review.md.
   Do NOT write review docs manually — this skill spawns independent reviewers and has deduplication
   logic that only loads when invoked.
-version: 2.3.0
 ---
 
 # /team-review — Design Review (Architecture + Best Practice + Adversarial)
@@ -23,7 +22,8 @@ items are resolved or explicitly waived.
   industry patterns for this problem class, with rigorous source-tier discipline?
 - **Reviewer C (adversarial)** judges *assumption robustness* — what assumptions is the
   design making that might be wrong, what simpler approach would solve the same problem, what
-  would a skeptical senior engineer object to? Runs on a model different from the host runtime for cross-model diversity.
+  would a skeptical senior engineer object to? Runs in an independent context; a safely available
+  different-family model is an optional diversity enhancement, not a prerequisite.
 
 Together they answer: "Is this design self-consistent, aligned with how the world solves this
 problem, AND robust to skeptical challenge?"
@@ -42,7 +42,7 @@ first."
 
 - After `/team-design` is approved and before `/team-plan`
 - When re-reviewing a design that had MUST-FIX items addressed
-- Do NOT auto-trigger — the user consciously enters this workflow by typing `/team-review`
+- Enter after explicit design approval, or as the review stage inside a user-invoked `/team-auto` run.
 
 ---
 
@@ -99,21 +99,11 @@ Before doing anything else, count how many review cycles have already run for th
    # Write design content to .agents/tmp/bootstrap-workflow/review-input.md
    ```
 
-4. Identify the 2-3 project skills most relevant to this design. Start from `docs/project-scope.md`
-   if it exists (`relevant_global_skills` field), then cross-reference the design content using this
-   domain-to-skill mapping:
-
-   | Design content signals | Skill to load |
-   |---|---|
-   | dbt models, SQL transforms, marts, staging, schema.yml | `analytics-engineering` |
-   | LLM API calls, RAG, prompts, evals, token cost, structured output | `llm-engineering` |
-   | Agent loops, MCP tools/servers, multi-agent, memory, HITL | `agentic-systems` |
-   | Airflow/Dagster/Prefect DAGs, ETL pipelines, ingestion, CDC, streaming | `data-engineering` |
-   | ML training, notebooks, feature engineering, MLflow, model evaluation | `data-science` |
-   | GL models, ARR/MRR/NRR, revenue recognition, budget vs actuals, reconciliation | `financial-analytics` |
-   | TypeScript/React, REST/GraphQL APIs, auth, Node.js, AWS/GCP services | `software-engineering` |
-
-   Select the 2-3 skills whose signals appear most prominently. Note them — Reviewer A will be told to load them.
+4. Identify up to 3 installed project or provider skills relevant to this design. Start from
+   `docs/project-scope.md` if it exists (`relevant_global_skills` field), then inspect the skills
+   actually available in the current session. Select only skills whose declared scope matches the
+   design. Do not assume a particular domain plugin or invent unavailable skill names. Note the
+   selected names — Reviewer A will be told to load them. If none apply, say `none`.
 
 ### Step 2: Spawn 3 Independent Reviewers in Parallel
 
@@ -123,11 +113,9 @@ the next. Each reviewer runs in an isolated context — no shared state, no awar
 reviewers' findings. The reviewer roles, lenses, and prompts below are runtime-agnostic; only the
 spawn mechanism differs.
 
-**Pre-flight second-model check for Reviewer C (adversarial):** Reviewer C is the cross-model
-lens — it must run on a model *different from the host runtime* so its blind spots don't overlap
-A and B's. Before spawning, determine whether a different model is reachable (see **§ Dispatch by
-Runtime** for the exact detection command on your runtime — e.g. probing for a non-host model's
-CLI on `PATH`). Two outcomes:
+**Pre-flight diversity check for Reviewer C (adversarial):** Reviewer C always runs in an isolated
+native worker. If the environment explicitly exposes an authenticated different-family model with
+a safe read-only mode, the same prompt may run there for stronger diversity. Two outcomes:
 
 - **A different model is available** → run Reviewer C there (true cross-model diversity).
 - **No different model is available** → fall back to a **same-runtime adversarial pass** (a native
@@ -143,7 +131,7 @@ CLI on `PATH`). Two outcomes:
 Spawn this reviewer as an independent worker with the architecture-advisor role (the role is defined
 by its prompt — see § Dispatch by Runtime for the per-runtime worker primitive). See
 `references/reviewer-prompts.md` for the full prompt template. Fill in `[LIST SKILL NAMES]` with the
-2-3 skills identified in Step 1.
+installed skills identified in Step 1, or `none`.
 
 Reviewer A's lens: **STRUCTURAL INTEGRITY**
 - Internal consistency of constraints, options, and recommendation
@@ -153,8 +141,8 @@ Reviewer A's lens: **STRUCTURAL INTEGRITY**
 - What's missing or understated
 - Risks not acknowledged
 
-Reviewer A has direct access to Context7, Exa, Read, Grep, Glob, Bash. It can verify library
-capabilities and read codebase files to ground its findings.
+Reviewer A uses the runtime's available documentation/web tools plus repository reads. It can
+verify library capabilities and read codebase files to ground its findings.
 
 ---
 
@@ -183,20 +171,19 @@ discipline (T1/T2/T3 source tiers, 2-source corroboration, recency filters) that
 
 ---
 
-#### Reviewer C: Adversarial (cross-model, design-focused)
+#### Reviewer C: Adversarial (independent, design-focused)
 
 Spawn this reviewer as an independent worker (a generic worker — no specialized role; see § Dispatch
-by Runtime for the per-runtime worker primitive). The worker's only job is to run the adversarial
-lens **on a model different from the host runtime** (cross-model diversity), using the verbatim
+by Runtime for the per-runtime worker primitive). Its job is to run the adversarial
+lens in an isolated context using the verbatim
 adversarial design prompt at `references/codex-adversarial-design-prompt.md`, substituting
 `{{TARGET_LABEL}}`, `{{USER_FOCUS}}`, and `{{REVIEW_INPUT}}` before invoking it. Returns the findings
-verbatim for the lead to merge. The concrete launch — which model to target, and the
-`codex exec --yolo` invocation when the different model is Codex — is in **§ Dispatch by Runtime**,
-along with the same-runtime fallback when no second model is reachable. If the user (or an
+verbatim for the lead to merge. Runtime-native dispatch and the optional safe second-model path are
+in **§ Dispatch by Runtime**. If the user
 invoking skill such as `/team-auto`) asked for a different model or reasoning effort for the
-cross-model step on this run, append one final line to the worker prompt —
-`CODEX OVERRIDE: model=<slug> effort=<level>` — which the worker substitutes into the CLI
-flags, keeping `--yolo` and all other flags unchanged.
+adversarial step on this run, append one final line to the worker prompt —
+`MODEL OVERRIDE: model=<slug> effort=<level>` — honor it only through the selected runtime's
+documented safe flags. An override never authorizes disabling approvals or sandboxing.
 
 See `references/reviewer-prompts.md` for the full worker prompt template.
 
@@ -209,27 +196,18 @@ Reviewer C's lens: **ASSUMPTION CHALLENGE & BLIND SPOTS**
 - What would a skeptical senior engineer object to?
 - Where is the design silent when it should be explicit?
 
-**Why a different model from the host runtime:** Reviewers A and B run on the host runtime (the
-model you're running on). Running the adversarial lens on a *different* model — same design doc,
-different underlying weights — catches blind spots that same-model reviewers tend to share. The
-target model must therefore be chosen to differ from the host: when the host is Codex, target a
-non-Codex model (e.g. `claude -p`); when the host is OpenCode, target a different model. This is
-the cross-model diversity check at design stage (mirroring what `/team-qa` Validator E does at
-post-build stage for code diffs). When no different model is reachable, Reviewer C falls back to a
-same-runtime adversarial pass with a logged "cross-model diversity reduced" note (Step 2 pre-flight).
+**Why an independent context:** Reviewers A and B have different roles but share the host model.
+Reviewer C's isolated prompt and context still challenge their framing. A genuinely different
+model adds useful diversity when safely available; otherwise disclose the reduced diversity rather
+than manufacturing it through a recursive host-CLI call.
 
-**Why a design-specific prompt, not the code-diff prompt from `/team-qa`:** The codex plugin
-ships a code-focused adversarial prompt whose attack surface enumerates code-level concerns
+**Why a design-specific prompt, not the code-diff prompt from `/team-qa`:** The QA prompt
+enumerates code-level concerns
 (auth, race conditions, schema drift, line-level grounding). Those don't apply to a design
 document — a design doesn't have line numbers to ground against. The prompt at
 `references/codex-adversarial-design-prompt.md` is purpose-built for design-time review, with
 an assumption-challenge lens and relaxed structured-output requirements (free-form numbered
 findings instead of schema-validated JSON, because design findings don't have line ranges).
-
-**Why `--yolo` (when the cross-model target is Codex):** Same reason as Validator E — Codex's inner
-bwrap sandbox can't create nested user namespaces inside Docker. `--yolo` is the documented short
-alias for `--dangerously-bypass-approvals-and-sandbox`, explicitly intended for externally-sandboxed
-environments like our container.
 
 ---
 
@@ -324,9 +302,9 @@ Then STOP. Display exactly this gate:
 ---
 **Review complete.** (Cycle [N+1]/5)
 
-Reviewers run: A (architecture) · B (best-practice) · C (cross-model adversarial)
-[If C ran as a same-runtime fallback: replace "C (cross-model adversarial)" with "C (same-runtime adversarial — cross-model diversity reduced)"]
-[If C was skipped entirely: replace "C (cross-model adversarial)" with "C: skipped — <reason>"]
+Reviewers run: A (architecture) · B (best-practice) · C (independent adversarial)
+[If C ran on a native same-family worker: append "— cross-model diversity reduced"]
+[If C was skipped entirely: replace "C (independent adversarial)" with "C: skipped — <reason>"]
 
 MUST-FIX: [N] findings
 SHOULD-FIX: [N] findings
@@ -362,9 +340,9 @@ OR when the 5-cycle cap is reached (see Step 0 — escalation required).
 
 | Reviewer | Model | Implementation | Lens | Evidence base |
 |----------|-------|---------------|------|---------------|
-| A: architecture-advisor role | Host runtime | Worker pass (architecture-advisor role) | Structural integrity, internal pattern fit | Codebase + AGENTS.md/CLAUDE.md + Context7/Exa for library verification |
-| B: bootstrap-workflow:best-practice-check | Host runtime | Worker pass forwarding to `/bootstrap-workflow:best-practice-check` | External pattern validation, drift from established practice | Mandatory external research via Exa/Context7/DeepWiki with T1/T2/T3 source tiers |
-| C: adversarial-design | A model *different from the host* (e.g. `claude -p` when host is Codex); else same-runtime fallback with logged reduced-diversity note | Worker pass runs the verbatim prompt from `references/codex-adversarial-design-prompt.md` (`codex exec --yolo` when the different model is Codex) | Assumption challenge, blind spots, simpler-approach alternatives | Design document only — no codebase access, no external research |
+| A: architecture-advisor role | Host runtime | Worker pass (architecture-advisor role) | Structural integrity, internal pattern fit | Codebase + project instructions + live provider-agnostic research |
+| B: bootstrap-workflow:best-practice-check | Host runtime | Worker pass forwarding to `/bootstrap-workflow:best-practice-check` | External pattern validation, drift from established practice | Mandatory live research with T1/T2/T3 source tiers |
+| C: adversarial-design | Independent native worker; different-family model only when safely available | Worker pass runs the repository adversarial prompt | Assumption challenge, blind spots, simpler-approach alternatives | Design document only — no codebase access, no external research |
 
 Each reviewer gets: design document at `.agents/tmp/bootstrap-workflow/review-input.md` + AGENTS.md/CLAUDE.md
 Each reviewer works in isolation: no shared state, no awareness of the other reviewers' findings
@@ -377,7 +355,7 @@ Each pattern below states the *why* first — what fails when the pattern slips 
 
 - **Independent contexts are the entire value proposition of multi-lens review.** When reviewers see each other's output, all three lenses converge on whoever spoke first; you've paid for three reviews and gotten one. Keep each reviewer in isolation — no shared scratchpads, no relayed findings, no peeking.
 - **Reviewer B's credibility comes from the source-tier discipline inside `bootstrap-workflow:best-practice-check`** — T1/T2/T3 corroboration, recency filters, mandatory external research. Hand-rolling pattern research approximates the appearance without any of the discipline, and produces findings the user can't trust. Invoke the skill via your runtime's skill/command invocation; don't do your own pattern research instead.
-- **The verbatim adversarial prompt at `references/codex-adversarial-design-prompt.md` is calibrated** — grounding rules that block invented design claims, and an assumption-challenge lens specifically tuned for design-stage review. A hand-written adversarial prompt loses both calibration points. Use the verbatim prompt; if no model different from the host is available, label the fallback explicitly as a same-runtime pass — running the "adversarial lens" on the same model as Reviewers A and B is three same-model reviewers with shared blind spots, not a true cross-model check.
+- **The verbatim adversarial prompt at `references/codex-adversarial-design-prompt.md` is calibrated** — grounding rules that block invented design claims, and an assumption-challenge lens specifically tuned for design-stage review. A hand-written adversarial prompt loses both calibration points. Use the verbatim prompt in an isolated worker; when it shares the host model family, label the reduced model diversity honestly.
 - **A finding that contradicts the actual codebase is a false positive that costs the user time and erodes trust** — including the simpler-approach suggestions Reviewer C surfaces. Fact-check every finding against the code (and against project constraints, for C's suggestions) before propagating it.
 - **MUST-FIX inflation cheapens the signal** — if everything is MUST-FIX, the user can no longer tell what's actually blocking. Reserve MUST-FIX for genuine blockers; route the rest to SHOULD-FIX or WON'T-FIX per the classification table above.
 - **WON'T-FIX items dropped silently become invisible context for the next reviewer** — they may turn out to matter when the design changes. Log every WON'T-FIX with its reasoning, even when you're confident it's the right call now.
@@ -395,8 +373,8 @@ Each pattern below states the *why* first — what fails when the pattern slips 
 | "I trust the design" | Trust is not verification. Check claims against the actual implementation. |
 | "Minor issue" | Classify SHOULD-FIX or WON'T-FIX with stated reason and log. Minor issues accumulate into major debt. |
 | "bootstrap-workflow:best-practice-check is slow, I'll skip it" | The whole point of Reviewer B is the external research discipline. Skipping it removes the skill's value. |
-| "I'll just do the research myself instead of invoking the skill" | Approximation. The skill has tier classification, corroboration rules, and recency filters. You cannot replicate them in an ad-hoc Exa search. |
-| "The different model is slow, I'll run the adversarial lens on the host runtime instead" | Running the adversarial lens on the host runtime when Reviewers A and B already ran there removes the cross-model diversity that was the whole point of Reviewer C. That's not a substitute — that's three same-model reviewers with a blind spot in common. If no different model is reachable, run the same-runtime fallback and report the reduced diversity (or report C as skipped); let the user decide whether to proceed. |
+| "I'll just do the research myself instead of invoking the skill" | Approximation. The skill has tier classification, corroboration rules, and recency filters. Invoke it rather than improvising a looser search. |
+| "The different model is unavailable, so I'll skip Reviewer C" | Model-family diversity is optional; the isolated adversarial context is not. Run the native worker, report reduced diversity, and skip only when no isolated worker can run safely. |
 | "I'll write my own adversarial prompt instead of using the verbatim one" | Approximation. The verbatim prompt at `references/codex-adversarial-design-prompt.md` has calibrated grounding rules (no inventing design claims) and a specific assumption-challenge lens tuned for design-stage review. A hand-rolled prompt loses both. |
 
 ---
@@ -414,7 +392,7 @@ The review report is a point-in-time assessment. A changed design requires a fre
 **Read (for setup):**
 - `docs/specs/<feature>/design.md` — the subject of the review
 - `AGENTS.md/CLAUDE.md` — project context and conventions
-- `references/codex-adversarial-design-prompt.md` — the verbatim prompt Reviewer C's cross-model worker uses
+- `references/codex-adversarial-design-prompt.md` — the verbatim prompt Reviewer C's isolated worker uses
 
 **Read (for fact-checking in Step 4):**
 - Scoped source files relevant to each finding — only what's needed to validate
@@ -435,14 +413,14 @@ The review report is a point-in-time assessment. A changed design requires a fre
 ## Dispatch by Runtime
 
 The review substance above is runtime-agnostic — the three reviewer lenses (A architecture, B
-best-practice forwarder, C cross-model adversarial), their prompts, the dedup/fact-check/classify
+best-practice forwarder, C independent adversarial), their prompts, the dedup/fact-check/classify
 logic, and the cycle-cap gate. The orchestration primitives below are the **only** runtime-specific
-part: how the reviewers are spawned, and **which model backs Reviewer C** (it must differ from the
-host runtime). Implement these four primitives for your runtime; everything else stays the same.
+part: how the reviewers are spawned, and whether a safely configured second model backs Reviewer C.
+Implement these four primitives for your runtime; everything else stays the same.
 
 | Primitive | What it does |
 |-----------|--------------|
-| `spawn_reviewers` | Fan out the three reviewers (A, B, C) in parallel, each in an isolated context, each with its constructed prompt from `references/reviewer-prompts.md`. A and B run on the host runtime; **Reviewer C runs on a model different from the host** (cross-model diversity), falling back to a same-runtime adversarial pass with a logged reduced-diversity note when no second model is reachable, or skipped entirely if even that is impossible. |
+| `spawn_reviewers` | Fan out the three reviewers (A, B, C) in parallel, each in an isolated context, each with its constructed prompt from `references/reviewer-prompts.md`. A and B run on the host runtime; Reviewer C uses an isolated native worker by default or an explicitly configured safe different-family model. |
 | `collect_findings` | Gather each reviewer's raw findings back to the lead (two reviewers if C was skipped) |
 | `cross_check` | Step 4 convergence — **lead-mediated**: the lead dedups, fact-checks against the codebase, and classifies. The three reviewers run in isolation with no awareness of each other; convergence is the lead's job, not a peer round. |
 | `teardown` | Reclaim worker sessions after the report ships |
@@ -453,15 +431,12 @@ host runtime). Implement these four primitives for your runtime; everything else
 > relevant prompt from `references/reviewer-prompts.md`. This mirrors the Claude version, which
 > spawns them as prompt-defined subagents.
 >
-> **Reviewer C is the CROSS-MODEL lens by design.** It exists to cancel out the host model's
-> systematic blind spots, so it must run on a model *different from the host runtime* — when the
-> host is Codex, target a non-Codex model (e.g. `claude -p`); when the host is OpenCode, target a
-> different model. When no different model is reachable, fall back to a same-runtime adversarial
-> pass in an isolated context and log that cross-model diversity is reduced (Step 2 pre-flight).
-> Detect the second model in the pre-flight, before spawning.
+> **Reviewer C is an isolation-first adversarial lens.** Use the runtime's native worker by default
+> and log reduced model diversity when it shares the host family. A different-family model is useful
+> only when explicitly configured, authenticated, and invocable in a documented read-only mode.
 >
-> Use your runtime's **native, in-session subagent delegation** (plus a shell-out to a different
-> model's CLI for Reviewer C) — workers that report their findings back to the lead. Do **NOT** use
+> Use your runtime's **native, in-session subagent delegation** — workers that report their findings
+> back to the lead. A safe external-model adapter may replace Reviewer C when explicitly available. Do **NOT** use
 > cross-agent or cross-container dispatch primitives (e.g. NanoClaw's `spawn_task` MCP, available
 > only to container agents): those launch *separate agent sessions* that can't return findings to
 > this lead for the dedup/classify pass, which defeats the entire review. Stay in-session.
@@ -477,17 +452,10 @@ bounded-delegation rules in [`../shared/codex-workflow-primitives.md`](../shared
     template from `references/reviewer-prompts.md` (A with `[LIST SKILL NAMES]` filled in; B as the
     `/bootstrap-workflow:best-practice-check` forwarder). Write scope is naturally disjoint —
     reviewers produce findings, they don't edit.
-  - **Reviewer C (different model — NOT Codex)** — the host is Codex, so running C on `codex exec`
-    would be same-model, not cross-model. Instead shell out to a non-Codex model for the adversarial
-    pass, e.g. `claude -p "<Reviewer C prompt>"` if the Claude CLI is on `PATH`, or any other
-    available non-Codex model CLI. Detect availability in the Step 2 pre-flight with, e.g.,
-    `command -v claude >/dev/null 2>&1 && echo yes || echo no`. Feed it the substituted verbatim
-    prompt from `references/codex-adversarial-design-prompt.md`.
-  - **Reviewer C fallback (same-runtime adversarial pass)** — if no different model is reachable, run
-    a second independent Codex subagent with the verbatim adversarial prompt (`codex exec --yolo`
-    when invoking Codex directly — `--yolo` because bwrap can't nest in Docker), in an isolated
-    context, prepend the reduced-diversity warning to its prompt, and log the reduced-diversity
-    notice (Step 2 pre-flight). If even that is impossible, skip C and note it in the report header.
+  - **Reviewer C** — delegate a third independent Codex subagent with the substituted repository
+    adversarial prompt. Log reduced cross-model diversity. If an explicitly configured safe
+    different-family model is available, it may receive the same prompt instead. Never shell out
+    to `codex exec` from Codex to simulate diversity.
   - If your environment can't run subagents in parallel, run the passes sequentially with
     **separated notes** so their conclusions don't contaminate each other.
 - `collect_findings`: each subagent returns its raw findings to the lead.
@@ -500,7 +468,9 @@ bounded-delegation rules in [`../shared/codex-workflow-primitives.md`](../shared
 
 - `spawn_reviewers`:
   - **Reviewers A and B** — issue parallel `task({ subagent_type: 'general', description, prompt, background: true })` calls, one per reviewer. OpenCode's general worker is named `general` (NOT `general-purpose`). Convey each reviewer's prompt from `references/reviewer-prompts.md` in the `prompt` (A with `[LIST SKILL NAMES]` filled in; B the best-practice-check forwarder). `background: true` is the parallel key — without it the calls serialize.
-  - **Reviewer C (different model)** — run the adversarial pass on a model *different from the host*: a non-default OpenCode model, or a shell-out to another model's CLI (e.g. `codex exec --yolo` since Codex differs from OpenCode's model, or `claude -p`). Detect availability in the Step 2 pre-flight (probe for the second CLI on `PATH`). Feed it the substituted verbatim prompt from `references/codex-adversarial-design-prompt.md`. All three reviewer calls can be issued **in one tool turn** so they run in parallel.
+  - **Reviewer C** — run the repository adversarial prompt in a separate `task(...)`. Use a
+    different-family model only when explicitly configured with safe invocation. All three calls
+    can be issued in one tool turn.
   - **Reviewer C fallback (same-runtime adversarial pass)** — if no different model is reachable, run a second `task({ subagent_type: 'general', ... })` adversarial pass in an isolated context, prepend the reduced-diversity warning to its prompt, and log the reduced-diversity notice. If even that is impossible, skip C and note it on failure.
 - `collect_findings`: await each background task's completion and read its result.
 - `cross_check`: **lead-mediated**, same as Codex — OpenCode `task` workers are fire-and-return with no peer channel. The lead performs Step 4 and re-dispatches one targeted `task` only for a specific disputed finding.
@@ -508,4 +478,12 @@ bounded-delegation rules in [`../shared/codex-workflow-primitives.md`](../shared
 
 ### Claude (reference — for parity, not used on this runtime)
 
-On Claude this skill spawns the three reviewers via the Task tool — `Task(subagent_type: bootstrap-workflow:architecture-advisor)` for Reviewer A and `Task(subagent_type: general-purpose)` for the Reviewer B and C forwarders — all launched in one parallel turn. There the host is Claude, so the cross-model lens (Reviewer C) shells out to **Codex** as the different model (`codex exec --yolo` with the verbatim adversarial-design prompt), falling back to a same-runtime Claude `Task(subagent_type: general-purpose)` adversarial pass with a reduced-diversity note when Codex is unavailable. There is no `TeamCreate`/`SendMessage`/`TeamDelete` here: the reviewers are isolated fire-and-return subagents with no peer channel by design, so `cross_check` is already lead-mediated on Claude too (the lead's Step 4 dedup/fact-check/classify pass). The Codex/OpenCode dispatch above is a direct parity match — same isolation, same lead-mediated convergence, same cross-model-C-with-same-runtime-fallback design; only the host model (and therefore which model backs C) and the spawn primitive differ.
+On Claude this skill spawns all three reviewers as ordinary fire-and-return subagents in one
+parallel turn; each prompt defines its reviewer role. There the host is Claude, so the cross-model
+lens (Reviewer C) may shell out to **Codex** as the different model (ephemeral read-only `codex exec` with the
+verbatim adversarial-design prompt), falling back to a same-runtime Claude pass with a
+reduced-diversity note when Codex is unavailable. These reviewers intentionally do not use an agent
+team or peer messaging, so `cross_check` is lead-mediated on Claude too (the lead's Step 4
+dedup/fact-check/classify pass). The Codex/OpenCode dispatch above is a direct parity match — same
+isolation, same lead-mediated convergence, and the same optional diversity-with-native-fallback design;
+only the host model and spawn primitive differ.

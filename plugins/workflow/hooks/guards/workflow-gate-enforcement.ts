@@ -3,11 +3,11 @@
  * PreToolUse hook: Workflow gate enforcement
  *
  * Enforces artifact-based gates for /team-build:
- * - Blocks TeamCreate when team name contains "build" and no passing
- *   pre-build drift report exists for that feature
+ * - Blocks creation of namespaced build tasks when no passing pre-build drift
+ *   report exists for that feature
  *
  * Gate logic (1.8.2):
- *   Team name format: "<feature-name>-build" (REQUIRED for build teams)
+ *   Task subject prefix: "[team-build:<feature-name>]" (REQUIRED for Path A build tasks)
  *     - feature-name must match /^[a-z0-9][a-z0-9_-]{0,63}$/
  *   Required artifact: docs/specs/<feature-name>/pre-build-drift.md
  *   Passing condition: parsed_MISSING == 0 AND (parsed_DIVERGED - validAcks) == 0
@@ -29,14 +29,13 @@
  * Security model:
  *   - cwd is supplied by the harness via tool-input. The harness is the
  *     trust boundary — if the harness is compromised, the hook cannot help.
- *   - All paths derived from team_name go through a strict allowlist
+ *   - All paths derived from task_subject go through a strict allowlist
  *     before being joined with cwd, preventing path traversal.
  *   - Code fences in drift reports are stripped before entry parsing,
  *     preventing example markdown from polluting entry detection.
- *   - The hook fails CLOSED on errors inside the gate decision path.
- *     The only fail-open is at the outermost frame for malformed hook
- *     stdin (so a hook bug never blocks legitimate work, but a malformed
- *     drift report DOES block).
+ *   - The hook fails CLOSED on malformed input and errors inside the gate
+ *     decision path. Claude supplies structured JSON for this event; invalid
+ *     input must not silently disable a build gate.
  *
  * Exit code 2 blocks the tool (Claude Code semantics).
  * Message written to stderr is shown to Claude as the reason for the block.
@@ -45,12 +44,13 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import type { ToolUseInput } from '../lib/types';
 
-interface TeamCreateInput extends ToolUseInput {
-    tool_input: {
-        team_name?: string;
-        description?: string;
-        [key: string]: any;
-    };
+interface TaskCreatedInput extends ToolUseInput {
+    hook_event_name?: string;
+    task_id?: string;
+    task_subject?: string;
+    task_description?: string;
+    teammate_name?: string;
+    team_name?: string; // Deprecated runtime field. Never used for authorization.
 }
 
 interface DriftEntry {
@@ -78,14 +78,15 @@ interface GateResult {
 }
 
 /**
- * Strict feature-name allowlist. Used to extract the feature from a build
- * team_name and prevent path traversal.
+ * Strict feature-name allowlist. Used to extract the feature from a build-task
+ * subject and prevent path traversal.
  *
  * Format: lowercase alphanumeric, hyphens, underscores. Must start with
  * alphanumeric. Length 1-64 chars (the leading char + up to 63 more).
  * No dots, no slashes, no whitespace — eliminates `..`, `/`, `\` traversal.
  */
-const FEATURE_NAME_RE = /^([a-z0-9][a-z0-9_-]{0,63})-build$/;
+const BUILD_TASK_PREFIX_RE = /^\[team-build:([a-z0-9][a-z0-9_-]{0,63})\](?:\s|$)/;
+const BUILD_TASK_MARKER_RE = /^\[team-build:/i;
 
 /**
  * Strict ISO 8601 date format for expires_at. YYYY-MM-DD only.
@@ -100,7 +101,7 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
  * (e.g., a sample `### [B1]` entry shown for documentation) cannot pollute
  * real entry detection.
  */
-function stripCodeFences(content: string): string {
+export function stripCodeFences(content: string): string {
     return content.replace(/```[\s\S]*?```/g, '').replace(/~~~[\s\S]*?~~~/g, '');
 }
 
@@ -114,7 +115,7 @@ function stripCodeFences(content: string): string {
  * The header pattern is anchored to start-of-line so headers inside body
  * text or stripped fences are not matched. CRLF line endings are normalized.
  */
-function parseDriftEntries(rawContent: string): DriftEntry[] {
+export function parseDriftEntries(rawContent: string): DriftEntry[] {
     const content = stripCodeFences(rawContent.replace(/\r\n/g, '\n'));
     const entries: DriftEntry[] = [];
     // Anchor the header to start-of-line via (?:^|\n) so the regex doesn't
@@ -139,7 +140,7 @@ function parseDriftEntries(rawContent: string): DriftEntry[] {
  * Errors are returned, not thrown — the gate caller incorporates them into
  * the block message so users see why their acks were rejected.
  */
-function loadAndValidateAcks(
+export function loadAndValidateAcks(
     acksPath: string,
     entries: DriftEntry[]
 ): { valid: Ack[]; errors: string[] } {
@@ -247,7 +248,7 @@ function loadAndValidateAcks(
  * report could put `MISSING: 0` in the summary while listing real DIVERGED
  * entries below — only parsed entries count.
  */
-function evaluateGate(reportPath: string, acksPath: string): GateResult | null {
+export function evaluateGate(reportPath: string, acksPath: string): GateResult | null {
     if (!existsSync(reportPath)) {
         return null;
     }
@@ -256,6 +257,19 @@ function evaluateGate(reportPath: string, acksPath: string): GateResult | null {
     try {
         content = readFileSync(reportPath, 'utf-8');
     } catch {
+        return null;
+    }
+
+    // A zero-finding report legitimately has no [B<n>] entries, so entry count
+    // alone cannot distinguish "clean" from an empty or unrelated markdown file.
+    // Require the stable report structure before accepting zero parsed blockers.
+    const normalized = stripCodeFences(content.replace(/\r\n/g, '\n'));
+    if (
+        !/^# Drift Report:/m.test(normalized) ||
+        !/^## Summary\s*$/m.test(normalized) ||
+        !/^\|\s*MISSING\s*\|/m.test(normalized) ||
+        !/^\|\s*DIVERGED\s*\|/m.test(normalized)
+    ) {
         return null;
     }
 
@@ -282,33 +296,33 @@ function evaluateGate(reportPath: string, acksPath: string): GateResult | null {
 }
 
 /**
- * Extract the feature name from a build team name with strict allowlist.
- * Returns null if the team_name doesn't match the convention exactly.
+ * Extract the feature name from a namespaced build-task subject.
+ * Returns null if the subject doesn't match the convention exactly.
  *
  * The allowlist excludes `.`, `/`, `\`, and whitespace, eliminating any
  * possibility of path traversal when the result is later joined with cwd.
  */
-function extractFeatureName(teamName: string): string | null {
-    const match = teamName.match(FEATURE_NAME_RE);
+export function extractFeatureName(taskSubject: string): string | null {
+    const match = taskSubject.match(BUILD_TASK_PREFIX_RE);
     return match ? match[1] : null;
 }
 
-function formatBlockMessage(
-    teamName: string,
+export function formatBlockMessage(
+    taskSubject: string,
     featureName: string | null,
     result: GateResult | null
 ): string {
     const lines: string[] = [];
-    lines.push(`BLOCKED: Cannot create build team "${teamName}" — pre-build drift check not passed.`);
+    lines.push(`BLOCKED: Cannot create build task "${taskSubject}" — pre-build drift check not passed.`);
     lines.push('');
 
     if (!featureName) {
         lines.push(
-            `Build teams must use the naming convention "<feature-name>-build" where feature-name matches /^[a-z0-9][a-z0-9_-]{0,63}$/. Got: "${teamName}"`
+            `Build task subjects must start with "[team-build:<feature-name>]" where feature-name matches /^[a-z0-9][a-z0-9_-]{0,63}$/. Got: "${taskSubject}"`
         );
         lines.push('');
         lines.push(
-            `Rename the team to follow the convention, then re-run the gate. The convention enables feature-specific drift report lookup and prevents path traversal in the gate hook.`
+            `Fix the task subject to use the feature directory's exact name, then retry TaskCreate. The convention enables feature-specific drift report lookup and prevents path traversal in the gate hook.`
         );
         return lines.join('\n');
     }
@@ -361,46 +375,33 @@ function formatBlockMessage(
     return lines.join('\n');
 }
 
-function main(): void {
-    // Outermost frame: ONLY catches malformed stdin (hook input). This is
-    // the only fail-open path — a broken harness must not block legitimate
-    // work due to a hook bug parsing JSON. Everything inside the gate
-    // decision below fails CLOSED.
-    let input: TeamCreateInput;
+export function main(): void {
+    let input: TaskCreatedInput;
     try {
         const rawInput = readFileSync(0, 'utf-8');
         input = JSON.parse(rawInput);
     } catch (error) {
         console.error(
-            '[workflow-gate] Hook input parse error (non-blocking):',
+            'BLOCKED: workflow gate received malformed hook input:',
             error instanceof Error ? error.message : error
         );
+        process.exit(2);
+    }
+
+    if (input.hook_event_name !== 'TaskCreated') {
         process.exit(0);
     }
 
-    if (input.tool_name !== 'TeamCreate') {
-        process.exit(0);
-    }
-
-    const teamName = (input.tool_input?.team_name || '').toLowerCase();
-    const description = (input.tool_input?.description || '').toLowerCase();
-
-    // Detect build teams. We honor the description-based detection so a
-    // team with `description: "build the X feature"` is also gated, but
-    // we ALWAYS require the team_name to match the convention. The
-    // previous behavior (description-only fallback that scanned all
-    // features for any passing report) was a bypass: a passing report
-    // for X authorized arbitrary teams Y. Fail closed instead.
-    const isBuildTeam = teamName.includes('build') || description.includes('build');
-    if (!isBuildTeam) {
+    const taskSubject = input.task_subject || '';
+    if (!BUILD_TASK_MARKER_RE.test(taskSubject)) {
         process.exit(0);
     }
 
     const cwd = input.cwd || process.cwd();
-    const featureName = extractFeatureName(teamName);
+    const featureName = extractFeatureName(taskSubject);
 
     if (!featureName) {
-        console.error(formatBlockMessage(teamName, null, null));
+        console.error(formatBlockMessage(taskSubject, null, null));
         process.exit(2);
     }
 
@@ -419,18 +420,18 @@ function main(): void {
         // Anything that throws here is either a corrupt report, an unreadable
         // acks file, or a hook bug — none of which should authorize a build.
         console.error(
-            `BLOCKED: gate evaluation threw an unexpected error for "${teamName}":`,
+            `BLOCKED: gate evaluation threw an unexpected error for "${taskSubject}":`,
             error instanceof Error ? error.message : error
         );
         process.exit(2);
     }
 
     if (!result || !result.passing) {
-        console.error(formatBlockMessage(teamName, featureName, result));
+        console.error(formatBlockMessage(taskSubject, featureName, result));
         process.exit(2);
     }
 
     process.exit(0);
 }
 
-main();
+if (import.meta.main) main();

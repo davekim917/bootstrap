@@ -68,11 +68,12 @@ If during Path B execution:
 - A group is too complex for a single subagent pass
 - Fix iterations exceed limits on multiple groups
 
-Switch to Path A: create the team, register remaining groups as tasks, spawn builders. Work already completed by Path B subagents is preserved.
+Switch to Path A: register the remaining build work and dispatch the remaining builders in parallel.
+Work already completed by Path B subagents is preserved.
 
 ## Advantages of Path B
 
-- Lower overhead: no team creation, no shutdown protocol, no message passing
+- Lower overhead: no persistent workers, shutdown protocol, or message passing
 - Simpler coordination: lead directly validates each group before moving on
 - Better for small builds: 1-3 independent groups don't need team infrastructure
 

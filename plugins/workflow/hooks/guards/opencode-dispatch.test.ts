@@ -53,6 +53,7 @@ type BeforeHook = (
  */
 async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'approved') {
   const stagedActions: string[] = [];
+  const stagedSummaries: Array<string | undefined> = [];
   mock.module(CORE, () => ({
     ...REAL_CORE,
     // The destructive gate path is guarded by `else if (IS_NANOCLAW)`; force it
@@ -68,8 +69,14 @@ async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'app
       stagedActions.push('request_destructive_gate');
       return decision;
     },
-    runEmailGate: (): 'approved' | 'denied' | 'timeout' => {
+    runEmailGate: (
+      _command: string,
+      _reason: string,
+      _onStagingError?: (error: unknown) => void,
+      summary?: string,
+    ): 'approved' | 'denied' | 'timeout' => {
       stagedActions.push('request_bash_gate');
+      stagedSummaries.push(summary);
       return decision;
     },
     // Belt-and-suspenders: never let a real DB poll run.
@@ -82,7 +89,9 @@ async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'app
     before({ tool: 'bash', sessionID: 's', callID: 'c' }, { args: { command } });
   const runEdit = (path: string, tool = 'write') =>
     before({ tool, sessionID: 's', callID: 'c' }, { args: { path } });
-  return { before, runBash, runEdit, stagedActions };
+  const runTool = (tool: string, args: Record<string, unknown> = {}) =>
+    before({ tool, sessionID: 's', callID: 'c' }, { args });
+  return { before, runBash, runEdit, runTool, stagedActions, stagedSummaries };
 }
 
 // Representative input per guard class, with its expected outcome at the
@@ -191,6 +200,26 @@ describe('test_oc_dispatch_action_per_gate', () => {
     const { runBash, stagedActions } = await loadEntrypoint('approved');
     await runBash('gws gmail +send --to a@b.com --subject hi');
     expect(stagedActions).toEqual(['request_bash_gate']);
+  });
+
+  test('native email send → request_bash_gate and omits the body', async () => {
+    const { runTool, stagedActions, stagedSummaries } = await loadEntrypoint('approved');
+    await runTool('send_email', {
+      to: 'a@b.com',
+      subject: 'Status',
+      body: 'sensitive body',
+    });
+    expect(stagedActions).toEqual(['request_bash_gate']);
+    expect(stagedSummaries[0]).toContain('a@b.com');
+    expect(stagedSummaries[0]).toContain('Status');
+    expect(stagedSummaries[0]).not.toContain('sensitive body');
+  });
+
+  test('native draft creation and read-only Gmail tools do not stage', async () => {
+    const { runTool, stagedActions } = await loadEntrypoint('approved');
+    await runTool('gmail_create_draft_reply', { to: 'a@b.com' });
+    await runTool('gmail_search_emails', { query: 'from:a@b.com' });
+    expect(stagedActions).toHaveLength(0);
   });
 
   test('destructive gate → request_destructive_gate (NOT request_bash_gate)', async () => {
@@ -317,6 +346,12 @@ describe('test_oc_dispatch_fail_closed_on_absent_core', () => {
     await expectEntrypointFailsClosed(undefined, brokenEmail, /evaluateEmailSend/);
   });
 
+  test('a missing native email evaluator (evaluateEmailToolCall) fails closed', async () => {
+    const brokenEmail = { ...REAL_EMAIL } as Record<string, unknown>;
+    delete brokenEmail.evaluateEmailToolCall;
+    await expectEntrypointFailsClosed(undefined, brokenEmail, /evaluateEmailToolCall/);
+  });
+
   test('a complete core lets the entrypoint construct (control — no false-positive fail-closed)', async () => {
     // Sanity: with both cores intact, the entrypoint constructs the hook object.
     const og = await import('./opencode-guard');
@@ -345,5 +380,10 @@ describe('test_oc_dispatch_fail_closed_on_malformed_core', () => {
   test('a malformed email evaluator (present but not a function) fails closed', async () => {
     const malformedEmail = { ...REAL_EMAIL, evaluateEmailSend: { nope: true } } as Record<string, unknown>;
     await expectEntrypointFailsClosed(undefined, malformedEmail, /evaluateEmailSend/);
+  });
+
+  test('a malformed native email evaluator fails closed', async () => {
+    const malformedEmail = { ...REAL_EMAIL, evaluateEmailToolCall: false } as Record<string, unknown>;
+    await expectEntrypointFailsClosed(undefined, malformedEmail, /evaluateEmailToolCall/);
   });
 });

@@ -94,10 +94,10 @@ auto_judgments:
 |-------|-------|--------|
 | `/team-brief` | — | Initialize: `constraints` (from Step 2), `decisions` (from Steps 3-4 Q&A and forced defaults) |
 | `/team-design` | Full record | Append: `decisions` (chosen option + rejected options), `constraints` (new HARD/SOFT from constraint analysis), `assumptions` (from Assumptions Log) |
-| `/team-review` | Full record | Append: `waivers` (waived MUST-FIX findings with stated reasons), `review_cycles` (one entry per invocation; hard cap at 3) |
+| `/team-review` | Full record | Append: `waivers` (waived MUST-FIX findings with stated reasons), `review_cycles` (one entry per invocation; hard cap at 5) |
 | `/team-plan` | Full record | Update: `affects_groups` on constraints and decisions. Append: `decisions` (interpretation calls, file conflict resolutions) |
 | `/team-build` | Full record | Append: `decisions` (lead interpretation calls during build), `waivers` (escalated criteria accepted by user) |
-| `/team-auto` | Full record | Append: `auto_qa_cycles` (one entry per QA fix pass; hard cap at 3); `auto_judgments` (one entry per in-flight judgment call applied at any stage). Reads `review_cycles` for cycle-cap evaluation. |
+| `/team-auto` | Full record | Append: `auto_qa_cycles` (one entry per QA fix pass; hard cap at 5); `auto_judgments` (one entry per in-flight judgment call applied at any stage). Reads `review_cycles` for cycle-cap evaluation. |
 
 ---
 

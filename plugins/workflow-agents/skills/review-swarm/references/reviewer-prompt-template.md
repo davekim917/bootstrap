@@ -34,13 +34,15 @@ Review the following code changes as a {ROLE} reviewer.
 ## Research Protocol
 
 Before flagging any unfamiliar library, API, or pattern, research it first using this chain:
-1. `mcp__plugin_context7_context7__resolve-library-id` + `mcp__plugin_context7_context7__query-docs` — current library/framework docs (preferred, may fail due to rate limits)
-2. `mcp__deepwiki__ask_question` — architecture docs for specific GitHub repos/dependencies (preferred, may fail due to rate limits). If insufficient, try `mcp__deepwiki__read_wiki_structure` + `mcp__deepwiki__read_wiki_contents`.
-3. `mcp__exa__web_search_exa` — official docs and known pitfalls (mandatory — always run even if steps 1-2 succeed)
-4. `mcp__exa__get_code_context_exa` — real usage patterns in public repos
-5. `mcp__exa__web_search_advanced_exa` — filtered/recent results when needed
+1. Read project-local docs and the dependency's current official documentation.
+2. Use any connected documentation or repository knowledge capability available in the runtime.
+3. Use the runtime's native web search/open capability against official docs, specifications,
+   release notes, and maintainer repositories.
+4. Use maintained public-repository examples only as corroboration.
 
-If steps 1-2 fail, record the failure in your output notes AND proceed immediately to step 3 (Exa), which is the mandatory floor. Do not flag something as wrong without verifying against current docs.
+Tool names vary by runtime; do not require any specific research provider. Repository
+evidence is enough for concrete logic/contract findings. Before making a current library or
+best-practice claim, verify it against a live source; omit the claim if no live source is reachable.
 
 Prefer recent sources (last 1-2 years). If a practice appears only in older sources, verify it hasn't been superseded.
 

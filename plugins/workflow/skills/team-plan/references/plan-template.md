@@ -69,13 +69,16 @@ and carry the reason into Known Risks.)*
 [2-4 sentences. What to build, why this approach, which convention it follows. Cite the skill or
 CLAUDE.md section. Describe the non-obvious decisions — not the obvious ones.]
 
-**Code pattern:**
+**Interface and invariants:**
 
 ```typescript
-// Pattern from: [skill-name] — [section]
-// Adapted for: [this task]
-[complete, runnable example — not pseudocode]
+// Contract source: [project instructions, installed skill, design, or verified docs]
+// Contract for: [this task]
+[signature/interface only — no production-code body]
 ```
+
+ASSERT: [observable invariant]
+ASSERT: [observable negative constraint]
 
 **Test cases:**
 

@@ -4,7 +4,6 @@ description: >
   Branch lifecycle and shipping. Structured branch completion after /team-qa clears.
   Verifies test suite, checks branch status, presents exactly 4 options (merge locally,
   push PR, keep branch, discard), executes the chosen path. No code changes — git operations only.
-version: 1.0.1
 ---
 
 # /team-ship — Branch Lifecycle and Shipping
@@ -19,7 +18,7 @@ Structured branch completion after `/team-qa` clears. Verifies readiness, presen
 ## Prerequisites
 
 1. `/team-qa` has cleared (all findings fixed or explicitly waived)
-2. A feature branch exists (not on main/master)
+2. A feature branch exists (not the repository's resolved default branch)
 3. All tests pass
 
 **If prerequisites are not met:** Stop and tell the user what's missing.
@@ -38,7 +37,7 @@ Structured branch completion after `/team-qa` clears. Verifies readiness, presen
 
 ### Step 1: Verify Test Suite
 
-Run the full test suite (test command from CLAUDE.md). Apply the cross-cutting `team-verification-before-completion` protocol — fresh test output, read directly, before any "ready to ship" claim. A green run from yesterday is not evidence; it has to be from this branch state, this session.
+Run the full test suite using the command from the applicable project instructions. Apply the cross-cutting `team-verification-before-completion` protocol — fresh test output, read directly, before any "ready to ship" claim. A green run from yesterday is not evidence; it has to be from this branch state, this session.
 
 <!-- GATE: ship-tests — All tests pass before proceeding -->
 
@@ -46,16 +45,20 @@ Run the full test suite (test command from CLAUDE.md). Apply the cross-cutting `
 
 ### Step 2: Verify Branch Status
 
-1. Confirm not on main/master branch
-2. Check for uncommitted changes — if any exist, STOP and report
-3. Check for unpushed commits — report count
-4. Check if branch is up to date with remote (if tracking)
+1. Resolve the default branch from `refs/remotes/origin/HEAD`, repository instructions, or the
+   remote hosting metadata. Fall back to an existing local `main`/`master` only when the canonical
+   default cannot be queried. If still ambiguous, STOP and ask; do not guess.
+2. Confirm the current branch is not that default branch
+3. Check for uncommitted changes — if any exist, STOP and report
+4. Check for unpushed commits — report count
+5. Check if branch is up to date with remote (if tracking)
 
 <!-- GATE: ship-branch-status — Clean branch, no uncommitted changes -->
 
 Report the status:
 ```
 Branch: [branch-name]
+Default branch: [default-branch]
 Uncommitted changes: none
 Unpushed commits: [N]
 Remote tracking: [yes/no] — [up to date / behind by N]
@@ -68,7 +71,7 @@ Present exactly 4 options to the user:
 ```
 How would you like to ship this branch?
 
-1. **Merge locally** — merge into main, delete feature branch
+1. **Merge locally** — merge into [default-branch], delete feature branch
 2. **Push for PR** — push branch to remote, create pull request via gh
 3. **Keep branch** — do nothing, branch stays as-is
 4. **Discard** — delete the feature branch (requires confirmation)
@@ -79,12 +82,12 @@ Wait for user selection. Do not proceed without explicit choice.
 ### Step 4: Execute Choice
 
 **Option 1 — Merge locally:**
-1. Switch to main: `git checkout main`
-2. Pull latest: `git pull`
+1. Switch to the resolved default branch: `git switch [default-branch]`
+2. Pull latest without creating an implicit merge commit: `git pull --ff-only`
 3. Merge: `git merge [branch-name]`
 4. Run tests again after merge
 5. Delete feature branch: `git branch -d [branch-name]`
-6. Report: "Merged [branch] into main. Feature branch deleted."
+6. Report: "Merged [branch] into [default-branch]. Feature branch deleted."
 
 **Option 2 — Push for PR:**
 1. Push branch: `git push -u origin [branch-name]`
@@ -96,9 +99,9 @@ Wait for user selection. Do not proceed without explicit choice.
 2. Report: "Branch [name] kept as-is. No changes made."
 
 **Option 4 — Discard:**
-1. Confirm with user: "This will delete branch [name] and all uncommitted work. Type 'confirm' to proceed."
+1. Confirm with user: "This will permanently delete branch [name] and commits not reachable from another ref. Type 'confirm' to proceed."
 2. Wait for confirmation — do not proceed without it
-3. Switch to main: `git checkout main`
+3. Switch to the resolved default branch: `git switch [default-branch]`
 4. Delete branch: `git branch -D [branch-name]`
 5. Report: "Branch [name] deleted."
 
@@ -125,7 +128,7 @@ Present a structured summary:
 
 Action taken: [merge / push PR / keep / discard]
 Branch: [branch-name]
-Result: [specific outcome — e.g., "merged into main", "PR #42 created", "kept as-is", "deleted"]
+Result: [specific outcome — e.g., "merged into [default-branch]", "PR #42 created", "kept as-is", "deleted"]
 Test suite: PASS ([N] tests)
 ---
 ```
@@ -139,7 +142,7 @@ The retro analyzes brief → design → review → plan → build → qa → shi
 - Never ship with failing tests — no exceptions
 - Never delete a branch without explicit user confirmation
 - Never force-push without explicit user request and confirmation of consequences
-- Never merge into main if the merge produces conflicts without user review
+- Never merge into the default branch if the merge produces conflicts without user review
 - Never auto-select an option — always wait for user choice
 
 ## Anti-Patterns (Do Not Do These)
@@ -164,8 +167,8 @@ Rollback from /team-ship is rare — it means /team-qa missed something or the m
 
 ## Context Discipline
 
-**READ:** CLAUDE.md (test command, branch conventions), git status, git log.
-**WRITE:** Nothing — all actions are git operations via Bash.
+**READ:** Applicable project instructions (test command, branch conventions), git status, git log, default-branch metadata.
+**WRITE:** No source files — shipping actions mutate git refs, the index/worktree, and optionally the remote/PR state.
 **DO NOT READ:** Source code, specs, design documents. This skill operates on branches, not code.
 
 ## Model Tier

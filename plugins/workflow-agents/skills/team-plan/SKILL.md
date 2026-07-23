@@ -1,10 +1,9 @@
 ---
 name: team-plan
 description: >
-  Invoke after /team-review clears. Produces an execution plan at docs/specs/<feature>/plan.md.
+  Invoke after /team-review clears. Produces an execution plan at docs/specs/FEATURE/plan.md.
   Do NOT write plans manually — this skill has task decomposition rules, conflict checks, and
   constraint injection that only load when invoked.
-version: 1.1.0
 ---
 
 # /team-plan — Atomic Task Decomposition
@@ -31,7 +30,7 @@ anything beyond their task group.
 
 - After `/team-review` clears and before `/team-build`
 - When re-planning after a design revision
-- Do NOT auto-trigger — the user types `/team-plan` to enter this workflow
+- Enter after explicit review clearance, or as the plan stage inside a user-invoked `/team-auto` run.
 
 ---
 
@@ -46,7 +45,7 @@ Load in order:
    **Render-check flag scan:** After reading the design document, scan it for `[RENDER-CHECK NEEDED]` flags and note each flagged decision. Task assignment for these flags happens in Step 2 (once task boundaries are identified) — complete the flag-to-task mapping after Step 2, then use it in Step 4f to add render-check acceptance criteria to the relevant tasks.
 3. **AGENTS.md/CLAUDE.md** — tech stack, conventions, critical guardrails
 4. **Project scope** — read `docs/project-scope.md` if it exists. Determines which domain skills to load and provides implementation conventions (primary language, framework, test framework). If not present, proceed without it.
-5. **Relevant project skills** — load the skills listed in `relevant_global_skills` from the scope file (or 2-4 most applicable skills if no scope file). Read them now — you will transcribe patterns directly into task specs so builders don't need to load skills themselves.
+5. **Relevant project skills** — load the skills listed in `relevant_global_skills` from the scope file (or up to 4 actually installed skills whose declared scope applies if no scope file). Read them now — you will transcribe patterns directly into task specs so builders don't need to load skills themselves. An empty set is valid; never invent a skill name.
 
 ### Step 2: Identify Task Boundaries
 
@@ -161,12 +160,12 @@ Tasks without ASSERT lines fall back to the general criteria check.
 
 If no project skill covers the interface pattern, check whether an external library provides it.
 Verify the interface via the Research Fallback Chain before specifying it:
-1. **Context7** — `resolve-library-id` → `query-docs` for the library
-2. **Exa fallback** — `mcp__exa__get_code_context_exa` for real usage patterns in public repos
-3. **WebSearch** — last resort
+1. **Official/project documentation** through any connected documentation capability
+2. **Primary-source web search** through the runtime's native web/search capability
+3. **Current dependency source/examples** when documentation is incomplete
 
-If unable to verify at all, write:
-`[NO SKILL PATTERN — builder uses judgment, cite reasoning in commit message]` and note as a risk.
+Do not pin the plan to a particular MCP vendor. If unable to verify at all, write:
+`[NO INSTALLED SKILL PATTERN — builder uses judgment and reports reasoning in the completion report]` and note as a risk.
 
 **e) Named test cases**
 Write test cases by name before the code exists. These are the RED-side artifact for the cross-cutting `team-tdd` protocol that builders apply during implementation — the names and assertions you write here become the failing tests builders run before writing production code. If you can't name the test now, the task is underspecified.

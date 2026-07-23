@@ -1,10 +1,9 @@
 ---
 name: team-design
 description: >
-  Invoke after /team-brief is approved. Produces a design document at docs/specs/<feature>/design.md.
+  Invoke after /team-brief is approved. Produces a design document at docs/specs/FEATURE/design.md.
   Do NOT write design docs manually — this skill has constraint analysis, option evaluation, and
   a research process that only load when invoked.
-version: 1.0.0
 ---
 
 # /team-design — First-Principles Design Skill
@@ -27,7 +26,8 @@ An approved brief — either from `/team-brief` or user-provided.
 - After `/team-brief` is approved and before writing any code
 - When a feature touches >3 files or introduces new patterns
 - When multiple valid architectural approaches exist
-- Do NOT auto-trigger — the user consciously enters this workflow by typing `/team-design`
+- Enter after explicit brief approval. `/team-auto` may orchestrate later stages only after the
+  user explicitly invokes it from an approved design.
 
 ---
 
@@ -76,7 +76,8 @@ Load ONLY what's relevant to this specific design:
 1. **Project skills:** Load the skills listed in `relevant_global_skills` from `docs/project-scope.md` (read or written in Step 1). If `relevant_global_skills` is empty, use `quality_gates` and `description` from the scope file to frame constraints.
 2. **Source files:** Read files directly related to the change area. Scope to ~5-10 files max. Do NOT read the entire codebase.
 3. **Library documentation:** Use the **Research Fallback Chain** (see below) for any library the design will use. Check live docs, not assumptions.
-4. **Web search:** Included in the Research Fallback Chain — use `mcp__exa__web_search_exa` or WebSearch for unfamiliar patterns and known pitfalls.
+4. **Web research:** Included in the Research Fallback Chain — use the live documentation or web
+   capability available in the current runtime for unfamiliar patterns and known pitfalls.
 
 **Context discipline:** Every file you read here should be directly load-bearing for the design decision. If you're unsure whether to read something, don't.
 
@@ -173,7 +174,7 @@ Every claim in the design must be grounded:
 | Claim type | Required grounding |
 |------------|-------------------|
 | Pattern recommendation | Cite CLAUDE.md section or project skill by name |
-| Library recommendation | Verified against Context7 docs or web search (include source) |
+| Library recommendation | Verified against primary/vendor docs or a live documentation/web tool (include source) |
 | Codebase assumption | Cite the specific file and line number you read |
 | Pseudocode primitive (function/file/interface) | Verified via Read/Grep/index, OR tagged `[NEW]` with owner + creation step |
 | Unknown | Mark as ASSUMPTION explicitly |
@@ -199,7 +200,7 @@ If you cannot ground a claim, write:
 - **Don't propose one option.** Single-option designs hide the tradeoffs. Always 2-3.
 - **Don't inflate confidence.** Medium confidence presented as High leads to rework.
 - **Don't read the entire codebase.** Scope to relevant files. More context = more noise.
-- **Don't speculate about libraries.** Check Context7 or web search. Live docs over assumptions.
+- **Don't speculate about libraries.** Check primary/vendor documentation through the live docs or web capability available in the runtime. Live sources over assumptions.
 - **Don't skip the gate.** The design is worthless if you immediately start implementing. The gate is the point.
 - **Don't start without a brief.** Designing without requirements is architecture by vibes.
 
@@ -239,7 +240,7 @@ Accepts rollback from `/team-review` (MUST-FIX requiring design revision) and `/
 - `docs/project-scope.md` — if it exists; determines which domain skills to load (Step 1)
 - Relevant project skills — loaded from `relevant_global_skills` in scope file (Step 3)
 - ~5-10 source files — scoped to the change area
-- Context7 docs — for libraries involved in the design
+- Primary/vendor documentation — for libraries involved in the design
 - Web search — for unfamiliar patterns and known pitfalls
 
 **Write:**
@@ -260,14 +261,16 @@ Accepts rollback from `/team-review` (MUST-FIX requiring design revision) and `/
 
 When verifying a library, pattern, or technical claim:
 
-1. **Context7 first** — `resolve-library-id` → `query-docs`. Fast, structured, high-signal.
-2. **Exa fallback** — if Context7 returns no results or insufficient coverage:
-   - `mcp__exa__get_code_context_exa` — real usage patterns in public repos
-   - `mcp__exa__web_search_exa` — official docs, blog posts, known pitfalls
-   - `mcp__exa__crawling_exa` — fetch specific documentation URLs directly
-3. **WebSearch last resort** — built-in web search if both Context7 and Exa fail.
+1. **Official/project documentation first** — use a connected documentation tool when one is
+   available, otherwise open or search the vendor's official documentation directly.
+2. **Primary-source web fallback** — use the runtime's built-in web/search capability, restricted
+   to official docs, specifications, maintainers' repositories, or original research.
+3. **Direct repository evidence** — inspect the dependency's current source/examples when the
+   public docs are incomplete.
 
-Never skip straight to assumptions. Exhaust the chain first.
+Tool names are intentionally not pinned: Claude and Codex expose different native/plugin-backed
+research capabilities. Never skip straight to assumptions. If no live source is reachable, mark
+the claim unverified and stop or escalate instead of filling the gap from training data.
 
 ---
 

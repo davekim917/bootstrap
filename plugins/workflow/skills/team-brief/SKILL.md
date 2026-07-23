@@ -2,9 +2,8 @@
 name: team-brief
 description: >
   Invoke to crystallize requirements for a non-trivial feature. Produces a structured brief
-  at docs/specs/<feature>/brief.md. Do NOT write briefs manually — this skill has a
+  at docs/specs/FEATURE/brief.md. Do NOT write briefs manually — this skill has a
   specific process, file structure, and approval gate that only load when invoked.
-version: 1.0.0
 ---
 
 # /team-brief — Requirements Crystallization Skill
@@ -22,12 +21,13 @@ Transforms fuzzy user intent into a validated, structured brief through conversa
 - When a user says "I want to..." or "Build me a..." without clear constraints
 - When scope boundaries are fuzzy (what's in vs out)
 - When multiple valid interpretations exist
+- May be selected automatically by `workflow-routing` for qualifying feature work. This creates
+  the brief only; it does not authorize advancing past the brief approval gate.
 
 ## When NOT to Use
 
 - Trivial fixes (typos, single-line bugs, config tweaks)
 - Tasks where requirements are already fully specified
-- Do NOT auto-trigger — the user consciously enters this workflow by typing `/team-brief`
 
 ## Selective Mode (`--scope-only`)
 
@@ -83,7 +83,13 @@ Do not ask questions yet. Just build your internal map.
 After running all individual signal checks above, collect every domain where at least one indicator fired. The `domains` list is the union of all matches:
 
   domains: [<every domain with ≥1 signal>]
-  relevant_global_skills: [<skill for each domain, deduplicated>]
+  relevant_global_skills: [<available skills whose declared scope matches those domains>]
+
+`domains` records what the repository contains; it is not a promise that a same-named skill is
+installed. Inspect the skills available in the current session before populating
+`relevant_global_skills`. Never invent a skill name or assume one of this repo's retired domain
+skills exists. If no installed skill matches, write `relevant_global_skills: []` and populate
+`quality_gates` and `security_surface` from project instructions and detected tooling instead.
 
 Only use AND-logic for disambiguation: when a file pattern matches multiple domains, the AND-logic below resolves which domain takes precedence.
 

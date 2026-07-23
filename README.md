@@ -1,295 +1,152 @@
 # bootstrap
 
-A portable agent environment for Claude Code and Codex. Install only the plugins built for the agent you are using.
+A focused team-delivery workflow for Claude Code and Codex.
 
-Built for my own use, shared in case it's useful to others.
+The repository deliberately does one thing: turn ambiguous work into a brief, design, adversarial
+review, executable plan, coordinated build, QA evidence, and a clean ship decision. General data,
+analytics, engineering, finance, and vendor-tool knowledge belongs in the maintained role-specific
+plugins available to each runtime, not in duplicate bootstrap skills.
 
 ## Plugins
 
-| Plugin | What it provides |
-|--------|-----------------|
-| `bootstrap-workflow` | Claude Code team workflow skills (brief → design → review → plan → build → qa → ship), safety/quality hooks, specialized agents |
-| `bootstrap-workflow-agents` | Codex-native team workflow skills with Codex plugin metadata and no Claude team/hook dependencies |
-| `bootstrap-domain` | Provider-agnostic domain expertise skills for software engineering, data, analytics, AI, and finance |
-| `bootstrap-commands` | Codebase analysis commands that generate CLAUDE.md, project skills, and AI dev setup |
-| `bootstrap-tools` | Provider-agnostic tool integration skills for CLI tools (Cortex Code, and more) |
+| Runtime | Plugin | What it provides |
+|---|---|---|
+| Claude Code | `bootstrap-workflow` | Claude-native team workflow skills and workflow safety gates |
+| Codex | `bootstrap-workflow-agents` | Codex-native workflow skills and safety gates packaged as a native Codex plugin |
+
+The plugins share the same user-facing workflow and intentionally have separate implementations
+where their orchestration primitives differ.
 
 ## Install
 
 ### Claude Code
 
-Add the marketplace, then install the plugins you want:
-
-```
+```text
 /plugin marketplace add davekim917/bootstrap
-```
-
-Install only what you need:
-```
-/plugin install bootstrap-workflow@davekim917-bootstrap     # team workflow + hooks + agents
-/plugin install bootstrap-domain@davekim917-bootstrap       # domain skills only
-/plugin install bootstrap-commands@davekim917-bootstrap     # bootstrap commands only
-/plugin install bootstrap-tools@davekim917-bootstrap        # tool integration skills
+/plugin install bootstrap-workflow@davekim917-bootstrap
 ```
 
 ### Codex
 
-The Codex workflow lives in a separate plugin so Codex installs Codex-native skill bodies rather than the Claude workflow. The domain and tools plugins are provider-agnostic, so Codex installs those same plugin directories natively through their `.codex-plugin/plugin.json` manifests:
-
-```
+```bash
 codex plugin marketplace add davekim917/bootstrap --ref main
+codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
 ```
 
-For local development on a host that keeps this repo at `~/plugins/bootstrap`:
+For a local checkout at `~/plugins/bootstrap`:
 
-```
+```bash
 codex plugin marketplace add ~/plugins/bootstrap
+codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
 ```
 
-Then install or enable the Codex-compatible plugins from that Codex marketplace.
+The Codex marketplace is checked in at `.agents/plugins/marketplace.json`. Codex loads the plugin
+from its plugin cache and discovers its bundled skills and hooks through
+`.codex-plugin/plugin.json`; do not mirror them into `~/.agents/skills`.
 
-```json
-{
-  "name": "davekim917-bootstrap",
-  "interface": {
-    "displayName": "Dave Kim Bootstrap for Codex"
-  },
-  "plugins": [
-    {
-      "name": "bootstrap-workflow-agents",
-      "source": {
-        "source": "local",
-        "path": "./plugins/workflow-agents"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Coding"
-    },
-    {
-      "name": "bootstrap-domain",
-      "source": {
-        "source": "local",
-        "path": "./plugins/domain"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Coding"
-    },
-    {
-      "name": "bootstrap-tools",
-      "source": {
-        "source": "local",
-        "path": "./plugins/tools"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Coding"
-    }
-  ]
-}
-```
+This repository does not ship persistent custom-agent definitions. Claude workflow skills create
+bounded, session-scoped native agent teams; Codex workflow skills create bounded, prompt-defined
+subagents. Nothing copies files into `~/.codex/agents` or `CODEX_HOME/agents`.
 
-This marketplace is checked in at `.agents/plugins/marketplace.json`. The workflow-only object is also kept at `plugins/workflow-agents/marketplace-entry.json` for copy/paste into another Codex marketplace.
-
-The Codex marketplace uses the same marketplace name, `davekim917-bootstrap`, as the Claude marketplace. The platform-specific plugin entries are what enforce separation.
-
-Codex workflow skills must be installed through the Codex plugin, not copied into `.agents/skills` as standalone mirrors. This keeps same-named skills such as `team-build` and `team-qa` unambiguous:
-
-- Claude sees `plugins/workflow` through `.claude-plugin/marketplace.json`.
-- Codex sees `plugins/workflow-agents` through `.agents/plugins/marketplace.json`.
-- Host or container sync jobs should not mirror `plugins/workflow-agents/skills/*` into `~/.agents/skills` or `/home/node/.agents/skills`.
-
-For NanoClaw container agents, install the Codex plugin in the host/per-group Codex home before starting the container. NanoClaw preserves Codex `[plugins.*]` config and mounts the Codex plugin cache into the container, so Codex primary and Codex peer sessions load the plugin natively instead of relying on copied workflow skills.
-
-When NanoClaw manages `~/plugins/bootstrap`, its host checks pull the repo, refresh local Codex marketplace cache entries, and run Codex marketplace upgrades for Git-backed installs. That keeps version bumps visible to host Codex sessions and to containers that mount the Codex plugin cache.
-
-Codex subagents are currently shipped as a managed TOML bundle under `plugins/workflow-agents/agents/` because Codex supports subagents but plugin manifests do not yet expose an `agents` component. The bundle is generated from `plugins/workflow/agents/*.md`:
-
-```
-node plugins/workflow-agents/scripts/sync-codex-agents.mjs
-node plugins/workflow-agents/scripts/sync-codex-agents.mjs --check
-node plugins/workflow-agents/scripts/sync-codex-agents.mjs --sync-home
-```
-
-The Codex workflow `SessionStart` hook syncs those managed TOML files into `CODEX_HOME/agents` or `~/.codex/agents`, overwriting only files already marked as managed by `bootstrap-workflow-agents agent-sync` or `nanoclaw codex-sync`. If the upstream Claude agent files change, run the generator and commit the updated TOML bundle so plugin upgrades carry the new agents.
-
-### Prerequisites
-
-Claude workflow:
-
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
-- [Bun](https://bun.sh/) runtime (for TypeScript hooks — workflow plugin only)
-- `jq` (for shell hooks — `brew install jq` on macOS)
-
-Codex workflow:
-
-- Codex plugin support
-- No Claude team-agent API or Claude hook runtime required
-
-## bootstrap-workflow
-
-Claude workflow: team-* skills, 6 agents, safety/quality hooks.
-
-## bootstrap-workflow-agents
-
-Codex workflow: Codex-native versions of the workflow skills with shared conventions under `plugins/workflow-agents/skills/shared/`.
-
-The Codex plugin wires a Codex-specific hook set for safe surfaces only: payload-shape logging, destructive command blocking, protected-file blocking, post-edit tracking, and managed subagent sync. It intentionally does not port Claude-only `TeamCreate` or `AskUserQuestion` gates.
-
-Enable hook payload logging only when debugging hook shape:
-
-```
-BOOTSTRAP_CODEX_HOOK_LOG=summary codex
-BOOTSTRAP_CODEX_HOOK_LOG=full codex
-```
-
-### Workflow Skills
-
-The Claude and Codex workflow plugins share the core workflow names. Codex installs the Codex-native bodies from `plugins/workflow-agents`; Claude installs the Claude-native bodies from `plugins/workflow`.
-
-| Skill | Purpose |
-|-------|---------|
-| `/team-brief` | Extract structured requirements from fuzzy ideas |
-| `/team-design` | First-principles design with constraint analysis |
-| `/team-review` | Adversarial design or code review |
-| `/team-plan` | Atomic task decomposition with exact file paths and test cases |
-| `/team-build` | Implementation with coordinated builder agents when useful |
-| `/team-qa` | 5-check validation pipeline (denoise, style, docs, security, perf) |
-| `/team-ship` | Branch lifecycle and merge/PR options |
-| `/team-tdd` | Test-driven development enforcement |
-| `/team-debug` | Root-cause-first debugging methodology |
-| `/team-drift` | Mechanized drift detection between any two documents |
-| `/team-retro` | Post-ship learning capture |
-| `/team-auto` | End-to-end autonomous workflow loop |
-| `/team-verification-before-completion` | Evidence-based completion claims |
-| `/team-receiving-review-feedback` | Protocol for processing review findings |
-| `review-swarm` | Independent review swarm and adjudication |
-| `best-practice-check` | Current-docs best-practice validation |
-| `workflow-routing` | Route fuzzy workflow requests to the right skill |
-
-### Claude Agents
-
-Specialized subagents invoked by workflow skills:
-
-- `architecture-advisor` — architectural review and design feedback
-- `code-review-specialist` — code quality and convention review
-- `cpo-advisor` — product strategy and prioritization
-- `cto-advisor` — strategic technical decisions
-- `performance-analyzer` — performance issue detection
-- `security-reviewer` — security vulnerability review
-
-### Claude Hooks
-
-**Safety** (PreToolUse):
-- Block destructive bash commands (rm on protected paths, eval, shred, unlink)
-- Block edits to protected files (.env, .git/, lock files, terraform)
-- Workflow gate enforcement (blocks build without passing drift check)
-
-**Quality** (PostToolUse):
-- TypeScript type checking after file edits
-- Prettier formatting after file edits
-- Edited file tracking for session-end review
-
-**Lifecycle** (SessionStart):
-- Session timestamp injection
-- Cloud MCP connector management
-
-### Usage
+## Workflow
 
 For a non-trivial feature:
 
-```
+```text
 /team-brief → /team-design → /team-review → /team-plan → /team-build → /team-qa → /team-ship
 ```
 
-For smaller work with clear requirements, skip to `/team-design` → `/team-plan` → `/team-build`.
+For smaller work with clear requirements, start later in the sequence. Trivial fixes do not need
+the full workflow.
 
-For trivial fixes, skip the workflow entirely.
+| Skill | Purpose |
+|---|---|
+| `/team-brief` | Turn fuzzy requests into explicit requirements and acceptance criteria |
+| `/team-design` | Produce a first-principles design with constraints and alternatives |
+| `/team-review` | Run independent architecture, best-practice, and adversarial review lenses |
+| `/team-plan` | Decompose the approved design into atomic tasks and tests |
+| `/team-build` | Implement through bounded, coordinated builders when useful |
+| `/team-qa` | Validate behavior, review findings, documentation, and ship readiness |
+| `/team-ship` | Complete the branch lifecycle with evidence |
+| `/team-tdd` | Enforce test-first implementation |
+| `/team-debug` | Diagnose root cause before changing production code |
+| `/team-drift` | Detect drift between documents or contracts |
+| `/team-retro` | Capture lessons from a completed workflow |
+| `/team-auto` | Run the approved workflow end to end |
+| `/team-verification-before-completion` | Require evidence before completion claims |
+| `/team-receiving-review-feedback` | Validate and process review findings |
+| `review-swarm` | Run independent, prompt-defined review roles and adjudicate findings |
+| `best-practice-check` | Check an approach against current authoritative sources |
+| `workflow-routing` | Route work to the smallest appropriate workflow surface |
 
-## bootstrap-domain
+## Runtime boundaries
 
-8 domain expertise skills — loaded contextually based on your project:
+- Claude installs only `plugins/workflow` through `.claude-plugin/marketplace.json`.
+- Codex installs only `plugins/workflow-agents` through `.agents/plugins/marketplace.json`.
+- General domain and tool knowledge is not distributed from this repository.
+- Reviewer identities such as security or architecture reviewer are prompt-defined roles, not
+  globally installed permanent agents.
+- Shared guard cores are authored under the Claude plugin and vendored into the Codex plugin;
+  `scripts/vendor-guards.mjs --check` prevents drift.
+- Mechanically portable skills are generated by `sync-agent-skills.mjs`; judgment-based ports are
+  checked for structural parity by the eval harness.
 
-- `software-engineering` — TypeScript, React, Node.js, APIs, testing
-- `analytics-engineering` — dbt, SQL modeling, data transformation
-- `analytics` — dashboards, metrics, BI tools
-- `data-engineering` — pipelines, orchestration, data quality
-- `data-science` — notebooks, ML, feature engineering
-- `llm-engineering` — LLM APIs, prompt engineering, RAG, evals
-- `agentic-systems` — agent loops, multi-agent systems, MCP, tools
-- `financial-analytics` — GL modeling, reconciliation, regulatory reporting
+The OpenAI plugin manifest also supports MCP server and app/connector declarations. Add those to
+the native plugin only when the workflow itself acquires a real integration dependency; do not add
+copy-to-home setup scripts.
 
-## bootstrap-commands
+## Hooks
 
-7 commands for bootstrapping AI-assisted development in any codebase:
+Both plugins carry the portable safety surfaces: destructive-command approval, outbound-email
+approval, managed-clone blocking, Snowflake-connector blocking, and protected-file blocking. Local
+Claude and Codex sessions use each CLI's native approval prompt. NanoClaw sessions use its
+session-database approval round trip. Claude additionally enforces its document workflow gate on
+`TaskCreated`, because that event belongs to Claude's native agent-team task system.
 
-| Command | Purpose |
-|---------|---------|
-| `/bootstrap` | Orchestrator — guides you through the full sequence |
-| `/bootstrap-discovery` | Stage 1: Analyze codebase patterns and architecture |
-| `/bootstrap-config` | Stage 2: Generate CLAUDE.md and AGENTS.md |
-| `/bootstrap-skills` | Stage 3: Generate project-specific skills |
-| `/bootstrap-domain` | Stage 4: Generate domain-specific skills |
-| `/bootstrap-audit` | Stage 5: Audit and reconcile all artifacts |
-| `/bootstrap-complete` | Stage 6: Final cleanup and validation |
+The old project-opinionated formatter, TypeScript, Next.js/Supabase reminder, timestamp, and edit
+telemetry hooks are intentionally not distributed. Validation belongs in the workflow skills and
+the target repository's own checks, not in a global plugin hook.
 
-Also includes the `skill-developer` utility skill for creating new skills.
+## Repository structure
 
-## Structure
-
-```
+```text
 bootstrap/
-├── .agents/plugins/marketplace.json
-├── .claude-plugin/marketplace.json
+├── .agents/plugins/marketplace.json       # Codex marketplace: workflow only
+├── .claude-plugin/marketplace.json         # Claude marketplace: workflow only
 ├── plugins/
-│   ├── workflow/               # bootstrap-workflow plugin
+│   ├── workflow/                           # Claude workflow plugin
 │   │   ├── .claude-plugin/plugin.json
-│   │   ├── skills/             # 13 team-* skills
-│   │   ├── hooks/              # safety, quality, lifecycle hooks
-│   │   ├── agents/             # 6 specialized subagents
-│   │   └── tests/              # workflow validation specs
-│   ├── workflow-agents/         # bootstrap-workflow-agents plugin
-│   │   ├── .codex-plugin/plugin.json
-│   │   ├── agents/             # generated Codex subagent TOML bundle
-│   │   ├── hooks/              # Codex-specific hook manifest and hook runner
-│   │   ├── scripts/            # agent sync/generation tooling
-│   │   └── skills/             # Codex-native workflow skills
-│   ├── domain/                 # bootstrap-domain plugin
-│   │   ├── .claude-plugin/plugin.json
-│   │   ├── .codex-plugin/plugin.json
-│   │   └── skills/             # 8 domain expertise skills
-│   ├── tools/                  # bootstrap-tools plugin
-│   │   ├── .claude-plugin/plugin.json
-│   │   ├── .codex-plugin/plugin.json
-│   │   └── skills/             # tool integration skills
-│   └── bootstrap-commands/     # bootstrap-commands plugin
-│       ├── .claude-plugin/plugin.json
-│       ├── commands/           # 7 bootstrap commands
-│       ├── skills/             # skill-developer
-│       └── scripts/            # helper scripts
+│   │   ├── hooks/
+│   │   └── skills/
+│   └── workflow-agents/                    # Codex workflow plugin
+│       ├── .codex-plugin/plugin.json
+│       ├── hooks/
+│       ├── scripts/
+│       └── skills/
+├── evals/                                  # cross-runtime behavior and parity harness
+├── scripts/                                # boundary, parity, and vendoring checks
+└── deprecated/                             # historical bootstrap-command artifacts; not distributed
 ```
 
-## Customization
+## Development checks
 
-### Adding Domain Skills
+```bash
+node scripts/check-plugin-boundaries.mjs
+node scripts/check-parity.mjs
 
-Create a new skill in `plugins/domain/skills/your-domain/SKILL.md`.
+cd plugins/workflow/hooks && bun test && bun run check
+cd plugins/workflow-agents/hooks && bun test && bun run check
+```
 
-### Disabling Hooks
+The boundary check rejects retired domain/tool plugin directories, permanent agent bundles, and
+repo-local standalone skill mirrors. Pass `--strict-home` when validating a host image to also fail
+on stale global copies under `~/.agents/skills`.
 
-Individual hooks can be disabled in Claude Code settings without removing the plugin. Environment variable bypasses are available:
-- `SKIP_FILE_PROTECTION=1` — bypass file protection guard
-- `SKIP_ERROR_REMINDER=1` — bypass error handling reminder
+## Prerequisites
 
-### Extending the Workflow
-
-The team-* skills are designed to be used together but each works independently. You can invoke any skill directly without running the full sequence.
+- Claude Code for `bootstrap-workflow`
+- Codex with native plugin support for `bootstrap-workflow-agents`
+- Bun for TypeScript hooks
 
 ## License
 

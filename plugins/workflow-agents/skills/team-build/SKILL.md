@@ -4,7 +4,6 @@ description: >
   Invoke after /team-plan is approved. Spawns parallel builder agents from the approved plan.
   Do NOT coordinate builds manually — this skill has drift checks, context isolation, and
   validation gates that only load when invoked.
-version: 1.2.0
 ---
 
 # /team-build — Team-Coordinated Parallel Build
@@ -13,13 +12,14 @@ version: 1.2.0
 
 Executes the approved `/team-plan` using a coordinated team of builder agents. The current
 session acts as the lead: it runs a pre-build drift check (design vs. plan) to confirm the plan
-faithfully reflects the design, sets up the builder team, assigns work, monitors progress, validates
+faithfully reflects the design, registers the build work, assigns it, monitors progress, validates
 acceptance criteria, and runs a post-build drift check (plan vs. implementation). Builders execute
 in parallel, each isolated to their own task group and files.
 
 **Key principles:**
 - **Lead never writes code.** It orchestrates, validates, and unblocks.
-- **Builders never see other groups' files.** Context isolation prevents cross-contamination.
+- **Builders never modify other groups' files.** They may read the smallest dependency surface
+  needed to understand a contract, but write ownership stays exclusive.
 - **Every acceptance criterion is validated** by the lead, not self-reported by builders.
 - **Pre-build drift check** (Step 2) confirms the plan faithfully reflects the approved design.
 - **Post-build drift check** (Step 7) confirms implementation matches plan before the user approves.
@@ -30,7 +30,7 @@ in parallel, each isolated to their own task group and files.
 ## Prerequisites
 
 1. An approved plan document (from `/team-plan`)
-2. All plan task groups have: exact file paths, code patterns, named test cases, acceptance criteria
+2. All plan task groups have: exact file paths, interfaces/invariants, named test cases, acceptance criteria
 3. An approved design document (from `/team-design`) — required for the pre-build drift check (Step 2). Standard location: `docs/specs/<feature>/design.md`. If not at the standard location, Step 2 will ask for it before proceeding.
 
 **If the plan is missing any of these:** Stop and tell the user to run `/team-plan` first.
@@ -38,7 +38,7 @@ in parallel, each isolated to their own task group and files.
 ## When to Use
 
 - After `/team-plan` is approved
-- Do NOT auto-trigger — the user types `/team-build` to enter this workflow
+- Enter only after explicit plan approval, or as the build stage inside a user-invoked `/team-auto` run. Do not route arbitrary implementation work here without those gates.
 
 ---
 
@@ -48,14 +48,15 @@ in parallel, each isolated to their own task group and files.
 
 **Resolve the feature name FIRST (single source of truth):**
 
-The feature name is the **directory name** under `docs/specs/`. It was chosen at `/team-brief` time and recorded in `decisions.yaml` under `feature:`. You **MUST** use this exact name for the rest of the workflow — including the team name in Step 3 (which is `<feature>-build` exactly).
+The feature name is the **directory name** under `docs/specs/`. It was chosen at `/team-brief` time and recorded in `decisions.yaml` under `feature:`. You **MUST** use this exact name for the rest of the workflow — including the build namespace `[team-build:<feature>]` in Step 3.
 
-1. List `docs/specs/` and identify the active feature directory (e.g., `streets-frontend`).
+1. List `docs/specs/` and identify the active feature directory (e.g., `session-refresh`).
 2. If multiple directories exist, ask the user which feature this build is for.
 3. If `docs/specs/<feature>/decisions.yaml` exists, read its `feature:` field and verify it matches the directory name. They MUST match — if they don't, STOP and ask the user to reconcile.
-4. Record the chosen feature name. Do NOT add prefixes (`xzo-crm-<feature>`) or suffixes; do NOT pick a different "more descriptive" name. The directory name is the canonical name and is used by the gate hook to locate `pre-build-drift.md` and `drift-acks.json`.
+4. Record the chosen feature name. Do NOT add repository-name prefixes or arbitrary suffixes; do NOT pick a different "more descriptive" name. The directory name is the canonical build identity.
 
-> **Why:** Past failure mode — agent generated artifacts at `docs/specs/xzo-crm-streets-frontend/` but named the team `streets-frontend-build`. The gate looked for `docs/specs/streets-frontend/pre-build-drift.md` (derived from the team name minus `-build`) and didn't find it. Agent had to manually copy files to satisfy both paths. The feature name MUST come from a single source — the directory you're working in.
+> **Why:** Drift artifacts and build state must resolve from one canonical feature name. Inventing a
+> second build identifier makes runtimes validate or report against the wrong directory.
 
 **Then read the artifacts:**
 
@@ -83,7 +84,7 @@ Locate the approved design document. Check in order:
 - `docs/specs/<feature>/design.md` (standard location from `/team-design`)
 - Ask the user: "I need the design document for the pre-build drift check. Where is it, or can you paste it?"
 
-Do not proceed to the drift check or team creation until the design document is found, or the user explicitly waives the check (log the waiver as a known risk in the build record).
+Do not proceed to the drift check or build dispatch until the design document is found, or the user explicitly waives the check (log the waiver as a known risk in the build record).
 
 Then invoke `/team-drift`:
 
@@ -93,42 +94,44 @@ Then invoke `/team-drift`:
 
 <!-- GATE: pre-build-drift — MISSING=0, effective_DIVERGED=0 -->
 **Gate:**
-- If **MISSING > 0:** STOP. The plan is incomplete relative to the design. Reconcile the plan with the design — MISSING entries are not eligible for acknowledgment. Do not create the team or spawn builders.
+- If **MISSING > 0:** STOP. The plan is incomplete relative to the design. Reconcile the plan with the design — MISSING entries are not eligible for acknowledgment. Do not dispatch builders.
 - If **DIVERGED > 0 and not all DIVERGED entries are acknowledged:** STOP. For each DIVERGED entry, choose one of:
    1. Fix the plan to match the design (the plan was wrong), OR
    2. Acknowledge the divergence in `docs/specs/<feature>/drift-acks.json` with a non-empty `reason` (the divergence is intentional and correct — for example, a Stage-3 review finding that required the plan to deviate). See `team-drift/references/drift-acks-template.json` for the schema.
    - **Do not revert valid changes from the plan to satisfy the gate.** If the plan is intentionally diverging because of a justified decision, acknowledge it. Reverting good work to make a binary gate pass is the failure mode this escape hatch exists to prevent.
-- If **MISSING == 0 and effective_DIVERGED == 0** (all DIVERGED entries acknowledged or zero to begin with): Proceed to Step 3 (team creation). Log any PARTIAL findings as known risks carried into the build.
+- If **MISSING == 0 and effective_DIVERGED == 0** (all DIVERGED entries acknowledged or zero to begin with): Proceed to Step 3 (build registration). Log any PARTIAL findings as known risks carried into the build.
 
-**Why before team creation:** Spawning builders costs tokens and time. If the plan drifts from the design, everything built from it is wrong. Catch it before spending anything. The ack escape hatch ensures the gate blocks **unintentional** drift while not punishing **intentional, justified** divergence.
+**Why before build dispatch:** Spawning builders costs tokens and time. If the plan drifts from the design, everything built from it is wrong. Catch it before spending anything. The ack escape hatch ensures the gate blocks **unintentional** drift while not punishing **intentional, justified** divergence.
 
 ### Optional: Worktree Isolation
 
 **Pre-check (run before asking):**
 1. Run `git worktree list` — if current directory is already a worktree, skip this step entirely.
-2. Check current branch name:
-   - If on `main`/`master`: show "Currently on main. Isolating on a new branch is recommended."
+2. Resolve the repository's default branch from remote metadata or project instructions, then check
+   the current branch name:
+   - If on the default branch: show "Currently on <default-branch>. Isolating on a new branch is recommended."
    - If on a feature branch: show "Currently on <branch-name>. Continue here, or create a new worktree?"
 
-**If pre-configured in AGENTS.md/CLAUDE.md** (`worktree: always` / `worktree: never`): follow config, skip question.
+**If pre-configured in the applicable project instructions** (`worktree: always` / `worktree: never`): follow config, skip question.
 
 **Otherwise, ask once:** [continue on current branch / create worktree]
 
 If worktree chosen:
-- Check if `.worktrees/` exists and is in `.gitignore`; add + commit if not.
-- `git worktree add .worktrees/<feature-name> -b <feature-branch>`
+- Resolve the worktree root from project instructions, or default to a sibling directory outside
+  the repository (for example `../<repo-name>-worktrees/`) so no `.gitignore` edit is needed.
+- `git worktree add <worktree-root>/<feature-name> -b <feature-branch>`
 - Run project setup (`npm install` / `pip install` / etc.).
 - Run baseline tests; if failing, report + ask whether to proceed.
 
 If continue chosen:
-- If on `main`/`master`: log "Proceeding on main — known risk."
+- If on the default branch: log "Proceeding on <default-branch> — known risk."
 - Proceed to Build Path Selection.
 
 Do not ask again.
 
 ---
 
-### Working Directory Discipline (NanoClaw & sandboxed harnesses)
+### Working Directory Discipline (sandboxed runtimes)
 
 Before doing any git clone, `gh repo clone`, `mkdir`, or `cp` for build-orchestration
 state (the lead's branch clone, drift-check workspaces, scratch notes, builder
@@ -136,46 +139,34 @@ coordination files), verify you are writing to a **persistent, harness-writable*
 
 **Rules:**
 
-1. **Clone to the harness-provided working dir, not `/tmp/`.** On NanoClaw and similar
-   sandboxed harnesses, `/tmp/` is ephemeral per-container and **invisible to sub-agent
-   builders spawned in separate contexts**. Work you place in `/tmp/` will be silently
-   lost between builder spawns and between message turns — the lead will then try to
-   "rebuild" state it cannot see, producing phantom reconstructions of work that already
-   exists in the actual persistent location.
+1. **Use the runtime-provided persistent working directory.** Do not assume `/tmp/` is shared
+   across worker contexts; many sandboxed runtimes recreate or isolate temporary storage. Prefer
+   the existing repository/worktree over a fresh clone.
 
-2. **On NanoClaw containers:** `/workspace/group/` is the persistent writable mount for
-   the current group. `/workspace/group/<REPO-NAME>/` (if present) is the existing
-   thread worktree — prefer it over a fresh clone. If you need a separate clone for a
-   drift check, put it at `/workspace/group/<REPO-NAME>-drift-<feature>` (same writable
-   mount, different subdirectory). Never clone to `/workspace/` (read-only parent mount),
-   `/home/`, `/opt/`, or `/tmp/`.
+2. **Do not hardcode a universal container path.** Resolve the writable workspace from the
+   current runtime, project instructions, or harness metadata. If a separate drift worktree is
+   required, create it under that same persistent workspace.
 
 3. **Probe before cloning anywhere you're not sure about.** If you get an EACCES or
    "Permission denied" on a `mkdir` or `git clone`, **do not silently fall back to
-   `/tmp/`**. Surface the error to the user and ask where to work, or retry inside
-   `/workspace/group/`. A `/tmp/` fallback will mask the real problem and cause silent
-   data loss downstream when builders can't see your work.
+   `/tmp/`**. Retry only in a documented persistent workspace; if none can be resolved, surface
+   the error and ask where to work. A temporary fallback can mask the real problem and strand
+   builder output outside the lead's view.
 
-4. **When running `codex exec` for drift checks:** codex requires `cwd` to be inside a
-   git repo (or it will bail with "not in a git repo"). `cd` into the cloned repo
-   first. Do not assume the process started inside one.
+4. **Run repository-aware tools from the resolved project root.** Do not assume a worker or
+   external read-only validator inherited the lead's working directory.
 
-5. **Pass the persistent path to builders in their spawn messages.** If the lead is
-   working in `/workspace/group/XZO-BACKEND`, the builder prompt must explicitly state
-   the same path so builders write to the same persistent location.
+5. **Pass the resolved persistent path to builders in their spawn messages.** Every builder must
+   read and write the same repository/worktree the lead is validating.
 
-**Observed failure mode (for context):** Lead agents that fall back to `/tmp/` for a
-branch clone after a `/workspace/` EACCES typically lose ~30 minutes of builder output
-per failure, because sub-agent builders spawn in fresh contexts and write to the real
-persistent path while the lead is still reading/writing its phantom `/tmp/` copy. The
-lead then reports "Builder X's worktree is gone" and tries to reconstruct. It is not
-gone — the lead is looking in the wrong place.
+**Failure mode this prevents:** the lead validates one clone while workers write to another, then
+mistakes the path mismatch for lost work.
 
 ---
 
 ### Build Path Selection
 
-Before creating the team, determine which execution path fits this build:
+Before registering the build, determine which execution path fits this build:
 
 **Path A: Team-Coordinated (default)** — Use when:
 - More than 3 task groups in the plan
@@ -195,23 +186,16 @@ The user can override path selection. If uncertain, default to Path A (team-coor
 
 ---
 
-### Step 3: Create Team and Register Tasks
+### Step 3: Register Namespaced Build Work
 
-**Team naming convention (REQUIRED — gate-enforced):**
-
-The team name MUST be exactly `<feature-name>-build` where `<feature-name>` is the **same value you resolved in Step 1** (the `docs/specs/<feature-name>/` directory name). It must also match the regex `^[a-z0-9][a-z0-9_-]{0,63}$` (lowercase alphanumeric, hyphens, underscores; starts with alphanumeric; max 64 chars).
-
-**Derive, do not invent.** Compute the team name as a literal string concatenation: `<feature-name-from-Step-1>` + `-build`. Do not add prefixes, do not "improve" the name, do not use a more descriptive variant. The workflow gate hook (`workflow-gate-enforcement`) uses the team name to locate the drift report at `docs/specs/<feature-name>/pre-build-drift.md` and the acks file at `docs/specs/<feature-name>/drift-acks.json`. If the team name and the directory name disagree, the gate cannot find the artifacts and fails closed.
-
-If the team name does not match the convention or does not match the Step 1 feature directory, the gate fails with `BLOCKED: Build teams must use the naming convention "<feature-name>-build"` — even if a passing drift report exists for a different feature. The strict allowlist also prevents path traversal in the gate hook.
-
-**Set up the build team:** register the team under the derived `<feature-name>-build` name with a
-short description (`[feature name] — [N] task groups, [N] builders`). See **§ Dispatch by Runtime**
-for the exact primitive on your runtime.
+Use `[team-build:<feature-name>]` as the canonical build namespace, where `<feature-name>` is the
+exact directory resolved in Step 1 and matches `^[a-z0-9][a-z0-9_-]{0,63}$`. Runtimes with a
+shared task list prefix every build task subject with this value. Runtimes without one store it in
+lead state and pass it in every builder prompt. See **§ Dispatch by Runtime**.
 
 **Register one task per group**, carrying each group's dependency edges from the plan's dependency
 graph (a sequential group is marked blocked by every group it waits on). Each task pairs a subject
-(`Group A: [Name]`) with the **complete task group spec from the plan** as its description.
+(`[team-build:<feature>] Group A: [Name]`) with the **complete task group spec from the plan** as its description.
 
 **Important:** The task description should be the complete task group spec from the plan —
 builders will read it from the task list to know what to do. On runtimes without a shared task
@@ -247,17 +231,19 @@ reports progress and how the lead identifies it). Name each builder for the grou
 (`builder-[group-name]`).
 
 The builder prompt (see `references/builder-prompt-template.md`) must contain:
-1. The complete task group spec verbatim from the plan (all tasks, code patterns, test cases, acceptance criteria)
+1. The complete task group spec verbatim from the plan (all tasks, interfaces/invariants, test cases, acceptance criteria)
 2. AGENTS.md/CLAUDE.md excerpts: tech stack, test/lint commands, critical guardrails
 3. The team/build identifier and the builder's own task identifier (so progress reports and status updates can be attributed back to the lead)
-4. Clear instructions: read only owned files, report progress back to the lead, don't load external skills
+4. Clear instructions: write only owned files, keep dependency reads scoped, report progress back to the lead, and don't load external skills
 5. **An explicit scope contract:** the prompt must state `YOUR GROUP: <letter>` and
    `FILES YOU OWN (exclusive):` with the full list, and must require the builder's first
    status message to echo back `ACK: Builder <name> claiming Group <letter>, files: [...]`
 6. **An out-of-scope prohibition:** the prompt must include:
-   *"You are forbidden from creating, modifying, or even reading files outside your
-   ownership list. If the spec seems to require work outside your list, STOP and message
-   the lead — do not silently expand your scope. Another builder owns that work."*
+   *"You are forbidden from creating, modifying, deleting, or reverting files outside your
+   ownership list. You may read a directly imported dependency, public interface, or relevant
+   test fixture when needed to implement your owned files; keep those reads minimal and do not
+   inspect another builder's in-progress implementation. If the spec requires an out-of-scope
+   write, STOP and report to the lead — do not silently expand your scope."*
 
 **Lead-side verification after spawn:**
 
@@ -290,17 +276,10 @@ none of the builders had ever begun work.
 
 **Procedure (do not skip any step):**
 
-1. **Wait 60 seconds** after the last spawn call returns. Use the Bash tool:
-   ```bash
-   sleep 60
-   ```
-   60s sits in the middle of mature-orchestrator launch-verification windows: Kubernetes
-   `startupProbe` defaults to ~30s, systemd `Type=notify` `TimeoutStartSec` defaults to
-   90s, Prefect's zombie-detection window is 90s. 60s is long enough to let real
-   builders pick up the work and short enough to fail fast on a broken spawn mechanism.
-   Do not skip the wait — polling immediately after spawn will report `pending` for
-   builders that are about to start normally, producing false STUCK signals.
-2. **Poll the live builder status** (see **§ Dispatch by Runtime** for the status-poll
+1. **Inspect every spawn result immediately.** Record the returned worker identifier/status or
+   the concrete error. A missing identifier or explicit error is a failed spawn, not a pending one.
+2. **Poll live builder status within 30 seconds** of the last spawn (see **§ Dispatch by Runtime**
+   for the status-poll
    primitive on your runtime — a team task list, the running-subagent/background-task roster,
    or a heartbeat probe) and inspect each spawned builder. For each entry in
    `builder_assignments`:
@@ -315,8 +294,7 @@ none of the builders had ever begun work.
       value alongside the polled state for that builder. Do not discard the original
       return — it may contain the failure cause.
    2. **Re-spawn that builder ONCE** with the same prompt and assignment.
-   3. **Wait another 60 seconds** (`sleep 60` via Bash, same as step 1).
-   4. **Re-poll** the live builder status (same primitive as step 2). If the builder is now
+   3. **Re-poll within 30 seconds** using the same primitive as step 2. If the builder is now
       PASS, log `Spawn verified after one retry` and proceed.
    5. **If still STUCK after the retry: STOP. Fail loud.** Surface to the user:
       - Which builder(s) failed to start
@@ -406,7 +384,7 @@ the group C spec plus the context that groups A and B produced.
   `grep -rn '<symbol>' --include='*.<ext>'` fallback). Record command + result in
   build-state.md. A single caller is acceptable only if the search confirms it is the only
   caller.
-- [ ] For frontend groups with render-check acceptance criteria: after functional criteria pass, the **lead** (not the builder) performs visual verification — start the dev server, use `mcp__chrome-devtools__navigate_page` + `mcp__chrome-devtools__take_screenshot` if devtools MCP is available; or if devtools MCP is unavailable, pause and tell the user explicitly: "Render-check required — [specific decision from the acceptance criterion, e.g., 'text-accent on bg-primary logo color']. Please verify in the browser and confirm to continue." Do not ask the builder for visual confirmation — builder agents cannot render or observe visual output. Do not self-approve render-checks.
+- [ ] For frontend groups with render-check acceptance criteria: after functional criteria pass, the **lead** (not the builder) performs visual verification — start the dev server and use any available browser/devtools screenshot capability; if none is available, pause and tell the user explicitly: "Render-check required — [specific decision from the acceptance criterion, e.g., 'text-accent on bg-primary logo color']. Please verify in the browser and confirm to continue." Do not ask the builder for visual confirmation — builder agents cannot render or observe visual output. Do not self-approve render-checks.
 - [ ] Domain-specific completion gate passes — see [`references/domain-completion-gates.md`](references/domain-completion-gates.md) for gates by artifact type (dbt, DAG, ML, LLM eval, agent/MCP, GL model)
 
 ### Two-Stage Implementation Review
@@ -502,9 +480,13 @@ Say "approved" to proceed, or flag anything to revisit.
 
 ## Builder Context Isolation
 
-Each builder receives: task group spec (complete, with injected ASSERTs) + AGENTS.md/CLAUDE.md excerpts (stack/commands/guardrails) + team name + task ID.
+Each builder receives: task group spec (complete, with injected ASSERTs) + AGENTS.md/CLAUDE.md excerpts (stack/commands/guardrails) + build namespace + task ID.
 
-Each builder reads only files in their task group's ownership list. Each builder never reads other groups' files, loads project skills, reads the full plan, or writes to files outside their ownership. Cross-group reads introduce mid-build assumptions about unfinished work — isolation eliminates this failure class.
+Each builder writes only files in its task group's ownership list. It may read the smallest stable
+dependency surface needed to implement those files (for example, an imported type, public interface,
+or shared test fixture), but it does not inspect another builder's in-progress implementation,
+load project skills, or read the full plan. Exclusive writes prevent conflicts; scoped reads prevent
+builders from guessing at contracts that already exist.
 
 **Builders apply the cross-cutting `team-tdd` protocol** when implementing: write the failing test first, watch it fail for the predicted reason, then write the production code that makes it pass. The test cases in the task spec are the RED-side artifact; builders don't write production code without first running the named test and seeing it fail. This is what makes spec-compliance review meaningful — without TDD, "tests pass" is just "tests written after the fact don't catch what the spec wanted."
 
@@ -512,7 +494,7 @@ Each builder reads only files in their task group's ownership list. Each builder
 
 ## Lead Responsibilities
 
-**Lead DOES:** read plan/design/decision record, run drift checks, set up the builder team, spawn builders, answer blockers, validate criteria by reading files and running tests, write context checkpoints, shut down builders.
+**Lead DOES:** read plan/design/decision record, run drift checks, register build work, spawn builders, answer blockers, validate criteria by reading files and running tests, write context checkpoints, shut down builders.
 
 **Lead does NOT:** write or edit code, make implementation decisions that should have been in the plan (flag to user instead), run builders sequentially when they could run in parallel.
 
@@ -574,7 +556,7 @@ The orchestration primitives below are the **only** runtime-specific part. They 
 
 | Primitive | What it does |
 |-----------|--------------|
-| `setup_team` + `register_tasks` | Stand up the `<feature-name>-build` team and register one task per group (Step 3), carrying the plan's dependency edges and per-group spec |
+| `register_build` + `register_tasks` | Record `[team-build:<feature>]` and register one task per group where supported (Step 3), carrying dependency edges and per-group spec |
 | `spawn_builders` | Fan out one builder per independent task group in parallel — each scoped to its own files (Step 4); also the sequential-group spawn (Step 5) and the targeted fix-agent (Step 7) |
 | `report_status` / `mark_complete` | Builder reports progress/completion back to the lead; lead marks a builder's task complete (Steps 4–5) |
 | `lead_message` | Lead → builder: scope correction, fix-required after a failed criterion, or a blocker resolution (Steps 4–5) |
@@ -585,9 +567,10 @@ The orchestration primitives below are the **only** runtime-specific part. They 
 > create and modify code. Each builder owns an **exclusive, non-overlapping** file list (the
 > `builder_assignments` map in Step 4 is that contract). Every builder prompt must state, in
 > addition to its `YOUR GROUP` / `FILES YOU OWN` block: *"You are not alone in this codebase — other
-> builders are working in parallel on different files. Do NOT create, modify, revert, or even read
-> any file outside your ownership list. If the spec seems to need work outside your list, STOP and
-> message the lead; another builder owns that work."* The **lead** owns integration, final
+> builders are working in parallel on different files. Do NOT create, modify, revert, or delete
+> any file outside your ownership list. You may minimally read a stable dependency/interface or
+> relevant fixture needed for your owned files, but do not inspect another builder's in-progress
+> implementation. If the spec needs an out-of-scope write, STOP and message the lead."* The **lead** owns integration, final
 > validation of every acceptance criterion, the drift checks, and the user-facing completion claim —
 > builders never self-approve.
 
@@ -603,10 +586,9 @@ parallel where your Codex environment supports it, following the bounded-delegat
 [`../shared/codex-workflow-primitives.md`](../shared/codex-workflow-primitives.md) (§ Codex
 Subagents):
 
-- `setup_team` + `register_tasks`: there is no separate team object — the lead holds the
-  `<feature-name>-build` identity, the dependency graph, and each group's full spec in working
-  memory (and in `build-state.md`). The `<feature-name>-build` string is still the canonical name
-  the gate hook derives drift-artifact paths from, so keep it exact.
+- `register_build` + `register_tasks`: there is no separate team object — the lead holds the
+  `[team-build:<feature>]` identity, dependency graph, and each group's full spec in working memory
+  and `build-state.md`.
 - `spawn_builders`: delegate one subagent per independent group. Each builder's prompt carries: its
   complete task-group spec, the AGENTS.md/CLAUDE.md excerpts, the build identifier + its own task
   identifier, **its exclusive owned-files list**, and the "you are not alone — do not touch files
@@ -620,7 +602,8 @@ Subagents):
 - `lead_message`: the lead re-delegates a targeted follow-up to the same builder with the specific
   correction or fix — a scope-mismatch correction, a failed-criterion fix, or a blocker resolution.
 - `poll_status`: use the running-subagent roster / heartbeat to verify each builder actually
-  started (Step 4's 60s-wait → check → re-spawn-once → fail-loud procedure applies verbatim) and to
+  started (Step 4's inspect → poll within 30s → re-dispatch-once → fail-loud procedure applies
+  verbatim) and to
   confirm a blocking group finished before spawning its dependent.
 - `terminate` / `teardown`: stop a subagent that twice claims out-of-scope work and re-delegate with
   a tighter prompt. Subagents complete and return — there is no long-lived team to delete; the lead
@@ -628,9 +611,9 @@ Subagents):
 
 ### OpenCode
 
-- `setup_team` + `register_tasks`: same as Codex — no separate team object; the lead holds the
-  `<feature-name>-build` identity, the dependency graph, and each group's spec in working memory /
-  `build-state.md`. Keep the `<feature-name>-build` string exact for the gate hook.
+- `register_build` + `register_tasks`: same as Codex — no separate team object; the lead holds the
+  `[team-build:<feature>]` identity, dependency graph, and each group's spec in working memory and
+  `build-state.md`.
 - `spawn_builders`: issue parallel `task({ subagent_type: 'general', description, prompt, background: true })`
   calls **in one tool turn** — one per independent group. OpenCode's general worker is named
   `general` (NOT `general-purpose`). `background: true` is the parallel key — without it the calls
@@ -645,7 +628,7 @@ Subagents):
   correction or fix is delivered by dispatching a fresh, targeted `task({ subagent_type: 'general',
   background: true, … })` scoped to that builder's group with the specific fix-required instruction.
 - `poll_status`: track which background tasks have returned for spawn verification (Step 4's
-  60s-wait → check → re-dispatch-once → fail-loud procedure applies verbatim) and to confirm a
+  inspect → poll within 30s → re-dispatch-once → fail-loud procedure applies verbatim) and to confirm a
   blocking group's task returned before dispatching its dependent.
 - `terminate` / `teardown`: a mis-scoped builder is handled by letting/forcing its task to end and
   re-dispatching a tighter `task(...)`; background tasks self-complete, so no explicit team teardown
@@ -655,22 +638,20 @@ Subagents):
 
 On Claude this skill uses:
 
-- `setup_team` + `register_tasks`: `TeamCreate(team_name: "<feature-name>-build", description: …)`
-  then one `TaskCreate(subject, description, activeForm)` per group, wiring sequential dependencies
-  with `TaskUpdate(addBlockedBy: [...])`. The `description` is the complete task-group spec.
-- `spawn_builders`: parallel background `Task(subagent_type: "general-purpose",
-  team_name: "<feature-name>-build", name: "builder-<group>", run_in_background: true, prompt: …)`
-  — no `model` override; builders inherit the session model —
-  calls — one per independent group; the same call spawns sequential and fix-agent builders.
+- `register_build` + `register_tasks`: one `TaskCreate` per group with a
+  `[team-build:<feature>]` subject prefix, wiring sequential dependencies with
+  `TaskUpdate(addBlockedBy: [...])`. The `TaskCreated` hook verifies pre-build drift artifacts.
+- `spawn_builders`: explicitly spawn native agent-team teammates named `builder-<group>`, one per
+  independent group. The first teammate forms the session-scoped team automatically; the same
+  mechanism spawns sequential and fix-agent builders.
 - `report_status` / `mark_complete`: builders report via `SendMessage`; the lead validates and calls
   `TaskUpdate(status: "completed")`.
 - `lead_message`: `SendMessage` to the builder with the scope correction, fix-required, or blocker
   resolution.
-- `poll_status`: `TaskList(team_name: "<feature-name>-build")` for spawn verification and
-  dependency-completion checks.
-- `terminate` / `teardown`: `TaskStop` to terminate a mis-scoped builder; `SendMessage(type:
-  "shutdown_request", recipient: "builder-<name>", …)` to each builder, wait for confirmations, then
-  `TeamDelete`.
+- `poll_status`: `TaskList()` filtered to `[team-build:<feature>]` subjects for spawn verification
+  and dependency-completion checks.
+- `terminate` / `teardown`: stop a mis-scoped builder; send a shutdown request to each builder and
+  wait for confirmations. Claude cleans up the session-scoped team automatically.
 
 The Codex/OpenCode lead-mediated equivalents above preserve the same behavior: disjoint per-builder
 write scopes, scope-echo verification, spawn verification, lead-validated completion, and lead-owned

@@ -15,7 +15,7 @@ before adding a Claude skill that needs a port.
 its Claude original — every process step, principle, checklist, criterion, anti-pattern,
 rationalization-resistance table, and output contract — **verbatim**. The ONLY things that
 change are the orchestration primitives (how subagents are spawned, how they converge, how
-the team is town down) and other Claude-specific touchpoints (tool names, agent-type refs,
+the team is torn down) and other Claude-specific touchpoints (tool names, agent-type refs,
 `.claude/` paths). If you find yourself summarizing or dropping substance, stop — that is
 gutting, and the parity-lint will fail it.
 
@@ -25,16 +25,17 @@ gutting, and the parity-lint will fail it.
    `cp workflow/skills/<s>/SKILL.md workflow-agents/skills/<s>/SKILL.md` and
    `cp -r workflow/skills/<s>/references workflow-agents/skills/<s>/` (if any). This
    guarantees substance fidelity and restores the reference files.
-2. **Frontmatter.** Ensure `name`, `version`, `description` are present (gutted ports lost
-   `version`). Keep the same `name`; keep `description` unless it names a Claude-only tool.
+2. **Frontmatter.** Ensure standard `name` and `description` fields are present. Strip
+   Claude-only visibility controls such as `user-invocable`; plugin manifests own versioning.
 3. **Translate orchestration + Claude touchpoints only.** Walk the body and translate:
    - Subagent spawning / team choreography → a `## Dispatch by Runtime` section (template
      below) + a link to `../shared/codex-workflow-primitives.md`. Move ALL per-runtime
      dispatch syntax INTO that section; the body above it stays runtime-neutral.
    - Claude tool names in prose: `Skill tool` → "your runtime's skill/command invocation";
-     `the Task tool` / `Agent(...)` / `TeamCreate` / `SendMessage` → the dispatch section.
-   - Agent-type references (`bootstrap-workflow:security-reviewer`) → keep the role name as
-     a *prompt-defined* role label (workers are generic; identity is the prompt).
+     `the Task tool` / `Agent(...)` / `SendMessage` → the dispatch section. Obsolete
+     `TeamCreate` / `TeamDelete` / `team_name` references are removed rather than translated.
+   - Reviewer identities → prompt-defined role labels (workers are generic; identity is the
+     prompt). Do not depend on copied or globally installed custom-agent definitions.
    - `.claude/` paths → `AGENTS.md`/`docs/` per the shared primitives doc.
 4. **Gate.** `node ../../evals/harness/parity-lint.mjs <s>` must PASS (substance headings
    preserved ≥85%, references restored, Claude tokens confined, frontmatter intact). For
@@ -68,10 +69,11 @@ calls in ONE tool turn — one per worker. `background: true` is the parallel ke
 worker is `general` (NOT `general-purpose`). Lead-mediated convergence, same as Codex.
 
 ### Claude (reference — for parity, not used on this runtime)
-On Claude this uses `TeamCreate` + `Agent(team_name=…)`, `SendMessage` rounds for peer
-convergence, and `SendMessage(shutdown_request)` + `TeamDelete`. The lead-mediated
-convergence above is the near-parity equivalent (fire-and-return workers have no peer
-channel).
+On Claude this explicitly spawns native agent-team teammates. The first teammate forms the
+session-scoped team automatically; reviewers use `SendMessage` rounds for peer convergence and
+receive shutdown requests when done. There is no separate team creation or deletion step. The
+lead-mediated convergence above is the near-parity equivalent (fire-and-return workers have no
+peer channel).
 ```
 
 ## Skill classification (for the rollout)
@@ -84,7 +86,7 @@ reviewers).
 other workflow skills in sequence with gates. Translate skill-invocation, not dispatch.
 
 **Single-agent** (no dispatch section; translate Claude tool/agent/path refs + add
-`version` + cite shared primitives for verification/artifacts): `team-brief`, `team-design`,
+standard frontmatter + cite shared primitives for verification/artifacts): `team-brief`, `team-design`,
 `team-plan`, `team-tdd`, `team-ship`, `team-retro`, `team-debug`, `team-drift`,
 `team-verification-before-completion`, `team-receiving-review-feedback`,
 `best-practice-check`, `workflow-routing`.
@@ -93,5 +95,6 @@ other workflow skills in sequence with gates. Translate skill-invocation, not di
 
 - Not a rewrite. If the codex skill reads as a fresh, shorter take on the topic, it's wrong.
 - Not behavior change. Same gates, same stop-points, same anti-patterns, same thresholds.
-- Not Claude-primitive leakage. `TeamCreate`/`SendMessage`/`Agent(`/`subagent_type` never
-  appear in the runtime-neutral body — only inside Dispatch-by-Runtime.
+- Not Claude-primitive leakage. `SendMessage`/`Agent(`/`subagent_type` never appear in the
+  runtime-neutral body — only inside Dispatch-by-Runtime. Obsolete `TeamCreate`, `TeamDelete`, and
+  `team_name` lifecycle syntax must not appear anywhere.

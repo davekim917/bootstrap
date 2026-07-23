@@ -106,6 +106,15 @@ const EMAIL_CORPUS = [
   '',
 ];
 
+const NATIVE_EMAIL_CORPUS: Array<[string, Record<string, unknown>]> = [
+  ['send_email', { to: 'a@b.com', subject: 'Status', body: 'omitted' }],
+  ['mcp__gmail__reply_email', { message: { recipient: 'a@b.com' } }],
+  ['gmail_send_draft_email', { to_email: 'a@b.com' }],
+  ['gmail_create_draft_reply', { to: 'a@b.com' }],
+  ['gmail_search_emails', { query: 'from:a@b.com' }],
+  ['send_message', { recipient: 'a@b.com' }],
+];
+
 describe('test_differential_imports_two_paths', () => {
   test('the SoT and vendored cores are distinct module objects from distinct trees', () => {
     // If these were the same import (e.g. a symlink resolved to one inode), the
@@ -125,6 +134,8 @@ describe('test_differential_imports_two_paths', () => {
     }
     expect(typeof sotEmail.evaluateEmailSend).toBe('function');
     expect(typeof vendoredEmail.evaluateEmailSend).toBe('function');
+    expect(typeof sotEmail.evaluateEmailToolCall).toBe('function');
+    expect(typeof vendoredEmail.evaluateEmailToolCall).toBe('function');
   });
 });
 
@@ -173,6 +184,18 @@ describe('test_differential_cores_identical_verdicts', () => {
         test(`identical: ${JSON.stringify(cmd)} (scheduled=${isScheduledTask})`, () => {
           expect(sotEmail.evaluateEmailSend(cmd, { isScheduledTask })).toEqual(
             vendoredEmail.evaluateEmailSend(cmd, { isScheduledTask }),
+          );
+        });
+      }
+    }
+  });
+
+  describe('evaluateEmailToolCall', () => {
+    for (const [toolName, toolInput] of NATIVE_EMAIL_CORPUS) {
+      for (const isScheduledTask of [false, true]) {
+        test(`identical: ${toolName} (scheduled=${isScheduledTask})`, () => {
+          expect(sotEmail.evaluateEmailToolCall(toolName, toolInput, { isScheduledTask })).toEqual(
+            vendoredEmail.evaluateEmailToolCall(toolName, toolInput, { isScheduledTask }),
           );
         });
       }

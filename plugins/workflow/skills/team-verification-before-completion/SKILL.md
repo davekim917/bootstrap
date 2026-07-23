@@ -8,7 +8,6 @@ description: >
   Use when agent claims work is done or signals task completion.
   Do not use for intermediate progress updates or partial status reports.
 user-invocable: false
-version: 1.0.0
 ---
 
 # Verification Before Completion

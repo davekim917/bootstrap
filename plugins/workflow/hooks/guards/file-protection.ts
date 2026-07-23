@@ -5,8 +5,8 @@
  * `file-protection-core.ts` (shared with the OpenCode plugin + the codex
  * container chain). This file owns the Claude-hook I/O surface only.
  *
- * Exit code 2 blocks the tool (Claude Code semantics).
- * Fail-open on parse error (exit 0).
+ * Exit code 2 blocks the tool (Claude Code semantics). Enforcement failures
+ * fail closed so malformed hook input cannot disable the protection boundary.
  */
 import { readFileSync } from 'fs';
 import { checkEditProtection } from './file-protection-core';
@@ -37,9 +37,11 @@ Bypass: export SKIP_FILE_PROTECTION=1 (temporary)
 
         process.exit(0);
     } catch (error) {
-        // Fail open but log for debugging.
-        console.error('[file-protection] Hook error (non-blocking):', error instanceof Error ? error.message : error);
-        process.exit(0);
+        console.error(
+            'BLOCKED: file-protection hook failed closed:',
+            error instanceof Error ? error.message : error,
+        );
+        process.exit(2);
     }
 }
 

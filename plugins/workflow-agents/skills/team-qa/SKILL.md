@@ -2,10 +2,9 @@
 name: team-qa
 description: >
   Invoke after /team-build is approved. Runs validation checks on changed files (denoise + parallel
-  validators: style, docs, code review swarm, Codex adversarial cross-model). Do NOT run QA checks
+  validators: style, docs, code review swarm, independent adversarial review). Do NOT run QA checks
   manually — this skill has validator isolation, finding classification, and selective re-run logic
   that only load when invoked.
-version: 2.3.0
 ---
 
 # /team-qa — Post-Build Validation Pipeline
@@ -13,20 +12,20 @@ version: 2.3.0
 ## What This Skill Does
 
 Runs the built implementation through a structured validation pipeline. Five checks in two phases:
-denoise first (sequential), then style + doc + code review swarm + Codex adversarial (parallel).
-Scoped Claude validators (style, doc) get only changed files + one relevant skill. The code review
+denoise first (sequential), then style + doc + code review swarm + an adversarial worker (parallel).
+Scoped validators (style, doc) get only changed files + one relevant skill. The code review
 swarm delegates to `/review-swarm` for rich, research-backed code review — covering security,
 performance, architecture, domain idioms, and adversarial correctness dynamically based on the diff.
-Codex attacks the git diff with cross-model framing focused on auth/data-loss/race-condition failure modes.
+The adversarial worker attacks the git diff with framing focused on auth/data-loss/race-condition failure modes.
 
 **Key principle:** Scoped validators (A, B) stay tight — changed files + one skill — to minimize
 false positives. The code review swarm (CD) deliberately gets the full diff + AGENTS.md/CLAUDE.md + research
 tools because its job is the broad correctness check that scoped validators can't do.
 
-**Cross-model coverage:** Validators A, B, CD run on the host runtime. Validator E runs on a model
-**different from the host** (the cross-model pass) — see § Dispatch by Runtime for how each runtime
-picks that second model and falls back when none is available. The cross-model pass catches failure
-modes the host model tends to miss (or rationalize away).
+**Adversarial isolation:** Validators A, B, and CD run on the host runtime. Validator E runs in an
+independent worker context by default. When an authenticated different-family model is explicitly
+available, the runtime may use it for additional diversity; otherwise it records that cross-model
+diversity was reduced rather than weakening safety controls or recursively invoking the host CLI.
 
 **Output:** QA report classifying all findings (see `references/qa-report-template.md`)
 **NOT output:** The fixes themselves — findings go back to the user or loop to a fix pass
@@ -41,7 +40,7 @@ A completed build — either from `/team-build` or an implementation the user wa
 
 - After `/team-build` is approved and before shipping/merging
 - When validating any implementation against project standards
-- Do NOT auto-trigger — the user types `/team-qa` to invoke
+- Enter after explicit build approval, or as the QA stage inside a user-invoked `/team-auto` run.
 
 ## Selective Re-run (`--only`)
 
@@ -52,7 +51,7 @@ After fixing one finding, you don't need to re-run the entire pipeline. Use `--o
 /team-qa --only style        # Validator A only
 /team-qa --only docs         # Validator B only
 /team-qa --only swarm        # Validator CD only (code review swarm)
-/team-qa --only codex        # Validator E only (Codex adversarial)
+/team-qa --only adversarial  # Validator E only (`codex` remains a compatibility alias)
 ```
 
 When `--only` is present: **skip to the named validator directly** (still read the changed files list from Step 1 first). All other validators are skipped for this run.
@@ -72,11 +71,13 @@ Get the definitive list of files to validate. Check in order:
 1. **From `/team-build` plan** — the plan's file ownership map is the authoritative list of what changed
 2. **From git** if no plan is available:
    ```bash
-   git diff --name-only main...HEAD   # all changes on this branch vs main
-   # or
-   git diff --name-only HEAD~1        # just the last commit
+   git diff --name-only <BASE_BRANCH>...HEAD
    ```
 3. **From user** if neither is available — ask explicitly
+
+Resolve `<BASE_BRANCH>` once from the approved build metadata, an explicit user scope, or the
+repository's default-branch metadata (`refs/remotes/origin/HEAD` / hosting provider). Do not assume
+`main`, and do not silently shrink a multi-commit feature to `HEAD~1`.
 
 Group changed files by type for targeted routing:
 - **API/backend:** routes, controllers, services, middleware
@@ -120,12 +121,12 @@ file-type routing table at [`references/qa-validator-routing.md`](references/qa-
 
 ### Multi-Domain File-Type Resolution
 
-When multiple domain skills are loaded (e.g., software-engineering + data-science):
+When multiple installed skills are loaded:
 - The scope file determines which skills to load (the candidate set).
 - The file-type routing table in [`references/qa-validator-routing.md`](references/qa-validator-routing.md) determines which
   loaded skill applies to each specific file.
-- A `.py` API handler file: software-engineering checks apply; data-science checks do not.
-- A `.ipynb` notebook: data-science checks apply; software-engineering checks do not.
+- A `.py` API handler uses only loaded skills whose declared scope covers API/backend code.
+- A `.ipynb` notebook uses only loaded skills whose declared scope covers notebooks or analysis.
 - Skills not in the loaded set never apply, even if a file-type pattern matches.
 
 Doc Freshness (B) applies universally — check for stale model descriptions (dbt `schema.yml`),
@@ -151,20 +152,20 @@ Read every changed file directly. Apply `references/denoise-checklist.md`. Flag:
 - **Pipeline test values** — dev connection strings, test schedule intervals, disabled tasks
 - **Hardcoded fiscal year cutoffs in financial SQL** — `WHERE fiscal_year = 2024` or similar absolute fiscal year references in GL models, reconciliation scripts, or period-close queries
 
-Present findings as a list with file:line. For each:
-- **Auto-safe removals** (unused imports, debug logs, temp files): propose removing immediately
-- **Judgment calls** (dead code, commented blocks): show the code, ask user to confirm removal
+Present findings as a list with file:line and carry them into the final QA classification. This
+stage is diagnostic: do not edit files or pause for per-item approval. Classify debug artifacts,
+credential/PII exposure, or behavior-changing debris by impact; ordinary unused imports and
+commented code are SHOULD-FIX/ADVISORY. Phase 2 runs against the same diff so later validators can
+corroborate or contradict the findings.
 
-Wait for user to approve/deny each item before proceeding to Phase 2.
-
-**Gate:** Denoise must complete before Phase 2 starts. A clean codebase produces cleaner validator output.
+**Gate:** Every changed file has been denoise-checked and findings recorded before Phase 2 starts.
 
 ### Phase 2: Parallel Validators
 
 Launch all applicable validators simultaneously (A, B, CD, E — four validators in parallel).
-Skip Validator CD only if the diff is pure docs/config with no code changes. Skip Validator E
-(cross-model adversarial) only if no cross-model target is reachable and a same-runtime fallback
-is declined, or the diff has no code changes.
+Skip Validator CD only if the diff is pure docs/config with no code changes. Skip Validator E only
+if the diff has no code changes, or the runtime cannot create an isolated worker and no explicitly
+configured safe external adversary is available.
 
 ---
 
@@ -204,18 +205,17 @@ AGENTS.md/CLAUDE.md parsing, domain detection, and research.
 
 **Purpose:** The broad code-review lane. Covers correctness, project conventions, security,
 performance, architecture, and domain-specific idioms through dynamic reviewer selection. Unlike
-scoped validators A and B, this validator receives the full diff + AGENTS.md/CLAUDE.md + research tools so
-its reviewers can check current best practices (context7, deepwiki, Exa) and converge on their
+scoped validators A and B, this validator receives the full diff + AGENTS.md/CLAUDE.md + available live research tools so
+its reviewers can check current best practices and converge on their
 findings before reporting. Replaces the previous isolated C (security) and D (performance)
 validators.
 
 **When to skip:** Pure docs or pure config diffs with no code changes. Otherwise always run. Any other CD skip reason (context budget, time pressure, validator overlap, "Codex E covers it") MUST be user-approved before /team-qa. Lead may NOT skip CD on judgment grounds.
 
-**Pre-flight check:** Verify at least one `mcp__exa__*` tool is in the session's tool list.
-Review-swarm hard-fails without Exa (`review-swarm/SKILL.md:107`). If none present, **skip
-this validator** with the warning:
-
-> ⚠ Code review swarm research tools unavailable (no mcp__exa__* present) — Validator CD skipped. Code review coverage reduced.
+**Research capability:** Review-swarm uses project/repository evidence for concrete findings and
+whichever live documentation or web capability the runtime exposes for current-library claims.
+Absence of a specific MCP provider is not a skip condition. If no live research is reachable,
+reviewers omit unverified external-pattern claims and continue with code-grounded review.
 
 **Invocation:** Invoke the `review-swarm` skill (via your runtime's skill/command invocation —
 see **§ Dispatch by Runtime**) with the branch scope and domain hints from Step 2. Review-swarm
@@ -271,42 +271,28 @@ same ground.
 
 ---
 
-#### Validator E: Codex Adversarial Review (Cross-Model)
+#### Validator E: Independent Adversarial Review
 
 **Context:** Git diff (the actual code changes — not files in isolation)
 
-**Purpose:** Cross-model adversarial pass on the implementation. A model **different from the host
-runtime** attacks the diff with framing focused on the failure modes the host model tends to miss
-or rationalize: auth/permission boundaries, data loss, race conditions, rollback safety,
-idempotency gaps, schema drift, observability gaps. This is the only validator that deliberately
-runs on a model from a *different* family than the one running the rest of the pipeline — that
-diversity is the whole point (two agents from the same model family share systematic blind spots).
+**Purpose:** An isolated adversarial pass attacks the implementation for failure modes the lead may
+miss or rationalize: auth/permission boundaries, data loss, race conditions, rollback safety,
+idempotency gaps, schema drift, and observability gaps. Isolation is required; model-family diversity
+is optional.
 
-**Pre-flight: pick the cross-model target.** Before spawning, determine which model is the
-different-from-host adversary and confirm it's reachable. The exact detection command is in
-**§ Dispatch by Runtime** (e.g. probing for a non-host model's CLI on `PATH`):
+**Pre-flight:** Confirm the runtime can create an independent worker. Use that native worker by
+default and log `cross-model diversity reduced`. If an authenticated different-family model is
+explicitly configured, it may replace the native worker using that runtime's documented read-only
+mode. A missing external model is never a reason to skip a reachable native worker, disable a
+sandbox, disable approvals, or recursively shell into the host CLI.
 
-- The default cross-model adversary is reached via `codex exec` **when the host runtime is not
-  Codex**. When the host runtime *is* Codex, `codex exec` would be same-model, so the target is a
-  *non-Codex* model instead (e.g. `claude -p`) — see § Dispatch by Runtime.
-- If no second, different model is reachable, fall back to a **same-runtime adversarial pass** (the
-  host model attacks its own diff) in an isolated worker, and log:
-
-  > ⚠ No second model available — Validator E running a same-runtime adversarial pass. Cross-model diversity reduced this run.
-
-- If the cross-model target is `codex exec` but the codex binary is missing (`command -v codex`
-  fails) or unauthenticated (no `~/.codex/auth.json`) **and no other second model is reachable**,
-  fall back to the same-runtime pass above, or skip with:
-
-  > ⚠ Codex CLI unavailable/unauthenticated and no second model reachable — Validator E skipped. Cross-model coverage reduced. (Run `codex login` on the host, or make a second model available.)
-
-Do not block QA on cross-model-target unavailability — degrade or skip, and note it in the gate.
-
-**Invocation:** Spawn a generic worker (no model override — inherits the session model) with the verbatim worker prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-e-codex-adversarial-subagent-prompt) — see **§ Dispatch by Runtime** for the spawn primitive AND the cross-model CLI selection on your runtime. The worker shells out to the designated cross-model adversarial CLI (`codex exec --yolo` by default; a non-Codex CLI when the host is Codex), captures the JSON output, and returns it verbatim — it does not do its own adversarial reasoning. This is an **external cross-model call**, not an in-session reviewer: the worker's only job is to drive that CLI and relay its structured output. The reference file documents the indirection (why direct CLI, not the slash command; why `--yolo`), the cross-model targeting, and the four-step procedure.
+**Invocation:** Spawn a generic worker (no model override — inherits the session model) with the verbatim adversarial prompt at [`references/qa-validator-prompts.md`](references/qa-validator-prompts.md#validator-e-adversarial-worker-prompt) — see **§ Dispatch by Runtime**. On Codex this is a native independent subagent by default. Use an external second-model CLI only when it is explicitly available and authenticated; never disable that CLI's approvals or sandbox merely to preserve model diversity.
 
 Fill in `<BASE_BRANCH>` and `<REPO_ROOT>` for the project before spawning.
 
-**Run-scoped override:** If the user (or an invoking skill such as `/team-auto`) asked for a different codex model or reasoning effort on this run, append one final line to the worker prompt — `CODEX OVERRIDE: model=<slug> effort=<level>` (either field optional). The worker substitutes those values into the `codex exec` flags and changes nothing else — `--yolo`, `--ephemeral`, and the schema/output flags stay exactly as written. Without that line, the pinned default applies.
+**Run-scoped override:** If the user asked for a specific external model or reasoning effort, honor
+that request using the selected runtime's documented flags. Otherwise inherit runtime configuration;
+do not pin a model slug in this workflow.
 
 **Lead-side parsing:** The subagent returns a JSON document matching
 `references/codex-review-output.schema.json`:
@@ -331,7 +317,7 @@ Fill in `<BASE_BRANCH>` and `<REPO_ROOT>` for the project before spawning.
 }
 ```
 
-**Mapping Codex severity to team-qa classification:**
+**Mapping adversarial severity to team-qa classification:**
 
 | Codex severity × confidence | team-qa class |
 |---|---|
@@ -342,12 +328,12 @@ Fill in `<BASE_BRANCH>` and `<REPO_ROOT>` for the project before spawning.
 | `low` (any confidence) | ADVISORY |
 | Verdict `approve` with no findings | No findings — note in report |
 
-**If the cross-model adversary returns errors or times out:** Log "Cross-model adversarial review
+**If the adversarial worker returns errors or times out:** Log "Adversarial review
 failed — Validator E skipped this run" in the report and continue. Do not retry mid-run.
 
-**Resyncing the verbatim prompt:** If upstream `@openai/codex-plugin-cc` updates their
-adversarial prompt or output schema, refresh the copies in `references/` per the instructions
-in `references/CODEX-SOURCES.md`.
+The adversarial prompt and output schema are owned by this workflow plugin and versioned with it.
+Validate their placeholder/schema contract in this repo when changing either file; do not copy
+runtime plugin internals into this plugin.
 
 ---
 
@@ -391,16 +377,16 @@ Then STOP. Display exactly this gate:
 ---
 **QA complete.**
 
-Denoise:        [N fixed, N waived]
+Denoise:        [N findings — N MUST-FIX, N SHOULD-FIX, N ADVISORY]
 Style:          [N violations — N MUST-FIX, N SHOULD-FIX, N ADVISORY (M introduced, P pre-existing)]
 Doc freshness:  [N stale items]
-Code review (swarm): [N findings — N MUST-FIX (BUG), N SHOULD-FIX (SUGGESTION)]   [or: skipped — no code changes | skipped — Exa unavailable | failed — swarm error]
-Codex (cross-model): [N findings — N MUST-FIX, N SHOULD-FIX, N ADVISORY]   [or: skipped — cross-model target unavailable | ran same-runtime — cross-model diversity reduced]
+Code review (swarm): [N findings — N MUST-FIX (BUG), N SHOULD-FIX (SUGGESTION)]   [or: skipped — no code changes | failed — swarm error]
+Adversarial:     [N findings — N MUST-FIX, N SHOULD-FIX, N ADVISORY]   [or: skipped — no isolated target | native worker — cross-model diversity reduced]
 
 [If CD or E was skipped/failed:]
-⚠ COVERAGE DEGRADED: [code review swarm | cross-model adversarial] unavailable this run.
+⚠ COVERAGE DEGRADED: [code review swarm | adversarial worker] unavailable this run.
    MUST-FIX total below excludes findings that lane would produce.
-   Re-run `/team-qa --only [swarm|codex]` once tools recover.
+   Re-run `/team-qa --only [swarm|adversarial]` once tools recover.
 
 MUST-FIX total: [N]
 
@@ -481,8 +467,8 @@ When QA clears with no MUST-FIX items remaining, add to the "all clear" gate mes
 |------|------|-----------|
 | Lead (current session, orchestrates) | Current session model | Denoise runs inline, finding classification requires judgment, gate decisions need care |
 | Validator A: Style Audit | Inherited (session model) | Mechanical: convention matching against a loaded skill — no pin; runs on whatever the session runs |
-| Validator CD: Code Review Swarm | `/review-swarm` (reviewer workers, model per reviewer) | Delegated to review-swarm's own model selection. Covers correctness, security, performance, architecture, and domain idioms with research backing and reviewer convergence. Replaces the isolated specialist reviewers (security-reviewer, performance-analyzer) previously used as Validators C and D. |
-| Validator E: Codex Adversarial | A model **different from the host runtime** (codex via `codex exec --yolo` when the host is not Codex; a non-Codex model such as `claude -p` when the host is Codex). Fallback: same-runtime adversarial pass with a logged "cross-model diversity reduced" note when no second model is reachable. | Cross-model adversarial pass — runs the verbatim prompt from `references/codex-adversarial-prompt.md` against a different-family model so its blind spots don't overlap the host's. See § Dispatch by Runtime for per-runtime CLI selection. |
+| Validator CD: Code Review Swarm | `/review-swarm` (reviewer workers, model per reviewer) | Delegated to review-swarm's own model selection. Covers correctness, security, performance, architecture, and domain idioms with research backing and reviewer convergence. Replaces the former isolated specialist passes. |
+| Validator E: Adversarial | Independent native worker by default; an authenticated different-family model when explicitly available. | Adversarial pass using the repository prompt. Log "cross-model diversity reduced" when the native host model is used. |
 
 Keep denoise (inline), finding classification, and the final gate judgment on the lead — that is the judgment-heavy work.
 
@@ -501,7 +487,7 @@ only runtime-specific part — how the validators are spawned and how the pipeli
 sequentially first** — it is the lead reading every changed file directly against
 `references/denoise-checklist.md`, with no worker spawned, and it must complete (gate) before any
 Phase 2 worker starts. Phase 2 then runs the validators **in parallel**: Validator A (style audit)
-and Validator E (Codex adversarial) are spawned workers; Validator B (doc freshness) runs **inline**
+and Validator E (independent adversarial) are spawned workers; Validator B (doc freshness) runs **inline**
 on the lead (no spawn); Validator CD is **not a worker at all** — it is a full invocation of the
 `review-swarm` sub-skill, which does its own internal dispatch (and its own teardown) per its own
 **§ Dispatch by Runtime**. Do not flatten denoise into the parallel phase, and do not collapse the
@@ -512,21 +498,16 @@ Two of the Phase 2 lanes are special:
 - **Validator CD is a sub-skill, not an in-session subagent.** You invoke the `review-swarm` skill
   (via your runtime's skill/command invocation) and wait for its combined report. Review-swarm
   fans out and reconciles its own reviewers; team-qa does not spawn those reviewers directly.
-- **Validator E is an external cross-model call, not an in-session subagent — and it must target a
-  model DIFFERENT from the host runtime.** The worker you spawn exists only to drive the cross-model
-  adversarial CLI and relay its structured JSON verbatim; the adversarial reasoning happens in that
-  external model, not in the spawned worker. **Which CLI is host-dependent:** `codex exec --yolo`
-  when the host runtime is not Codex (genuinely cross-model), but a *non-Codex* CLI (e.g. `claude -p`)
-  when the host runtime *is* Codex — otherwise shelling to codex would be same-model and the
-  cross-model point is lost. If no second model is reachable, run a same-runtime adversarial pass and
-  log "cross-model diversity reduced" (see the Validator E pre-flight). Per-runtime CLI selection is
-  spelled out in each runtime subsection below.
+- **Validator E is an independent adversarial context.** On Codex it runs as a native subagent by
+  default, which keeps the plugin self-contained and safe. If the environment explicitly exposes
+  an authenticated different-family model, it may be used instead. Model diversity is useful but
+  never justifies shelling back into the host model or bypassing another CLI's safety controls.
 
 > Use your runtime's native, in-session subagent delegation — workers that report back to the lead.
 > Do NOT use cross-agent/cross-container dispatch (e.g. NanoClaw's `spawn_task` MCP): those launch
 > separate sessions that can't converge their findings back into the lead's QA report. Stay
-> in-session. (This applies to the Validator A and Validator E workers; Validator E's worker is
-> in-session even though the CLI it *shells out to* drives a separate, different-from-host model.)
+> in-session. This applies to the Validator A and Validator E workers. Only a runtime-specific,
+> explicitly configured external-model adapter may leave the host model, and it must remain read-only.
 
 ### Codex
 
@@ -541,17 +522,10 @@ Subagents). Lead-mediated convergence (workers report to the lead; the lead reco
 - **Validator B (doc freshness):** inline on the lead — no subagent.
 - **Validator CD (code review swarm):** invoke the `review-swarm` skill (the §-CD arguments block);
   review-swarm runs its own Codex subagents and teardown. Team-qa waits up to the 15-minute cap.
-- **Validator E (cross-model adversarial):** one Codex subagent carrying the **verbatim** prompt at
-  `references/qa-validator-prompts.md#validator-e-codex-adversarial-subagent-prompt`. **The host is
-  Codex, so the cross-model target must NOT be codex** — shelling to `codex exec` here would be
-  same-model and defeat the cross-model purpose. Point the worker at a *non-Codex* model's CLI
-  instead, e.g. `claude -p "<adversarial prompt built from the template>"` if the Claude CLI is on
-  `PATH`, or any other available non-Codex model CLI. Detect availability in the pre-flight with,
-  e.g., `command -v claude >/dev/null 2>&1 && echo yes || echo no`. If no non-Codex model is
-  reachable, fall back to a **same-runtime adversarial pass** (a Codex subagent that does the
-  adversarial review itself, or shells to `codex exec --yolo` as same-model) and prepend the
-  "cross-model diversity reduced" note (Validator E pre-flight) so the lead logs it in the gate.
-  Re-delegate a failed worker once; the lead owns finding integration, classification, and the final gate.
+- **Validator E (adversarial):** one Codex subagent carrying the verbatim adversarial prompt. Log
+  "cross-model diversity reduced" unless an explicitly configured different-family model actually
+  ran. Never shell out to `codex exec` from Codex to simulate diversity. Re-delegate a failed worker
+  once; the lead owns finding integration, classification, and the final gate.
 
 ### OpenCode
 
@@ -565,12 +539,9 @@ key. OpenCode's worker is `general` (NOT `general-purpose`). Lead-mediated conve
 - **Validator CD (code review swarm):** invoke the `review-swarm` skill via OpenCode's skill/command
   invocation (not a `task` call) — review-swarm issues its own background `task` reviewers and
   reclaims them. Team-qa waits up to the 15-minute cap.
-- **Validator E (cross-model adversarial):** one `task(...)` whose `prompt` is the verbatim Validator E
-  worker prompt. Point it at a model **different from the OpenCode host model** — `codex exec --yolo`
-  if codex is on `PATH` and is a different family from the host model, or a non-default OpenCode model
-  / another model's CLI. Detect availability in the pre-flight (e.g. probe for the second CLI on
-  `PATH`). If no second model is reachable, run a **same-runtime adversarial pass** via another
-  `task(...)` and prepend the "cross-model diversity reduced" note (Validator E pre-flight). Re-dispatch
+- **Validator E (adversarial):** one `task(...)` whose prompt is the repository adversarial prompt.
+  Use a different-family model only when explicitly configured and authenticated; otherwise run a
+  same-runtime pass and prepend the "cross-model diversity reduced" note. Re-dispatch
   a failed task once; the lead classifies and gates. Background tasks self-complete — no explicit teardown.
 
 ### Claude (reference — for parity, not used on this runtime)
@@ -578,11 +549,10 @@ key. OpenCode's worker is `general` (NOT `general-purpose`). Lead-mediated conve
 On Claude this pipeline spawns Validator A and Validator E via `Task(...)` (`subagent_type: general-purpose`,
 no `model` override — they inherit the session model), Validator CD via the `Skill` tool invoking `bootstrap-workflow:review-swarm`, and
 Validators B + denoise inline. **Validator E's cross-model target on Claude is genuinely Codex** —
-the Claude-hosted worker shells out to `codex exec --yolo` (OpenAI), so no inversion is needed here;
+the Claude-hosted worker may shell out to ephemeral read-only `codex exec` (OpenAI) when available;
 the Codex/OpenCode subsections above invert that choice precisely because shelling to codex from a
-Codex host would be same-model. Review-swarm's own reviewers run as `TeamCreate` + `Agent(team_name=…)`
-with live `SendMessage` convergence rounds, and team-qa explicitly verifies/cleans that team with
-`TeamList()` + `TeamDelete(team_name: "code-review")` (a leaked team causes `TeamCreate` failures on
-the next run). The Codex/OpenCode lead-mediated convergence and runtime-native teardown above are the
-near-parity equivalents — same gates, same classification, same 15-minute CD cap — achieved without a
-persistent team object because fire-and-return workers reclaim themselves.
+Codex host would be same-model. Review-swarm's own reviewers run as native agent-team teammates with
+live `SendMessage` convergence rounds and receive shutdown requests when done; the session-scoped
+team needs no explicit creation or deletion. The Codex/OpenCode lead-mediated convergence and
+runtime-native teardown above are the near-parity equivalents — same gates, same classification,
+same 15-minute CD cap — achieved with fire-and-return workers that reclaim themselves.

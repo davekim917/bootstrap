@@ -7,7 +7,6 @@ description: >
   reviews, methodology reviews, pipeline architecture reviews, and data model reviews.
   Use when processing any review feedback. Do not use for self-review or generating review findings.
 user-invocable: false
-version: 1.0.0
 ---
 
 # Receiving Review Feedback
@@ -108,7 +107,7 @@ Do not implement clear items while waiting for unclear ones to be clarified — 
 
 ### Inside `/team-auto`: this gate routes through escalation, not user prompts
 
-When this skill is invoked from inside `/team-auto` (sentinel `docs/specs/<feature>/.team-auto-active` is fresh), the "Hard Gate: Unclear Items" and the "Need clarification" option under § 5 RESPOND are **not** direct user-prompt paths. The `AskUserQuestion` block hook will refuse them anyway.
+When this skill is invoked from inside `/team-auto` (sentinel `docs/specs/<feature>/.team-auto-active` is fresh), the "Hard Gate: Unclear Items" and the "Need clarification" option under § 5 RESPOND are **not** direct user-prompt paths. The installed workflow guard rejects the runtime's native structured user-input tool while the sentinel is fresh. Do not evade that guard with a plain chat question, which hooks cannot intercept on every runtime.
 
 The autonomous handling sequence is:
 

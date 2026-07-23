@@ -23,6 +23,10 @@ describe('isProtectedEditPath', () => {
     it('blocks terraform glob paths', () => {
         expect(isProtectedEditPath('terraform/main.tf')).toBe(true);
         expect(isProtectedEditPath('infra/terraform/prod.tf')).toBe(true);
+        expect(isProtectedEditPath('/workspace/repo/terraform/main.tf')).toBe(true);
+        expect(isProtectedEditPath('/workspace/repo/infra/terraform/prod.tf')).toBe(true);
+        expect(isProtectedEditPath('C:\\repo\\terraform\\main.tf')).toBe(true);
+        expect(isProtectedEditPath('C:\\repo\\infra\\terraform\\prod.tf')).toBe(true);
     });
 
     it('allows template/allowlisted files even though they look protected', () => {

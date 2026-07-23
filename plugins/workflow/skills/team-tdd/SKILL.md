@@ -7,7 +7,6 @@ description: >
   ML evaluation metrics, and analytics query assertions. Includes rationalization resistance table
   to counter common excuses for skipping TDD. Apply during /team-build, bug fixes, and refactoring.
 user-invocable: false
-version: 1.0.0
 ---
 
 # /team-tdd — Test-Driven Development Enforcement
@@ -51,7 +50,7 @@ The RED-GREEN-REFACTOR cycle is universal. The vocabulary differs by domain:
 | Data Engineering | Write data quality check (GE, Soda, custom) | Quality check fails (no data yet) | Build pipeline / transformation | Quality check passes | Refactor pipeline, re-run checks |
 | ML / Data Science | Define eval metric threshold | Evaluation fails (below baseline) | Train model / engineer features | Eval meets threshold | Refactor features/training, re-evaluate |
 | Analytics | Write query assertion against control total | Query returns wrong/no result | Build query / metric logic | Query matches control total | Refactor query, re-run assertions |
-| Mobile (React Native / Expo) | Jest + `@testing-library/react-native` test or Detox E2E spec asserting component behavior | `jest` fails (component/screen missing or wrong output) | Implement RN component, screen, or hook | `jest` passes | Apply `vercel-react-native-skills`: memoize list items, `StyleSheet.create`, move callbacks outside render → rerun tests |
+| Mobile (React Native / Expo) | Jest + `@testing-library/react-native` test or Detox E2E spec asserting component behavior | `jest` fails (component/screen missing or wrong output) | Implement RN component, screen, or hook | `jest` passes | Apply project instructions and any actually installed matching mobile skill, then rerun tests |
 | Financial Analytics | Reconciliation check: calculated total vs known source (GL, prior period, filing) shows variance outside tolerance | Check fails because model / calculation not built | Build GL model, financial calculation, or transformation | Reconciliation passes within tolerance | Optimize query, tighten tolerance, improve period logic → re-run checks |
 | AI / LLM Integration | Write eval assertion: expected input → expected output format/content/quality | Eval harness fails (wrong shape, below threshold, or API not called yet) | Implement prompt template, chain, or agent logic | Eval assertion passes; response matches schema and quality threshold | Improve prompt clarity, reduce token cost, add retry logic → re-run evals |
 
