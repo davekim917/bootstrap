@@ -7,7 +7,7 @@ Cross-model review is mandatory:
 
 Use one independent reviewer from another model family by default. Add reviewers or specialist
 lenses only when a changed trust boundary or domain risk justifies them. The reviewer receives the
-source bundle, not the lead model's conclusions, and runs read-only.
+source bundle, not the lead model's conclusions, and must not mutate the target.
 
 ## Required transports
 
@@ -15,7 +15,7 @@ When Claude is primary, invoke Codex with settings that do not inherit any host 
 `config.toml`:
 
 ```sh
-codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="xhigh"' --ephemeral --sandbox read-only
+codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="xhigh"' --ephemeral --yolo
 ```
 
 When Codex or OpenCode is primary, invoke Claude with:
@@ -24,8 +24,17 @@ When Codex or OpenCode is primary, invoke Claude with:
 claude -p --model claude-opus-5 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json
 ```
 
-Pass the review prompt and source bundle on stdin. Apply a fixed 10-minute process timeout without
-changing the command's model, effort, isolation, permissions, or persistence flags.
+Pass the review prompt and source bundle on stdin. Run each external reviewer in the foreground and
+set the invoking Bash or process timeout to `3600000` milliseconds (a 60-minute ceiling). Do not
+background or detach the child process: keeping it attached preserves lifecycle, cancellation, and
+complete output. A review that needs more than ten minutes is still healthy; classify it as
+`timeout` only if the 60-minute ceiling is actually reached.
+
+`--yolo` is required because Codex's inner sandbox cannot create its namespaces inside nested
+Docker. NanoClaw's container is the external isolation boundary for that invocation. This transport
+choice does not change the reviewer contract: review only the supplied source bundle, do not edit
+files or invoke side-effecting tools, and return the requested verdict. Do not change the command's
+model, effort, execution mode, permissions, or persistence flags.
 
 ## Prompt and verdict
 

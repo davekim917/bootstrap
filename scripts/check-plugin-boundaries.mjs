@@ -248,11 +248,11 @@ if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '4.0.0') {
-  fail(`bootstrap-workflow breaking release must be version 4.0.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '4.0.1') {
+  fail(`bootstrap-workflow release must be version 4.0.1 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '1.0.0') {
-  fail(`bootstrap-workflow-agents breaking release must be version 1.0.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '1.0.1') {
+  fail(`bootstrap-workflow-agents release must be version 1.0.1 (found ${codexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -361,7 +361,9 @@ const crossModelTokens = [
   '--model gpt-5.6-sol',
   'model_reasoning_effort="xhigh"',
   '--ephemeral',
-  '--sandbox read-only',
+  '--yolo',
+  '3600000',
+  '60-minute',
   'claude -p',
   '--model claude-opus-5',
   '--effort high',
@@ -380,8 +382,17 @@ for (const contractPath of [
 ]) {
   requireTextTokens(contractPath, crossModelTokens, 'the explicit safe cross-model review contract');
   const content = readText(contractPath);
-  if (content?.includes('--yolo') || content?.includes('danger-full-access')) {
-    fail(`${contractPath}: cross-model review must remain read-only`);
+  const forbiddenTokens = [
+    '--sandbox',
+    '10-minute',
+    'danger-full-access',
+    '--dangerously-skip-permissions',
+    '--dangerously-bypass-approvals-and-sandbox',
+    '--permission-mode bypassPermissions',
+  ];
+  const forbidden = forbiddenTokens.filter((token) => content?.includes(token));
+  if (forbidden.length > 0) {
+    fail(`${contractPath}: cross-model review must use the nested-container-compatible --yolo transport and 60-minute ceiling`);
   }
 }
 
