@@ -7,11 +7,9 @@
  *   - HOOKS  → scripts/vendor-guards.mjs --check
  *       The shared destructive-guard + file-protection cores are authored once
  *       (workflow/hooks/guards/*-core.ts) and vendored into workflow-agents.
- *   - SKILLS → evals/harness/parity-lint.mjs --all
- *       workflow-agents skills must cover the Claude skills' substance and carry
- *       no Claude-only orchestration tokens outside their Dispatch-by-Runtime
- *       region. (Skill BODIES legitimately differ — Claude-specific vs runtime
- *       neutral — so they are gated by substance coverage, not byte-identity.)
+ *   - WORKFLOW CONTRACT → evals/harness/parity-lint.mjs --all
+ *       Both plugins expose exactly seven skills, mirror the shared contracts,
+ *       retain both explicit cross-model review lanes, and stop auto at ship.
  *   - BOUNDARIES → scripts/check-plugin-boundaries.mjs
  *       Plugin boundary invariants (user-facing skill-name parity, real SKILL.md).
  *
@@ -27,7 +25,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHECKS = [
   { name: 'hooks    (vendor-guards --check)', argv: ['scripts/vendor-guards.mjs', '--check'] },
   { name: 'skills:gen (sync-agent-skills --check)', argv: ['plugins/workflow-agents/scripts/sync-agent-skills.mjs', '--check'] },
-  { name: 'skills:lint (parity-lint --all)', argv: ['evals/harness/parity-lint.mjs', '--all'] },
+  { name: 'skills:contract (parity-lint --all)', argv: ['evals/harness/parity-lint.mjs', '--all'] },
   { name: 'bounds   (check-plugin-boundaries)', argv: ['scripts/check-plugin-boundaries.mjs'] },
 ];
 

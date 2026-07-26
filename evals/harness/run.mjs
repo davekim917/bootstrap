@@ -163,7 +163,7 @@ async function runTarget(targetId, suiteDir, caseNames, args, outRoot) {
       tier.trials = n;
     }
     // Per-target timeout override: runtimes differ in speed (e.g. opencode/Kimi review
-    // swarms run ~2× slower than codex and time out at the default tier ceiling). A target
+    // parallel reviews may run slower than codex and time out at the default tier ceiling). A target
     // may declare env.timeoutMs to raise its own ceiling without inflating it for everyone.
     // Validate first — a malformed value would coerce to NaN and disable the kill timer in
     // sh() (NaN is falsy), letting a run hang indefinitely.

@@ -1,29 +1,11 @@
 #!/usr/bin/env node
 /**
- * Single-source generator for the MECHANICALLY-DERIVABLE workflow-agents skills.
- *
- * The develop-once goal for skills, made concrete by measuring the actual
- * Claude→agents delta per skill:
- *
- *   - 8 skills (MANAGED below) differ from their Claude source ONLY by mechanical,
- *     runtime-neutral token substitutions. Those are GENERATED here from the
- *     Claude source — edit the Claude skill once, regenerate, and the agents copy
- *     follows. `--check` fails if a managed copy drifts from `transform(Claude)`.
- *
- *   - 9 skills (the 5 orchestration skills with Dispatch-by-Runtime sections +
- *     4 others) carry JUDGMENT-BASED runtime-neutral translation — re-worded prose,
- *     Skill-tool/`~/.claude` invocation language rephrased to neutral form, inline
- *     teammate/subagent dispatch blocks lifted into a Dispatch section. That can't be faithfully
- *     reproduced by mechanical rules, so those skills stay hand-authored and are
- *     gated for drift by `evals/harness/parity-lint.mjs` (substance coverage +
- *     no-Claude-token-leak) instead. See PARITY.md.
- *
- * Net: every skill is drift-gated (managed → here; hand-authored → parity-lint),
- * and the trivially-derivable majority of the duplication is eliminated.
+ * Generate the complete Codex/OpenCode workflow skill distribution from the
+ * canonical Claude tree.
  *
  * Usage:
- *   node plugins/workflow-agents/scripts/sync-agent-skills.mjs           # regenerate managed skills
- *   node plugins/workflow-agents/scripts/sync-agent-skills.mjs --check   # exit 1 if any managed copy is stale
+ *   node plugins/workflow-agents/scripts/sync-agent-skills.mjs
+ *   node plugins/workflow-agents/scripts/sync-agent-skills.mjs --check
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -33,68 +15,153 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const CLAUDE = path.join(REPO, 'plugins/workflow/skills');
 const AGENTS = path.join(REPO, 'plugins/workflow-agents/skills');
 
-// Skills whose agents copy is exactly transform(Claude) — verified by measuring
-// the delta (Δ≤4, no Dispatch section, purely mechanical substitutions).
-const MANAGED = [
-  'best-practice-check',
-  'team-brief',
-  'team-debug',
+const SKILLS = [
   'team-plan',
-  'team-receiving-review-feedback',
-  'team-retro',
+  'team-build',
+  'team-review',
+  'team-auto',
+  'team-debug',
   'team-ship',
-  'team-tdd',
+  'team-retro',
 ];
 
-/** Mechanical, runtime-neutral substitutions (Claude → agents). */
-export function transform(text) {
+const SHARED = ['workflow-contract.md', 'cross-model-review.md'];
+
+/** Mechanical substitutions for schema/path differences only. */
+export function transformSkill(text) {
   return text
-    // Claude supports visibility controls that are not part of the OpenAI skill schema.
     .replace(/^user-invocable:\s*(?:true|false)\s*\n/m, '')
     .replace(/\.claude\/tmp/g, '.agents/tmp/bootstrap-workflow')
-    // standalone CLAUDE.md → AGENTS.md/CLAUDE.md (not inside a path like ~/.claude/CLAUDE.md)
     .replace(/(?<![./\w])CLAUDE\.md/g, 'AGENTS.md/CLAUDE.md');
+}
+
+function expectedFiles() {
+  const files = new Map();
+  for (const skill of SKILLS) {
+    const source = path.join(CLAUDE, skill, 'SKILL.md');
+    if (!fs.existsSync(source)) {
+      throw new Error(`missing canonical skill: ${source}`);
+    }
+    files.set(
+      path.join(skill, 'SKILL.md'),
+      transformSkill(fs.readFileSync(source, 'utf8')),
+    );
+  }
+  for (const name of SHARED) {
+    const source = path.join(CLAUDE, 'shared', name);
+    if (!fs.existsSync(source)) {
+      throw new Error(`missing canonical shared contract: ${source}`);
+    }
+    files.set(path.join('shared', name), fs.readFileSync(source, 'utf8'));
+  }
+  return files;
+}
+
+function existingFiles(root) {
+  if (!fs.existsSync(root)) return [];
+  const found = [];
+  const visit = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else found.push(path.relative(root, full));
+    }
+  };
+  visit(root);
+  return found.sort();
+}
+
+function existingDirectories(root) {
+  if (!fs.existsSync(root)) return [];
+  const found = [];
+  const visit = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const full = path.join(dir, entry.name);
+      found.push(path.relative(root, full));
+      visit(full);
+    }
+  };
+  visit(root);
+  return found.sort();
+}
+
+function removeEmptyParents(file) {
+  let dir = path.dirname(file);
+  while (dir !== AGENTS && dir.startsWith(`${AGENTS}${path.sep}`)) {
+    if (fs.readdirSync(dir).length > 0) break;
+    fs.rmdirSync(dir);
+    dir = path.dirname(dir);
+  }
+}
+
+function removeUnexpectedEmptyDirectories(expected) {
+  const directories = existingDirectories(AGENTS).sort(
+    (a, b) => b.split(path.sep).length - a.split(path.sep).length,
+  );
+  for (const relative of directories) {
+    const prefix = `${relative}${path.sep}`;
+    const belongs = [...expected.keys()].some(
+      (file) => file === relative || file.startsWith(prefix),
+    );
+    if (!belongs) {
+      const target = path.join(AGENTS, relative);
+      if (fs.readdirSync(target).length === 0) fs.rmdirSync(target);
+    }
+  }
 }
 
 function main() {
   const check = process.argv.includes('--check');
+  const expected = expectedFiles();
+  const actual = existingFiles(AGENTS);
   const stale = [];
-  let wrote = 0;
 
-  for (const skill of MANAGED) {
-    const src = path.join(CLAUDE, skill, 'SKILL.md');
-    const dst = path.join(AGENTS, skill, 'SKILL.md');
-    if (!fs.existsSync(src)) {
-      console.error(`sync-agent-skills: MISSING Claude source for managed skill '${skill}' (${src})`);
-      process.exit(1);
-    }
-    const generated = transform(fs.readFileSync(src, 'utf8'));
-    const current = fs.existsSync(dst) ? fs.readFileSync(dst, 'utf8') : null;
-    if (current !== generated) {
-      stale.push(skill);
+  for (const [relative, content] of expected) {
+    const destination = path.join(AGENTS, relative);
+    if (!fs.existsSync(destination) || fs.readFileSync(destination, 'utf8') !== content) {
+      stale.push(relative);
       if (!check) {
-        fs.mkdirSync(path.dirname(dst), { recursive: true });
-        fs.writeFileSync(dst, generated);
-        wrote++;
+        fs.mkdirSync(path.dirname(destination), { recursive: true });
+        fs.writeFileSync(destination, content);
       }
     }
   }
 
-  if (check) {
-    if (stale.length) {
-      console.error(
-        `sync-agent-skills: STALE managed skill(s) — run the generator:\n  ${stale.join('\n  ')}`,
-      );
-      process.exit(1);
+  const unexpected = actual.filter((relative) => !expected.has(relative));
+  if (!check) {
+    for (const relative of unexpected) {
+      const target = path.join(AGENTS, relative);
+      fs.unlinkSync(target);
+      removeEmptyParents(target);
     }
-    console.log(`sync-agent-skills: ${MANAGED.length} managed skills in sync ✓ (9 hand-authored skills gated by parity-lint)`);
-    return;
+    removeUnexpectedEmptyDirectories(expected);
   }
 
+  const expectedTopLevel = new Set([...SKILLS, 'shared']);
+  const unexpectedDirectories = existingDirectories(AGENTS).filter((relative) => {
+    const topLevel = relative.split(path.sep)[0];
+    return !expectedTopLevel.has(topLevel);
+  });
+
+  if (check && (stale.length || unexpected.length || unexpectedDirectories.length)) {
+    if (stale.length) {
+      console.error(`sync-agent-skills: stale or missing:\n  ${stale.join('\n  ')}`);
+    }
+    if (unexpected.length) {
+      console.error(`sync-agent-skills: unexpected generated-tree files:\n  ${unexpected.join('\n  ')}`);
+    }
+    if (unexpectedDirectories.length) {
+      console.error(
+        `sync-agent-skills: unexpected generated-tree directories:\n  ${unexpectedDirectories.join('\n  ')}`,
+      );
+    }
+    process.exit(1);
+  }
+
+  const action = check ? 'verified' : 'generated';
   console.log(
-    wrote > 0
-      ? `sync-agent-skills: regenerated ${wrote} managed skill(s):\n  ${stale.join('\n  ')}`
-      : `sync-agent-skills: ${MANAGED.length} managed skills already in sync ✓`,
+    `sync-agent-skills: ${action} ${SKILLS.length} skills and ${SHARED.length} shared contracts`,
   );
 }
 

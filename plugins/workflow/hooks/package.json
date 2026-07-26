@@ -1,7 +1,7 @@
 {
     "name": "bootstrap-workflow-hooks",
     "version": "1.0.0",
-    "description": "Claude workflow safety guards and build-artifact gates for the bootstrap workflow plugin",
+    "description": "Claude safety guards for the bootstrap workflow plugin",
     "private": true,
     "type": "module",
     "scripts": {

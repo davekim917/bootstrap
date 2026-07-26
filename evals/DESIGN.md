@@ -1,7 +1,7 @@
 # Agent Eval Harness — Design
 
 A reusable harness for evaluating **agent behavior** — not just workflow-skill parity.
-"Does Codex match Claude on review-swarm" is one expressible eval; so is "did my prompt
+"Does Codex match Claude on the workflow-core cases" is one expressible eval; so is "did my prompt
 edit regress tool use", "does this skill catch the planted bug", "is the agent avoiding a
 known failure mode", and "has capability X drifted since last week".
 
@@ -48,7 +48,7 @@ An eval is `(target, case) → verdict`. Four nouns:
   "env": {                          // the FULL capability surface — all provisioned, none assumed
     "auth": "~/.local/share/opencode-illysium-opencode/auth.json",
     "mcp": ["exa", "context7", "deepwiki"],
-    "skills": ["review-swarm"],     // skill files materialized into the runtime's skill path
+    "skills": ["team-plan"],        // skill files materialized into the runtime's skill path
     "subagents": ["security-reviewer", "..."],  // agent defs materialized into the agent path
     "systemPromptAppend": null,
     "repo": null                    // optional working-tree fixture
@@ -189,7 +189,7 @@ evals/
     report.mjs         # per-run + aggregate + comparison + provenance artifacts
     targets/           # reusable target configs (opencode-kimi.json, codex-gpt.json, claude.json)
   suites/
-    review-swarm/      # first suite (fixtures + truth + rubric + anchors + lint)
+    workflow-core/     # risk-scaling fixtures + truth + rubric + anchors
       case-*/ { input.md, truth.json }
       rubric.md
       cassettes/       # frozen MCP responses
@@ -215,15 +215,16 @@ evals/
 2. **Prove the spine across all three adapters cheaply:** a minimal **one-tool** case (e.g.
    "use Exa to answer X, then call tool Y") run on opencode + codex + claude, asserting the
    normalizer + preflight produce comparable transcripts. This catches cross-runtime
-   normalization breakage when a one-case fix is cheap — *before* 17 swarm cases are built
+   normalization breakage when a one-case fix is cheap — before model-backed fixtures expand
    against one runtime's shape.
-3. **OpenCode review-swarm vertical:** faithful env (frozen cassettes), gate-ordered scoring,
-   `done`-tier trials → review-swarm green on `opencode-kimi`.
-4. **Extend codex + claude adapters to the swarm case** → parity comparison for review-swarm
-   lights up (the immediate deliverable).
-5. **Roll to the remaining skills** + tiered CI (per-PR smoke / nightly / release-parity), with
+3. **OpenCode workflow-core vertical:** faithful env, gate-ordered scoring, and smoke-tier
+   risk-scaling fixtures green on `opencode-kimi`.
+4. **Extend Codex + Claude adapters to workflow-core** so cross-runtime behavioral comparison
+   lights up.
+5. **Add risk-driven cases when contracts grow** + tiered CI (per-PR smoke / nightly /
+   release-parity), with
    judge cost bounded by tier.
 
-**Cost note:** the full matrix (17 skills × 3 runtimes × release trials × judge calls) is only
+**Cost note:** the full matrix (selected skills × 3 runtimes × release trials × judge calls) is only
 ever run at the release tier. Per-PR runs are smoke-tier on changed suites with deterministic
 gates + a cheap judge, so CI stays usable and "validation is the done-bar" doesn't get bypassed.

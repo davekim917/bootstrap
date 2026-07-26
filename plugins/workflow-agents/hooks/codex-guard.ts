@@ -23,7 +23,7 @@ import { checkEditProtection, EDIT_TOOLS } from './guards/file-protection-core';
 
 const SHELL_TOOLS = new Set(['exec_command', 'local_shell_call', 'shell', 'Bash']);
 const TEAM_AUTO_SENTINEL = '.team-auto-active';
-const TEAM_AUTO_SENTINEL_MAX_AGE_MS = 30 * 60 * 1000;
+const TEAM_AUTO_SENTINEL_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 
 function isUserInputTool(toolName: unknown): boolean {
     if (typeof toolName !== 'string') return false;
@@ -146,8 +146,8 @@ function main(): void {
             if (sentinel) {
                 emitDeny(
                     `request_user_input is disabled while /team-auto is active (${sentinel}). `
-                    + 'Apply judgment under the team-auto rules, or delete the sentinel, write '
-                    + 'auto-pause.md, and exit through the escalation protocol.',
+                    + 'Remove the sentinel, record one evidenced blocker in '
+                    + 'docs/specs/<feature>/run.md, and stop.',
                     'User input is disabled while /team-auto is active.',
                 );
             }

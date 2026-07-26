@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { discoverRetiredAgents } from './retire-bootstrap-agents.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
@@ -163,6 +164,10 @@ if (!codexWorkflowEntry) {
   fail('.agents/plugins/marketplace.json must register bootstrap-workflow-agents');
 } else if (normalizeSource(sourcePath(codexWorkflowEntry)) !== './plugins/workflow-agents') {
   fail('bootstrap-workflow-agents must source ./plugins/workflow-agents in .agents/plugins/marketplace.json');
+} else if (codexWorkflowEntry.version !== codexManifest?.version) {
+  fail(
+    `bootstrap-workflow-agents version must match between marketplace and plugin manifest (${codexWorkflowEntry.version} !== ${codexManifest?.version})`,
+  );
 }
 
 for (const entry of codexEntries) {
@@ -243,6 +248,12 @@ if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
+if (claudeManifest?.version !== '4.0.0') {
+  fail(`bootstrap-workflow breaking release must be version 4.0.0 (found ${claudeManifest?.version})`);
+}
+if (codexManifest?.version !== '1.0.0') {
+  fail(`bootstrap-workflow-agents breaking release must be version 1.0.0 (found ${codexManifest?.version})`);
+}
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
   fail('plugins/workflow-agents must not contain .claude-plugin metadata');
@@ -263,6 +274,9 @@ for (const retiredPath of [
   'plugins/tools',
   'plugins/workflow/agents',
   'plugins/workflow-agents/agents',
+  'plugins/workflow/hooks/guards/workflow-artifact-path.ts',
+  'plugins/workflow/hooks/guards/workflow-gate-enforcement.ts',
+  'plugins/workflow/hooks/guards/workflow-gate-enforcement.test.ts',
 ]) {
   const retiredRoot = path.join(repoRoot, retiredPath);
   const remainingFiles = findFiles(
@@ -290,123 +304,131 @@ const claudeSkillsRoot = path.join(repoRoot, 'plugins/workflow/skills');
 const codexSkills = skillNames(codexSkillsRoot);
 const claudeSkills = skillNames(claudeSkillsRoot);
 
-const mirroredCodexReferenceFiles = [
-  'CODEX-SOURCES.md',
-  'codex-adversarial-prompt.md',
-  'codex-review-output.schema.json',
+const expectedSkills = [
+  'team-auto',
+  'team-build',
+  'team-debug',
+  'team-plan',
+  'team-retro',
+  'team-review',
+  'team-ship',
 ];
-for (const fileName of mirroredCodexReferenceFiles) {
-  const claudePath = `plugins/workflow/skills/team-qa/references/${fileName}`;
-  const codexPath = `plugins/workflow-agents/skills/team-qa/references/${fileName}`;
-  const claudeContent = readText(claudePath);
-  const codexContent = readText(codexPath);
-  if (
-    claudeContent !== undefined
-    && codexContent !== undefined
-    && claudeContent !== codexContent
-  ) {
-    fail(`${fileName}: Claude and Codex workflow mirrors must be byte-identical`);
+const retiredSkillNames = [
+  'best-practice-check',
+  'review-swarm',
+  'team-brief',
+  'team-design',
+  'team-drift',
+  'team-qa',
+  'team-receiving-review-feedback',
+  'team-tdd',
+  'team-verification-before-completion',
+  'workflow-routing',
+];
+for (const [label, inventory] of [
+  ['Claude', claudeSkills],
+  ['Codex/OpenCode', codexSkills],
+]) {
+  const actual = [...inventory].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expectedSkills)) {
+    fail(`${label} plugin must expose exactly seven workflow skills: ${expectedSkills.join(', ')} (found ${actual.join(', ')})`);
   }
 }
-
-for (const promptPath of [
-  'plugins/workflow/skills/team-qa/references/codex-adversarial-prompt.md',
-  'plugins/workflow-agents/skills/team-qa/references/codex-adversarial-prompt.md',
+for (const [label, root] of [
+  ['Claude', claudeSkillsRoot],
+  ['Codex/OpenCode', codexSkillsRoot],
 ]) {
-  requireTextTokens(
-    promptPath,
-    [
-      '{{TARGET_LABEL}}',
-      '{{USER_FOCUS}}',
-      '{{REVIEW_COLLECTION_GUIDANCE}}',
-      '{{REVIEW_INPUT}}',
-    ],
-    'the upstream Codex adversarial prompt mirror',
-  );
-}
-
-for (const validatorPromptPath of [
-  'plugins/workflow/skills/team-qa/references/qa-validator-prompts.md',
-  'plugins/workflow-agents/skills/team-qa/references/qa-validator-prompts.md',
-]) {
-  requireTextTokens(
-    validatorPromptPath,
-    [
-      '{{TARGET_LABEL}}',
-      '{{USER_FOCUS}}',
-      '{{REVIEW_COLLECTION_GUIDANCE}}',
-      '{{REVIEW_INPUT}}',
-    ],
-    'Validator E substitution contract',
-  );
-}
-
-requireTextTokens(
-  'plugins/workflow/skills/team-qa/references/qa-validator-prompts.md',
-  [
-    ".replace(\n    '{{REVIEW_COLLECTION_GUIDANCE}}'",
-    'Unresolved Codex prompt markers',
-  ],
-  'the Claude Validator E prompt builder',
-);
-
-const codexSourcesPath = 'plugins/workflow/skills/team-qa/references/CODEX-SOURCES.md';
-const codexSources = readText(codexSourcesPath);
-if (codexSources !== undefined) {
-  const rows = new Map(
-    [...codexSources.matchAll(
-      /^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*`([0-9a-f]{7,40})`\s*\|/gm,
-    )].map((match) => [match[1], { upstream: match[2], sha: match[3] }]),
-  );
-  for (const [local, upstream] of [
-    ['codex-adversarial-prompt.md', 'plugins/codex/prompts/adversarial-review.md'],
-    ['codex-review-output.schema.json', 'plugins/codex/schemas/review-output.schema.json'],
-  ]) {
-    const row = rows.get(local);
-    if (!row) {
-      fail(`${codexSourcesPath}: missing /update-container source row for ${local}`);
-    } else {
-      if (row.upstream !== upstream) {
-        fail(`${codexSourcesPath}: ${local} must track ${upstream}`);
-      }
-      if (row.sha.length !== 40) {
-        fail(`${codexSourcesPath}: ${local} must pin a full 40-character upstream SHA`);
-      }
+  for (const retired of retiredSkillNames) {
+    if (fs.existsSync(path.join(root, retired))) {
+      fail(`${label} plugin still contains retired skill directory ${retired}`);
     }
   }
 }
 
-const claudeCrossModelContracts = [
-  {
-    path: 'plugins/workflow/skills/team-qa/SKILL.md',
-    tokens: ['Validator E: Codex Adversarial Review (Cross-Model)', 'codex login status'],
-  },
-  {
-    path: 'plugins/workflow/skills/team-qa/references/qa-validator-prompts.md',
-    tokens: ['codex exec', '--ephemeral', '--sandbox read-only'],
-  },
-  {
-    path: 'plugins/workflow/skills/team-review/SKILL.md',
-    tokens: ['Reviewer C (Codex)', 'codex login status', 'codex exec --ephemeral --sandbox read-only'],
-  },
-  {
-    path: 'plugins/workflow/skills/team-review/references/reviewer-prompts.md',
-    tokens: ['codex exec --ephemeral --sandbox read-only'],
-  },
-  {
-    path: 'plugins/workflow/skills/team-drift/SKILL.md',
-    tokens: ['codex login status', 'codex exec --ephemeral --sandbox read-only'],
-  },
+for (const fileName of ['workflow-contract.md', 'cross-model-review.md']) {
+  const claudePath = `plugins/workflow/skills/shared/${fileName}`;
+  const codexPath = `plugins/workflow-agents/skills/shared/${fileName}`;
+  const claudeContent = readText(claudePath);
+  const codexContent = readText(codexPath);
+  if (claudeContent !== undefined && codexContent !== undefined && claudeContent !== codexContent) {
+    fail(`shared/${fileName}: Claude and Codex/OpenCode copies must be byte-identical`);
+  }
+}
+
+const crossModelTokens = [
+  'codex exec',
+  '--ignore-user-config',
+  '--model gpt-5.6-sol',
+  'model_reasoning_effort="xhigh"',
+  '--ephemeral',
+  '--sandbox read-only',
+  'claude -p',
+  '--model claude-opus-5',
+  '--effort high',
+  '--safe-mode',
+  '--no-session-persistence',
+  '--permission-mode plan',
+  '--tools ""',
+  '--strict-mcp-config',
+  '--output-format json',
+  'run.md',
+  'degraded',
 ];
-for (const contract of claudeCrossModelContracts) {
+for (const contractPath of [
+  'plugins/workflow/skills/shared/cross-model-review.md',
+  'plugins/workflow-agents/skills/shared/cross-model-review.md',
+]) {
+  requireTextTokens(contractPath, crossModelTokens, 'the explicit safe cross-model review contract');
+  const content = readText(contractPath);
+  if (content?.includes('--yolo') || content?.includes('danger-full-access')) {
+    fail(`${contractPath}: cross-model review must remain read-only`);
+  }
+}
+
+for (const root of ['plugins/workflow/skills', 'plugins/workflow-agents/skills']) {
   requireTextTokens(
-    contract.path,
-    contract.tokens,
-    'the Claude-to-Codex cross-model workflow lane',
+    `${root}/team-plan/SKILL.md`,
+    ['plan.md', 'cross-model', 'before', 'approval'],
+    'the mandatory plan review gate',
   );
-  const content = readText(contract.path);
-  if (content?.includes('--yolo')) {
-    fail(`${contract.path}: cross-model review must not disable Codex approvals or sandboxing`);
+  requireTextTokens(
+    `${root}/team-review/SKILL.md`,
+    ['--implementation', 'approved plan', 'implementation diff', 'cross-model', 'run.md'],
+    'the mandatory implementation review gate',
+  );
+  requireTextTokens(
+    `${root}/team-auto/SKILL.md`,
+    ['never ships', '.team-auto-active', 'run.md'],
+    'the bounded auto-runner contract',
+  );
+}
+
+const retiredStageTokens = retiredSkillNames;
+const activeContractFiles = [
+  path.join(repoRoot, 'README.md'),
+  path.join(repoRoot, '.claude-plugin', 'marketplace.json'),
+  path.join(repoRoot, '.agents', 'plugins', 'marketplace.json'),
+  path.join(repoRoot, 'plugins', 'workflow', '.claude-plugin', 'plugin.json'),
+  path.join(repoRoot, 'plugins', 'workflow-agents', '.codex-plugin', 'plugin.json'),
+  ...findFiles(
+    path.join(repoRoot, 'plugins', 'workflow', 'skills'),
+    (_fullPath, entry) => entry.isFile(),
+  ),
+  ...findFiles(
+    path.join(repoRoot, 'plugins', 'workflow-agents', 'skills'),
+    (_fullPath, entry) => entry.isFile(),
+  ),
+  ...findFiles(
+    path.join(repoRoot, 'evals', 'suites'),
+    (_fullPath, entry) => entry.isFile(),
+  ),
+];
+for (const filePath of activeContractFiles) {
+  const content = fs.readFileSync(filePath, 'utf8');
+  for (const token of retiredStageTokens) {
+    if (content.includes(token)) {
+      fail(`${path.relative(repoRoot, filePath)}: active contract references retired stage ${token}`);
+    }
   }
 }
 
@@ -474,6 +496,23 @@ if (retiredGlobalSkills.length > 0) {
   const message = `global ~/.agents/skills still contains retired bootstrap skill copies: ${retiredGlobalSkills.join(', ')}`;
   if (strictHome) fail(message);
   else warn(message);
+}
+
+const retiredAgentDiscovery = discoverRetiredAgents();
+if (retiredAgentDiscovery.targets.length > 0) {
+  const message =
+    `active runtime homes still contain marker-owned retired Bootstrap agents: ${
+      retiredAgentDiscovery.targets.map((entry) => entry.source).join(', ')
+    }`;
+  if (strictHome) fail(message);
+  else warn(message);
+}
+if (retiredAgentDiscovery.unmanagedCollisions.length > 0) {
+  warn(
+    `retired agent basenames without the Bootstrap marker were preserved: ${
+      retiredAgentDiscovery.unmanagedCollisions.map((entry) => entry.source).join(', ')
+    }`,
+  );
 }
 
 const codexClaudeMetadata = findFiles(

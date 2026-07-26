@@ -165,9 +165,9 @@ describe('Codex team-auto input guard', () => {
     expectDecision(result, 'deny', /team-auto/i);
   });
 
-  test('allows user-input requests after the sentinel becomes stale', async () => {
+  test('allows user-input requests only after the sentinel is stale for two hours', async () => {
     const { root, sentinel } = teamAutoFixture();
-    const stale = new Date(Date.now() - 31 * 60 * 1000);
+    const stale = new Date(Date.now() - 121 * 60 * 1000);
     utimesSync(sentinel, stale, stale);
 
     const result = await runGuard({
@@ -177,6 +177,21 @@ describe('Codex team-auto input guard', () => {
       cwd: root,
     });
     expect(result.output).toEqual({ continue: true });
+  });
+
+  test('names run.md and no retired recovery artifacts', async () => {
+    const { root } = teamAutoFixture();
+    const result = await runGuard({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'request_user_input',
+      tool_input: { questions: [] },
+      cwd: root,
+    });
+
+    const reason = result.output.hookSpecificOutput.permissionDecisionReason;
+    expect(reason).toContain('docs/specs/<feature>/run.md');
+    expect(reason).not.toContain('auto-pause.md');
+    expect(reason).not.toContain('decisions.yaml');
   });
 
   test('allows non-input tools and exposes the sentinel lookup for direct checks', async () => {

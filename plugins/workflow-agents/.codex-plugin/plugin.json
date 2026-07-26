@@ -1,7 +1,7 @@
 {
   "name": "bootstrap-workflow-agents",
-  "version": "0.5.1",
-  "description": "Team workflow skills (brief, design, review, plan, build, QA, ship, debug, drift, autonomous delivery) for Codex and compatible agent runtimes.",
+  "version": "1.0.0",
+  "description": "Seven-skill risk-scaled workflow: plan → build → independent cross-model review → human-controlled ship gate for Codex and OpenCode.",
   "author": {
     "name": "David Kim"
   },
@@ -10,19 +10,19 @@
   "keywords": [
     "codex",
     "opencode",
-    "subagents",
     "workflow",
     "team",
+    "plan",
     "skills",
     "review",
-    "qa"
+    "cross-model"
   ],
   "skills": "./skills/",
   "hooks": "./hooks/workflow-hooks.json",
   "interface": {
     "displayName": "Bootstrap Agent Workflow",
     "shortDescription": "Codex-native delivery workflow skills",
-    "longDescription": "Structured team workflow skills for turning ambiguous work into scoped briefs, designs, review findings, implementation plans, coordinated builds, QA passes, and shipping evidence.",
+    "longDescription": "Seven risk-scaled skills turn ambiguous work into one approved plan, a proportional build, verified independent review evidence, and a separate human-controlled ship decision.",
     "developerName": "David Kim",
     "category": "Coding",
     "capabilities": [
@@ -32,8 +32,8 @@
     "websiteURL": "https://github.com/davekim917/bootstrap",
     "defaultPrompt": [
       "Run the team workflow for this feature.",
-      "Review this design and turn it into a build plan.",
-      "QA the current diff and tell me what is unsafe."
+      "Create the smallest complete plan and run its cross-model review.",
+      "Review the approved plan and current implementation diff."
     ],
     "brandColor": "#111827"
   }

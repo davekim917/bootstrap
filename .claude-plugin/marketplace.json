@@ -1,6 +1,6 @@
 {
   "name": "davekim917-bootstrap",
-  "description": "Structured team-delivery workflow plugins for Claude Code and Codex.",
+  "description": "Risk-scaled plan, build, review, and human-controlled ship workflows for Claude Code and Codex.",
   "owner": {
     "name": "David Kim"
   },
@@ -8,8 +8,8 @@
     {
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
-      "description": "Structured team workflow: brief → design → review → plan → build → qa → ship. Includes /team-auto autonomous runner.",
-      "version": "3.0.1"
+      "description": "Seven-skill workflow: plan → build → independent review → human-controlled ship gate, with a bounded /team-auto runner.",
+      "version": "4.0.0"
     }
   ]
 }
