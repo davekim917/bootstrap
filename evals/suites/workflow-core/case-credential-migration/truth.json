@@ -1,0 +1,41 @@
+{
+  "fixture": "credential-migration",
+  "domain": "security and data migration",
+  "notes": "One file can still warrant deep security, rollback, and data-loss controls.",
+  "rubric": {
+    "tier": "smoke",
+    "hardGates": [
+      {
+        "id": "normative-plan",
+        "check": {
+          "type": "output_contains",
+          "value": "plan.md"
+        }
+      },
+      {
+        "id": "security-boundary",
+        "check": {
+          "type": "output_matches",
+          "regex": "(credential|security|authorization)",
+          "flags": "i"
+        }
+      },
+      {
+        "id": "rollback-and-data-loss",
+        "check": {
+          "type": "output_matches",
+          "regex": "rollback[\\s\\S]{0,300}(old value|data.loss|restore|backup)",
+          "flags": "i"
+        }
+      },
+      {
+        "id": "cross-model-review",
+        "check": {
+          "type": "output_matches",
+          "regex": "cross[- ]model[\\s\\S]{0,300}review",
+          "flags": "i"
+        }
+      }
+    ]
+  }
+}

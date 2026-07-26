@@ -1,21 +1,95 @@
 # bootstrap
 
-A focused team-delivery workflow for Claude Code and Codex.
+A risk-scaled delivery workflow for Claude Code, Codex, and OpenCode:
 
-The repository deliberately does one thing: turn ambiguous work into a brief, design, adversarial
-review, executable plan, coordinated build, QA evidence, and a clean ship decision. General data,
-analytics, engineering, finance, and vendor-tool knowledge belongs in the maintained role-specific
-plugins available to each runtime, not in duplicate bootstrap skills.
+```text
+/team-plan → /team-build → /team-review → human-controlled /team-ship
+```
+
+The workflow uses the smallest mechanism that satisfies the real requirements and failure
+boundaries. A four-file mechanical change should stay small; a one-file credential or destructive
+migration still receives security, rollback, and verification depth. Complexity must be justified
+by scale, repetition, concurrency, security, or failure impact—not by a fixed ceremony.
 
 ## Plugins
 
-| Runtime | Plugin | What it provides |
-|---|---|---|
-| Claude Code | `bootstrap-workflow` | Claude-native team workflow skills and workflow safety gates |
-| Codex | `bootstrap-workflow-agents` | Codex-native workflow skills and safety gates packaged as a native Codex plugin |
+| Runtime | Plugin | Version | What it provides |
+|---|---|---:|---|
+| Claude Code | `bootstrap-workflow` | 4.0.0 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 1.0.0 | Runtime-neutral workflow skills and safety gates |
 
-The plugins share the same user-facing workflow and intentionally have separate implementations
-where their orchestration primitives differ.
+Both plugins expose exactly seven user-facing skills:
+
+| Skill | Purpose |
+|---|---|
+| `/team-plan` | First planning entry point; writes the normative `plan.md` and runs its independent review |
+| `/team-build` | Implements the approved plan with proportional testing and delegation |
+| `/team-review` | Reviews a plan or implementation, verifies findings, and records evidence |
+| `/team-auto` | Runs approved plan → build → review, then stops at the ship gate |
+| `/team-debug` | Diagnoses root cause from evidence before changing production code |
+| `/team-ship` | Performs the separate, human-controlled publish or merge boundary |
+| `/team-retro` | Optionally captures short, reusable lessons after delivery |
+
+`/team-plan` absorbs requirements, constraints, architecture, acceptance criteria, and execution
+decomposition. `/team-review` selects QA, drift, security, performance, best-practice, and domain
+lenses only when the actual risk warrants them. A finding becomes MUST-FIX only after the lead
+traces it to a violated invariant or concrete failure mode.
+
+`/team-auto` permits one evidence-backed correction. If its own enforcement or revision creates a
+new blocker, it records the evidence and stops instead of entering another loop. It never ships.
+
+## Workflow artifacts
+
+Routine work has only two durable artifacts:
+
+- `docs/specs/<feature>/plan.md` — the approved product, design, and execution contract.
+- `docs/specs/<feature>/run.md` — current stage, verified findings, actual reviewer/model details,
+  and fresh verification evidence.
+
+`docs/specs/<feature>/.team-auto-active` is an ephemeral concurrency sentinel, not another review
+document. It is removed on normal exit and recovered after two hours without refresh.
+
+## Cross-model review
+
+Independent other-family review is mandatory at both consequential gates:
+
+1. `/team-plan` reviews the raw proposed `plan.md` before asking for approval.
+2. `/team-review --implementation` reviews the approved plan plus raw implementation diff.
+
+The review receives source artifacts, not the lead model's conclusions, and runs read-only.
+Findings are hypotheses until verified by the lead. The plugin explicitly selects reviewer model
+and effort; it never inherits them from host or container configuration.
+
+Claude-primary reviews use:
+
+```bash
+codex exec \
+  --ignore-user-config \
+  --model gpt-5.6-sol \
+  -c 'model_reasoning_effort="xhigh"' \
+  --ephemeral \
+  --sandbox read-only
+```
+
+Codex/OpenCode-primary reviews use:
+
+```bash
+claude -p \
+  --model claude-opus-5 \
+  --effort high \
+  --safe-mode \
+  --no-session-persistence \
+  --permission-mode plan \
+  --tools "" \
+  --strict-mcp-config \
+  --output-format json
+```
+
+Each external review has a fixed ten-minute timeout. Missing or unauthenticated CLIs, unsupported
+flags, timeouts, non-zero exits, and malformed or empty output are recorded distinctly in
+`run.md`. The workflow does not weaken sandboxing, retry automatically, or call a same-family pass
+“diverse.” Manual work asks the user whether to proceed with degraded coverage; `/team-auto`
+stops once.
 
 ## Install
 
@@ -40,97 +114,60 @@ codex plugin marketplace add ~/plugins/bootstrap
 codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
 ```
 
-The Codex marketplace is checked in at `.agents/plugins/marketplace.json`. Codex loads the plugin
-from its plugin cache and discovers its bundled skills and hooks through
-`.codex-plugin/plugin.json`; do not mirror them into `~/.agents/skills`.
+Codex loads the plugin from its cache through `.codex-plugin/plugin.json`; do not copy workflow
+skills or agent definitions into a user home.
 
-This repository does not ship persistent custom-agent definitions. Claude workflow skills create
-bounded, session-scoped native agent teams; Codex workflow skills create bounded, prompt-defined
-subagents. Nothing copies files into `~/.codex/agents` or `CODEX_HOME/agents`.
+## Upgrading from pre-4.0 / pre-1.0
 
-## Workflow
+Older Bootstrap releases leaked six permanent Codex agent definitions into active runtime homes.
+Version 4.0.0/1.0.0 no longer ships permanent agents. Preview the marker-safe cleanup:
 
-For a non-trivial feature:
-
-```text
-/team-brief → /team-design → /team-review → /team-plan → /team-build → /team-qa → /team-ship
+```bash
+node scripts/retire-bootstrap-agents.mjs
 ```
 
-For smaller work with clear requirements, start later in the sequence. Trivial fixes do not need
-the full workflow.
+Then apply it:
 
-| Skill | Purpose |
-|---|---|
-| `/team-brief` | Turn fuzzy requests into explicit requirements and acceptance criteria |
-| `/team-design` | Produce a first-principles design with constraints and alternatives |
-| `/team-review` | Run independent architecture, best-practice, and adversarial review lenses |
-| `/team-plan` | Decompose the approved design into atomic tasks and tests |
-| `/team-build` | Implement through bounded, coordinated builders when useful |
-| `/team-qa` | Validate behavior, review findings, documentation, and ship readiness |
-| `/team-ship` | Complete the branch lifecycle with evidence |
-| `/team-tdd` | Enforce test-first implementation |
-| `/team-debug` | Diagnose root cause before changing production code |
-| `/team-drift` | Detect drift between documents or contracts |
-| `/team-retro` | Capture lessons from a completed workflow |
-| `/team-auto` | Run the approved workflow end to end |
-| `/team-verification-before-completion` | Require evidence before completion claims |
-| `/team-receiving-review-feedback` | Validate and process review findings |
-| `review-swarm` | Run independent, prompt-defined review roles and adjudicate findings |
-| `best-practice-check` | Check an approach against current authoritative sources |
-| `workflow-routing` | Route work to the smallest appropriate workflow surface |
+```bash
+node scripts/retire-bootstrap-agents.mjs --apply
+```
 
-## Runtime boundaries
+Dry-run is the default. Apply mode removes only the six retired basenames carrying the exact
+Bootstrap ownership marker. Before deletion it writes a timestamped quarantine preserving each
+file's full home-relative path and a manifest containing its absolute source and SHA-256 hash.
+Unmanaged collisions, unrelated agents, and plugin caches are preserved. Restart affected
+Claude, Codex/NanoClaw, or OpenCode sessions after cleanup so cached definitions are unloaded.
 
-- Claude installs only `plugins/workflow` through `.claude-plugin/marketplace.json`.
-- Codex installs only `plugins/workflow-agents` through `.agents/plugins/marketplace.json`.
-- General domain and tool knowledge is not distributed from this repository.
-- Reviewer identities such as security or architecture reviewer are prompt-defined roles, not
-  globally installed permanent agents.
-- Shared guard cores are authored under the Claude plugin and vendored into the Codex plugin;
-  `scripts/vendor-guards.mjs --check` prevents drift.
-- Mechanically portable skills are generated by `sync-agent-skills.mjs`; judgment-based ports are
-  checked for structural parity by the eval harness.
+## Runtime and safety boundaries
 
-The OpenAI plugin manifest also supports MCP server and app/connector declarations. Add those to
-the native plugin only when the workflow itself acquires a real integration dependency; do not add
-copy-to-home setup scripts.
-
-## Hooks
-
-Both plugins carry the portable safety surfaces: destructive-command approval, outbound-email
-approval, managed-clone blocking, Snowflake-connector blocking, and protected-file blocking. Local
-Claude and Codex sessions use each CLI's native approval prompt. NanoClaw sessions use its
-session-database approval round trip. Claude additionally enforces its document workflow gate on
-`TaskCreated`, because that event belongs to Claude's native agent-team task system.
-
-The old project-opinionated formatter, TypeScript, Next.js/Supabase reminder, timestamp, and edit
-telemetry hooks are intentionally not distributed. Validation belongs in the workflow skills and
-the target repository's own checks, not in a global plugin hook.
+- Claude installs only `plugins/workflow`.
+- Codex/OpenCode installs only `plugins/workflow-agents`.
+- Reviewer identities are bounded prompt roles, never globally installed permanent agents.
+- Mechanically portable skills and shared contracts are generated from the Claude source tree.
+- Shared destructive and protected-file guards are authored once and vendored to the agent plugin.
+- Both plugins retain destructive-command, outbound-email, self-approval, managed-clone,
+  Snowflake-connector, and protected-file safety checks.
+- Planning and review artifacts are workflow contracts, not filesystem safety boundaries.
 
 ## Repository structure
 
 ```text
 bootstrap/
-├── .agents/plugins/marketplace.json       # Codex marketplace: workflow only
-├── .claude-plugin/marketplace.json         # Claude marketplace: workflow only
+├── .agents/plugins/marketplace.json
+├── .claude-plugin/marketplace.json
 ├── plugins/
-│   ├── workflow/                           # Claude workflow plugin
-│   │   ├── .claude-plugin/plugin.json
-│   │   ├── hooks/
-│   │   └── skills/
-│   └── workflow-agents/                    # Codex workflow plugin
-│       ├── .codex-plugin/plugin.json
-│       ├── hooks/
-│       ├── scripts/
-│       └── skills/
-├── evals/                                  # cross-runtime behavior and parity harness
-├── scripts/                                # boundary, parity, and vendoring checks
-└── deprecated/                             # historical bootstrap-command artifacts; not distributed
+│   ├── workflow/
+│   └── workflow-agents/
+├── evals/
+├── scripts/
+└── deprecated/
 ```
 
 ## Development checks
 
 ```bash
+node --test scripts/retire-bootstrap-agents.test.mjs
+node --test evals/harness/*.test.mjs
 node scripts/check-plugin-boundaries.mjs
 node scripts/check-parity.mjs
 
@@ -138,9 +175,8 @@ cd plugins/workflow/hooks && bun test && bun run check
 cd plugins/workflow-agents/hooks && bun test && bun run check
 ```
 
-The boundary check rejects retired domain/tool plugin directories, permanent agent bundles, and
-repo-local standalone skill mirrors. Pass `--strict-home` when validating a host image to also fail
-on stale global copies under `~/.agents/skills`.
+Use `node scripts/check-plugin-boundaries.mjs --strict-home` after retirement cleanup to fail on
+marker-owned retired agents still active in Claude, Codex sibling-home, or OpenCode agent roots.
 
 ## Prerequisites
 

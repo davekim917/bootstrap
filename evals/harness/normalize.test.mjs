@@ -177,7 +177,7 @@ test('opencode normalizeFromDb: tool part → toolCall, text part → finalOutpu
 
 // parallelism is decided by child execution-window OVERLAP, not child count — so a sequential
 // fan-out (≥2 children, disjoint windows) is NOT falsely marked parallel (would make the
-// review-swarm `parallel` gate unfalsifiable).
+// any `parallel` gate unfalsifiable).
 test('opencode normalizeFromDb: overlapping child windows ⇒ parallel; disjoint ⇒ sequential', () => {
   const run = (childParts) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-par-'));

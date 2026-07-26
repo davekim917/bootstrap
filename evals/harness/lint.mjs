@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Gate 1 — static structure lint for an augmented workflow-agents skill.
+ * Gate 1 — static contract lint for a workflow skill.
  *
- * Verifies the skill was *translated*, not gutted: valid frontmatter, every
- * referenced file exists, the per-runtime dispatch section names its target
- * runtimes, and all runtime-neutral substance anchors survive. Cheap pre-gate to
+ * Verifies valid frontmatter, required contract language, and referenced files.
+ * Runtime-specific dispatch structure is not prescribed: the shared contracts
+ * and behavioral fixtures are the parity boundary. Cheap pre-gate to
  * the behavioral eval (run.mjs); passing it is necessary, not sufficient.
  *
  * Usage:  node harness/lint.mjs <suite>
@@ -51,7 +51,7 @@ const body = fs.readFileSync(skillMd, 'utf8');
 const fm = body.match(/^---\n([\s\S]*?)\n---/);
 if (!fm) fail('SKILL.md has no YAML frontmatter block');
 else {
-  for (const key of ['name', 'version', 'description']) {
+  for (const key of ['name', 'description']) {
     if (new RegExp(`^${key}\\s*:`, 'm').test(fm[1])) ok(`frontmatter has \`${key}\``);
     else fail(`frontmatter missing \`${key}\``);
   }
@@ -60,7 +60,7 @@ else {
 // 2. Required substrings (runtime-neutral substance survived the translation)
 for (const s of anchors.required_substrings ?? []) {
   if (body.includes(s)) ok(`substance anchor present: "${s}"`);
-  else fail(`substance anchor MISSING (gutted?): "${s}"`);
+  else fail(`required contract anchor missing: "${s}"`);
 }
 
 // 3. Referenced files exist (the anchors list + any references/ links in the body)
@@ -74,8 +74,9 @@ for (const ref of linkedRefs) {
 // 4. Dispatch section names each target runtime — scoped to the section itself (up to the
 // next level-2 heading), so a mention in an unrelated later section can't satisfy the gate.
 const dispatchIdx = body.indexOf('## Dispatch by Runtime');
-if (dispatchIdx === -1) fail('no "## Dispatch by Runtime" section');
-else {
+if ((anchors.dispatch_must_name ?? []).length > 0 && dispatchIdx === -1) {
+  fail('anchors require a "## Dispatch by Runtime" section');
+} else if (dispatchIdx !== -1) {
   const after = body.slice(dispatchIdx + '## Dispatch by Runtime'.length);
   const nextH2 = after.search(/\n##\s/);
   const dispatch = nextH2 === -1 ? after : after.slice(0, nextH2);

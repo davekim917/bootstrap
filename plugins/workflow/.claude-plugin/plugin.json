@@ -1,13 +1,13 @@
 {
   "name": "bootstrap-workflow",
-  "version": "3.0.1",
-  "description": "Structured team workflow: brief → design → review → plan → build → qa → ship. Includes shared safety gates, build-artifact enforcement, native agent-team workflows, and an autonomous /team-auto runner.",
+  "version": "4.0.0",
+  "description": "Seven-skill risk-scaled workflow: plan → build → independent cross-model review → human-controlled ship gate, with shared safety guards and a bounded /team-auto runner.",
   "author": {
     "name": "David Kim"
   },
   "repository": "https://github.com/davekim917/bootstrap",
   "license": "MIT",
-  "keywords": ["workflow", "team", "skills", "hooks", "subagents"],
+  "keywords": ["workflow", "team", "plan", "review", "cross-model", "skills", "hooks"],
   "skills": ["./skills"],
   "hooks": "./hooks/workflow-hooks.json"
 }

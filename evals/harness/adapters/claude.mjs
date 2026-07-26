@@ -15,7 +15,7 @@ import { sh, hasBinary } from '../lib.mjs';
 import { emptyTranscript, researchToolKind, isSubagentTool } from '../transcript.mjs';
 
 // Default tools auto-approved for eval runs (override via target.env.allowedTools).
-// Broad enough for review/QA skills (Read/Grep/Glob + Task subagents + research MCP);
+// Broad enough for review skills (Read/Grep/Glob + Task subagents + research MCP);
 // no Write/Edit by default since review is read-only.
 const DEFAULT_ALLOWED = ['Read', 'Grep', 'Glob', 'Bash', 'Task', 'WebFetch', 'WebSearch'];
 

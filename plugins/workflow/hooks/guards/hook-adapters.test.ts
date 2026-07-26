@@ -3,7 +3,6 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { findFreshSentinel } from './block-askuser-during-auto';
-import { isCanonicalPath, relativeArtifactPath } from './workflow-artifact-path';
 
 const temporaryRoots: string[] = [];
 
@@ -35,32 +34,10 @@ describe('enforcement adapters fail closed', () => {
         expect(result.status).toBe(2);
         expect(result.stderr).toMatch(/failed closed/i);
     });
-
-    test('workflow build gate blocks malformed hook input', async () => {
-        const result = await runHook('workflow-gate-enforcement.ts', '{bad-json');
-        expect(result.status).toBe(2);
-        expect(result.stderr).toMatch(/malformed hook input/i);
-    });
-});
-
-describe('workflow artifact path handling', () => {
-    const cwd = '/workspace/repo';
-
-    test('accepts canonical relative and absolute artifact paths', () => {
-        expect(isCanonicalPath('docs/specs/auth/design.md', cwd)).toBe(true);
-        expect(isCanonicalPath('/workspace/repo/docs/specs/auth/design.md', cwd)).toBe(true);
-        expect(isCanonicalPath('docs/project-scope.md', cwd)).toBe(true);
-    });
-
-    test('rejects lookalike and escaping paths', () => {
-        expect(isCanonicalPath('docs/specs-archive/auth/design.md', cwd)).toBe(false);
-        expect(isCanonicalPath('../other/docs/specs/auth/design.md', cwd)).toBe(false);
-        expect(relativeArtifactPath('../other/design.md', cwd)).toBe('../other/design.md');
-    });
 });
 
 describe('team-auto sentinel', () => {
-    test('detects a fresh sentinel and ignores it after the stale threshold', () => {
+    test('detects a fresh sentinel and ignores it only after two hours', () => {
         const root = mkdtempSync(join(tmpdir(), 'team-auto-hook-'));
         temporaryRoots.push(root);
         const featureDir = join(root, 'docs', 'specs', 'auth');
@@ -70,7 +47,7 @@ describe('team-auto sentinel', () => {
 
         expect(findFreshSentinel(root)).toBe(sentinel);
 
-        const stale = new Date(Date.now() - 31 * 60 * 1000);
+        const stale = new Date(Date.now() - 121 * 60 * 1000);
         utimesSync(sentinel, stale, stale);
         expect(findFreshSentinel(root)).toBeNull();
     });
@@ -93,6 +70,9 @@ describe('team-auto sentinel', () => {
         expect(result.status).toBe(2);
         expect(result.stderr).toContain('BLOCKED: AskUserQuestion during /team-auto');
         expect(result.stderr).toContain(sentinel);
+        expect(result.stderr).toContain('docs/specs/<feature>/run.md');
+        expect(result.stderr).not.toContain('auto-pause.md');
+        expect(result.stderr).not.toContain('decisions.yaml');
     });
 
     test('allows unrelated tools, stale sentinels, and the explicit debug bypass', async () => {
@@ -118,7 +98,7 @@ describe('team-auto sentinel', () => {
             { SKIP_TEAM_AUTO_ASKBLOCK: '1' },
         )).status).toBe(0);
 
-        const stale = new Date(Date.now() - 31 * 60 * 1000);
+        const stale = new Date(Date.now() - 121 * 60 * 1000);
         utimesSync(sentinel, stale, stale);
         expect((await runHook(
             'block-askuser-during-auto.ts',

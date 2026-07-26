@@ -1,0 +1,13 @@
+{
+  "skill": "team-plan",
+  "required_substrings": [
+    "plan.md",
+    "cross-model",
+    "approval",
+    "run.md"
+  ],
+  "required_references": [
+    "../shared/workflow-contract.md",
+    "../shared/cross-model-review.md"
+  ]
+}

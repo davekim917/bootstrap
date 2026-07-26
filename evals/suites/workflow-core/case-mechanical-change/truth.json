@@ -1,0 +1,33 @@
+{
+  "fixture": "mechanical-change",
+  "domain": "workflow routing",
+  "notes": "The plan should stay cohesive without skipping the plan-stage cross-model gate.",
+  "rubric": {
+    "tier": "smoke",
+    "hardGates": [
+      {
+        "id": "normative-plan",
+        "check": {
+          "type": "output_contains",
+          "value": "plan.md"
+        }
+      },
+      {
+        "id": "cross-model-before-approval",
+        "check": {
+          "type": "output_matches",
+          "regex": "cross[- ]model[\\s\\S]{0,300}before[\\s\\S]{0,120}approv",
+          "flags": "i"
+        }
+      },
+      {
+        "id": "no-forced-parallelism",
+        "check": {
+          "type": "output_matches",
+          "regex": "(does not|doesn't|no need to|without).{0,80}(parallel|multiple builder)",
+          "flags": "i"
+        }
+      }
+    ]
+  }
+}

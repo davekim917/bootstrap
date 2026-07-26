@@ -1,94 +1,56 @@
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { norm, covered, tokenLeaks, headingText, hasFrontmatter } from './parity-lint.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import {
+  EXPECTED_SKILLS,
+  evaluateContracts,
+  frontmatterFields,
+  normalizeWhitespace,
+  skillInventory,
+} from './parity-lint.mjs';
 
-test('headingText strips leading ## and trims', () => {
-  assert.equal(headingText('### Step 3: Spawn Reviewers'), 'Step 3: Spawn Reviewers');
-  assert.equal(headingText('## What This Skill Does'), 'What This Skill Does');
+test('normalizeWhitespace makes multiline command contracts comparable', () => {
+  assert.equal(normalizeWhitespace('codex exec \\\n  --ephemeral\n --sandbox read-only'), 'codex exec --ephemeral --sandbox read-only');
 });
 
-test('norm lowercases, strips formatting + trailing punctuation, collapses space', () => {
-  assert.equal(norm('Anti-Patterns (Do Not Do These)'), 'anti-patterns (do not do these)');
-  assert.equal(norm('**Rationalization Resistance**'), 'rationalization resistance');
-  assert.equal(norm('Selective Mode (`--scope-only`):'), 'selective mode (--scope-only)');
+test('skillInventory includes only directories with a top-level SKILL.md', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-contract-inventory-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'team-plan'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'shared'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'team-plan', 'SKILL.md'), 'body');
+  fs.writeFileSync(path.join(root, 'shared', 'contract.md'), 'body');
+  assert.deepEqual(skillInventory(root), ['team-plan']);
 });
 
-test('covered: exact, prefix either direction (parenthetical suffix tolerance)', () => {
-  const codex = ['anti-patterns (do not do these)', 'context discipline'];
-  assert.equal(covered('anti-patterns (do not do these)', codex), true); // exact
-  assert.equal(covered('anti-patterns', codex), true); // claude shorter, codex extends
-  assert.equal(covered('context discipline (keep it lean)', codex), true); // claude longer, codex prefix
-  assert.equal(covered('rationalization resistance', codex), false); // genuinely absent
+test('frontmatterFields requires a real opening frontmatter block', () => {
+  assert.equal(frontmatterFields('body'), null);
+  const fields = frontmatterFields('---\nname: team-plan\ndescription: Plan work\n---\nbody');
+  assert.equal(fields.get('name'), 'team-plan');
+  assert.equal(fields.get('description'), 'Plan work');
 });
 
-test('tokenLeaks: Claude tokens INSIDE "## Dispatch by Runtime" are confined (no leak)', () => {
-  // The review-swarm shape: tokens live under Dispatch by Runtime → Claude (reference).
-  const md = [
-    '## Context Discipline',
-    'Keep the lead context lean.',
-    '## Dispatch by Runtime',
-    '### Codex',
-    'Use native delegation.',
-    '### Claude (reference — for parity, not used on this runtime)',
-    'On Claude this uses `TeamCreate` + `Agent(subagent_type=…)` and `SendMessage` + `TeamDelete`.',
-    '## Resource Files',
-    'See references/.',
-  ].join('\n');
-  assert.deepEqual(tokenLeaks(md), []);
-});
+test('evaluateContracts rejects an extra public skill before other contract checks', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workflow-contract-extra-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const claudeRoot = path.join(root, 'claude');
+  const agentRoot = path.join(root, 'agent');
+  for (const skill of [...EXPECTED_SKILLS, 'team-qa']) {
+    for (const family of [claudeRoot, agentRoot]) {
+      const directory = path.join(family, skill);
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(
+        path.join(directory, 'SKILL.md'),
+        `---\nname: ${skill}\ndescription: test\n---\n`,
+      );
+    }
+  }
 
-test('tokenLeaks: Claude tokens in the runtime-neutral BODY are flagged (the team-qa/team-build gutting)', () => {
-  const md = [
-    '## QA Pipeline',
-    'Dispatch validators with subagent_type = `general-purpose`.',
-    'On Claude: parallel `Agent(...)` calls in one block.',
-    '## Output',
-  ].join('\n');
-  const leaks = tokenLeaks(md);
-  assert.equal(leaks.length, 2);
-  assert.deepEqual(leaks.map((l) => l.token).sort(), ['Agent(', 'subagent_type']);
-});
+  const result = evaluateContracts({ claudeRoot, agentRoot });
 
-test('tokenLeaks: .claude/ paths are flagged in the body, allowed in the Claude-reference region', () => {
-  const leakBody = ['## Process', 'Write the design to `.claude/tmp/review-input.md`.'].join('\n');
-  const leaks = tokenLeaks(leakBody);
-  assert.equal(leaks.length, 1);
-  assert.equal(leaks[0].token, '.claude');
-  const confined = ['## Dispatch by Runtime', '### Claude (reference)', 'On Claude, write to .claude/tmp/.'].join('\n');
-  assert.deepEqual(tokenLeaks(confined), []);
-});
-
-test('tokenLeaks: a Claude-reference heading OUTSIDE Dispatch does NOT exempt (no confinement bypass)', () => {
-  const md = [
-    '## Process',
-    '### Claude (reference)', // standalone claude-ref subheading in a non-dispatch section
-    'coordinate via SendMessage', // must STILL be flagged
-    '## Dispatch by Runtime',
-    '### Claude (reference)',
-    'On Claude: TeamCreate + Agent(...)', // exempt — under Dispatch
-  ].join('\n');
-  const leaks = tokenLeaks(md);
-  assert.equal(leaks.length, 1);
-  assert.equal(leaks[0].token, 'SendMessage');
-});
-
-test('tokenLeaks: a non-dispatch ## heading after Dispatch closes the confinement region', () => {
-  const md = [
-    '## Dispatch by Runtime',
-    '### Claude (reference)',
-    'uses TeamCreate',
-    '## Anti-Patterns', // closes the region
-    'Do not call SendMessage here in the body.', // now a leak
-  ].join('\n');
-  const leaks = tokenLeaks(md);
-  assert.equal(leaks.length, 1);
-  assert.equal(leaks[0].token, 'SendMessage');
-});
-
-test('hasFrontmatter: needs standard name/description and rejects non-standard keys', () => {
-  assert.equal(hasFrontmatter('---\nname: x\ndescription: y\n---\nbody').ok, true);
-  assert.deepEqual(hasFrontmatter('---\nname: x\n---\nbody').missing, ['description']);
-  assert.deepEqual(hasFrontmatter('---\nname: x\nversion: 1.0\ndescription: y\n---\nbody').unexpected, ['version']);
-  assert.deepEqual(hasFrontmatter('---\nname: x\ndescription: y\nuser-invocable: false\n---\nbody').unexpected, ['user-invocable']);
-  assert.equal(hasFrontmatter('no frontmatter at all').ok, false);
+  assert.equal(result.pass, false);
+  assert.equal(result.failures.some((failure) => failure.includes('expected exactly')), true);
+  assert.equal(result.failures.some((failure) => failure.includes('retired skill directory remains: team-qa')), true);
 });

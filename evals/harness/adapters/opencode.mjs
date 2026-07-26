@@ -214,7 +214,7 @@ export function normalizeFromDb(dbPath, stdoutFallback) {
   const t = emptyTranscript();
   const fallback = (stdoutFallback || '').trim();
   // Bind to the ROOT session (the lead), not the session of the most-recent part:
-  // in swarm/parallel-review runs a child subagent can write last, and keying on the
+  // in parallel-review runs a child subagent can write last, and keying on the
   // latest part would read finalOutput / tool calls / subagent accounting from the
   // child's conversation instead of the lead's. The lead is the only parent-less
   // session (children carry parent_id); pick the root with the most recent activity.
@@ -274,7 +274,7 @@ export function normalizeFromDb(dbPath, stdoutFallback) {
   // subagents = child sessions spawned during this run. Parallelism is decided by execution-window
   // OVERLAP, not child count: a count-based flag (`kids.length > 1`) can't tell concurrent
   // (task background:true) fan-out from sequential one-then-next dispatch — both yield ≥2 children —
-  // which makes the review-swarm `parallel` gate (score.mjs) unfalsifiable: it would pass even on a
+  // which makes a `parallel` gate (score.mjs) unfalsifiable: it would pass even on a
   // fully sequential run. Two children whose [min,max] part-time windows intersect ⇒ parallel.
   try {
     const kids = sqliteJson(dbPath, `SELECT id, title FROM session WHERE parent_id = '${sid}'`);

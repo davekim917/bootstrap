@@ -20,7 +20,7 @@ A/B'd against another, or regression-tracked over time.
 node harness/run.mjs --suite <suite> [--case <case>] (--target <t> | --compare a,b,c) \
      [--tier smoke|done|release] [--trials N] [--out <dir>]
 node harness/lint.mjs <suite>           # Gate-1 static lint (suite anchors.json)
-node harness/parity-lint.mjs --all      # structural parity-lint (workflow-agents vs Claude)
+node harness/parity-lint.mjs --all      # seven-skill and shared-contract parity gate
 node --test                             # unit tests for the pure scoring/normalize logic
 ```
 
@@ -101,8 +101,8 @@ rubric-overridable; the definitions are fixed.
   caught every bug with zero false positives, which is the eval being wrong, not the agent.
 
 - **process behavior** — from the transcript via hard gates (e.g. `subagents_spawned`),
-  not the judge. E.g. a review swarm must dispatch ≥2 reviewers in parallel; a solo pass
-  fails the process gate even with a perfect report.
+  not the judge. A case that genuinely requires independent parallel work can demand it;
+  cohesive work must not manufacture parallelism merely to satisfy the harness.
 
 > **Anti-gaming.** "Don't reward verbosity" is enforced by criterion (b), not by counting
 > every unlisted finding against precision: padding with vague/duplicative/incorrect BUGs
