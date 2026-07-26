@@ -12,7 +12,7 @@ import {
 } from './parity-lint.mjs';
 
 test('normalizeWhitespace makes multiline command contracts comparable', () => {
-  assert.equal(normalizeWhitespace('codex exec \\\n  --ephemeral\n --sandbox read-only'), 'codex exec --ephemeral --sandbox read-only');
+  assert.equal(normalizeWhitespace('codex exec \\\n  --ephemeral\n --yolo'), 'codex exec --ephemeral --yolo');
 });
 
 test('skillInventory includes only directories with a top-level SKILL.md', (t) => {

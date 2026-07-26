@@ -117,7 +117,7 @@ export function evaluateContracts({
   }
 
   const exactCommands = [
-    `codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="xhigh"' --ephemeral --sandbox read-only`,
+    `codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="xhigh"' --ephemeral --yolo`,
     'claude -p --model claude-opus-5 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json',
   ];
   for (const [label, root] of inventories) {
@@ -129,7 +129,8 @@ export function evaluateContracts({
       fs.readFileSync(reviewPath, 'utf8'),
       [
         ...exactCommands,
-        '10-minute',
+        '3600000',
+        '60-minute',
         'missing',
         'unauthenticated',
         'unsupported',

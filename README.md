@@ -15,8 +15,8 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 4.0.0 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 1.0.0 | Runtime-neutral workflow skills and safety gates |
+| Claude Code | `bootstrap-workflow` | 4.0.1 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 1.0.1 | Runtime-neutral workflow skills and safety gates |
 
 Both plugins expose exactly seven user-facing skills:
 
@@ -56,7 +56,7 @@ Independent other-family review is mandatory at both consequential gates:
 1. `/team-plan` reviews the raw proposed `plan.md` before asking for approval.
 2. `/team-review --implementation` reviews the approved plan plus raw implementation diff.
 
-The review receives source artifacts, not the lead model's conclusions, and runs read-only.
+The review receives source artifacts, not the lead model's conclusions, and is non-mutating.
 Findings are hypotheses until verified by the lead. The plugin explicitly selects reviewer model
 and effort; it never inherits them from host or container configuration.
 
@@ -68,7 +68,7 @@ codex exec \
   --model gpt-5.6-sol \
   -c 'model_reasoning_effort="xhigh"' \
   --ephemeral \
-  --sandbox read-only
+  --yolo
 ```
 
 Codex/OpenCode-primary reviews use:
@@ -85,11 +85,13 @@ claude -p \
   --output-format json
 ```
 
-Each external review has a fixed ten-minute timeout. Missing or unauthenticated CLIs, unsupported
-flags, timeouts, non-zero exits, and malformed or empty output are recorded distinctly in
-`run.md`. The workflow does not weaken sandboxing, retry automatically, or call a same-family pass
-“diverse.” Manual work asks the user whether to proceed with degraded coverage; `/team-auto`
-stops once.
+Each external reviewer runs in the foreground with a 60-minute process ceiling. For Codex,
+`--yolo` avoids the inner sandbox that cannot create namespaces inside nested Docker; the NanoClaw
+container is the external isolation boundary, while the review contract remains non-mutating and
+supplies its source bundle on stdin. Missing or unauthenticated CLIs, unsupported flags, timeouts,
+non-zero exits, and malformed or empty output are recorded distinctly in `run.md`. The workflow
+does not retry automatically or call a same-family pass “diverse.” Manual work asks the user
+whether to proceed with degraded coverage; `/team-auto` stops once.
 
 ## Install
 
