@@ -15,7 +15,7 @@ When Claude is primary, invoke Codex with settings that do not inherit any host 
 `config.toml`:
 
 ```sh
-codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="xhigh"' --ephemeral --yolo
+codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo
 ```
 
 When Codex or OpenCode is primary, invoke Claude with:

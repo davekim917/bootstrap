@@ -44,7 +44,7 @@ The reviewer gets the source artifact, not the lead model's conclusions. It is r
 
 Default transports:
 
-- Claude primary → Codex: `codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="xhigh"' --ephemeral --sandbox read-only`. The review contract sets both values explicitly and does not inherit model or effort from any host or container `config.toml`.
+- Claude primary → Codex: `codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="high"' --ephemeral --sandbox read-only`. The review contract sets both values explicitly and does not inherit model or effort from any host or container `config.toml`.
 - Codex/OpenCode primary → Claude: `claude -p --model claude-opus-5 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json`.
 
 An explicitly configured safe target from another model family may substitute when the default target is unavailable, but the run must record the actual model and transport. Runtime diversity alone does not count: an OpenCode target satisfies this gate only when its model family differs from the primary.
@@ -173,7 +173,7 @@ During this rollout, apply the cleanup to the two currently verified homes—`~/
 - Shared contracts are byte-identical after generation.
 - No active skill, hook, manifest, README section, or eval references a retired stage or artifact.
 - Both cross-model commands retain their safe/read-only flags, explicitly set model and effort, and record those values in `run.md`.
-- The Codex lane explicitly invokes `gpt-5.6-sol` / `xhigh` with `--ignore-user-config`; it does not inherit review settings from `config.toml`.
+- The Codex lane explicitly invokes `gpt-5.6-sol` / `high` with `--ignore-user-config`; it does not inherit review settings from `config.toml`.
 - The Claude lane explicitly invokes `claude-opus-5` / `high`.
 - Cross-model preflight distinguishes missing, unauthenticated, unsupported, timed-out, and malformed-review failures.
 - Cross-model unavailability is labeled degraded and cannot be silently replaced by a same-family reviewer.

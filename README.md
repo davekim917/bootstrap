@@ -15,8 +15,8 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 4.0.2 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 1.0.2 | Runtime-neutral workflow skills and safety gates |
+| Claude Code | `bootstrap-workflow` | 4.0.3 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 1.0.3 | Runtime-neutral workflow skills and safety gates |
 
 Both plugins expose exactly seven user-facing skills:
 
@@ -66,7 +66,7 @@ Claude-primary reviews use:
 codex exec \
   --ignore-user-config \
   --model gpt-5.6-sol \
-  -c 'model_reasoning_effort="xhigh"' \
+  -c 'model_reasoning_effort="high"' \
   --ephemeral \
   --yolo
 ```
