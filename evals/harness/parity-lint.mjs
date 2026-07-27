@@ -117,7 +117,7 @@ export function evaluateContracts({
   }
 
   const exactCommands = [
-    `codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="xhigh"' --ephemeral --yolo`,
+    `codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo`,
     'claude -p --model claude-opus-5 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json',
   ];
   for (const [label, root] of inventories) {

@@ -248,11 +248,11 @@ if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '4.0.2') {
-  fail(`bootstrap-workflow release must be version 4.0.2 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '4.0.3') {
+  fail(`bootstrap-workflow release must be version 4.0.3 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '1.0.2') {
-  fail(`bootstrap-workflow-agents release must be version 1.0.2 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '1.0.3') {
+  fail(`bootstrap-workflow-agents release must be version 1.0.3 (found ${codexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -359,7 +359,7 @@ const crossModelTokens = [
   'codex exec',
   '--ignore-user-config',
   '--model gpt-5.6-sol',
-  'model_reasoning_effort="xhigh"',
+  'model_reasoning_effort="high"',
   '--ephemeral',
   '--yolo',
   '3600000',
