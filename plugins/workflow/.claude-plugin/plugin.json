@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-workflow",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "description": "Seven-skill risk-scaled workflow: plan → build → independent cross-model review → human-controlled ship gate, with shared safety guards and a bounded /team-auto runner.",
   "author": {
     "name": "David Kim"

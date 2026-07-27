@@ -1167,7 +1167,10 @@ export function writeGateRequest(
         requestId,
         label,
         summary,
-        command: command.slice(0, 500),
+        // The host renders a bounded head+tail preview and retains the full
+        // command in its approval record. Truncating here would discard final
+        // arguments before the approver or audit trail could inspect them.
+        command,
     });
 
     const outbound = new Database(NANOCLAW_OUTBOUND_DB);

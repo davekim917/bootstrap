@@ -15,8 +15,8 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 4.0.1 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 1.0.1 | Runtime-neutral workflow skills and safety gates |
+| Claude Code | `bootstrap-workflow` | 4.0.2 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 1.0.2 | Runtime-neutral workflow skills and safety gates |
 
 Both plugins expose exactly seven user-facing skills:
 
