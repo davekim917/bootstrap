@@ -158,6 +158,21 @@ export function bypassFlagIsRealArgvToken(gwsSegment: string): boolean {
     return false;
 }
 
+// A deliberately narrow exception for the normal CLI-help probe an agent uses
+// to learn a send command without sending mail. It accepts only optional export
+// assignments, one direct gws invocation, stderr-to-stdout, and head -N.
+// The captured gws segment still goes through the regular argv verifier, which
+// proves help is an option rather than (for example) a subject value.
+const SAFE_HELP_PROBE_RE =
+    /^(?:export\s+(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|<>\x60$(){}#'"]+)(?:\s+[A-Za-z_][A-Za-z0-9_]*=[^\s;&|<>\x60$(){}#'"]+)*\s+&&\s+)?((?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|<>\x60$(){}#'"]+\s+)*gws\s+gmail\s+(?:\+(?:send|reply|reply-all|forward)|users\s+(?:messages|drafts)\s+send)(?:\s+[^\s;&|<>\x60$(){}#'"]+)*)\s+2>&1\s*\|\s*head\s+-\d+\s*$/;
+
+export function safeHelpProbeIsReadOnly(command: string): boolean {
+    const match = command.match(SAFE_HELP_PROBE_RE);
+    if (!match) return false;
+    const gwsSegment = match[1];
+    return /(?:^|[ \t])(?:--help|-h)(?:$|[ \t])/.test(gwsSegment) && bypassFlagIsRealArgvToken(gwsSegment);
+}
+
 /** Snapshot of the only env input the email gate decision depends on. */
 export interface EnvSnapshot {
     /** True when the send originates from a scheduled task. Source:
@@ -324,10 +339,11 @@ export function envelopeFromJsonRaw(segment: string): {
  *
  * Decision ordering:
  *   1. Not an email send (GWS_EMAIL_SEND_RE miss) → allow.
- *   2. WHOLE command is a single, simple send carrying a real bypass flag
+ *   2. Exact bounded read-only `gws … --help 2>&1 | head -N` probe → allow.
+ *   3. WHOLE command is a single, simple send carrying a real bypass flag
  *      (--dry-run / --draft / --help / -h) → allow.
- *   3. Scheduled task (env.isScheduledTask) → allow (v1 parity bypass).
- *   4. Otherwise → gate, with the parsed envelope rendered into label + summary.
+ *   4. Scheduled task (env.isScheduledTask) → allow (v1 parity bypass).
+ *   5. Otherwise → gate, with the parsed envelope rendered into label + summary.
  *
  * SCOPE — what this layer can and cannot do (read before "fixing" step 1):
  * This is a best-effort shell-text gate. It reliably gates the email sends an
@@ -361,7 +377,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // It also fixes the over-block where a quoted separator in a dry-run body
     // (`--body "a;b" --dry-run`) used to split mid-quote: the quoted span is
     // stripped before the metacharacter test, so the real --dry-run still bypasses.
-    if (bypassFlagIsRealArgvToken(command)) return { action: 'allow' };
+    if (safeHelpProbeIsReadOnly(command) || bypassFlagIsRealArgvToken(command)) return { action: 'allow' };
 
     // Scheduled tasks intentionally bypass — v1 also did this so
     // automated email reports aren't prompted every run.

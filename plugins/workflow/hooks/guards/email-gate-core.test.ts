@@ -115,6 +115,22 @@ describe('evaluateEmailSend — gate decision', () => {
         }
     });
 
+    test('allows only the bounded read-only help probe used by the gws CLI', () => {
+        const helpProbe =
+            'export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/primary.json && gws gmail users messages send --help 2>&1 | head -60';
+        expect(evaluateEmailSend(helpProbe, INTERACTIVE)).toEqual({ action: 'allow' });
+
+        // The special case must not admit a real second command, a further
+        // pipe, or a help-looking value consumed by another option.
+        for (const command of [
+            helpProbe + ' && gws gmail +send --to victim@example.com --body x',
+            helpProbe + ' | cat',
+            'gws gmail +send --subject --help 2>&1 | head -60',
+        ]) {
+            expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
+        }
+    });
+
     test('bypass is scoped to the gws SEGMENT, not the whole command', () => {
         // Verbatim source (claude.ts:613-615) only honors a bypass flag in the
         // segment that contains the gws send. A --dry-run in a later piped
