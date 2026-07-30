@@ -31,6 +31,11 @@ Add specialist lenses only when the changed surface warrants them:
 Do not spawn a fixed swarm. One other-family reviewer is mandatory at the plan and implementation
 gates; other reviewers need a named risk justification.
 
+Select lenses here; judge against the rubric in `../shared/cross-model-review.md`. Send each
+reviewer the rubric items for its selected lenses, and require every finding to cite one of them or
+a named external invariant. A rubric match is a hypothesis — the lead still traces it to source
+before it can become `MUST-FIX`.
+
 ## Plan mode
 
 1. Read the raw proposed `plan.md`, applicable repository instructions, and cited source.

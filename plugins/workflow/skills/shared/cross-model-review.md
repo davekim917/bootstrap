@@ -59,6 +59,45 @@ Reject empty output, malformed or invalid JSON, a missing/unknown verdict, or fi
 fields. The lead verifies every finding against the supplied artifact and repository source before
 accepting it.
 
+## Review rubric
+
+Send the reviewer the rubric items for the selected lenses. Every finding must ground in one of
+them or in a named external invariant — the `requirement` field is where it goes. This exists so
+two reviewers judge the same change against the same bar instead of each re-deriving one from a
+lens name.
+
+A rubric item is a hypothesis generator, never a verdict. The lead still traces every finding to
+source before it can become `MUST-FIX`; a rubric match alone does not block.
+
+Always applied:
+
+- **Correctness** — behavior matches the stated acceptance criteria; empty, boundary, and error
+  inputs are handled; no silently swallowed failure; repeated or concurrent invocation is safe
+  wherever reachable.
+- **Simplicity** — no abstraction with one implementation, no configuration for a value that never
+  varies, no scaffolding for unrequested futures; an existing project primitive or the standard
+  library would not have done the job.
+- **Plan fidelity** — every acceptance criterion is implemented; nothing outside approved scope
+  rides along; deviations are recorded in `run.md` rather than silent.
+- **Failure handling** — failures surface rather than swallow; partial writes cannot strand
+  inconsistent state; retries are bounded; an error path that loses user data is a blocker.
+- **Verification quality** — tests exercise the criteria, not the implementation's shape, and would
+  fail if the logic broke; evidence in `run.md` is fresh output, not restated intent.
+
+Applied when the changed surface warrants:
+
+- **Security** — trust boundaries validate input; authorization is checked at the boundary, not
+  assumed from the caller; credentials never reach logs, chat, or disk in usable form; destructive
+  operations are gated or reversible.
+- **State and rollback** — migrations are reversible, or one-way with stated justification;
+  lifecycle transitions are total; persisted shape changes stay readable by in-flight consumers.
+- **Performance** — a scale claim is measured rather than asserted; the hot path adds no unbounded
+  scan, N+1, or per-item process spawn.
+- **Product and accessibility** — user-visible behavior matches stated intent; keyboard reachability
+  and contrast basics hold for new UI.
+- **External currency** — any claim about an external API, framework, or standard is checked against
+  a current authoritative source rather than model memory.
+
 ## Preflight and evidence
 
 Record in `run.md`:
