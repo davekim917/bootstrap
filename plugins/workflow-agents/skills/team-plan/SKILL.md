@@ -39,9 +39,10 @@ Planning may inspect and write planning artifacts only. Do not implement product
    - safety, migration, rollback, and observability where relevant;
    - an ordered implementation path with exact ownership boundaries, dependencies, and checks;
    - known risks, unresolved user decisions, and verification commands.
-   For behavior-changing work, also emit the acceptance criteria as `.todo` cases in the
-   repository's test framework, per the shared contract's executable-acceptance-criteria rule.
-   State in `plan.md` where they live, or why the work is exempt.
+   For behavior-changing work, write the acceptance criteria as the exact test cases `/team-build`
+   will materialize after approval — name and assertion per criterion — per the shared contract's
+   executable-acceptance-criteria rule. They stay in `plan.md`; planning does not write to the test
+   tree.
 5. Create or update `run.md` and run the plan-stage review required by the cross-model contract on
    the raw proposed `plan.md`.
 6. Verify each review finding. Apply one bounded correction batch for accepted `MUST-FIX` findings.

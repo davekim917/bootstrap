@@ -40,17 +40,19 @@ Put durable intent in `plan.md` and execution evidence in `run.md`.
 For behavior-changing work, acceptance criteria belong in the test tree as well as in `plan.md`. A
 spec you can run beats a spec every later stage has to re-read and re-interpret.
 
-- `/team-plan` emits one `.todo` case per acceptance criterion (`it.todo`, `test.todo`, or the
-  framework's equivalent), named after the criterion, in the repository's existing test framework
-  and beside the code it covers. Not under `docs/specs/` — a test the normal test command does not
-  run is prose in a `.ts` file.
-- `.todo` is deliberate: it keeps the suite green while the work is unstarted, and still reports
-  the outstanding criteria on every run. Do not commit failing tests to express intent.
-- `/team-build` is complete when those cases are implemented and passing — not when the diff looks
-  finished.
+- `/team-plan` writes the exact cases — name and assertion per criterion — into `plan.md`. Planning
+  does not touch the test tree: approval has not happened yet, and a rejected plan must leave no
+  trace in the product repository.
+- `/team-build` materializes those cases into the repository's existing test framework, beside the
+  code they cover, as its first action after approval — before implementing. Run them once
+  immediately so their initial failure is observed rather than assumed.
+- `/team-build` is complete when every one of those cases passes — not when the diff looks
+  finished. A criterion that turned out to be wrong is a plan correction recorded in `run.md`, not
+  a silently deleted test.
 - `/team-review` checks the cases actually cover the criteria, rather than re-deriving intent from
   prose.
-- `/team-ship` treats a remaining `.todo` for the feature as unshipped.
+- `/team-ship` verifies each named case from `plan.md` exists and passes. Check those cases by
+  name; a green suite is not evidence, because a pending or skipped case also leaves it green.
 
 Skip this for exploratory, research, or investigation plans, and for work with no observable
 behavior change — a skeleton there is noise, not rigor. State which applies in `plan.md`.
