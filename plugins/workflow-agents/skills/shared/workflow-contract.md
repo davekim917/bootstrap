@@ -47,12 +47,18 @@ spec you can run beats a spec every later stage has to re-read and re-interpret.
   code they cover, as its first action after approval — before implementing. Run them once
   immediately so their initial failure is observed rather than assumed.
 - `/team-build` is complete when every one of those cases passes — not when the diff looks
-  finished. A criterion that turned out to be wrong is a plan correction recorded in `run.md`, not
-  a silently deleted test.
+  finished.
+- When a criterion turns out to be wrong, correct `plan.md` first: it stays the normative contract,
+  so a case must never diverge from it. Update the plan, update the materialized case to match,
+  and record the change in `run.md` as evidence. If the correction alters product intent, scope, or
+  a hard invariant, it needs renewed user approval — it is a new plan, not a build detail. Never
+  silently retarget or delete a test to make a build pass.
 - `/team-review` checks the cases actually cover the criteria, rather than re-deriving intent from
   prose.
-- `/team-ship` verifies each named case from `plan.md` exists and passes. Check those cases by
-  name; a green suite is not evidence, because a pending or skipped case also leaves it green.
+- `/team-ship` verifies each case named in `plan.md` exists, asserts what the plan says it asserts,
+  and passes. Check name AND assertion: a case renamed-in-place or retargeted to a weaker
+  assertion still passes under its original name. A green suite is not evidence either, because a
+  pending or skipped case also leaves it green.
 
 Skip this for exploratory, research, or investigation plans, and for work with no observable
 behavior change — a skeleton there is noise, not rigor. State which applies in `plan.md`.
