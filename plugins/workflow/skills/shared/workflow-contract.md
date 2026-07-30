@@ -35,6 +35,26 @@ The feature directory is `docs/specs/<feature>/`.
 Do not create routine brief, design, review, drift, QA, decision, pause, or build-state artifacts.
 Put durable intent in `plan.md` and execution evidence in `run.md`.
 
+## Executable acceptance criteria
+
+For behavior-changing work, acceptance criteria belong in the test tree as well as in `plan.md`. A
+spec you can run beats a spec every later stage has to re-read and re-interpret.
+
+- `/team-plan` emits one `.todo` case per acceptance criterion (`it.todo`, `test.todo`, or the
+  framework's equivalent), named after the criterion, in the repository's existing test framework
+  and beside the code it covers. Not under `docs/specs/` — a test the normal test command does not
+  run is prose in a `.ts` file.
+- `.todo` is deliberate: it keeps the suite green while the work is unstarted, and still reports
+  the outstanding criteria on every run. Do not commit failing tests to express intent.
+- `/team-build` is complete when those cases are implemented and passing — not when the diff looks
+  finished.
+- `/team-review` checks the cases actually cover the criteria, rather than re-deriving intent from
+  prose.
+- `/team-ship` treats a remaining `.todo` for the feature as unshipped.
+
+Skip this for exploratory, research, or investigation plans, and for work with no observable
+behavior change — a skeleton there is noise, not rigor. State which applies in `plan.md`.
+
 ## Verification
 
 Before claiming a stage complete:
