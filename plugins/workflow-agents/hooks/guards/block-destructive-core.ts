@@ -101,6 +101,34 @@ export const GIT_CLONE_MANAGED_DIR_RE = /\/workspace\/(?:agent|worktrees|workgro
 export const GIT_CLONE_BLOCK_REASON =
     'Ad-hoc `git clone` into a managed dir (/workspace/{agent,worktrees,workgroup,...}) is blocked. Use the `create_worktree` MCP tool for an existing repo, or `clone_repo` to add a new one. If the clone is ephemeral, keep the entire command within /tmp.';
 
+// ── Snapshot git-mutation guard (ADVISORY) ──
+// Repo-store rework: the old canonical paths (/workspace/workgroup/<repo>)
+// are read-only browsing snapshots of origin/HEAD, advanced by the host.
+// Mutating git commands aimed there ("cd into the canonical and checkout a
+// branch") are the stale-tree failure mode the topology exists to kill. The
+// RO bind mount is the real enforcement (EROFS); this evaluator exists to
+// give a *useful* message instead of a bare filesystem error. Same
+// accepted-residual-bypass posture as the git-clone guard: command-text
+// matching only, no cwd resolution.
+//
+// Deliberately NOT matched: read-only git verbs (log/status/diff/show/...),
+// the .worktrees checkout namespace, and the memory tree. The .repos mirrors
+// and .rescues archives ARE covered — Bash-level git mutations there are
+// never sanctioned.
+export const SNAPSHOT_GIT_MUTATION_VERB_RE =
+    /\bgit\b(?:\s+(?:-C|--work-tree|--git-dir)\s+\S+|\s+-c\s+\S+|\s+--\S+)*\s+(checkout|switch|commit|reset|restore|clean|merge|rebase|cherry-pick|stash|am|apply|update-ref|branch|worktree)\b/;
+export const SNAPSHOT_PATH_RE = /\/workspace\/workgroup\/(?!\.worktrees\b|memory\b)/;
+export const SNAPSHOT_GIT_MUTATION_BLOCK_REASON =
+    'Git working-tree mutations under /workspace/workgroup/<repo> are blocked: that path is a read-only snapshot of origin/HEAD maintained by the host. Use `create_worktree` and work in /workspace/worktrees/<repo>; shared long-lived checkouts belong under /workspace/workgroup/.worktrees/.';
+
+export function evaluateSnapshotGitMutation(command: string): { action: 'allow' | 'block'; reason?: string } {
+    if (!command) return { action: 'allow' };
+    if (SNAPSHOT_GIT_MUTATION_VERB_RE.test(command) && SNAPSHOT_PATH_RE.test(command)) {
+        return { action: 'block', reason: SNAPSHOT_GIT_MUTATION_BLOCK_REASON };
+    }
+    return { action: 'allow' };
+}
+
 /** Verdict for the git-clone guard. Intentionally NARROWER than GateEvaluation
  *  (no `gate`) so every adapter can treat any non-`allow` as a block and never
  *  fail-open on an unexpected verdict. Pure — no I/O. */
