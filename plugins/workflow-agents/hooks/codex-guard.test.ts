@@ -57,6 +57,17 @@ describe('Codex local approval transport', () => {
     expectDecision(await runGuard(shell('terraform destroy')), 'ask', /terraform/i);
   });
 
+  test('denies git mutations inside read-only repo snapshots', async () => {
+    expectDecision(
+      await runGuard(shell('git -C /workspace/workgroup/APOLLO checkout -b feature')),
+      'deny',
+      /snapshot/i,
+    );
+    expect(
+      (await runGuard(shell('git -C /workspace/workgroup/.worktrees/shared commit -m x'))).output,
+    ).toEqual({ continue: true });
+  });
+
   test('asks through the native protocol for outbound email', async () => {
     expectDecision(
       await runGuard(shell('gws gmail +send --to ops@example.com --subject report')),
