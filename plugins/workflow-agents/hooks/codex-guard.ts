@@ -14,6 +14,7 @@ import {
     evaluateBashCommand,
     evaluateGitCloneDestination,
     evaluateSelfApproval,
+    evaluateSnapshotGitMutation,
     evaluateSnowflakeConnector,
     runEmailGate,
     runNanoclawGate,
@@ -207,6 +208,11 @@ function main(): void {
         const clone = evaluateGitCloneDestination(command);
         if (clone.action !== 'allow') {
             emitDeny(clone.reason, 'Git clone into a managed directory is not allowed.');
+        }
+
+        const snapshot = evaluateSnapshotGitMutation(command);
+        if (snapshot.action !== 'allow') {
+            emitDeny(snapshot.reason, 'Git mutations inside read-only repo snapshots are not allowed.');
         }
 
         const destructive = evaluateBashCommand(command);
