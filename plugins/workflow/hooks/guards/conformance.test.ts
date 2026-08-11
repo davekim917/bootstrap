@@ -48,10 +48,35 @@ const BASH_GATE = [
   'docker rm -f db',
   'helm uninstall app',
   'dbt run --full-refresh',
+  // Git remote history mutation (fleet-hardening P2): force push in every
+  // spelling, mirror push, remote-ref deletion / per-ref force refspecs —
+  // including behind git's global options (-C).
+  'git push --force origin main',
+  'git push -f',
+  'git -C /workspace/worktrees/XZO push -f origin develop',
+  'git push --mirror backup',
+  'git push origin --delete feature-x',
+  'git push origin :feature-x',
+  'git push origin +main',
 ];
 
-// Allowed: safe / ephemeral.
-const BASH_ALLOW = ['ls -la', 'git status', 'rm -rf node_modules', 'echo hello', 'cat README.md', 'rm -rf dist'];
+// Allowed: safe / ephemeral. The git rows pin the DELIBERATE non-gates:
+// lease-protected force pushes (the sanctioned recovery the MCP git_push tool
+// uses), plain pushes, local branch ops, and `git stash push -f` (not a push).
+const BASH_ALLOW = [
+  'ls -la',
+  'git status',
+  'rm -rf node_modules',
+  'echo hello',
+  'cat README.md',
+  'rm -rf dist',
+  'git push origin main',
+  'git push --force-with-lease origin feat/x',
+  'git push --force-if-includes --force-with-lease',
+  'git stash push -f',
+  'git push origin refs/heads/a:refs/heads/b',
+  'git commit -m "force push docs"',
+];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);
 // pure /tmp clones and non-clone commands are allowed. Order-independent: a
