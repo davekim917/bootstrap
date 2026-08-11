@@ -1005,6 +1005,40 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         return 'Destructive Firebase CLI command.';
     }
 
+    // ── Git (remote history mutation) ────────────────────────────────────
+    // (fleet-hardening P2) Raw `git push --force` was the one unclassified
+    // history-mutation path: the MCP git_push tool is lease-protected, but a
+    // Bash force push was invisible to the matrix, and server-side branch
+    // protection is unavailable on free-plan private repos — this gate is the
+    // enforcement point. `--force-with-lease`/`--force-if-includes` stay
+    // allowed: they refuse to clobber unseen remote work and are the
+    // sanctioned recovery path the git_push tool itself uses.
+    if (name === 'git') {
+        // Skip git's global options so `git -C /x push -f` classifies like
+        // `git push -f`. Only these take a separate value argument.
+        const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
+        let i = 0;
+        while (i < args.length) {
+            if (GIT_GLOBAL_VALUE_OPTS.has(args[i])) { i += 2; continue; }
+            if (args[i].startsWith('-')) { i += 1; continue; }
+            break;
+        }
+        if (args[i] === 'push') {
+            const pushArgs = args.slice(i + 1);
+            if (pushArgs.includes('--force') || pushArgs.includes('-f')) {
+                return 'git push --force rewrites remote history. Use --force-with-lease (refuses to clobber unseen work) or get approval.';
+            }
+            if (pushArgs.includes('--mirror')) {
+                return 'git push --mirror force-updates every remote ref.';
+            }
+            // `+refspec` is per-ref force; `:refspec` deletes the remote ref.
+            if (pushArgs.includes('--delete') || pushArgs.includes('-d') ||
+                pushArgs.some(a => (a.startsWith(':') || a.startsWith('+')) && a.length > 1)) {
+                return 'git push deleting or force-updating a remote ref (+/: refspec, --delete).';
+            }
+        }
+    }
+
     // ── dbt ──────────────────────────────────────────────────────────────
 
     if (name === 'dbt' && ['run', 'build'].includes(args[0]) && args.includes('--full-refresh')) {
