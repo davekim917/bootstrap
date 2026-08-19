@@ -34,7 +34,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/../../.nanoclaw-always-on.md\""
+            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/always-on.md\""
           }
         ]
       }

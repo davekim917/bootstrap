@@ -248,11 +248,11 @@ if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '4.3.0') {
-  fail(`bootstrap-workflow release must be version 4.3.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '4.3.1') {
+  fail(`bootstrap-workflow release must be version 4.3.1 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '1.3.0') {
-  fail(`bootstrap-workflow-agents release must be version 1.3.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '1.3.1') {
+  fail(`bootstrap-workflow-agents release must be version 1.3.1 (found ${codexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -353,6 +353,18 @@ for (const fileName of ['workflow-contract.md', 'cross-model-review.md']) {
   const codexContent = readText(codexPath);
   if (claudeContent !== undefined && codexContent !== undefined && claudeContent !== codexContent) {
     fail(`shared/${fileName}: Claude and Codex/OpenCode copies must be byte-identical`);
+  }
+}
+
+// The repo-root copy is what NanoClaw's non-Claude providers read directly off
+// disk (src/claude-md-compose.ts); the plugin-relative copy is what the
+// installed Claude plugin cache and the SessionStart hook can actually reach
+// (the cache only materializes the plugin subtree, not the repo root).
+{
+  const rootContent = readText('.nanoclaw-always-on.md');
+  const pluginContent = readText('plugins/workflow/always-on.md');
+  if (rootContent !== undefined && pluginContent !== undefined && rootContent !== pluginContent) {
+    fail('.nanoclaw-always-on.md and plugins/workflow/always-on.md must be byte-identical');
   }
 }
 
