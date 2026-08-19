@@ -11,6 +11,7 @@ import path from 'node:path';
 import { PLUGINS } from './lib.mjs';
 
 export const EXPECTED_SKILLS = Object.freeze([
+  'orchestrate',
   'team-auto',
   'team-build',
   'team-debug',
