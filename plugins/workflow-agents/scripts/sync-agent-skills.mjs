@@ -23,6 +23,7 @@ const SKILLS = [
   'team-debug',
   'team-ship',
   'team-retro',
+  'orchestrate',
 ];
 
 const SHARED = ['workflow-contract.md', 'cross-model-review.md'];
