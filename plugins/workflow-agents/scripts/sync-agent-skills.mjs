@@ -26,7 +26,13 @@ const SKILLS = [
   'orchestrate',
 ];
 
-const SHARED = ['workflow-contract.md', 'cross-model-review.md'];
+const SHARED = [
+  'workflow-contract.md',
+  'cross-model-review.md',
+  'references/CODEX-SOURCES.md',
+  'references/codex-adversarial-prompt.md',
+  'references/codex-review-output.schema.json',
+];
 
 /** Mechanical substitutions for schema/path differences only. */
 export function transformSkill(text) {

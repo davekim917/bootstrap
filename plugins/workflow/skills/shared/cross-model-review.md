@@ -38,6 +38,59 @@ model, effort, execution mode, permissions, or persistence flags.
 
 ## Prompt and verdict
 
+### When Codex is the external reviewer
+
+Send Codex the byte-identical vendored prompt at `references/codex-adversarial-prompt.md`, and
+validate its response against `references/codex-review-output.schema.json`. This file is a mirror
+of OpenAI's own adversarial-review prompt (see `references/CODEX-SOURCES.md` for the pinned
+upstream SHAs) — never edit it locally; resync it from upstream instead.
+
+Fill the four substitution markers before sending:
+
+- `{{TARGET_LABEL}}` — what is under review (e.g. `plan.md` for `/team-plan`, or the implementation
+  diff for `/team-review --implementation`).
+- `{{USER_FOCUS}}` — the user-specified focus area for this review, or `none specified`.
+- `{{REVIEW_COLLECTION_GUIDANCE}}` — instructions scoping the reviewer's repository reads to the
+  supplied diff and its direct callers/contracts, so the review stays bounded to the change.
+- `{{REVIEW_INPUT}}` — the source bundle: the raw plan or the approved plan plus implementation diff.
+
+Reject empty output, malformed or invalid JSON, a verdict outside `approve`/`needs-attention`, or
+findings missing any schema-required field (`severity`, `title`, `body`, `file`, `line_start`,
+`line_end`, `confidence`, `recommendation`).
+
+#### Mapping to the workflow verdict
+
+The lead maps Codex's output into the workflow shape below — the prompt itself is never edited to
+emit the workflow schema, since that would break the mirror `references/CODEX-SOURCES.md` exists to
+protect.
+
+| Codex output | Workflow verdict |
+|---|---|
+| `verdict: "approve"`, empty `findings` | `clear` |
+| `verdict: "approve"`, non-empty `findings` | `invalid-output` (contract violation — `approve` must carry no findings) |
+| `verdict: "needs-attention"`, empty `findings` | `invalid-output` (contract violation — `needs-attention` must carry findings) |
+| `verdict: "needs-attention"`, non-empty `findings` | `must_fix` |
+
+Per finding:
+
+- `requirement` ← the `attack_surface` category from the vendored prompt that the lead can trace the
+  finding to (auth/permissions/trust boundary, data loss/corruption, rollback/idempotency,
+  concurrency/ordering, degraded-dependency, compat/migration, observability); if none applies, use
+  the finding's own `title` verbatim.
+- `evidence` ← `"{file}:{line_start}-{line_end}"`.
+- `failure_mode` ← `body`.
+- `smallest_fix` ← `recommendation`.
+- `severity` ← `critical`/`high` maps to `MUST-FIX`; `medium`/`low` maps to `SHOULD-FIX`.
+
+`next_steps` has no workflow-schema analog; record it in `run.md` as supporting context, not as a
+finding.
+
+A finding the lead cannot ground in the actual source (the file/lines don't hold up, the claim is
+unsupported) is dropped and recorded as rejected in `run.md` — the verification step below applies
+unchanged to Codex findings.
+
+### When Claude is the external reviewer
+
 Ask for exactly one JSON object:
 
 ```json
@@ -61,7 +114,10 @@ accepting it.
 
 ## Review rubric
 
-Send the reviewer the rubric items for the selected lenses. Every finding must ground in one of
+Send a Claude reviewer the rubric items for the selected lenses directly, as part of its prompt. A
+Codex reviewer instead gets its own vendored `<attack_surface>`/`<review_method>` sections (see
+above); this rubric then serves only as the grounding bar the lead checks Codex findings against,
+and as the `requirement` category list used when mapping them. Every finding must ground in one of
 them or in a named external invariant — the `requirement` field is where it goes. This exists so
 two reviewers judge the same change against the same bar instead of each re-deriving one from a
 lens name.
