@@ -40,58 +40,79 @@ model, effort, execution mode, permissions, or persistence flags.
 
 ### When Codex is the external reviewer
 
-Send Codex the byte-identical vendored prompt at `references/codex-adversarial-prompt.md`, and
-validate its response against `references/codex-review-output.schema.json`. This file is a mirror
-of OpenAI's own adversarial-review prompt (see `references/CODEX-SOURCES.md` for the pinned
-upstream SHAs) — never edit it locally; resync it from upstream instead.
+This path is Codex-only. Never route the vendored prompt to a Claude or OpenCode reviewer, and
+never generalize this section to other reviewers. Its second line asserts a fixed identity —
+`You are Codex performing an adversarial software review.` — the only model-specific line in all 84
+lines of the prompt; sending it to a different model asserts a false identity, and editing it would
+break the byte-identical mirror `references/CODEX-SOURCES.md` exists to protect. When Codex or
+OpenCode is primary and Claude is the reviewer, use the composed prompt in "When Claude is the
+external reviewer" below, unchanged.
 
-Fill the four substitution markers before sending:
+Send the vendored prompt at `references/codex-adversarial-prompt.md` verbatim, filling only its
+four substitution markers (below), and enforce its schema at the CLI boundary rather than in prose:
+
+```sh
+codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo \
+  --output-schema references/codex-review-output.schema.json \
+  --output-last-message <path-to-write-the-final-JSON-response>
+```
+
+`--output-schema` and `--output-last-message` (`-o`) are native `codex exec` flags (confirmed
+against the installed CLI's `--help`) — the response shape is enforced by Codex itself, not by
+asking nicely in the prompt.
+
+The vendored prompt is a different layer than the rubric below, not a competing contract: OpenAI's
+is stance and attack surface (how to think, where to look); bootstrap's is criteria and adjudication
+(what counts as a finding, who decides). Inject the workflow's own lenses through the prompt's
+placeholders rather than rewriting or replacing it:
 
 - `{{TARGET_LABEL}}` — what is under review (e.g. `plan.md` for `/team-plan`, or the implementation
   diff for `/team-review --implementation`).
-- `{{USER_FOCUS}}` — the user-specified focus area for this review, or `none specified`.
-- `{{REVIEW_COLLECTION_GUIDANCE}}` — instructions scoping the reviewer's repository reads to the
-  supplied diff and its direct callers/contracts, so the review stays bounded to the change.
-- `{{REVIEW_INPUT}}` — the source bundle: the raw plan or the approved plan plus implementation diff.
+- `{{USER_FOCUS}}` — the user-specified focus area, followed by the rubric lenses that have no
+  analog in the vendored prompt's `<attack_surface>`: **plan fidelity**, **verification quality**,
+  and **simplicity** (see Review rubric below for their definitions). The vendored prompt has never
+  seen `plan.md` and cannot on its own check scope adherence or whether a test would fail if the
+  logic broke, so the workflow supplies those checks here instead of trying to fold them into a
+  rewritten prompt.
+- `{{REVIEW_COLLECTION_GUIDANCE}}` — scope-limiting instructions: read only the supplied diff and
+  its direct callers/contracts; do not edit files or run side-effecting commands. `--yolo` disables
+  sandboxing entirely, so — unlike the read-only-sandboxed invocation this guidance was originally
+  written for — nothing at the OS level stops Codex from reading or touching files outside the
+  change. This text is the only thing enforcing scope; do not weaken it.
+- `{{REVIEW_INPUT}}` — the source bundle: the raw plan, or the approved plan plus implementation diff.
 
 Reject empty output, malformed or invalid JSON, a verdict outside `approve`/`needs-attention`, or
 findings missing any schema-required field (`severity`, `title`, `body`, `file`, `line_start`,
 `line_end`, `confidence`, `recommendation`).
 
-#### Mapping to the workflow verdict
+#### Recording the result in run.md
 
-The lead maps Codex's output into the workflow shape below — the prompt itself is never edited to
-emit the workflow schema, since that would break the mirror `references/CODEX-SOURCES.md` exists to
-protect.
+Composition means there is no schema to translate — Codex's findings keep their own shape
+(`severity`, `title`, `body`, `file`, `line_start`, `line_end`, `confidence`, `recommendation`) in
+`run.md` rather than being renamed into the Claude-reviewer field names below. Only the top-level
+verdict needs a bookkeeping label for the rest of the workflow:
 
-| Codex output | Workflow verdict |
+| Codex output | Recorded as |
 |---|---|
 | `verdict: "approve"`, empty `findings` | `clear` |
-| `verdict: "approve"`, non-empty `findings` | `invalid-output` (contract violation — `approve` must carry no findings) |
-| `verdict: "needs-attention"`, empty `findings` | `invalid-output` (contract violation — `needs-attention` must carry findings) |
 | `verdict: "needs-attention"`, non-empty `findings` | `must_fix` |
+| `verdict: "approve"` with findings, or `verdict: "needs-attention"` with none, or anything failing the reject-conditions above | `invalid-output` |
 
-Per finding:
-
-- `requirement` ← the `attack_surface` category from the vendored prompt that the lead can trace the
-  finding to (auth/permissions/trust boundary, data loss/corruption, rollback/idempotency,
-  concurrency/ordering, degraded-dependency, compat/migration, observability); if none applies, use
-  the finding's own `title` verbatim.
-- `evidence` ← `"{file}:{line_start}-{line_end}"`.
-- `failure_mode` ← `body`.
-- `smallest_fix` ← `recommendation`.
-- `severity` ← `critical`/`high` maps to `MUST-FIX`; `medium`/`low` maps to `SHOULD-FIX`.
-
-`next_steps` has no workflow-schema analog; record it in `run.md` as supporting context, not as a
-finding.
-
-A finding the lead cannot ground in the actual source (the file/lines don't hold up, the claim is
-unsupported) is dropped and recorded as rejected in `run.md` — the verification step below applies
-unchanged to Codex findings.
+The lead still verifies every finding against the supplied artifact and repository source before
+accepting it — same as for a Claude reviewer — and a finding that doesn't hold up is dropped and
+recorded as rejected in `run.md`.
 
 ### When Claude is the external reviewer
 
-Ask for exactly one JSON object:
+Ask for exactly one JSON object, and enforce it at the CLI boundary — `--output-format json` alone
+only shapes the response envelope, it does not constrain content to a schema:
+
+```sh
+claude -p --model claude-opus-5 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json \
+  --json-schema '{"type":"object","required":["verdict","findings"],"properties":{"verdict":{"enum":["clear","must_fix","degraded"]},"findings":{"type":"array","items":{"type":"object","required":["severity","requirement","evidence","failure_mode","smallest_fix","confidence"],"properties":{"severity":{"enum":["MUST-FIX","SHOULD-FIX"]},"requirement":{"type":"string"},"evidence":{"type":"string"},"failure_mode":{"type":"string"},"smallest_fix":{"type":"string"},"confidence":{"type":"number","minimum":0,"maximum":1}}}}}}'
+```
+
+The requested object shape:
 
 ```json
 {
@@ -102,7 +123,8 @@ Ask for exactly one JSON object:
       "requirement": "violated requirement or invariant",
       "evidence": "artifact section or file:line",
       "failure_mode": "concrete failure",
-      "smallest_fix": "bounded correction"
+      "smallest_fix": "bounded correction",
+      "confidence": "0-1, how certain the reviewer is this finding is real and material"
     }
   ]
 }
@@ -115,15 +137,19 @@ accepting it.
 ## Review rubric
 
 Send a Claude reviewer the rubric items for the selected lenses directly, as part of its prompt. A
-Codex reviewer instead gets its own vendored `<attack_surface>`/`<review_method>` sections (see
-above); this rubric then serves only as the grounding bar the lead checks Codex findings against,
-and as the `requirement` category list used when mapping them. Every finding must ground in one of
-them or in a named external invariant — the `requirement` field is where it goes. This exists so
-two reviewers judge the same change against the same bar instead of each re-deriving one from a
-lens name.
+Codex reviewer instead gets its own vendored `<attack_surface>`/`<review_method>` sections plus the
+**Plan fidelity**, **Verification quality**, and **Simplicity** lenses via `{{USER_FOCUS}}` (see
+above); this rubric then serves as the grounding bar the lead checks every finding against,
+Codex's included. Every finding must ground in one of them or in a named external invariant — for a
+Claude reviewer, the `requirement` field is where it goes. This exists so two reviewers judge the
+same change against the same bar instead of each re-deriving one from a lens name.
 
 A rubric item is a hypothesis generator, never a verdict. The lead still traces every finding to
 source before it can become `MUST-FIX`; a rubric match alone does not block.
+
+**Calibration:** prefer one strong finding over several weak ones; do not dilute a serious issue
+with filler. If the change looks safe, say so directly and return no findings — an empty finding
+list is a complete, valid review, not a sign the reviewer didn't try.
 
 Always applied:
 
