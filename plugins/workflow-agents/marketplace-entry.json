@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-workflow-agents",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Seven-skill risk-scaled workflow: plan → build → independent cross-model review → human-controlled ship gate.",
   "source": {
     "source": "local",

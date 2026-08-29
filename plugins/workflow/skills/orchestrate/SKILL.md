@@ -62,3 +62,18 @@ spot-check anything consequential.
 One-line edit in a file already in context; end-of-session work with little
 remaining context to protect; anything where the round trip exceeds the task.
 Delegation is an optimization, not a ritual.
+
+## Stopping a worker that writes shared state
+
+A stop order is a message racing the work, and delivery can lag minutes —
+never rely on a message alone to prevent a write (2026-08-29: a stop order
+lost the race with a live-runbook write; the work landed anyway).
+
+- Brief any worker that will WRITE a shared live file (runbook, board, live
+  config) to write atomically (tmp+rename) under the file's agreed lock, and
+  to check for `<target>.stop` INSIDE that lock — flag present means abort
+  without writing.
+- To stop such a worker: create the stop-flag first, then send the message.
+  The flag is the fence; the message is the courtesy.
+- After any stop, verify the artifact. A worker's silence and your own stop
+  order are both unverified claims until the file says otherwise.
