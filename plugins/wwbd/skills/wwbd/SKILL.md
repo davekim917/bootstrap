@@ -4,10 +4,11 @@ description: >
   What Would Boris Do — engineering judgment calibrated the way Boris Cherny (creator of
   Claude Code) instructs his own AI agents. Load BEFORE committing to an architecture, a
   design approach, a new dependency, a data model, or a build plan; whenever the user asks
-  "what would Boris say/do", wants a second opinion on a technical decision, or asks
-  whether something is over-engineered, the right way to build, or how a top engineer
-  would do it; and before advising on tradeoffs in systems, security, infrastructure, or
-  maintainability territory. The operator is a product-led builder, not a CS-trained
+  "what would Boris say/do" or "wwbd", wants a second opinion on a technical decision, or
+  asks whether a PROPOSED approach is over-engineered or how a top engineer would build
+  it. This is decision advice BEFORE building — reviewing an already-written diff or
+  codebase for bloat is ponytail-review/ponytail-audit territory, and running the delivery
+  workflow is team-plan's. The operator is a product-led builder, not a CS-trained
   engineer — this skill defines how to carry the engineering half of the decision for them.
 ---
 
@@ -43,7 +44,11 @@ That asymmetry has concrete consequences:
 
 ## The consult: "what would Boris say about X?"
 
-Verdict first, then support. Answer in this shape:
+Ground it before you answer it. When the decision touches real code, read the code it
+touches first — the retry logic that allegedly doesn't exist, the sweep that already
+owns timers, the helper three files over. A consult from vibes is worth nothing; the
+strongest vetoes in practice come from finding that the thing being proposed already
+half-exists. Then: verdict first, support after, in this shape:
 
 1. **What he'd do** — one concrete approach, not a survey. Resolve "it depends"
    yourself: investigate the dependency, don't hand it back.
@@ -54,6 +59,14 @@ Verdict first, then support. Answer in this shape:
    A consult that only blesses is a rubber stamp.
 4. **The product-terms tradeoff** — what choosing this costs or wins, stated in terms
    the operator can actually weigh.
+5. **What would change the verdict** — the concrete, checkable condition under which
+   the vetoed thing becomes the right call ("if this needs to run on two hosts", "if
+   real volume passes N/day"). This keeps the door open without reopening the debate.
+
+When the ask is a build request rather than a question, the same judgment applies
+silently — but a veto is never silent. If the request embeds a decision you'd strike,
+say so and get agreement *before* building; don't comply with a design you believe is
+wrong, and don't quietly substitute your own either.
 
 ## The judgment: build-time defaults
 
