@@ -147,6 +147,8 @@ const codexMarketplace = readJson('.agents/plugins/marketplace.json');
 const claudeMarketplace = readJson('.claude-plugin/marketplace.json');
 const codexManifest = readJson('plugins/workflow-agents/.codex-plugin/plugin.json');
 const claudeManifest = readJson('plugins/workflow/.claude-plugin/plugin.json');
+const wwbdClaudeManifest = readJson('plugins/wwbd/.claude-plugin/plugin.json');
+const wwbdCodexManifest = readJson('plugins/wwbd/.codex-plugin/plugin.json');
 const codexCopyPasteEntry = readJson('plugins/workflow-agents/marketplace-entry.json');
 const codexHookManifest = readJson('plugins/workflow-agents/hooks/workflow-hooks.json');
 
@@ -170,15 +172,30 @@ if (!codexWorkflowEntry) {
   );
 }
 
+// Supported roster: the workflow distribution plus the single-source wwbd
+// advisory plugin. Anything else creeping into a marketplace is drift.
+const codexRoster = new Map([
+  ['bootstrap-workflow-agents', './plugins/workflow-agents'],
+  ['wwbd', './plugins/wwbd'],
+]);
 for (const entry of codexEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
-  if (entry.name !== 'bootstrap-workflow-agents' || entrySource !== './plugins/workflow-agents') {
+  if (codexRoster.get(entry.name) !== entrySource) {
     fail(`.agents/plugins/marketplace.json contains unsupported plugin entry ${entry.name ?? '<unnamed>'}`);
   }
 }
 
-if (codexEntries.length !== 1) {
-  fail(`.agents/plugins/marketplace.json must expose exactly one plugin (found ${codexEntries.length})`);
+if (codexEntries.length !== codexRoster.size) {
+  fail(`.agents/plugins/marketplace.json must expose exactly ${codexRoster.size} plugins (found ${codexEntries.length})`);
+}
+
+const codexWwbdEntry = codexEntries.find((entry) => entry.name === 'wwbd');
+if (!codexWwbdEntry) {
+  fail('.agents/plugins/marketplace.json must register wwbd');
+} else if (codexWwbdEntry.version !== wwbdCodexManifest?.version) {
+  fail(
+    `wwbd version must match between .agents marketplace and .codex-plugin manifest (${codexWwbdEntry.version} !== ${wwbdCodexManifest?.version})`,
+  );
 }
 
 const claudeWorkflowEntry = claudeEntries.find((entry) => entry.name === 'bootstrap-workflow');
@@ -192,15 +209,53 @@ if (!claudeWorkflowEntry) {
   );
 }
 
+const claudeRoster = new Map([
+  ['bootstrap-workflow', './plugins/workflow'],
+  ['wwbd', './plugins/wwbd'],
+]);
 for (const entry of claudeEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
-  if (entry.name !== 'bootstrap-workflow' || entrySource !== './plugins/workflow') {
+  if (claudeRoster.get(entry.name) !== entrySource) {
     fail(`.claude-plugin/marketplace.json contains unsupported plugin entry ${entry.name ?? '<unnamed>'}`);
   }
 }
 
-if (claudeEntries.length !== 1) {
-  fail(`.claude-plugin/marketplace.json must expose exactly one plugin (found ${claudeEntries.length})`);
+if (claudeEntries.length !== claudeRoster.size) {
+  fail(`.claude-plugin/marketplace.json must expose exactly ${claudeRoster.size} plugins (found ${claudeEntries.length})`);
+}
+
+const claudeWwbdEntry = claudeEntries.find((entry) => entry.name === 'wwbd');
+if (!claudeWwbdEntry) {
+  fail('.claude-plugin/marketplace.json must register wwbd');
+} else if (claudeWwbdEntry.version !== wwbdClaudeManifest?.version) {
+  fail(
+    `wwbd version must match between .claude-plugin marketplace and plugin manifest (${claudeWwbdEntry.version} !== ${wwbdClaudeManifest?.version})`,
+  );
+}
+
+// wwbd is single-source: one directory serves Claude and Codex/OpenCode, so the
+// two manifests must agree on identity and both point at the same skills tree.
+if (wwbdClaudeManifest?.name !== 'wwbd') {
+  fail('plugins/wwbd/.claude-plugin/plugin.json name must be wwbd');
+}
+if (wwbdCodexManifest?.name !== 'wwbd') {
+  fail('plugins/wwbd/.codex-plugin/plugin.json name must be wwbd');
+}
+if (wwbdClaudeManifest?.version !== wwbdCodexManifest?.version) {
+  fail(
+    `wwbd Claude and Codex manifests must share one version (${wwbdClaudeManifest?.version} !== ${wwbdCodexManifest?.version})`,
+  );
+}
+if (!exists('plugins/wwbd/skills/wwbd/SKILL.md')) {
+  fail('plugins/wwbd must ship skills/wwbd/SKILL.md');
+}
+if (!exists('plugins/wwbd/always-on.md')) {
+  fail('plugins/wwbd must ship always-on.md (the SessionStart nudge)');
+}
+// Codex/OpenCode containers fire no plugin hooks — a hooks entry there would be
+// dead config that looks live. Keep the Codex manifest hook-free.
+if (wwbdCodexManifest?.hooks !== undefined) {
+  fail('plugins/wwbd/.codex-plugin/plugin.json must not declare hooks (non-Claude providers get the nudge via .nanoclaw-always-on.md)');
 }
 
 if (codexManifest?.name !== 'bootstrap-workflow-agents') {
@@ -362,9 +417,13 @@ for (const fileName of ['workflow-contract.md', 'cross-model-review.md']) {
 // (the cache only materializes the plugin subtree, not the repo root).
 {
   const rootContent = readText('.nanoclaw-always-on.md');
-  const pluginContent = readText('plugins/workflow/always-on.md');
-  if (rootContent !== undefined && pluginContent !== undefined && rootContent !== pluginContent) {
-    fail('.nanoclaw-always-on.md and plugins/workflow/always-on.md must be byte-identical');
+  const workflowContent = readText('plugins/workflow/always-on.md');
+  const wwbdContent = readText('plugins/wwbd/always-on.md');
+  if (rootContent !== undefined && workflowContent !== undefined && wwbdContent !== undefined) {
+    const expected = `${workflowContent.trimEnd()}\n\n${wwbdContent.trimEnd()}\n`;
+    if (rootContent !== expected) {
+      fail('.nanoclaw-always-on.md must be plugins/workflow/always-on.md + blank line + plugins/wwbd/always-on.md, byte-exact');
+    }
   }
 }
 
@@ -457,6 +516,7 @@ for (const filePath of activeContractFiles) {
 }
 
 checkSkillMarkdownLinks(codexSkillsRoot);
+checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/wwbd/skills'));
 checkSkillMarkdownLinks(claudeSkillsRoot);
 
 for (const skillName of codexSkills) {
