@@ -73,7 +73,10 @@ placeholders rather than rewriting or replacing it:
   and **simplicity** (see Review rubric below for their definitions). The vendored prompt has never
   seen `plan.md` and cannot on its own check scope adherence or whether a test would fail if the
   logic broke, so the workflow supplies those checks here instead of trying to fold them into a
-  rewritten prompt.
+  rewritten prompt. If the repo under review defines a review policy file (`docs/review-policy.md`
+  or `REVIEW.md`), append its severity semantics and do-not-report list here too — that file is the
+  project's contract for what a finding is for, and this slot is the only channel that reaches the
+  reviewer.
 - `{{REVIEW_COLLECTION_GUIDANCE}}` — scope-limiting instructions: read only the supplied diff and
   its direct callers/contracts; do not edit files or run side-effecting commands. `--yolo` disables
   sandboxing entirely, so — unlike the read-only-sandboxed invocation this guidance was originally
