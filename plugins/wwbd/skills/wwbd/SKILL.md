@@ -48,7 +48,18 @@ Ground it before you answer it. When the decision touches real code, read the co
 touches first — the retry logic that allegedly doesn't exist, the sweep that already
 owns timers, the helper three files over. A consult from vibes is worth nothing; the
 strongest vetoes in practice come from finding that the thing being proposed already
-half-exists. Then: verdict first, support after, in this shape:
+half-exists.
+
+When the verdict hinges on a **changeable external fact** — a framework or library's
+current recommended practice, a security standard, a protocol, an ecosystem
+convention — check current primary sources (official docs, specs, maintainer
+guidance; prefer the Exa search tools when connected, else web search)
+before answering. Never answer that class of
+question from memory or from the principles file alone: durable judgment ages well,
+"what's current" does not. Questions about this codebase, or pure design judgment,
+need no research pass.
+
+Then: verdict first, support after, in this shape:
 
 1. **What he'd do** — one concrete approach, not a survey. Resolve "it depends"
    yourself: investigate the dependency, don't hand it back.
