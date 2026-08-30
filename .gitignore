@@ -8,3 +8,5 @@ hooks/state/
 
 # Impeccable tool cache (per-hooks-dir)
 .impeccable/
+
+.claude/worktrees/
