@@ -1,0 +1,13 @@
+{
+  "name": "wwbd",
+  "version": "1.0.0",
+  "description": "What Would Boris Do — engineering judgment channeled from Boris Cherny's published guidance, calibrated for a product-led, agent-maintained builder.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": ["judgment", "architecture", "simplicity", "advisory", "boris"],
+  "skills": ["./skills"],
+  "hooks": "./hooks/wwbd-hooks.json"
+}

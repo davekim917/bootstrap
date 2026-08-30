@@ -10,6 +10,12 @@
       "source": "./plugins/workflow",
       "description": "Seven-skill workflow: plan → build → independent review → human-controlled ship gate, with a bounded /team-auto runner.",
       "version": "4.3.3"
+    },
+    {
+      "name": "wwbd",
+      "source": "./plugins/wwbd",
+      "description": "What Would Boris Do — engineering-judgment advisory skill channeling Boris Cherny's published guidance, with an always-on nudge to consult it before architecture/design/build decisions.",
+      "version": "1.0.0"
     }
   ]
 }
