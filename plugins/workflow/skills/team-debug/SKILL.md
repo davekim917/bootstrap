@@ -22,8 +22,13 @@ Read `../shared/workflow-contract.md` first.
 5. Implement the smallest root-cause fix. Do not bundle unrelated cleanup.
 6. Re-run the reproduction, affected tests, and proportional regression checks. Inspect the diff
    and verify error paths or alternate inputs.
-7. Report root cause, evidence, files changed, fresh commands/results, pattern scope, and remaining
-   risk. When inside a planned workflow, append this evidence to `run.md`.
+7. For an incident (production/fleet breakage, not a routine red test): the fix is not closed
+   until a permanent check exists that would catch a recurrence — a regression test, a startup
+   tripwire, or a deterministic gate. If none is practical, record a dated reason in the report;
+   never skip silently.
+8. Report root cause, evidence, files changed, fresh commands/results, pattern scope, the
+   permanent check (or the dated reason there is none), and remaining risk. When inside a planned
+   workflow, append this evidence to `run.md`.
 
 If repeated fixes fail, stop changing code. Reassess whether the model, boundary, or test premise
 is wrong and bring that evidence forward. Complexity is justified only by the external failure
