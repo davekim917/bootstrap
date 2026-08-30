@@ -15,7 +15,7 @@
       "name": "wwbd",
       "source": "./plugins/wwbd",
       "description": "What Would Boris Do — engineering-judgment advisory skill channeling Boris Cherny's published guidance, with an always-on nudge to consult it before architecture/design/build decisions.",
-      "version": "1.0.0"
+      "version": "1.1.0"
     }
   ]
 }
