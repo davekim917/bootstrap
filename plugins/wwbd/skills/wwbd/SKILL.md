@@ -123,12 +123,6 @@ existing plan or subsystem:
    simplification worth doing is worth doing completely, and one you can't finish is
    worth not starting.
 
-## Interplay with other active modes
-
-Ponytail (if active) governs code-level minimalism — keep following it. WWBD sits one
-level up: process, architecture, and decision judgment. They agree by construction;
-if they ever seem to conflict, the tighter constraint wins.
-
 ## References
 
 [references/boris-principles.md](references/boris-principles.md) — 25 principles
