@@ -35,12 +35,15 @@ Tiers — your discretion. Use the worker roster registered in your
 environment. Claude stacks (`.claude/agents/*.md`): `worker-fast` (Haiku)
 for mechanical bulk with unambiguous acceptance criteria, `worker` (Sonnet)
 as default, `worker-high` (Opus) when reasoning is the bottleneck or a
-worker failed, `worker-codex` for an independent cross-model second opinion.
-Codex stacks (roles from `$CODEX_HOME/agents/*.toml`): the worker-fast role
-(gpt-5.6-luna) for mechanical bulk, the worker role (gpt-5.6-terra) as
-default, a high-reasoning role when reasoning is the bottleneck. Read your
-own roster; dispatch independent work in parallel — state "dispatch IN
-PARALLEL" explicitly.
+worker failed, `worker-frontier` (Fable 5.1) only after worker-high has
+failed or the task is clearly frontier-hard — never the routine choice, it's
+the priciest rung per token — `worker-codex` for an independent cross-model
+second opinion. Codex stacks (roles from `$CODEX_HOME/agents/*.toml`): the
+worker-fast role (gpt-5.6-luna) for mechanical bulk, the worker role
+(gpt-5.6-terra) as default, a high-reasoning role (Sol) when reasoning is the
+bottleneck, and the worker-frontier role (Sol at max reasoning) under the
+same escalation-only rule. Read your own roster; dispatch independent work
+in parallel — state "dispatch IN PARALLEL" explicitly.
 
 ## Keep for yourself
 
