@@ -124,14 +124,19 @@ function main(): void {
             block(clone.reason, 'Git clone into a managed directory is not allowed.');
         }
 
-        const destructive = evaluateBashCommand(command);
+        // Claude's hook payload carries the tool call's working directory; the
+        // lab-scope predicate uses it to resolve a bare `git push origin` to the
+        // repo it would actually reach. The core falls back to process.cwd().
+        const cwd = typeof input.cwd === 'string' ? input.cwd : undefined;
+
+        const destructive = evaluateBashCommand(command, { cwd });
         if (destructive.action === 'block') {
             block(destructive.reason, 'Destructive command blocked.');
         }
 
         if (destructive.action === 'gate') {
             const reason = destructive.reason ?? 'Destructive command requires approval.';
-            const post = evaluateBashCommand(command, { skipGate: true });
+            const post = evaluateBashCommand(command, { skipGate: true, cwd });
             if (post.action === 'block') {
                 block(post.reason, 'Command remains blocked after destructive-gate evaluation.');
             }
