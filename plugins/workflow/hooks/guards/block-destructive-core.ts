@@ -846,6 +846,271 @@ function resolveEphemeralRmArgs(cmd: ResolvedCommand, proven: ReadonlySet<string
     };
 }
 
+// ── Lab-scoped exemption ─────────────────────────────────────────────────────
+// In a Lab session — a wiring whose channel instructions profile is `lab`, which
+// the host projects into the container as NANOCLAW_INSTRUCTIONS_PROFILE
+// (nanoclaw-v2 src/container-runner.ts) — a destructive action aimed at a LAB
+// TARGET must neither hold for approval nor be denied. The lab exists to be torn
+// down and rebuilt; an approval card on every `DROP SCHEMA` defeats the point.
+//
+// TWO predicates must BOTH hold. The session predicate alone is never enough:
+// being in the lab room does not exempt a command aimed at production. The
+// target predicate reads the RESOLVED command (post wrapper-stripping) and fails
+// CLOSED — an unrecognized family, or a target constructed at runtime
+// (`psql "$URL"`, a variable-built repo path), is NOT a lab target and stays
+// gated.
+//
+// Deliberately NOT exempted:
+//   • tier-1 hard blocks (eval, shell -c, find -exec rm, xargs rm, shred, dd,
+//     truncate). A `sh -c` wrapper hides the real target from the target
+//     predicate, so exempting tier 1 would dismantle the target matching itself.
+//   • `snow sql` — Snowflake has no lab tenant, so every Snowflake statement
+//     stays gated even in the lab.
+//   • non-LAB repos, non-`lab-` Render services, and prod/dev databases, in the
+//     lab room or anywhere else.
+
+/** The instructions-profile name that marks a Lab session. */
+export const LAB_INSTRUCTIONS_PROFILE = 'lab';
+
+/** GitHub org that owns the lab repos. Compared case-insensitively. */
+export const LAB_ORG = 'illysium-ai';
+
+/**
+ * PREDICATE 1 — lab session.
+ *
+ * Read at call time, never cached at module scope: the core is imported once per
+ * adapter process and the tests flip this env between cases.
+ */
+export function isLabSession(): boolean {
+    return process.env.NANOCLAW_INSTRUCTIONS_PROFILE === LAB_INSTRUCTIONS_PROFILE;
+}
+
+// The OWNER half is pinned to the lab org inside the pattern itself, not only
+// in a follow-up comparison, so `other-org/LAB-XZO` cannot match at all.
+//
+// The whole pattern is case-INSENSITIVE. GitHub repo names are case-insensitive
+// and both lab repos were renamed up from lowercase, so agents still hold
+// `lab-xzo` / `illysium-wiki` URLs that redirect to the current names. Refusing
+// those spellings would gate the exact commands the exemption exists to free.
+const LAB_REPO_NAME = '(?:LAB-[A-Z0-9-]+|ILLYSIUM-WIKI)';
+const LAB_REPO_REF_RE = new RegExp(
+    `(?:^|[^A-Za-z0-9_.-])(${LAB_ORG})\\/(${LAB_REPO_NAME})(?:\\.git)?(?![A-Za-z0-9_-])`,
+    'gi',
+);
+
+/** Name of the lab repo `value` references (`<org>/<repo>`), or null. Accepts a
+ *  bare `org/repo` or any URL containing one. */
+export function labRepoRefName(value: string): string | null {
+    if (!value) return null;
+    LAB_REPO_REF_RE.lastIndex = 0;
+    const m = LAB_REPO_REF_RE.exec(value);
+    return m ? `${m[1]}/${m[2]}` : null;
+}
+
+/** True when `value` references a LAB-* or ILLYSIUM-WIKI repo under the lab org. */
+export function isLabRepoRef(value: string): boolean {
+    return labRepoRefName(value) !== null;
+}
+
+// A worktree checkout dir is named for its repo (`<worktrees>/XZO`), and the host
+// bind-mounts the same directory twice — at /workspace/worktrees and at its own
+// host path (nanoclaw-v2 src/container-runner.ts). Matching the `worktrees/<repo>`
+// SEGMENT rather than a /workspace-anchored prefix covers both mounts with one
+// pattern.
+// Case-insensitive for the same reason as LAB_REPO_REF_RE: a checkout dir is
+// named for its repo, and a clone taken before the rename is `lab-xzo` on disk.
+const LAB_WORKTREE_SEGMENT_RE = new RegExp(`(?:^|\\/)worktrees\\/${LAB_REPO_NAME}(?:\\/|$)`, 'i');
+
+/**
+ * True when `p` sits inside a LAB-* or ILLYSIUM-WIKI worktree checkout, under
+ * either the /workspace mount or the host-path alias mount.
+ *
+ * Tested against the NORMALIZED path only. Matching the raw string would let
+ * `/workspace/worktrees/LAB-XZO/../XZO` read as a lab path and delete the prod
+ * checkout next door.
+ */
+export function isLabWorktreePath(p: string): boolean {
+    if (!p) return false;
+    return LAB_WORKTREE_SEGMENT_RE.test(normalizePath(p));
+}
+
+/** process.cwd() throws when the cwd has been unlinked; a guard must not die on it. */
+function currentWorkingDir(): string {
+    try {
+        return process.cwd();
+    } catch {
+        return '';
+    }
+}
+
+// ── git target resolution ────────────────────────────────────────────────────
+
+const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
+// URL and scp-style (`git@github.com:org/repo`) remotes.
+const REPO_URL_RE = /^(?:(?:https?|ssh|git|git\+ssh|file):\/\/|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:)/;
+// A bare `org/repo` positional. Only consulted in the REMOTE position, so a
+// branch named `feature/x` in a refspec position is never mistaken for a repo.
+const ORG_REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/;
+
+/** Index of the git subcommand in `args`, skipping git's global options. */
+function gitSubcommandIndex(args: string[]): number {
+    let i = 0;
+    while (i < args.length) {
+        if (GIT_GLOBAL_VALUE_OPTS.has(args[i])) { i += 2; continue; }
+        if (args[i].startsWith('-')) { i += 1; continue; }
+        break;
+    }
+    return i;
+}
+
+/** Value of `git -C <path>` / `--work-tree <path>`, which relocates the
+ *  effective working directory. */
+function gitRelocatedDir(args: string[]): string | null {
+    for (let i = 0; i < args.length - 1; i++) {
+        if (args[i] === '-C' || args[i] === '--work-tree') return args[i + 1];
+    }
+    return null;
+}
+
+/** First positional after the subcommand — the remote for push/fetch/pull. */
+function gitRemoteArg(args: string[]): string | null {
+    for (let j = gitSubcommandIndex(args) + 1; j < args.length; j++) {
+        if (args[j].startsWith('-')) continue;
+        return args[j];
+    }
+    return null;
+}
+
+function labGitTarget(cmd: ResolvedCommand, cwd: string): string | null {
+    // An explicit repo URL anywhere in the command decides on its own, and ALL
+    // of them must be lab repos — a lab cwd does not launder a push to a prod URL.
+    const urls = cmd.args.filter(a => REPO_URL_RE.test(a));
+    if (urls.length > 0) {
+        return urls.every(isLabRepoRef) ? labRepoRefName(urls[0]) : null;
+    }
+
+    // A bare `org/repo` in the remote position decides the same way.
+    const remote = gitRemoteArg(cmd.args);
+    if (remote && ORG_REPO_RE.test(remote)) {
+        return isLabRepoRef(remote) ? labRepoRefName(remote) : null;
+    }
+
+    // Bare remote name (`origin`, `upstream`) or none: the checkout decides.
+    const effectiveCwd = gitRelocatedDir(cmd.args) ?? cwd;
+    return isLabWorktreePath(effectiveCwd) ? effectiveCwd : null;
+}
+
+// ── SQL target resolution ────────────────────────────────────────────────────
+
+// `snow` is absent on purpose: Snowflake has no lab tenant.
+const LAB_SQL_CLIS = new Set(['psql', 'pg_dump', 'pg_restore', 'pg_dumpall', 'mysql', 'mysqldump']);
+const LAB_DB_NAME_RE = /^lab[-_]/i;
+// Render Postgres hostnames look like `dpg-xxxx-a.virginia-postgres.render.com`,
+// so the reliable lab signals are the DATABASE and USER names, not the host.
+const CONNECTION_URI_RE =
+    /\b(?:postgres(?:ql)?|mysql|mysqlx|mariadb):\/\/(?:([^:@/\s]*)(?::[^@/\s]*)?@)?([^/?#:\s]*)(?::\d+)?(?:\/([^?#\s]*))?/i;
+// libpq keyword/value form: `psql "host=... dbname=lab_xzo user=lab_xzo_admin"`.
+const CONNECTION_KV_RE = /\b(?:host|user|dbname|database)=([^\s'"]+)/gi;
+const SQL_HOST_FLAGS = new Set(['-h', '--host']);
+const SQL_USER_FLAGS = new Set(['-U', '--username']);
+const SQL_DB_FLAGS = new Set(['-d', '--dbname']);
+
+function labSqlSignal(value: string): string | null {
+    if (!value) return null;
+
+    const uri = CONNECTION_URI_RE.exec(value);
+    if (uri) {
+        for (const part of [uri[1], uri[2], uri[3]]) {
+            if (part && LAB_DB_NAME_RE.test(part)) return part;
+        }
+    }
+
+    CONNECTION_KV_RE.lastIndex = 0;
+    let kv: RegExpExecArray | null;
+    while ((kv = CONNECTION_KV_RE.exec(value)) !== null) {
+        if (LAB_DB_NAME_RE.test(kv[1])) return kv[1];
+    }
+
+    return null;
+}
+
+function labSqlTarget(cmd: ResolvedCommand): string | null {
+    const { args } = cmd;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+
+        // --host=lab-x / --username=lab_x / --dbname=lab_xzo
+        const eq = a.match(/^(?:--host|--username|--dbname)=(.+)$/);
+        if (eq && LAB_DB_NAME_RE.test(eq[1])) return eq[1];
+
+        // -h lab-x / -U lab_xzo_admin / -d lab_xzo
+        if (SQL_HOST_FLAGS.has(a) || SQL_USER_FLAGS.has(a) || SQL_DB_FLAGS.has(a)) {
+            const v = args[i + 1];
+            if (v && !v.startsWith('-') && LAB_DB_NAME_RE.test(v)) return v;
+            continue;
+        }
+
+        // A connection string, given bare or as some other flag's value.
+        const signal = labSqlSignal(a);
+        if (signal) return signal;
+    }
+    return null;
+}
+
+// ── Platform / service target resolution ─────────────────────────────────────
+
+const LAB_RESOURCE_RE = /^lab-/;
+
+function labRenderTarget(cmd: ResolvedCommand): string | null {
+    const verbs = PLATFORM_DESTRUCTIVE.render;
+    for (const a of cmd.args) {
+        if (a.startsWith('-') || verbs.has(a)) continue;
+        if (LAB_RESOURCE_RE.test(a)) return a;
+    }
+    return null;
+}
+
+// `gh repo delete` is exempt for LAB-* under the lab org ONLY. ILLYSIUM-WIKI is
+// deliberately not deletable without approval: the wiki is lab-writable, not
+// lab-disposable — and `illysium-wiki` does not start with `lab-`, so the
+// case-insensitive match below still refuses it.
+const GH_LAB_REPO_RE = new RegExp(`^(${LAB_ORG})\\/(LAB-[A-Z0-9-]+)$`, 'i');
+
+function labGhTarget(cmd: ResolvedCommand): string | null {
+    const target = cmd.args[2];
+    if (!target) return null;
+    return GH_LAB_REPO_RE.test(target) ? target : null;
+}
+
+/**
+ * PREDICATE 2 — lab target.
+ *
+ * Returns the matched target's name (used in the stderr log line) or null.
+ * Fails CLOSED: every family it does not recognize, and every target it cannot
+ * read literally out of the resolved command, returns null and stays gated.
+ */
+export function labTargetOf(cmd: ResolvedCommand, cwd: string = currentWorkingDir()): string | null {
+    switch (cmd.name) {
+        case 'git':
+            return labGitTarget(cmd, cwd);
+        case 'render':
+            return labRenderTarget(cmd);
+        case 'gh':
+            return cmd.args[0] === 'repo' && cmd.args[1] === 'delete' ? labGhTarget(cmd) : null;
+        default:
+            return LAB_SQL_CLIS.has(cmd.name) ? labSqlTarget(cmd) : null;
+    }
+}
+
+/** Boolean form of the lab-target predicate. */
+export function isLabTarget(cmd: ResolvedCommand, cwd: string = currentWorkingDir()): boolean {
+    return labTargetOf(cmd, cwd) !== null;
+}
+
+function logLabScope(message: string): void {
+    console.error(`lab-scope: ${message}`);
+}
+
 // ── Hard block checks ────────────────────────────────────────────────────────
 
 /** Returns block reason if the command is unconditionally blocked, null otherwise */
@@ -1056,8 +1321,18 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
  * Apply three-tier rm protection. Returns the full block message (already
  * prefixed with `BLOCKED:`) when the rm should be blocked, or null when it is
  * allowed. The caller is responsible for emitting the message and exiting.
+ *
+ * `opts.isExtraSafe` widens tier 2 (the ephemeral-path allowlist) for the
+ * caller's scope. evaluateBashCommand passes the lab-worktree matcher through it
+ * in a Lab session and nothing else does — the default behavior is unchanged.
  */
-export function checkRmDecision(cmd: ResolvedCommand): string | null {
+export function checkRmDecision(
+    cmd: ResolvedCommand,
+    opts: { isExtraSafe?: (path: string) => boolean } = {},
+): string | null {
+    const safe = opts.isExtraSafe
+        ? (p: string) => isSafePath(p) || opts.isExtraSafe!(p)
+        : isSafePath;
     // Separate flags from paths using AST-parsed args
     const flags: string[] = [];
     const paths: string[] = [];
@@ -1094,14 +1369,14 @@ export function checkRmDecision(cmd: ResolvedCommand): string | null {
 
     // Tier 1: protected paths → hard block (safe ephemeral paths take priority)
     for (const p of paths) {
-        if (!isSafePath(p) && isProtectedPath(p)) {
+        if (!safe(p) && isProtectedPath(p)) {
             return `BLOCKED: '${cmd.raw}' — '${p}' is a protected path.`;
         }
     }
 
     // Tier 2: safe ephemeral paths → allow
     // Tier 3: everything else → redirect to trash (flag only the unsafe paths)
-    const unsafePaths = paths.filter(p => !isSafePath(p));
+    const unsafePaths = paths.filter(p => !safe(p));
     if (unsafePaths.length > 0) {
         const trashCmd = `trash ${unsafePaths.join(' ')}`;
         return `BLOCKED: rm is not allowed for non-ephemeral paths. Re-run your command using trash instead:\n\n  ${trashCmd}\n\ntrash moves files to macOS Trash (recoverable). Ephemeral paths (tmp, node_modules, dist, build, .cache, coverage, __pycache__, etc.) are allowed with rm.`;
@@ -1127,15 +1402,28 @@ export function checkRmDecision(cmd: ResolvedCommand): string | null {
  * pass: in the original main(), an approved gate falls through to the rm tier,
  * so a destructive rm in the same command line is still blocked even after the
  * gated verb was approved. Skipping tier (2) reproduces that fall-through.
+ *
+ * `opts.cwd` is the working directory the command will run in — supplied by an
+ * adapter that has it on its hook input (Claude's `cwd` field), else
+ * process.cwd(). It only ever matters to the lab-scope predicate below, which
+ * uses it to resolve a bare `git push origin` to the repo it would actually
+ * push to.
+ *
+ * LAB SCOPE (tier 2 and tier 3 only): in a Lab session, a gated verb aimed at a
+ * lab target allows instead of holding, and a lab worktree path joins the rm
+ * ephemeral allowlist. Tier 1 is never exempted. Both predicates must hold and
+ * both fail closed — see the lab-scope block above.
  */
 export function evaluateBashCommand(
     command: string,
-    opts: { skipGate?: boolean } = {},
+    opts: { skipGate?: boolean; cwd?: string } = {},
 ): GateEvaluation {
     const commands = extractCommands(command);
     const ephemeralMktempVariables = findEphemeralMktempVariables(command);
+    const lab = isLabSession();
+    const cwd = opts.cwd ?? currentWorkingDir();
 
-    // --- Hard block checks (no bypass, ever) ---
+    // --- Hard block checks (no bypass, ever — lab included) ---
     for (const cmd of commands) {
         const reason = checkHardBlock(cmd);
         if (reason) {
@@ -1148,6 +1436,13 @@ export function evaluateBashCommand(
         for (const cmd of commands) {
             const reason = checkGatedCommand(cmd);
             if (reason) {
+                if (lab) {
+                    const target = labTargetOf(cmd, cwd);
+                    if (target !== null) {
+                        logLabScope(`allowed ${cmd.name} against lab target ${target}`);
+                        continue;
+                    }
+                }
                 return { action: 'gate', reason };
             }
         }
@@ -1159,7 +1454,17 @@ export function evaluateBashCommand(
             const proven = typeof cmd.pos === 'number'
                 ? ephemeralMktempVariables.get(cmd.pos) ?? new Set<string>()
                 : new Set<string>();
-            const reason = checkRmDecision(resolveEphemeralRmArgs(cmd, proven));
+            const resolved = resolveEphemeralRmArgs(cmd, proven);
+            let reason = checkRmDecision(resolved);
+            if (reason && lab) {
+                // Re-decide with lab worktree paths counted as ephemeral. Only
+                // logged when it actually changes the outcome.
+                const relaxed = checkRmDecision(resolved, { isExtraSafe: isLabWorktreePath });
+                if (relaxed === null) {
+                    logLabScope(`allowed rm against lab target ${resolved.args.filter(a => !a.startsWith('-')).join(' ')}`);
+                }
+                reason = relaxed;
+            }
             if (reason) {
                 return { action: 'block', reason };
             }
