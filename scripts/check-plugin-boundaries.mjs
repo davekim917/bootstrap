@@ -303,11 +303,11 @@ if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '4.3.7') {
-  fail(`bootstrap-workflow release must be version 4.3.7 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '4.3.8') {
+  fail(`bootstrap-workflow release must be version 4.3.8 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '1.3.7') {
-  fail(`bootstrap-workflow-agents release must be version 1.3.7 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '1.3.8') {
+  fail(`bootstrap-workflow-agents release must be version 1.3.8 (found ${codexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
