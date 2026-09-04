@@ -76,7 +76,10 @@ placeholders rather than rewriting or replacing it:
   rewritten prompt. If the repo under review defines a review policy file (`docs/review-policy.md`
   or `REVIEW.md`), append its severity semantics and do-not-report list here too — that file is the
   project's contract for what a finding is for, and this slot is the only channel that reaches the
-  reviewer.
+  reviewer. Also inject: for race, TOCTOU, and ownership findings — already in the vendored prompt's
+  own `<attack_surface>` — report the finding class once with every affected call site and name the
+  primitive (the writer, the spawner, the migrator) where the invariant belongs, never one call site
+  per round.
 - `{{REVIEW_COLLECTION_GUIDANCE}}` — scope-limiting instructions: read only the supplied diff and
   its direct callers/contracts; do not edit files or run side-effecting commands. `--yolo` disables
   sandboxing entirely, so — unlike the read-only-sandboxed invocation this guidance was originally
@@ -159,6 +162,10 @@ Always applied:
 - **Correctness** — behavior matches the stated acceptance criteria; empty, boundary, and error
   inputs are handled; no silently swallowed failure; repeated or concurrent invocation is safe
   wherever reachable.
+- **Invariant ownership** — every stated invariant names the one primitive that enforces it (the
+  writer, the spawner, the migrator); a plan that enforces an invariant by re-checking at call
+  sites, or by awaiting between a check and its write, is a design defect — reject with the
+  primitive named.
 - **Simplicity** — no abstraction with one implementation, no configuration for a value that never
   varies, no scaffolding for unrequested futures; an existing project primitive or the standard
   library would not have done the job.
