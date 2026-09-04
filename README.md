@@ -15,10 +15,11 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 4.0.3 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 1.0.3 | Runtime-neutral workflow skills and safety gates |
+| Claude Code | `bootstrap-workflow` | 4.3.9 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 1.3.9 | Runtime-neutral workflow skills and safety gates |
+| Claude Code / Codex | `wwbd` | 1.2.1 | Boris Cherny-inspired engineering-judgment advisory skill |
 
-Both plugins expose exactly seven user-facing skills:
+Both workflow plugins expose exactly seven user-facing skills:
 
 | Skill | Purpose |
 |---|---|
@@ -65,7 +66,7 @@ Claude-primary reviews use:
 ```bash
 codex exec \
   --ignore-user-config \
-  --model gpt-5.6-sol \
+  --model gpt-6-astra \
   -c 'model_reasoning_effort="high"' \
   --ephemeral \
   --yolo
@@ -75,7 +76,7 @@ Codex/OpenCode-primary reviews use:
 
 ```bash
 claude -p \
-  --model claude-opus-5 \
+  --model claude-fable-5-1 \
   --effort high \
   --safe-mode \
   --no-session-persistence \
@@ -100,6 +101,7 @@ whether to proceed with degraded coverage; `/team-auto` stops once.
 ```text
 /plugin marketplace add davekim917/bootstrap
 /plugin install bootstrap-workflow@davekim917-bootstrap
+/plugin install wwbd@davekim917-bootstrap
 ```
 
 ### Codex
@@ -107,6 +109,7 @@ whether to proceed with degraded coverage; `/team-auto` stops once.
 ```bash
 codex plugin marketplace add davekim917/bootstrap --ref main
 codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
+codex plugin add wwbd@davekim917-bootstrap
 ```
 
 For a local checkout at `~/plugins/bootstrap`:
@@ -114,10 +117,16 @@ For a local checkout at `~/plugins/bootstrap`:
 ```bash
 codex plugin marketplace add ~/plugins/bootstrap
 codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
+codex plugin add wwbd@davekim917-bootstrap
 ```
 
 Codex loads the plugin from its cache through `.codex-plugin/plugin.json`; do not copy workflow
 skills or agent definitions into a user home.
+
+WWBD is installed separately from the workflow plugin. After installing it, start a new Codex
+session so its WWBD skill is available. Verify installation with `codex plugin list`.
+Claude also gets a SessionStart reminder; Codex discovers the advisory skill through its native
+plugin skill loader.
 
 ## Upgrading from pre-4.0 / pre-1.0
 
@@ -142,8 +151,9 @@ Claude, Codex/NanoClaw, or OpenCode sessions after cleanup so cached definitions
 
 ## Runtime and safety boundaries
 
-- Claude installs only `plugins/workflow`.
-- Codex/OpenCode installs only `plugins/workflow-agents`.
+- Claude's workflow plugin installs from `plugins/workflow`.
+- Codex/OpenCode's workflow plugin installs from `plugins/workflow-agents`.
+- Claude and Codex can also install the shared `plugins/wwbd` advisory plugin.
 - Reviewer identities are bounded prompt roles, never globally installed permanent agents.
 - Mechanically portable skills and shared contracts are generated from the Claude source tree.
 - Shared destructive and protected-file guards are authored once and vendored to the agent plugin.
@@ -159,7 +169,8 @@ bootstrap/
 ├── .claude-plugin/marketplace.json
 ├── plugins/
 │   ├── workflow/
-│   └── workflow-agents/
+│   ├── workflow-agents/
+│   └── wwbd/
 ├── evals/
 ├── scripts/
 └── deprecated/

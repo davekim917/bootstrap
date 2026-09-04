@@ -118,8 +118,8 @@ export function evaluateContracts({
   }
 
   const exactCommands = [
-    `codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo`,
-    'claude -p --model claude-opus-5 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json',
+    `codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="high"' --ephemeral --yolo`,
+    'claude -p --model claude-fable-5-1 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json',
   ];
   for (const [label, root] of inventories) {
     const reviewPath = path.join(root, 'shared', 'cross-model-review.md');

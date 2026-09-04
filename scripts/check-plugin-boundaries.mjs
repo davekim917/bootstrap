@@ -303,11 +303,11 @@ if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '4.3.8') {
-  fail(`bootstrap-workflow release must be version 4.3.8 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '4.3.9') {
+  fail(`bootstrap-workflow release must be version 4.3.9 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '1.3.8') {
-  fail(`bootstrap-workflow-agents release must be version 1.3.8 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '1.3.9') {
+  fail(`bootstrap-workflow-agents release must be version 1.3.9 (found ${codexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -430,14 +430,14 @@ for (const fileName of ['workflow-contract.md', 'cross-model-review.md']) {
 const crossModelTokens = [
   'codex exec',
   '--ignore-user-config',
-  '--model gpt-5.6-sol',
+  '--model gpt-6-astra',
   'model_reasoning_effort="high"',
   '--ephemeral',
   '--yolo',
   '3600000',
   '60-minute',
   'claude -p',
-  '--model claude-opus-5',
+  '--model claude-fable-5-1',
   '--effort high',
   '--safe-mode',
   '--no-session-persistence',
