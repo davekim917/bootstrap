@@ -15,13 +15,13 @@ When Claude is primary, invoke Codex with settings that do not inherit any host 
 `config.toml`:
 
 ```sh
-codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo
+codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="high"' --ephemeral --yolo
 ```
 
 When Codex or OpenCode is primary, invoke Claude with:
 
 ```sh
-claude -p --model claude-opus-5 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json
+claude -p --model claude-fable-5-1 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json
 ```
 
 Pass the review prompt and source bundle on stdin. Run each external reviewer in the foreground and
@@ -52,7 +52,7 @@ Send the vendored prompt at `references/codex-adversarial-prompt.md` verbatim, f
 four substitution markers (below), and enforce its schema at the CLI boundary rather than in prose:
 
 ```sh
-codex exec --ignore-user-config --model gpt-5.6-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo \
+codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="high"' --ephemeral --yolo \
   --output-schema references/codex-review-output.schema.json \
   --output-last-message <path-to-write-the-final-JSON-response>
 ```
@@ -114,7 +114,7 @@ Ask for exactly one JSON object, and enforce it at the CLI boundary — `--outpu
 only shapes the response envelope, it does not constrain content to a schema:
 
 ```sh
-claude -p --model claude-opus-5 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json \
+claude -p --model claude-fable-5-1 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json \
   --json-schema '{"type":"object","required":["verdict","findings"],"properties":{"verdict":{"enum":["clear","must_fix","degraded"]},"findings":{"type":"array","items":{"type":"object","required":["severity","requirement","evidence","failure_mode","smallest_fix","confidence"],"properties":{"severity":{"enum":["MUST-FIX","SHOULD-FIX"]},"requirement":{"type":"string"},"evidence":{"type":"string"},"failure_mode":{"type":"string"},"smallest_fix":{"type":"string"},"confidence":{"type":"number","minimum":0,"maximum":1}}}}}}'
 ```
 
