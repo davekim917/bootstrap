@@ -18,6 +18,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code | `bootstrap-workflow` | 4.3.9 | Claude-native workflow skills and safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 1.3.9 | Runtime-neutral workflow skills and safety gates |
 | Claude Code / Codex | `wwbd` | 1.2.1 | Boris Cherny-inspired engineering-judgment advisory skill |
+| Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
 Both workflow plugins expose exactly seven user-facing skills:
 
@@ -102,6 +103,7 @@ whether to proceed with degraded coverage; `/team-auto` stops once.
 /plugin marketplace add davekim917/bootstrap
 /plugin install bootstrap-workflow@davekim917-bootstrap
 /plugin install wwbd@davekim917-bootstrap
+/plugin install concise@davekim917-bootstrap
 ```
 
 ### Codex
@@ -110,6 +112,7 @@ whether to proceed with degraded coverage; `/team-auto` stops once.
 codex plugin marketplace add davekim917/bootstrap --ref main
 codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
 codex plugin add wwbd@davekim917-bootstrap
+codex plugin add concise@davekim917-bootstrap
 ```
 
 For a local checkout at `~/plugins/bootstrap`:
@@ -127,6 +130,24 @@ WWBD is installed separately from the workflow plugin. After installing it, star
 session so its WWBD skill is available. Verify installation with `codex plugin list`.
 Claude also gets a SessionStart reminder; Codex discovers the advisory skill through its native
 plugin skill loader.
+
+### Concise
+
+`concise` is opt-in and applies only to the current conversation. In Claude Code, Codex, or
+NanoClaw, ask to "use the concise skill". Ask to "turn concise mode off" to restore the session's
+usual response style. It never becomes a persistent preference, shared instruction, or always-on
+mode. Start a fresh host session after installing the plugin so its skill catalog includes it.
+
+The canonical skill for every runtime is
+`~/plugins/bootstrap/plugins/concise/skills/concise/SKILL.md`. From the NanoClaw checkout, run the enabler to mirror its
+skill to OpenCode; Claude and Codex read the declared plugin directly from the container mount:
+
+```bash
+pnpm exec tsx scripts/enable-agent-plugin.ts bootstrap
+```
+
+Respawn the target agent after an update. Do not copy this skill into `container/skills/` or create
+a NanoClaw always-on ruleset.
 
 ## Upgrading from pre-4.0 / pre-1.0
 
@@ -170,7 +191,8 @@ bootstrap/
 ├── plugins/
 │   ├── workflow/
 │   ├── workflow-agents/
-│   └── wwbd/
+│   ├── wwbd/
+│   └── concise/
 ├── evals/
 ├── scripts/
 └── deprecated/
