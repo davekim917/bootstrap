@@ -8,14 +8,20 @@
     {
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
-      "description": "Seven-skill workflow: plan → build → independent review → human-controlled ship gate, with a bounded /team-auto runner.",
+      "description": "Seven-skill workflow: plan \u2192 build \u2192 independent review \u2192 human-controlled ship gate, with a bounded /team-auto runner.",
       "version": "4.3.9"
     },
     {
       "name": "wwbd",
       "source": "./plugins/wwbd",
-      "description": "What Would Boris Do — engineering-judgment advisory skill channeling Boris Cherny's published guidance, with an always-on nudge to consult it before architecture/design/build decisions.",
+      "description": "What Would Boris Do \u2014 engineering-judgment advisory skill channeling Boris Cherny's published guidance, with an always-on nudge to consult it before architecture/design/build decisions.",
       "version": "1.2.1"
+    },
+    {
+      "name": "concise",
+      "source": "./plugins/concise",
+      "description": "Session-only concise chat with proper grammar and complete technical artifacts.",
+      "version": "1.0.1"
     }
   ]
 }

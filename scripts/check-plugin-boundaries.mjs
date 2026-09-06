@@ -149,6 +149,8 @@ const codexManifest = readJson('plugins/workflow-agents/.codex-plugin/plugin.jso
 const claudeManifest = readJson('plugins/workflow/.claude-plugin/plugin.json');
 const wwbdClaudeManifest = readJson('plugins/wwbd/.claude-plugin/plugin.json');
 const wwbdCodexManifest = readJson('plugins/wwbd/.codex-plugin/plugin.json');
+const conciseClaudeManifest = readJson('plugins/concise/.claude-plugin/plugin.json');
+const conciseCodexManifest = readJson('plugins/concise/.codex-plugin/plugin.json');
 const codexCopyPasteEntry = readJson('plugins/workflow-agents/marketplace-entry.json');
 const codexHookManifest = readJson('plugins/workflow-agents/hooks/workflow-hooks.json');
 
@@ -172,11 +174,12 @@ if (!codexWorkflowEntry) {
   );
 }
 
-// Supported roster: the workflow distribution plus the single-source wwbd
-// advisory plugin. Anything else creeping into a marketplace is drift.
+// Supported roster: the workflow distribution plus the standalone single-source
+// advisory and session-mode plugins. Anything else creeping into a marketplace is drift.
 const codexRoster = new Map([
   ['bootstrap-workflow-agents', './plugins/workflow-agents'],
   ['wwbd', './plugins/wwbd'],
+  ['concise', './plugins/concise'],
 ]);
 for (const entry of codexEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
@@ -198,6 +201,15 @@ if (!codexWwbdEntry) {
   );
 }
 
+const codexConciseEntry = codexEntries.find((entry) => entry.name === 'concise');
+if (!codexConciseEntry) {
+  fail('.agents/plugins/marketplace.json must register concise');
+} else if (codexConciseEntry.version !== conciseCodexManifest?.version) {
+  fail(
+    `concise version must match between .agents marketplace and .codex-plugin manifest (${codexConciseEntry.version} !== ${conciseCodexManifest?.version})`,
+  );
+}
+
 const claudeWorkflowEntry = claudeEntries.find((entry) => entry.name === 'bootstrap-workflow');
 if (!claudeWorkflowEntry) {
   fail('.claude-plugin/marketplace.json must register bootstrap-workflow');
@@ -212,6 +224,7 @@ if (!claudeWorkflowEntry) {
 const claudeRoster = new Map([
   ['bootstrap-workflow', './plugins/workflow'],
   ['wwbd', './plugins/wwbd'],
+  ['concise', './plugins/concise'],
 ]);
 for (const entry of claudeEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
@@ -230,6 +243,15 @@ if (!claudeWwbdEntry) {
 } else if (claudeWwbdEntry.version !== wwbdClaudeManifest?.version) {
   fail(
     `wwbd version must match between .claude-plugin marketplace and plugin manifest (${claudeWwbdEntry.version} !== ${wwbdClaudeManifest?.version})`,
+  );
+}
+
+const claudeConciseEntry = claudeEntries.find((entry) => entry.name === 'concise');
+if (!claudeConciseEntry) {
+  fail('.claude-plugin/marketplace.json must register concise');
+} else if (claudeConciseEntry.version !== conciseClaudeManifest?.version) {
+  fail(
+    `concise version must match between .claude-plugin marketplace and .claude-plugin manifest (${claudeConciseEntry.version} !== ${conciseClaudeManifest?.version})`,
   );
 }
 
@@ -256,6 +278,51 @@ if (!exists('plugins/wwbd/always-on.md')) {
 // dead config that looks live. Keep the Codex manifest hook-free.
 if (wwbdCodexManifest?.hooks !== undefined) {
   fail('plugins/wwbd/.codex-plugin/plugin.json must not declare hooks (non-Claude providers get the nudge via .nanoclaw-always-on.md)');
+}
+
+// concise is one skills-only plugin directory for Claude and Codex/OpenCode.
+// It intentionally has no activation hook or always-on file: invocation turns
+// the current conversation mode on, and the skill itself turns it off again.
+if (conciseClaudeManifest?.name !== 'concise') {
+  fail('plugins/concise/.claude-plugin/plugin.json name must be concise');
+}
+if (conciseCodexManifest?.name !== 'concise') {
+  fail('plugins/concise/.codex-plugin/plugin.json name must be concise');
+}
+if (conciseClaudeManifest?.version !== conciseCodexManifest?.version) {
+  fail(
+    `concise Claude and Codex manifests must share one version (${conciseClaudeManifest?.version} !== ${conciseCodexManifest?.version})`,
+  );
+}
+for (const [label, manifest] of [
+  ['Claude', conciseClaudeManifest],
+  ['Codex', conciseCodexManifest],
+]) {
+  if (normalizeSource(manifest?.skills) !== './skills') {
+    fail(`plugins/concise ${label} manifest skills must point at ./skills/`);
+  }
+  if (manifest?.hooks !== undefined) {
+    fail(`plugins/concise ${label} manifest must not declare hooks; concise is session-invoked only`);
+  }
+}
+if (!exists('plugins/concise/skills/concise/SKILL.md')) {
+  fail('plugins/concise must ship the shared skills/concise/SKILL.md');
+}
+const conciseAgentDefinition = readText('plugins/concise/skills/concise/agents/openai.yaml');
+if (
+  conciseAgentDefinition !== undefined
+  && !/^\s*allow_implicit_invocation:\s*false\s*$/m.test(conciseAgentDefinition)
+) {
+  fail('plugins/concise/skills/concise/agents/openai.yaml must set allow_implicit_invocation: false');
+}
+for (const activationPath of [
+  'plugins/concise/hooks',
+  'plugins/concise/always-on.md',
+  'plugins/concise/.nanoclaw-always-on.md',
+]) {
+  if (exists(activationPath)) {
+    fail(`${activationPath} must not exist; concise is session-invoked only`);
+  }
 }
 
 if (codexManifest?.name !== 'bootstrap-workflow-agents') {
@@ -517,6 +584,7 @@ for (const filePath of activeContractFiles) {
 
 checkSkillMarkdownLinks(codexSkillsRoot);
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/wwbd/skills'));
+checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/concise/skills'));
 checkSkillMarkdownLinks(claudeSkillsRoot);
 
 for (const skillName of codexSkills) {

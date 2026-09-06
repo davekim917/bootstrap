@@ -1,0 +1,24 @@
+{
+  "name": "concise",
+  "version": "1.0.1",
+  "description": "Session-only concise chat with proper grammar and complete technical artifacts.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Concise",
+    "shortDescription": "Toggle concise chat for this session",
+    "longDescription": "Opt-in concise, grammatical chat for host and NanoClaw sessions. Keeps technical artifacts complete and turns off when asked.",
+    "developerName": "David Kim",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive"
+    ],
+    "defaultPrompt": [
+      "Use the concise skill for this session."
+    ]
+  }
+}

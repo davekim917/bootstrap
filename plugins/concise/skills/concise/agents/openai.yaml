@@ -1,0 +1,6 @@
+interface:
+  display_name: "Concise"
+  short_description: "Toggle concise chat for this session only"
+  default_prompt: "Use $concise to enable concise chat for this session."
+policy:
+  allow_implicit_invocation: false

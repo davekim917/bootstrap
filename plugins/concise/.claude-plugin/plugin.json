@@ -1,0 +1,11 @@
+{
+  "name": "concise",
+  "version": "1.0.1",
+  "description": "Session-only concise chat with proper grammar and complete technical artifacts.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "skills": "./skills/"
+}
