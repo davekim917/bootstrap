@@ -1,0 +1,24 @@
+{
+  "name": "instruction-audit",
+  "version": "1.0.0",
+  "description": "Read-only audit of the always-on instruction surface — host and container — for context waste, dead rules, cross-layer contradictions, and unclear authority.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Instruction Audit",
+    "shortDescription": "Audit agent instructions for debt and conflicts",
+    "longDescription": "Finds instructions that waste context, never fire, contradict each other across host and container layers, stop work early, or grant unclear authority. Measures a baseline, tests rules against real usage data, and proposes exact edits. Read-only — applies nothing.",
+    "developerName": "David Kim",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive"
+    ],
+    "defaultPrompt": [
+      "Run an instruction debt audit of my agent setup."
+    ]
+  }
+}

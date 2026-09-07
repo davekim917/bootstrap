@@ -180,6 +180,7 @@ const codexRoster = new Map([
   ['bootstrap-workflow-agents', './plugins/workflow-agents'],
   ['wwbd', './plugins/wwbd'],
   ['concise', './plugins/concise'],
+  ['instruction-audit', './plugins/instruction-audit'],
 ]);
 for (const entry of codexEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
@@ -225,6 +226,7 @@ const claudeRoster = new Map([
   ['bootstrap-workflow', './plugins/workflow'],
   ['wwbd', './plugins/wwbd'],
   ['concise', './plugins/concise'],
+  ['instruction-audit', './plugins/instruction-audit'],
 ]);
 for (const entry of claudeEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
