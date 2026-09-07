@@ -1,0 +1,11 @@
+{
+  "name": "instruction-audit",
+  "version": "1.0.0",
+  "description": "Read-only audit of the always-on instruction surface — host and container — for context waste, dead rules, cross-layer contradictions, and unclear authority.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "skills": "./skills/"
+}

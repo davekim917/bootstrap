@@ -22,6 +22,12 @@
       "source": "./plugins/concise",
       "description": "Session-only concise chat with proper grammar and complete technical artifacts.",
       "version": "1.0.1"
+    },
+    {
+      "name": "instruction-audit",
+      "source": "./plugins/instruction-audit",
+      "description": "Read-only audit of the always-on instruction surface \u2014 host and container \u2014 for context waste, dead rules, cross-layer contradictions, and unclear authority.",
+      "version": "1.0.0"
     }
   ]
 }
