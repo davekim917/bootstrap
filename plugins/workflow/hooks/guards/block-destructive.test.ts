@@ -486,3 +486,36 @@ describe('wrapper resolution', () => {
         expectNativeAsk(await runHook(cmd));
     });
 });
+
+// A package runner executes an arbitrary command, so the guard has to resolve
+// through it the way it already does through sudo/env/nohup. It did not, and
+// `Bash(pnpm exec *)` is commonly allow-listed — so `pnpm exec <anything>`
+// passed the guard AND skipped the prompt. Ten characters defeated both layers.
+describe('package runners resolve to the real command', () => {
+    test.each([
+        ['pnpm exec rm -rf /'],
+        ['pnpm dlx rm -rf /'],
+        ['yarn dlx rm -rf /'],
+        ['npx rm -rf /'],
+        ['npx -y rm -rf /'],
+        ['bunx rm -rf /'],
+        ['npx -p some-pkg rm -rf /'],
+        ['sudo pnpm exec rm -rf /'],
+    ])('%s → still blocked', async (cmd) => {
+        const { exitCode } = await runHook(cmd);
+        expect(exitCode).not.toBe(0);
+    });
+
+    // The fix must not tax ordinary use: these are how the repo actually runs.
+    test.each([
+        ['pnpm exec tsx scripts/q.ts data/v2.db "select 1"'],
+        ['pnpm exec vitest run'],
+        ['pnpm exec prettier --check "src/**/*.ts"'],
+        ['pnpm install --frozen-lockfile'],
+        ['pnpm run build'],
+        ['pnpm exec rm -rf node_modules'],
+    ])('%s → still allowed', async (cmd) => {
+        const { exitCode } = await runHook(cmd);
+        expect(exitCode).toBe(0);
+    });
+});
