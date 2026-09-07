@@ -10,8 +10,12 @@ description: >
 
 # /orchestrate — delegate execution, keep judgment
 
-You are the architect and general contractor, not the labor. Plan, specify,
-delegate, review. Workers hammer the nails.
+Plan, specify, delegate, review — and keep your own context for judgment.
+Delegate work whose OUTPUT would flood that context: broad sweeps, log triage,
+long test runs, implementation you would not read line by line. Below that bar
+— a small edit, a file you already have open, something you can finish in a few
+calls — do it yourself. A worker costs a spawn and starts without what you
+already know, so delegating small work is slower AND worse.
 
 ## Why this saves money (measured)
 

@@ -282,6 +282,36 @@ if (wwbdCodexManifest?.hooks !== undefined) {
   fail('plugins/wwbd/.codex-plugin/plugin.json must not declare hooks (non-Claude providers get the nudge via .nanoclaw-always-on.md)');
 }
 
+// The always-on nudge reaches Claude via plugins/<p>/always-on.md and every
+// other provider via .nanoclaw-always-on.md, which concatenates the same blocks.
+// Nothing made them AGREE, so editing one silently split the fleet: Claude
+// sessions on the new directive, container and Codex agents on the old one, with
+// no check to notice. Compare the shared blocks byte-for-byte.
+for (const [pluginFile, heading] of [
+  ['plugins/workflow/always-on.md', '# Orchestrate'],
+  ['plugins/wwbd/always-on.md', '# WWBD'],
+]) {
+  if (!exists(pluginFile) || !exists('.nanoclaw-always-on.md')) continue;
+  const block = (text) => {
+    const start = text.indexOf(heading);
+    if (start === -1) return undefined;
+    const next = text.indexOf('\n# ', start + 1);
+    return text.slice(start, next === -1 ? undefined : next).trim();
+  };
+  const fromPlugin = block(readText(pluginFile));
+  const fromNanoclaw = block(readText('.nanoclaw-always-on.md'));
+  if (fromPlugin === undefined) {
+    fail(`${pluginFile} must contain a "${heading}" block (the always-on nudge)`);
+  } else if (fromNanoclaw === undefined) {
+    fail(`.nanoclaw-always-on.md must carry the "${heading}" block so non-Claude providers get the same directive`);
+  } else if (fromPlugin !== fromNanoclaw) {
+    fail(
+      `"${heading}" has drifted between ${pluginFile} and .nanoclaw-always-on.md — ` +
+        'Claude and non-Claude agents would receive different standing instructions. Edit both.',
+    );
+  }
+}
+
 // concise is one skills-only plugin directory for Claude and Codex/OpenCode.
 // It intentionally has no activation hook or always-on file: invocation turns
 // the current conversation mode on, and the skill itself turns it off again.
@@ -372,11 +402,11 @@ if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '4.3.9') {
-  fail(`bootstrap-workflow release must be version 4.3.9 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '4.3.10') {
+  fail(`bootstrap-workflow release must be version 4.3.10 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '1.3.9') {
-  fail(`bootstrap-workflow-agents release must be version 1.3.9 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '1.3.10') {
+  fail(`bootstrap-workflow-agents release must be version 1.3.10 (found ${codexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {

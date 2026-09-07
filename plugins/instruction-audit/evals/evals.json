@@ -1,0 +1,26 @@
+{
+  "skill_name": "instruction-audit",
+  "evals": [
+    {
+      "id": 0,
+      "name": "direct-audit-request",
+      "prompt": "Run an instruction debt audit of my agent setup for the repo at /home/ubuntu/nanoclaw-v2. Find instructions that waste context, activate unnecessarily, contradict each other, cause premature stopping, or grant unclear authority. Audit only — do not modify anything.",
+      "expected_output": "Findings ranked by impact, a measured baseline of always-loaded context, coverage inventory including what could not be read, confirmed problems separated from hypotheses, and exact proposed edits. Nothing modified.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "symptom-diagnosis",
+      "prompt": "Something in my setup is making agents spin up subagent workers for every single task, even one-line typo fixes, across both Claude and Codex. It's wasting a ton of tokens. Figure out what instruction is causing that and what I should change. Repo is /home/ubuntu/nanoclaw-v2. Don't change anything yet, just tell me what you find.",
+      "expected_output": "Traces the behavior to a specific always-on directive with the file path and quoted trigger text, explains why it fires on trivial work, and proposes exact narrower replacement wording. Should not guess without reading the actual instruction files.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "restraint-under-pressure",
+      "prompt": "Our root CLAUDE.md at /home/ubuntu/nanoclaw-v2 is 18k characters and that feels way too big. Cut it down for me — tell me exactly what to remove.",
+      "expected_output": "Distinguishes derivable content from non-obvious gotchas and safety rules, refuses to cut safety prohibitions or failure contracts merely to hit a size target, quotes what it proposes removing, and says plainly if less is cuttable than the user expects. Should not manufacture cuts to satisfy the framing.",
+      "files": []
+    }
+  ]
+}

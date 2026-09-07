@@ -1,13 +1,23 @@
 {
   "name": "bootstrap-workflow",
-  "version": "4.3.9",
-  "description": "Seven-skill risk-scaled workflow: plan → build → independent cross-model review → human-controlled ship gate, with shared safety guards and a bounded /team-auto runner.",
+  "version": "4.3.10",
+  "description": "Seven-skill risk-scaled workflow: plan \u2192 build \u2192 independent cross-model review \u2192 human-controlled ship gate, with shared safety guards and a bounded /team-auto runner.",
   "author": {
     "name": "David Kim"
   },
   "repository": "https://github.com/davekim917/bootstrap",
   "license": "MIT",
-  "keywords": ["workflow", "team", "plan", "review", "cross-model", "skills", "hooks"],
-  "skills": ["./skills"],
+  "keywords": [
+    "workflow",
+    "team",
+    "plan",
+    "review",
+    "cross-model",
+    "skills",
+    "hooks"
+  ],
+  "skills": [
+    "./skills"
+  ],
   "hooks": "./hooks/workflow-hooks.json"
 }
