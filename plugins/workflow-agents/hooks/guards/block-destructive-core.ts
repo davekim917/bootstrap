@@ -202,6 +202,11 @@ export const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 // Command wrappers that should be stripped to find the real command
 export const WRAPPERS = new Set([
     'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout',
+    // Package runners execute an arbitrary command too. Without them here,
+    // `pnpm exec rm -rf <path>` resolved to name='pnpm' and every destructive
+    // check passed — and since `Bash(pnpm exec *)` is commonly allow-listed,
+    // that also meant no prompt. A ten-character prefix defeated both layers.
+    'pnpm', 'yarn', 'npx', 'bunx',
 ]);
 
 // Protected home subdirectories — rm targeting anything inside these is blocked
@@ -637,6 +642,18 @@ export function resolveCommand(node: any): ResolvedCommand | null {
             if (args[skip] === '-n' && skip + 1 < args.length) skip = 2;
         } else if (name === 'timeout' || name === 'gtimeout') {
             skip = 1; // skip duration argument
+        } else if (name === 'pnpm' || name === 'yarn') {
+            // Only `exec`/`dlx` run an arbitrary command. `pnpm run <script>`
+            // executes a package.json script whose body is not on this command
+            // line, so there is nothing here to resolve — leave it alone.
+            while (skip < args.length && args[skip].startsWith('-')) skip += 1;
+            if (!(skip < args.length && (args[skip] === 'exec' || args[skip] === 'dlx'))) break;
+            skip += 1;
+        } else if (name === 'npx' || name === 'bunx') {
+            // The command follows the flags; -p/--package takes a value.
+            while (skip < args.length && args[skip].startsWith('-')) {
+                skip += args[skip] === '-p' || args[skip] === '--package' ? 2 : 1;
+            }
         }
         // nohup, time, command, builtin: just skip the wrapper word
 
