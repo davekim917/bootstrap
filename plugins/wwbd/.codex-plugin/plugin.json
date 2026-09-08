@@ -1,21 +1,29 @@
 {
   "name": "wwbd",
-  "version": "1.2.1",
-  "description": "What Would Boris Do — engineering judgment channeled from Boris Cherny's published guidance, calibrated for a product-led, agent-maintained builder.",
+  "version": "1.2.2",
+  "description": "What Would Boris Do \u2014 engineering judgment channeled from Boris Cherny's published guidance, calibrated for a product-led, agent-maintained builder.",
   "author": {
     "name": "David Kim"
   },
   "repository": "https://github.com/davekim917/bootstrap",
   "license": "MIT",
-  "keywords": ["judgment", "architecture", "simplicity", "advisory", "boris"],
+  "keywords": [
+    "judgment",
+    "architecture",
+    "simplicity",
+    "advisory",
+    "boris"
+  ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "WWBD — What Would Boris Do",
+    "displayName": "WWBD \u2014 What Would Boris Do",
     "shortDescription": "Engineering-judgment advisory skill",
     "longDescription": "Channels Boris Cherny's published agentic-engineering judgment: verdict-first consults, build-time defaults (spec-first, verification loops, simplicity bias), and a from-scratch architecture review test.",
     "developerName": "David Kim",
     "category": "Coding",
-    "capabilities": ["Interactive"],
+    "capabilities": [
+      "Interactive"
+    ],
     "websiteURL": "https://github.com/davekim917/bootstrap",
     "defaultPrompt": [
       "What would Boris say about this architecture?",
