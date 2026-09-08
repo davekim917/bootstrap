@@ -7,8 +7,8 @@ description: >
   "what would Boris say/do" or "wwbd", wants a second opinion on a technical decision, or
   asks whether a PROPOSED approach is over-engineered or how a top engineer would build
   it. This is decision advice BEFORE building — reviewing an already-written diff or
-  codebase for bloat is ponytail-review/ponytail-audit territory, and running the delivery
-  workflow is team-plan's. The operator is a product-led builder, not a CS-trained
+  codebase for bloat is team-review's territory, and running the delivery workflow is
+  team-plan's. The operator is a product-led builder, not a CS-trained
   engineer — this skill defines how to carry the engineering half of the decision for them.
 ---
 
