@@ -2,11 +2,12 @@
 name: team-auto
 description: >
   User-invoked autonomous runner for an explicitly approved plan. Runs team-build then
-  team-review --implementation, permits one bounded correction, and stops at the team-ship gate.
-  Maintains a recoverable two-hour sentinel and never ships.
+  team-review --implementation, permits one bounded correction, then hands off to team-ship, which
+  lands reversible work itself and stops at anything that deploys. Maintains a recoverable
+  two-hour sentinel.
 ---
 
-# /team-auto — Approved plan to pre-ship gate
+# /team-auto — Approved plan to pull request
 
 Read `../shared/workflow-contract.md` and `../shared/cross-model-review.md` first.
 
@@ -36,8 +37,11 @@ The sentinel is only a concurrency guard. It is not approval or workflow state.
 3. **Review:** invoke `/team-review --implementation`. Its cross-model review is mandatory.
 4. **Correct once:** if review returns verified `MUST-FIX`, apply one cohesive, evidence-backed
    correction batch and re-run only affected checks once.
-5. **Stop:** if clear, remove the sentinel and report readiness for the separate `/team-ship`
-   decision. Never invoke shipping.
+5. **Ship what is safe:** if clear, remove the sentinel and invoke `/team-ship`. It lands the
+   reversible tier itself — commit, push the working branch, open the PR — and asks a human only
+   for an action that deploys or cannot be cleanly undone. Do not stop here and report "ready to
+   ship": an approved plan that passed review and preflight has the authority to become a pull
+   request.
 
 If the correction creates a workflow-only blocker, a required reviewer is unavailable, the same
 mechanism fails again, or affected checks remain red, record one concrete blocker in `run.md`,
