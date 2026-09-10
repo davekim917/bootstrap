@@ -6,8 +6,8 @@
   "plugins": [
     {
       "name": "bootstrap-workflow-agents",
-      "version": "1.3.11",
-      "description": "Seven-skill risk-scaled workflow: plan \u2192 build \u2192 independent cross-model review \u2192 human-controlled ship gate.",
+      "version": "1.4.0",
+      "description": "Seven-skill risk-scaled workflow: plan \u2192 build \u2192 independent cross-model review \u2192 tiered ship gate.",
       "source": {
         "source": "local",
         "path": "./plugins/workflow-agents"

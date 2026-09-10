@@ -74,4 +74,6 @@ Before claiming a stage complete:
 5. State explicitly when a check could not run and why.
 
 No workflow stage may weaken repository safety rules, bypass a hook, or treat old green output as
-current evidence. `/team-auto` never ships.
+current evidence. `/team-auto` carries work only as far as `/team-ship`'s reversible tier — commit,
+push the working branch, open the PR — and never performs an action that deploys or cannot be
+cleanly undone.

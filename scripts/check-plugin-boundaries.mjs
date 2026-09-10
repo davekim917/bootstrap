@@ -402,11 +402,11 @@ if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '4.3.11') {
-  fail(`bootstrap-workflow release must be version 4.3.11 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '4.4.0') {
+  fail(`bootstrap-workflow release must be version 4.4.0 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '1.3.11') {
-  fail(`bootstrap-workflow-agents release must be version 1.3.11 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '1.4.0') {
+  fail(`bootstrap-workflow-agents release must be version 1.4.0 (found ${codexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -580,7 +580,7 @@ for (const root of ['plugins/workflow/skills', 'plugins/workflow-agents/skills']
   );
   requireTextTokens(
     `${root}/team-auto/SKILL.md`,
-    ['never ships', '.team-auto-active', 'run.md'],
+    ['stops at anything that deploys', '.team-auto-active', 'run.md'],
     'the bounded auto-runner contract',
   );
 }

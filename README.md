@@ -3,7 +3,7 @@
 A risk-scaled delivery workflow for Claude Code, Codex, and OpenCode:
 
 ```text
-/team-plan → /team-build → /team-review → human-controlled /team-ship
+/team-plan → /team-build → /team-review → /team-ship
 ```
 
 The workflow uses the smallest mechanism that satisfies the real requirements and failure
@@ -15,9 +15,9 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 4.3.9 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 1.3.9 | Runtime-neutral workflow skills and safety gates |
-| Claude Code / Codex | `wwbd` | 1.2.1 | Boris Cherny-inspired engineering-judgment advisory skill |
+| Claude Code | `bootstrap-workflow` | 4.4.0 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 1.4.0 | Runtime-neutral workflow skills and safety gates |
+| Claude Code / Codex | `wwbd` | 1.2.2 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
 Both workflow plugins expose exactly seven user-facing skills:
@@ -27,9 +27,9 @@ Both workflow plugins expose exactly seven user-facing skills:
 | `/team-plan` | First planning entry point; writes the normative `plan.md` and runs its independent review |
 | `/team-build` | Implements the approved plan with proportional testing and delegation |
 | `/team-review` | Reviews a plan or implementation, verifies findings, and records evidence |
-| `/team-auto` | Runs approved plan → build → review, then stops at the ship gate |
+| `/team-auto` | Runs approved plan → build → review, then hands off to `/team-ship` |
 | `/team-debug` | Diagnoses root cause from evidence before changing production code |
-| `/team-ship` | Performs the separate, human-controlled publish or merge boundary |
+| `/team-ship` | Lands reversible work itself; asks a human before anything that deploys or cannot be undone |
 | `/team-retro` | Optionally captures short, reusable lessons after delivery |
 
 `/team-plan` absorbs requirements, constraints, architecture, acceptance criteria, and execution
@@ -38,7 +38,7 @@ lenses only when the actual risk warrants them. A finding becomes MUST-FIX only 
 traces it to a violated invariant or concrete failure mode.
 
 `/team-auto` permits one evidence-backed correction. If its own enforcement or revision creates a
-new blocker, it records the evidence and stops instead of entering another loop. It never ships.
+new blocker, it records the evidence and stops instead of entering another loop. It never deploys: it hands off to `/team-ship`, which stops at anything that deploys.
 
 ## Workflow artifacts
 

@@ -1,7 +1,7 @@
 {
   "name": "bootstrap-workflow-agents",
-  "version": "1.3.11",
-  "description": "Seven-skill risk-scaled workflow: plan \u2192 build \u2192 independent cross-model review \u2192 human-controlled ship gate for Codex and OpenCode.",
+  "version": "1.4.0",
+  "description": "Seven-skill risk-scaled workflow: plan \u2192 build \u2192 independent cross-model review \u2192 tiered ship gate for Codex and OpenCode.",
   "author": {
     "name": "David Kim"
   },
@@ -22,7 +22,7 @@
   "interface": {
     "displayName": "Bootstrap Agent Workflow",
     "shortDescription": "Codex-native delivery workflow skills",
-    "longDescription": "Seven risk-scaled skills turn ambiguous work into one approved plan, a proportional build, verified independent review evidence, and a separate human-controlled ship decision.",
+    "longDescription": "Seven risk-scaled skills turn ambiguous work into one approved plan, a proportional build, verified independent review evidence, and a tiered ship: reversible work lands itself, anything that deploys asks a human.",
     "developerName": "David Kim",
     "category": "Coding",
     "capabilities": [

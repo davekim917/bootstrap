@@ -1,6 +1,6 @@
 {
   "name": "davekim917-bootstrap",
-  "description": "Risk-scaled plan, build, review, and human-controlled ship workflows for Claude Code and Codex.",
+  "description": "Risk-scaled plan, build, review, and tiered ship workflows for Claude Code and Codex.",
   "owner": {
     "name": "David Kim"
   },
@@ -8,8 +8,8 @@
     {
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
-      "description": "Seven-skill workflow: plan \u2192 build \u2192 independent review \u2192 human-controlled ship gate, with a bounded /team-auto runner.",
-      "version": "4.3.11"
+      "description": "Seven-skill workflow: plan \u2192 build \u2192 independent review \u2192 tiered ship gate, with a bounded /team-auto runner.",
+      "version": "4.4.0"
     },
     {
       "name": "wwbd",

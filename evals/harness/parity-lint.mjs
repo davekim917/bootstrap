@@ -163,7 +163,7 @@ export function evaluateContracts({
     requireTokens(failures, `${label}/team-auto`, auto, [
       'one',
       'correction',
-      'never ships',
+      'stops at anything that deploys',
       '.team-auto-active',
       'run.md',
     ]);
