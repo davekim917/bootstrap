@@ -9,7 +9,7 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Seven-skill workflow: plan \u2192 build \u2192 independent review \u2192 tiered ship gate, with a bounded /team-auto runner.",
-      "version": "4.4.0"
+      "version": "4.4.1"
     },
     {
       "name": "wwbd",

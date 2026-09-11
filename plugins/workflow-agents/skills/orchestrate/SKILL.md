@@ -49,6 +49,11 @@ bottleneck, and the worker-frontier role (Sol at max reasoning) under the
 same escalation-only rule. Read your own roster; dispatch independent work
 in parallel — state "dispatch IN PARALLEL" explicitly.
 
+**Reviews never go to the cheap tiers (operator rule).** Review, verification,
+delta checks, receipts and gap analyses of another agent's work go only to
+`worker-high`, `worker-frontier` or `worker-codex` — never `worker` (Sonnet) or
+`worker-fast` (Haiku). On Codex stacks, the Sol roles only.
+
 ## Keep for yourself
 
 - Deciding what the change is; writing the brief
