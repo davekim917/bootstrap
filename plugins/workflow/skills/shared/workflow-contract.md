@@ -19,6 +19,17 @@ reason and checks. Ambiguity, novel design, visual taste, security, concurrency 
 high-consequence judgment favor frontier quality. Independent review still uses its own fresh
 context.
 
+### Dispatch-first gate
+
+Before the coordinator reads nontrivial implementation source, inspects a deployment or log,
+chooses/runs a diagnostic or regression check, or makes a technical correctness judgment, it must
+dispatch the retained frontier owner. The coordinator may read the request, find a source location,
+check status/authorization, create the worktree or claim, and pass existing evidence; it must not
+use that setup to pre-solve the task. Record either `frontier owner dispatched` with its model and
+effort, or the narrow direct action and why it is purely logistical/mechanical. This applies to
+scheduled work and incident recovery too. A useful technical conclusion reached directly by a
+Sonnet/Terra coordinator is still a trial-policy miss, not an exception created after the fact.
+
 Never delegate substantive work below the approved Opus/Sol floor. This covers discovery,
 implementation, verification, repair, scheduled tasks and review; Sonnet, Terra, Luna and routine
 cheap subagents are not worker substitutes. If no approved worker is available, report and obtain
