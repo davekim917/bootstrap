@@ -87,7 +87,7 @@ export function evaluateContracts({
     if (JSON.stringify(inventory) !== JSON.stringify(EXPECTED_SKILLS)) {
       failures.push(`${label}: expected exactly ${EXPECTED_SKILLS.join(', ')}; found ${inventory.join(', ')}`);
     } else {
-      checks.push(`${label}: exactly seven workflow skills`);
+      checks.push(`${label}: seven team skills plus orchestrate`);
     }
     for (const retired of RETIRED_SKILLS) {
       if (fs.existsSync(path.join(root, retired))) {
@@ -118,8 +118,8 @@ export function evaluateContracts({
   }
 
   const exactCommands = [
-    `codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="high"' --ephemeral --yolo`,
-    'claude -p --model claude-fable-5-1 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json',
+    `codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="medium"' --ephemeral --yolo`,
+    'claude -p --model claude-fable-5-1 --effort medium --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json',
   ];
   for (const [label, root] of inventories) {
     const reviewPath = path.join(root, 'shared', 'cross-model-review.md');
@@ -142,11 +142,34 @@ export function evaluateContracts({
       ],
     );
 
+    const ownership = fs.readFileSync(path.join(root, 'orchestrate', 'SKILL.md'), 'utf8');
+    requireTokens(failures, `${label}/orchestrate`, ownership, [
+      'worker-frontier', 'claude-fable-5-1', 'gpt-6-astra', 'default medium',
+      'same retained session', 'artifact author', '../../scripts/frontier-worker.mjs',
+    ]);
+    const workflow = fs.readFileSync(path.join(root, 'shared', 'workflow-contract.md'), 'utf8');
+    requireTokens(failures, `${label}/workflow`, workflow, [
+      'unchanged exact artifact, relevant environment and command',
+      'Invalidate affected evidence', 'maximum of 3 corrective rounds',
+      'reconsider the root cause or test premise once',
+      'Factual corrections and test-detail refinements do not reset authorization',
+      'no mandatory exact test skeleton', 'human interruptions', 'escaped defects',
+    ]);
+    for (const [name, content] of [['orchestrate', ownership], ['workflow', workflow]]) {
+      for (const retired of ['worker-fast', 'worker-high', 'worker-codex', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+        if (content.includes(retired)) failures.push(`${label}/${name}: retired worker policy ${retired}`);
+      }
+    }
+    requireTokens(failures, `${label}/cross-model-review`, fs.readFileSync(reviewPath, 'utf8'), [
+      'artifact author, not the coordinator', 'fresh and independent',
+      'Routine changes do not automatically require both gates',
+      'explicit reviewer effort override',
+    ]);
+
     const plan = fs.readFileSync(path.join(root, 'team-plan', 'SKILL.md'), 'utf8');
     requireTokens(failures, `${label}/team-plan`, plan, [
       'plan.md',
       'cross-model',
-      'before',
       'approval',
     ]);
 
@@ -161,8 +184,7 @@ export function evaluateContracts({
 
     const auto = fs.readFileSync(path.join(root, 'team-auto', 'SKILL.md'), 'utf8');
     requireTokens(failures, `${label}/team-auto`, auto, [
-      'one',
-      'correction',
+      '3 corrective rounds',
       'stops at anything that deploys',
       '.team-auto-active',
       'run.md',

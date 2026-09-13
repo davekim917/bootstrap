@@ -1,9 +1,6 @@
 ---
 name: team-debug
-description: >
-  Evidence-first debugging for test failures, incidents, and unexpected behavior. Establishes a
-  reproduction and root cause before the smallest fix, then verifies the regression and affected
-  pattern without shotgun changes.
+description: Diagnose failures and verify a bounded root-cause fix.
 ---
 
 # /team-debug — Reproduce, explain, fix
@@ -30,6 +27,7 @@ Read `../shared/workflow-contract.md` first.
    permanent check (or the dated reason there is none), and remaining risk. When inside a planned
    workflow, append this evidence to `run.md`.
 
-If repeated fixes fail, stop changing code. Reassess whether the model, boundary, or test premise
-is wrong and bring that evidence forward. Complexity is justified only by the external failure
-boundary, not by failed patches.
+Keep diagnosis and repair in the retained frontier owner session. Use the shared maximum of 3
+corrective rounds across the task. On a repeated failure signature, reconsider the hypothesis or
+test premise once. Stop on no progress, exhausted budget or repeated workflow-created obstruction;
+a second productive failure alone is not a stop. Complexity needs an external failure boundary.

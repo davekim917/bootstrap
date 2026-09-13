@@ -1,18 +1,15 @@
 ---
 name: team-auto
-description: >
-  User-invoked autonomous runner for an explicitly approved plan. Runs team-build then
-  team-review --implementation, permits one bounded correction, then hands off to team-ship, which
-  lands reversible work itself and stops at anything that deploys. Maintains a recoverable
-  two-hour sentinel.
+description: Carry authorized work through bounded build, review and safe publication.
 ---
 
 # /team-auto — Approved plan to pull request
 
 Read `../shared/workflow-contract.md` and `../shared/cross-model-review.md` first.
 
-Never auto-trigger. The user must invoke `/team-auto`, and the exact
-`docs/specs/<feature>/plan.md` must already have explicit approval.
+Never auto-trigger. The user must invoke `/team-auto`, with implementation authority for the scope recorded in
+`docs/specs/<feature>/plan.md`. Ground it in the existing conversation; a new factual or test-detail
+revision does not require ceremonial reapproval.
 
 ## Sentinel
 
@@ -31,21 +28,24 @@ The sentinel is only a concurrency guard. It is not approval or workflow state.
 ## State machine
 
 1. **Preflight:** read the approved plan, repository instructions, git state, and `run.md`. Confirm
-   no missing product decision or unapproved plan revision.
+   no missing product, scope, trust or irreversible decision.
 2. **Build:** invoke `/team-build` against that plan. Refresh the sentinel. Stop on an ungrounded
    scope/trust/irreversibility decision or a safety control.
-3. **Review:** invoke `/team-review --implementation`. Its cross-model review is mandatory.
-4. **Correct once:** if review returns verified `MUST-FIX`, apply one cohesive, evidence-backed
-   correction batch and re-run only affected checks once.
+3. **Review:** invoke `/team-review --implementation`. Apply consequential review gates and honor explicit review requests.
+4. **Correct within budget:** return verified MUST-FIX to the retained owner. Use the shared maximum
+   of 3 corrective rounds across build/test/review, including one reconsideration on a repeated
+   failure signature. Re-run only affected checks; reuse valid exact evidence.
 5. **Ship what is safe:** if clear, remove the sentinel and invoke `/team-ship`. It lands the
    reversible tier itself — commit, push the working branch, open the PR — and asks a human only
    for an action that deploys or cannot be cleanly undone. Do not stop here and report "ready to
    ship": an approved plan that passed review and preflight has the authority to become a pull
    request.
 
-If the correction creates a workflow-only blocker, a required reviewer is unavailable, the same
-mechanism fails again, or affected checks remain red, record one concrete blocker in `run.md`,
-remove the sentinel, and stop. Do not start another review/repair cycle.
+If the budget is exhausted, progress stops, workflow-created obstruction repeats, or a required
+reviewer is unavailable without explicit accepted coverage, record the concrete blocker in `run.md`,
+remove the sentinel, and stop. A second productive failure alone does not stop the run.
+
+`/team-auto` stops at anything that deploys and cannot silently add deploy authority.
 
 ## Authority
 

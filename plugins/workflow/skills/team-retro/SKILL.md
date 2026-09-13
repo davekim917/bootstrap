@@ -1,8 +1,6 @@
 ---
 name: team-retro
-description: >
-  Optional short post-ship learning capture. Uses plan.md, run.md, git, and outcome evidence to
-  identify a few specific process or project improvements; never auto-triggers or edits policy.
+description: Capture observed outcomes and one-week workflow measurements when requested.
 ---
 
 # /team-retro — Capture evidence-backed learning
@@ -10,7 +8,7 @@ description: >
 Read `../shared/workflow-contract.md` first. Run only when the user asks after shipping or a
 deliberately stopped workflow.
 
-Read `plan.md`, `run.md`, relevant git history, and observed outcome evidence. Produce
+Read `plan.md` and `run.md` when present, relevant git history, and observed outcome evidence. Produce
 `docs/retros/<feature>/retro.md` containing:
 
 1. the intended outcome and actual result;
@@ -23,3 +21,7 @@ Distinguish product/code failures from workflow-created obstruction. Do not reco
 unless repetition, scale, risk, or failure impact demonstrates that it pays for itself. Do not edit
 skills, policy, or project instructions during the retro; present recommendations for a separate
 decision.
+
+For the one-week trial, report accepted and stopped task counts, total measured usage per accepted
+task (unknown where unavailable), elapsed time, repair rounds, escaped defects and human
+interruptions with reasons. Separate observed outcomes from unmeasured savings hypotheses.

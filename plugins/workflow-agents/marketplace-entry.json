@@ -1,7 +1,7 @@
 {
   "name": "bootstrap-workflow-agents",
-  "version": "1.4.1",
-  "description": "Seven-skill risk-scaled workflow: plan \u2192 build \u2192 independent cross-model review \u2192 tiered ship gate.",
+  "version": "2.0.0",
+  "description": "One retained frontier owner, proportional independent review, and bounded safe publication.",
   "source": {
     "source": "local",
     "path": "./plugins/workflow-agents"

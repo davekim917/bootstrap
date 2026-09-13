@@ -1,9 +1,6 @@
 ---
 name: team-review
-description: >
-  Evidence-based review in plan or implementation mode. Selects lenses by risk, requires
-  cross-model diversity at consequential gates, verifies findings against source, and records
-  review plus ship-readiness evidence in run.md.
+description: Review plans or implementation with independent context and source-backed findings.
 ---
 
 # /team-review — Verify the contract or implementation
@@ -28,8 +25,8 @@ Add specialist lenses only when the changed surface warrants them:
 - user-visible UI or workflow → relevant product/accessibility behavior;
 - changing external API, framework, security rule, or standard → current authoritative sources.
 
-Do not spawn a fixed swarm. One other-family reviewer is mandatory at the plan and implementation
-gates; other reviewers need a named risk justification.
+Do not spawn a fixed swarm. One other-family reviewer is required at consequential plan and implementation
+gates; routine work does not automatically require both. Honor explicit review requests; other reviewers need a named risk justification.
 
 Select lenses here; judge against the rubric in `../shared/cross-model-review.md`. Send each
 reviewer the rubric items for its selected lenses, and require every finding to cite one of them or
@@ -47,13 +44,15 @@ before it can become `MUST-FIX`.
 
 ## Implementation mode
 
-1. Read the exact approved `plan.md`, `run.md`, repository instructions, git status, and complete
-   raw diff including untracked files in scope.
+1. Read the approved plan and `run.md` when present, the authorized request, repository instructions,
+   git status, and complete raw implementation diff including untracked files in scope.
+   Simple work may use the conversation as its contract.
 2. Map every requirement and invariant to implementation evidence. Inspect changed code and the
    relevant call paths, not only test names.
-3. Run the shared cross-model review on the approved plan plus raw diff.
-4. Run fresh risk-selected tests, typechecks, lint/build, security, migration, or visual checks.
-   Do not require irrelevant commands merely because they exist.
+3. Run the shared cross-model review on the approved plan (or authorized request) plus raw diff.
+4. Use risk-selected tests, typechecks, lint/build, security, migration, or visual checks.
+   Reuse evidence only for the unchanged exact artifact, relevant environment and command;
+   invalidate affected evidence after relevant changes. Do not repeat checks just for a new stage.
 5. Verify each reviewer claim. Record accepted/rejected findings, exact commands/results, checked
    edge cases, coverage, and known risks in `run.md`.
 6. Return:
@@ -63,7 +62,7 @@ before it can become `MUST-FIX`.
 
 ## Correction rule
 
-One evidence-backed correction batch is allowed per review entry. Re-run only affected checks once.
-If the correction creates a new workflow-origin blocker or the same mechanism fails again, stop,
-classify the mechanism versus external invariant, and bring the evidence to the user. Do not turn
-review into an open-ended repair loop.
+Return accepted findings to the same retained frontier owner. Use the shared default maximum of 3
+corrective rounds across the task, with one reconsideration on a repeated failure signature.
+Re-run affected checks and review the changed surface as risk requires. Stop on exhausted budget,
+no progress or repeated workflow-created obstruction, not merely a second productive failure.

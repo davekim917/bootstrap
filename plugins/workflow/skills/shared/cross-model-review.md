@@ -1,9 +1,10 @@
 # Shared cross-model review contract
 
-Cross-model review is mandatory:
-
-- in `/team-plan`, on the raw proposed `plan.md` before approval;
-- in `/team-review --implementation`, on the approved plan plus raw implementation diff.
+Independent fresh cross-model review is required at consequential plan and implementation gates.
+Review the raw proposed plan, or the approved plan plus raw implementation diff. Routine changes
+do not automatically require both gates; record the risk-based choice and honor explicit review
+requests. Consequential work includes trust, authorization, destructive/data-loss boundaries,
+concurrency, lifecycle and migration changes, or materially uncertain technical designs.
 
 Use one independent reviewer from another model family by default. Add reviewers or specialist
 lenses only when a changed trust boundary or domain risk justifies them. The reviewer receives the
@@ -11,17 +12,17 @@ source bundle, not the lead model's conclusions, and must not mutate the target.
 
 ## Required transports
 
-When Claude is primary, invoke Codex with settings that do not inherit any host or container
+When the artifact author is Claude, invoke Codex with settings that do not inherit any host or container
 `config.toml`:
 
 ```sh
-codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="high"' --ephemeral --yolo
+codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="medium"' --ephemeral --yolo
 ```
 
-When Codex or OpenCode is primary, invoke Claude with:
+When the artifact author is Codex, invoke Claude with:
 
 ```sh
-claude -p --model claude-fable-5-1 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json
+claude -p --model claude-fable-5-1 --effort medium --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json
 ```
 
 Pass the review prompt and source bundle on stdin. Run each external reviewer in the foreground and
@@ -33,8 +34,16 @@ complete output. A review that needs more than ten minutes is still healthy; cla
 `--yolo` is required because Codex's inner sandbox cannot create its namespaces inside nested
 Docker. NanoClaw's container is the external isolation boundary for that invocation. This transport
 choice does not change the reviewer contract: review only the supplied source bundle, do not edit
-files or invoke side-effecting tools, and return the requested verdict. Do not change the command's
-model, effort, execution mode, permissions, or persistence flags.
+files or invoke side-effecting tools, and return the requested verdict. Preserve execution mode, permissions and persistence flags. Medium effort is the default.
+An explicit reviewer effort override is allowed only after validating support against the actual
+CLI/model and passing it through its native flag/config field. Record the requested and effective
+setting; never emulate an effort change with prompt wording. Unsupported settings are a preflight
+failure, not an invitation to fall back silently.
+
+Choose the other family relative to the artifact author, not the coordinator. For mixed-family
+authorship, record that limitation and choose the reviewer for the consequential authored surface;
+do not claim complete family independence. OpenCode transport must identify its actual model family
+before selection. Reviewer context must be fresh and independent of the retained builder session.
 
 ## Prompt and verdict
 
@@ -44,15 +53,14 @@ This path is Codex-only. Never route the vendored prompt to a Claude or OpenCode
 never generalize this section to other reviewers. Its second line asserts a fixed identity —
 `You are Codex performing an adversarial software review.` — the only model-specific line in all 84
 lines of the prompt; sending it to a different model asserts a false identity, and editing it would
-break the byte-identical mirror `references/CODEX-SOURCES.md` exists to protect. When Codex or
-OpenCode is primary and Claude is the reviewer, use the composed prompt in "When Claude is the
+break the byte-identical mirror `references/CODEX-SOURCES.md` exists to protect. When the artifact author is Codex and Claude is the reviewer, use the composed prompt in "When Claude is the
 external reviewer" below, unchanged.
 
 Send the vendored prompt at `references/codex-adversarial-prompt.md` verbatim, filling only its
 four substitution markers (below), and enforce its schema at the CLI boundary rather than in prose:
 
 ```sh
-codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="high"' --ephemeral --yolo \
+codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="medium"' --ephemeral --yolo \
   --output-schema references/codex-review-output.schema.json \
   --output-last-message <path-to-write-the-final-JSON-response>
 ```
@@ -114,7 +122,7 @@ Ask for exactly one JSON object, and enforce it at the CLI boundary — `--outpu
 only shapes the response envelope, it does not constrain content to a schema:
 
 ```sh
-claude -p --model claude-fable-5-1 --effort high --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json \
+claude -p --model claude-fable-5-1 --effort medium --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json \
   --json-schema '{"type":"object","required":["verdict","findings"],"properties":{"verdict":{"enum":["clear","must_fix","degraded"]},"findings":{"type":"array","items":{"type":"object","required":["severity","requirement","evidence","failure_mode","smallest_fix","confidence"],"properties":{"severity":{"enum":["MUST-FIX","SHOULD-FIX"]},"requirement":{"type":"string"},"evidence":{"type":"string"},"failure_mode":{"type":"string"},"smallest_fix":{"type":"string"},"confidence":{"type":"number","minimum":0,"maximum":1}}}}}}'
 ```
 
@@ -174,7 +182,7 @@ Always applied:
 - **Failure handling** — failures surface rather than swallow; partial writes cannot strand
   inconsistent state; retries are bounded; an error path that loses user data is a blocker.
 - **Verification quality** — tests exercise the criteria, not the implementation's shape, and would
-  fail if the logic broke; evidence in `run.md` is fresh output, not restated intent.
+  fail if the logic broke; evidence in `run.md` is actual output valid for the exact artifact/environment/command, not restated intent.
 
 Applied when the changed surface warrants:
 
@@ -194,7 +202,7 @@ Applied when the changed surface warrants:
 
 Record in `run.md`:
 
-- review stage and primary runtime/model family;
+- review stage, artifact author runtime/model family and coordinator family separately;
 - target runtime plus requested and effective model/effort enforced by the explicit CLI arguments;
 - exact command and timeout;
 - one of: `completed`, `missing-cli`, `unauthenticated`, `unsupported-flags`, `timeout`,

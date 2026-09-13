@@ -1,7 +1,7 @@
 {
   "fixture": "mechanical-change",
   "domain": "workflow routing",
-  "notes": "The plan should stay cohesive without skipping the plan-stage cross-model gate.",
+  "notes": "Routine mechanical work stays cohesive and does not automatically require both review gates.",
   "rubric": {
     "tier": "smoke",
     "hardGates": [
@@ -13,10 +13,10 @@
         }
       },
       {
-        "id": "cross-model-before-approval",
+        "id": "proportional-review",
         "check": {
           "type": "output_matches",
-          "regex": "cross[- ]model[\\s\\S]{0,300}before[\\s\\S]{0,120}approv",
+          "regex": "(does not|doesn.t|not required|no mandatory|need not|unnecessary)[\\s\\S]{0,100}(review|both gates)|(review|both gates)[\\s\\S]{0,100}(not required|unnecessary|optional)",
           "flags": "i"
         }
       },

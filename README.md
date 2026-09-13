@@ -15,12 +15,12 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 4.4.1 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 1.4.1 | Runtime-neutral workflow skills and safety gates |
+| Claude Code | `bootstrap-workflow` | 5.0.0 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.0.0 | Runtime-neutral workflow skills and safety gates |
 | Claude Code / Codex | `wwbd` | 1.2.2 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
-Both workflow plugins expose exactly seven user-facing skills:
+Both workflow plugins expose seven team skills plus `/orchestrate`:
 
 | Skill | Purpose |
 |---|---|
@@ -37,16 +37,17 @@ decomposition. `/team-review` selects QA, drift, security, performance, best-pra
 lenses only when the actual risk warrants them. A finding becomes MUST-FIX only after the lead
 traces it to a violated invariant or concrete failure mode.
 
-`/team-auto` permits one evidence-backed correction. If its own enforcement or revision creates a
-new blocker, it records the evidence and stops instead of entering another loop. It never deploys: it hands off to `/team-ship`, which stops at anything that deploys.
+`/team-auto` shares a maximum of 3 corrective rounds across build/test/review, with one
+reconsideration on repeated failure signatures. No progress or repeated workflow-created obstruction
+stops the run; a second productive failure alone does not. It never deploys: it hands off to `/team-ship`, which stops at anything that deploys.
 
 ## Workflow artifacts
 
-Routine work has only two durable artifacts:
+Substantial work uses two minimal durable artifacts; simple tasks can report evidence in chat:
 
 - `docs/specs/<feature>/plan.md` — the approved product, design, and execution contract.
 - `docs/specs/<feature>/run.md` — current stage, verified findings, actual reviewer/model details,
-  and fresh verification evidence.
+  and verification evidence valid for the exact artifact, environment and command.
 
 `docs/specs/<feature>/.team-auto-active` is an ephemeral concurrency sentinel, not another review
 document. It is removed on normal exit and recovered after two hours without refresh.
@@ -55,30 +56,32 @@ document. It is removed on normal exit and recovered after two hours without ref
 
 Independent other-family review is mandatory at both consequential gates:
 
-1. `/team-plan` reviews the raw proposed `plan.md` before asking for approval.
+1. `/team-plan` reviews the raw proposed plan before consequential implementation.
 2. `/team-review --implementation` reviews the approved plan plus raw implementation diff.
 
+Routine work does not automatically need both gates; explicit requested reviews are honored.
+Choose the other family relative to the artifact author, not the coordinator.
 The review receives source artifacts, not the lead model's conclusions, and is non-mutating.
 Findings are hypotheses until verified by the lead. The plugin explicitly selects reviewer model
 and effort; it never inherits them from host or container configuration.
 
-Claude-primary reviews use:
+Claude-authored artifact reviews use (medium default, explicit validated overrides allowed):
 
 ```bash
 codex exec \
   --ignore-user-config \
   --model gpt-6-astra \
-  -c 'model_reasoning_effort="high"' \
+  -c 'model_reasoning_effort="medium"' \
   --ephemeral \
   --yolo
 ```
 
-Codex/OpenCode-primary reviews use:
+Codex-authored artifact reviews use:
 
 ```bash
 claude -p \
   --model claude-fable-5-1 \
-  --effort high \
+  --effort medium \
   --safe-mode \
   --no-session-persistence \
   --permission-mode plan \
@@ -94,6 +97,23 @@ supplies its source bundle on stdin. Missing or unauthenticated CLIs, unsupporte
 non-zero exits, and malformed or empty output are recorded distinctly in `run.md`. The workflow
 does not retry automatically or call a same-family pass “diverse.” Manual work asks the user
 whether to proceed with degraded coverage; `/team-auto` stops once.
+
+## One-week frontier-owner trial
+
+The cheap coordinator handles logistics, status, authority and evidence collection. One retained
+`worker-frontier` owns investigation, technical design, build, tests and repair: Claude Fable 5.1
+(`claude-fable-5-1`) or GPT-6 Astra (`gpt-6-astra`), medium by default. Effort changes require explicit
+validated runtime settings, never prompt-only instructions. Runtime profiles are managed by the
+host; this skills plugin does not install permanent agents. Simple tasks may execute directly.
+
+Existing conversational approval survives factual and test-detail plan refinements. New product,
+scope, trust and destructive boundaries retain their gates. Tests target observable acceptance;
+there is no required exact test skeleton or repeated stage-by-stage test ceremony. Reuse evidence
+only for the unchanged artifact, relevant environment and command; invalidate it after relevant changes.
+
+Record usage per accepted task (including failed attempts), elapsed time, repair rounds, escaped
+defects and human interruptions with reasons. Mark unavailable measurements unknown. Review the
+trial after one week using observed outcomes; this release does not claim measured savings.
 
 ## Install
 

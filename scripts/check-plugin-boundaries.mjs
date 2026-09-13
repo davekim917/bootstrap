@@ -402,11 +402,11 @@ if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '4.4.1') {
-  fail(`bootstrap-workflow release must be version 4.4.1 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.0.0') {
+  fail(`bootstrap-workflow release must be version 5.0.0 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '1.4.1') {
-  fail(`bootstrap-workflow-agents release must be version 1.4.1 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.0.0') {
+  fail(`bootstrap-workflow-agents release must be version 2.0.0 (found ${codexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -486,7 +486,7 @@ for (const [label, inventory] of [
 ]) {
   const actual = [...inventory].sort();
   if (JSON.stringify(actual) !== JSON.stringify(expectedSkills)) {
-    fail(`${label} plugin must expose exactly seven workflow skills: ${expectedSkills.join(', ')} (found ${actual.join(', ')})`);
+    fail(`${label} plugin must expose seven team skills plus orchestrate: ${expectedSkills.join(', ')} (found ${actual.join(', ')})`);
   }
 }
 for (const [label, root] of [
@@ -530,14 +530,14 @@ const crossModelTokens = [
   'codex exec',
   '--ignore-user-config',
   '--model gpt-6-astra',
-  'model_reasoning_effort="high"',
+  'model_reasoning_effort="medium"',
   '--ephemeral',
   '--yolo',
   '3600000',
   '60-minute',
   'claude -p',
   '--model claude-fable-5-1',
-  '--effort high',
+  '--effort medium',
   '--safe-mode',
   '--no-session-persistence',
   '--permission-mode plan',
@@ -570,13 +570,13 @@ for (const contractPath of [
 for (const root of ['plugins/workflow/skills', 'plugins/workflow-agents/skills']) {
   requireTextTokens(
     `${root}/team-plan/SKILL.md`,
-    ['plan.md', 'cross-model', 'before', 'approval'],
-    'the mandatory plan review gate',
+    ['plan.md', 'cross-model', 'consequential', 'approval'],
+    'the consequential plan review contract',
   );
   requireTextTokens(
     `${root}/team-review/SKILL.md`,
     ['--implementation', 'approved plan', 'implementation diff', 'cross-model', 'run.md'],
-    'the mandatory implementation review gate',
+    'the consequential implementation review contract',
   );
   requireTextTokens(
     `${root}/team-auto/SKILL.md`,

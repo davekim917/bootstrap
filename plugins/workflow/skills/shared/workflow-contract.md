@@ -1,79 +1,75 @@
 # Shared workflow contract
 
-This contract applies to `/team-plan`, `/team-build`, `/team-review`, `/team-auto`,
-`/team-debug`, `/team-ship`, and `/team-retro`.
+Applies to orchestrate and all seven team skills during the one-week frontier-owner trial.
 
-## Simplicity
+## Ownership and judgment
 
-- Use the smallest mechanism that satisfies the real requirements and failure boundaries.
-- Prefer existing project primitives, platform capabilities, and standard libraries.
-- Add complexity only for evidenced scale, repetition, concurrency, security, or failure impact.
-- Always harden trust, authorization, credentials, destructive operations, and data-loss boundaries.
-- A blocker must name a violated requirement, invariant, or concrete failure mode.
-- If a workflow revision or enforcement mechanism creates its own blocker, stop after one
-  productive correction. Classify the mechanism as flawed and removable, or show the external
-  invariant that genuinely requires more complexity. Do not start another loop.
+A cheap coordinator handles logistics, status, authorization and evidence collection. One retained
+frontier owner investigates, designs, implements, tests and fixes. Default medium effort; explicit
+overrides must use validated supported runtime configuration. Simple tasks may execute directly.
+Use the smallest mechanism satisfying the requirements and failure boundaries. Prefer existing
+primitives; justify complexity by evidenced scale, concurrency, security or failure impact.
+Never weaken trust, authorization, credential, destructive-action or data-loss safeguards.
+Read exact source and applicable instructions; verify relevant changing external facts.
 
-## Grounding and findings
+## Scope and approval
 
-- Read the applicable repository instructions and the exact source or artifact before deciding.
-- Verify changeable external facts against authoritative current sources when they affect the work.
-- Treat reviewer comments as hypotheses. A finding becomes `MUST-FIX` only after the lead traces it
-  to source and proves a violated requirement, invariant, or concrete failure mode.
-- `SHOULD-FIX` identifies evidenced improvement that is not ship-blocking. Everything else is a
-  question, preference, or rejected finding.
+Ground authority in the existing conversation and applicable operator instructions. A request to
+implement authorizes implementation within its stated scope; do not require ceremonial approval
+of a newly written plan. Factual corrections and test-detail refinements do not reset authorization.
+Record them. New product intent, scope, trust boundaries, hard constraints or destructive and
+irreversible behavior require the missing decision before dependent work. Planning-only requests
+remain planning-only. No stage bypasses repository safety controls or adds deployment authority.
 
-## Artifacts
+## Minimal artifacts
 
-The feature directory is `docs/specs/<feature>/`.
+For work needing a written contract use `docs/specs/<feature>/plan.md` for outcome, scope,
+observable acceptance criteria, source-grounded design and material risks/decisions. Keep it short.
+Use `run.md` for authority, owner/runtime settings, stage, decisions, command evidence, findings,
+repair rounds and remaining risks. Simple tasks need no mandatory plan/run files; report evidence
+in the conversation. Do not create routine additional workflow artifacts.
+`.team-auto-active` is an ephemeral concurrency sentinel, never approval or a decision record.
 
-- `plan.md` is the single normative product, design, scope, and execution contract.
-- `run.md` is the append-friendly operational record: stage, decisions, verified findings,
-  corrections, commands, results, checked edge cases, reviewer coverage, and known risks.
-- `.team-auto-active` is an ephemeral auto-run sentinel. It is not a decision record.
+## Acceptance and verification
 
-Do not create routine brief, design, review, drift, QA, decision, pause, or build-state artifacts.
-Put durable intent in `plan.md` and execution evidence in `run.md`.
+Acceptance criteria describe observable outcomes. Add meaningful tests when practical, preferably
+confirming the expected failure before a behavioral fix. There is no mandatory exact test skeleton
+before every change. For prose or behavior that cannot be isolated, record the proportional check.
+Never weaken or silently retarget an assertion merely to make it pass.
 
-## Executable acceptance criteria
+Evidence is reusable only for the unchanged exact artifact, relevant environment and command.
+Record the commit/tree or content fingerprint (including in-scope untracked files), command,
+environment inputs that affect it, result and checked edge cases. Invalidate affected evidence
+after relevant changes; run the affected checks again. A stage transition alone does not justify
+rerunning a test. Read actual output and inspect the final artifact before claiming completion.
+Report unavailable checks honestly. A green suite with skipped acceptance coverage is not proof.
 
-For behavior-changing work, acceptance criteria belong in the test tree as well as in `plan.md`. A
-spec you can run beats a spec every later stage has to re-read and re-interpret.
+## Review and corrections
 
-- `/team-plan` writes the exact cases — name and assertion per criterion — into `plan.md`. Planning
-  does not touch the test tree: approval has not happened yet, and a rejected plan must leave no
-  trace in the product repository.
-- `/team-build` materializes those cases into the repository's existing test framework, beside the
-  code they cover, as its first action after approval — before implementing. Run them once
-  immediately so their initial failure is observed rather than assumed.
-- `/team-build` is complete when every one of those cases passes — not when the diff looks
-  finished.
-- When a criterion turns out to be wrong, correct `plan.md` first: it stays the normative contract,
-  so a case must never diverge from it. Update the plan, update the materialized case to match,
-  and record the change in `run.md` as evidence. If the correction alters product intent, scope, or
-  a hard invariant, it needs renewed user approval — it is a new plan, not a build detail. Never
-  silently retarget or delete a test to make a build pass.
-- `/team-review` checks the cases actually cover the criteria, rather than re-deriving intent from
-  prose.
-- `/team-ship` verifies each case named in `plan.md` exists, asserts what the plan says it asserts,
-  and passes. Check name AND assertion: a case renamed-in-place or retargeted to a weaker
-  assertion still passes under its original name. A green suite is not evidence either, because a
-  pending or skipped case also leaves it green.
+Use independent fresh cross-model review at consequential plan and implementation gates; routine
+changes do not automatically need both. Honor explicitly requested reviews. Apply the shared
+cross-model contract. Findings are hypotheses: the owner verifies source and concrete failure
+before accepting MUST-FIX. Record rejected findings and nonblocking SHOULD-FIX separately.
 
-Skip this for exploratory, research, or investigation plans, and for work with no observable
-behavior change — a skeleton there is noise, not rigor. State which applies in `plan.md`.
+The retained owner has a default maximum of 3 corrective rounds per task across build, test and
+review. A round is a cohesive evidence-backed repair batch plus affected verification; count it in
+run.md. A second productive failure is not a stop condition. On a repeated failure signature,
+reconsider the root cause or test premise once before another repair; do not repeat the same patch.
+Stop at the bound, on no progress, or repeated workflow-created obstruction. Name the external
+invariant, or identify the removable workflow mechanism; do not manufacture more process to
+satisfy a flawed rule. A new round budget needs an explicit grounded decision.
 
-## Verification
+## One-week measurement
 
-Before claiming a stage complete:
+For each accepted task record task id, acceptance evidence, started/completed times, elapsed time,
+owner/model/effort, measured usage and cost when available (otherwise unknown), repair rounds,
+escaped defects, and human interruptions with reasons. Include stopped/unaccepted attempts in the
+weekly denominator and report acceptance rate and total usage per accepted task; do not hide failed
+work or claim savings from model pricing alone. Keep measurements in run.md or the existing task
+ledger, without introducing a second tracking system.
 
-1. Run fresh checks appropriate to the actual risk and changed surface.
-2. Read their output and record command, result, and relevant counts in `run.md`.
-3. Inspect the final diff or artifact.
-4. Record edge cases and failure paths checked, not only the happy path.
-5. State explicitly when a check could not run and why.
+## Shipping
 
-No workflow stage may weaken repository safety rules, bypass a hook, or treat old green output as
-current evidence. `/team-auto` carries work only as far as `/team-ship`'s reversible tier — commit,
-push the working branch, open the PR — and never performs an action that deploys or cannot be
-cleanly undone.
+Preserve `/team-ship` authority and exact-target checks. `/team-auto` carries work only to authorized
+reversible publication and stops at anything that deploys; it cannot silently add deploy authority.
+Destructive, protected-file, outbound-email and self-approval controls remain in force.

@@ -1,9 +1,6 @@
 ---
 name: team-ship
-description: >
-  Publish and merge boundary after implementation review clears. Runs fresh readiness checks, shows
-  the exact branch and remote impact, then lands reversible work itself and asks a human only for
-  actions that deploy or cannot be cleanly undone.
+description: Validate evidence and publish within existing authority and safety gates.
 ---
 
 # /team-ship — Shipping boundary
@@ -13,16 +10,17 @@ this workflow, must invoke it.
 
 ## Preflight
 
-1. Read `plan.md` and `run.md`; require a current `/team-review --implementation` result with no
-   unresolved `MUST-FIX`, or explicit user waivers.
-2. Run fresh required checks against the exact current tree and inspect the final diff.
+1. Read `plan.md` and `run.md` when present; require the risk-appropriate review evidence, including
+   explicit requested reviews, with no unresolved `MUST-FIX`, or explicit user waivers.
+2. Validate required evidence for the exact current artifact, relevant environment and command.
+   Reuse unchanged evidence; rerun affected checks after relevant changes. Inspect the final diff.
 3. Resolve the current branch, canonical default branch, tracking remote, uncommitted changes,
    unpushed commits, and divergence. Do not guess the default branch.
 4. Report the exact intended effect: commit scope, merge target, push target, PR behavior, branch
    deletion, deployment, or other irreversible consequence.
 
-If the tree changed after review, checks fail, coverage is degraded without the user's explicit
-acceptance, or the target is ambiguous, stop.
+If relevant changes invalidate required review, refresh the affected coverage. If checks fail,
+required coverage is degraded without explicit acceptance, or the target is ambiguous, stop.
 
 **These checks are the safety, and nothing below relaxes them.** A clean preflight is what makes
 the first tier safe to land unattended; a failed one stops the ship at either tier.
