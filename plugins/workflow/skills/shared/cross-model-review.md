@@ -10,6 +10,13 @@ Use one independent reviewer from another model family by default. Add reviewers
 lenses only when a changed trust boundary or domain risk justifies them. The reviewer receives the
 source bundle, not the lead model's conclusions, and must not mutate the target.
 
+Before launching a review, claim the exact repository/PR/head review slot in the workgroup's
+review ledger. Reuse an active exact-head receipt instead of launching a second general review from
+another watcher or session. A parallel review needs a named independent risk (for example migration
+rollback, authorization boundary, or a specialist domain) recorded with the claim. Release the slot
+with the verdict or a recorded failed transport; a changed head is a new artifact and needs its own
+review decision.
+
 ## Required transports
 
 When the artifact author is Claude, invoke Codex with settings that do not inherit any host or container

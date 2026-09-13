@@ -29,6 +29,12 @@ cheap subagent for the technical owner. Do not pre-solve the technical problem i
 or hand each stage to a fresh builder. The trial evaluates quality and total observed use, not a
 cheap-worker ladder.
 
+At task start, make the dispatch-first decision visible before doing technical exploration. The
+coordinator may identify the request, repository, worktree, claim, authorization and existing
+evidence. It must dispatch before reading implementation to diagnose it, querying live systems to
+explain a failure, selecting/running a technical check, or reaching a correctness conclusion. Do
+not turn a short scheduled wake, a familiar codebase, or a likely one-line fix into an exception.
+
 Keep one worker role, with no automatic retry or model ladder. If no approved worker is available,
 report the limitation and obtain a recovery decision; never silently downgrade.
 
