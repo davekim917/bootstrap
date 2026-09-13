@@ -40,8 +40,10 @@ report the limitation and obtain a recovery decision; never silently downgrade.
 
 The native worker profile defaults to Claude Fable 5.1 (`claude-fable-5-1`) or Codex GPT-6 Astra
 (`gpt-6-astra`), medium effort. Select only `low`, `medium`, `high`, `xhigh`, or `max` for an
-autonomous worker, using the shared contract's task-shape rubric. `ultra` is operator-only and
-must never be passed to a worker or reviewer. Use only an installed, verified runtime profile.
+autonomous worker, using the shared contract's task-shape rubric. Do not select `ultra` from that
+roster. When the current human explicitly directs an ultra worker, record the wording and call the
+Codex helper with `--effort ultra --human-directed-ultra true`; never infer this from task shape.
+Use only an installed, verified runtime profile.
 Choose native dispatch or the CLI helper at task start, then retain that transport's session.
 The native Codex worker is model-pinned; select Opus/Sol or another approved floor model with the
 helper from the start using explicit `--model`, not a prompt asking the native worker to become
