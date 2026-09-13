@@ -91,3 +91,12 @@ All 14 ordinary container.json defaults were verified. No activation command has
 restart guard rejected it pending actual user approval. Campaign migration, ordinary scheduled-pin
 audit, fresh activation checks and the seven-day evaluation remain open, not completed by audit.
 The complete article could not be fetched on the latest retry (HTTP 403); do not claim it was read.
+
+## Campaign migration implementation — staged, awaiting activation
+
+Two Astra/medium owners completed the campaign policy and scheduled migration tooling; existing
+independent Astra/medium reviewer cleared the final bundle. 56 live task rows audited; 37 changes
+prepared with 17 files and two central config rows. Seven final synthetic migration cases pass.
+Reviewed migrate.mjs SHA256: 60b0fc9c950385f87233e41d158cc17376ac1e48056adeec45484297a641ed34.
+The task ledger records exact artifacts and the still-pending joint activation. Restart alone now
+adopts existing containers, so activation includes explicit scoped container refresh.

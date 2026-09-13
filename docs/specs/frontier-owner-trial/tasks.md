@@ -48,10 +48,10 @@ proof of execution. Evidence is in run.md and the linked runtime documentation.
   QA-specific profiles, shared smoke-test skill, parent-effort ladder, campaign prompt files AND
   executing stored task prompts/model pins together. Preserve independent two-family conclusions,
   dissent, evidence barriers and the sole publisher. Audit is complete; migration is not.
-- [ ] Review Shohei/release specialist responsibilities explicitly; avoid applying ordinary-root
+- [x] Review Shohei/release specialist responsibilities explicitly; avoid applying ordinary-root
   defaults while that role still owns technical release judgments.
-- [ ] Audit ordinary scheduled task model/effort pins for unintended overrides; classify deliberate
-  task-specific choices separately and reconcile obsolete coordinator pins. Not yet audited.
+- [x] Audit ordinary scheduled task model/effort pins for unintended overrides and classify task-specific choices.
+  Complete: 56 live rows audited; 37 task updates prepared, with apply still pending below.
 - [ ] Close Claude live-inference verification honestly: no Fable inference was launched because
   this session's explicit model constraint allows only Astra low/medium. SDK/CLI wiring and stub
   tests are checked; Fable live behavior remains unverified until an authorized runtime check.
@@ -85,3 +85,31 @@ not evidence of activation; no push was requested as part of the latest tracking
 - Private rollback: /home/ubuntu/.local/state/bootstrap-frontier-trial/20260913T044107Z.
 - Dinesh = illysium-argus, Gilfoyle = illysium-momus, Shohei = illysium-admiral.
 - A prior snapshot of active containers is not current authorization to interrupt new work.
+
+## Joint campaign activation — prepared 2026-09-13
+
+User explicitly requested completing scheduled-pin audit and Dinesh/Gilfoyle migration together.
+Read-only audit and implementation/review are complete; live apply is NOT complete.
+
+- 37 scheduled row updates: inheritance plus corrected retained-owner prompts; schedules, pause
+  states, routing and historical rows preserved. Five Dinesh prompts included, no Gilfoyle task created.
+- 14 QA/release instruction/profile files, the meeting-prep playbook, and two QA container configs
+  are staged together (17 files total). Central QA defaults dualwrite to Sonnet/xhigh and Terra/xhigh.
+- Shohei retains Fable/medium as a technical release owner; second-opinion commands aligned.
+- Independent Astra/medium review clear; 7/7 final migration tests pass, including rollback after
+  commits, absent-file handling, natural successor refresh and semantic-change refusal.
+- Native cross-container handles are never assumed resumable; documented remaining-work handoffs
+  preserve evidence and independent conclusions without copying runtime histories or credentials.
+- Current host preserves containers on service restart. Joint activation must explicitly refresh
+  the reviewed 17 Claude/Codex groups' running containers; OpenCode is excluded from that cohort.
+
+- [ ] Apply reviewed bundle while host/profile sync and affected containers are stopped, after
+  real-user restart-guard approval. Use --refresh --apply, not plain --apply.
+- [ ] Reconcile host profiles, start services, verify model defaults/rosters, task inheritance,
+  service health and fresh runtime behavior; commit only the owned resulting source/group deltas.
+
+Bundle: /tmp/frontier-scheduled-migration/{REPORT.md,migrate.mjs,plan.json,qa-config-plan.json};
+QA: /tmp/frontier-campaign-migration/{manifest.json,prompt-map.json,validation.json,migration.diff};
+activation: /tmp/frontier-joint-activation/{runtime-scope.json,runtime-ids.py,reviewed-inputs.json}.
+A private durable copy lives below the existing rollback snapshot at joint-campaign-staged/.
+No source publication, live inference probe, service lifecycle or DB apply occurred in preparation.
