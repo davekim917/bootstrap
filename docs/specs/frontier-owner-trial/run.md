@@ -1,5 +1,26 @@
 # Frontier owner trial — implementation record
 
+## Latest state: activated 2026-09-13T06:17:53Z
+
+The exact user-approved activation completed. Both services are active; OneCLI preflight passed
+at 06:17:57Z and NanoClaw reported running at 06:18:05Z. The active runner snapshot matches source.
+All 37 task contents/pins and unchanged schedule fields were verified after activation, as were
+both QA central defaults and all 14 QA file hashes. Host defaults are Sonnet/xhigh and Terra/xhigh;
+one generic frontier profile per runtime defaults to medium, with no Codex role effort lock.
+The 14 ordinary groups plus Dinesh/Gilfoyle total 16 coordinators. Shohei stays Fable/medium.
+
+Shared QA source is committed on main as 9289fa106. No Docker rebuild or remote push occurred.
+Group files contain unrelated pre-existing edits; their owned migration patch and before/after
+bytes are backed up without a broad group commit. Applied receipt/backups are private at
+/home/ubuntu/.local/state/bootstrap-frontier-trial/20260913T044107Z/joint-campaign-applied/.
+
+Operational trial start: 2026-09-13T06:18:05Z; target evaluation: 2026-09-20T06:18:05Z.
+No automatic review timer was created. Fresh natural container/model execution remains to observe;
+no extra production task or Fable inference was triggered. Title-generation credential exhaustion
+and a retired Discord-channel warning predate activation; main startup and OneCLI preflight passed.
+Build metadata trails documentation/skill changes only; no compiled host-code drift was detected.
+Earlier preparation sections below are historical and do not mean activation is still pending.
+
 Approved: user explicitly authorized the discussed changes and confirmed both Claude and Codex.
 Implementation-session constraint: subagents only GPT-6 Astra at low or medium effort.
 

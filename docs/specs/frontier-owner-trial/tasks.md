@@ -1,5 +1,17 @@
 # Frontier trial — complete request ledger
 
+## Latest status: joint activation complete
+
+2026-09-13T06:17:53Z: approved joint activation applied all 37 task updates, 17 files and two
+central QA defaults. Both services are active. OneCLI preflight, runner snapshot, host defaults,
+all 37 stored task contents/schedules, and all 14 QA hashes were verified. Host personal profiles,
+ordinary defaults, and Dinesh/Gilfoyle campaign migration are active; run.md records the receipt.
+The source commit is 9289fa106; no remote push or Docker rebuild occurred. Installed group files
+retain unrelated edits, with the exact owned patch backed up privately rather than broadly staged.
+Fresh natural container/model behavior and the seven-day evaluation remain open. Operational
+trial start is 2026-09-13T06:18:05Z; evaluation target is September 20 at the same time, no timer.
+The pending-activation wording farther below describes the earlier preparation state.
+
 Updated: 2026-09-13. This is the durable checklist for the rapid sequence of user requests.
 Keep unfinished work open across sessions. Implementation authorization persists; activation
 still requires the installed restart guard's real-user approval. Do not treat this ledger as
@@ -37,13 +49,13 @@ proof of execution. Evidence is in run.md and the linked runtime documentation.
 
 ## Remaining execution — do not silently drop
 
-- [ ] Activate host personal profiles and CLI defaults; restart profile sync and NanoClaw using
+- [x] Activate host personal profiles and CLI defaults; restart profile sync and NanoClaw using
   the guarded command prepared in /tmp/frontier-activate-host-profiles.py and the prior tool call.
   Guard nonce is ephemeral: use only an actual matching user approval, never infer it from assent.
 - [ ] Verify fresh host and container profile discovery, effective primary/companion configs,
   service health/OneCLI preflight and actual post-activation behavior. Existing sessions can retain
   old settings. Saved config, installed cache and active runtime are separate evidence layers.
-- [ ] Dinesh/Gilfoyle coordinated campaign migration: transfer substantive QA judgment to retained
+- [x] Dinesh/Gilfoyle coordinated campaign migration: transfer substantive QA judgment to retained
   Fable/Astra workers before making their roots ordinary coordinators. Update standing instructions,
   QA-specific profiles, shared smoke-test skill, parent-effort ladder, campaign prompt files AND
   executing stored task prompts/model pins together. Preserve independent two-family conclusions,
@@ -103,7 +115,7 @@ Read-only audit and implementation/review are complete; live apply is NOT comple
 - Current host preserves containers on service restart. Joint activation must explicitly refresh
   the reviewed 17 Claude/Codex groups' running containers; OpenCode is excluded from that cohort.
 
-- [ ] Apply reviewed bundle while host/profile sync and affected containers are stopped, after
+- [x] Apply reviewed bundle while host/profile sync and affected containers are stopped, after
   real-user restart-guard approval. Use --refresh --apply, not plain --apply.
 - [ ] Reconcile host profiles, start services, verify model defaults/rosters, task inheritance,
   service health and fresh runtime behavior; commit only the owned resulting source/group deltas.
