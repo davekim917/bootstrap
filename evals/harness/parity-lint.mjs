@@ -146,6 +146,8 @@ export function evaluateContracts({
     requireTokens(failures, `${label}/orchestrate`, ownership, [
       'worker-frontier', 'claude-fable-5-1', 'gpt-6-astra', 'default medium',
       'same retained session', 'artifact author', '../../scripts/frontier-worker.mjs',
+      'Sonnet/xhigh or Terra/xhigh', 'no file-count or cheap-first hurdle',
+      'never silently downgrade', 'Opus 5 or Sol are explicit exceptions only',
     ]);
     const workflow = fs.readFileSync(path.join(root, 'shared', 'workflow-contract.md'), 'utf8');
     requireTokens(failures, `${label}/workflow`, workflow, [
@@ -156,7 +158,7 @@ export function evaluateContracts({
       'no mandatory exact test skeleton', 'human interruptions', 'escaped defects',
     ]);
     for (const [name, content] of [['orchestrate', ownership], ['workflow', workflow]]) {
-      for (const retired of ['worker-fast', 'worker-high', 'worker-codex', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+      for (const retired of ['worker-fast', 'worker-high', 'worker-codex', 'gpt-5.6-luna']) {
         if (content.includes(retired)) failures.push(`${label}/${name}: retired worker policy ${retired}`);
       }
     }

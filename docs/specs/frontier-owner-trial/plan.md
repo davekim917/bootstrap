@@ -9,6 +9,9 @@ worker instead of a ladder of progressively stronger workers. Cover both Bootstr
 host Claude/Codex worker definitions, and NanoClaw's generated container definitions.
 Claude frontier is Fable 5.1; Codex frontier is GPT-6 Astra. Default effort is medium;
 an explicit supported runtime setting can change effort for a task or resumed turn.
+Ordinary coordinators use Sonnet/xhigh on Claude and Terra/xhigh on Codex, as explicitly
+selected by the user. Substantive real work naturally delegates to the frontier owner;
+Opus 5/Sol are explicit exceptions, never a cheap-first ladder or silent downgrade.
 
 ## Approved behavior
 
@@ -16,6 +19,8 @@ an explicit supported runtime setting can change effort for a task or resumed tu
   dispatch, status and evidence bookkeeping; does not prescribe the worker's technical solution.
 - The frontier worker owns investigation, technical planning, implementation, testing and fixes.
   Resume its exact task-specific session throughout a cohesive task, never a global last session.
+  Native handles and CLI UUIDs are not interchangeable. Choose transport at task start; use a
+  helper-owned CLI session when effort needs to change across resumptions.
 - Independent review uses a fresh context and raw artifacts. Other-family selection is relative
   to the artifact author. Depth and number of review gates follow risk and explicit user requests.
 - Reuse checks for the identical artifact and relevant environment. Record identity, command,
@@ -69,6 +74,12 @@ Record source, installation and fresh-runtime verification separately. No unrela
 model defaults, auth, mounts or live workloads are changed merely to simplify workers. Trial
 coordinators use explicit lower-cost launch settings so production specialist identities stay intact.
 Retain the old source commits and restore the backed-up installed files to roll back the trial.
+
+The user additionally requested a Dinesh/Gilfoyle campaign audit. Their root judgment assignments,
+stored task pins, and QA-specific profiles require a separate coordinated migration; do not
+downgrade these roots while they still own verdicts. Apply the agreed ordinary defaults to the
+14 ordinary groups and remove their three redundant channel overrides; preserve QA/release
+specialists and OpenCode providers. Host CLI coordinator defaults are included in activation.
 
 No broad benchmark framework or new routing service is part of this change. A full week of
 behavioral evidence remains operational follow-up rather than an implementation-completion claim.

@@ -15,8 +15,8 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.0.0 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.0.0 | Runtime-neutral workflow skills and safety gates |
+| Claude Code | `bootstrap-workflow` | 5.0.1 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.0.1 | Runtime-neutral workflow skills and safety gates |
 | Claude Code / Codex | `wwbd` | 1.2.2 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
@@ -100,11 +100,31 @@ whether to proceed with degraded coverage; `/team-auto` stops once.
 
 ## One-week frontier-owner trial
 
-The cheap coordinator handles logistics, status, authority and evidence collection. One retained
-`worker-frontier` owns investigation, technical design, build, tests and repair: Claude Fable 5.1
-(`claude-fable-5-1`) or GPT-6 Astra (`gpt-6-astra`), medium by default. Effort changes require explicit
-validated runtime settings, never prompt-only instructions. Runtime profiles are managed by the
-host; this skills plugin does not install permanent agents. Simple tasks may execute directly.
+Ordinary coordinators run Sonnet/xhigh or Terra/xhigh and directly perform only brief logistical
+or mechanical actions. Delegate substantive design, implementation, research/synthesis, debugging,
+technical planning and judgment-heavy review to frontier models by default. No file-count or
+cheap-first hurdle applies, and task length alone does not justify a downgrade. Ambiguity, novel
+design, visual taste, security, concurrency and high-consequence judgments favor frontier quality.
+
+One retained `worker-frontier` owns investigation, design, build, tests and repair: Claude Fable
+5.1 (`claude-fable-5-1`) or GPT-6 Astra (`gpt-6-astra`), medium by default. Independent review gets
+fresh context. Opus 5/Sol are explicit exceptions: a user request, frontier unavailable/quota with
+transparent recorded fallback, or tightly specified, well-understood low-risk work with meaningful
+acceptance checks. Record the reason and actual settings; if fallback cannot meet requirements,
+report and escalate instead of silently downgrading. There is one worker role and no retry ladder.
+
+Launch ordinary coordinator sessions with:
+
+```sh
+claude --model sonnet --effort xhigh
+codex --model gpt-5.6-terra -c 'model_reasoning_effort="xhigh"'
+```
+
+Worker defaults remain medium. Validate actual runtime metadata separately from saved settings.
+Choose native or CLI ownership at task start: native handles stay with their parent; helper
+`--resume` accepts only its own CLI UUID. An approved alternate model uses helper `--model` from
+the start because the native Codex worker is model-pinned. Never silently replay work after a
+transport switch fails. Runtime profiles are host-managed; this plugin installs no permanent agents.
 
 Existing conversational approval survives factual and test-detail plan refinements. New product,
 scope, trust and destructive boundaries retain their gates. Tests target observable acceptance;

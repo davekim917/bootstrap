@@ -23,8 +23,9 @@ Implementation-session constraint: subagents only GPT-6 Astra at low or medium e
 
 ## Implementation verification
 
-- Bootstrap Claude 5.0.0 and Codex 2.0.0 generated from the canonical workflow tree.
-- Plugin parity passed; 48 harness/retirement tests passed; 7 foreground-helper tests passed.
+- Bootstrap Claude 5.0.1 and Codex 2.0.1 generated from the canonical workflow tree. Patch bump
+  propagates the later strong-frontier/default-coordinator instructions and transport clarification.
+- Plugin parity passed; 48 harness/retirement tests passed; 8 foreground-helper tests passed.
 - Both hook typechecks and 30 Codex hook tests passed. Claude hooks unchanged: 586/586 pass from
   canonical cwd; /tmp worktree cwd changes ephemeral-path semantics and causes 12 fixture failures.
 - Independent fresh Astra/medium review found the unnecessary frontier transport wrapper and
@@ -32,6 +33,48 @@ Implementation-session constraint: subagents only GPT-6 Astra at low or medium e
   and signal cleanup now pass original reviewer reproduction and descendant survival regressions.
 - Review coverage is same-family by explicit user instruction; no Fable inference was launched.
 - Native provider inference/default-effort activation and live host restart remain separate below.
+
+## Native probes and rollout preparation
+
+- Native project-only probe was not discovered; temporary user-scope role succeeded and was removed.
+- Parent probe 01a09915-307f-7dd3-bbc1-5d929fbdad47 used Astra/low. Runtime turn metadata confirms
+  child 01a09915-4c55-7020-996c-410ac3816f39 used Astra/medium with no explicit effort, and child
+  01a09915-6aa6-74f0-bb63-3bce3cb64177 used Astra/low with an explicit override.
+- Native child -> separate CLI resume is unsupported by Codex v2. The helper correctly reported
+  failure and did not substitute a new thread. Skills now distinguish native and CLI ownership.
+- Helper-owned thread 01a09919-75c8-7311-a4b7-7c0a01fafcc9 was started Astra/medium and resumed
+  Astra/low; the same persisted thread contains both native turn-context records.
+- Claude 5.0.0 and Codex 2.0.0 installed from local Bootstrap marketplace. Original marketplace,
+  plugin cache and profiles backed up privately at
+  /home/ubuntu/.local/state/bootstrap-frontier-trial/20260913T044107Z.
+- NanoClaw 479b12277 built in the canonical checkout with BUILD_ALLOW_LOCAL=1; dashboard cache
+  restored successfully. No service restart has occurred.
+- Local PreToolUse restart guard blocked stopping the sync watcher. Final reconciliation/restart
+  requires its exact real-user nonce approval; no guard was bypassed.
+- User selected ordinary Sonnet/xhigh and Terra/xhigh coordinators; 14 group defaults were saved
+  through ncl and verified in the central projection. Three redundant ordinary channel overrides
+  were cleared to inherit (two #internz wirings and main/general).
+- Dinesh/Gilfoyle/Shohei remain specialized judgment roots pending campaign-role migration.
+
+## Campaign audit
+
+Dinesh (illysium-argus) is Opus/xhigh and Gilfoyle (illysium-momus) Sol/xhigh. Their QA-specific
+workers remain Sonnet/xhigh and Luna/max, with separate frontier adjudicator profiles and a
+parent-effort escalation ladder. The standing instructions and shared smoke-test skill still
+assign substantive verdicts to the roots. Five pending Dinesh task rows include three explicit
+Opus/high pins, one Sonnet/xhigh pin and one unpinned task; the stored PR/develop prompts match
+their files. No active QA-pair containers were found at inspection. Saved group defaults alone
+would not migrate these campaigns. Preserve the independent two-family conclusions, dissent,
+evidence barriers and sole publisher when transferring judgment to retained frontier owners.
+Ordinary scheduled task pins were not rewritten; explicit task intent stays separate from defaults.
+
+## Source validation
+
+NanoClaw: 63 roster/converter/sync tests, 353 receipt/generator tests, companion 27 pass/3 expected
+skips, affected typechecks, build and reviewer freshness checks passed. Existing Sol/Opus exact-head
+receipts remain accepted for compatibility; default new dispatch is frontier. Ratchet shrank six
+lines. Source commits are local, not pushed. Final host profile reconciliation and service restart
+remain approval-gated; no claim of fleet activation or week-long savings is made.
 
 ## Week measurement
 

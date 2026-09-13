@@ -4,13 +4,42 @@ Applies to orchestrate and all seven team skills during the one-week frontier-ow
 
 ## Ownership and judgment
 
-A cheap coordinator handles logistics, status, authorization and evidence collection. One retained
-frontier owner investigates, designs, implements, tests and fixes. Default medium effort; explicit
-overrides must use validated supported runtime configuration. Simple tasks may execute directly.
+Specialized QA/release technical owners retain their explicit judgment, independence and
+sole-verdict authority until separately migrated; ordinary-coordinator instructions do not
+replace those contracts or downgrade those roles.
+
+Ordinary coordinators are Sonnet/xhigh or Terra/xhigh. Direct coordinator work is limited to
+brief logistical or mechanical actions. Delegate substantive design, implementation,
+research/synthesis, debugging, technical planning and judgment-heavy review to frontier models by
+default, with no file-count or cheap-first hurdle. Short work is not automatically lower-tier work.
+One retained Fable 5.1/Astra owner investigates, designs, implements, tests and fixes. Default medium
+effort for frontier workers; explicit overrides must use validated supported runtime configuration.
+Ambiguity, novel design, visual taste, security, concurrency and high-consequence judgment favor
+frontier quality. Independent review still uses its own fresh context.
+
+Opus 5/Sol are explicit exceptions for a user request, frontier unavailability/quota with a
+transparent recorded fallback, or tightly specified, well-understood low-risk work with meaningful
+acceptance checks. Record the reason and actual settings. If fallback cannot meet requirements,
+report and escalate; no silent downgrade, extra worker tier or automatic retry ladder.
 Use the smallest mechanism satisfying the requirements and failure boundaries. Prefer existing
 primitives; justify complexity by evidenced scale, concurrency, security or failure impact.
 Never weaken trust, authorization, credential, destructive-action or data-loss safeguards.
 Read exact source and applicable instructions; verify relevant changing external facts.
+
+## Session and effort continuity
+
+Choose native dispatch or the CLI helper at task start. A model-pinned native Codex worker cannot
+become an alternate model through prompting; start an approved alternate with helper `--model`. Retain native child handles within the
+spawning parent; follow-ups preserve existing effort unless a runtime explicitly supports updates.
+Native effort overrides apply at spawn only. When mid-task effort changes or CLI resume are
+needed, start a helper-owned CLI session and retain its exact UUID, runtime and runtime home.
+Helper `--resume` accepts only its own CLI session UUID, never a native child handle. These
+transports cannot resume each other's sessions. A failed switch does not authorize silent restart,
+replay or replacement: preserve current work and obtain an explicit recovery decision.
+
+Record saved defaults, requested settings and actual runtime metadata separately. Saved settings
+do not prove active session behavior; mark missing actual model/effort evidence unverified. Use
+supported native settings for explicit overrides, not prompt wording.
 
 ## Scope and approval
 
