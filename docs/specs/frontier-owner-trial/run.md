@@ -82,3 +82,12 @@ For each accepted task record: task/artifact identity, coordinator and worker mo
 worker session ID, premium usage (measured or unavailable), elapsed time, repair rounds,
 human interruptions and escaped defects. Keep API-equivalent cost separate from quota.
 Trial starts only when installation and launch configuration are verified; no week outcome yet.
+
+## Request reconciliation — 2026-09-13
+
+The complete conversation-derived checklist is tasks.md. Latest installed versions are Claude
+5.0.1 and Codex 2.0.1; installed orchestrate, shared contract and helper match canonical bytes.
+All 14 ordinary container.json defaults were verified. No activation command has run: the
+restart guard rejected it pending actual user approval. Campaign migration, ordinary scheduled-pin
+audit, fresh activation checks and the seven-day evaluation remain open, not completed by audit.
+The complete article could not be fetched on the latest retry (HTTP 403); do not claim it was read.
