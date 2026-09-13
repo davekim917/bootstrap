@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 const EFFORTS = {
   claude: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
-  codex: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
+  codex: new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
 };
 const MODELS = {
   claude: { default: 'claude-fable-5-1[1m]', allowed: new Set(['claude-fable-5-1[1m]', 'claude-fable-5-1', 'claude-opus-5[1m]', 'claude-opus-5']) },
@@ -17,7 +17,7 @@ export const WORKER_CONTEXT = 'You are the assigned premium technical worker, no
 
 export function invocation(argv, inheritedEnv = process.env) {
   const options = {};
-  const allowed = new Set(['runtime', 'cwd', 'effort', 'model', 'resume', 'timeout-seconds']);
+  const allowed = new Set(['runtime', 'cwd', 'effort', 'model', 'resume', 'timeout-seconds', 'human-directed-ultra']);
   for (let i = 0; i < argv.length; i += 2) {
     const key = argv[i]?.startsWith('--') ? argv[i].slice(2) : '';
     const value = argv[i + 1];
@@ -30,6 +30,16 @@ export function invocation(argv, inheritedEnv = process.env) {
   if (!EFFORTS[runtime]) throw new Error('--runtime must be claude or codex');
   const effort = options.effort ?? 'medium';
   if (!EFFORTS[runtime].has(effort)) throw new Error(`Unsupported ${runtime} effort: ${effort}`);
+  const humanDirectedUltra = options['human-directed-ultra'];
+  if (humanDirectedUltra !== undefined && humanDirectedUltra !== 'true') {
+    throw new Error('--human-directed-ultra must be true when supplied');
+  }
+  if (effort === 'ultra' && !(runtime === 'codex' && humanDirectedUltra === 'true')) {
+    throw new Error('Codex ultra requires direct human direction and --human-directed-ultra true');
+  }
+  if (effort !== 'ultra' && humanDirectedUltra !== undefined) {
+    throw new Error('--human-directed-ultra is valid only with --effort ultra');
+  }
   const model = options.model ?? MODELS[runtime].default;
   if (!MODELS[runtime].allowed.has(model)) throw new Error(`Unsupported ${runtime} worker model: ${model}`);
   if (!options.cwd) throw new Error('--cwd is required');
@@ -119,7 +129,7 @@ export function run(spec) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.length === 3 && process.argv[2] === '--help') {
-    console.log('Usage: node frontier-worker.mjs --runtime claude|codex --cwd DIR [--effort medium] [--model MODEL] [--resume UUID] [--timeout-seconds 3600]\nAutonomous efforts: low, medium, high, xhigh, max. Default workers: Fable 5.1 / GPT-6 Astra. Approved worker floor: Fable or Opus on Claude; Astra or Sol on Codex. Prompt: stdin. Results and session IDs: native JSON events on stdout. Resume only this helper\'s own CLI UUID, never a native subagent handle. Keep transport, exact model, effort and session ID in run.md. This helper adds no sandbox or approval bypass.');
+    console.log('Usage: node frontier-worker.mjs --runtime claude|codex --cwd DIR [--effort medium] [--model MODEL] [--resume UUID] [--timeout-seconds 3600]\nAutonomous efforts: low, medium, high, xhigh, max. Codex ultra requires a direct current human instruction and --human-directed-ultra true. Default workers: Fable 5.1 / GPT-6 Astra. Approved worker floor: Fable or Opus on Claude; Astra or Sol on Codex. Prompt: stdin. Results and session IDs: native JSON events on stdout. Resume only this helper\'s own CLI UUID, never a native subagent handle. Keep transport, exact model, effort and session ID in run.md. This helper adds no sandbox or approval bypass.');
   } else {
     try {
       process.exitCode = await run(invocation(process.argv.slice(2)));

@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-workflow-agents",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "One retained frontier owner, proportional independent review, and bounded safe publication.",
   "author": {
     "name": "David Kim"

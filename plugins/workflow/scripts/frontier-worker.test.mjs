@@ -39,7 +39,16 @@ test('invalid choices and ambiguous resume fail before launch', () => {
     ['--model', 'claude-sonnet-5'],
   ]) assert.throws(() => invocation([...base, ...extra]));
   assert.throws(() => invocation(['--runtime', 'codex', '--cwd', os.tmpdir(), '--effort', 'ultra']));
+  assert.throws(() => invocation(['--runtime', 'codex', '--cwd', os.tmpdir(), '--effort', 'ultra', '--human-directed-ultra', 'no']));
+  assert.throws(() => invocation(['--runtime', 'codex', '--cwd', os.tmpdir(), '--effort', 'medium', '--human-directed-ultra', 'true']));
   assert.throws(() => invocation(['--runtime', 'other', '--cwd', os.tmpdir()]));
+});
+
+test('Codex ultra requires a direct human-direction control', () => {
+  const spec = invocation([
+    '--runtime', 'codex', '--cwd', os.tmpdir(), '--effort', 'ultra', '--human-directed-ultra', 'true',
+  ]);
+  assert.match(spec.args.join(' '), /ultra/);
 });
 
 test('approved worker floor admits Fable/Opus and Astra/Sol, but rejects lower-tier delegation', () => {

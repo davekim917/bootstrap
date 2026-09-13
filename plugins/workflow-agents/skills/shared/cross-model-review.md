@@ -46,8 +46,8 @@ An explicit reviewer effort override is allowed only after validating support ag
 CLI/model and passing it through its native flag/config field. Record the requested and effective
 setting; never emulate an effort change with prompt wording. Unsupported settings are a preflight
 failure, not an invitation to fall back silently. Reviewers use only the shared autonomous
-vocabulary: `low`, `medium`, `high`, `xhigh`, or `max`. `ultra` is operator-only and forbidden
-for delegated review.
+vocabulary: `low`, `medium`, `high`, `xhigh`, or `max`. Codex `ultra` requires an explicit current
+human direction, recorded with the review request; task risk never authorizes it by itself.
 
 Choose the other family relative to the artifact author, not the coordinator. For mixed-family
 authorship, record that limitation and choose the reviewer for the consequential authored surface;

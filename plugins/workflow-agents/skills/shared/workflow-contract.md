@@ -22,9 +22,11 @@ context.
 ### Autonomous effort selection
 
 The complete autonomous worker vocabulary is `low`, `medium`, `high`, `xhigh`, and `max` for
-both provider families. `ultra` is deliberately excluded: it is an operator-only human-session
-choice and must never be selected, requested, or passed by a coordinator, worker, reviewer, or
-the frontier helper. Do not treat `ultracode` as a worker effort either; it is a separate
+both provider families. `ultra` is deliberately excluded from autonomous selection. A coordinator
+may use Codex `ultra` only after the current human explicitly directs it (for example, “delegate
+this to an ultra worker”): record that instruction and invoke the helper with
+`--human-directed-ultra true`. Never infer the directive from task difficulty, retries, urgency,
+or a prior human preference. Do not treat `ultracode` as a worker effort either; it is a separate
 Claude-session mode.
 
 `medium` is this trial's measured cost/quality default, not a claim that every vendor recommends
@@ -82,8 +84,9 @@ replay or replacement: preserve current work and obtain an explicit recovery dec
 Record saved defaults, requested settings and actual runtime metadata separately. Saved settings
 do not prove active session behavior; mark missing actual model/effort evidence unverified. Use
 supported native settings for explicit overrides, not prompt wording. The helper rejects anything
-outside the shared five-level autonomous vocabulary; report that preflight failure rather than
-falling back, substituting `ultra`, or emulating an effort change in prose.
+outside the shared five-level autonomous vocabulary, except Codex `ultra` with the recorded direct
+human directive and `--human-directed-ultra true`; report every other preflight failure rather than
+falling back or emulating an effort change in prose.
 
 ## Scope and approval
 
