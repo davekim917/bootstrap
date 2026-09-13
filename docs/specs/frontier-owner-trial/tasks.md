@@ -12,6 +12,16 @@ Fresh natural container/model behavior and the seven-day evaluation remain open.
 trial start is 2026-09-13T06:18:05Z; evaluation target is September 20 at the same time, no timer.
 The pending-activation wording farther below describes the earlier preparation state.
 
+## Latest policy: dynamic premium worker floor
+
+Committed locally as 56a1e22 and installed as Bootstrap Claude 5.0.2 / Codex 2.0.2. One retained
+worker may be Fable 5.1 or Opus 5 on Claude, and Astra 6 or Sol on Codex. Fable/Astra stay the
+medium-effort defaults, while Opus/Sol are first-class selections at task start. No substantive
+delegation may fall below that floor. Coordinator defaults remain Sonnet/xhigh and Terra/xhigh;
+that is direct coordination, not worker delegation. No host restart or image build is required for
+NanoClaw because fresh containers mount the current plugin source; a fresh host Claude Code session
+loads the updated plugin. No remote push has occurred.
+
 Updated: 2026-09-13. This is the durable checklist for the rapid sequence of user requests.
 Keep unfinished work open across sessions. Implementation authorization persists; activation
 still requires the installed restart guard's real-user approval. Do not treat this ledger as
