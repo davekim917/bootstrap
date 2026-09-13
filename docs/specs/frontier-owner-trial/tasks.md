@@ -20,7 +20,8 @@ medium-effort defaults, while Opus/Sol are first-class selections at task start.
 delegation may fall below that floor. Coordinator defaults remain Sonnet/xhigh and Terra/xhigh;
 that is direct coordination, not worker delegation. No host restart or image build is required for
 NanoClaw because fresh containers mount the current plugin source; a fresh host Claude Code session
-loads the updated plugin. No remote push has occurred.
+loads the updated plugin. The complete frontier rollout was published to origin/main at
+7e6139578d1b398da7a2a3645da629f9da2fbd08 after local/remote parity verification.
 
 Updated: 2026-09-13. This is the durable checklist for the rapid sequence of user requests.
 Keep unfinished work open across sessions. Implementation authorization persists; activation
