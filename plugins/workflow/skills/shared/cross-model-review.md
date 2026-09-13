@@ -45,7 +45,9 @@ files or invoke side-effecting tools, and return the requested verdict. Preserve
 An explicit reviewer effort override is allowed only after validating support against the actual
 CLI/model and passing it through its native flag/config field. Record the requested and effective
 setting; never emulate an effort change with prompt wording. Unsupported settings are a preflight
-failure, not an invitation to fall back silently.
+failure, not an invitation to fall back silently. Reviewers use only the shared autonomous
+vocabulary: `low`, `medium`, `high`, `xhigh`, or `max`. `ultra` is operator-only and forbidden
+for delegated review.
 
 Choose the other family relative to the artifact author, not the coordinator. For mixed-family
 authorship, record that limitation and choose the reviewer for the consequential authored surface;

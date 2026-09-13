@@ -22,6 +22,10 @@ test('both runtimes default medium and explicit effort overrides stay local', ()
     assert.ok(low.args.includes(session));
     assert.ok(!low.args.includes('--last'));
     if (runtime === 'claude') assert.equal(low.env.CLAUDE_CODE_EFFORT_LEVEL, 'low');
+    for (const effort of ['high', 'xhigh', 'max']) {
+      const explicit = invocation(['--runtime', runtime, '--cwd', os.tmpdir(), '--effort', effort], parent);
+      assert.match(explicit.args.join(' '), new RegExp(effort));
+    }
   }
   assert.equal(parent.CLAUDE_CODE_EFFORT_LEVEL, 'high');
 });
@@ -34,6 +38,7 @@ test('invalid choices and ambiguous resume fail before launch', () => {
     ['--runtime', 'codex'], ['--yolo'], ['--effort'], ['--model', 'gpt-6-astra'],
     ['--model', 'claude-sonnet-5'],
   ]) assert.throws(() => invocation([...base, ...extra]));
+  assert.throws(() => invocation(['--runtime', 'codex', '--cwd', os.tmpdir(), '--effort', 'ultra']));
   assert.throws(() => invocation(['--runtime', 'other', '--cwd', os.tmpdir()]));
 });
 
