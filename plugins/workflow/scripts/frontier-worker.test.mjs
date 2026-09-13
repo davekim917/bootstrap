@@ -31,9 +31,18 @@ test('invalid choices and ambiguous resume fail before launch', () => {
   for (const extra of [
     ['--effort', 'ultra'], ['--effort', 'medium; touch /tmp/unwanted'],
     ['--resume', 'last'], ['--resume', '--last'], ['--timeout-seconds', '0'],
-    ['--runtime', 'codex'], ['--yolo'], ['--effort'],
+    ['--runtime', 'codex'], ['--yolo'], ['--effort'], ['--model', 'gpt-6-astra'],
+    ['--model', 'claude-sonnet-5'],
   ]) assert.throws(() => invocation([...base, ...extra]));
   assert.throws(() => invocation(['--runtime', 'other', '--cwd', os.tmpdir()]));
+});
+
+test('explicit Opus/Sol exceptions change actual CLI model without creating another worker tier', () => {
+  for (const [runtime, model] of [['claude', 'claude-opus-5'], ['codex', 'gpt-5.6-sol']]) {
+    const spec = invocation(['--runtime', runtime, '--cwd', os.tmpdir(), '--model', model]);
+    assert.equal(spec.args[spec.args.indexOf('--model') + 1], model);
+    assert.match(spec.args.join(' '), /medium/);
+  }
 });
 
 async function fakeWorker(t, { runtime = 'claude', extra = [], behavior = '' } = {}) {
