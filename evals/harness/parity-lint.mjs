@@ -147,7 +147,8 @@ export function evaluateContracts({
       'worker-frontier', 'claude-fable-5-1', 'gpt-6-astra', 'default medium',
       'same retained session', 'artifact author', '../../scripts/frontier-worker.mjs',
       'Sonnet/xhigh or Terra/xhigh', 'no file-count or cheap-first hurdle',
-      'never silently downgrade', 'Opus 5 or Sol are explicit exceptions only',
+      'approved worker floor', 'Fable 5.1 or Opus 5', 'GPT-6 Astra or GPT-5.6 Sol',
+      'Never choose a worker below that floor',
     ]);
     const workflow = fs.readFileSync(path.join(root, 'shared', 'workflow-contract.md'), 'utf8');
     requireTokens(failures, `${label}/workflow`, workflow, [
