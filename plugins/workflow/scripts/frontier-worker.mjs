@@ -13,7 +13,7 @@ const MODELS = {
   codex: { default: 'gpt-6-astra', allowed: new Set(['gpt-6-astra', 'gpt-5.6-sol']) },
 };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export const WORKER_CONTEXT = 'You are the assigned frontier technical worker, not the coordinator. Own the following task through investigation, technical design, implementation, relevant verification and fixes. Follow repository rules and the task scope. Do not launch another orchestration layer or delegate unless the user explicitly requests it. Return concise results with evidence and any unresolved limits. The original task follows unchanged.\n\n';
+export const WORKER_CONTEXT = 'You are the assigned premium technical worker, not the coordinator. Own the following task through investigation, technical design, implementation, relevant verification and fixes. Follow repository rules and the task scope. Do not launch another orchestration layer or delegate unless the user explicitly requests it. Return concise results with evidence and any unresolved limits. The original task follows unchanged.\n\n';
 
 export function invocation(argv, inheritedEnv = process.env) {
   const options = {};
@@ -119,7 +119,7 @@ export function run(spec) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.length === 3 && process.argv[2] === '--help') {
-    console.log('Usage: node frontier-worker.mjs --runtime claude|codex --cwd DIR [--effort medium] [--model MODEL] [--resume UUID] [--timeout-seconds 3600]\nDefault workers: Fable 5.1 / GPT-6 Astra. Explicit exceptions: claude-opus-5 / gpt-5.6-sol. Prompt: stdin. Results and session IDs: native JSON events on stdout. Resume only this helper\'s own CLI UUID, never a native subagent handle. Keep transport, exact model, effort and session ID in run.md. This helper adds no sandbox or approval bypass.');
+    console.log('Usage: node frontier-worker.mjs --runtime claude|codex --cwd DIR [--effort medium] [--model MODEL] [--resume UUID] [--timeout-seconds 3600]\nDefault workers: Fable 5.1 / GPT-6 Astra. Approved worker floor: Fable or Opus on Claude; Astra or Sol on Codex. Prompt: stdin. Results and session IDs: native JSON events on stdout. Resume only this helper\'s own CLI UUID, never a native subagent handle. Keep transport, exact model, effort and session ID in run.md. This helper adds no sandbox or approval bypass.');
   } else {
     try {
       process.exitCode = await run(invocation(process.argv.slice(2)));

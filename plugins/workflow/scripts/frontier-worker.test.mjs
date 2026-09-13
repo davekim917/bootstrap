@@ -37,11 +37,17 @@ test('invalid choices and ambiguous resume fail before launch', () => {
   assert.throws(() => invocation(['--runtime', 'other', '--cwd', os.tmpdir()]));
 });
 
-test('explicit Opus/Sol exceptions change actual CLI model without creating another worker tier', () => {
-  for (const [runtime, model] of [['claude', 'claude-opus-5'], ['codex', 'gpt-5.6-sol']]) {
+test('approved worker floor admits Fable/Opus and Astra/Sol, but rejects lower-tier delegation', () => {
+  for (const [runtime, model] of [
+    ['claude', 'claude-fable-5-1[1m]'], ['claude', 'claude-opus-5'],
+    ['codex', 'gpt-6-astra'], ['codex', 'gpt-5.6-sol'],
+  ]) {
     const spec = invocation(['--runtime', runtime, '--cwd', os.tmpdir(), '--model', model]);
     assert.equal(spec.args[spec.args.indexOf('--model') + 1], model);
     assert.match(spec.args.join(' '), /medium/);
+  }
+  for (const [runtime, model] of [['claude', 'claude-sonnet-5'], ['codex', 'gpt-5.6-luna']]) {
+    assert.throws(() => invocation(['--runtime', runtime, '--cwd', os.tmpdir(), '--model', model]));
   }
 });
 

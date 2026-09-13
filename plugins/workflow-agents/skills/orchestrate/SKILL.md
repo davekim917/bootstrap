@@ -18,22 +18,26 @@ debugging, technical planning and judgment-heavy review to frontier models by de
 no file-count or cheap-first hurdle; a short task is not by itself a reason to downgrade.
 
 One `worker-frontier` owns investigation, technical design, implementation, tests, and fixes in
-the same retained session. Ambiguity, novel design, visual taste, security, concurrency and
-high-consequence judgment default to Fable/Astra. Do not pre-solve the technical problem in the
-coordinator or hand each stage to a fresh builder. The trial aims to evaluate the quality and
-observed cost of this strong frontier default, not to minimize model price per call.
+the same retained session. Its approved worker floor is Claude Fable 5.1 or Opus 5, and Codex
+GPT-6 Astra or GPT-5.6 Sol. Fable/Astra remain the default medium-effort workers; Opus/Sol are
+first-class dynamic worker selections, not fallbacks. Choose the model once at task start from
+that floor based on user direction, task/model fit, observed trial results, or provider
+availability; record the actual model, effort, reason, and checks. Never choose a worker below
+that floor for substantive delegated work, including discovery, implementation, checks, fixes,
+scheduled tasks, or review. In particular, do not substitute Sonnet, Terra, Luna, or a routine
+cheap subagent for the technical owner. Do not pre-solve the technical problem in the coordinator
+or hand each stage to a fresh builder. The trial evaluates quality and total observed use, not a
+cheap-worker ladder.
 
-Opus 5 or Sol are explicit exceptions only: the user requests them; frontier is unavailable or
-quota-limited with a transparent recorded fallback; or the task is tightly specified,
-well-understood and low-risk with meaningful acceptance checks. Record the reason, actual model,
-effort and checks. If the fallback cannot meet requirements, report the limitation and escalate;
-never silently downgrade. Keep one worker role, with no automatic retry or model ladder.
+Keep one worker role, with no automatic retry or model ladder. If no approved worker is available,
+report the limitation and obtain a recovery decision; never silently downgrade.
 
-The worker profile is Claude Fable 5.1 (`claude-fable-5-1`) or Codex GPT-6 Astra
-(`gpt-6-astra`), default medium effort. Use only an installed, verified runtime profile.
+The native worker profile defaults to Claude Fable 5.1 (`claude-fable-5-1`) or Codex GPT-6 Astra
+(`gpt-6-astra`), medium effort. Use only an installed, verified runtime profile.
 Choose native dispatch or the CLI helper at task start, then retain that transport's session.
-The native Codex worker is model-pinned; an approved alternate model uses the helper from the
-start with explicit `--model`, not a prompt asking the native worker to become another model.
+The native Codex worker is model-pinned; select Opus/Sol or another approved floor model with the
+helper from the start using explicit `--model`, not a prompt asking the native worker to become
+another model.
 Native child handles belong to the spawning parent; resume them through that parent's native
 follow-up tool. Native effort overrides apply at spawn only. Follow-ups preserve the existing
 effort unless the runtime explicitly supports updating it.
@@ -49,8 +53,9 @@ node scripts/frontier-worker.mjs --runtime codex --cwd /absolute/worktree --effo
 node scripts/frontier-worker.mjs --runtime codex --cwd /absolute/worktree --effort low --resume CLI_SESSION_UUID < followup.txt
 ```
 
-Use `--runtime claude` for Fable. Replace `CLI_SESSION_UUID` with the recorded CLI UUID; use the
-second command only for that helper-started session. The helper uses exact models and native
+Use `--runtime claude` for Fable or Opus and `--runtime codex` for Astra or Sol. Replace
+`CLI_SESSION_UUID` with the recorded CLI UUID; use the second command only for that helper-started
+session. The helper accepts only this four-model worker floor and uses exact models and native
 configuration, with no build permission bypass or ephemeral build session. Claude's native Agent
 input has no effort field; the helper scopes `CLAUDE_CODE_EFFORT_LEVEL` to that child process.
 

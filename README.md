@@ -106,12 +106,13 @@ technical planning and judgment-heavy review to frontier models by default. No f
 cheap-first hurdle applies, and task length alone does not justify a downgrade. Ambiguity, novel
 design, visual taste, security, concurrency and high-consequence judgments favor frontier quality.
 
-One retained `worker-frontier` owns investigation, design, build, tests and repair: Claude Fable
-5.1 (`claude-fable-5-1`) or GPT-6 Astra (`gpt-6-astra`), medium by default. Independent review gets
-fresh context. Opus 5/Sol are explicit exceptions: a user request, frontier unavailable/quota with
-transparent recorded fallback, or tightly specified, well-understood low-risk work with meaningful
-acceptance checks. Record the reason and actual settings; if fallback cannot meet requirements,
-report and escalate instead of silently downgrading. There is one worker role and no retry ladder.
+One retained `worker-frontier` owns investigation, design, build, tests and repair. Its worker
+floor is Claude Fable 5.1 or Opus 5, and Codex GPT-6 Astra or GPT-5.6 Sol. Fable/Astra default to
+medium; Opus/Sol are first-class dynamic selections, chosen once at task start based on user
+direction, task/model fit, observed trial results, or provider availability. Never delegate
+substantive work below that floor. Record the actual model, effort, reason and checks; if no
+approved worker is available, report the limitation instead of silently downgrading. There is one
+worker role and no retry ladder.
 
 Launch ordinary coordinator sessions with:
 

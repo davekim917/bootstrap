@@ -9,7 +9,7 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "One retained frontier owner, proportional independent review, and bounded safe publication.",
-      "version": "5.0.1"
+      "version": "5.0.2"
     },
     {
       "name": "wwbd",

@@ -10,17 +10,19 @@ replace those contracts or downgrade those roles.
 
 Ordinary coordinators are Sonnet/xhigh or Terra/xhigh. Direct coordinator work is limited to
 brief logistical or mechanical actions. Delegate substantive design, implementation,
-research/synthesis, debugging, technical planning and judgment-heavy review to frontier models by
-default, with no file-count or cheap-first hurdle. Short work is not automatically lower-tier work.
-One retained Fable 5.1/Astra owner investigates, designs, implements, tests and fixes. Default medium
-effort for frontier workers; explicit overrides must use validated supported runtime configuration.
-Ambiguity, novel design, visual taste, security, concurrency and high-consequence judgment favor
-frontier quality. Independent review still uses its own fresh context.
+research/synthesis, debugging, technical planning and judgment-heavy review to a retained worker
+from the approved floor: Fable 5.1 or Opus 5 for Claude, Astra 6 or Sol for Codex. Fable/Astra are
+the default at medium effort; Opus/Sol are first-class dynamic worker selections, not exceptions.
+Choose once at task start based on user direction, task/model fit, observed trial results, or
+provider availability, then retain that same owner. Record the actual model, effort, selection
+reason and checks. Ambiguity, novel design, visual taste, security, concurrency and
+high-consequence judgment favor frontier quality. Independent review still uses its own fresh
+context.
 
-Opus 5/Sol are explicit exceptions for a user request, frontier unavailability/quota with a
-transparent recorded fallback, or tightly specified, well-understood low-risk work with meaningful
-acceptance checks. Record the reason and actual settings. If fallback cannot meet requirements,
-report and escalate; no silent downgrade, extra worker tier or automatic retry ladder.
+Never delegate substantive work below the approved Opus/Sol floor. This covers discovery,
+implementation, verification, repair, scheduled tasks and review; Sonnet, Terra, Luna and routine
+cheap subagents are not worker substitutes. If no approved worker is available, report and obtain
+a recovery decision; no silent downgrade, extra worker tier or automatic retry ladder.
 Use the smallest mechanism satisfying the requirements and failure boundaries. Prefer existing
 primitives; justify complexity by evidenced scale, concurrency, security or failure impact.
 Never weaken trust, authorization, credential, destructive-action or data-loss safeguards.
