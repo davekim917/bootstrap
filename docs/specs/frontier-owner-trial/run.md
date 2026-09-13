@@ -21,6 +21,20 @@ and a retired Discord-channel warning predate activation; main startup and OneCL
 Build metadata trails documentation/skill changes only; no compiled host-code drift was detected.
 Earlier preparation sections below are historical and do not mean activation is still pending.
 
+## Worker-floor policy supersession — 2026-09-13
+
+The user broadened the worker policy after activation. Bootstrap Claude 5.0.2 and Codex 2.0.2
+now allow one retained worker to be Fable 5.1 or Opus 5 on Claude, and Astra 6 or Sol on Codex.
+Fable/Astra remain the medium-effort default. Opus/Sol are first-class task-start selections rather
+than exceptions. Every substantive delegation has this floor; Sonnet, Terra, Luna and other cheap
+workers are disallowed for delegated discovery, implementation, checks, repair, scheduled work and
+review. The coordinator defaults remain Sonnet/xhigh and Terra/xhigh because they are not worker
+delegations. The helper allowlist enforces the same four-model floor. Parity and helper tests pass.
+
+Both local plugins were refreshed. Claude Code applies its updated plugin in a fresh host session.
+NanoClaw has no running agent containers; fresh container sessions mount the revised plugin source
+directly, so no host restart or image build is needed for this instruction-only update.
+
 Approved: user explicitly authorized the discussed changes and confirmed both Claude and Codex.
 Implementation-session constraint: subagents only GPT-6 Astra at low or medium effort.
 
