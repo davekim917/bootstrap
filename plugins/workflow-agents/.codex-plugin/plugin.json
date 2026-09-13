@@ -1,7 +1,7 @@
 {
   "name": "bootstrap-workflow-agents",
-  "version": "1.4.1",
-  "description": "Seven-skill risk-scaled workflow: plan \u2192 build \u2192 independent cross-model review \u2192 tiered ship gate for Codex and OpenCode.",
+  "version": "2.0.0",
+  "description": "One retained frontier owner, proportional independent review, and bounded safe publication.",
   "author": {
     "name": "David Kim"
   },
@@ -22,7 +22,7 @@
   "interface": {
     "displayName": "Bootstrap Agent Workflow",
     "shortDescription": "Codex-native delivery workflow skills",
-    "longDescription": "Seven risk-scaled skills turn ambiguous work into one approved plan, a proportional build, verified independent review evidence, and a tiered ship: reversible work lands itself, anything that deploys asks a human.",
+    "longDescription": "A coordinator handles logistics while one frontier owner investigates, builds, tests and repairs; independent review and existing publication gates remain.",
     "developerName": "David Kim",
     "category": "Coding",
     "capabilities": [

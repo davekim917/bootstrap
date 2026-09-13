@@ -166,6 +166,19 @@ function main() {
     process.exit(1);
   }
 
+  // The build transport is authored once beside the canonical workflow plugin.
+  const helperSource = path.join(REPO, 'plugins/workflow/scripts/frontier-worker.mjs');
+  const helperTarget = path.join(REPO, 'plugins/workflow-agents/scripts/frontier-worker.mjs');
+  if (!fs.existsSync(helperSource)) throw new Error(`missing canonical helper: ${helperSource}`);
+  const helper = fs.readFileSync(helperSource);
+  if (!fs.existsSync(helperTarget) || !helper.equals(fs.readFileSync(helperTarget))) {
+    if (check) {
+      console.error('sync-agent-skills: stale or missing scripts/frontier-worker.mjs');
+      process.exit(1);
+    }
+    fs.writeFileSync(helperTarget, helper);
+  }
+
   const action = check ? 'verified' : 'generated';
   console.log(
     `sync-agent-skills: ${action} ${SKILLS.length} skills and ${SHARED.length} shared contracts`,

@@ -1,91 +1,42 @@
 ---
 name: orchestrate
-description: >
-  Delegation playbook for top-level agent sessions. Load at the start of ANY multi-step task —
-  implementation, debugging, research, refactor, audit — before reading files or running searches,
-  and whenever about to do bulk work inline (reading several files, grep sweeps, running tests,
-  executing a planned code change). Not for subagents/workers, who execute directly and never
-  re-delegate.
+description: Coordinate a retained frontier owner for substantial work; execute simple tasks directly.
 ---
 
-# /orchestrate — delegate execution, keep judgment
+# /orchestrate — One technical owner
 
-Plan, specify, delegate, review — and keep your own context for judgment.
-Delegate work whose OUTPUT would flood that context: broad sweeps, log triage,
-long test runs, implementation you would not read line by line. Below that bar
-— a small edit, a file you already have open, something you can finish in a few
-calls — do it yourself. A worker costs a spawn and starts without what you
-already know, so delegating small work is slower AND worse.
+Read `../shared/workflow-contract.md` first.
 
-## Why this saves money (measured)
+For the one-week trial, the cheap coordinator handles logistics, status, existing authorization,
+and evidence collection. One `worker-frontier` owns investigation, technical design,
+implementation, tests, and fixes in the same retained session. Do not pre-solve the technical
+problem in the coordinator or hand each stage to a fresh builder.
 
-Not tier pricing — context re-billing. Every token a tool result adds to your
-context is re-billed as a cache read on every remaining turn of the session. A
-50k-token grep dump at turn 100 of a 500-turn session is a ~5M-token decision.
-Measured on this stack (2026-08): a heavy-delegation session held ~200k
-context/turn and spent $90; comparable non-delegating ones held 400-500k/turn
-and spent $263-$1,280, cache reads dominating. A worker's bulk tokens bill once
-in its short-lived context; yours bill again every turn. This holds for every
-top-level model tier — Sonnet mains re-bill context the same way.
+The worker profile is Claude Fable 5.1 (`claude-fable-5-1`) or Codex GPT-6 Astra
+(`gpt-6-astra`), default medium effort. Use only an installed, verified runtime profile.
+Prefer native dispatch when the runtime exposes the requested effort field. For a supported
+explicit-effort/resume fallback use `../../scripts/frontier-worker.mjs` in the foreground, with
+runtime, cwd and effort specified and the returned session id retained for resume. The helper uses
+exact models and native configuration, with no build permission bypass or ephemeral build session.
+Claude's native Agent input has no effort field; the helper scopes `CLAUDE_CODE_EFFORT_LEVEL` to
+that child process. Codex native dispatch uses its exposed effort override when available.
+An explicit effort override must be validated and applied through supported runtime configuration
+or dispatch options; prose such as "think harder" is not an effort setting. Record requested and
+actual runtime settings; if a requested setting is unsupported, report it instead of pretending.
 
-## Delegate (anything whose cost is volume, not judgment)
+Give the owner the desired outcome, scope, constraints, existing approval, source locations,
+observable acceptance criteria, and evidence to return. The owner can read, search, test, and fix
+directly. Resume that same owner for corrections. Simple tasks can execute directly without a
+mandatory spawn. There is no worker tier ladder or mandatory escalation sequence.
 
-- Information gathering: greps, file sweeps, log triage, reading >2 files
-- Executing a change you have already specified
-- Running tests/builds, reproducing failures
-- Anything returning more than a few thousand tokens of raw output
+Review is a separate fresh context selected relative to the artifact author's model family,
+not the coordinator's. Follow `../shared/cross-model-review.md` for risk and transport.
+Do not dispatch extra builders by default; any necessary independent work needs explicit ownership
+and a concrete reason, while the retained owner remains responsible for integration.
 
-Tiers — your discretion. Use the worker roster registered in your
-environment. Claude stacks (`.claude/agents/*.md`): `worker-fast` (Haiku)
-for mechanical bulk with unambiguous acceptance criteria, `worker` (Sonnet)
-as default, `worker-high` (Opus) when reasoning is the bottleneck or a
-worker failed, `worker-frontier` (Fable 5.1) only after worker-high has
-failed or the task is clearly frontier-hard — never the routine choice, it's
-the priciest rung per token — `worker-codex` for an independent cross-model
-second opinion. Codex stacks (roles from `$CODEX_HOME/agents/*.toml`): the
-worker-fast role (gpt-5.6-luna) for mechanical bulk, the worker role
-(gpt-5.6-terra) as default, a high-reasoning role (Sol) when reasoning is the
-bottleneck, and the worker-frontier role (Sol at max reasoning) under the
-same escalation-only rule. Read your own roster; dispatch independent work
-in parallel — state "dispatch IN PARALLEL" explicitly.
+## Shared-state stop fence
 
-**Reviews never go to the cheap tiers (operator rule).** Review, verification,
-delta checks, receipts and gap analyses of another agent's work go only to
-`worker-high`, `worker-frontier` or `worker-codex` — never `worker` (Sonnet) or
-`worker-fast` (Haiku). On Codex stacks, the Sol roles only.
-
-## Keep for yourself
-
-- Deciding what the change is; writing the brief
-- Reviewing what comes back — against evidence in the report, not confidence
-- Targeted scouting needed to write a good brief (one grep, one file — not a sweep)
-- Talking to the user
-
-## The brief is the product
-
-A worker round-trip on a vague brief costs more than doing it yourself. Every
-brief carries: exact scope (files/functions), the decision already made (they
-execute, not design), acceptance criteria, and what evidence to report back
-(test output, diffs, line numbers). Verify claims against that evidence;
-spot-check anything consequential.
-
-## Don't bother
-
-One-line edit in a file already in context; end-of-session work with little
-remaining context to protect; anything where the round trip exceeds the task.
-Delegation is an optimization, not a ritual.
-
-## Stopping a worker that writes shared state
-
-A stop order is a message racing the work, and delivery can lag minutes —
-never rely on a message alone to prevent a write (2026-08-29: a stop order
-lost the race with a live-runbook write; the work landed anyway).
-
-- Brief any worker that will WRITE a shared live file (runbook, board, live
-  config) to write atomically (tmp+rename) under the file's agreed lock, and
-  to check for `<target>.stop` INSIDE that lock — flag present means abort
-  without writing.
-- To stop such a worker: create the stop-flag first, then send the message.
-  The flag is the fence; the message is the courtesy.
-- After any stop, verify the artifact. A worker's silence and your own stop
-  order are both unverified claims until the file says otherwise.
+For a worker authorized to write a shared live file, require atomic tmp+rename under the agreed
+lock and a check for `<target>.stop` inside that lock. To stop it, create the flag before sending
+the stop message, then inspect the artifact. A message or silence alone is not proof of a stop.
+Workers execute their own tools and do not re-delegate.

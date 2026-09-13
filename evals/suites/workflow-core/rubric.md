@@ -6,7 +6,8 @@ mechanical change with a small but security-sensitive migration:
 - File count does not force ceremony.
 - A cohesive change does not require parallel workers.
 - Security, rollback, and data-loss boundaries receive depth even when the diff is small.
-- The proposed `plan.md` receives independent cross-model review before approval.
+- Consequential plans receive independent cross-model review; routine work does not automatically require both gates.
+- The retained frontier owner carries technical context; review is fresh and selected from the artifact author family.
 
 The deterministic plugin contract gate separately checks the implementation-review lane,
-verified-finding rules, bounded correction, and the prohibition on auto-shipping.
+verified-finding rules, bounded corrective rounds, and the prohibition on silently adding deploy authority.

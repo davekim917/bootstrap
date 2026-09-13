@@ -8,7 +8,7 @@
  *       The shared destructive-guard + file-protection cores are authored once
  *       (workflow/hooks/guards/*-core.ts) and vendored into workflow-agents.
  *   - WORKFLOW CONTRACT → evals/harness/parity-lint.mjs --all
- *       Both plugins expose exactly seven skills, mirror the shared contracts,
+ *       Both plugins expose seven team skills plus orchestrate, mirror the shared contracts,
  *       retain both explicit cross-model review lanes, and stop auto at ship.
  *   - BOUNDARIES → scripts/check-plugin-boundaries.mjs
  *       Plugin boundary invariants (user-facing skill-name parity, real SKILL.md).
@@ -24,6 +24,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const CHECKS = [
   { name: 'hooks    (vendor-guards --check)', argv: ['scripts/vendor-guards.mjs', '--check'] },
+  { name: 'worker:transport (frontier-worker tests)', argv: ['--test', 'plugins/workflow/scripts/frontier-worker.test.mjs'] },
   { name: 'skills:gen (sync-agent-skills --check)', argv: ['plugins/workflow-agents/scripts/sync-agent-skills.mjs', '--check'] },
   { name: 'skills:contract (parity-lint --all)', argv: ['evals/harness/parity-lint.mjs', '--all'] },
   { name: 'bounds   (check-plugin-boundaries)', argv: ['scripts/check-plugin-boundaries.mjs'] },
@@ -31,13 +32,15 @@ const CHECKS = [
 
 let failed = 0;
 for (const c of CHECKS) {
-  const script = path.join(REPO, c.argv[0]);
+  const scriptArg = c.argv[0] === '--test' ? c.argv[1] : c.argv[0];
+  const script = path.join(REPO, scriptArg);
   if (!fs.existsSync(script)) {
     console.log(`—  ${c.name} (script absent, skipped)`);
     continue;
   }
   console.log(`\n=== ${c.name} ===`);
-  const r = spawnSync('node', [script, ...c.argv.slice(1)], { cwd: REPO, stdio: 'inherit' });
+  const argv = c.argv[0] === '--test' ? ['--test', script] : [script, ...c.argv.slice(1)];
+  const r = spawnSync('node', argv, { cwd: REPO, stdio: 'inherit' });
   if (r.status !== 0) {
     failed++;
     console.error(`✗ ${c.name} — DRIFT`);

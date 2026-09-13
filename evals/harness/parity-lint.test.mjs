@@ -54,3 +54,46 @@ test('evaluateContracts rejects an extra public skill before other contract chec
   assert.equal(result.failures.some((failure) => failure.includes('expected exactly')), true);
   assert.equal(result.failures.some((failure) => failure.includes('retired skill directory remains: team-qa')), true);
 });
+
+function copiedContracts(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'frontier-contract-mutation-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const source = new URL('../../plugins/workflow/skills/', import.meta.url);
+  const claudeRoot = path.join(root, 'claude');
+  const agentRoot = path.join(root, 'agent');
+  fs.cpSync(source, claudeRoot, { recursive: true });
+  fs.cpSync(source, agentRoot, { recursive: true });
+  return { claudeRoot, agentRoot };
+}
+
+for (const [name, file, from, to, expected] of [
+  ['author-based diversity', 'shared/cross-model-review.md', 'artifact author, not the coordinator', 'coordinator only', 'artifact author'],
+  ['runtime reviewer effort', 'shared/cross-model-review.md', '--effort medium', '--effort high', '--effort medium'],
+  ['evidence invalidation', 'shared/workflow-contract.md', 'Invalidate affected evidence', 'Retain every result', 'Invalidate affected evidence'],
+  ['productive repair budget', 'shared/workflow-contract.md', 'maximum of 3 corrective rounds', 'maximum of 1 corrective round', '3 corrective rounds'],
+  ['scope continuity', 'shared/workflow-contract.md', 'Factual corrections and test-detail refinements do not reset authorization', 'Every edit requires new approval', 'do not reset authorization'],
+]) {
+  test(`contract gate rejects loss of ${name} even with identical runtime copies`, (t) => {
+    const roots = copiedContracts(t);
+    assert.equal(evaluateContracts(roots).pass, true);
+    for (const root of Object.values(roots)) {
+      const target = path.join(root, file);
+      const original = fs.readFileSync(target, 'utf8');
+      assert.ok(original.includes(from));
+      fs.writeFileSync(target, original.replaceAll(from, to));
+    }
+    const result = evaluateContracts(roots);
+    assert.equal(result.pass, false);
+    assert.ok(result.failures.some((failure) => failure.includes(expected)), result.failures.join('\n'));
+  });
+}
+
+test('contract gate rejects a reintroduced cheap worker ladder in both copies', (t) => {
+  const roots = copiedContracts(t);
+  for (const root of Object.values(roots)) {
+    fs.appendFileSync(path.join(root, 'orchestrate/SKILL.md'), '\nUse worker-fast before worker-frontier.\n');
+  }
+  const result = evaluateContracts(roots);
+  assert.equal(result.pass, false);
+  assert.ok(result.failures.some((failure) => failure.includes('retired worker policy worker-fast')));
+});
