@@ -19,6 +19,35 @@ reason and checks. Ambiguity, novel design, visual taste, security, concurrency 
 high-consequence judgment favor frontier quality. Independent review still uses its own fresh
 context.
 
+### Autonomous effort selection
+
+The complete autonomous worker vocabulary is `low`, `medium`, `high`, `xhigh`, and `max` for
+both provider families. `ultra` is deliberately excluded: it is an operator-only human-session
+choice and must never be selected, requested, or passed by a coordinator, worker, reviewer, or
+the frontier helper. Do not treat `ultracode` as a worker effort either; it is a separate
+Claude-session mode.
+
+`medium` is this trial's measured cost/quality default, not a claim that every vendor recommends
+it. Anthropic currently advises starting Fable/Opus at `high`; OpenAI advises raising effort when
+evaluations show a clear quality benefit. Select the level at dispatch from observable task shape,
+then retain it for that owner's build/test/fix loop:
+
+- `low` — short, explicit, easy-to-verify work with a known approach: a focused lookup,
+  mechanical edit, or narrow check.
+- `medium` — bounded implementation or ordinary research with clear acceptance criteria.
+- `high` — ambiguous diagnosis, interacting modules, meaningful design choices, complex logic,
+  or consequential review.
+- `xhigh` — difficult autonomous work with many dependent decisions, elusive failures,
+  substantial uncertainty, or expensive-to-detect mistakes; use it for the weekly
+  ideation/business-case owner.
+- `max` — an exceptional problem where additional exploration has a specific expected benefit;
+  prefer evidence that `xhigh` was insufficient over automatic escalation.
+
+Fix missing context, contradictory instructions, and unclear completion criteria before raising
+effort. Do not use severity labels, a failed command, or a desire to retry as a proxy for harder
+reasoning. There is no automatic effort ladder: an owner continues at its selected level unless a
+meaningful phase boundary or demonstrated insufficiency justifies a newly recorded override.
+
 ### Dispatch-first gate
 
 Before the coordinator reads nontrivial implementation source, inspects a deployment or log,
@@ -52,7 +81,9 @@ replay or replacement: preserve current work and obtain an explicit recovery dec
 
 Record saved defaults, requested settings and actual runtime metadata separately. Saved settings
 do not prove active session behavior; mark missing actual model/effort evidence unverified. Use
-supported native settings for explicit overrides, not prompt wording.
+supported native settings for explicit overrides, not prompt wording. The helper rejects anything
+outside the shared five-level autonomous vocabulary; report that preflight failure rather than
+falling back, substituting `ultra`, or emulating an effort change in prose.
 
 ## Scope and approval
 

@@ -15,8 +15,8 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.0.3 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.0.3 | Runtime-neutral workflow skills and safety gates |
+| Claude Code | `bootstrap-workflow` | 5.0.4 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.0.4 | Runtime-neutral workflow skills and safety gates |
 | Claude Code / Codex | `wwbd` | 1.2.2 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 

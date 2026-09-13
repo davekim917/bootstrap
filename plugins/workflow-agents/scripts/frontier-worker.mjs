@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 const EFFORTS = {
   claude: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
-  codex: new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
+  codex: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
 };
 const MODELS = {
   claude: { default: 'claude-fable-5-1[1m]', allowed: new Set(['claude-fable-5-1[1m]', 'claude-fable-5-1', 'claude-opus-5[1m]', 'claude-opus-5']) },
@@ -119,7 +119,7 @@ export function run(spec) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.length === 3 && process.argv[2] === '--help') {
-    console.log('Usage: node frontier-worker.mjs --runtime claude|codex --cwd DIR [--effort medium] [--model MODEL] [--resume UUID] [--timeout-seconds 3600]\nDefault workers: Fable 5.1 / GPT-6 Astra. Approved worker floor: Fable or Opus on Claude; Astra or Sol on Codex. Prompt: stdin. Results and session IDs: native JSON events on stdout. Resume only this helper\'s own CLI UUID, never a native subagent handle. Keep transport, exact model, effort and session ID in run.md. This helper adds no sandbox or approval bypass.');
+    console.log('Usage: node frontier-worker.mjs --runtime claude|codex --cwd DIR [--effort medium] [--model MODEL] [--resume UUID] [--timeout-seconds 3600]\nAutonomous efforts: low, medium, high, xhigh, max. Default workers: Fable 5.1 / GPT-6 Astra. Approved worker floor: Fable or Opus on Claude; Astra or Sol on Codex. Prompt: stdin. Results and session IDs: native JSON events on stdout. Resume only this helper\'s own CLI UUID, never a native subagent handle. Keep transport, exact model, effort and session ID in run.md. This helper adds no sandbox or approval bypass.');
   } else {
     try {
       process.exitCode = await run(invocation(process.argv.slice(2)));
