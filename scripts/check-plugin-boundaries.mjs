@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { discoverRetiredAgents } from './retire-bootstrap-agents.mjs';
+import { RETIRED_AGENT_NAMES, discoverRetiredAgents } from './retire-bootstrap-agents.mjs';
+import { WORKER_AGENT } from '../plugins/workflow-agents/scripts/codex-agent-toml.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
@@ -402,11 +403,11 @@ if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.2.0') {
-  fail(`bootstrap-workflow release must be version 5.2.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.3.0') {
+  fail(`bootstrap-workflow release must be version 5.3.0 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.2.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.2.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.3.0') {
+  fail(`bootstrap-workflow-agents release must be version 2.3.0 (found ${codexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -423,11 +424,37 @@ for (const unexpectedDir of ['commands']) {
   }
 }
 
+// The agents/ dirs are back, but narrowly. They were emptied in 53e9501, which
+// deleted a six-role advisor roster (architecture-advisor, cto-advisor and the
+// rest — now RETIRED_AGENT_NAMES); the rule that followed banned the directory
+// outright. The ban is replaced, not dropped: each plugin may ship exactly the
+// one worker role and nothing else, so the advisor roster still cannot come
+// back and no second worker can appear beside `worker-frontier`.
+for (const [dir, expected] of [
+  ['plugins/workflow/agents', `${WORKER_AGENT}.md`],
+  ['plugins/workflow-agents/agents', `${WORKER_AGENT}.toml`],
+]) {
+  const root = path.join(repoRoot, dir);
+  if (!exists(dir)) {
+    fail(`${dir} must ship ${expected} so /orchestrate has a worker on a bare install`);
+    continue;
+  }
+  const found = findFiles(root, (_full, entry) => entry.isFile() || entry.isSymbolicLink())
+    .map((full) => path.relative(root, full))
+    .sort();
+  if (found.length !== 1 || found[0] !== expected) {
+    fail(`${dir} must contain exactly ${expected}; found ${found.join(', ') || '(nothing)'}`);
+  }
+  for (const name of found) {
+    if (RETIRED_AGENT_NAMES.includes(path.parse(name).name)) {
+      fail(`${dir}/${name} is a retired advisor role and must not return`);
+    }
+  }
+}
+
 for (const retiredPath of [
   'plugins/domain',
   'plugins/tools',
-  'plugins/workflow/agents',
-  'plugins/workflow-agents/agents',
   'plugins/workflow/hooks/guards/workflow-artifact-path.ts',
   'plugins/workflow/hooks/guards/workflow-gate-enforcement.ts',
   'plugins/workflow/hooks/guards/workflow-gate-enforcement.test.ts',

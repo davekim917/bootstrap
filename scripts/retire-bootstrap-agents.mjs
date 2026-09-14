@@ -5,7 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const OWNERSHIP_MARKER = '# managed by bootstrap-workflow-agents agent-sync';
+import { OWNERSHIP_MARKER } from '../plugins/workflow-agents/scripts/ownership.mjs';
+
+// The marker is the plugin's identity, so it is defined inside the plugin and
+// re-exported here. The repo always contains the plugin; a marketplace install
+// of the plugin never contains the repo, so the dependency can only run this
+// way (plugins/workflow-agents/scripts/ownership.mjs).
+export { OWNERSHIP_MARKER } from '../plugins/workflow-agents/scripts/ownership.mjs';
 export const RETIRED_AGENT_NAMES = Object.freeze([
   'architecture-advisor',
   'code-review-specialist',

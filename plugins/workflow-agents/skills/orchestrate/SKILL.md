@@ -41,6 +41,17 @@ not turn a short scheduled wake, a familiar codebase, or a likely one-line fix i
 Keep one worker role, with no automatic retry or model ladder. If no approved worker is available,
 report the limitation and obtain a recovery decision; never silently downgrade.
 
+This plugin ships that role, so it exists on a bare install. **Resolving the worker by name:** on
+Claude, use `bootstrap-workflow:worker-frontier` whenever it is offered, and the bare
+`worker-frontier` only when it is not. Claude Code namespaces plugin agents, so the qualified name
+is the plugin's own copy — the one a plugin update refreshes. A bare `worker-frontier` comes from
+user scope (`~/.claude/agents/`, which is what a NanoClaw container mounts); it is a separate file
+that nothing in the plugin updates, so preferring it would silently pin an installation to whatever
+version was copied there. Both names denote the same role: never dispatch to both or treat the
+qualified one as a second worker. On Codex the name is always bare `worker-frontier` — Codex has no
+plugin-agent mechanism, so the role is installed into `<CODEX_HOME>/agents/` by
+`plugins/workflow-agents/scripts/install-agent-roles.mjs`.
+
 The native worker profile defaults to Claude Opus 5 (`claude-opus-5[1m]`) or Codex GPT-5.6 Sol
 (`gpt-5.6-sol`), `high` effort; Fable 5.1 / Astra 6 are reached with an explicit `--model` on the
 same worker role, not a second role. Select only `low`, `medium`, `high`, `xhigh`, or `max` for an
