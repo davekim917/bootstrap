@@ -10,24 +10,24 @@ import { invocation, WORKER_CONTEXT } from './frontier-worker.mjs';
 const helper = fileURLToPath(new URL('./frontier-worker.mjs', import.meta.url));
 const session = '01234567-89ab-4cde-8fab-0123456789ab';
 
-test('both runtimes default medium and explicit effort overrides stay local', () => {
-  const parent = { PATH: process.env.PATH, CLAUDE_CODE_EFFORT_LEVEL: 'high' };
+test('both runtimes default to the Opus/Sol worker at high and explicit effort overrides stay local', () => {
+  const parent = { PATH: process.env.PATH, CLAUDE_CODE_EFFORT_LEVEL: 'medium' };
   for (const runtime of ['claude', 'codex']) {
     const spec = invocation(['--runtime', runtime, '--cwd', os.tmpdir()], parent);
-    assert.match(spec.args.join(' '), /medium/);
-    assert.match(spec.args.join(' '), runtime === 'claude' ? /claude-fable-5-1/ : /gpt-6-astra/);
+    assert.match(spec.args.join(' '), /high/);
+    assert.match(spec.args.join(' '), runtime === 'claude' ? /claude-opus-5/ : /gpt-5\.6-sol/);
     assert.doesNotMatch(spec.args.join(' '), /yolo|bypass|ignore-user|safe-mode|ephemeral/);
     const low = invocation(['--runtime', runtime, '--cwd', os.tmpdir(), '--effort', 'low', '--resume', session], parent);
     assert.match(low.args.join(' '), /low/);
     assert.ok(low.args.includes(session));
     assert.ok(!low.args.includes('--last'));
     if (runtime === 'claude') assert.equal(low.env.CLAUDE_CODE_EFFORT_LEVEL, 'low');
-    for (const effort of ['high', 'xhigh', 'max']) {
+    for (const effort of ['medium', 'xhigh', 'max']) {
       const explicit = invocation(['--runtime', runtime, '--cwd', os.tmpdir(), '--effort', effort], parent);
       assert.match(explicit.args.join(' '), new RegExp(effort));
     }
   }
-  assert.equal(parent.CLAUDE_CODE_EFFORT_LEVEL, 'high');
+  assert.equal(parent.CLAUDE_CODE_EFFORT_LEVEL, 'medium');
 });
 
 test('invalid choices and ambiguous resume fail before launch', () => {
@@ -52,13 +52,22 @@ test('Codex ultra requires a direct human-direction control', () => {
 });
 
 test('approved worker floor admits Fable/Opus and Astra/Sol, but rejects lower-tier delegation', () => {
-  for (const [runtime, model] of [
-    ['claude', 'claude-fable-5-1[1m]'], ['claude', 'claude-opus-5'],
-    ['codex', 'gpt-6-astra'], ['codex', 'gpt-5.6-sol'],
+  // Escalating the model must NOT escalate the effort: the default effort is
+  // tier-aware, `high` on the Opus/Sol default worker and `medium` on the
+  // Fable/Astra escalation. One case per runtime for each tier.
+  for (const [runtime, model, expected] of [
+    ['claude', 'claude-fable-5-1[1m]', 'medium'], ['claude', 'claude-fable-5-1', 'medium'],
+    ['claude', 'claude-opus-5', 'high'],
+    ['codex', 'gpt-6-astra', 'medium'], ['codex', 'gpt-5.6-sol', 'high'],
   ]) {
     const spec = invocation(['--runtime', runtime, '--cwd', os.tmpdir(), '--model', model]);
     assert.equal(spec.args[spec.args.indexOf('--model') + 1], model);
-    assert.match(spec.args.join(' '), /medium/);
+    assert.match(spec.args.join(' '), new RegExp(expected));
+    assert.doesNotMatch(spec.args.join(' '), new RegExp(expected === 'high' ? 'medium' : '\\bhigh\\b'));
+    if (runtime === 'claude') assert.equal(spec.env.CLAUDE_CODE_EFFORT_LEVEL, expected);
+    // An explicit --effort still wins over the tier default, both directions.
+    const forced = invocation(['--runtime', runtime, '--cwd', os.tmpdir(), '--model', model, '--effort', 'xhigh']);
+    assert.match(forced.args.join(' '), /xhigh/);
   }
   for (const [runtime, model] of [['claude', 'claude-sonnet-5'], ['codex', 'gpt-5.6-luna']]) {
     assert.throws(() => invocation(['--runtime', runtime, '--cwd', os.tmpdir(), '--model', model]));

@@ -11,13 +11,13 @@ replace those contracts or downgrade those roles.
 Ordinary coordinators are Sonnet/xhigh or Terra/xhigh. Direct coordinator work is limited to
 brief logistical or mechanical actions. Delegate substantive design, implementation,
 research/synthesis, debugging, technical planning and judgment-heavy review to a retained worker
-from the approved floor: Fable 5.1 or Opus 5 for Claude, Astra 6 or Sol for Codex. Fable/Astra are
-the default at medium effort; Opus/Sol are first-class dynamic worker selections, not exceptions.
+from the approved floor: Fable 5.1 or Opus 5 for Claude, Astra 6 or Sol for Codex. Opus 5 and Sol
+are the default worker, at `high` effort. Fable 5.1 and Astra 6 are the escalation: select them on
+explicit human request, or when the task shape calls for the top model's judgment. Ambiguity,
+novel design, visual taste, security, concurrency and high-consequence judgment are that set.
 Choose once at task start based on user direction, task/model fit, observed trial results, or
 provider availability, then retain that same owner. Record the actual model, effort, selection
-reason and checks. Ambiguity, novel design, visual taste, security, concurrency and
-high-consequence judgment favor frontier quality. Independent review still uses its own fresh
-context.
+reason and checks. Independent review still uses its own fresh context.
 
 ### Autonomous effort selection
 
@@ -30,18 +30,28 @@ or a prior human preference. Do not treat `ultracode` as a worker effort either;
 Claude-session mode.
 
 This rubric governs effort on the dispatched worker, not the coordinating session — the user is
-free to run any model at any effort as the coordinator. `medium` is this trial's measured
-cost/quality default. Because workers are frontier models (Fable/Opus/Astra/Sol), effort level on
-them is the primary cost lever. Anthropic's API defaults to `high` for current models; OpenAI
-defaults GPT-5.5/5.6 to `medium`. Select the level at dispatch from observable task shape, then
-retain it for that owner's build/test/fix loop.
+free to run any model at any effort as the coordinator. Each worker tier carries its own measured
+cost/quality default (next paragraph). Because workers are frontier models (Fable/Opus/Astra/Sol),
+effort level on them is the primary cost lever. Anthropic's API defaults to `high` for current
+models; OpenAI defaults GPT-5.5/5.6 to `medium`. Select the level at dispatch from observable task
+shape, then retain it for that owner's build/test/fix loop.
+
+The triggers below have two default columns, one per worker tier. On the default Opus/Sol worker,
+read the "stay at" row as `high`: `low` for mechanical work, `xhigh` for an elusive failure. On an
+escalated Fable/Astra worker, read it as `medium`: `low` for mechanical work, `high` only when
+reasoning depth is also needed, `xhigh` rare, `max` only with evidence that `xhigh` was
+insufficient. Escalating the model does not also escalate the effort — model tier buys judgment,
+effort buys reasoning depth; stack both only when the task shape demands both. Escalation is by
+judgment shape, never by effort row: `high` and `xhigh` are ordinary Opus/Sol levels, so on an
+Opus/Sol worker already sitting at `high` the "Step to `high`" triggers below change no effort —
+they are the cue to consider escalating the model instead.
 
 Step down to `low`:
 - Focused single-file lookup or grep
 - Mechanical edit with zero judgment (rename, format fix, known substitution)
 - Narrow check with a known answer (does file X exist, what's the value of Y)
 
-Stay at `medium` (default):
+Stay at the tier default (`high` on Opus/Sol, `medium` on Fable/Astra):
 - Bounded implementation with clear acceptance criteria
 - Ordinary research with a known approach
 - Test writing for understood behavior
