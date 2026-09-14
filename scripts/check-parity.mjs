@@ -25,6 +25,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHECKS = [
   { name: 'hooks    (vendor-guards --check)', argv: ['scripts/vendor-guards.mjs', '--check'] },
   { name: 'worker:transport (frontier-worker tests)', argv: ['--test', 'plugins/workflow/scripts/frontier-worker.test.mjs'] },
+  { name: 'worker:roles (install-agent-roles tests)', argv: ['--test', 'plugins/workflow-agents/scripts/install-agent-roles.test.mjs'] },
   { name: 'skills:gen (sync-agent-skills --check)', argv: ['plugins/workflow-agents/scripts/sync-agent-skills.mjs', '--check'] },
   { name: 'skills:contract (parity-lint --all)', argv: ['evals/harness/parity-lint.mjs', '--all'] },
   { name: 'bounds   (check-plugin-boundaries)', argv: ['scripts/check-plugin-boundaries.mjs'] },

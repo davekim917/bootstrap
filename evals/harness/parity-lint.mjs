@@ -9,6 +9,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGINS } from './lib.mjs';
+import {
+  CODEX_WORKER_MODEL,
+  WORKER_AGENT,
+  frontmatterScalar,
+  parseAgentDef,
+  renderCodexAgentToml,
+} from '../../plugins/workflow-agents/scripts/codex-agent-toml.mjs';
 
 export const EXPECTED_SKILLS = Object.freeze([
   'orchestrate',
@@ -194,7 +201,47 @@ export function evaluateContracts({
     ]);
   }
 
+  checkWorkerAgentTwin(failures, checks);
+
   return { pass: failures.length === 0, checks, failures };
+}
+
+/**
+ * The worker role is one agent def, shipped to both runtimes. Claude reads
+ * `plugins/workflow/agents/<name>.md` (auto-discovered from the plugin root);
+ * Codex has no plugin-agent mechanism at all, so it gets a generated role TOML
+ * that `scripts/install-agent-roles.mjs` places in `<CODEX_HOME>/agents/`.
+ *
+ * Byte-identity is impossible across the two formats, so what is checked is the
+ * DERIVATION: the TOML must be exactly what the generator produces from the .md
+ * right now, and its model must be the Codex model the generator declares. That
+ * makes an edit to either side fail here instead of silently forking the role.
+ */
+function checkWorkerAgentTwin(failures, checks) {
+  const source = path.join(PLUGINS, 'workflow', 'agents', `${WORKER_AGENT}.md`);
+  const twin = path.join(PLUGINS, 'workflow-agents', 'agents', `${WORKER_AGENT}.toml`);
+  for (const [label, file] of [['Claude', source], ['Codex/OpenCode', twin]]) {
+    if (!fs.existsSync(file)) {
+      failures.push(`${label}/agents: ${WORKER_AGENT} must ship with the plugin (${path.relative(PLUGINS, file)})`);
+      return;
+    }
+  }
+
+  const markdown = fs.readFileSync(source, 'utf8');
+  const { frontmatter } = parseAgentDef(markdown);
+  if (frontmatterScalar(frontmatter, 'name') !== WORKER_AGENT) {
+    failures.push(`Claude/agents: ${WORKER_AGENT}.md must declare \`name: ${WORKER_AGENT}\``);
+  }
+
+  const expected = renderCodexAgentToml(markdown, CODEX_WORKER_MODEL);
+  if (fs.readFileSync(twin, 'utf8') !== expected) {
+    failures.push(
+      `Codex/OpenCode/agents: ${WORKER_AGENT}.toml is not the current render of ${WORKER_AGENT}.md — ` +
+        'regenerate: node plugins/workflow-agents/scripts/sync-agent-skills.mjs',
+    );
+    return;
+  }
+  checks.push(`agents/${WORKER_AGENT}: Codex role TOML derives from the Claude def`);
 }
 
 function main() {

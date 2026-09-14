@@ -11,6 +11,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { CODEX_WORKER_MODEL, WORKER_AGENT, renderCodexAgentToml } from './codex-agent-toml.mjs';
+
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const CLAUDE = path.join(REPO, 'plugins/workflow/skills');
 const AGENTS = path.join(REPO, 'plugins/workflow-agents/skills');
@@ -33,6 +35,7 @@ const SHARED = [
   'references/codex-adversarial-prompt.md',
   'references/codex-review-output.schema.json',
 ];
+
 
 /** Mechanical substitutions for schema/path differences only. */
 export function transformSkill(text) {
@@ -179,10 +182,29 @@ function main() {
     fs.writeFileSync(helperTarget, helper);
   }
 
+  // The worker role: one Claude agent def in, one Codex role TOML out.
+  const agentSource = path.join(REPO, `plugins/workflow/agents/${WORKER_AGENT}.md`);
+  const agentTarget = path.join(REPO, `plugins/workflow-agents/agents/${WORKER_AGENT}.toml`);
+  if (!fs.existsSync(agentSource)) throw new Error(`missing canonical agent def: ${agentSource}`);
+  const agentToml = renderCodexAgentToml(fs.readFileSync(agentSource, 'utf8'), CODEX_WORKER_MODEL);
+  const currentToml = fs.existsSync(agentTarget) ? fs.readFileSync(agentTarget, 'utf8') : null;
+  if (currentToml !== agentToml) {
+    if (check) {
+      console.error(`sync-agent-skills: stale or missing agents/${WORKER_AGENT}.toml`);
+      process.exit(1);
+    }
+    fs.mkdirSync(path.dirname(agentTarget), { recursive: true });
+    fs.writeFileSync(agentTarget, agentToml);
+  }
+
   const action = check ? 'verified' : 'generated';
   console.log(
-    `sync-agent-skills: ${action} ${SKILLS.length} skills and ${SHARED.length} shared contracts`,
+    `sync-agent-skills: ${action} ${SKILLS.length} skills, ${SHARED.length} shared contracts and 1 agent role`,
   );
 }
 
-main();
+// Run only as a script. Importing this module (parity-lint reads its constants)
+// must never regenerate the tree a --check run is about to verify.
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
+  main();
+}

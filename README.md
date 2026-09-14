@@ -15,8 +15,8 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.2.0 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.2.0 | Runtime-neutral workflow skills and safety gates |
+| Claude Code | `bootstrap-workflow` | 5.3.0 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.3.0 | Runtime-neutral workflow skills and safety gates |
 | Claude Code / Codex | `wwbd` | 1.2.2 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
@@ -128,7 +128,39 @@ does not also escalate the effort. Validate actual runtime metadata separately f
 Choose native or CLI ownership at task start: native handles stay with their parent; helper
 `--resume` accepts only its own CLI UUID. An approved alternate model uses helper `--model` from
 the start because the native Codex worker is model-pinned. Never silently replay work after a
-transport switch fails. Runtime profiles are host-managed; this plugin installs no permanent agents.
+transport switch fails.
+
+### The worker role
+
+Both plugins ship the `worker-frontier` agent definition, so `/orchestrate` has a worker to dispatch
+to on a bare install with no host setup.
+
+**Claude.** `plugins/workflow/agents/worker-frontier.md` is auto-discovered from the plugin root —
+no `plugin.json` entry, nothing to install. Claude Code namespaces plugin agents, so it appears as
+`bootstrap-workflow:worker-frontier`. A host that also installs the role in user scope
+(`~/.claude/agents/worker-frontier.md`) exposes the bare `worker-frontier` as well. Prefer the
+qualified name: it is the plugin's copy, and a plugin update refreshes it, while the user-scope file
+is a separate copy nothing in the plugin maintains. Use the bare name only where the qualified one
+is not offered — a NanoClaw container, for instance. They are one role, not two workers.
+
+**Codex / OpenCode.** A Codex plugin can ship skills, MCP servers, browser extensions and hooks —
+not agents. Codex reads named roles only from `<CODEX_HOME>/agents/<name>.toml`, so the role TOML is
+generated into `plugins/workflow-agents/agents/` and installed with one command:
+
+```sh
+node plugins/workflow-agents/scripts/install-agent-roles.mjs            # dry run, shows what it would write
+node plugins/workflow-agents/scripts/install-agent-roles.mjs --apply    # write into $CODEX_HOME/agents
+```
+
+It is fail-closed about ownership. Every file it writes carries
+`# managed by bootstrap-workflow-agents agent-sync` on line 1, and it overwrites only files carrying
+that same marker. A role owned by another manager — on a NanoClaw host,
+`# managed by nanoclaw codex-sync` owns this exact filename — or a hand-written one with no marker
+is reported and refused, never clobbered.
+
+The TOML is generated from the Claude `.md`, never hand-edited: run
+`node plugins/workflow-agents/scripts/sync-agent-skills.mjs` after changing the def. `parity-lint`
+fails when the two have forked.
 
 Existing conversational approval survives factual and test-detail plan refinements. New product,
 scope, trust and destructive boundaries retain their gates. Tests target observable acceptance;
