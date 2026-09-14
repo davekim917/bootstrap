@@ -29,21 +29,38 @@ this to an ultra worker”): record that instruction and invoke the helper with
 or a prior human preference. Do not treat `ultracode` as a worker effort either; it is a separate
 Claude-session mode.
 
-`medium` is this trial's measured cost/quality default, not a claim that every vendor recommends
-it. Anthropic currently advises starting Fable/Opus at `high`; OpenAI advises raising effort when
-evaluations show a clear quality benefit. Select the level at dispatch from observable task shape,
-then retain it for that owner's build/test/fix loop:
+This rubric governs effort on the dispatched worker, not the coordinating session — the user is
+free to run any model at any effort as the coordinator. `medium` is this trial's measured
+cost/quality default. Because workers are frontier models (Fable/Opus/Astra/Sol), effort level on
+them is the primary cost lever. Anthropic's API defaults to `high` for current models; OpenAI
+defaults GPT-5.5/5.6 to `medium`. Select the level at dispatch from observable task shape, then
+retain it for that owner's build/test/fix loop.
 
-- `low` — short, explicit, easy-to-verify work with a known approach: a focused lookup,
-  mechanical edit, or narrow check.
-- `medium` — bounded implementation or ordinary research with clear acceptance criteria.
-- `high` — ambiguous diagnosis, interacting modules, meaningful design choices, complex logic,
-  or consequential review.
-- `xhigh` — difficult autonomous work with many dependent decisions, elusive failures,
-  substantial uncertainty, or expensive-to-detect mistakes; use it for the weekly
-  ideation/business-case owner.
-- `max` — an exceptional problem where additional exploration has a specific expected benefit;
-  prefer evidence that `xhigh` was insufficient over automatic escalation.
+Step down to `low`:
+- Focused single-file lookup or grep
+- Mechanical edit with zero judgment (rename, format fix, known substitution)
+- Narrow check with a known answer (does file X exist, what's the value of Y)
+
+Stay at `medium` (default):
+- Bounded implementation with clear acceptance criteria
+- Ordinary research with a known approach
+- Test writing for understood behavior
+- Single-module changes
+
+Step to `high`:
+- Debugging without a known root cause
+- Concurrency, race conditions, state machines
+- Security or trust boundary changes
+- Multi-module changes with implicit cross-module contracts
+- Consequential review
+
+Step to `xhigh`:
+- Elusive failure after `high` didn't resolve it
+- Many dependent design decisions with no codebase precedent
+- Substantial uncertainty about the right approach
+
+`max` — evidence that `xhigh` was demonstrably insufficient; prefer evidence over automatic
+escalation.
 
 Fix missing context, contradictory instructions, and unclear completion criteria before raising
 effort. Do not use severity labels, a failed command, or a desire to retry as a proxy for harder
