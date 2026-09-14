@@ -9,9 +9,14 @@ const EFFORTS = {
   codex: new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
 };
 const MODELS = {
-  claude: { default: 'claude-fable-5-1[1m]', allowed: new Set(['claude-fable-5-1[1m]', 'claude-fable-5-1', 'claude-opus-5[1m]', 'claude-opus-5']) },
-  codex: { default: 'gpt-6-astra', allowed: new Set(['gpt-6-astra', 'gpt-5.6-sol']) },
+  claude: { default: 'claude-opus-5[1m]', allowed: new Set(['claude-fable-5-1[1m]', 'claude-fable-5-1', 'claude-opus-5[1m]', 'claude-opus-5']) },
+  codex: { default: 'gpt-5.6-sol', allowed: new Set(['gpt-6-astra', 'gpt-5.6-sol']) },
 };
+// The escalation tier. Selecting one of these buys judgment, not reasoning
+// depth, so its effort default stays `medium` — the contract forbids letting a
+// model escalation silently escalate effort too. Explicit --effort still wins.
+const ESCALATION_MODELS = new Set(['claude-fable-5-1[1m]', 'claude-fable-5-1', 'gpt-6-astra']);
+const defaultEffortFor = (model) => (ESCALATION_MODELS.has(model) ? 'medium' : 'high');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const WORKER_CONTEXT = 'You are the assigned premium technical worker, not the coordinator. Own the following task through investigation, technical design, implementation, relevant verification and fixes. Follow repository rules and the task scope. Do not launch another orchestration layer or delegate unless the user explicitly requests it. Return concise results with evidence and any unresolved limits. The original task follows unchanged.\n\n';
 
@@ -28,7 +33,9 @@ export function invocation(argv, inheritedEnv = process.env) {
   }
   const runtime = options.runtime;
   if (!EFFORTS[runtime]) throw new Error('--runtime must be claude or codex');
-  const effort = options.effort ?? 'medium';
+  const model = options.model ?? MODELS[runtime].default;
+  if (!MODELS[runtime].allowed.has(model)) throw new Error(`Unsupported ${runtime} worker model: ${model}`);
+  const effort = options.effort ?? defaultEffortFor(model);
   if (!EFFORTS[runtime].has(effort)) throw new Error(`Unsupported ${runtime} effort: ${effort}`);
   const humanDirectedUltra = options['human-directed-ultra'];
   if (humanDirectedUltra !== undefined && humanDirectedUltra !== 'true') {
@@ -40,8 +47,6 @@ export function invocation(argv, inheritedEnv = process.env) {
   if (effort !== 'ultra' && humanDirectedUltra !== undefined) {
     throw new Error('--human-directed-ultra is valid only with --effort ultra');
   }
-  const model = options.model ?? MODELS[runtime].default;
-  if (!MODELS[runtime].allowed.has(model)) throw new Error(`Unsupported ${runtime} worker model: ${model}`);
   if (!options.cwd) throw new Error('--cwd is required');
   const cwd = realpathSync(options.cwd);
   if (!statSync(cwd).isDirectory()) throw new Error('--cwd must name a directory');
@@ -129,7 +134,7 @@ export function run(spec) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.length === 3 && process.argv[2] === '--help') {
-    console.log('Usage: node frontier-worker.mjs --runtime claude|codex --cwd DIR [--effort medium] [--model MODEL] [--resume UUID] [--timeout-seconds 3600]\nAutonomous efforts: low, medium, high, xhigh, max. Codex ultra requires a direct current human instruction and --human-directed-ultra true. Default workers: Fable 5.1 / GPT-6 Astra. Approved worker floor: Fable or Opus on Claude; Astra or Sol on Codex. Prompt: stdin. Results and session IDs: native JSON events on stdout. Resume only this helper\'s own CLI UUID, never a native subagent handle. Keep transport, exact model, effort and session ID in run.md. This helper adds no sandbox or approval bypass.');
+    console.log('Usage: node frontier-worker.mjs --runtime claude|codex --cwd DIR [--effort high] [--model MODEL] [--resume UUID] [--timeout-seconds 3600]\nAutonomous efforts: low, medium, high, xhigh, max. Codex ultra requires a direct current human instruction and --human-directed-ultra true. Default workers: Opus 5 / GPT-5.6 Sol at high effort. Fable 5.1 / GPT-6 Astra are the escalation via --model and default to medium effort, because escalating the model does not escalate the effort. Approved worker floor: Fable or Opus on Claude; Astra or Sol on Codex. Prompt: stdin. Results and session IDs: native JSON events on stdout. Resume only this helper\'s own CLI UUID, never a native subagent handle. Keep transport, exact model, effort and session ID in run.md. This helper adds no sandbox or approval bypass.');
   } else {
     try {
       process.exitCode = await run(invocation(process.argv.slice(2)));

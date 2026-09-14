@@ -15,8 +15,8 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.1.0 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.1.0 | Runtime-neutral workflow skills and safety gates |
+| Claude Code | `bootstrap-workflow` | 5.2.0 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.2.0 | Runtime-neutral workflow skills and safety gates |
 | Claude Code / Codex | `wwbd` | 1.2.2 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
@@ -107,8 +107,10 @@ cheap-first hurdle applies, and task length alone does not justify a downgrade. 
 design, visual taste, security, concurrency and high-consequence judgments favor frontier quality.
 
 One retained `worker-frontier` owns investigation, design, build, tests and repair. Its worker
-floor is Claude Fable 5.1 or Opus 5, and Codex GPT-6 Astra or GPT-5.6 Sol. Fable/Astra default to
-medium; Opus/Sol are first-class dynamic selections, chosen once at task start based on user
+floor is Claude Fable 5.1 or Opus 5, and Codex GPT-6 Astra or GPT-5.6 Sol. Opus/Sol are the
+default worker at `high` effort; Fable/Astra are the escalation, selected on explicit human request
+or when the task shape calls for the top model's judgment, and they run at `low`/`medium` unless
+reasoning depth is also needed. The choice is made once at task start based on user
 direction, task/model fit, observed trial results, or provider availability. Never delegate
 substantive work below that floor. Record the actual model, effort, reason and checks; if no
 approved worker is available, report the limitation instead of silently downgrading. There is one
@@ -121,7 +123,8 @@ claude --model sonnet --effort xhigh
 codex --model gpt-5.6-terra -c 'model_reasoning_effort="xhigh"'
 ```
 
-Worker defaults remain medium. Validate actual runtime metadata separately from saved settings.
+Worker effort defaults by tier: `high` on Opus/Sol, `medium` on Fable/Astra. Escalating the model
+does not also escalate the effort. Validate actual runtime metadata separately from saved settings.
 Choose native or CLI ownership at task start: native handles stay with their parent; helper
 `--resume` accepts only its own CLI UUID. An approved alternate model uses helper `--model` from
 the start because the native Codex worker is model-pinned. Never silently replay work after a

@@ -144,7 +144,7 @@ export function evaluateContracts({
 
     const ownership = fs.readFileSync(path.join(root, 'orchestrate', 'SKILL.md'), 'utf8');
     requireTokens(failures, `${label}/orchestrate`, ownership, [
-      'worker-frontier', 'claude-fable-5-1', 'gpt-6-astra', 'default medium',
+      'worker-frontier', 'claude-opus-5', 'gpt-5.6-sol', 'default worker at `high` effort',
       'same retained session', 'artifact author', '../../scripts/frontier-worker.mjs',
       'Sonnet/xhigh or Terra/xhigh', 'no file-count or cheap-first hurdle',
       'approved worker floor', 'Fable 5.1 or Opus 5', 'GPT-6 Astra or GPT-5.6 Sol',

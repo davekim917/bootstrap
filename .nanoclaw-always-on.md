@@ -2,8 +2,9 @@
 
 For substantial work, load `orchestrate`: Sonnet/xhigh or Terra/xhigh handles brief logistics, status,
 authorization and evidence; one retained worker from the Fable/Opus or Astra/Sol floor investigates,
-designs, builds, tests and repairs in its retained session. Fable/Astra default to medium; Opus/Sol
-are valid dynamic worker choices. Never delegate substantive work below that Opus/Sol floor. Independent
+designs, builds, tests and repairs in its retained session. Opus/Sol are the default worker at high
+effort; Fable/Astra are the escalation, on explicit human request or judgment-heavy task shape.
+Escalating the model does not also escalate the effort. Never delegate substantive work below that Opus/Sol floor. Independent
 review uses fresh context and the other family relative to the artifact author. Only brief logistical or mechanical actions execute directly;
 workers use tools directly and do not re-delegate.
 

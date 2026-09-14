@@ -19,8 +19,11 @@ no file-count or cheap-first hurdle; a short task is not by itself a reason to d
 
 One `worker-frontier` owns investigation, technical design, implementation, tests, and fixes in
 the same retained session. Its approved worker floor is Claude Fable 5.1 or Opus 5, and Codex
-GPT-6 Astra or GPT-5.6 Sol. Fable/Astra remain the default medium-effort workers; Opus/Sol are
-first-class dynamic worker selections, not fallbacks. Choose the model once at task start from
+GPT-6 Astra or GPT-5.6 Sol. Opus/Sol are the default worker at `high` effort; Fable/Astra are the
+escalation, selected on explicit human request or judgment-heavy task shape (ambiguity, novel
+design, visual taste, security, concurrency, high-consequence judgment), and run at the default
+medium there unless reasoning depth is also needed. Escalating the model does not also escalate
+the effort. Choose the model once at task start from
 that floor based on user direction, task/model fit, observed trial results, or provider
 availability; record the actual model, effort, reason, and checks. Never choose a worker below
 that floor for substantive delegated work, including discovery, implementation, checks, fixes,
@@ -38,8 +41,9 @@ not turn a short scheduled wake, a familiar codebase, or a likely one-line fix i
 Keep one worker role, with no automatic retry or model ladder. If no approved worker is available,
 report the limitation and obtain a recovery decision; never silently downgrade.
 
-The native worker profile defaults to Claude Fable 5.1 (`claude-fable-5-1`) or Codex GPT-6 Astra
-(`gpt-6-astra`), medium effort. Select only `low`, `medium`, `high`, `xhigh`, or `max` for an
+The native worker profile defaults to Claude Opus 5 (`claude-opus-5[1m]`) or Codex GPT-5.6 Sol
+(`gpt-5.6-sol`), `high` effort; Fable 5.1 / Astra 6 are reached with an explicit `--model` on the
+same worker role, not a second role. Select only `low`, `medium`, `high`, `xhigh`, or `max` for an
 autonomous worker, using the shared contract's task-shape rubric. Do not select `ultra` from that
 roster. When the current human explicitly directs an ultra worker, record the wording and call the
 Codex helper with `--effort ultra --human-directed-ultra true`; never infer this from task shape.
@@ -59,11 +63,11 @@ not a CLI resume handle, even if it has the same shape. Transport handles are no
 For example, from the installed plugin root:
 
 ```sh
-node scripts/frontier-worker.mjs --runtime codex --cwd /absolute/worktree --effort medium < task.txt
+node scripts/frontier-worker.mjs --runtime codex --cwd /absolute/worktree --effort high < task.txt
 node scripts/frontier-worker.mjs --runtime codex --cwd /absolute/worktree --effort low --resume CLI_SESSION_UUID < followup.txt
 ```
 
-Use `--runtime claude` for Fable or Opus and `--runtime codex` for Astra or Sol. Replace
+Use `--runtime claude` for Opus or Fable and `--runtime codex` for Sol or Astra. Replace
 `CLI_SESSION_UUID` with the recorded CLI UUID; use the second command only for that helper-started
 session. The helper accepts only this four-model worker floor and uses exact models and native
 configuration, with no build permission bypass or ephemeral build session. Claude's native Agent
