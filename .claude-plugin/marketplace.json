@@ -9,13 +9,13 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "One retained frontier owner, proportional independent review, and bounded safe publication.",
-      "version": "5.5.0"
+      "version": "5.6.0"
     },
     {
       "name": "bootstrap-orchestrate",
       "source": "./plugins/orchestrate",
-      "description": "The /orchestrate skill: hand one task to a retained frontier sub-agent. Invoke-only — no standing directive, no hooks.",
-      "version": "1.1.0"
+      "description": "The /orchestrate skill: hand one task to a retained frontier sub-agent. Invoke-only \u2014 no standing directive, no hooks.",
+      "version": "1.2.0"
     },
     {
       "name": "wwbd",

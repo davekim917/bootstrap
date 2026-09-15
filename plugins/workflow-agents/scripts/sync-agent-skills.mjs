@@ -19,6 +19,13 @@
  * generated here from the canonical `plugins/workflow/skills/shared/` and gated
  * by evals/harness/parity-lint.mjs, which fails if any copy diverges.
  *
+ * It also renders the WORKER MODEL/EFFORT POLICY. One hand-edited file
+ * (plugins/workflow/worker-policy.json) is the source for the worker agent def's
+ * `model`/`effort` frontmatter and its "Runs on X at Y effort." sentence, the
+ * Codex role TOML's model and retargeted description, and the
+ * `worker-policy.generated.mjs` module each frontier-worker.mjs imports. See
+ * ./worker-policy.mjs.
+ *
  * Usage:
  *   node plugins/workflow-agents/scripts/sync-agent-skills.mjs
  *   node plugins/workflow-agents/scripts/sync-agent-skills.mjs --check
@@ -27,7 +34,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CODEX_WORKER_MODEL, WORKER_AGENT, renderCodexAgentToml } from './codex-agent-toml.mjs';
+import { WORKER_AGENT, renderCodexAgentToml } from './codex-agent-toml.mjs';
+import {
+  GENERATED_POLICY_BASENAME,
+  POLICY_CONSUMER_PLUGINS,
+  POLICY_PATH,
+  applyAgentDefPolicy,
+  loadWorkerPolicy,
+  renderPolicyModule,
+} from './worker-policy.mjs';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -223,6 +238,27 @@ function reconcile({ label, root, expected, expectedTopLevel, check }) {
   return problems;
 }
 
+/**
+ * Write one rendered artifact; returns a failure line under --check when the
+ * file on disk is not byte-identical to what the source of truth renders.
+ *
+ * This is the shape every worker-policy artifact takes, and it is what turns
+ * the gates from "assert the literal string `gpt-5.6-sol`" into "assert
+ * generated == source": a hand-edit of the output and a stale regeneration both
+ * fail here, and neither needs the gate to know what the policy says.
+ */
+function writeGenerated({ label, target, content, check }) {
+  const current = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : null;
+  if (current === content) return null;
+  if (check) {
+    return `${label}: stale or missing ${path.relative(REPO, target)} — regenerate: `
+      + 'node plugins/workflow-agents/scripts/sync-agent-skills.mjs';
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, content);
+  return null;
+}
+
 /** Copy one file verbatim; returns a failure line under --check when stale. */
 function mirrorFile({ label, source, target, check }) {
   if (!fs.existsSync(source)) throw new Error(`missing canonical file: ${source}`);
@@ -238,6 +274,20 @@ function main() {
   const check = process.argv.includes('--check');
   const problems = [];
   let skillCount = 0;
+
+  // The worker model/effort policy. Loaded (and validated) first: every artifact
+  // below that names a model or an effort is rendered from it.
+  const policy = loadWorkerPolicy(REPO);
+  const policyModule = renderPolicyModule(policy);
+  for (const plugin of POLICY_CONSUMER_PLUGINS) {
+    const problem = writeGenerated({
+      label: `sync-agent-skills[policy:${path.basename(plugin)}]`,
+      target: path.join(REPO, plugin, 'scripts', GENERATED_POLICY_BASENAME),
+      content: policyModule,
+      check,
+    });
+    if (problem) problems.push(problem);
+  }
 
   for (const pair of PAIRS) {
     skillCount += pair.skills.length;
@@ -299,10 +349,26 @@ function main() {
   }
 
   // The worker role: one Claude agent def in, one Codex role TOML out.
+  //
+  // The def's `model:`/`effort:` scalars and its closing "Runs on X at Y effort."
+  // sentence come from the policy; the rest of the file is hand-authored, so the
+  // policy is applied to it in place rather than the whole def being rendered.
+  // The TOML is then rendered from the POLICY-APPLIED def, so a stale def cannot
+  // leak a stale model into the Codex half — the def reports its own drift.
   const agentSource = path.join(REPO, `plugins/workflow/agents/${WORKER_AGENT}.md`);
   const agentTarget = path.join(REPO, `plugins/workflow-agents/agents/${WORKER_AGENT}.toml`);
   if (!fs.existsSync(agentSource)) throw new Error(`missing canonical agent def: ${agentSource}`);
-  const agentToml = renderCodexAgentToml(fs.readFileSync(agentSource, 'utf8'), CODEX_WORKER_MODEL);
+  const agentDef = applyAgentDefPolicy(fs.readFileSync(agentSource, 'utf8'), policy);
+  {
+    const problem = writeGenerated({
+      label: `sync-agent-skills[policy:agents/${WORKER_AGENT}.md]`,
+      target: agentSource,
+      content: agentDef,
+      check,
+    });
+    if (problem) problems.push(problem);
+  }
+  const agentToml = renderCodexAgentToml(agentDef, policy.codex.model);
   const currentToml = fs.existsSync(agentTarget) ? fs.readFileSync(agentTarget, 'utf8') : null;
   if (currentToml !== agentToml) {
     if (check) {
@@ -321,7 +387,8 @@ function main() {
   const action = check ? 'verified' : 'generated';
   console.log(
     `sync-agent-skills: ${action} ${skillCount} skills across ${PAIRS.length} plugin pairs, `
-    + `${SHARED.length} shared contracts per tree and 1 agent role`,
+    + `${SHARED.length} shared contracts per tree, 1 agent role and the worker policy `
+    + `(${POLICY_PATH}) in ${POLICY_CONSUMER_PLUGINS.length} plugins`,
   );
 }
 

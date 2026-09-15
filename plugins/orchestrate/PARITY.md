@@ -40,6 +40,12 @@ a directive, and no host-specific file does it either.
   `evals/harness/parity-lint.mjs` and `scripts/check-plugin-boundaries.mjs` pay the drift cost.
 - `scripts/frontier-worker.mjs` — copied from `plugins/workflow/scripts/frontier-worker.mjs` for
   the same reason: the skill names it as `../../scripts/frontier-worker.mjs`.
+- `scripts/worker-policy.generated.mjs` — rendered from `plugins/workflow/worker-policy.json`, the
+  one hand-edited home of the worker model/effort policy. `frontier-worker.mjs` *statically imports*
+  it, so it must sit beside every copy of the transport: an import that leaves the plugin resolves in
+  a checkout and crashes at load on an installed cache. `skills/orchestrate/SKILL.md` still states
+  the policy in prose and stays hand-authored; `parity-lint` checks that the prose names whatever the
+  policy file currently says. Flip procedure: README, "Changing the worker policy".
 
 ```sh
 node plugins/workflow-agents/scripts/sync-agent-skills.mjs

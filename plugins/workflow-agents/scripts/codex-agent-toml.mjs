@@ -23,11 +23,15 @@ import { OWNERSHIP_MARKER } from './ownership.mjs';
  * The one worker role, authored once as a Claude agent def and converted here
  * into the Codex named-role TOML. Only the model differs per provider: model
  * tier is provider-specific vocabulary; everything else is the same worker.
- * Both constants live in this side-effect-free module so parity-lint can read
- * them without importing (and therefore running) the sync script.
+ * This constant lives in this side-effect-free module so parity-lint and
+ * check-plugin-boundaries can read it without importing (and therefore running)
+ * the sync script.
+ *
+ * The Codex model is deliberately NOT a constant here any more: it is
+ * `codex.model` in plugins/workflow/worker-policy.json, reached through
+ * `loadWorkerPolicy` in worker-policy.mjs. Callers pass it in as `codexModel`.
  */
 export const WORKER_AGENT = 'worker-frontier';
-export const CODEX_WORKER_MODEL = 'gpt-5.6-sol';
 
 /** TOML basic string (double-quoted, single line). */
 export function tomlBasicString(value) {

@@ -10,6 +10,13 @@
  *   - WORKFLOW CONTRACT → evals/harness/parity-lint.mjs --all
  *       Both plugins expose seven team skills plus orchestrate, mirror the shared contracts,
  *       retain both explicit cross-model review lanes, and stop auto at ship.
+ *   - WORKER POLICY → plugins/workflow-agents/scripts/worker-policy.test.mjs
+ *       plus the generated-artifact halves of parity-lint. The frontier-worker
+ *       model/effort policy is ONE hand-edited file
+ *       (plugins/workflow/worker-policy.json); the agent def's frontmatter, the
+ *       Codex role TOML, and the generated policy module beside every
+ *       frontier-worker.mjs are rendered from it. Edit the policy, run
+ *       sync-agent-skills.mjs, commit — no gate asserts a model name by hand.
  *   - BOUNDARIES → scripts/check-plugin-boundaries.mjs
  *       Plugin boundary invariants (user-facing skill-name parity, real SKILL.md).
  *   - ORCHESTRATE SPLIT → scripts/plugin-enablement.test.mjs
@@ -29,6 +36,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const CHECKS = [
   { name: 'hooks    (vendor-guards --check)', argv: ['scripts/vendor-guards.mjs', '--check'] },
+  { name: 'worker:policy (worker-policy tests)', argv: ['--test', 'plugins/workflow-agents/scripts/worker-policy.test.mjs'] },
   { name: 'worker:transport (frontier-worker tests)', argv: ['--test', 'plugins/workflow/scripts/frontier-worker.test.mjs'] },
   { name: 'worker:roles (install-agent-roles tests)', argv: ['--test', 'plugins/workflow-agents/scripts/install-agent-roles.test.mjs'] },
   { name: 'worker:roles (SessionStart bare-install tests)', argv: ['--test', 'plugins/workflow-agents/scripts/session-install-roles.test.mjs'] },

@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-orchestrate",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "The /orchestrate skill: hand one task to a retained frontier sub-agent. Invoke-only — no standing directive, no hooks.",
   "author": {
     "name": "David Kim"

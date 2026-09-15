@@ -10,12 +10,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGINS } from './lib.mjs';
 import {
-  CODEX_WORKER_MODEL,
   WORKER_AGENT,
   frontmatterScalar,
   parseAgentDef,
   renderCodexAgentToml,
 } from '../../plugins/workflow-agents/scripts/codex-agent-toml.mjs';
+import {
+  GENERATED_POLICY_BASENAME,
+  POLICY_CONSUMER_PLUGINS,
+  POLICY_PATH,
+  applyAgentDefPolicy,
+  loadWorkerPolicy,
+  policyProseTokens,
+  renderPolicyModule,
+} from '../../plugins/workflow-agents/scripts/worker-policy.mjs';
+
+/** Repo root, derived from wherever the plugins tree is (lib.mjs honours an override). */
+const REPO = path.dirname(PLUGINS);
 
 /**
  * The workflow pair's public surface. `orchestrate` is NOT here: it ships in its
@@ -99,6 +110,9 @@ export function evaluateContracts({
 } = {}) {
   const failures = [];
   const checks = [];
+  // Loaded once and threaded through: every model/effort assertion below is
+  // derived from it, so the gate demands whatever the policy file says today.
+  const policy = loadWorkerPolicy(REPO);
   const workflowInventories = [
     ['Claude', claudeRoot, skillInventory(claudeRoot), EXPECTED_SKILLS, 'seven team skills'],
     ['Codex/OpenCode', agentRoot, skillInventory(agentRoot), EXPECTED_SKILLS, 'seven team skills'],
@@ -233,10 +247,17 @@ export function evaluateContracts({
     if (!fs.existsSync(ownershipPath)) continue;
     const ownership = fs.readFileSync(ownershipPath, 'utf8');
     requireTokens(failures, `${label}/orchestrate`, ownership, [
-      'worker-frontier', 'claude-opus-5', 'gpt-5.6-sol', 'default worker at `high` effort',
+      'worker-frontier',
+      // Policy-derived, not literals: flipping worker-policy.json changes what
+      // this gate demands, so the skill has to be updated with it instead of the
+      // gate being edited afterwards to match.
+      policy.claude.model, policy.codex.model,
+      `default worker at \`${policy.claude.effort}\` effort`,
+      `${policy.claude.escalation.label} or ${policy.claude.label}`,
+      `${policy.codex.escalation.label} or ${policy.codex.label}`,
       'same retained session', 'artifact author', '../../scripts/frontier-worker.mjs',
       'Sonnet/xhigh or Terra/xhigh', 'no file-count or cheap-first hurdle',
-      'approved worker floor', 'Fable 5.1 or Opus 5', 'GPT-6 Astra or GPT-5.6 Sol',
+      'approved worker floor',
       'Never choose a worker below that floor',
     ]);
     for (const retired of RETIRED_WORKER_POLICY) {
@@ -280,7 +301,9 @@ export function evaluateContracts({
     ]);
   }
 
-  checkWorkerAgentTwin(failures, checks);
+  checkWorkerAgentTwin(failures, checks, policy);
+  checkWorkerPolicyModules(failures, checks, policy);
+  checkWorkerPolicyProse(failures, checks, policy, inventories);
 
   return { pass: failures.length === 0, checks, failures };
 }
@@ -298,7 +321,7 @@ export function evaluateContracts({
  * right now, and its model must be the Codex model the generator declares. That
  * makes an edit to either side fail here instead of silently forking the role.
  */
-function checkWorkerAgentTwin(failures, checks) {
+function checkWorkerAgentTwin(failures, checks, policy) {
   const source = path.join(PLUGINS, 'workflow', 'agents', `${WORKER_AGENT}.md`);
   const twin = path.join(PLUGINS, 'workflow-agents', 'agents', `${WORKER_AGENT}.toml`);
   for (const [label, file] of [['Claude', source], ['Codex/OpenCode', twin]]) {
@@ -314,7 +337,19 @@ function checkWorkerAgentTwin(failures, checks) {
     failures.push(`Claude/agents: ${WORKER_AGENT}.md must declare \`name: ${WORKER_AGENT}\``);
   }
 
-  const expected = renderCodexAgentToml(markdown, CODEX_WORKER_MODEL);
+  // The def's own policy fields must already be what the policy file renders.
+  // Checked BEFORE the TOML so a stale def reports itself rather than showing up
+  // only as a mismatched Codex model.
+  if (applyAgentDefPolicy(markdown, policy) !== markdown) {
+    failures.push(
+      `Claude/agents: ${WORKER_AGENT}.md model/effort/"Runs on" no longer match ${POLICY_PATH} — ` +
+        'regenerate: node plugins/workflow-agents/scripts/sync-agent-skills.mjs',
+    );
+  } else {
+    checks.push(`agents/${WORKER_AGENT}: Claude def model/effort derive from ${POLICY_PATH}`);
+  }
+
+  const expected = renderCodexAgentToml(markdown, policy.codex.model);
   if (fs.readFileSync(twin, 'utf8') !== expected) {
     failures.push(
       `Codex/OpenCode/agents: ${WORKER_AGENT}.toml is not the current render of ${WORKER_AGENT}.md — ` +
@@ -323,6 +358,70 @@ function checkWorkerAgentTwin(failures, checks) {
     return;
   }
   checks.push(`agents/${WORKER_AGENT}: Codex role TOML derives from the Claude def`);
+}
+
+/**
+ * The generated policy module every frontier-worker.mjs imports.
+ *
+ * The transport used to carry the model ids as literals in four copies. Now it
+ * imports them, and this is the gate that makes the import trustworthy: each
+ * plugin must ship a copy, and each copy must be exactly what the policy file
+ * renders today. A hand-edit to a copy and a policy edit without a regenerate
+ * both fail here, and neither needs this gate to know a single model name.
+ */
+function checkWorkerPolicyModules(failures, checks, policy) {
+  const expected = renderPolicyModule(policy);
+  let allCurrent = true;
+  for (const plugin of POLICY_CONSUMER_PLUGINS) {
+    const file = path.join(REPO, plugin, 'scripts', GENERATED_POLICY_BASENAME);
+    const relative = path.relative(REPO, file);
+    if (!fs.existsSync(file)) {
+      failures.push(`${relative}: must ship beside frontier-worker.mjs; it imports it and a plugin cannot read across the boundary`);
+      allCurrent = false;
+      continue;
+    }
+    if (fs.readFileSync(file, 'utf8') !== expected) {
+      failures.push(
+        `${relative}: not the current render of ${POLICY_PATH} — ` +
+          'regenerate: node plugins/workflow-agents/scripts/sync-agent-skills.mjs',
+      );
+      allCurrent = false;
+    }
+  }
+  if (allCurrent) {
+    checks.push(`worker policy: ${GENERATED_POLICY_BASENAME} derives from ${POLICY_PATH} in ${POLICY_CONSUMER_PLUGINS.length} plugins`);
+  }
+}
+
+/**
+ * The prose surfaces that state the policy in words.
+ *
+ * `workflow-contract.md` weaves "Opus/Sol" and "Fable/Astra" through whole
+ * paragraphs as adjectives; carving a generated block out of that would mean
+ * rewriting the contract, so the prose stays hand-authored and this asserts it
+ * still names the CURRENT roster. `orchestrate/SKILL.md` carries the policy too
+ * and is checked more precisely above, against the exact model ids and the
+ * "default worker at `<effort>` effort" phrase. Same limit either way, and the
+ * same as NanoClaw's scripts/dispatch-default-docs.test.ts: it proves the doc
+ * states the current policy, not that it carries no sentence contradicting it.
+ */
+function checkWorkerPolicyProse(failures, checks, policy, inventories) {
+  const { shortLabels, efforts } = policyProseTokens(policy);
+  const surfaces = inventories.map(
+    ([label, root]) => [`${label}/workflow-contract`, path.join(root, 'shared', 'workflow-contract.md')],
+  );
+  for (const [label, file] of surfaces) {
+    if (!fs.existsSync(file)) continue;
+    const content = fs.readFileSync(file, 'utf8');
+    const missing = [...shortLabels, ...efforts].filter((token) => !content.includes(token));
+    if (missing.length > 0) {
+      failures.push(
+        `${label}: prose no longer names the current worker policy (${POLICY_PATH}); missing ${missing.map((t) => JSON.stringify(t)).join(', ')}`,
+      );
+    } else {
+      checks.push(`${label}: prose names the current worker policy tiers and efforts`);
+    }
+  }
 }
 
 function main() {
