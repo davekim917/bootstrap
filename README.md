@@ -246,6 +246,21 @@ codex plugin add wwbd@davekim917-bootstrap
 Codex loads the plugin from its cache through `.codex-plugin/plugin.json`; do not copy workflow
 skills or agent definitions into a user home.
 
+`codex plugin add` is what writes the `[plugins."<name>@davekim917-bootstrap"]` stanza with
+`enabled = true` into `~/.codex/config.toml`. Enablement is **per plugin and opt-in**, so an
+existing Codex install does not pick up `bootstrap-orchestrate-agents` when the marketplace gains
+it — run the `add` above (or add the stanza by hand) once per host.
+
+### Reaching NanoClaw containers
+
+Container Claude agents need no NanoClaw change. `discoverPlugins` walks `~/plugins` three levels
+deep for a `.claude-plugin/plugin.json` and hands each hit to the SDK as a `plugins:` entry, which
+is what loads a plugin's declared hooks; `plugins/bootstrap/plugins/orchestrate` matches at the
+third level. Neither plugin ships a `nanoclaw-plugin.json`, and neither should: that file's
+`preToolUseGuards` is a de-duplication signal telling NanoClaw to stand down one of its OWN
+built-in gates, and `bash-email` is the only value anything consumes. `check-plugin-boundaries`
+fails if one appears in the orchestrate plugin.
+
 WWBD is installed separately from the workflow plugin. After installing it, start a new Codex
 session so its WWBD skill is available. Verify installation with `codex plugin list`.
 Claude also gets a SessionStart reminder; Codex discovers the advisory skill through its native

@@ -898,6 +898,31 @@ for (const filePath of activeContractFiles) {
   if (exists('plugins/orchestrate/.codex-plugin')) {
     fail('plugins/orchestrate must not contain .codex-plugin metadata');
   }
+
+  // NO `nanoclaw-plugin.json` here, deliberately — do not "fix" this by adding one.
+  //
+  // That file is NOT how a plugin's hooks reach NanoClaw containers. Container
+  // Claude registers plugin hooks by passing each discovered plugin directory as
+  // an SDK `plugins:` entry
+  // (nanoclaw-v2 container/agent-runner/src/providers/claude.ts:1749-1752, handed
+  // to the SDK at :2710; the header at :1727-1731 says that pass-through is what
+  // makes the SDK load plugin-declared hooks). `discoverPlugins` walks three
+  // levels, so `plugins/bootstrap/plugins/orchestrate` is found and its
+  // `orchestrate-hooks.json` loads with no NanoClaw change at all.
+  //
+  // `nanoclaw-plugin.json`'s `preToolUseGuards` is a DE-DUPLICATION signal with
+  // exactly one consumer — `preToolUseGuards.includes('bash-email')` at
+  // claude.ts:2627 — which tells the runner to stand down its own built-in Bash
+  // email gate because a plugin owns it. Proof that it is not a registration
+  // list: plugins/workflow/nanoclaw-plugin.json names only `bash-email`, yet
+  // `file-protection` and `block-askuser-during-auto` are live in containers.
+  //
+  // There is no NanoClaw-side dispatch-first gate to stand down, and the
+  // consumer matches that one literal string, so `["dispatch-first"]` here would
+  // be inert config that reads as live wiring.
+  if (exists('plugins/orchestrate/nanoclaw-plugin.json')) {
+    fail('plugins/orchestrate/nanoclaw-plugin.json must not exist; preToolUseGuards is a de-duplication signal for NanoClaw\'s own built-in gates (only "bash-email" is consumed), not how plugin hooks register — see the comment above');
+  }
 }
 
 checkSkillMarkdownLinks(codexSkillsRoot);
