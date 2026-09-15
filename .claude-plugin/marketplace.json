@@ -9,7 +9,13 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "One retained frontier owner, proportional independent review, and bounded safe publication.",
-      "version": "5.4.0"
+      "version": "5.5.0"
+    },
+    {
+      "name": "bootstrap-orchestrate",
+      "source": "./plugins/orchestrate",
+      "description": "Automatic delegation pressure: the /orchestrate skill, its standing directive, and the dispatch-first coordinator guard. Disable it to work directly.",
+      "version": "1.0.0"
     },
     {
       "name": "wwbd",

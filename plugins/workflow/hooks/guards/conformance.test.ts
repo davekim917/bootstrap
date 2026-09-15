@@ -7,7 +7,6 @@ import {
 } from './block-destructive-core';
 import { evaluateEmailSend } from './email-gate-core';
 import { checkEditProtection } from './file-protection-core';
-import { isCoordinatorModel, isLogisticalToolUse } from './dispatch-first-core';
 
 /**
  * CROSS-SURFACE PARITY CONTRACT.
@@ -23,6 +22,11 @@ import { isCoordinatorModel, isLogisticalToolUse } from './dispatch-first-core';
  * per-adapter wiring tests (opencode-guard.test, runner.test, codex-app-server,
  * block-destructive.test) confirm each adapter maps the core verdict faithfully
  * to its own I/O (native ask or exit-2 / throw / stdout-JSON / decision-object).
+ *
+ * Dispatch-first scope is NOT here. It moved out with the guard itself when
+ * `/orchestrate` became its own plugin, so the safety guards can ship while
+ * automatic delegation pressure is disabled:
+ * `plugins/orchestrate/hooks/guards/conformance.test.ts`.
  */
 
 // Hard-block (never allowed): file-deletion primitives, shell-wrapper bypass,
@@ -134,34 +138,6 @@ const EMAIL_GATE = [
 ];
 const EMAIL_ALLOW = ['ls -la', 'git status', 'gws gmail +send --to a@b.com --dry-run'];
 
-// Dispatch-first coordinator guard: which models are gated at all, and which
-// calls are logistics the coordinator may make without dispatching. Builders
-// (Fable/Opus/Astra/Sol/Haiku) must never appear in the gated list — every
-// runtime adapter (Claude today, Codex/OpenCode via plan item 2.2) reads these
-// two predicates from the same core.
-const COORDINATOR_MODELS = ['claude-sonnet-5', 'claude-sonnet-4-5-20250929', 'gpt-5.6-terra'];
-const BUILDER_MODELS = ['claude-fable-5-1', 'claude-opus-5', 'gpt-6-astra', 'gpt-6-sol', 'claude-haiku-4-5-20251001'];
-const DISPATCH_FIRST_LOGISTICAL: Array<[string, Record<string, unknown>]> = [
-  ['Bash', { command: 'gh pr view 42 --json headRefOid' }],
-  ['Bash', { command: 'gh api repos/o/r/pulls/42' }],
-  ['Bash', { command: 'mkdir -p docs/specs/x' }],
-  ['Bash', { command: 'git fetch origin' }],
-  ['Bash', { command: 'ls -la' }],
-  ['Read', { file_path: '/repo/docs/specs/x/plan.md' }],
-  ['Read', { file_path: '/repo/docs/specs/x/run.md' }],
-  ['Read', { file_path: '/repo/CLAUDE.md' }],
-  ['Read', { file_path: '/repo/.claude/skills/orchestrate/SKILL.md' }],
-];
-const DISPATCH_FIRST_COUNTED: Array<[string, Record<string, unknown>]> = [
-  ['Bash', { command: 'git show HEAD:src/app.ts' }],
-  ['Bash', { command: 'curl https://svc/healthz' }],
-  ['Bash', { command: 'ls && cat src/index.ts' }],
-  ['Read', { file_path: '/repo/src/index.ts' }],
-  ['Grep', { pattern: 'healthz' }],
-  ['Glob', { pattern: 'src/**/*.ts' }],
-  ['WebFetch', { url: 'https://svc/healthz' }],
-];
-
 describe('parity contract — destructive bash', () => {
   for (const cmd of BASH_BLOCK) {
     it(`blocks: ${cmd}`, () => expect(evaluateBashCommand(cmd).action).toBe('block'));
@@ -262,22 +238,5 @@ describe('parity contract — email gate', () => {
   for (const cmd of EMAIL_GATE) {
     it(`allows (scheduled bypass): ${cmd}`, () =>
       expect(evaluateEmailSend(cmd, { isScheduledTask: true }).action).toBe('allow'));
-  }
-});
-
-describe('parity contract — dispatch-first', () => {
-  for (const m of COORDINATOR_MODELS) {
-    it(`gates coordinator: ${m}`, () => expect(isCoordinatorModel(m)).toBe(true));
-  }
-  for (const m of BUILDER_MODELS) {
-    it(`never gates builder: ${m}`, () => expect(isCoordinatorModel(m)).toBe(false));
-  }
-  for (const [tool, input] of DISPATCH_FIRST_LOGISTICAL) {
-    it(`logistical (not counted): ${tool} ${JSON.stringify(input)}`, () =>
-      expect(isLogisticalToolUse(tool, input)).toBe(true));
-  }
-  for (const [tool, input] of DISPATCH_FIRST_COUNTED) {
-    it(`counted: ${tool} ${JSON.stringify(input)}`, () =>
-      expect(isLogisticalToolUse(tool, input)).toBe(false));
   }
 });

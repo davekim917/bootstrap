@@ -15,12 +15,42 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.4.0 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.4.0 | Runtime-neutral workflow skills and safety gates |
+| Claude Code | `bootstrap-workflow` | 5.5.0 | The seven `team-*` skills, the `worker-frontier` role, and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.5.0 | The same, runtime-neutral |
+| Claude Code | `bootstrap-orchestrate` | 1.0.0 | `/orchestrate`, its always-on directive, and the dispatch-first guard |
+| Codex / OpenCode | `bootstrap-orchestrate-agents` | 1.0.0 | `/orchestrate` and its always-on directive, runtime-neutral |
 | Claude Code / Codex | `wwbd` | 1.2.2 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
-Both workflow plugins expose seven team skills plus `/orchestrate`:
+### Turning automatic delegation off
+
+`bootstrap-orchestrate` is a separate plugin so it can be **disabled on its own**.
+Three things push a session toward delegating, and all three live in it: the
+`/orchestrate` skill, the SessionStart directive that tells a session to load it for
+substantial work, and the `dispatch-first` PreToolUse guard, which warns and then
+blocks a coordinator that reads implementation source or runs checks before
+dispatching a worker.
+
+Disable it and a session works directly: no directive loads, `/orchestrate` is not
+offered, and nothing gates a Read. The seven `team-*` skills, the `worker-frontier`
+role and every safety guard keep working, because they ship in `bootstrap-workflow`.
+Enable it and behaviour is exactly what it was before the split.
+
+The `team-*` skills still delegate when you invoke one — the shared workflow contract
+they load says to hand substantive work to a retained frontier owner. That is
+deliberate: `/team-build` is an explicit request for the delegated workflow. What
+disabling `bootstrap-orchestrate` removes is the *automatic* pressure.
+
+`scripts/plugin-enablement.mjs` prints the composed session for any plugin set, and
+`scripts/plugin-enablement.test.mjs` runs the resolved hooks in both states:
+
+```bash
+node scripts/plugin-enablement.mjs bootstrap-workflow                        # disabled
+node scripts/plugin-enablement.mjs bootstrap-workflow bootstrap-orchestrate  # enabled
+```
+
+The workflow plugins expose the seven team skills; `/orchestrate` ships beside them
+in the orchestrate pair:
 
 | Skill | Purpose |
 |---|---|
@@ -132,8 +162,10 @@ transport switch fails.
 
 ### The worker role
 
-Both plugins ship the `worker-frontier` agent definition, so `/orchestrate` has a worker to dispatch
-to on a bare install with no host setup.
+Both **workflow** plugins ship the `worker-frontier` agent definition, so `/orchestrate` has a worker
+to dispatch to on a bare install with no host setup. The role stays with `bootstrap-workflow`:
+`/orchestrate` dispatches to it, and disabling the orchestrate plugin must not remove the worker the
+`team-*` skills also use.
 
 **Claude.** `plugins/workflow/agents/worker-frontier.md` is auto-discovered from the plugin root —
 no `plugin.json` entry, nothing to install. Claude Code namespaces plugin agents, so it appears as
@@ -187,6 +219,7 @@ trial after one week using observed outcomes; this release does not claim measur
 ```text
 /plugin marketplace add davekim917/bootstrap
 /plugin install bootstrap-workflow@davekim917-bootstrap
+/plugin install bootstrap-orchestrate@davekim917-bootstrap
 /plugin install wwbd@davekim917-bootstrap
 /plugin install concise@davekim917-bootstrap
 ```
@@ -196,6 +229,7 @@ trial after one week using observed outcomes; this release does not claim measur
 ```bash
 codex plugin marketplace add davekim917/bootstrap --ref main
 codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
+codex plugin add bootstrap-orchestrate-agents@davekim917-bootstrap
 codex plugin add wwbd@davekim917-bootstrap
 codex plugin add concise@davekim917-bootstrap
 ```
@@ -205,6 +239,7 @@ For a local checkout at `~/plugins/bootstrap`:
 ```bash
 codex plugin marketplace add ~/plugins/bootstrap
 codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
+codex plugin add bootstrap-orchestrate-agents@davekim917-bootstrap
 codex plugin add wwbd@davekim917-bootstrap
 ```
 
@@ -259,6 +294,13 @@ Claude, Codex/NanoClaw, or OpenCode sessions after cleanup so cached definitions
 
 - Claude's workflow plugin installs from `plugins/workflow`.
 - Codex/OpenCode's workflow plugin installs from `plugins/workflow-agents`.
+- `/orchestrate` and the dispatch-first guard install from `plugins/orchestrate` (Claude) and
+  `plugins/orchestrate-agents` (Codex/OpenCode), so they can be disabled without touching the
+  `team-*` skills or any safety guard.
+- `skills/shared/` is carried by all four plugins, not shared by reference: an installed
+  marketplace cache materializes only the plugin's own subtree, so a relative path cannot cross a
+  plugin boundary. `sync-agent-skills.mjs` generates every copy from
+  `plugins/workflow/skills/shared`, and `parity-lint` fails on any divergence.
 - Claude and Codex can also install the shared `plugins/wwbd` advisory plugin.
 - Reviewer identities are bounded prompt roles, never globally installed permanent agents.
 - Mechanically portable skills and shared contracts are generated from the Claude source tree.
@@ -278,6 +320,8 @@ bootstrap/
 ├── plugins/
 │   ├── workflow/
 │   ├── workflow-agents/
+│   ├── orchestrate/
+│   ├── orchestrate-agents/
 │   ├── wwbd/
 │   └── concise/
 ├── evals/
@@ -289,6 +333,7 @@ bootstrap/
 
 ```bash
 node --test scripts/retire-bootstrap-agents.test.mjs
+node --test scripts/plugin-enablement.test.mjs
 node --test evals/harness/*.test.mjs
 node --test plugins/workflow-agents/scripts/*.test.mjs
 node scripts/check-plugin-boundaries.mjs
@@ -296,6 +341,7 @@ node scripts/check-parity.mjs
 
 cd plugins/workflow/hooks && bun test && bun run check
 cd plugins/workflow-agents/hooks && bun test && bun run check
+cd plugins/orchestrate/hooks && bun test && bun run check
 ```
 
 Use `node scripts/check-plugin-boundaries.mjs --strict-home` after retirement cleanup to fail on
@@ -303,8 +349,8 @@ marker-owned retired agents still active in Claude, Codex sibling-home, or OpenC
 
 ## Prerequisites
 
-- Claude Code for `bootstrap-workflow`
-- Codex with native plugin support for `bootstrap-workflow-agents`
+- Claude Code for `bootstrap-workflow` and `bootstrap-orchestrate`
+- Codex with native plugin support for `bootstrap-workflow-agents` and `bootstrap-orchestrate-agents`
 - Bun for TypeScript hooks
 
 ## License

@@ -33,3 +33,31 @@ test('resolveSkillDir: strict to requested family — no cross-family fallback (
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// `orchestrate` lives in its own plugin now, so one runtime family spans two
+// directories. Searching both must not reopen the masking hazard above: a
+// Claude baseline still has to miss a skill that exists only on the Codex side,
+// even when that skill sits in the orchestrate plugin rather than the workflow one.
+test('resolveSkillDir: spans the orchestrate plugin without crossing runtimes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plugins-orch-'));
+  const mk = (fam, name) => {
+    const d = path.join(root, fam, 'skills', name);
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'SKILL.md'), '# x');
+    return d;
+  };
+  const claudeOrchestrate = mk('orchestrate', 'orchestrate');
+  const codexOrchestrate = mk('orchestrate-agents', 'orchestrate');
+  const codexOnly = mk('orchestrate-agents', 'port-only');
+  process.env.BOOTSTRAP_PLUGINS_DIR = root;
+  try {
+    const { resolveSkillDir } = await import('./lib.mjs?orch=' + Date.now());
+    assert.equal(resolveSkillDir('orchestrate', 'workflow'), claudeOrchestrate);
+    assert.equal(resolveSkillDir('orchestrate', 'workflow-agents'), codexOrchestrate);
+    assert.equal(resolveSkillDir('port-only', 'workflow'), null, 'baseline must not fall back to the port');
+    assert.equal(resolveSkillDir('port-only', 'workflow-agents'), codexOnly);
+  } finally {
+    delete process.env.BOOTSTRAP_PLUGINS_DIR;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

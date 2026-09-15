@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  EXPECTED_ORCHESTRATE_SKILLS,
   EXPECTED_SKILLS,
   evaluateContracts,
   frontmatterFields,
@@ -55,15 +56,93 @@ test('evaluateContracts rejects an extra public skill before other contract chec
   assert.equal(result.failures.some((failure) => failure.includes('retired skill directory remains: team-qa')), true);
 });
 
+test('evaluateContracts rejects orchestrate reappearing in a workflow tree', (t) => {
+  // The whole point of the split: with `orchestrate` back in the workflow pair,
+  // disabling bootstrap-orchestrate would not remove the skill.
+  const roots = copiedContracts(t);
+  assert.equal(evaluateContracts(roots).pass, true);
+  for (const root of [roots.claudeRoot, roots.agentRoot]) {
+    const directory = path.join(root, 'orchestrate');
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(
+      path.join(directory, 'SKILL.md'),
+      '---\nname: orchestrate\ndescription: test\n---\n',
+    );
+  }
+  const result = evaluateContracts(roots);
+  assert.equal(result.pass, false);
+  assert.ok(
+    result.failures.some((failure) => failure.includes('expected exactly') && failure.includes('orchestrate')),
+    result.failures.join('\n'),
+  );
+});
+
+test('evaluateContracts rejects an orchestrate plugin missing the shared contract', (t) => {
+  // A cross-plugin `../shared/workflow-contract.md` would resolve in this
+  // checkout and be absent on an installed cache. The gate has to notice the
+  // absence, not just compare bytes when the file happens to be there.
+  const roots = copiedContracts(t);
+  fs.rmSync(path.join(roots.orchestrateClaudeRoot, 'shared', 'workflow-contract.md'));
+  const result = evaluateContracts(roots);
+  assert.equal(result.pass, false);
+  assert.ok(
+    result.failures.some((failure) =>
+      failure.includes('Claude/orchestrate') && failure.includes('workflow-contract.md')),
+    result.failures.join('\n'),
+  );
+});
+
+test('evaluateContracts rejects a drifted orchestrate copy of the shared contract', (t) => {
+  const roots = copiedContracts(t);
+  const target = path.join(roots.orchestrateAgentRoot, 'shared', 'workflow-contract.md');
+  fs.writeFileSync(target, `${fs.readFileSync(target, 'utf8')}\nan extra local rule\n`);
+  const result = evaluateContracts(roots);
+  assert.equal(result.pass, false);
+  assert.ok(
+    result.failures.some((failure) => failure.includes('byte-identical to the canonical copy')),
+    result.failures.join('\n'),
+  );
+});
+
+test('evaluateContracts rejects an orchestrate plugin with no frontier-worker mirror', (t) => {
+  const roots = copiedContracts(t);
+  fs.rmSync(path.join(roots.orchestrateClaudeRoot, '..', 'scripts', 'frontier-worker.mjs'));
+  const result = evaluateContracts(roots);
+  assert.equal(result.pass, false);
+  assert.ok(
+    result.failures.some((failure) => failure.includes('frontier-worker.mjs is missing')),
+    result.failures.join('\n'),
+  );
+});
+
+/**
+ * Build a four-root fixture mirroring the real layout: two workflow trees with
+ * the seven team skills and the canonical `shared/`, and two orchestrate trees
+ * with `orchestrate/` plus their own copy of `shared/` and a plugin-local
+ * `scripts/frontier-worker.mjs` beside the skills root.
+ */
 function copiedContracts(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'frontier-contract-mutation-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const source = new URL('../../plugins/workflow/skills/', import.meta.url);
-  const claudeRoot = path.join(root, 'claude');
-  const agentRoot = path.join(root, 'agent');
-  fs.cpSync(source, claudeRoot, { recursive: true });
-  fs.cpSync(source, agentRoot, { recursive: true });
-  return { claudeRoot, agentRoot };
+  const workflowSource = new URL('../../plugins/workflow/skills/', import.meta.url);
+  const orchestrateSource = new URL('../../plugins/orchestrate/skills/', import.meta.url);
+  const helperSource = new URL('../../plugins/workflow/scripts/frontier-worker.mjs', import.meta.url);
+
+  const claudeRoot = path.join(root, 'claude', 'skills');
+  const agentRoot = path.join(root, 'agent', 'skills');
+  const orchestrateClaudeRoot = path.join(root, 'orchestrate-claude', 'skills');
+  const orchestrateAgentRoot = path.join(root, 'orchestrate-agent', 'skills');
+
+  for (const target of [claudeRoot, agentRoot]) {
+    fs.cpSync(workflowSource, target, { recursive: true });
+  }
+  for (const target of [orchestrateClaudeRoot, orchestrateAgentRoot]) {
+    fs.cpSync(orchestrateSource, target, { recursive: true });
+    const scripts = path.join(target, '..', 'scripts');
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.cpSync(helperSource, path.join(scripts, 'frontier-worker.mjs'));
+  }
+  return { claudeRoot, agentRoot, orchestrateClaudeRoot, orchestrateAgentRoot };
 }
 
 for (const [name, file, from, to, expected] of [
@@ -90,10 +169,15 @@ for (const [name, file, from, to, expected] of [
 
 test('contract gate rejects a reintroduced cheap worker ladder in both copies', (t) => {
   const roots = copiedContracts(t);
-  for (const root of Object.values(roots)) {
+  for (const root of [roots.orchestrateClaudeRoot, roots.orchestrateAgentRoot]) {
     fs.appendFileSync(path.join(root, 'orchestrate/SKILL.md'), '\nUse worker-fast before worker-frontier.\n');
   }
   const result = evaluateContracts(roots);
   assert.equal(result.pass, false);
   assert.ok(result.failures.some((failure) => failure.includes('retired worker policy worker-fast')));
+});
+
+test('EXPECTED_SKILLS and EXPECTED_ORCHESTRATE_SKILLS are disjoint', () => {
+  const overlap = EXPECTED_SKILLS.filter((skill) => EXPECTED_ORCHESTRATE_SKILLS.includes(skill));
+  assert.deepEqual(overlap, []);
 });

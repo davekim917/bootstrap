@@ -1,0 +1,14 @@
+{
+    "name": "bootstrap-orchestrate-hooks",
+    "version": "1.0.0",
+    "description": "The dispatch-first coordinator guard for the bootstrap orchestrate plugin",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "check": "bun run --bun tsc --noEmit",
+        "test": "bun test"
+    },
+    "devDependencies": {
+        "@types/bun": "latest"
+    }
+}
