@@ -391,23 +391,47 @@ if (!codexHookManifest?.hooks?.PreToolUse) {
   fail('plugins/workflow-agents/hooks/workflow-hooks.json must wire PreToolUse');
 }
 
-const codexHookEvents = Object.keys(codexHookManifest?.hooks ?? {});
-if (codexHookEvents.some((event) => event !== 'PreToolUse')) {
-  fail(`plugins/workflow-agents/hooks/workflow-hooks.json contains non-safety hook events: ${codexHookEvents.join(', ')}`);
+// SessionStart earns its place: Codex has no plugin-agent mechanism, so the
+// shipped `agents/worker-frontier.toml` is inert until something copies it into
+// `<CODEX_HOME>/agents/`. The hook is the only thing that runs on a bare
+// install with no user action. The allowlist stays closed around these two —
+// safety plus role installation — so a third event cannot drift in.
+if (!codexHookManifest?.hooks?.SessionStart) {
+  fail('plugins/workflow-agents/hooks/workflow-hooks.json must wire SessionStart so the worker role installs itself');
 }
 
-if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
-  fail('plugins/workflow-agents/hooks/workflow-hooks.json must resolve its guard through native ${PLUGIN_ROOT}');
+const ALLOWED_CODEX_HOOK_EVENTS = ['PreToolUse', 'SessionStart'];
+const codexHookEvents = Object.keys(codexHookManifest?.hooks ?? {});
+const unexpectedHookEvents = codexHookEvents.filter(
+  (event) => !ALLOWED_CODEX_HOOK_EVENTS.includes(event),
+);
+if (unexpectedHookEvents.length > 0) {
+  fail(`plugins/workflow-agents/hooks/workflow-hooks.json contains unexpected hook events: ${unexpectedHookEvents.join(', ')}`);
+}
+
+for (const [label, target] of [
+  ['guard', '${PLUGIN_ROOT}/hooks/codex-guard.ts'],
+  ['role installer', '${PLUGIN_ROOT}/scripts/session-install-roles.mjs'],
+]) {
+  if (!codexHookManifestText.includes(target)) {
+    fail(`plugins/workflow-agents/hooks/workflow-hooks.json must resolve its ${label} through native \${PLUGIN_ROOT}`);
+  }
+}
+
+// The hook command names a path inside the package; if that file is not
+// shipped, every Codex session silently starts without the worker role.
+if (!exists('plugins/workflow-agents/scripts/session-install-roles.mjs')) {
+  fail('plugins/workflow-agents/scripts/session-install-roles.mjs must ship; the SessionStart hook resolves it inside the package');
 }
 
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.3.0') {
-  fail(`bootstrap-workflow release must be version 5.3.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.4.0') {
+  fail(`bootstrap-workflow release must be version 5.4.0 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.3.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.3.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.4.0') {
+  fail(`bootstrap-workflow-agents release must be version 2.4.0 (found ${codexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {

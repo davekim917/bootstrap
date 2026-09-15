@@ -237,7 +237,21 @@ test('no module shipped in the plugin imports outside the plugin', async (t) => 
         `${rel} imports ${spec}, which resolves outside the packaged plugin`,
       );
     }
-    // Resolution is not enough — the target must actually load from the copy.
-    await import(`file://${file}`);
+
+    // Resolution is not enough — the target must actually load from the copy,
+    // AND loading it must leave its importer alive. Importing in-process hid
+    // that second half: `session-install-roles.mjs` called `process.exit(0)` at
+    // top level, so importing it here ended the test runner at exit code 0 and
+    // every later assertion was reported as a pass it never ran. A module that
+    // does its work (or exits) on import is a trap for anything that loads it,
+    // so the import happens in a child that has to survive and say so.
+    const probe = `await import(${JSON.stringify(`file://${file}`)}); process.stdout.write('alive');`;
+    const stdout = execFileSync(process.execPath, ['--input-type=module', '-e', probe], {
+      encoding: 'utf8',
+      // Point CODEX_HOME into the sandbox: if a module ever does run its work
+      // on import, it writes here instead of the developer's real Codex home.
+      env: { ...process.env, CODEX_HOME: path.join(dir, 'codex-home-sentinel') },
+    });
+    assert.equal(stdout, 'alive', `importing ${rel} must not run work or terminate its importer`);
   }
 });

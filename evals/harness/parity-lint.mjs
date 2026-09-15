@@ -210,7 +210,9 @@ export function evaluateContracts({
  * The worker role is one agent def, shipped to both runtimes. Claude reads
  * `plugins/workflow/agents/<name>.md` (auto-discovered from the plugin root);
  * Codex has no plugin-agent mechanism at all, so it gets a generated role TOML
- * that `scripts/install-agent-roles.mjs` places in `<CODEX_HOME>/agents/`.
+ * that `scripts/install-agent-roles.mjs` places in `<CODEX_HOME>/agents/`,
+ * driven by the plugin's own SessionStart hook so a bare install needs no
+ * manual step (`scripts/session-install-roles.mjs`).
  *
  * Byte-identity is impossible across the two formats, so what is checked is the
  * DERIVATION: the TOML must be exactly what the generator produces from the .md
