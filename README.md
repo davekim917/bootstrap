@@ -15,8 +15,8 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.3.0 | Claude-native workflow skills and safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.3.0 | Runtime-neutral workflow skills and safety gates |
+| Claude Code | `bootstrap-workflow` | 5.4.0 | Claude-native workflow skills and safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.4.0 | Runtime-neutral workflow skills and safety gates |
 | Claude Code / Codex | `wwbd` | 1.2.2 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
@@ -145,7 +145,14 @@ is not offered — a NanoClaw container, for instance. They are one role, not tw
 
 **Codex / OpenCode.** A Codex plugin can ship skills, MCP servers, browser extensions and hooks —
 not agents. Codex reads named roles only from `<CODEX_HOME>/agents/<name>.toml`, so the role TOML is
-generated into `plugins/workflow-agents/agents/` and installed with one command:
+generated into `plugins/workflow-agents/agents/` and copied there by the plugin's own `SessionStart`
+hook. Installing the plugin is the whole install: the hook runs before the first turn of every
+Codex session, so `worker-frontier` is on disk before `/orchestrate` can dispatch to it. It is
+idempotent and silent — an already-current role writes nothing — always exits 0, and never fails a
+session, whatever it finds on disk. Codex asks once to trust the plugin's hooks, the same prompt the
+safety guard already requires.
+
+The same installer is still a command, for a dry run or a home Codex is not currently using:
 
 ```sh
 node plugins/workflow-agents/scripts/install-agent-roles.mjs            # dry run, shows what it would write
@@ -156,7 +163,9 @@ It is fail-closed about ownership. Every file it writes carries
 `# managed by bootstrap-workflow-agents agent-sync` on line 1, and it overwrites only files carrying
 that same marker. A role owned by another manager — on a NanoClaw host,
 `# managed by nanoclaw codex-sync` owns this exact filename — or a hand-written one with no marker
-is reported and refused, never clobbered.
+is reported and refused, never clobbered. The command reports refusals and exits 1; the hook makes
+the same decision and stays quiet, because on a NanoClaw host the refusal is the correct steady
+state and a role that manager maintains is already there.
 
 The TOML is generated from the Claude `.md`, never hand-edited: run
 `node plugins/workflow-agents/scripts/sync-agent-skills.mjs` after changing the def. `parity-lint`
@@ -256,6 +265,8 @@ Claude, Codex/NanoClaw, or OpenCode sessions after cleanup so cached definitions
 - Shared destructive and protected-file guards are authored once and vendored to the agent plugin.
 - Both plugins retain destructive-command, outbound-email, self-approval, managed-clone,
   Snowflake-connector, and protected-file safety checks.
+- The Codex plugin declares exactly two hook events: `PreToolUse` for those safety checks and
+  `SessionStart` for the role install. `check-plugin-boundaries` enforces that closed list.
 - Planning and review artifacts are workflow contracts, not filesystem safety boundaries.
 
 ## Repository structure
@@ -279,6 +290,7 @@ bootstrap/
 ```bash
 node --test scripts/retire-bootstrap-agents.test.mjs
 node --test evals/harness/*.test.mjs
+node --test plugins/workflow-agents/scripts/*.test.mjs
 node scripts/check-plugin-boundaries.mjs
 node scripts/check-parity.mjs
 

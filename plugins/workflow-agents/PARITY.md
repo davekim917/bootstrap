@@ -31,3 +31,20 @@ node plugins/workflow-agents/scripts/sync-agent-skills.mjs --check
 
 `--check` verifies content and rejects unexpected files, so removed stages and obsolete references
 cannot survive as generated-tree residue.
+
+## What is generated and what is not
+
+Generated from the Claude tree — regenerate, never hand-edit:
+
+- `skills/**`
+- `scripts/frontier-worker.mjs`
+- `agents/worker-frontier.toml` (rendered from `plugins/workflow/agents/worker-frontier.md`)
+- `hooks/guards/*-core.ts` (vendored by `scripts/vendor-guards.mjs`)
+
+Hand-maintained, because Codex has no counterpart in the Claude plugin — Claude auto-discovers
+`agents/` from the plugin root, and Codex reads roles only from `<CODEX_HOME>/agents/`:
+
+- `hooks/workflow-hooks.json` and `hooks/codex-guard.ts`
+- `scripts/install-agent-roles.mjs`, `scripts/session-install-roles.mjs`, `scripts/ownership.mjs`
+- `scripts/codex-agent-toml.mjs`, `scripts/sync-agent-skills.mjs`
+- `.codex-plugin/plugin.json`, `marketplace-entry.json`, this file
