@@ -15,10 +15,10 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.5.0 | The seven `team-*` skills, the `worker-frontier` role, and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.5.0 | The same, runtime-neutral |
-| Claude Code | `bootstrap-orchestrate` | 1.1.0 | `/orchestrate`, an invoke-only skill: hand one task to a retained frontier sub-agent |
-| Codex / OpenCode | `bootstrap-orchestrate-agents` | 1.1.0 | The same, runtime-neutral |
+| Claude Code | `bootstrap-workflow` | 5.6.0 | The seven `team-*` skills, the `worker-frontier` role, and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.6.0 | The same, runtime-neutral |
+| Claude Code | `bootstrap-orchestrate` | 1.2.0 | `/orchestrate`, an invoke-only skill: hand one task to a retained frontier sub-agent |
+| Codex / OpenCode | `bootstrap-orchestrate-agents` | 1.2.0 | The same, runtime-neutral |
 | Claude Code / Codex | `wwbd` | 1.3.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
@@ -164,6 +164,34 @@ Choose native or CLI ownership at task start: native handles stay with their par
 `--resume` accepts only its own CLI UUID. An approved alternate model uses helper `--model` from
 the start because the native Codex worker is model-pinned. Never silently replay work after a
 transport switch fails.
+
+### Changing the worker policy
+
+The models and efforts above live in ONE hand-edited file,
+`plugins/workflow/worker-policy.json`. Everything mechanical is rendered from it: the worker agent
+def's `model`/`effort` frontmatter and its "Runs on X at Y effort." sentence, the generated Codex
+role TOML, and the `worker-policy.generated.mjs` module each plugin's `frontier-worker.mjs` imports
+for `MODELS` / `defaultEffortFor` / the `--help` policy sentence. The drift gates assert
+*generated == source*, so none of them names a model by hand any more.
+
+```sh
+$EDITOR plugins/workflow/worker-policy.json                # 1. the only hand edit
+node plugins/workflow-agents/scripts/sync-agent-skills.mjs # 2. regenerate
+node scripts/check-parity.mjs                              # 3. what still needs a human
+```
+
+Step 3 is the point. The gate names exactly which **prose** surfaces still state the old policy —
+`skills/shared/workflow-contract.md` and both `orchestrate/SKILL.md`s weave the tier names through
+whole paragraphs, so they stay hand-authored and the gate only proves they name the current roster.
+Update them, re-run, commit.
+
+Downstream, NanoClaw pins the role at container spawn and carries a vendored copy, so a flip is not
+live for agent containers until its vendor step runs there too (in the nanoclaw checkout:
+`pnpm exec tsx scripts/vendor-workflow-agent.ts`, then a PR).
+
+The cross-model **review** lane (`skills/shared/cross-model-review.md`) is deliberately not derived
+from this file: a reviewer is chosen for independence from the artifact's author, not for the worker
+tier.
 
 ### The worker role
 

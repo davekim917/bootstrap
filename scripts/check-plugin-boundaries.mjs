@@ -5,6 +5,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RETIRED_AGENT_NAMES, discoverRetiredAgents } from './retire-bootstrap-agents.mjs';
 import { WORKER_AGENT } from '../plugins/workflow-agents/scripts/codex-agent-toml.mjs';
+import {
+  GENERATED_POLICY_BASENAME,
+  POLICY_CONSUMER_PLUGINS,
+  POLICY_PATH,
+} from '../plugins/workflow-agents/scripts/worker-policy.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
@@ -521,17 +526,17 @@ if (!exists('plugins/workflow-agents/scripts/session-install-roles.mjs')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.5.0') {
-  fail(`bootstrap-workflow release must be version 5.5.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.6.0') {
+  fail(`bootstrap-workflow release must be version 5.6.0 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.5.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.5.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.6.0') {
+  fail(`bootstrap-workflow-agents release must be version 2.6.0 (found ${codexManifest?.version})`);
 }
-if (orchestrateClaudeManifest?.version !== '1.1.0') {
-  fail(`bootstrap-orchestrate release must be version 1.1.0 (found ${orchestrateClaudeManifest?.version})`);
+if (orchestrateClaudeManifest?.version !== '1.2.0') {
+  fail(`bootstrap-orchestrate release must be version 1.2.0 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '1.1.0') {
-  fail(`bootstrap-orchestrate-agents release must be version 1.1.0 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '1.2.0') {
+  fail(`bootstrap-orchestrate-agents release must be version 1.2.0 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -926,6 +931,21 @@ for (const filePath of activeContractFiles) {
   ]) {
     if (!exists(mirror)) {
       fail(`${mirror} must ship; the orchestrate skill names ../../scripts/frontier-worker.mjs, which cannot resolve into another plugin`);
+    }
+  }
+  // frontier-worker.mjs statically imports ./worker-policy.generated.mjs for its
+  // model ids and tier efforts. A static import of a file the installed cache
+  // does not materialize is a load-time crash, not a missing feature, so every
+  // plugin shipping the transport must ship the generated policy beside it. The
+  // VALUES are gated by parity-lint (generated == the one policy file); this is
+  // the co-location half.
+  if (!exists(POLICY_PATH)) {
+    fail(`${POLICY_PATH} must stay in the workflow plugin; it is the one source of the worker model/effort policy`);
+  }
+  for (const plugin of POLICY_CONSUMER_PLUGINS) {
+    const generated = `${plugin}/scripts/${GENERATED_POLICY_BASENAME}`;
+    if (!exists(generated)) {
+      fail(`${generated} must ship; ${plugin}/scripts/frontier-worker.mjs statically imports it and a plugin cannot import across the boundary`);
     }
   }
 
