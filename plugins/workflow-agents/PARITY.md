@@ -55,11 +55,9 @@ Generated from the Claude tree — regenerate, never hand-edit:
 - `agents/worker-frontier.toml` (rendered from `plugins/workflow/agents/worker-frontier.md`)
 - `hooks/guards/*-core.ts` (vendored by `scripts/vendor-guards.mjs`)
 
-`dispatch-first-core.ts` is deliberately NOT vendored here. Nothing on this side ever imported it
-— `hooks/codex-guard.ts` routes only the destructive, email and file-protection cores — so the copy
-was dead code that looked live. Its adapter lives with the guard in
-`plugins/orchestrate/hooks/guards/`. A Codex dispatch-first adapter would re-add the vendored file
-and wire it in `codex-guard.ts` in the same change.
+`dispatch-first-core.ts` is not vendored here. The guard it belonged to has been deleted outright:
+automatic delegation pressure is off, and a gate that blocks a coordinator from reading source
+before dispatching is exactly what an operator working directly must not hit. Do not re-add it.
 
 Hand-maintained, because Codex has no counterpart in the Claude plugin — Claude auto-discovers
 `agents/` from the plugin root, and Codex reads roles only from `<CODEX_HOME>/agents/`:

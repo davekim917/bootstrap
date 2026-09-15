@@ -1,7 +1,7 @@
 {
   "name": "bootstrap-orchestrate-agents",
-  "version": "1.0.0",
-  "description": "Automatic delegation pressure: the /orchestrate skill and its standing directive, for Codex and OpenCode.",
+  "version": "1.1.0",
+  "description": "The /orchestrate skill for Codex and OpenCode: hand one task to a retained frontier sub-agent. Invoke-only — no standing directive, no hooks.",
   "author": {
     "name": "David Kim"
   },
@@ -17,8 +17,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Bootstrap Orchestrate",
-    "shortDescription": "Delegate substantive work to one retained frontier owner",
-    "longDescription": "A coordinator handles logistics while one retained frontier owner investigates, builds, tests and repairs. Install alongside bootstrap-workflow-agents; disable it to work directly.",
+    "shortDescription": "Hand one task to a retained frontier sub-agent",
+    "longDescription": "When you ask for it, a coordinator handles logistics while one retained frontier owner investigates, builds, tests and repairs in a single continuous thread. Invoke-only: nothing loads it on its own. Install alongside bootstrap-workflow-agents.",
     "developerName": "David Kim",
     "category": "Coding",
     "capabilities": [
@@ -27,7 +27,7 @@
     ],
     "websiteURL": "https://github.com/davekim917/bootstrap",
     "defaultPrompt": [
-      "Dispatch the retained frontier owner for this task.",
+      "Use a frontier sub-agent for this task.",
       "Who should own this work, and at what model and effort?"
     ],
     "brandColor": "#111827"

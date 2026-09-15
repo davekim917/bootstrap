@@ -42,10 +42,6 @@ jobs:
         working-directory: plugins/workflow-agents/hooks
         run: bun install --production
 
-      - name: Install orchestrate hook dependencies
-        working-directory: plugins/orchestrate/hooks
-        run: bun install --production
-
       - name: Run guard test suite
         working-directory: plugins/workflow/hooks/guards
         run: bun test
@@ -54,9 +50,5 @@ jobs:
         working-directory: plugins/workflow-agents/hooks
         run: bun test
 
-      - name: Run dispatch-first guard test suite
-        working-directory: plugins/orchestrate/hooks/guards
-        run: bun test
-
-      - name: Prove the orchestrate split in both enablement states
+      - name: Prove the orchestrate plugin's composition in both enablement states
         run: node --test scripts/plugin-enablement.test.mjs

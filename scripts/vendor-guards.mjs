@@ -29,13 +29,10 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_DIR = path.join(REPO, 'plugins/workflow/hooks/guards');
 
 // Files vendored verbatim (with a banner) from SOURCE_DIR into each target dir.
-// `dispatch-first-core.ts` was vendored here until /orchestrate moved to its own
-// plugin. It is NOT vendored any more, and that is deliberate: nothing on the
-// Codex/OpenCode side ever imported the copy (codex-guard.ts routes only the
-// destructive, email and file-protection cores), so it was dead code that looked
-// live. Its one real consumer is the Claude adapter, which now lives beside it in
-// plugins/orchestrate/hooks/guards/. A future Codex dispatch-first adapter should
-// re-add the file here AND wire it in codex-guard.ts in the same change.
+// `dispatch-first-core.ts` was vendored here once. The guard it belonged to has
+// been deleted outright — automatic delegation pressure is off, and a gate that
+// blocks a coordinator from reading source before dispatching is exactly what an
+// operator working directly must not hit. Do not re-add it here.
 const VENDORED_FILES = [
   'block-destructive-core.ts',
   'file-protection-core.ts',
