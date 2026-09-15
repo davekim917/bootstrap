@@ -23,10 +23,9 @@ import { checkEditProtection } from './file-protection-core';
  * block-destructive.test) confirm each adapter maps the core verdict faithfully
  * to its own I/O (native ask or exit-2 / throw / stdout-JSON / decision-object).
  *
- * Dispatch-first scope is NOT here. It moved out with the guard itself when
- * `/orchestrate` became its own plugin, so the safety guards can ship while
- * automatic delegation pressure is disabled:
- * `plugins/orchestrate/hooks/guards/conformance.test.ts`.
+ * Dispatch-first scope is NOT here, and no longer exists anywhere: the guard was
+ * deleted when automatic delegation pressure was turned off fleet-wide. Only the
+ * safety guards remain, and they are unaffected by that.
  */
 
 // Hard-block (never allowed): file-deletion primitives, shell-wrapper bypass,

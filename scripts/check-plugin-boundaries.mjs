@@ -76,6 +76,102 @@ function skillNames(skillsRoot) {
   });
 }
 
+/** Every `plugins/<name>` directory, repo-relative and sorted. */
+function pluginDirs() {
+  const pluginsRoot = path.join(repoRoot, 'plugins');
+  if (!fs.existsSync(pluginsRoot)) return [];
+  return fs
+    .readdirSync(pluginsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => `plugins/${entry.name}`)
+    .sort();
+}
+
+/**
+ * Every SessionStart command string a hook manifest registers. Shape is the
+ * same for Claude and Codex: hooks.SessionStart[].hooks[].command.
+ */
+function sessionStartCommands(manifestRelativePath) {
+  const manifest = readJson(manifestRelativePath);
+  const groups = Array.isArray(manifest?.hooks?.SessionStart) ? manifest.hooks.SessionStart : [];
+  return groups.flatMap((group) => (Array.isArray(group?.hooks) ? group.hooks : []))
+    .map((hook) => hook?.command)
+    .filter((command) => typeof command === 'string');
+}
+
+/**
+ * A standing directive is delivered by the provider's OWN plugin hook reading
+ * the plugin's OWN always-on.md, and by nothing else.
+ *
+ *  (a) No `.nanoclaw-always-on.md` anywhere. That file was a host-only side
+ *      door: NanoClaw read it off disk and injected it into Codex/OpenCode
+ *      containers, so those runtimes received a directive their own plugin never
+ *      declared — and disabling the plugin did not remove it.
+ *  (b) Any plugin that ships always-on.md must wire the SessionStart hook that
+ *      cats it, on every side it has a manifest for. Claude resolves
+ *      ${CLAUDE_PLUGIN_ROOT}; Codex resolves ${PLUGIN_ROOT} and does not expand
+ *      the Claude token, so a Claude-shaped command in a Codex manifest cats an
+ *      empty path and the session silently starts with no directive.
+ *
+ * Only `wwbd` ships a directive today. `bootstrap-orchestrate` deliberately does
+ * not — see the orchestrate section below.
+ */
+function checkAlwaysOnDelivery() {
+  const SKIP_DIRS = new Set(['.git', 'node_modules']);
+  const strays = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) walk(path.join(dir, entry.name));
+      } else if (entry.name === '.nanoclaw-always-on.md') {
+        strays.push(path.relative(repoRoot, path.join(dir, entry.name)));
+      }
+    }
+  };
+  walk(repoRoot);
+  for (const stray of strays.sort()) {
+    fail(
+      `${stray} must not exist. Nothing host-specific belongs in this repo — a plugin's standing ` +
+        'directive comes from its own SessionStart hook reading its own always-on.md, so disabling ' +
+        'the plugin removes it on every runtime.',
+    );
+  }
+
+  for (const dir of pluginDirs()) {
+    if (!exists(`${dir}/always-on.md`)) continue;
+    for (const [manifestDir, token] of [
+      ['.claude-plugin', '${CLAUDE_PLUGIN_ROOT}/always-on.md'],
+      ['.codex-plugin', '${PLUGIN_ROOT}/always-on.md'],
+    ]) {
+      const manifestPath = `${dir}/${manifestDir}/plugin.json`;
+      if (!exists(manifestPath)) continue;
+      const hooksSource = readJson(manifestPath)?.hooks;
+      if (typeof hooksSource !== 'string') {
+        fail(
+          `${manifestPath} ships always-on.md but declares no hooks file — that runtime would ` +
+            'never read the directive. Declare "hooks": "./hooks/<file>.json" with a SessionStart hook.',
+        );
+        continue;
+      }
+      const hookManifestPath = path.join(dir, hooksSource.replace(/^\.\//, ''));
+      if (!exists(hookManifestPath)) {
+        fail(`${manifestPath} declares hooks ${hooksSource}, but ${hookManifestPath} does not exist`);
+        continue;
+      }
+      const commands = sessionStartCommands(hookManifestPath);
+      if (!commands.some((command) => command.includes(token))) {
+        fail(
+          `${hookManifestPath} must register a SessionStart command that cats "${token}"; ` +
+            'without it that runtime starts with no standing directive while the other has one.',
+        );
+      }
+      if (manifestDir === '.codex-plugin' && commands.some((c) => c.includes('CLAUDE_PLUGIN_ROOT'))) {
+        fail(`${hookManifestPath} must not reference Claude-only token CLAUDE_PLUGIN_ROOT`);
+      }
+    }
+  }
+}
+
 function findFiles(root, predicate, results = []) {
   if (!fs.existsSync(root)) return results;
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -304,41 +400,12 @@ if (!exists('plugins/wwbd/skills/wwbd/SKILL.md')) {
 if (!exists('plugins/wwbd/always-on.md')) {
   fail('plugins/wwbd must ship always-on.md (the SessionStart nudge)');
 }
-// Codex/OpenCode containers fire no plugin hooks — a hooks entry there would be
-// dead config that looks live. Keep the Codex manifest hook-free.
-if (wwbdCodexManifest?.hooks !== undefined) {
-  fail('plugins/wwbd/.codex-plugin/plugin.json must not declare hooks (non-Claude providers get the nudge via .nanoclaw-always-on.md)');
-}
-
-// The always-on nudge reaches Claude via plugins/<p>/always-on.md and every
-// other provider via .nanoclaw-always-on.md, which concatenates the same blocks.
-// Nothing made them AGREE, so editing one silently split the fleet: Claude
-// sessions on the new directive, container and Codex agents on the old one, with
-// no check to notice. Compare the shared blocks byte-for-byte.
-for (const [pluginFile, heading] of [
-  ['plugins/orchestrate/always-on.md', '# Orchestrate'],
-  ['plugins/wwbd/always-on.md', '# WWBD'],
-]) {
-  if (!exists(pluginFile) || !exists('.nanoclaw-always-on.md')) continue;
-  const block = (text) => {
-    const start = text.indexOf(heading);
-    if (start === -1) return undefined;
-    const next = text.indexOf('\n# ', start + 1);
-    return text.slice(start, next === -1 ? undefined : next).trim();
-  };
-  const fromPlugin = block(readText(pluginFile));
-  const fromNanoclaw = block(readText('.nanoclaw-always-on.md'));
-  if (fromPlugin === undefined) {
-    fail(`${pluginFile} must contain a "${heading}" block (the always-on nudge)`);
-  } else if (fromNanoclaw === undefined) {
-    fail(`.nanoclaw-always-on.md must carry the "${heading}" block so non-Claude providers get the same directive`);
-  } else if (fromPlugin !== fromNanoclaw) {
-    fail(
-      `"${heading}" has drifted between ${pluginFile} and .nanoclaw-always-on.md — ` +
-        'Claude and non-Claude agents would receive different standing instructions. Edit both.',
-    );
-  }
-}
+// wwbd is the one plugin that still ships a standing directive, and it reaches
+// BOTH runtimes from its own hooks — the Claude manifest's wwbd-hooks.json and
+// the Codex manifest's wwbd-codex-hooks.json (separate files because Codex does
+// not expand ${CLAUDE_PLUGIN_ROOT}). checkAlwaysOnDelivery enforces that, and
+// enforces that no host-specific delivery file exists anywhere in the repo.
+checkAlwaysOnDelivery();
 
 // concise is one skills-only plugin directory for Claude and Codex/OpenCode.
 // It intentionally has no activation hook or always-on file: invocation turns
@@ -460,11 +527,11 @@ if (claudeManifest?.version !== '5.5.0') {
 if (codexManifest?.version !== '2.5.0') {
   fail(`bootstrap-workflow-agents release must be version 2.5.0 (found ${codexManifest?.version})`);
 }
-if (orchestrateClaudeManifest?.version !== '1.0.0') {
-  fail(`bootstrap-orchestrate release must be version 1.0.0 (found ${orchestrateClaudeManifest?.version})`);
+if (orchestrateClaudeManifest?.version !== '1.1.0') {
+  fail(`bootstrap-orchestrate release must be version 1.1.0 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '1.0.0') {
-  fail(`bootstrap-orchestrate-agents release must be version 1.0.0 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '1.1.0') {
+  fail(`bootstrap-orchestrate-agents release must be version 1.1.0 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -638,22 +705,6 @@ for (const fileName of [
   }
 }
 
-// The repo-root copy is what NanoClaw's non-Claude providers read directly off
-// disk (src/claude-md-compose.ts); the plugin-relative copy is what the
-// installed Claude plugin cache and the SessionStart hook can actually reach
-// (the cache only materializes the plugin subtree, not the repo root).
-{
-  const rootContent = readText('.nanoclaw-always-on.md');
-  const orchestrateContent = readText('plugins/orchestrate/always-on.md');
-  const wwbdContent = readText('plugins/wwbd/always-on.md');
-  if (rootContent !== undefined && orchestrateContent !== undefined && wwbdContent !== undefined) {
-    const expected = `${orchestrateContent.trimEnd()}\n\n${wwbdContent.trimEnd()}\n`;
-    if (rootContent !== expected) {
-      fail('.nanoclaw-always-on.md must be plugins/orchestrate/always-on.md + blank line + plugins/wwbd/always-on.md, byte-exact');
-    }
-  }
-}
-
 const crossModelTokens = [
   'codex exec',
   '--ignore-user-config',
@@ -753,22 +804,20 @@ for (const filePath of activeContractFiles) {
 }
 
 
-// ─── The orchestrate split ────────────────────────────────────────────────────
-// `/orchestrate` and the automatic pressure to use it live in their own plugin
-// pair so the operator can DISABLE automatic delegation and still run
-// `/team-build`, `/team-review` and the rest by hand.
+// ─── The orchestrate pair: skills-only ────────────────────────────────────────
+// Automatic delegation pressure is OFF. `/orchestrate` remains as an INVOKE-ONLY
+// skill on both providers, and the two things that made it automatic are gone:
+// the `always-on.md` standing directive that told every session to load it, and
+// the `dispatch-first` PreToolUse guard that BLOCKED a coordinator from reading
+// source or running a check before dispatching.
 //
-// THREE things create that pressure, and disabling the plugin only works if ALL
-// THREE are inside it. Any one left behind in the workflow pair silently defeats
-// the switch: the skill would still be offered, or the standing directive would
-// still load, or — worst — the dispatch-first hook would still BLOCK a
-// coordinator from reading source before it dispatches, which is precisely the
-// thing an operator working directly needs to do. These assertions are the
-// machine-checked version of that, in both directions: present here, absent there.
+// So the orchestrate pair is now the same shape as `concise` — skills and
+// nothing that activates on its own. That shape is the assertion: a hooks file,
+// an always-on.md, or a manifest `hooks` field reappearing here would silently
+// restore the pressure, and reading the skill would not reveal it. Checked in
+// both directions: the skill present here and absent from the workflow pair, the
+// activation surface absent everywhere.
 {
-  const orchestrateHookManifestPath = 'plugins/orchestrate/hooks/orchestrate-hooks.json';
-  const orchestrateHookManifest = readJson(orchestrateHookManifestPath);
-  const orchestrateHookText = readText(orchestrateHookManifestPath) ?? '';
   const workflowHookManifest = readJson('plugins/workflow/hooks/workflow-hooks.json');
   const workflowHookText = readText('plugins/workflow/hooks/workflow-hooks.json') ?? '';
 
@@ -788,39 +837,43 @@ for (const filePath of activeContractFiles) {
     }
   }
 
-  // 2. THE STANDING DIRECTIVE — the SessionStart nudge and its non-Claude twin.
-  if (!exists('plugins/orchestrate/always-on.md')) {
-    fail('plugins/orchestrate must ship always-on.md (the SessionStart directive that auto-loads orchestrate)');
+  // 2. NO ACTIVATION SURFACE — the concise-shaped rule. `/orchestrate` is
+  //    invoke-only: nothing tells a session to load it and nothing gates a
+  //    session that does not. Any of these reappearing restores the automatic
+  //    pressure the operator turned off, so name each one explicitly rather than
+  //    leaving it to the reader to notice an added file.
+  for (const dir of ['plugins/orchestrate', 'plugins/orchestrate-agents']) {
+    for (const activationPath of [
+      `${dir}/always-on.md`,
+      `${dir}/.nanoclaw-always-on.md`,
+      `${dir}/hooks`,
+    ]) {
+      if (exists(activationPath)) {
+        fail(`${activationPath} must not exist; ${dir} is invoke-only, with no standing directive and no hooks`);
+      }
+    }
+  }
+  if (orchestrateClaudeManifest?.hooks !== undefined) {
+    fail('plugins/orchestrate/.claude-plugin/plugin.json must not declare hooks; /orchestrate is invoke-only');
+  }
+  if (orchestrateCodexManifest?.hooks !== undefined) {
+    fail('plugins/orchestrate-agents/.codex-plugin/plugin.json must not declare hooks; /orchestrate is invoke-only');
   }
   if (exists('plugins/workflow/always-on.md')) {
-    fail('plugins/workflow/always-on.md must not exist; the orchestrate directive moved to plugins/orchestrate, and a copy here would keep loading with that plugin disabled');
-  }
-  if (!orchestrateHookManifest?.hooks?.SessionStart) {
-    fail(`${orchestrateHookManifestPath} must wire SessionStart so the standing directive loads with the plugin`);
-  }
-  if (!orchestrateHookText.includes('${CLAUDE_PLUGIN_ROOT}/always-on.md')) {
-    fail(`${orchestrateHookManifestPath} SessionStart must read the plugin's own always-on.md`);
+    fail('plugins/workflow/always-on.md must not exist; the orchestrate directive was removed, not relocated');
   }
   if (workflowHookManifest?.hooks?.SessionStart) {
-    fail('plugins/workflow/hooks/workflow-hooks.json must not wire SessionStart; its only job was catting the orchestrate directive, which moved');
+    fail('plugins/workflow/hooks/workflow-hooks.json must not wire SessionStart; its only job was catting the orchestrate directive, which is gone');
   }
 
-  // 3. THE DISPATCH-FIRST GUARD — the one that makes the switch real. It BLOCKS
-  //    a coordinator from reading implementation source or running checks before
-  //    dispatching, so it must be registered by the orchestrate plugin and by
-  //    nothing else.
-  for (const file of [
+  // 3. THE DISPATCH-FIRST GUARD IS GONE — from every tree. It BLOCKED a
+  //    coordinator from reading implementation source or running checks before
+  //    dispatching; with automatic delegation off, that gate is exactly what an
+  //    operator working directly must not hit. A copy left anywhere could still
+  //    be wired.
+  for (const stale of [
     'plugins/orchestrate/hooks/guards/dispatch-first.ts',
     'plugins/orchestrate/hooks/guards/dispatch-first-core.ts',
-    'plugins/orchestrate/hooks/guards/dispatch-first-core.test.ts',
-    'plugins/orchestrate/hooks/guards/dispatch-first.test.ts',
-    'plugins/orchestrate/hooks/guards/conformance.test.ts',
-    'plugins/orchestrate/hooks/run-hook.sh',
-    'plugins/orchestrate/hooks/lib/types.ts',
-  ]) {
-    if (!exists(file)) fail(`plugins/orchestrate must ship ${path.relative('plugins/orchestrate', file)}`);
-  }
-  for (const stale of [
     'plugins/workflow/hooks/guards/dispatch-first.ts',
     'plugins/workflow/hooks/guards/dispatch-first-core.ts',
     'plugins/workflow/hooks/guards/dispatch-first-core.test.ts',
@@ -828,19 +881,25 @@ for (const filePath of activeContractFiles) {
     'plugins/workflow-agents/hooks/guards/dispatch-first-core.ts',
   ]) {
     if (exists(stale)) {
-      fail(`${stale} must not exist; the dispatch-first guard moved to plugins/orchestrate and a copy here could still be wired`);
+      fail(`${stale} must not exist; the dispatch-first guard was removed when automatic delegation pressure was turned off`);
     }
   }
-  if (!orchestrateHookText.includes('guards/dispatch-first.ts')) {
-    fail(`${orchestrateHookManifestPath} must register guards/dispatch-first.ts on PreToolUse`);
-  }
   if (workflowHookText.includes('dispatch-first')) {
-    fail('plugins/workflow/hooks/workflow-hooks.json must not register the dispatch-first guard; it would keep blocking direct work with bootstrap-orchestrate disabled');
+    fail('plugins/workflow/hooks/workflow-hooks.json must not register the dispatch-first guard; it would gate direct work');
+  }
+  for (const skillFile of [
+    'plugins/orchestrate/skills/orchestrate/SKILL.md',
+    'plugins/orchestrate-agents/skills/orchestrate/SKILL.md',
+  ]) {
+    const text = readText(skillFile);
+    if (text !== undefined && /dispatch-first/.test(text)) {
+      fail(`${skillFile} must not reference the dispatch-first guard; it no longer exists`);
+    }
   }
 
-  // The guards the workflow plugin KEEPS. Splitting orchestrate out must not take
-  // a safety guard with it — those protect the operator whether or not they are
-  // delegating.
+  // The guards the workflow plugin KEEPS. Removing the dispatch-first guard must
+  // not take a safety guard with it — those protect the operator whether or not
+  // they are delegating.
   const RETAINED_WORKFLOW_GUARDS = [
     'guards/block-destructive.ts',
     'guards/file-protection.ts',
@@ -849,9 +908,6 @@ for (const filePath of activeContractFiles) {
   for (const guard of RETAINED_WORKFLOW_GUARDS) {
     if (!workflowHookText.includes(guard)) {
       fail(`plugins/workflow/hooks/workflow-hooks.json must still register ${guard}`);
-    }
-    if (orchestrateHookText.includes(guard)) {
-      fail(`${orchestrateHookManifestPath} must not register ${guard}; safety guards stay with bootstrap-workflow so disabling orchestrate cannot disable them`);
     }
   }
   if (!exists('plugins/workflow/hooks/guards/opencode-guard.ts')) {
@@ -880,17 +936,11 @@ for (const filePath of activeContractFiles) {
   if (orchestrateCodexManifest?.name !== 'bootstrap-orchestrate-agents') {
     fail('plugins/orchestrate-agents/.codex-plugin/plugin.json name must be bootstrap-orchestrate-agents');
   }
-  if (normalizeSource(orchestrateClaudeManifest?.hooks) !== './hooks/orchestrate-hooks.json') {
-    fail('plugins/orchestrate/.claude-plugin/plugin.json hooks must point at ./hooks/orchestrate-hooks.json');
+  if (normalizeSource(orchestrateClaudeManifest?.skills) !== './skills') {
+    fail('plugins/orchestrate/.claude-plugin/plugin.json skills must point at ./skills/');
   }
   if (normalizeSource(orchestrateCodexManifest?.skills) !== './skills') {
     fail('plugins/orchestrate-agents/.codex-plugin/plugin.json skills must point at ./skills/');
-  }
-  // Codex/OpenCode has no live dispatch-first adapter (codex-guard.ts routes only
-  // the destructive/email/file-protection cores), so a hooks entry here would be
-  // dead config that looks live — the same rule wwbd is held to.
-  if (orchestrateCodexManifest?.hooks !== undefined) {
-    fail('plugins/orchestrate-agents/.codex-plugin/plugin.json must not declare hooks; Codex/OpenCode gets the directive via .nanoclaw-always-on.md and has no dispatch-first adapter');
   }
   if (exists('plugins/orchestrate-agents/.claude-plugin')) {
     fail('plugins/orchestrate-agents must not contain .claude-plugin metadata');
@@ -907,8 +957,9 @@ for (const filePath of activeContractFiles) {
   // (nanoclaw-v2 container/agent-runner/src/providers/claude.ts:1749-1752, handed
   // to the SDK at :2710; the header at :1727-1731 says that pass-through is what
   // makes the SDK load plugin-declared hooks). `discoverPlugins` walks three
-  // levels, so `plugins/bootstrap/plugins/orchestrate` is found and its
-  // `orchestrate-hooks.json` loads with no NanoClaw change at all.
+  // levels, so `plugins/bootstrap/plugins/wwbd` is found and its
+  // `wwbd-hooks.json` loads with no NanoClaw change at all. The orchestrate pair
+  // declares no hooks, so there is nothing to load for it either way.
   //
   // `nanoclaw-plugin.json`'s `preToolUseGuards` is a DE-DUPLICATION signal with
   // exactly one consumer — `preToolUseGuards.includes('bash-email')` at

@@ -20,8 +20,8 @@
     },
     {
       "name": "bootstrap-orchestrate-agents",
-      "version": "1.0.0",
-      "description": "Automatic delegation pressure: the /orchestrate skill and its standing directive, for Codex and OpenCode. Disable it to work directly.",
+      "version": "1.1.0",
+      "description": "The /orchestrate skill for Codex and OpenCode: hand one task to a retained frontier sub-agent. Invoke-only — no standing directive, no hooks.",
       "source": {
         "source": "local",
         "path": "./plugins/orchestrate-agents"
@@ -34,7 +34,7 @@
     },
     {
       "name": "wwbd",
-      "version": "1.2.2",
+      "version": "1.3.0",
       "description": "What Would Boris Do \u2014 engineering-judgment advisory skill channeling Boris Cherny's published guidance.",
       "source": {
         "source": "local",

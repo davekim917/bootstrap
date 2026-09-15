@@ -3,20 +3,31 @@
 `plugins/orchestrate/skills/orchestrate/SKILL.md` is the canonical source.
 `plugins/orchestrate-agents/skills/orchestrate/SKILL.md` is the generated Codex/OpenCode copy.
 
-This pair exists so **automatic delegation pressure can be disabled on its own**. Three things
-create that pressure, and all three ship here:
+This pair is **skills-only** — the same shape as `plugins/concise`. `/orchestrate` is invoke-only:
+you reach for it when you want one retained frontier sub-agent to own a task end to end, and
+nothing reaches for it on your behalf.
 
-1. `skills/orchestrate/SKILL.md` — the skill itself.
-2. `always-on.md` — the standing directive, delivered to Claude by this plugin's `SessionStart`
-   hook and to every other provider through the repo-root `.nanoclaw-always-on.md`, which
-   `scripts/check-plugin-boundaries.mjs` regenerates as this file plus `plugins/wwbd/always-on.md`.
-3. `hooks/guards/dispatch-first.ts` + `dispatch-first-core.ts`, registered on `PreToolUse` in
-   `hooks/orchestrate-hooks.json` — the guard that warns and then blocks a coordinator that reads
-   implementation source or runs checks before dispatching.
+Automatic delegation pressure was turned off fleet-wide, and the two mechanisms that created it
+were deleted rather than relocated:
 
-Disable the plugin and none of the three reach the session. `scripts/plugin-enablement.test.mjs`
-proves that by resolving the composed session in both states and RUNNING the hooks each one
-registers; it is mutation-checked, so putting any of the three back in `bootstrap-workflow` fails.
+- `always-on.md` and its `SessionStart` hook — the standing directive that told every session to
+  load this skill for substantial work.
+- `hooks/guards/dispatch-first.ts` + `dispatch-first-core.ts`, registered on `PreToolUse` — the
+  guard that warned and then BLOCKED a coordinator that read implementation source or ran checks
+  before dispatching.
+
+There is therefore no `hooks/` tree, no `hooks` field in `.claude-plugin/plugin.json` or
+`.codex-plugin/plugin.json`, and no `always-on.md` on either side.
+`scripts/check-plugin-boundaries.mjs` asserts each of those absences by name, because a file
+reappearing here would restore the pressure silently — reading the skill would not reveal it.
+`scripts/plugin-enablement.test.mjs` proves the same by resolving the composed session in both
+enablement states and RUNNING every hook each one registers: with the plugin enabled, nothing gates
+a coordinator's Read and the session receives no standing directive. It is mutation-checked.
+
+`plugins/wwbd` still ships a standing directive, and it is the model for how one is delivered now:
+the plugin's own `SessionStart` hook on each side cats the plugin's own `always-on.md`
+(`${CLAUDE_PLUGIN_ROOT}` for Claude, `${PLUGIN_ROOT}` for Codex). Nothing outside a plugin delivers
+a directive, and no host-specific file does it either.
 
 ## Generated here — regenerate, never hand-edit
 
@@ -40,4 +51,5 @@ node plugins/workflow-agents/scripts/sync-agent-skills.mjs --check
 The seven `team-*` skills, the canonical `skills/shared/`, `agents/worker-frontier.md` and its
 generated Codex TOML, and every safety guard (`block-destructive`, `file-protection`, `email-gate`,
 `block-askuser-during-auto`, `opencode-guard`). `/orchestrate` dispatches to that worker; disabling
-this plugin must never remove a worker role or a safety guard.
+this plugin, or removing the dispatch-first guard, must never remove a worker role or a safety
+guard.

@@ -1,7 +1,7 @@
 {
   "name": "bootstrap-orchestrate",
-  "version": "1.0.0",
-  "description": "Automatic delegation pressure: the /orchestrate skill, its standing directive, and the dispatch-first coordinator guard.",
+  "version": "1.1.0",
+  "description": "The /orchestrate skill: hand one task to a retained frontier sub-agent. Invoke-only — no standing directive, no hooks.",
   "author": {
     "name": "David Kim"
   },
@@ -10,13 +10,11 @@
   "keywords": [
     "orchestrate",
     "delegation",
-    "dispatch-first",
     "workflow",
     "skills",
-    "hooks"
+    "sub-agent"
   ],
   "skills": [
     "./skills"
-  ],
-  "hooks": "./hooks/orchestrate-hooks.json"
+  ]
 }

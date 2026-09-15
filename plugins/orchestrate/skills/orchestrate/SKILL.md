@@ -1,9 +1,15 @@
 ---
 name: orchestrate
-description: Delegate substantive work to one retained frontier owner; coordinate logistics.
+description: Hand one task to a retained frontier sub-agent that owns investigation, design, implementation, tests and fixes in a single continuous thread, while you coordinate logistics. Use ONLY when asked — "/orchestrate", "use a frontier sub-agent for this", "delegate this to a frontier worker in one continuous thread", "hand this to a frontier owner", "spin up a frontier worker and keep it on the task". Not a default: nothing instructs a session to load this, and working directly is the normal mode.
 ---
 
 # /orchestrate — One technical owner
+
+**Invoke-only.** This skill is loaded because someone asked for a retained frontier owner on this
+task. There is no standing directive telling a session to reach for it, and nothing gates a
+session from reading source, running checks or implementing directly — working directly is the
+normal mode. Everything below governs HOW to delegate once delegation has been asked for; none of
+it is a reason to delegate work nobody asked you to hand off.
 
 Read `../shared/workflow-contract.md` first.
 
@@ -11,11 +17,12 @@ Specialized QA/release technical owners retain their explicit judgment, independ
 sole-verdict authority until separately migrated; ordinary-coordinator instructions do not
 replace those contracts or downgrade those roles.
 
-For the one-week trial, ordinary coordinators are Sonnet/xhigh or Terra/xhigh. Their direct work
-is limited to brief logistical or mechanical actions: routing, status, existing authorization,
-and evidence collection. Delegate substantive design, implementation, research/synthesis,
-debugging, technical planning and judgment-heavy review to frontier models by default. There is
-no file-count or cheap-first hurdle; a short task is not by itself a reason to downgrade.
+When this skill is invoked, you are the coordinator for the delegated task. Ordinary coordinators
+are Sonnet/xhigh or Terra/xhigh; keep your own direct work to brief logistical or mechanical
+actions — routing, status, existing authorization, and evidence collection — and give the
+substantive design, implementation, research/synthesis, debugging, technical planning and
+judgment-heavy review to the frontier owner. There is no file-count or cheap-first hurdle within a
+delegated task; a short task is not by itself a reason to downgrade the worker.
 
 One `worker-frontier` owns investigation, technical design, implementation, tests, and fixes in
 the same retained session. Its approved worker floor is Claude Fable 5.1 or Opus 5, and Codex
@@ -29,14 +36,15 @@ availability; record the actual model, effort, reason, and checks. Never choose 
 that floor for substantive delegated work, including discovery, implementation, checks, fixes,
 scheduled tasks, or review. In particular, do not substitute Sonnet, Terra, Luna, or a routine
 cheap subagent for the technical owner. Do not pre-solve the technical problem in the coordinator
-or hand each stage to a fresh builder. The trial evaluates quality and total observed use, not a
-cheap-worker ladder.
+or hand each stage to a fresh builder — a cheap-worker ladder defeats the point of asking for a
+frontier owner.
 
-At task start, make the dispatch-first decision visible before doing technical exploration. The
-coordinator may identify the request, repository, worktree, claim, authorization and existing
-evidence. It must dispatch before reading implementation to diagnose it, querying live systems to
-explain a failure, selecting/running a technical check, or reaching a correctness conclusion. Do
-not turn a short scheduled wake, a familiar codebase, or a likely one-line fix into an exception.
+Having been asked to delegate, dispatch before doing the technical exploration yourself. Identify
+the request, repository, worktree, claim, authorization and existing evidence, then hand over:
+reading implementation to diagnose it, querying live systems to explain a failure,
+selecting/running a technical check, and reaching a correctness conclusion all belong to the
+owner. Do not turn a short scheduled wake, a familiar codebase, or a likely one-line fix into an
+exception once the task has been handed to this skill.
 
 Keep one worker role, with no automatic retry or model ladder. If no approved worker is available,
 report the limitation and obtain a recovery decision; never silently downgrade.

@@ -17,32 +17,37 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 |---|---|---:|---|
 | Claude Code | `bootstrap-workflow` | 5.5.0 | The seven `team-*` skills, the `worker-frontier` role, and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.5.0 | The same, runtime-neutral |
-| Claude Code | `bootstrap-orchestrate` | 1.0.0 | `/orchestrate`, its always-on directive, and the dispatch-first guard |
-| Codex / OpenCode | `bootstrap-orchestrate-agents` | 1.0.0 | `/orchestrate` and its always-on directive, runtime-neutral |
-| Claude Code / Codex | `wwbd` | 1.2.2 | Boris Cherny-inspired engineering-judgment advisory skill |
+| Claude Code | `bootstrap-orchestrate` | 1.1.0 | `/orchestrate`, an invoke-only skill: hand one task to a retained frontier sub-agent |
+| Codex / OpenCode | `bootstrap-orchestrate-agents` | 1.1.0 | The same, runtime-neutral |
+| Claude Code / Codex | `wwbd` | 1.3.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
-### Turning automatic delegation off
+### Delegation is invoke-only
 
-`bootstrap-orchestrate` is a separate plugin so it can be **disabled on its own**.
-Three things push a session toward delegating, and all three live in it: the
-`/orchestrate` skill, the SessionStart directive that tells a session to load it for
-substantial work, and the `dispatch-first` PreToolUse guard, which warns and then
-blocks a coordinator that reads implementation source or runs checks before
-dispatching a worker.
+Automatic delegation pressure is off. Working directly is the normal mode: nothing
+tells a session to reach for a sub-agent, and nothing gates a session that reads
+source, runs a check, or implements a fix itself.
 
-Disable it and a session works directly: no directive loads, `/orchestrate` is not
-offered, and nothing gates a Read. The seven `team-*` skills, the `worker-frontier`
-role and every safety guard keep working, because they ship in `bootstrap-workflow`.
-Enable it and behaviour is exactly what it was before the split.
+`bootstrap-orchestrate` is a **skills-only** plugin — the same shape as `concise`.
+It ships `/orchestrate` and nothing that activates on its own: no `always-on.md`,
+no `SessionStart` hook, no `hooks` field in either manifest. Invoke it when you want
+one retained frontier sub-agent to own a task end to end — "use a frontier sub-agent
+for this", "delegate this to a frontier worker in one continuous thread", or plain
+`/orchestrate`.
+
+Two mechanisms used to create the pressure, and both were deleted rather than moved:
+the standing `SessionStart` directive that told every session to load the skill, and
+the `dispatch-first` PreToolUse guard, which warned and then BLOCKED a coordinator
+that read implementation source or ran a check before dispatching.
 
 The `team-*` skills still delegate when you invoke one — the shared workflow contract
 they load says to hand substantive work to a retained frontier owner. That is
-deliberate: `/team-build` is an explicit request for the delegated workflow. What
-disabling `bootstrap-orchestrate` removes is the *automatic* pressure.
+deliberate: `/team-build` is an explicit request for the delegated workflow. What is
+gone is the *automatic* pressure, not delegation itself.
 
 `scripts/plugin-enablement.mjs` prints the composed session for any plugin set, and
-`scripts/plugin-enablement.test.mjs` runs the resolved hooks in both states:
+`scripts/plugin-enablement.test.mjs` resolves and RUNS the hooks each state registers,
+asserting that enabling `bootstrap-orchestrate` adds no directive and no gate:
 
 ```bash
 node scripts/plugin-enablement.mjs bootstrap-workflow                        # disabled
@@ -255,16 +260,26 @@ it — run the `add` above (or add the stanza by hand) once per host.
 
 Container Claude agents need no NanoClaw change. `discoverPlugins` walks `~/plugins` three levels
 deep for a `.claude-plugin/plugin.json` and hands each hit to the SDK as a `plugins:` entry, which
-is what loads a plugin's declared hooks; `plugins/bootstrap/plugins/orchestrate` matches at the
-third level. Neither plugin ships a `nanoclaw-plugin.json`, and neither should: that file's
+is what loads a plugin's declared hooks; `plugins/bootstrap/plugins/wwbd` matches at the third
+level. The orchestrate pair declares no hooks at all, so there is nothing to load for it. Neither
+plugin ships a `nanoclaw-plugin.json`, and neither should: that file's
 `preToolUseGuards` is a de-duplication signal telling NanoClaw to stand down one of its OWN
 built-in gates, and `bash-email` is the only value anything consumes. `check-plugin-boundaries`
 fails if one appears in the orchestrate plugin.
 
 WWBD is installed separately from the workflow plugin. After installing it, start a new Codex
 session so its WWBD skill is available. Verify installation with `codex plugin list`.
-Claude also gets a SessionStart reminder; Codex discovers the advisory skill through its native
-plugin skill loader.
+Both runtimes get the same SessionStart reminder from the plugin's own hook; Codex additionally
+discovers the advisory skill through its native plugin skill loader.
+
+WWBD is the only plugin here that still ships a standing directive, and it shows how one is
+delivered: **the runtime's own plugin declares a `SessionStart` command hook that cats the
+`always-on.md` in its own plugin root**, and the hook's stdout is injected into the model's
+context. Claude's `hooks/wwbd-hooks.json` resolves `${CLAUDE_PLUGIN_ROOT}`; the Codex manifest
+declares a second file, `hooks/wwbd-codex-hooks.json`, resolving `${PLUGIN_ROOT}` — Codex does not
+expand the Claude token. Nothing outside a plugin delivers a directive, so disabling the plugin
+removes it on every runtime at once. Adding a hook to a plugin that had none means Codex asks once
+to trust that plugin's hooks on the next session start.
 
 ### Concise
 
@@ -309,9 +324,9 @@ Claude, Codex/NanoClaw, or OpenCode sessions after cleanup so cached definitions
 
 - Claude's workflow plugin installs from `plugins/workflow`.
 - Codex/OpenCode's workflow plugin installs from `plugins/workflow-agents`.
-- `/orchestrate` and the dispatch-first guard install from `plugins/orchestrate` (Claude) and
-  `plugins/orchestrate-agents` (Codex/OpenCode), so they can be disabled without touching the
-  `team-*` skills or any safety guard.
+- `/orchestrate` installs from `plugins/orchestrate` (Claude) and `plugins/orchestrate-agents`
+  (Codex/OpenCode) as a skills-only plugin: invoke-only, with no standing directive and no hooks,
+  so it can be disabled without touching the `team-*` skills or any safety guard.
 - `skills/shared/` is carried by all four plugins, not shared by reference: an installed
   marketplace cache materializes only the plugin's own subtree, so a relative path cannot cross a
   plugin boundary. `sync-agent-skills.mjs` generates every copy from
@@ -322,8 +337,10 @@ Claude, Codex/NanoClaw, or OpenCode sessions after cleanup so cached definitions
 - Shared destructive and protected-file guards are authored once and vendored to the agent plugin.
 - Both plugins retain destructive-command, outbound-email, self-approval, managed-clone,
   Snowflake-connector, and protected-file safety checks.
-- The Codex plugin declares exactly two hook events: `PreToolUse` for those safety checks and
-  `SessionStart` for the role install. `check-plugin-boundaries` enforces that closed list.
+- `bootstrap-workflow-agents` declares exactly two hook events: `PreToolUse` for those safety
+  checks and `SessionStart` for the role install. `check-plugin-boundaries` enforces that closed
+  list. `wwbd` declares `SessionStart` only, for its standing directive; the orchestrate pair
+  declares no hooks at all.
 - Planning and review artifacts are workflow contracts, not filesystem safety boundaries.
 
 ## Repository structure
@@ -356,7 +373,6 @@ node scripts/check-parity.mjs
 
 cd plugins/workflow/hooks && bun test && bun run check
 cd plugins/workflow-agents/hooks && bun test && bun run check
-cd plugins/orchestrate/hooks && bun test && bun run check
 ```
 
 Use `node scripts/check-plugin-boundaries.mjs --strict-home` after retirement cleanup to fail on
