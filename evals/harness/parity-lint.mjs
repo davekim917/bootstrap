@@ -17,8 +17,13 @@ import {
   renderCodexAgentToml,
 } from '../../plugins/workflow-agents/scripts/codex-agent-toml.mjs';
 
+/**
+ * The workflow pair's public surface. `orchestrate` is NOT here: it ships in its
+ * own plugin pair (bootstrap-orchestrate / bootstrap-orchestrate-agents) so the
+ * operator can disable automatic delegation pressure while the explicitly-invoked
+ * team skills keep working. Its inventory is EXPECTED_ORCHESTRATE_SKILLS.
+ */
 export const EXPECTED_SKILLS = Object.freeze([
-  'orchestrate',
   'team-auto',
   'team-build',
   'team-debug',
@@ -27,6 +32,11 @@ export const EXPECTED_SKILLS = Object.freeze([
   'team-review',
   'team-ship',
 ]);
+
+export const EXPECTED_ORCHESTRATE_SKILLS = Object.freeze(['orchestrate']);
+
+/** Worker tiers retired in 5.x; their return in any contract copy is a regression. */
+const RETIRED_WORKER_POLICY = ['worker-fast', 'worker-high', 'worker-codex', 'gpt-5.6-luna'];
 
 export const RETIRED_SKILLS = Object.freeze([
   'best-practice-check',
@@ -48,6 +58,8 @@ export const SHARED_CONTRACTS = Object.freeze([
 
 const CLAUDE_ROOT = path.join(PLUGINS, 'workflow', 'skills');
 const AGENT_ROOT = path.join(PLUGINS, 'workflow-agents', 'skills');
+const ORCHESTRATE_CLAUDE_ROOT = path.join(PLUGINS, 'orchestrate', 'skills');
+const ORCHESTRATE_AGENT_ROOT = path.join(PLUGINS, 'orchestrate-agents', 'skills');
 
 export function normalizeWhitespace(value) {
   return value.replace(/\\\s*\n/g, ' ').replace(/\s+/g, ' ').trim();
@@ -82,19 +94,26 @@ function requireTokens(failures, label, content, tokens) {
 export function evaluateContracts({
   claudeRoot = CLAUDE_ROOT,
   agentRoot = AGENT_ROOT,
+  orchestrateClaudeRoot = ORCHESTRATE_CLAUDE_ROOT,
+  orchestrateAgentRoot = ORCHESTRATE_AGENT_ROOT,
 } = {}) {
   const failures = [];
   const checks = [];
-  const inventories = [
-    ['Claude', claudeRoot, skillInventory(claudeRoot)],
-    ['Codex/OpenCode', agentRoot, skillInventory(agentRoot)],
+  const workflowInventories = [
+    ['Claude', claudeRoot, skillInventory(claudeRoot), EXPECTED_SKILLS, 'seven team skills'],
+    ['Codex/OpenCode', agentRoot, skillInventory(agentRoot), EXPECTED_SKILLS, 'seven team skills'],
   ];
+  const orchestrateInventories = [
+    ['Claude/orchestrate', orchestrateClaudeRoot, skillInventory(orchestrateClaudeRoot), EXPECTED_ORCHESTRATE_SKILLS, 'the orchestrate skill'],
+    ['Codex/OpenCode/orchestrate', orchestrateAgentRoot, skillInventory(orchestrateAgentRoot), EXPECTED_ORCHESTRATE_SKILLS, 'the orchestrate skill'],
+  ];
+  const inventories = [...workflowInventories, ...orchestrateInventories];
 
-  for (const [label, root, inventory] of inventories) {
-    if (JSON.stringify(inventory) !== JSON.stringify(EXPECTED_SKILLS)) {
-      failures.push(`${label}: expected exactly ${EXPECTED_SKILLS.join(', ')}; found ${inventory.join(', ')}`);
+  for (const [label, root, inventory, expected, description] of inventories) {
+    if (JSON.stringify(inventory) !== JSON.stringify([...expected])) {
+      failures.push(`${label}: expected exactly ${expected.join(', ')}; found ${inventory.join(', ')}`);
     } else {
-      checks.push(`${label}: seven team skills plus orchestrate`);
+      checks.push(`${label}: ${description}`);
     }
     for (const retired of RETIRED_SKILLS) {
       if (fs.existsSync(path.join(root, retired))) {
@@ -110,31 +129,67 @@ export function evaluateContracts({
     }
   }
 
+  // THE CRUX OF THE ORCHESTRATE SPLIT.
+  //
+  // `skills/orchestrate/SKILL.md` opens with "Read `../shared/workflow-contract.md`
+  // first", and that contract is shared with the seven team-* skills. A relative
+  // path cannot leave a plugin: an installed marketplace cache materializes only
+  // the plugin's own subtree, so `plugins/orchestrate` reaching into
+  // `plugins/workflow` would resolve in this checkout and be MISSING on every real
+  // install — and a missing contract reference does not fail loudly. The skill
+  // would quietly degrade to whatever the model remembers of the contract.
+  //
+  // So each plugin carries its own copy, generated from one canonical tree
+  // (plugins/workflow/skills/shared) by sync-agent-skills.mjs. The cost of that
+  // choice is drift, and THIS is the gate that pays it: every copy compared
+  // byte-for-byte against the canonical one, in every tree that has it.
+  const sharedRoots = [
+    ['Codex/OpenCode', agentRoot],
+    ['Claude/orchestrate', orchestrateClaudeRoot],
+    ['Codex/OpenCode/orchestrate', orchestrateAgentRoot],
+  ];
   for (const shared of SHARED_CONTRACTS) {
     const claudePath = path.join(claudeRoot, 'shared', shared);
-    const agentPath = path.join(agentRoot, 'shared', shared);
-    if (!fs.existsSync(claudePath) || !fs.existsSync(agentPath)) {
-      failures.push(`shared/${shared}: contract must exist in both runtime trees`);
+    if (!fs.existsSync(claudePath)) {
+      failures.push(`shared/${shared}: canonical contract missing from the Claude workflow tree`);
       continue;
     }
-    if (!fs.readFileSync(claudePath).equals(fs.readFileSync(agentPath))) {
-      failures.push(`shared/${shared}: runtime copies must be byte-identical`);
-    } else {
-      checks.push(`shared/${shared}: byte-identical`);
+    const canonical = fs.readFileSync(claudePath);
+    let identical = true;
+    for (const [label, root] of sharedRoots) {
+      const copyPath = path.join(root, 'shared', shared);
+      if (!fs.existsSync(copyPath)) {
+        failures.push(`${label}: shared/${shared} must exist in every plugin that reads it`);
+        identical = false;
+        continue;
+      }
+      if (!canonical.equals(fs.readFileSync(copyPath))) {
+        failures.push(
+          `${label}: shared/${shared} must be byte-identical to the canonical copy — ` +
+            'regenerate: node plugins/workflow-agents/scripts/sync-agent-skills.mjs',
+        );
+        identical = false;
+      }
     }
+    if (identical) checks.push(`shared/${shared}: byte-identical across ${sharedRoots.length + 1} plugin trees`);
   }
 
   const exactCommands = [
     `codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="medium"' --ephemeral --yolo`,
     'claude -p --model claude-fable-5-1 --effort medium --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json',
   ];
-  for (const [label, root] of inventories) {
+  // Contract substance lives with whichever tree carries the file. After the
+  // orchestrate split that is no longer one tree per runtime: the shared
+  // contracts are in all four, `orchestrate/SKILL.md` only in the orchestrate
+  // pair, and the team-* skills only in the workflow pair.
+  for (const [label, root] of inventories.map(([l, r]) => [l, r])) {
     const reviewPath = path.join(root, 'shared', 'cross-model-review.md');
     if (!fs.existsSync(reviewPath)) continue;
+    const review = fs.readFileSync(reviewPath, 'utf8');
     requireTokens(
       failures,
       `${label}/cross-model-review`,
-      fs.readFileSync(reviewPath, 'utf8'),
+      review,
       [
         ...exactCommands,
         '3600000',
@@ -148,16 +203,18 @@ export function evaluateContracts({
         'run.md',
       ],
     );
-
-    const ownership = fs.readFileSync(path.join(root, 'orchestrate', 'SKILL.md'), 'utf8');
-    requireTokens(failures, `${label}/orchestrate`, ownership, [
-      'worker-frontier', 'claude-opus-5', 'gpt-5.6-sol', 'default worker at `high` effort',
-      'same retained session', 'artifact author', '../../scripts/frontier-worker.mjs',
-      'Sonnet/xhigh or Terra/xhigh', 'no file-count or cheap-first hurdle',
-      'approved worker floor', 'Fable 5.1 or Opus 5', 'GPT-6 Astra or GPT-5.6 Sol',
-      'Never choose a worker below that floor',
+    requireTokens(failures, `${label}/cross-model-review`, review, [
+      'artifact author, not the coordinator', 'fresh and independent',
+      'Routine changes do not automatically require both gates',
+      'explicit reviewer effort override',
     ]);
-    const workflow = fs.readFileSync(path.join(root, 'shared', 'workflow-contract.md'), 'utf8');
+
+    const workflowPath = path.join(root, 'shared', 'workflow-contract.md');
+    if (!fs.existsSync(workflowPath)) {
+      failures.push(`${label}: shared/workflow-contract.md must exist wherever cross-model-review.md does`);
+      continue;
+    }
+    const workflow = fs.readFileSync(workflowPath, 'utf8');
     requireTokens(failures, `${label}/workflow`, workflow, [
       'unchanged exact artifact, relevant environment and command',
       'Invalidate affected evidence', 'maximum of 3 corrective rounds',
@@ -165,26 +222,49 @@ export function evaluateContracts({
       'Factual corrections and test-detail refinements do not reset authorization',
       'no mandatory exact test skeleton', 'human interruptions', 'escaped defects',
     ]);
-    for (const [name, content] of [['orchestrate', ownership], ['workflow', workflow]]) {
-      for (const retired of ['worker-fast', 'worker-high', 'worker-codex', 'gpt-5.6-luna']) {
-        if (content.includes(retired)) failures.push(`${label}/${name}: retired worker policy ${retired}`);
-      }
+    for (const retired of RETIRED_WORKER_POLICY) {
+      if (workflow.includes(retired)) failures.push(`${label}/workflow: retired worker policy ${retired}`);
     }
-    requireTokens(failures, `${label}/cross-model-review`, fs.readFileSync(reviewPath, 'utf8'), [
-      'artifact author, not the coordinator', 'fresh and independent',
-      'Routine changes do not automatically require both gates',
-      'explicit reviewer effort override',
-    ]);
+  }
 
-    const plan = fs.readFileSync(path.join(root, 'team-plan', 'SKILL.md'), 'utf8');
-    requireTokens(failures, `${label}/team-plan`, plan, [
+  // The orchestrate skill: its own pair only.
+  for (const [label, root] of orchestrateInventories.map(([l, r]) => [l, r])) {
+    const ownershipPath = path.join(root, 'orchestrate', 'SKILL.md');
+    if (!fs.existsSync(ownershipPath)) continue;
+    const ownership = fs.readFileSync(ownershipPath, 'utf8');
+    requireTokens(failures, `${label}/orchestrate`, ownership, [
+      'worker-frontier', 'claude-opus-5', 'gpt-5.6-sol', 'default worker at `high` effort',
+      'same retained session', 'artifact author', '../../scripts/frontier-worker.mjs',
+      'Sonnet/xhigh or Terra/xhigh', 'no file-count or cheap-first hurdle',
+      'approved worker floor', 'Fable 5.1 or Opus 5', 'GPT-6 Astra or GPT-5.6 Sol',
+      'Never choose a worker below that floor',
+    ]);
+    for (const retired of RETIRED_WORKER_POLICY) {
+      if (ownership.includes(retired)) failures.push(`${label}/orchestrate: retired worker policy ${retired}`);
+    }
+    // `../../scripts/frontier-worker.mjs` is plugin-relative. It resolves only if
+    // this plugin carries its own mirror of the helper — the skill's reference
+    // would otherwise point into bootstrap-workflow, which an installed cache
+    // cannot see.
+    const helper = path.join(root, '..', 'scripts', 'frontier-worker.mjs');
+    if (!fs.existsSync(helper)) {
+      failures.push(`${label}/orchestrate: SKILL.md names ../../scripts/frontier-worker.mjs but ${path.relative(PLUGINS, helper)} is missing`);
+    } else {
+      checks.push(`${label}/orchestrate: plugin-relative frontier-worker.mjs resolves`);
+    }
+  }
+
+  // The team-* skills: the workflow pair only.
+  for (const [label, root] of workflowInventories.map(([l, r]) => [l, r])) {
+    const plan = path.join(root, 'team-plan', 'SKILL.md');
+    if (!fs.existsSync(plan)) continue;
+    requireTokens(failures, `${label}/team-plan`, fs.readFileSync(plan, 'utf8'), [
       'plan.md',
       'cross-model',
       'approval',
     ]);
 
-    const review = fs.readFileSync(path.join(root, 'team-review', 'SKILL.md'), 'utf8');
-    requireTokens(failures, `${label}/team-review`, review, [
+    requireTokens(failures, `${label}/team-review`, fs.readFileSync(path.join(root, 'team-review', 'SKILL.md'), 'utf8'), [
       '--implementation',
       'approved plan',
       'implementation diff',
@@ -192,8 +272,7 @@ export function evaluateContracts({
       'run.md',
     ]);
 
-    const auto = fs.readFileSync(path.join(root, 'team-auto', 'SKILL.md'), 'utf8');
-    requireTokens(failures, `${label}/team-auto`, auto, [
+    requireTokens(failures, `${label}/team-auto`, fs.readFileSync(path.join(root, 'team-auto', 'SKILL.md'), 'utf8'), [
       '3 corrective rounds',
       'stops at anything that deploys',
       '.team-auto-active',

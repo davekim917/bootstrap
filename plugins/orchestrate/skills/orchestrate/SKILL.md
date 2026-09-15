@@ -41,7 +41,8 @@ not turn a short scheduled wake, a familiar codebase, or a likely one-line fix i
 Keep one worker role, with no automatic retry or model ladder. If no approved worker is available,
 report the limitation and obtain a recovery decision; never silently downgrade.
 
-This plugin ships that role, so it exists on a bare install. **Resolving the worker by name:** on
+The `bootstrap-workflow` plugin ships that role, so it exists on a bare install alongside this one.
+**Resolving the worker by name:** on
 Claude, use `bootstrap-workflow:worker-frontier` whenever it is offered, and the bare
 `worker-frontier` only when it is not. Claude Code namespaces plugin agents, so the qualified name
 is the plugin's own copy — the one a plugin update refreshes. A bare `worker-frontier` comes from

@@ -26,9 +26,21 @@ export const PLUGINS =
  * error rather than quietly comparing a port against itself.
  */
 export function resolveSkillDir(name, prefer = 'workflow-agents') {
-  const family = prefer === 'workflow' ? 'workflow/skills' : 'workflow-agents/skills';
-  const d = path.join(PLUGINS, family, name);
-  return fs.existsSync(path.join(d, 'SKILL.md')) ? d : null;
+  // One runtime family now spans TWO plugins: the team-* skills in workflow/,
+  // and `orchestrate` in orchestrate/ since it was split out so it can be
+  // disabled on its own. Searching both is NOT the cross-family fallback the
+  // note above forbids — both directories belong to the SAME runtime, so a
+  // Claude baseline still cannot resolve to a Codex/OpenCode port. Without it,
+  // `resolveSkillDir('orchestrate', ...)` would silently return null and the
+  // caller would report a provisioning error for a skill that is installed.
+  const families = prefer === 'workflow'
+    ? ['workflow/skills', 'orchestrate/skills']
+    : ['workflow-agents/skills', 'orchestrate-agents/skills'];
+  for (const family of families) {
+    const d = path.join(PLUGINS, family, name);
+    if (fs.existsSync(path.join(d, 'SKILL.md'))) return d;
+  }
+  return null;
 }
 
 /**

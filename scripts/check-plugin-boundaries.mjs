@@ -148,11 +148,14 @@ const codexMarketplace = readJson('.agents/plugins/marketplace.json');
 const claudeMarketplace = readJson('.claude-plugin/marketplace.json');
 const codexManifest = readJson('plugins/workflow-agents/.codex-plugin/plugin.json');
 const claudeManifest = readJson('plugins/workflow/.claude-plugin/plugin.json');
+const orchestrateClaudeManifest = readJson('plugins/orchestrate/.claude-plugin/plugin.json');
+const orchestrateCodexManifest = readJson('plugins/orchestrate-agents/.codex-plugin/plugin.json');
 const wwbdClaudeManifest = readJson('plugins/wwbd/.claude-plugin/plugin.json');
 const wwbdCodexManifest = readJson('plugins/wwbd/.codex-plugin/plugin.json');
 const conciseClaudeManifest = readJson('plugins/concise/.claude-plugin/plugin.json');
 const conciseCodexManifest = readJson('plugins/concise/.codex-plugin/plugin.json');
 const codexCopyPasteEntry = readJson('plugins/workflow-agents/marketplace-entry.json');
+const orchestrateCopyPasteEntry = readJson('plugins/orchestrate-agents/marketplace-entry.json');
 const codexHookManifest = readJson('plugins/workflow-agents/hooks/workflow-hooks.json');
 
 const codexEntries = pluginEntries(codexMarketplace);
@@ -179,6 +182,7 @@ if (!codexWorkflowEntry) {
 // advisory and session-mode plugins. Anything else creeping into a marketplace is drift.
 const codexRoster = new Map([
   ['bootstrap-workflow-agents', './plugins/workflow-agents'],
+  ['bootstrap-orchestrate-agents', './plugins/orchestrate-agents'],
   ['wwbd', './plugins/wwbd'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
@@ -192,6 +196,17 @@ for (const entry of codexEntries) {
 
 if (codexEntries.length !== codexRoster.size) {
   fail(`.agents/plugins/marketplace.json must expose exactly ${codexRoster.size} plugins (found ${codexEntries.length})`);
+}
+
+const codexOrchestrateEntry = codexEntries.find((entry) => entry.name === 'bootstrap-orchestrate-agents');
+if (!codexOrchestrateEntry) {
+  fail('.agents/plugins/marketplace.json must register bootstrap-orchestrate-agents');
+} else if (normalizeSource(sourcePath(codexOrchestrateEntry)) !== './plugins/orchestrate-agents') {
+  fail('bootstrap-orchestrate-agents must source ./plugins/orchestrate-agents in .agents/plugins/marketplace.json');
+} else if (codexOrchestrateEntry.version !== orchestrateCodexManifest?.version) {
+  fail(
+    `bootstrap-orchestrate-agents version must match between marketplace and plugin manifest (${codexOrchestrateEntry.version} !== ${orchestrateCodexManifest?.version})`,
+  );
 }
 
 const codexWwbdEntry = codexEntries.find((entry) => entry.name === 'wwbd');
@@ -225,6 +240,7 @@ if (!claudeWorkflowEntry) {
 
 const claudeRoster = new Map([
   ['bootstrap-workflow', './plugins/workflow'],
+  ['bootstrap-orchestrate', './plugins/orchestrate'],
   ['wwbd', './plugins/wwbd'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
@@ -238,6 +254,17 @@ for (const entry of claudeEntries) {
 
 if (claudeEntries.length !== claudeRoster.size) {
   fail(`.claude-plugin/marketplace.json must expose exactly ${claudeRoster.size} plugins (found ${claudeEntries.length})`);
+}
+
+const claudeOrchestrateEntry = claudeEntries.find((entry) => entry.name === 'bootstrap-orchestrate');
+if (!claudeOrchestrateEntry) {
+  fail('.claude-plugin/marketplace.json must register bootstrap-orchestrate');
+} else if (normalizeSource(sourcePath(claudeOrchestrateEntry)) !== './plugins/orchestrate') {
+  fail('bootstrap-orchestrate must source ./plugins/orchestrate in .claude-plugin/marketplace.json');
+} else if (claudeOrchestrateEntry.version !== orchestrateClaudeManifest?.version) {
+  fail(
+    `bootstrap-orchestrate version must match between marketplace and plugin manifest (${claudeOrchestrateEntry.version} !== ${orchestrateClaudeManifest?.version})`,
+  );
 }
 
 const claudeWwbdEntry = claudeEntries.find((entry) => entry.name === 'wwbd');
@@ -289,7 +316,7 @@ if (wwbdCodexManifest?.hooks !== undefined) {
 // sessions on the new directive, container and Codex agents on the old one, with
 // no check to notice. Compare the shared blocks byte-for-byte.
 for (const [pluginFile, heading] of [
-  ['plugins/workflow/always-on.md', '# Orchestrate'],
+  ['plugins/orchestrate/always-on.md', '# Orchestrate'],
   ['plugins/wwbd/always-on.md', '# WWBD'],
 ]) {
   if (!exists(pluginFile) || !exists('.nanoclaw-always-on.md')) continue;
@@ -427,11 +454,17 @@ if (!exists('plugins/workflow-agents/scripts/session-install-roles.mjs')) {
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.4.0') {
-  fail(`bootstrap-workflow release must be version 5.4.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.5.0') {
+  fail(`bootstrap-workflow release must be version 5.5.0 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.4.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.4.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.5.0') {
+  fail(`bootstrap-workflow-agents release must be version 2.5.0 (found ${codexManifest?.version})`);
+}
+if (orchestrateClaudeManifest?.version !== '1.0.0') {
+  fail(`bootstrap-orchestrate release must be version 1.0.0 (found ${orchestrateClaudeManifest?.version})`);
+}
+if (orchestrateCodexManifest?.version !== '1.0.0') {
+  fail(`bootstrap-orchestrate-agents release must be version 1.0.0 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -504,13 +537,25 @@ if (
   fail('plugins/workflow-agents/marketplace-entry.json must match the .agents marketplace entry');
 }
 
+if (
+  orchestrateCopyPasteEntry &&
+  JSON.stringify(orchestrateCopyPasteEntry, null, 2) !== JSON.stringify(codexOrchestrateEntry, null, 2)
+) {
+  fail('plugins/orchestrate-agents/marketplace-entry.json must match the .agents marketplace entry');
+}
+
 const codexSkillsRoot = path.join(repoRoot, 'plugins/workflow-agents/skills');
 const claudeSkillsRoot = path.join(repoRoot, 'plugins/workflow/skills');
+const orchestrateClaudeSkillsRoot = path.join(repoRoot, 'plugins/orchestrate/skills');
+const orchestrateCodexSkillsRoot = path.join(repoRoot, 'plugins/orchestrate-agents/skills');
 const codexSkills = skillNames(codexSkillsRoot);
 const claudeSkills = skillNames(claudeSkillsRoot);
 
+// The split: the workflow pair keeps the seven explicitly-invoked team skills,
+// the orchestrate pair owns the one skill that automatic delegation pressure
+// runs through. `orchestrate` appearing in a workflow tree would put it back
+// where disabling the orchestrate plugin cannot remove it.
 const expectedSkills = [
-  'orchestrate',
   'team-auto',
   'team-build',
   'team-debug',
@@ -519,6 +564,7 @@ const expectedSkills = [
   'team-review',
   'team-ship',
 ];
+const expectedOrchestrateSkills = ['orchestrate'];
 const retiredSkillNames = [
   'best-practice-check',
   'review-swarm',
@@ -537,7 +583,16 @@ for (const [label, inventory] of [
 ]) {
   const actual = [...inventory].sort();
   if (JSON.stringify(actual) !== JSON.stringify(expectedSkills)) {
-    fail(`${label} plugin must expose seven team skills plus orchestrate: ${expectedSkills.join(', ')} (found ${actual.join(', ')})`);
+    fail(`${label} workflow plugin must expose exactly the seven team skills: ${expectedSkills.join(', ')} (found ${actual.join(', ')})`);
+  }
+}
+for (const [label, root] of [
+  ['Claude', orchestrateClaudeSkillsRoot],
+  ['Codex/OpenCode', orchestrateCodexSkillsRoot],
+]) {
+  const actual = skillNames(root).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expectedOrchestrateSkills)) {
+    fail(`${label} orchestrate plugin must expose exactly ${expectedOrchestrateSkills.join(', ')} (found ${actual.join(', ') || '(nothing)'})`);
   }
 }
 for (const [label, root] of [
@@ -551,13 +606,35 @@ for (const [label, root] of [
   }
 }
 
-for (const fileName of ['workflow-contract.md', 'cross-model-review.md']) {
-  const claudePath = `plugins/workflow/skills/shared/${fileName}`;
-  const codexPath = `plugins/workflow-agents/skills/shared/${fileName}`;
-  const claudeContent = readText(claudePath);
-  const codexContent = readText(codexPath);
-  if (claudeContent !== undefined && codexContent !== undefined && claudeContent !== codexContent) {
-    fail(`shared/${fileName}: Claude and Codex/OpenCode copies must be byte-identical`);
+// `skills/shared/` is carried by all FOUR plugins, not shared by reference: an
+// installed marketplace cache materializes only the plugin's own subtree, so
+// `plugins/orchestrate` cannot reach `../workflow/skills/shared/`. Every copy is
+// generated from the one canonical tree; this is the gate that fails if one drifts.
+const CANONICAL_SHARED_DIR = 'plugins/workflow/skills/shared';
+const SHARED_COPY_DIRS = [
+  'plugins/workflow-agents/skills/shared',
+  'plugins/orchestrate/skills/shared',
+  'plugins/orchestrate-agents/skills/shared',
+];
+for (const fileName of [
+  'workflow-contract.md',
+  'cross-model-review.md',
+  'references/CODEX-SOURCES.md',
+  'references/codex-adversarial-prompt.md',
+  'references/codex-review-output.schema.json',
+]) {
+  const canonical = readText(`${CANONICAL_SHARED_DIR}/${fileName}`);
+  if (canonical === undefined) continue;
+  for (const dir of SHARED_COPY_DIRS) {
+    const copy = readText(`${dir}/${fileName}`);
+    if (copy === undefined) continue;
+    if (copy !== canonical) {
+      fail(
+        `${dir}/${fileName} has drifted from ${CANONICAL_SHARED_DIR}/${fileName} — ` +
+          'every plugin carries its own copy because a relative path cannot cross a plugin ' +
+          'boundary on an installed cache. Regenerate: node plugins/workflow-agents/scripts/sync-agent-skills.mjs',
+      );
+    }
   }
 }
 
@@ -567,12 +644,12 @@ for (const fileName of ['workflow-contract.md', 'cross-model-review.md']) {
 // (the cache only materializes the plugin subtree, not the repo root).
 {
   const rootContent = readText('.nanoclaw-always-on.md');
-  const workflowContent = readText('plugins/workflow/always-on.md');
+  const orchestrateContent = readText('plugins/orchestrate/always-on.md');
   const wwbdContent = readText('plugins/wwbd/always-on.md');
-  if (rootContent !== undefined && workflowContent !== undefined && wwbdContent !== undefined) {
-    const expected = `${workflowContent.trimEnd()}\n\n${wwbdContent.trimEnd()}\n`;
+  if (rootContent !== undefined && orchestrateContent !== undefined && wwbdContent !== undefined) {
+    const expected = `${orchestrateContent.trimEnd()}\n\n${wwbdContent.trimEnd()}\n`;
     if (rootContent !== expected) {
-      fail('.nanoclaw-always-on.md must be plugins/workflow/always-on.md + blank line + plugins/wwbd/always-on.md, byte-exact');
+      fail('.nanoclaw-always-on.md must be plugins/orchestrate/always-on.md + blank line + plugins/wwbd/always-on.md, byte-exact');
     }
   }
 }
@@ -643,12 +720,22 @@ const activeContractFiles = [
   path.join(repoRoot, '.agents', 'plugins', 'marketplace.json'),
   path.join(repoRoot, 'plugins', 'workflow', '.claude-plugin', 'plugin.json'),
   path.join(repoRoot, 'plugins', 'workflow-agents', '.codex-plugin', 'plugin.json'),
+  path.join(repoRoot, 'plugins', 'orchestrate', '.claude-plugin', 'plugin.json'),
+  path.join(repoRoot, 'plugins', 'orchestrate-agents', '.codex-plugin', 'plugin.json'),
   ...findFiles(
     path.join(repoRoot, 'plugins', 'workflow', 'skills'),
     (_fullPath, entry) => entry.isFile(),
   ),
   ...findFiles(
     path.join(repoRoot, 'plugins', 'workflow-agents', 'skills'),
+    (_fullPath, entry) => entry.isFile(),
+  ),
+  ...findFiles(
+    path.join(repoRoot, 'plugins', 'orchestrate', 'skills'),
+    (_fullPath, entry) => entry.isFile(),
+  ),
+  ...findFiles(
+    path.join(repoRoot, 'plugins', 'orchestrate-agents', 'skills'),
     (_fullPath, entry) => entry.isFile(),
   ),
   ...findFiles(
@@ -665,7 +752,157 @@ for (const filePath of activeContractFiles) {
   }
 }
 
+
+// ─── The orchestrate split ────────────────────────────────────────────────────
+// `/orchestrate` and the automatic pressure to use it live in their own plugin
+// pair so the operator can DISABLE automatic delegation and still run
+// `/team-build`, `/team-review` and the rest by hand.
+//
+// THREE things create that pressure, and disabling the plugin only works if ALL
+// THREE are inside it. Any one left behind in the workflow pair silently defeats
+// the switch: the skill would still be offered, or the standing directive would
+// still load, or — worst — the dispatch-first hook would still BLOCK a
+// coordinator from reading source before it dispatches, which is precisely the
+// thing an operator working directly needs to do. These assertions are the
+// machine-checked version of that, in both directions: present here, absent there.
+{
+  const orchestrateHookManifestPath = 'plugins/orchestrate/hooks/orchestrate-hooks.json';
+  const orchestrateHookManifest = readJson(orchestrateHookManifestPath);
+  const orchestrateHookText = readText(orchestrateHookManifestPath) ?? '';
+  const workflowHookManifest = readJson('plugins/workflow/hooks/workflow-hooks.json');
+  const workflowHookText = readText('plugins/workflow/hooks/workflow-hooks.json') ?? '';
+
+  // 1. THE SKILL — in the orchestrate pair, gone from the workflow pair.
+  for (const [label, file] of [
+    ['Claude', 'plugins/orchestrate/skills/orchestrate/SKILL.md'],
+    ['Codex/OpenCode', 'plugins/orchestrate-agents/skills/orchestrate/SKILL.md'],
+  ]) {
+    if (!exists(file)) fail(`${label} orchestrate plugin must ship ${file}`);
+  }
+  for (const stale of [
+    'plugins/workflow/skills/orchestrate',
+    'plugins/workflow-agents/skills/orchestrate',
+  ]) {
+    if (exists(stale)) {
+      fail(`${stale} must not exist; the orchestrate skill moved to the bootstrap-orchestrate pair, and a copy here would still be offered with that plugin disabled`);
+    }
+  }
+
+  // 2. THE STANDING DIRECTIVE — the SessionStart nudge and its non-Claude twin.
+  if (!exists('plugins/orchestrate/always-on.md')) {
+    fail('plugins/orchestrate must ship always-on.md (the SessionStart directive that auto-loads orchestrate)');
+  }
+  if (exists('plugins/workflow/always-on.md')) {
+    fail('plugins/workflow/always-on.md must not exist; the orchestrate directive moved to plugins/orchestrate, and a copy here would keep loading with that plugin disabled');
+  }
+  if (!orchestrateHookManifest?.hooks?.SessionStart) {
+    fail(`${orchestrateHookManifestPath} must wire SessionStart so the standing directive loads with the plugin`);
+  }
+  if (!orchestrateHookText.includes('${CLAUDE_PLUGIN_ROOT}/always-on.md')) {
+    fail(`${orchestrateHookManifestPath} SessionStart must read the plugin's own always-on.md`);
+  }
+  if (workflowHookManifest?.hooks?.SessionStart) {
+    fail('plugins/workflow/hooks/workflow-hooks.json must not wire SessionStart; its only job was catting the orchestrate directive, which moved');
+  }
+
+  // 3. THE DISPATCH-FIRST GUARD — the one that makes the switch real. It BLOCKS
+  //    a coordinator from reading implementation source or running checks before
+  //    dispatching, so it must be registered by the orchestrate plugin and by
+  //    nothing else.
+  for (const file of [
+    'plugins/orchestrate/hooks/guards/dispatch-first.ts',
+    'plugins/orchestrate/hooks/guards/dispatch-first-core.ts',
+    'plugins/orchestrate/hooks/guards/dispatch-first-core.test.ts',
+    'plugins/orchestrate/hooks/guards/dispatch-first.test.ts',
+    'plugins/orchestrate/hooks/guards/conformance.test.ts',
+    'plugins/orchestrate/hooks/run-hook.sh',
+    'plugins/orchestrate/hooks/lib/types.ts',
+  ]) {
+    if (!exists(file)) fail(`plugins/orchestrate must ship ${path.relative('plugins/orchestrate', file)}`);
+  }
+  for (const stale of [
+    'plugins/workflow/hooks/guards/dispatch-first.ts',
+    'plugins/workflow/hooks/guards/dispatch-first-core.ts',
+    'plugins/workflow/hooks/guards/dispatch-first-core.test.ts',
+    'plugins/workflow/hooks/guards/dispatch-first.test.ts',
+    'plugins/workflow-agents/hooks/guards/dispatch-first-core.ts',
+  ]) {
+    if (exists(stale)) {
+      fail(`${stale} must not exist; the dispatch-first guard moved to plugins/orchestrate and a copy here could still be wired`);
+    }
+  }
+  if (!orchestrateHookText.includes('guards/dispatch-first.ts')) {
+    fail(`${orchestrateHookManifestPath} must register guards/dispatch-first.ts on PreToolUse`);
+  }
+  if (workflowHookText.includes('dispatch-first')) {
+    fail('plugins/workflow/hooks/workflow-hooks.json must not register the dispatch-first guard; it would keep blocking direct work with bootstrap-orchestrate disabled');
+  }
+
+  // The guards the workflow plugin KEEPS. Splitting orchestrate out must not take
+  // a safety guard with it — those protect the operator whether or not they are
+  // delegating.
+  const RETAINED_WORKFLOW_GUARDS = [
+    'guards/block-destructive.ts',
+    'guards/file-protection.ts',
+    'guards/block-askuser-during-auto.ts',
+  ];
+  for (const guard of RETAINED_WORKFLOW_GUARDS) {
+    if (!workflowHookText.includes(guard)) {
+      fail(`plugins/workflow/hooks/workflow-hooks.json must still register ${guard}`);
+    }
+    if (orchestrateHookText.includes(guard)) {
+      fail(`${orchestrateHookManifestPath} must not register ${guard}; safety guards stay with bootstrap-workflow so disabling orchestrate cannot disable them`);
+    }
+  }
+  if (!exists('plugins/workflow/hooks/guards/opencode-guard.ts')) {
+    fail('plugins/workflow/hooks/guards/opencode-guard.ts must stay in the workflow plugin');
+  }
+
+  // The worker role and its transport stay with bootstrap-workflow; orchestrate
+  // dispatches TO them. The helper is mirrored (not moved) because the skill
+  // names it by a plugin-relative path.
+  if (!exists('plugins/workflow/scripts/frontier-worker.mjs')) {
+    fail('plugins/workflow/scripts/frontier-worker.mjs must stay in the workflow plugin');
+  }
+  for (const mirror of [
+    'plugins/orchestrate/scripts/frontier-worker.mjs',
+    'plugins/orchestrate-agents/scripts/frontier-worker.mjs',
+  ]) {
+    if (!exists(mirror)) {
+      fail(`${mirror} must ship; the orchestrate skill names ../../scripts/frontier-worker.mjs, which cannot resolve into another plugin`);
+    }
+  }
+
+  // Manifest shape.
+  if (orchestrateClaudeManifest?.name !== 'bootstrap-orchestrate') {
+    fail('plugins/orchestrate/.claude-plugin/plugin.json name must be bootstrap-orchestrate');
+  }
+  if (orchestrateCodexManifest?.name !== 'bootstrap-orchestrate-agents') {
+    fail('plugins/orchestrate-agents/.codex-plugin/plugin.json name must be bootstrap-orchestrate-agents');
+  }
+  if (normalizeSource(orchestrateClaudeManifest?.hooks) !== './hooks/orchestrate-hooks.json') {
+    fail('plugins/orchestrate/.claude-plugin/plugin.json hooks must point at ./hooks/orchestrate-hooks.json');
+  }
+  if (normalizeSource(orchestrateCodexManifest?.skills) !== './skills') {
+    fail('plugins/orchestrate-agents/.codex-plugin/plugin.json skills must point at ./skills/');
+  }
+  // Codex/OpenCode has no live dispatch-first adapter (codex-guard.ts routes only
+  // the destructive/email/file-protection cores), so a hooks entry here would be
+  // dead config that looks live — the same rule wwbd is held to.
+  if (orchestrateCodexManifest?.hooks !== undefined) {
+    fail('plugins/orchestrate-agents/.codex-plugin/plugin.json must not declare hooks; Codex/OpenCode gets the directive via .nanoclaw-always-on.md and has no dispatch-first adapter');
+  }
+  if (exists('plugins/orchestrate-agents/.claude-plugin')) {
+    fail('plugins/orchestrate-agents must not contain .claude-plugin metadata');
+  }
+  if (exists('plugins/orchestrate/.codex-plugin')) {
+    fail('plugins/orchestrate must not contain .codex-plugin metadata');
+  }
+}
+
 checkSkillMarkdownLinks(codexSkillsRoot);
+checkSkillMarkdownLinks(orchestrateClaudeSkillsRoot);
+checkSkillMarkdownLinks(orchestrateCodexSkillsRoot);
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/wwbd/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/concise/skills'));
 checkSkillMarkdownLinks(claudeSkillsRoot);

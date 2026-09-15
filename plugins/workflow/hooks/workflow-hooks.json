@@ -10,15 +10,6 @@
         ]
       },
       {
-        "matcher": "Bash|Read|Grep|Glob|WebFetch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/dispatch-first.ts"
-          }
-        ]
-      },
-      {
         "matcher": "Edit|MultiEdit|Write",
         "hooks": [
           {
@@ -33,17 +24,6 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh guards/block-askuser-during-auto.ts"
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "matcher": "startup|resume|clear|compact",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/always-on.md\""
           }
         ]
       }

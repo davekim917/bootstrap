@@ -1,0 +1,22 @@
+{
+  "name": "bootstrap-orchestrate",
+  "version": "1.0.0",
+  "description": "Automatic delegation pressure: the /orchestrate skill, its standing directive, and the dispatch-first coordinator guard.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "orchestrate",
+    "delegation",
+    "dispatch-first",
+    "workflow",
+    "skills",
+    "hooks"
+  ],
+  "skills": [
+    "./skills"
+  ],
+  "hooks": "./hooks/orchestrate-hooks.json"
+}
