@@ -173,6 +173,28 @@ test('disabled: the destructive-command guard is untouched and still fires', () 
   assert.ok(blockedOne(results), `expected block-destructive to fire, got ${JSON.stringify(results)}`);
 });
 
+test('disabled: an invoked team-* skill still loads a contract that mandates delegation', () => {
+  // The split's boundary, stated as an assertion. What `bootstrap-orchestrate`
+  // takes away is AUTOMATIC pressure. `/team-build` is meant for parallel build,
+  // so invoking it deliberately must still delegate — the operator's A/B compares
+  // "pushed toward a subagent by default" against "delegates when asked", not
+  // "delegates" against "never delegates". If this ever fails, the experiment has
+  // stopped measuring what it was set up to measure.
+  const workflowSkills = resolveSkills(DISABLED);
+  assert.ok(workflowSkills.includes('team-build'));
+
+  // The skill reads `../shared/workflow-contract.md`, which must resolve inside
+  // the still-enabled workflow plugin and still carry the delegation mandate.
+  const contract = path.join(WORKFLOW, 'skills', 'shared', 'workflow-contract.md');
+  assert.ok(fs.existsSync(contract), 'team-* skills must still reach their shared contract');
+  const text = fs.readFileSync(contract, 'utf8');
+  assert.match(text, /Delegate substantive design, implementation/);
+  assert.match(text, /Never delegate substantive work below the approved Opus\/Sol floor/);
+
+  // And the worker it delegates to is still shipped by the enabled plugin.
+  assert.ok(fs.existsSync(path.join(WORKFLOW, 'agents', 'worker-frontier.md')));
+});
+
 test('enabled: the guard composition matches the pre-split session exactly', () => {
   // "Enabled ⇒ behaviour unchanged" made concrete. This table is the PreToolUse
   // composition of bootstrap-workflow 5.4.0 at b491d97, the last commit before
