@@ -249,10 +249,18 @@ export function evaluateContracts({
   //
   //  - the four parameters, and the positional parse that fills the first two
   //    from the invocation;
-  //  - the three runtime dispatch lines — drop one and that runtime silently has
-  //    no instruction at all, which reads as the skill simply not working there;
-  //  - the retained thread, asserted per runtime, because "same sub-agent every
+  //  - the four dispatch lines, which are runtime × model family, not runtime —
+  //    drop one and that combination silently has no instruction at all, which
+  //    reads as the skill simply not working there;
+  //  - the retained thread, asserted per line, because "same sub-agent every
   //    round" is the one property a coordinator drifts away from first;
+  //  - the two REFUSALS. Claude Code's own Agent tool cannot run an OpenAI model
+  //    and Codex cannot run an Anthropic model at all, so each of those has one
+  //    correct behaviour: route it, or stop. Without the explicit refusals the
+  //    plausible failure is a coordinator quietly dispatching the nearest model
+  //    it CAN reach and reporting success — the caller asked for one model and
+  //    got another, with nothing saying so. That is the costliest silent failure
+  //    in this skill, so both refusal sentences get their own tokens;
   //  - the instruction that the sub-agent does not review its own work, and the
   //    coordinator's derived verification step, which is the thing that replaces
   //    it. Either half alone is worse than neither: a sub-agent that does not
@@ -271,12 +279,21 @@ export function evaluateContracts({
       'Verification is whatever the deliverable demands',
       'Say in one line which check you chose',
       'not to test or review its own work',
-      'Claude Code:', 'Codex:', 'OpenCode:',
+      // Runtime × model family. Each line is named by its own prefix so a
+      // deleted one fails as itself rather than as a vague missing token.
+      'Claude Code, Anthropic model', 'Claude Code, OpenAI model',
+      'Codex, OpenAI model', 'OpenCode:',
       'bootstrap-orchestrate:worker-{effort_level}',
       'every later round is SendMessage to that name',
+      'codex:codex-rescue',
+      '--model <full id> --effort {effort_level} --write',
+      'every later round asks it to `--resume` the same run',
       'spawn_agent', 'reasoning_effort',
       'every later round goes to that agent id',
       'agent "worker-{effort_level}"',
+      // The refusals.
+      'If that plugin is not installed, stop and say so — do not substitute a model',
+      'An Anthropic model cannot be dispatched from Codex; say so and stop',
     ]);
     for (const retired of RETIRED_WORKER_POLICY) {
       if (skill.includes(retired)) failures.push(`${label}/orchestrate: retired worker policy ${retired}`);

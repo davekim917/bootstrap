@@ -11,6 +11,7 @@ Verification is whatever the deliverable demands, decided from {task} before the
 Each round: pass the sub-agent the original brief plus your findings and the latest artifact (screenshot, output, query result) — minimal, no technical opinions or details. Instruct it not to test or review its own work: work toward the goal, fix what it finds, stop after implementation, recap very briefly. Stop after {rounds} rounds, or when {done}.
 
 Dispatch on this runtime:
-- Claude Code: Agent tool, subagent_type "bootstrap-orchestrate:worker-{effort_level}", model {model}, a fixed name; every later round is SendMessage to that name.
-- Codex: spawn_agent with model {model} and reasoning_effort {effort_level}; every later round goes to that agent id.
+- Claude Code, Anthropic model (fable, opus, sonnet, haiku, claude-*): Agent tool, subagent_type "bootstrap-orchestrate:worker-{effort_level}", model {model}, a fixed name; every later round is SendMessage to that name.
+- Claude Code, OpenAI model (astra, sol, terra, luna, gpt-*): the Codex plugin's `codex:codex-rescue` agent, asking it to run the task with `--model <full id> --effort {effort_level} --write`; every later round asks it to `--resume` the same run. If that plugin is not installed, stop and say so — do not substitute a model.
+- Codex, OpenAI model: spawn_agent with model {model} and reasoning_effort {effort_level}; every later round goes to that agent id. An Anthropic model cannot be dispatched from Codex; say so and stop.
 - OpenCode: task tool with agent "worker-{effort_level}"; the sub-agent runs the parent's model.

@@ -73,8 +73,24 @@ check you chose. Neither half works alone: a sub-agent that does not self-check 
 a coordinator that does not check it ships unverified work.
 
 There is no role behind it, no approved model floor, and no helper CLI. Dispatch goes
-through whatever the runtime already has: Claude Code's `Agent` tool, Codex's
-`spawn_agent`, OpenCode's `task` tool.
+through whatever the runtime already has, and the route depends on the model family as
+well as the runtime:
+
+| Runtime | Model | Route |
+|---|---|---|
+| Claude Code | Anthropic | `Agent` tool, `bootstrap-orchestrate:worker-<level>`, then `SendMessage` each round |
+| Claude Code | OpenAI | the Codex plugin's `codex:codex-rescue` agent, `--resume` each round |
+| Codex | OpenAI | `spawn_agent`, then the same agent id each round |
+| Codex | Anthropic | not possible — the skill says so and stops |
+| OpenCode | parent's | `task` tool, agent `worker-<level>` |
+
+The two gaps are refusals, not fallbacks. Claude Code's own `Agent` tool cannot run an
+OpenAI model, so asking for one routes out to the Codex plugin; if that plugin is not
+installed the skill stops rather than substituting. Codex cannot run an Anthropic model
+at all. Quietly dispatching the nearest reachable model would hand the caller a
+different model than they asked for with nothing saying so, which is the costliest
+silent failure this skill could have — so both refusals are gated by their own drift
+tokens and a mutation test.
 
 The one thing the plugin ships besides the skill is five near-empty agent definitions,
 `agents/worker-<level>.md`. They exist because Claude Code's `Agent` tool takes a
