@@ -158,6 +158,40 @@ test('enabled: the five effort shims are the only sub-agents the plugin adds', (
   // nothing else, because a sixth definition here would be a role.
   assert.deepEqual(resolveAgents([ORCHESTRATE]), WORKER_SHIMS);
   assert.deepEqual(resolveAgents(ENABLED), WORKER_SHIMS);
+
+  // They arrive by AUTO-DISCOVERY, with no `agents` field in the manifest. That
+  // is not a stylistic preference: Claude rejects a directory entry outright,
+  // and setting the field at all turns auto-loading off.
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(ORCHESTRATE, '.claude-plugin', 'plugin.json'), 'utf8'),
+  );
+  assert.equal(manifest.agents, undefined, 'the manifest must not declare an agents field');
+  assert.ok(fs.existsSync(path.join(ORCHESTRATE, 'agents')), 'agents/ must exist to be auto-loaded');
+});
+
+test('MUTATION: declaring the agents directory empties the composed agent list', (t) => {
+  // The trapdoor, proved rather than asserted. `"agents": ["./agents"]` reads as
+  // a harmless belt-and-braces declaration and is the obvious thing to write; it
+  // silently removes every shim, because a directory is not a valid entry AND
+  // the field's presence stops `agents/` being auto-loaded. If this mutation
+  // still resolved five shims, the test above would be proving nothing.
+  const mutant = orchestrateMutant(t, 'agents-mutant');
+  const manifestPath = path.join(mutant, '.claude-plugin', 'plugin.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  assert.deepEqual(resolveAgents([mutant]), WORKER_SHIMS, 'fixture must start healthy');
+
+  manifest.agents = ['./agents'];
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  assert.deepEqual(
+    resolveAgents([mutant]), [],
+    'declaring the directory must yield no agents — otherwise the no-agents-field assertion is cosmetic',
+  );
+
+  // Naming the files explicitly is the other valid spelling, and it must work,
+  // so the gate is pinning a real rule rather than one arbitrary layout.
+  manifest.agents = WORKER_SHIMS.map((name) => `./agents/${name}.md`);
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  assert.deepEqual(resolveAgents([mutant]), WORKER_SHIMS);
 });
 
 test('disabled: no sub-agent definition survives without the orchestrate plugin', () => {
@@ -226,7 +260,19 @@ test('enabled: the destructive-command guard is untouched and still fires', () =
   assert.ok(blockedOne(results), `expected block-destructive to fire, got ${JSON.stringify(results)}`);
 });
 
-test('an invoked team-* skill still loads a contract that mandates delegation', (t) => {
+/**
+ * The delegation contract, as ONE function over the text, so the same checks can
+ * be run against the real file and against mutated copies. The previous shape of
+ * this test wrote a sentence to a temp file, read it back and asserted a regex
+ * matched it — which proves the regex compiles, not that any gate would fire.
+ */
+function assertDelegationContract(text) {
+  assert.match(text, /Delegate substantive design, implementation/);
+  assert.doesNotMatch(text, /approved.{0,20}floor/i, 'the worker floor is retired');
+  assert.doesNotMatch(text, /worker-frontier/, 'the named worker role is retired');
+}
+
+test('an invoked team-* skill still loads a contract that mandates delegation', () => {
   // What was removed is AUTOMATIC pressure, and now also the named worker ROLE
   // and its model/effort policy. `/team-build` is still an explicit request for
   // the delegated workflow, so invoking it must still delegate — otherwise
@@ -236,23 +282,26 @@ test('an invoked team-* skill still loads a contract that mandates delegation', 
 
   const contract = path.join(WORKFLOW, 'skills', 'shared', 'workflow-contract.md');
   assert.ok(fs.existsSync(contract), 'team-* skills must still reach their shared contract');
-  const text = fs.readFileSync(contract, 'utf8');
-  assert.match(text, /Delegate substantive design, implementation/);
+  assertDelegationContract(fs.readFileSync(contract, 'utf8'));
+});
 
-  // …and it must delegate to a plain sub-agent, not to a floor of approved
-  // models. That floor is what the policy file encoded; a contract naming one
-  // again would need a policy behind it that no longer exists.
-  assert.doesNotMatch(text, /approved.{0,20}floor/i, 'the worker floor is retired');
-  assert.doesNotMatch(text, /worker-frontier/, 'the named worker role is retired');
-
-  // A mutation proof for the absence claims: the exact sentences that were
-  // removed must still be detectable if someone puts them back.
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'enablement-contract-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const mutant = path.join(root, 'workflow-contract.md');
-  fs.writeFileSync(mutant, `${text}\nNever delegate below the approved worker floor.\n`);
-  const mutated = fs.readFileSync(mutant, 'utf8');
-  assert.match(mutated, /approved.{0,20}floor/i, 'the floor assertion would pass vacuously');
+test('MUTATION: the delegation-contract checks fail when their property is broken', () => {
+  // Run the SAME checks against mutated text and require each one to throw. Two
+  // absence claims and one presence claim, one mutation each.
+  const text = fs.readFileSync(
+    path.join(WORKFLOW, 'skills', 'shared', 'workflow-contract.md'), 'utf8',
+  );
+  for (const [label, mutated] of [
+    ['floor restored', `${text}\nNever delegate below the approved worker floor.\n`],
+    ['named role restored', `${text}\nHand the task to worker-frontier.\n`],
+    ['delegation removed', text.replace('Delegate substantive design, implementation', 'Do it yourself')],
+  ]) {
+    assert.throws(
+      () => assertDelegationContract(mutated),
+      assert.AssertionError,
+      `mutation "${label}" did not trip the contract checks — they would pass vacuously`,
+    );
+  }
 });
 
 test('enabled: the PreToolUse composition is the workflow plugin\'s safety guards and nothing else', () => {

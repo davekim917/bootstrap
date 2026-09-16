@@ -286,14 +286,26 @@ export function evaluateContracts({
       'bootstrap-orchestrate:worker-{effort_level}',
       'every later round is SendMessage to that name',
       'codex:codex-rescue',
-      '--model <full id> --effort {effort_level} --write',
-      'every later round asks it to `--resume` the same run',
+      '--model <full id> --effort {effort_level} --write --wait',
+      'every later round asks it to `--resume --wait`',
       'spawn_agent', 'reasoning_effort',
-      'every later round goes to that agent id',
-      'agent "worker-{effort_level}"',
-      // The refusals.
-      'If that plugin is not installed, stop and say so — do not substitute a model',
+      'Every later round goes to that agent id',
+      'agent "worker-{effort_level}" when that agent exists',
+      // The four REFUSALS and DEGRADATIONS. Each one covers a capability the
+      // runtime does not have, and each names what to do instead — route, stop,
+      // or degrade out loud. The shared failure they prevent is silence: the
+      // caller asks for a model or an effort, gets something else, and nothing
+      // in the transcript says so.
+      'a specific version cannot be named; say so if one was asked for',
+      '`max` is not accepted there — use `xhigh` and say so',
+      'If the plugin is not installed, stop and say so — do not substitute a model',
+      'if the tool exposes no model or reasoning_effort field, say so and stop',
       'An Anthropic model cannot be dispatched from Codex; say so and stop',
+      'say in one line that effort could not be set',
+      // The resume caveat is a correctness constraint on the caller, not a
+      // nicety: resume picks the latest Codex thread in the repo, so a
+      // concurrent Codex run silently hijacks round two.
+      'resumes the latest Codex thread in this repository',
     ]);
     for (const retired of RETIRED_WORKER_POLICY) {
       if (skill.includes(retired)) failures.push(`${label}/orchestrate: retired worker policy ${retired}`);

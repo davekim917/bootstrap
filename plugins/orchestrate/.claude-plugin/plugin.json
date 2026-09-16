@@ -16,8 +16,5 @@
   ],
   "skills": [
     "./skills"
-  ],
-  "agents": [
-    "./agents"
   ]
 }
