@@ -134,6 +134,12 @@ function main(): void {
         const eventArg = process.argv[2];
         const raw = readFileSync(0, 'utf-8');
         const input = raw.trim() ? JSON.parse(raw) : {};
+        // Every PreToolUse handler of one tool call receives the SAME
+        // `tool_use_id`, and codex dispatches them concurrently. Passing it into
+        // the session-DB gate is what makes this adapter and NanoClaw's in-tree
+        // chain share ONE approval card instead of raising one each — see
+        // `claimGateRequest` in block-destructive-core.
+        const toolUseId = typeof input.tool_use_id === 'string' ? input.tool_use_id : undefined;
         const event = eventArg ?? input.hook_event_name;
         if (event && event !== 'PreToolUse') emitContinue();
 
@@ -168,7 +174,7 @@ function main(): void {
             let staged = true;
             const decision = runEmailGate(`tool:${input.tool_name}`, reason, () => {
                 staged = false;
-            }, nativeEmail.summary);
+            }, nativeEmail.summary, toolUseId);
             if (!staged) {
                 emitDeny(`${reason} — could not stage the NanoClaw approval request.`, reason);
             }
@@ -238,7 +244,7 @@ function main(): void {
             let staged = true;
             const decision = runNanoclawGate(command, reason, () => {
                 staged = false;
-            });
+            }, toolUseId);
             if (!staged) {
                 emitDeny(`${reason} — could not stage the NanoClaw approval request.`, reason);
             }
@@ -256,7 +262,7 @@ function main(): void {
             let staged = true;
             const decision = runEmailGate(command, email.reason, () => {
                 staged = false;
-            }, email.summary);
+            }, email.summary, toolUseId);
             if (!staged) {
                 emitDeny(`${email.reason} — could not stage the NanoClaw approval request.`, email.reason);
             }
