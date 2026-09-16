@@ -271,13 +271,10 @@ export function evaluateContracts({
   //    reads as the skill simply not working there;
   //  - the retained thread, asserted per line, because "same sub-agent every
   //    round" is the one property a coordinator drifts away from first;
-  //  - the two REFUSALS. Claude Code's own Agent tool cannot run an OpenAI model
-  //    and Codex cannot run an Anthropic model at all, so each of those has one
-  //    correct behaviour: route it, or stop. Without the explicit refusals the
-  //    plausible failure is a coordinator quietly dispatching the nearest model
-  //    it CAN reach and reporting success — the caller asked for one model and
-  //    got another, with nothing saying so. That is the costliest silent failure
-  //    in this skill, so both refusal sentences get their own tokens;
+  //  - NO refusal prose for a cross-provider model: the Agent tool rejects a
+  //    non-Anthropic model at input validation and spawn_agent errors on an
+  //    unknown id, so the tool's own error is the report and a sentence would
+  //    only restate it;
   //  - the instruction that the sub-agent does not review its own work, and the
   //    coordinator's derived verification step, which is the thing that replaces
   //    it. Either half alone is worse than neither: a sub-agent that does not
@@ -298,23 +295,18 @@ export function evaluateContracts({
       'not to test or review its own work',
       // One line per runtime, each named by its own prefix so a deleted one
       // fails as itself rather than as a vague missing token. There is no
-      // cross-provider hop: a Claude session dispatches Anthropic models, a
-      // Codex session dispatches OpenAI models, and each refuses the other.
+      // cross-provider hop and no refusal prose for one: each runtime's own
+      // tool rejects a model it cannot run, and that error is the report.
       'Claude Code:', 'Codex:', 'OpenCode:',
       'bootstrap-orchestrate:worker-{effort_level}',
       'every later round is SendMessage to that name',
       'spawn_agent', 'reasoning_effort',
-      'Every later round goes to that agent id',
+      'every later round goes to that agent id',
       'agent "worker-{effort_level}" when that agent exists',
-      // The REFUSALS and DEGRADATIONS. Each one covers a capability the
-      // runtime does not have, and each names what to do instead — stop, or
-      // degrade out loud. The shared failure they prevent is silence: the
-      // caller asks for a model or an effort, gets something else, and nothing
-      // in the transcript says so.
+      // The two DEGRADATIONS a runtime performs silently unless told to speak:
+      // the Agent tool maps any Claude id to a family alias, and OpenCode runs a
+      // default sub-agent when the shim is absent. Each names what to say.
       'a specific version cannot be named; say so if one was asked for',
-      'An OpenAI model cannot be dispatched from Claude Code; say so and stop',
-      'if the tool exposes no model or reasoning_effort field, say so and stop',
-      'An Anthropic model cannot be dispatched from Codex; say so and stop',
       'say in one line that effort could not be set',
     ]);
     for (const retired of RETIRED_WORKER_ROLES) {

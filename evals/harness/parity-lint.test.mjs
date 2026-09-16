@@ -162,9 +162,6 @@ test('contract gate rejects dropping any capability refusal or degradation', (t)
   // sentences is the instruction to say so instead, and none may be droppable.
   for (const refusal of [
     'a specific version cannot be named; say so if one was asked for',
-    'An OpenAI model cannot be dispatched from Claude Code; say so and stop.',
-    'if the tool exposes no model or reasoning_effort field, say so and stop',
-    'An Anthropic model cannot be dispatched from Codex; say so and stop.',
     'say in one line that effort could not be set',
   ]) {
     const roots = copiedContracts(t);

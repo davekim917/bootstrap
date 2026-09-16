@@ -11,6 +11,6 @@ Verification is whatever the deliverable demands, decided from {task} before the
 Each round: pass the sub-agent the original brief plus your findings and the latest artifact (screenshot, output, query result) — minimal, no technical opinions or details. Instruct it not to test or review its own work: work toward the goal, fix what it finds, stop after implementation, recap very briefly. Stop after {rounds} rounds, or when {done}.
 
 Dispatch on this runtime:
-- Claude Code: Agent tool, subagent_type "bootstrap-orchestrate:worker-{effort_level}", model = the family alias for {model} (fable, opus, sonnet, haiku — a specific version cannot be named; say so if one was asked for), a fixed name; every later round is SendMessage to that name. An OpenAI model cannot be dispatched from Claude Code; say so and stop.
-- Codex: spawn_agent with model {model} and reasoning_effort {effort_level}; if the tool exposes no model or reasoning_effort field, say so and stop. Every later round goes to that agent id. An Anthropic model cannot be dispatched from Codex; say so and stop.
+- Claude Code: Agent tool, subagent_type "bootstrap-orchestrate:worker-{effort_level}", model = the family alias for {model} (fable, opus, sonnet, haiku — a specific version cannot be named; say so if one was asked for), a fixed name; every later round is SendMessage to that name.
+- Codex: spawn_agent with model {model} and reasoning_effort {effort_level}; every later round goes to that agent id.
 - OpenCode: task tool with agent "worker-{effort_level}" when that agent exists; if it does not, dispatch the default sub-agent and say in one line that effort could not be set. The sub-agent runs the parent's model either way.

@@ -17,7 +17,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 |---|---|---:|---|
 | Claude Code | `bootstrap-workflow` | 5.7.0 | The seven `team-*` skills and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.7.0 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.0.1 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.0.2 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.3.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
@@ -73,36 +73,30 @@ check you chose. Neither half works alone: a sub-agent that does not self-check 
 a coordinator that does not check it ships unverified work.
 
 There is no role behind it, no approved model floor, no helper CLI, and no
-cross-provider hop: a Claude session dispatches Anthropic models, a Codex session
-dispatches OpenAI models, and each refuses the other out loud. Dispatch goes through
+cross-provider hop: a Claude session dispatches Anthropic models and a Codex session
+dispatches OpenAI models, because that is what each runtime's own tool accepts — ask
+for the other and the tool rejects it, which is the report. Dispatch goes through
 whatever the runtime already has:
 
 | Runtime | Route | Caveat |
 |---|---|---|
-| Claude Code | `Agent` tool, `bootstrap-orchestrate:worker-<level>`, then `SendMessage` each round | family alias only (`fable`/`opus`/`sonnet`/`haiku`); no specific version; an OpenAI model is refused |
-| Codex | `spawn_agent` with `model` + `reasoning_effort`, then the same agent id each round | stops if the tool exposes no `model`/`reasoning_effort`; an Anthropic model is refused |
+| Claude Code | `Agent` tool, `bootstrap-orchestrate:worker-<level>`, then `SendMessage` each round | family alias only (`fable`/`opus`/`sonnet`/`haiku`); no specific version |
+| Codex | `spawn_agent` with `model` + `reasoning_effort`, then the same agent id each round | |
 | OpenCode | `task` tool, agent `worker-<level>` if present, else the default sub-agent | nothing installs the shims on a bare OpenCode host, so effort may not be settable |
 
-Every caveat above is a **refusal or an announced degradation, never a silent
-substitution** — that is the single design rule of the dispatch block. The Agent tool
-takes only a family alias, so `/orchestrate claude-opus-5 …` gets `opus` and is told so.
-Quietly handing back a different model or a different effort than the caller asked for
-is the costliest failure this skill could have, so each of those sentences is gated by
-its own drift token and a mutation test that deletes it and requires the gate to fail.
+The two caveats are the two places a runtime would degrade silently: the Agent tool
+takes only a family alias, so `/orchestrate claude-opus-5 …` gets `opus` and is told so;
+and OpenCode runs a default sub-agent when the shim is absent, and says so. Each of
+those sentences is gated by its own drift token and a mutation test.
 
 On the last row: nothing in this repo installs the effort shims onto an OpenCode host —
 a Codex-shaped manifest cannot ship agents, and OpenCode would not read `model: inherit`
 or `effort` from one anyway. The skill therefore degrades out loud rather than pinning an
 effort it cannot pin.
 
-On the Codex row: `spawn_agent` does accept `model` and `reasoning_effort`
-(`SpawnAgentArgs`, codex-rs 0.154.0, `core/src/tools/handlers/multi_agents/spawn.rs:229-230`
-and `multi_agents_v2/spawn.rs:284-285`), and they are exposed by default —
-`multi_agent_v2.expose_spawn_agent_model_overrides` defaults to `true`
-(`core/src/config/mod.rs:1308`, reached through the `Default` impl at 1316-1322). Turn
-that key off and the tool schema drops both properties outright
-(`core/src/tools/handlers/multi_agents_spec.rs:111-114`), which is why the skill checks
-for them and stops rather than spawning an inherited-model agent and saying nothing.
+On the Codex row: `spawn_agent` accepts `model` and `reasoning_effort` (`SpawnAgentArgs`,
+codex-rs 0.154.0, `core/src/tools/handlers/multi_agents/spawn.rs:229-230`), exposed by
+default (`multi_agent_v2.expose_spawn_agent_model_overrides`, `core/src/config/mod.rs:1308`).
 
 The one thing the plugin ships besides the skill is five near-empty agent definitions,
 `agents/worker-<level>.md`. They exist because Claude Code's `Agent` tool takes a
