@@ -1,7 +1,7 @@
 {
   "name": "bootstrap-orchestrate",
-  "version": "1.2.0",
-  "description": "The /orchestrate skill: hand one task to a retained frontier sub-agent. Invoke-only — no standing directive, no hooks.",
+  "version": "2.0.0",
+  "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Invoke-only.",
   "author": {
     "name": "David Kim"
   },
@@ -10,11 +10,14 @@
   "keywords": [
     "orchestrate",
     "delegation",
-    "workflow",
-    "skills",
-    "sub-agent"
+    "sub-agent",
+    "effort",
+    "skills"
   ],
   "skills": [
     "./skills"
+  ],
+  "agents": [
+    "./agents"
   ]
 }
