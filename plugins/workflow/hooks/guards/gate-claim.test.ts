@@ -6,6 +6,7 @@ import {
     claimGateRequest,
     gateClaimKey,
     gateRequestAlreadyDecided,
+    isDecidedGateStatus,
     publishGateClaim,
 } from './block-destructive-core';
 
@@ -177,5 +178,38 @@ describe('gateRequestAlreadyDecided', () => {
         // refuse the shortcut and make the caller stage its own card — the
         // opposite answer would let an unreadable DB wave a replay through.
         expect(gateRequestAlreadyDecided('gate-anything')).toBe(true);
+    });
+});
+
+describe('isDecidedGateStatus', () => {
+    // The predicate `gateRequestAlreadyDecided` rests on. An earlier revision
+    // treated the mere presence of a row as decided, which made every `pending`
+    // card — the live, unanswered state — look settled and brought back the
+    // duplicate cards the claim exists to remove.
+    test('only delivered and failed are decided', () => {
+        expect(isDecidedGateStatus('delivered')).toBe(true);
+        expect(isDecidedGateStatus('failed')).toBe(true);
+    });
+
+    test('PENDING is NOT decided — it is exactly what a loser should wait on', () => {
+        // The host writes `pending` the moment it posts the card and leaves it
+        // there for the whole decision window. Counting it as decided makes
+        // every loser arriving more than one host poll (~1s) after the owner
+        // raise its own card, and a command needing both the destructive and
+        // the email gate raise four.
+        expect(isDecidedGateStatus('pending')).toBe(false);
+    });
+
+    test('an absent row is not decided', () => {
+        expect(isDecidedGateStatus(undefined)).toBe(false);
+        expect(isDecidedGateStatus(null)).toBe(false);
+    });
+
+    test('an UNKNOWN future status is not decided', () => {
+        // A status this code has never heard of is likelier a new in-flight
+        // state than a new terminal one, and guessing "decided" is the answer
+        // that silently duplicates cards.
+        expect(isDecidedGateStatus('queued')).toBe(false);
+        expect(isDecidedGateStatus('')).toBe(false);
     });
 });
