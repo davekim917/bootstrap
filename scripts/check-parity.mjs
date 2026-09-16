@@ -8,15 +8,10 @@
  *       The shared destructive-guard + file-protection cores are authored once
  *       (workflow/hooks/guards/*-core.ts) and vendored into workflow-agents.
  *   - WORKFLOW CONTRACT → evals/harness/parity-lint.mjs --all
- *       Both plugins expose seven team skills plus orchestrate, mirror the shared contracts,
- *       retain both explicit cross-model review lanes, and stop auto at ship.
- *   - WORKER POLICY → plugins/workflow-agents/scripts/worker-policy.test.mjs
- *       plus the generated-artifact halves of parity-lint. The frontier-worker
- *       model/effort policy is ONE hand-edited file
- *       (plugins/workflow/worker-policy.json); the agent def's frontmatter, the
- *       Codex role TOML, and the generated policy module beside every
- *       frontier-worker.mjs are rendered from it. Edit the policy, run
- *       sync-agent-skills.mjs, commit — no gate asserts a model name by hand.
+ *       Both workflow plugins expose the seven team skills and mirror the shared
+ *       contracts; the orchestrate plugin exposes its one skill and the five
+ *       effort shims it dispatches to; both explicit cross-model review lanes
+ *       survive and auto still stops at ship.
  *   - BOUNDARIES → scripts/check-plugin-boundaries.mjs
  *       Plugin boundary invariants (user-facing skill-name parity, real SKILL.md).
  *   - ORCHESTRATE SPLIT → scripts/plugin-enablement.test.mjs
@@ -24,6 +19,14 @@
  *       enabled and disabled. The disabled state must let a coordinator read
  *       implementation source directly while every team-* skill still loads;
  *       the enabled state must reproduce the pre-split guard chain exactly.
+ *
+ * There is no WORKER POLICY row any more. The `worker-frontier` model/effort
+ * policy (plugins/workflow/worker-policy.json) and everything rendered from it —
+ * the agent def's frontmatter, the Codex role TOML and its SessionStart
+ * installer, the generated policy module, the frontier-worker CLI transport —
+ * went with the role itself: `/orchestrate` names a model and an effort per
+ * dispatch instead of naming a worker, and dispatches through the runtime's own
+ * sub-agent tool. `check-plugin-boundaries` asserts those files stay gone.
  *
  * Usage: node scripts/check-parity.mjs    (run in CI / pre-commit)
  */
@@ -36,10 +39,6 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const CHECKS = [
   { name: 'hooks    (vendor-guards --check)', argv: ['scripts/vendor-guards.mjs', '--check'] },
-  { name: 'worker:policy (worker-policy tests)', argv: ['--test', 'plugins/workflow-agents/scripts/worker-policy.test.mjs'] },
-  { name: 'worker:transport (frontier-worker tests)', argv: ['--test', 'plugins/workflow/scripts/frontier-worker.test.mjs'] },
-  { name: 'worker:roles (install-agent-roles tests)', argv: ['--test', 'plugins/workflow-agents/scripts/install-agent-roles.test.mjs'] },
-  { name: 'worker:roles (SessionStart bare-install tests)', argv: ['--test', 'plugins/workflow-agents/scripts/session-install-roles.test.mjs'] },
   { name: 'skills:gen (sync-agent-skills --check)', argv: ['plugins/workflow-agents/scripts/sync-agent-skills.mjs', '--check'] },
   { name: 'split    (orchestrate enable/disable proof)', argv: ['--test', 'scripts/plugin-enablement.test.mjs'] },
   { name: 'contracts (parity-lint tests)', argv: ['--test', 'evals/harness/parity-lint.test.mjs'] },

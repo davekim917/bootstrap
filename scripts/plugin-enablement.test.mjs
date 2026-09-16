@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   claudeMarketplacePlugins,
   hooksForTool,
+  resolveAgents,
   resolveSessionStartText,
   resolveSkills,
   runHookCommand,
@@ -43,6 +44,11 @@ const DISABLED = [WORKFLOW];
 
 const TEAM_SKILLS = [
   'team-auto', 'team-build', 'team-debug', 'team-plan', 'team-retro', 'team-review', 'team-ship',
+];
+
+/** The five effort shims the orchestrate plugin ships, in sorted order. */
+const DELEGATE_AGENTS = [
+  'delegate-high', 'delegate-low', 'delegate-max', 'delegate-medium', 'delegate-xhigh',
 ];
 
 /**
@@ -121,41 +127,63 @@ test('disabled: every team skill still loads and orchestrate is gone', () => {
 });
 
 test('/orchestrate resolves as a skill on both the Claude and the Codex side', () => {
-  // The skill is the ONLY thing the pair ships now, so its presence on both
-  // sides is the whole product surface. Read each side the way its own runtime
-  // does: Claude from the plugin's declared `skills` roots, Codex from the
-  // .codex-plugin manifest's.
+  // One directory, two manifests — the `wwbd` shape. There is no generated Codex
+  // copy to keep in sync, so what has to hold is that BOTH manifests point at the
+  // same tree and each runtime reads the skill through its own declaration. Read
+  // each side the way its own runtime does.
   assert.ok(resolveSkills([ORCHESTRATE]).includes('orchestrate'));
 
-  const agentsRoot = path.join(REPO, 'plugins/orchestrate-agents');
   const codexManifest = JSON.parse(
-    fs.readFileSync(path.join(agentsRoot, '.codex-plugin', 'plugin.json'), 'utf8'),
+    fs.readFileSync(path.join(ORCHESTRATE, '.codex-plugin', 'plugin.json'), 'utf8'),
   );
   const declared = codexManifest.skills;
   const roots = (Array.isArray(declared) ? declared : [declared]).map((rel) =>
-    path.resolve(agentsRoot, rel));
+    path.resolve(ORCHESTRATE, rel));
   const found = roots.flatMap((root) =>
     (fs.existsSync(root) ? fs.readdirSync(root) : [])
       .filter((entry) => fs.existsSync(path.join(root, entry, 'SKILL.md'))));
   assert.ok(found.includes('orchestrate'), `Codex side skills: ${found.join(', ')}`);
+
+  const claudeManifest = JSON.parse(
+    fs.readFileSync(path.join(ORCHESTRATE, '.claude-plugin', 'plugin.json'), 'utf8'),
+  );
+  assert.equal(claudeManifest.name, codexManifest.name, 'one plugin name across both manifests');
+  assert.equal(claudeManifest.version, codexManifest.version, 'one version across both manifests');
 });
 
-test('the orchestrate pair registers no hooks and no standing directive, on either side', () => {
+test('enabled: the five effort shims are the only sub-agents the plugin adds', () => {
+  // The dispatch line in SKILL.md names `bootstrap-orchestrate:delegate-<level>`.
+  // A level with no definition behind it fails at dispatch time, in the middle of
+  // someone's task, so the composed session is asserted to offer all five — and
+  // nothing else, because a sixth definition here would be a role.
+  assert.deepEqual(resolveAgents([ORCHESTRATE]), DELEGATE_AGENTS);
+  assert.deepEqual(resolveAgents(ENABLED), DELEGATE_AGENTS);
+});
+
+test('disabled: no sub-agent definition survives without the orchestrate plugin', () => {
+  // The workflow pair used to ship `worker-frontier`, so disabling orchestrate
+  // still left a named worker behind. It does not any more: the roles went with
+  // the policy, and the shims belong to the plugin that dispatches to them.
+  assert.deepEqual(resolveAgents(DISABLED), []);
+});
+
+test('the orchestrate plugin registers no hooks and no standing directive, on either side', () => {
   // Invoke-only, asserted through the manifests rather than the file tree: a
   // hooks field is what a runtime acts on, and an unreferenced hooks file is
   // inert. Both are checked, because a declared-but-missing file and an
   // undeclared-but-present file fail differently.
   for (const [label, manifestPath] of [
     ['Claude', 'plugins/orchestrate/.claude-plugin/plugin.json'],
-    ['Codex', 'plugins/orchestrate-agents/.codex-plugin/plugin.json'],
+    ['Codex', 'plugins/orchestrate/.codex-plugin/plugin.json'],
   ]) {
     const manifest = JSON.parse(fs.readFileSync(path.join(REPO, manifestPath), 'utf8'));
     assert.equal(manifest.hooks, undefined, `${label} manifest must declare no hooks`);
   }
-  for (const dir of ['plugins/orchestrate', 'plugins/orchestrate-agents']) {
-    assert.ok(!fs.existsSync(path.join(REPO, dir, 'hooks')), `${dir}/hooks must not exist`);
-    assert.ok(!fs.existsSync(path.join(REPO, dir, 'always-on.md')), `${dir}/always-on.md must not exist`);
-  }
+  assert.ok(!fs.existsSync(path.join(REPO, 'plugins/orchestrate/hooks')), 'plugins/orchestrate/hooks must not exist');
+  assert.ok(
+    !fs.existsSync(path.join(REPO, 'plugins/orchestrate/always-on.md')),
+    'plugins/orchestrate/always-on.md must not exist',
+  );
 
   // And the composed session, resolved as the host would: enabling the plugin
   // adds no SessionStart output at all.
@@ -198,10 +226,11 @@ test('enabled: the destructive-command guard is untouched and still fires', () =
   assert.ok(blockedOne(results), `expected block-destructive to fire, got ${JSON.stringify(results)}`);
 });
 
-test('an invoked team-* skill still loads a contract that mandates delegation', () => {
-  // What was removed is AUTOMATIC pressure. `/team-build` is an explicit request
-  // for the delegated workflow, so invoking it must still delegate — otherwise
-  // turning the pressure off has quietly removed delegation altogether.
+test('an invoked team-* skill still loads a contract that mandates delegation', (t) => {
+  // What was removed is AUTOMATIC pressure, and now also the named worker ROLE
+  // and its model/effort policy. `/team-build` is still an explicit request for
+  // the delegated workflow, so invoking it must still delegate — otherwise
+  // dropping the role has quietly removed delegation altogether.
   const workflowSkills = resolveSkills(DISABLED);
   assert.ok(workflowSkills.includes('team-build'));
 
@@ -209,9 +238,21 @@ test('an invoked team-* skill still loads a contract that mandates delegation', 
   assert.ok(fs.existsSync(contract), 'team-* skills must still reach their shared contract');
   const text = fs.readFileSync(contract, 'utf8');
   assert.match(text, /Delegate substantive design, implementation/);
-  assert.match(text, /Never delegate substantive work below the approved Opus\/Sol floor/);
 
-  assert.ok(fs.existsSync(path.join(WORKFLOW, 'agents', 'worker-frontier.md')));
+  // …and it must delegate to a plain sub-agent, not to a floor of approved
+  // models. That floor is what the policy file encoded; a contract naming one
+  // again would need a policy behind it that no longer exists.
+  assert.doesNotMatch(text, /approved.{0,20}floor/i, 'the worker floor is retired');
+  assert.doesNotMatch(text, /worker-frontier/, 'the named worker role is retired');
+
+  // A mutation proof for the absence claims: the exact sentences that were
+  // removed must still be detectable if someone puts them back.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'enablement-contract-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const mutant = path.join(root, 'workflow-contract.md');
+  fs.writeFileSync(mutant, `${text}\nNever delegate below the approved worker floor.\n`);
+  const mutated = fs.readFileSync(mutant, 'utf8');
+  assert.match(mutated, /approved.{0,20}floor/i, 'the floor assertion would pass vacuously');
 });
 
 test('enabled: the PreToolUse composition is the workflow plugin\'s safety guards and nothing else', () => {

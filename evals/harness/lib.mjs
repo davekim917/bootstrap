@@ -33,9 +33,15 @@ export function resolveSkillDir(name, prefer = 'workflow-agents') {
   // Claude baseline still cannot resolve to a Codex/OpenCode port. Without it,
   // `resolveSkillDir('orchestrate', ...)` would silently return null and the
   // caller would report a provisioning error for a skill that is installed.
+  //
+  // `orchestrate/skills` appears under BOTH families on purpose: that plugin is
+  // no longer a Claude/Codex pair but one directory with two manifests, so there
+  // is a single copy of the skill and both runtimes read it. The masking hazard
+  // is unchanged, because it turned on a Claude BASELINE resolving to a
+  // separately-authored Codex PORT — and there is no port here to resolve to.
   const families = prefer === 'workflow'
     ? ['workflow/skills', 'orchestrate/skills']
-    : ['workflow-agents/skills', 'orchestrate-agents/skills'];
+    : ['workflow-agents/skills', 'orchestrate/skills'];
   for (const family of families) {
     const d = path.join(PLUGINS, family, name);
     if (fs.existsSync(path.join(d, 'SKILL.md'))) return d;

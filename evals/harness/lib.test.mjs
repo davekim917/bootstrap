@@ -35,9 +35,11 @@ test('resolveSkillDir: strict to requested family — no cross-family fallback (
 });
 
 // `orchestrate` lives in its own plugin now, so one runtime family spans two
-// directories. Searching both must not reopen the masking hazard above: a
-// Claude baseline still has to miss a skill that exists only on the Codex side,
-// even when that skill sits in the orchestrate plugin rather than the workflow one.
+// directories — and that plugin is a SINGLE directory with two manifests, so both
+// families resolve the same file. Searching both must not reopen the masking
+// hazard above: a Claude baseline still has to miss a skill that exists only on
+// the Codex side of the WORKFLOW pair, which is where a separately-authored port
+// actually lives.
 test('resolveSkillDir: spans the orchestrate plugin without crossing runtimes', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plugins-orch-'));
   const mk = (fam, name) => {
@@ -46,14 +48,14 @@ test('resolveSkillDir: spans the orchestrate plugin without crossing runtimes', 
     fs.writeFileSync(path.join(d, 'SKILL.md'), '# x');
     return d;
   };
-  const claudeOrchestrate = mk('orchestrate', 'orchestrate');
-  const codexOrchestrate = mk('orchestrate-agents', 'orchestrate');
-  const codexOnly = mk('orchestrate-agents', 'port-only');
+  const orchestrate = mk('orchestrate', 'orchestrate');
+  const codexOnly = mk('workflow-agents', 'port-only');
   process.env.BOOTSTRAP_PLUGINS_DIR = root;
   try {
     const { resolveSkillDir } = await import('./lib.mjs?orch=' + Date.now());
-    assert.equal(resolveSkillDir('orchestrate', 'workflow'), claudeOrchestrate);
-    assert.equal(resolveSkillDir('orchestrate', 'workflow-agents'), codexOrchestrate);
+    // One directory, both runtimes: there is no second copy to resolve to.
+    assert.equal(resolveSkillDir('orchestrate', 'workflow'), orchestrate);
+    assert.equal(resolveSkillDir('orchestrate', 'workflow-agents'), orchestrate);
     assert.equal(resolveSkillDir('port-only', 'workflow'), null, 'baseline must not fall back to the port');
     assert.equal(resolveSkillDir('port-only', 'workflow-agents'), codexOnly);
   } finally {

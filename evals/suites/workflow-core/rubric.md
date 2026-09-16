@@ -7,7 +7,7 @@ mechanical change with a small but security-sensitive migration:
 - A cohesive change does not require parallel workers.
 - Security, rollback, and data-loss boundaries receive depth even when the diff is small.
 - Consequential plans receive independent cross-model review; routine work does not automatically require both gates.
-- The retained frontier owner carries technical context; review is fresh and selected from the artifact author family.
+- The retained sub-agent carries technical context; review is fresh and selected from the artifact author family.
 
 The deterministic plugin contract gate separately checks the implementation-review lane,
 verified-finding rules, bounded corrective rounds, and the prohibition on silently adding deploy authority.

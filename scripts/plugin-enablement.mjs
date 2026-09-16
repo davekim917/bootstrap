@@ -13,14 +13,15 @@
  * the manifests the way the host does, and then RUNNING what they name, can.
  * `plugin-enablement.test.mjs` does exactly that, in both states.
  *
- * Fidelity, stated plainly: this models the three composition rules the split
+ * Fidelity, stated plainly: this models the four composition rules the split
  * depends on — skills are the union of each enabled plugin's `skills/` dirs,
- * PreToolUse hooks are the union of each enabled plugin's `hooks` manifest
- * entries with `${CLAUDE_PLUGIN_ROOT}` bound to that plugin's root, and
- * SessionStart output is the concatenation of those commands' stdout. It does
- * not model Claude Code's settings file, plugin namespacing, or matcher regex
- * dialect beyond `new RegExp`. Those are the host's business; what the split
- * turns on is which commands exist and what they do when run.
+ * agents are the union of its `agents/` dirs, PreToolUse hooks are the union of
+ * each enabled plugin's `hooks` manifest entries with `${CLAUDE_PLUGIN_ROOT}`
+ * bound to that plugin's root, and SessionStart output is the concatenation of
+ * those commands' stdout. It does not model Claude Code's settings file, plugin
+ * namespacing, or matcher regex dialect beyond `new RegExp`. Those are the host's
+ * business; what the split turns on is which commands exist and what they do when
+ * run.
  *
  * Usage:
  *   node scripts/plugin-enablement.mjs bootstrap-workflow bootstrap-orchestrate
@@ -70,6 +71,36 @@ export function resolveSkills(pluginRoots) {
       if (!fs.existsSync(root)) continue;
       for (const entry of fs.readdirSync(root)) {
         if (fs.existsSync(path.join(root, entry, 'SKILL.md'))) names.add(entry);
+      }
+    }
+  }
+  return [...names].sort();
+}
+
+/**
+ * The sub-agent names a session can dispatch to: the union over enabled plugins
+ * of the `.md` files under each agents root.
+ *
+ * Roots come from the manifest's `agents` declaration, falling back to the
+ * conventional `agents/` directory — Claude Code auto-discovers that one, so a
+ * plugin can ship agents without declaring them and the composition must see
+ * them either way. Names are the `name:` frontmatter where present, else the
+ * basename; the host namespaces them as `<plugin>:<name>`, which this does not
+ * model because what the split turns on is whether the definition is offered at
+ * all.
+ */
+export function resolveAgents(pluginRoots) {
+  const names = new Set();
+  for (const pluginRoot of pluginRoots) {
+    const declared = manifest(pluginRoot)?.agents ?? ['./agents'];
+    for (const rel of Array.isArray(declared) ? declared : [declared]) {
+      const root = path.resolve(pluginRoot, rel);
+      if (!fs.existsSync(root)) continue;
+      for (const entry of fs.readdirSync(root)) {
+        if (!entry.endsWith('.md')) continue;
+        const text = fs.readFileSync(path.join(root, entry), 'utf8');
+        const declaredName = /^name:[ \t]*(\S.*?)[ \t]*$/m.exec(text.split('\n---')[0] ?? '');
+        names.add(declaredName ? declaredName[1] : entry.replace(/\.md$/, ''));
       }
     }
   }
@@ -144,6 +175,7 @@ function main() {
 
   console.log(`enabled: ${enabled.join(', ')}`);
   console.log(`skills:  ${resolveSkills(roots).join(', ') || '(none)'}`);
+  console.log(`agents:  ${resolveAgents(roots).join(', ') || '(none)'}`);
   console.log('PreToolUse hooks:');
   for (const hook of resolveHookCommands(roots, 'PreToolUse')) {
     console.log(`  [${hook.plugin}] matcher=${hook.matcher ?? '*'} ${hook.command}`);
