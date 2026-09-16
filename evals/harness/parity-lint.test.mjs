@@ -148,7 +148,7 @@ test('contract gate rejects an effort shim that pins a model', (t) => {
   // reporting the substitution.
   const roots = copiedContracts(t);
   assert.equal(evaluateContracts(roots).pass, true);
-  const shim = path.join(roots.orchestrateAgentsRoot, 'delegate-high.md');
+  const shim = path.join(roots.orchestrateAgentsRoot, 'worker-high.md');
   fs.writeFileSync(shim, fs.readFileSync(shim, 'utf8').replace('model: inherit', 'model: claude-opus-5'));
   const result = evaluateContracts(roots);
   assert.equal(result.pass, false);
@@ -157,7 +157,7 @@ test('contract gate rejects an effort shim that pins a model', (t) => {
 
 test('contract gate rejects an effort shim that grows instructions', (t) => {
   const roots = copiedContracts(t);
-  const shim = path.join(roots.orchestrateAgentsRoot, 'delegate-medium.md');
+  const shim = path.join(roots.orchestrateAgentsRoot, 'worker-medium.md');
   fs.appendFileSync(shim, '\nAlways write tests first.\nRead docs/review-notes.md before editing.\n');
   const result = evaluateContracts(roots);
   assert.equal(result.pass, false);
@@ -166,10 +166,10 @@ test('contract gate rejects an effort shim that grows instructions', (t) => {
 
 test('contract gate rejects a missing effort level', (t) => {
   const roots = copiedContracts(t);
-  fs.rmSync(path.join(roots.orchestrateAgentsRoot, 'delegate-max.md'));
+  fs.rmSync(path.join(roots.orchestrateAgentsRoot, 'worker-max.md'));
   const result = evaluateContracts(roots);
   assert.equal(result.pass, false);
-  assert.ok(result.failures.some((failure) => failure.includes('delegate-max.md')), result.failures.join('\n'));
+  assert.ok(result.failures.some((failure) => failure.includes('worker-max.md')), result.failures.join('\n'));
 });
 
 test('EXPECTED_SKILLS and EXPECTED_ORCHESTRATE_SKILLS are disjoint', () => {

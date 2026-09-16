@@ -47,8 +47,8 @@ const TEAM_SKILLS = [
 ];
 
 /** The five effort shims the orchestrate plugin ships, in sorted order. */
-const DELEGATE_AGENTS = [
-  'delegate-high', 'delegate-low', 'delegate-max', 'delegate-medium', 'delegate-xhigh',
+const WORKER_SHIMS = [
+  'worker-high', 'worker-low', 'worker-max', 'worker-medium', 'worker-xhigh',
 ];
 
 /**
@@ -152,12 +152,12 @@ test('/orchestrate resolves as a skill on both the Claude and the Codex side', (
 });
 
 test('enabled: the five effort shims are the only sub-agents the plugin adds', () => {
-  // The dispatch line in SKILL.md names `bootstrap-orchestrate:delegate-<level>`.
+  // The dispatch line in SKILL.md names `bootstrap-orchestrate:worker-<level>`.
   // A level with no definition behind it fails at dispatch time, in the middle of
   // someone's task, so the composed session is asserted to offer all five — and
   // nothing else, because a sixth definition here would be a role.
-  assert.deepEqual(resolveAgents([ORCHESTRATE]), DELEGATE_AGENTS);
-  assert.deepEqual(resolveAgents(ENABLED), DELEGATE_AGENTS);
+  assert.deepEqual(resolveAgents([ORCHESTRATE]), WORKER_SHIMS);
+  assert.deepEqual(resolveAgents(ENABLED), WORKER_SHIMS);
 });
 
 test('disabled: no sub-agent definition survives without the orchestrate plugin', () => {

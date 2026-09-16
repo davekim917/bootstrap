@@ -29,8 +29,8 @@ source, runs a check, or implements a fix itself.
 
 `bootstrap-orchestrate` activates nothing on its own: no `always-on.md`, no
 `SessionStart` hook, no `hooks` field in either manifest. Invoke it when you want one
-sub-agent to do all the implementation in a single thread — "use an opus subagent
-with high effort", "delegate this to fable", or plain `/orchestrate`.
+sub-agent to do all the work in a single thread — `/orchestrate opus high <task>`, or
+"use an opus subagent at high effort to …".
 
 Two mechanisms used to create the pressure, and both were deleted rather than moved:
 the standing `SessionStart` directive that told every session to load the skill, and
@@ -44,24 +44,40 @@ What is gone is the *automatic* pressure, not delegation itself.
 
 ### What `/orchestrate` is
 
-A parameterized delegation prompt, and nothing else. You give it a model and an effort
-level; it dispatches ONE sub-agent, hands it the brief, and keeps that same sub-agent
-for every later round. You coordinate and test; the sub-agent is told not to test or
-review its own work, so the verification comes from outside it.
+A parameterized delegation prompt, and nothing else.
+
+```text
+/orchestrate <model> <effort> <task>
+```
+
+The first two words are the model and the effort when they look like one; everything
+after is the task. Leave either out and it uses the session's own. It dispatches ONE
+sub-agent, hands it the brief, and keeps that same sub-agent for every later round.
 
 | Parameter | Meaning | Default |
 |---|---|---|
 | `{model}` | the sub-agent's model, as this runtime names it | this session's model |
-| `{effort_level}` | `low` \| `medium` \| `high` \| `xhigh` \| `max` | this session's effort |
+| `{effort_level}` | the effort the sub-agent runs at | this session's effort |
 | `{rounds}` | coordinate→delegate cycles before stopping | 3 |
 | `{done}` | the completion signal | the sub-agent says the work is complete |
+
+The task text can override the last two: "stop after 5 rounds", "until the numbers
+reconcile".
+
+The division of labour is the point. The sub-agent does all of the work and is told
+NOT to test or review it. You do not do the work; you verify it, and you pick the
+check from the deliverable before the first dispatch — run it and browser-test a UI,
+build and run the tests for code, re-run the queries and cross-check the math for
+analytics, check claims against sources for a document. You say in one line which
+check you chose. Neither half works alone: a sub-agent that does not self-check plus
+a coordinator that does not check it ships unverified work.
 
 There is no role behind it, no approved model floor, and no helper CLI. Dispatch goes
 through whatever the runtime already has: Claude Code's `Agent` tool, Codex's
 `spawn_agent`, OpenCode's `task` tool.
 
 The one thing the plugin ships besides the skill is five near-empty agent definitions,
-`agents/delegate-<level>.md`. They exist because Claude Code's `Agent` tool takes a
+`agents/worker-<level>.md`. They exist because Claude Code's `Agent` tool takes a
 `model` per call but not an `effort` — effort can only be pinned in an agent
 definition's frontmatter. So each shim pins one level, sets `model: inherit` so the
 dispatch still chooses the model, and carries a single line of body. They are not
