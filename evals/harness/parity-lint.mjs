@@ -207,7 +207,7 @@ export function evaluateContracts({
 
   const exactCommands = [
     `codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="medium"' --ephemeral --yolo`,
-    'claude -p --model claude-fable-5-1 --effort medium --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json',
+    'claude -p --model claude-fable-5-1 --effort medium --safe-mode --no-session-persistence --tools "" --strict-mcp-config --output-format json',
   ];
   // Contract substance lives with whichever tree carries the file. After the
   // orchestrate split that is no longer one tree per runtime: the shared
