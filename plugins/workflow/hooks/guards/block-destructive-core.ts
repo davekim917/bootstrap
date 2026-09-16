@@ -1556,16 +1556,27 @@ const CLAIM_POLL_INTERVAL_MS = 25;
 const CLAIM_MAX_AGE_MS = 60 * 60 * 1000;
 
 /**
- * Identity of ONE approval card.
+ * Identity of ONE approval card: the tool call, plus which gate is asking.
  *
  * `toolUseId` is what makes two handlers of the same tool call collide and two
- * different tool calls not. `action` and `command` are in the key as well, so a
- * single tool call that legitimately needs two DIFFERENT approvals — a
- * destructive gate and an outbound-email gate — still raises one card each
- * rather than silently collapsing into whichever staged first.
+ * different tool calls not. `action` is in the key so a single tool call that
+ * legitimately needs two DIFFERENT approvals — a destructive gate and an
+ * outbound-email gate — still raises one card each rather than collapsing into
+ * whichever staged first and answering one question with the other's approval.
+ *
+ * The COMMAND is deliberately NOT in the key, and leaving it in was a real bug
+ * caught before this shipped. The two guards do not see the same command string:
+ * NanoClaw's in-tree chain runs its Bash sanitizer FIRST and gates on the
+ * rewritten `unset <secret-vars> 2>/dev/null; <original>` form, while this
+ * adapter gates on the raw command from the hook input — codex hands every
+ * handler the same `input_json`, built once before any of them runs. Keying on
+ * the command therefore produced two different keys for one tool call and both
+ * guards staged anyway, exactly the behaviour the claim exists to remove. One
+ * tool call is one command, so (toolUseId, action) is both sufficient and the
+ * only thing the two chains can agree on.
  */
-export function gateClaimKey(toolUseId: string, action: string, command: string): string {
-    return createHash('sha256').update(`${toolUseId}\u0000${action}\u0000${command}`).digest('hex').slice(0, 32);
+export function gateClaimKey(toolUseId: string, action: string): string {
+    return createHash('sha256').update(`${toolUseId}\u0000${action}`).digest('hex').slice(0, 32);
 }
 
 /** Remove claim files older than the gate window. Best-effort, never throws. */
@@ -1582,6 +1593,44 @@ function sweepStaleClaims(nowMs: number): void {
             if (nowMs - statSync(full).mtimeMs > CLAIM_MAX_AGE_MS) unlinkSync(full);
         } catch {
             // Gone already, or not ours to remove.
+        }
+    }
+}
+
+/**
+ * Has this requestId ALREADY been decided?
+ *
+ * A live peer publishes an id that nothing has answered yet, so a published id
+ * that already carries a `delivered` row is not a peer to wait on — it is a past
+ * decision being replayed, and honouring it would hand this tool call an
+ * approval a human gave to a different command.
+ *
+ * The claim directory lives under /tmp, which an agent can write to, so this is
+ * the one check that cannot be skipped: without it, planting a claim pointing at
+ * any previously-approved requestId skips the gate outright. (It also covers the
+ * no-attacker case — a `tool_use_id` repeating inside the sweep window would
+ * otherwise reuse the earlier decision.)
+ *
+ * Unreadable DB, missing table, anything unexpected: answer TRUE. "I could not
+ * check" must refuse the shortcut and make the caller stage its own card, never
+ * wave it through.
+ */
+export function gateRequestAlreadyDecided(requestId: string): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+    let db: import('bun:sqlite').Database | undefined;
+    try {
+        db = new Database(NANOCLAW_INBOUND_DB, { readonly: true });
+        db.exec('PRAGMA busy_timeout = 2000');
+        const row = db.prepare('SELECT status FROM delivered WHERE message_out_id = ?').get(requestId);
+        return row !== null && row !== undefined;
+    } catch {
+        return true;
+    } finally {
+        try {
+            db?.close();
+        } catch {
+            // Nothing left to do.
         }
     }
 }
@@ -1819,10 +1868,10 @@ export function runGateRequest(
         toolUseId?: string;
     },
 ): GateDecision {
-    const key = opts.toolUseId ? gateClaimKey(opts.toolUseId, opts.action, command) : null;
+    const key = opts.toolUseId ? gateClaimKey(opts.toolUseId, opts.action) : null;
     if (key) {
         const claim = claimGateRequest(key);
-        if (!claim.owner && claim.requestId) {
+        if (!claim.owner && claim.requestId && !gateRequestAlreadyDecided(claim.requestId)) {
             // A peer guard already staged this exact card. Wait on ITS decision
             // so the human answers once and both guards honour that one answer.
             return pollDeliveredTable(claim.requestId, 60 * 60 * 1000);
