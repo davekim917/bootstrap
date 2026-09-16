@@ -4,12 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RETIRED_AGENT_NAMES, discoverRetiredAgents } from './retire-bootstrap-agents.mjs';
-import { WORKER_AGENT } from '../plugins/workflow-agents/scripts/codex-agent-toml.mjs';
-import {
-  GENERATED_POLICY_BASENAME,
-  POLICY_CONSUMER_PLUGINS,
-  POLICY_PATH,
-} from '../plugins/workflow-agents/scripts/worker-policy.mjs';
+
+/** The five effort shims the orchestrate plugin dispatches to, one per level. */
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
@@ -250,13 +247,12 @@ const claudeMarketplace = readJson('.claude-plugin/marketplace.json');
 const codexManifest = readJson('plugins/workflow-agents/.codex-plugin/plugin.json');
 const claudeManifest = readJson('plugins/workflow/.claude-plugin/plugin.json');
 const orchestrateClaudeManifest = readJson('plugins/orchestrate/.claude-plugin/plugin.json');
-const orchestrateCodexManifest = readJson('plugins/orchestrate-agents/.codex-plugin/plugin.json');
+const orchestrateCodexManifest = readJson('plugins/orchestrate/.codex-plugin/plugin.json');
 const wwbdClaudeManifest = readJson('plugins/wwbd/.claude-plugin/plugin.json');
 const wwbdCodexManifest = readJson('plugins/wwbd/.codex-plugin/plugin.json');
 const conciseClaudeManifest = readJson('plugins/concise/.claude-plugin/plugin.json');
 const conciseCodexManifest = readJson('plugins/concise/.codex-plugin/plugin.json');
 const codexCopyPasteEntry = readJson('plugins/workflow-agents/marketplace-entry.json');
-const orchestrateCopyPasteEntry = readJson('plugins/orchestrate-agents/marketplace-entry.json');
 const codexHookManifest = readJson('plugins/workflow-agents/hooks/workflow-hooks.json');
 
 const codexEntries = pluginEntries(codexMarketplace);
@@ -281,9 +277,14 @@ if (!codexWorkflowEntry) {
 
 // Supported roster: the workflow distribution plus the standalone single-source
 // advisory and session-mode plugins. Anything else creeping into a marketplace is drift.
+//
+// `bootstrap-orchestrate` sources the SAME directory on both sides now. It was a
+// Claude/Codex pair (plugins/orchestrate + plugins/orchestrate-agents) while it
+// shipped a generated skill copy and a mirrored helper script; with neither left,
+// the two manifests describe one skills-and-agents tree, the `wwbd` shape.
 const codexRoster = new Map([
   ['bootstrap-workflow-agents', './plugins/workflow-agents'],
-  ['bootstrap-orchestrate-agents', './plugins/orchestrate-agents'],
+  ['bootstrap-orchestrate', './plugins/orchestrate'],
   ['wwbd', './plugins/wwbd'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
@@ -299,14 +300,14 @@ if (codexEntries.length !== codexRoster.size) {
   fail(`.agents/plugins/marketplace.json must expose exactly ${codexRoster.size} plugins (found ${codexEntries.length})`);
 }
 
-const codexOrchestrateEntry = codexEntries.find((entry) => entry.name === 'bootstrap-orchestrate-agents');
+const codexOrchestrateEntry = codexEntries.find((entry) => entry.name === 'bootstrap-orchestrate');
 if (!codexOrchestrateEntry) {
-  fail('.agents/plugins/marketplace.json must register bootstrap-orchestrate-agents');
-} else if (normalizeSource(sourcePath(codexOrchestrateEntry)) !== './plugins/orchestrate-agents') {
-  fail('bootstrap-orchestrate-agents must source ./plugins/orchestrate-agents in .agents/plugins/marketplace.json');
+  fail('.agents/plugins/marketplace.json must register bootstrap-orchestrate');
+} else if (normalizeSource(sourcePath(codexOrchestrateEntry)) !== './plugins/orchestrate') {
+  fail('bootstrap-orchestrate must source ./plugins/orchestrate in .agents/plugins/marketplace.json');
 } else if (codexOrchestrateEntry.version !== orchestrateCodexManifest?.version) {
   fail(
-    `bootstrap-orchestrate-agents version must match between marketplace and plugin manifest (${codexOrchestrateEntry.version} !== ${orchestrateCodexManifest?.version})`,
+    `bootstrap-orchestrate version must match between the Codex marketplace and .codex-plugin manifest (${codexOrchestrateEntry.version} !== ${orchestrateCodexManifest?.version})`,
   );
 }
 
@@ -490,16 +491,22 @@ if (!codexHookManifest?.hooks?.PreToolUse) {
   fail('plugins/workflow-agents/hooks/workflow-hooks.json must wire PreToolUse');
 }
 
-// SessionStart earns its place: Codex has no plugin-agent mechanism, so the
-// shipped `agents/worker-frontier.toml` is inert until something copies it into
-// `<CODEX_HOME>/agents/`. The hook is the only thing that runs on a bare
-// install with no user action. The allowlist stays closed around these two —
-// safety plus role installation — so a third event cannot drift in.
-if (!codexHookManifest?.hooks?.SessionStart) {
-  fail('plugins/workflow-agents/hooks/workflow-hooks.json must wire SessionStart so the worker role installs itself');
+// SessionStart is GONE, and the allowlist is now a single event. It existed to
+// copy a generated `worker-frontier` role TOML into `<CODEX_HOME>/agents/`,
+// because Codex reads named roles only from there and a plugin cannot ship one.
+// There is no role to install any more: `/orchestrate` names a model and an
+// effort per dispatch instead of naming a role, so the installer, the role and
+// the hook that ran it all went together. A SessionStart entry reappearing here
+// would run a script into the user's Codex home on every session start, which is
+// exactly the surface that was removed — so the closed list is the assertion.
+if (codexHookManifest?.hooks?.SessionStart) {
+  fail(
+    'plugins/workflow-agents/hooks/workflow-hooks.json must not wire SessionStart; its only job was '
+      + 'installing the retired worker role into the user\'s Codex home',
+  );
 }
 
-const ALLOWED_CODEX_HOOK_EVENTS = ['PreToolUse', 'SessionStart'];
+const ALLOWED_CODEX_HOOK_EVENTS = ['PreToolUse'];
 const codexHookEvents = Object.keys(codexHookManifest?.hooks ?? {});
 const unexpectedHookEvents = codexHookEvents.filter(
   (event) => !ALLOWED_CODEX_HOOK_EVENTS.includes(event),
@@ -508,35 +515,38 @@ if (unexpectedHookEvents.length > 0) {
   fail(`plugins/workflow-agents/hooks/workflow-hooks.json contains unexpected hook events: ${unexpectedHookEvents.join(', ')}`);
 }
 
-for (const [label, target] of [
-  ['guard', '${PLUGIN_ROOT}/hooks/codex-guard.ts'],
-  ['role installer', '${PLUGIN_ROOT}/scripts/session-install-roles.mjs'],
-]) {
-  if (!codexHookManifestText.includes(target)) {
-    fail(`plugins/workflow-agents/hooks/workflow-hooks.json must resolve its ${label} through native \${PLUGIN_ROOT}`);
-  }
+if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
+  fail('plugins/workflow-agents/hooks/workflow-hooks.json must resolve its guard through native ${PLUGIN_ROOT}');
 }
 
-// The hook command names a path inside the package; if that file is not
-// shipped, every Codex session silently starts without the worker role.
-if (!exists('plugins/workflow-agents/scripts/session-install-roles.mjs')) {
-  fail('plugins/workflow-agents/scripts/session-install-roles.mjs must ship; the SessionStart hook resolves it inside the package');
+// The role-install scripts the hook used to name. Each one left in the tree
+// could still be wired by hand or by a stale manifest, so name them here rather
+// than trusting the hook manifest alone.
+for (const retiredScript of [
+  'plugins/workflow-agents/scripts/session-install-roles.mjs',
+  'plugins/workflow-agents/scripts/install-agent-roles.mjs',
+  'plugins/workflow-agents/scripts/codex-agent-toml.mjs',
+]) {
+  if (exists(retiredScript)) {
+    fail(`${retiredScript} is retired; there is no worker role to install into a Codex home`);
+  }
 }
 
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.6.0') {
-  fail(`bootstrap-workflow release must be version 5.6.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.7.0') {
+  fail(`bootstrap-workflow release must be version 5.7.0 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.6.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.6.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.7.0') {
+  fail(`bootstrap-workflow-agents release must be version 2.7.0 (found ${codexManifest?.version})`);
 }
-if (orchestrateClaudeManifest?.version !== '1.2.0') {
-  fail(`bootstrap-orchestrate release must be version 1.2.0 (found ${orchestrateClaudeManifest?.version})`);
+// One directory, two manifests: the version is pinned on both and they must agree.
+if (orchestrateClaudeManifest?.version !== '2.0.0') {
+  fail(`bootstrap-orchestrate release must be version 2.0.0 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '1.2.0') {
-  fail(`bootstrap-orchestrate-agents release must be version 1.2.0 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '2.0.0') {
+  fail(`bootstrap-orchestrate .codex-plugin release must be version 2.0.0 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -553,30 +563,50 @@ for (const unexpectedDir of ['commands']) {
   }
 }
 
-// The agents/ dirs are back, but narrowly. They were emptied in 53e9501, which
-// deleted a six-role advisor roster (architecture-advisor, cto-advisor and the
-// rest — now RETIRED_AGENT_NAMES); the rule that followed banned the directory
-// outright. The ban is replaced, not dropped: each plugin may ship exactly the
-// one worker role and nothing else, so the advisor roster still cannot come
-// back and no second worker can appear beside `worker-frontier`.
-for (const [dir, expected] of [
-  ['plugins/workflow/agents', `${WORKER_AGENT}.md`],
-  ['plugins/workflow-agents/agents', `${WORKER_AGENT}.toml`],
-]) {
+// The ONE agents/ directory, and the shape of what is in it.
+//
+// Two bans are folded together here. The older one: a six-role advisor roster
+// (architecture-advisor, cto-advisor and the rest — now RETIRED_AGENT_NAMES) was
+// deleted in 53e9501 and must not come back. The newer one: `worker-frontier`,
+// the single named worker role that replaced the roster, is gone too, along with
+// the model/effort policy file that rendered its frontmatter and the Codex TOML
+// twin an install hook copied into the user's home.
+//
+// What ships instead is five EFFORT SHIMS. They carry no instructions and name
+// no model: `model: inherit` means the dispatch picks the model and the shim
+// only pins the effort, which is the one thing a Claude Agent call cannot pass
+// per-call. So the assertion is the absence of a role: exactly five files, one
+// per level, each with `model: inherit`. A shim that pinned a model, or a sixth
+// file with a behavioural body, would be a role wearing a shim's name.
+{
+  const dir = 'plugins/orchestrate/agents';
   const root = path.join(repoRoot, dir);
+  const expected = EFFORT_LEVELS.map((level) => `delegate-${level}.md`).sort();
   if (!exists(dir)) {
-    fail(`${dir} must ship ${expected} so /orchestrate has a worker on a bare install`);
-    continue;
-  }
-  const found = findFiles(root, (_full, entry) => entry.isFile() || entry.isSymbolicLink())
-    .map((full) => path.relative(root, full))
-    .sort();
-  if (found.length !== 1 || found[0] !== expected) {
-    fail(`${dir} must contain exactly ${expected}; found ${found.join(', ') || '(nothing)'}`);
-  }
-  for (const name of found) {
-    if (RETIRED_AGENT_NAMES.includes(path.parse(name).name)) {
-      fail(`${dir}/${name} is a retired advisor role and must not return`);
+    fail(`${dir} must ship the five effort shims so /orchestrate can dispatch on a bare install`);
+  } else {
+    const found = findFiles(root, (_full, entry) => entry.isFile() || entry.isSymbolicLink())
+      .map((full) => path.relative(root, full))
+      .sort();
+    if (JSON.stringify(found) !== JSON.stringify(expected)) {
+      fail(`${dir} must contain exactly ${expected.join(', ')}; found ${found.join(', ') || '(nothing)'}`);
+    }
+    for (const name of found) {
+      if (RETIRED_AGENT_NAMES.includes(path.parse(name).name)) {
+        fail(`${dir}/${name} is a retired advisor role and must not return`);
+      }
+      const text = readText(`${dir}/${name}`);
+      if (text === undefined) continue;
+      if (!/^model:\s*inherit\s*$/m.test(text)) {
+        fail(
+          `${dir}/${name} must declare \`model: inherit\`; a shim that pins a model turns the effort `
+            + 'level back into a role and takes the model choice away from the dispatch',
+        );
+      }
+      const level = path.parse(name).name.replace(/^delegate-/, '');
+      if (!new RegExp(`^effort:\\s*${level}\\s*$`, 'm').test(text)) {
+        fail(`${dir}/${name} must declare \`effort: ${level}\`; the filename is the level it pins`);
+      }
     }
   }
 }
@@ -584,16 +614,25 @@ for (const [dir, expected] of [
 for (const retiredPath of [
   'plugins/domain',
   'plugins/tools',
+  // The Claude/Codex orchestrate PAIR. One directory serves both runtimes now;
+  // a second tree here would be a copy no generator maintains.
+  'plugins/orchestrate-agents',
+  // The named worker role, on both sides, and the policy file that rendered it.
+  'plugins/workflow/agents',
+  'plugins/workflow-agents/agents',
+  'plugins/workflow/worker-policy.json',
   'plugins/workflow/hooks/guards/workflow-artifact-path.ts',
   'plugins/workflow/hooks/guards/workflow-gate-enforcement.ts',
   'plugins/workflow/hooks/guards/workflow-gate-enforcement.test.ts',
 ]) {
   const retiredRoot = path.join(repoRoot, retiredPath);
-  const remainingFiles = findFiles(
-    retiredRoot,
-    (_fullPath, entry) => entry.isFile() || entry.isSymbolicLink(),
-  );
-  if (remainingFiles.length > 0) {
+  // The list mixes directories and single files. `findFiles` walks a directory
+  // and returns [] for a path that does not exist, but throws ENOTDIR on a
+  // regular file — so a retired FILE is checked with a plain existence test.
+  const remaining = fs.existsSync(retiredRoot) && fs.statSync(retiredRoot).isFile()
+    ? [retiredRoot]
+    : findFiles(retiredRoot, (_fullPath, entry) => entry.isFile() || entry.isSymbolicLink());
+  if (remaining.length > 0) {
     fail(`${retiredPath} is retired; keep the active distribution workflow-only and free of copied agent definitions`);
   }
 }
@@ -609,24 +648,17 @@ if (
   fail('plugins/workflow-agents/marketplace-entry.json must match the .agents marketplace entry');
 }
 
-if (
-  orchestrateCopyPasteEntry &&
-  JSON.stringify(orchestrateCopyPasteEntry, null, 2) !== JSON.stringify(codexOrchestrateEntry, null, 2)
-) {
-  fail('plugins/orchestrate-agents/marketplace-entry.json must match the .agents marketplace entry');
-}
 
 const codexSkillsRoot = path.join(repoRoot, 'plugins/workflow-agents/skills');
 const claudeSkillsRoot = path.join(repoRoot, 'plugins/workflow/skills');
-const orchestrateClaudeSkillsRoot = path.join(repoRoot, 'plugins/orchestrate/skills');
-const orchestrateCodexSkillsRoot = path.join(repoRoot, 'plugins/orchestrate-agents/skills');
+const orchestrateSkillsRoot = path.join(repoRoot, 'plugins/orchestrate/skills');
 const codexSkills = skillNames(codexSkillsRoot);
 const claudeSkills = skillNames(claudeSkillsRoot);
 
 // The split: the workflow pair keeps the seven explicitly-invoked team skills,
-// the orchestrate pair owns the one skill that automatic delegation pressure
-// runs through. `orchestrate` appearing in a workflow tree would put it back
-// where disabling the orchestrate plugin cannot remove it.
+// the orchestrate plugin owns the one delegation skill. `orchestrate` appearing
+// in a workflow tree would put it back where disabling bootstrap-orchestrate
+// cannot remove it.
 const expectedSkills = [
   'team-auto',
   'team-build',
@@ -658,13 +690,10 @@ for (const [label, inventory] of [
     fail(`${label} workflow plugin must expose exactly the seven team skills: ${expectedSkills.join(', ')} (found ${actual.join(', ')})`);
   }
 }
-for (const [label, root] of [
-  ['Claude', orchestrateClaudeSkillsRoot],
-  ['Codex/OpenCode', orchestrateCodexSkillsRoot],
-]) {
-  const actual = skillNames(root).sort();
+{
+  const actual = skillNames(orchestrateSkillsRoot).sort();
   if (JSON.stringify(actual) !== JSON.stringify(expectedOrchestrateSkills)) {
-    fail(`${label} orchestrate plugin must expose exactly ${expectedOrchestrateSkills.join(', ')} (found ${actual.join(', ') || '(nothing)'})`);
+    fail(`the orchestrate plugin must expose exactly ${expectedOrchestrateSkills.join(', ')} (found ${actual.join(', ') || '(nothing)'})`);
   }
 }
 for (const [label, root] of [
@@ -678,16 +707,16 @@ for (const [label, root] of [
   }
 }
 
-// `skills/shared/` is carried by all FOUR plugins, not shared by reference: an
-// installed marketplace cache materializes only the plugin's own subtree, so
-// `plugins/orchestrate` cannot reach `../workflow/skills/shared/`. Every copy is
-// generated from the one canonical tree; this is the gate that fails if one drifts.
+// `skills/shared/` is carried by BOTH workflow plugins, not shared by reference:
+// an installed marketplace cache materializes only the plugin's own subtree, so
+// `plugins/workflow-agents` cannot reach `../workflow/skills/shared/`. The copy is
+// generated from the one canonical tree; this is the gate that fails if it drifts.
+//
+// The orchestrate plugin is no longer a consumer. `/orchestrate` used to open by
+// reading this contract, which is why it carried a third and fourth copy; the
+// rewritten skill is self-contained, so it ships no `shared/` at all.
 const CANONICAL_SHARED_DIR = 'plugins/workflow/skills/shared';
-const SHARED_COPY_DIRS = [
-  'plugins/workflow-agents/skills/shared',
-  'plugins/orchestrate/skills/shared',
-  'plugins/orchestrate-agents/skills/shared',
-];
+const SHARED_COPY_DIRS = ['plugins/workflow-agents/skills/shared'];
 for (const fileName of [
   'workflow-contract.md',
   'cross-model-review.md',
@@ -777,7 +806,7 @@ const activeContractFiles = [
   path.join(repoRoot, 'plugins', 'workflow', '.claude-plugin', 'plugin.json'),
   path.join(repoRoot, 'plugins', 'workflow-agents', '.codex-plugin', 'plugin.json'),
   path.join(repoRoot, 'plugins', 'orchestrate', '.claude-plugin', 'plugin.json'),
-  path.join(repoRoot, 'plugins', 'orchestrate-agents', '.codex-plugin', 'plugin.json'),
+  path.join(repoRoot, 'plugins', 'orchestrate', '.codex-plugin', 'plugin.json'),
   ...findFiles(
     path.join(repoRoot, 'plugins', 'workflow', 'skills'),
     (_fullPath, entry) => entry.isFile(),
@@ -791,7 +820,7 @@ const activeContractFiles = [
     (_fullPath, entry) => entry.isFile(),
   ),
   ...findFiles(
-    path.join(repoRoot, 'plugins', 'orchestrate-agents', 'skills'),
+    path.join(repoRoot, 'plugins', 'orchestrate', 'agents'),
     (_fullPath, entry) => entry.isFile(),
   ),
   ...findFiles(
@@ -809,16 +838,16 @@ for (const filePath of activeContractFiles) {
 }
 
 
-// ─── The orchestrate pair: skills-only ────────────────────────────────────────
-// Automatic delegation pressure is OFF. `/orchestrate` remains as an INVOKE-ONLY
-// skill on both providers, and the two things that made it automatic are gone:
-// the `always-on.md` standing directive that told every session to load it, and
-// the `dispatch-first` PreToolUse guard that BLOCKED a coordinator from reading
+// ─── The orchestrate plugin: one skill, five effort shims ─────────────────────
+// Automatic delegation pressure is OFF. `/orchestrate` is an INVOKE-ONLY skill on
+// every runtime, and the two things that made it automatic are gone: the
+// `always-on.md` standing directive that told every session to load it, and the
+// `dispatch-first` PreToolUse guard that BLOCKED a coordinator from reading
 // source or running a check before dispatching.
 //
-// So the orchestrate pair is now the same shape as `concise` — skills and
-// nothing that activates on its own. That shape is the assertion: a hooks file,
-// an always-on.md, or a manifest `hooks` field reappearing here would silently
+// So the plugin is the same shape as `concise` — content and nothing that
+// activates on its own. That shape is the assertion: a hooks file, an
+// always-on.md, or a manifest `hooks` field reappearing here would silently
 // restore the pressure, and reading the skill would not reveal it. Checked in
 // both directions: the skill present here and absent from the workflow pair, the
 // activation surface absent everywhere.
@@ -826,12 +855,11 @@ for (const filePath of activeContractFiles) {
   const workflowHookManifest = readJson('plugins/workflow/hooks/workflow-hooks.json');
   const workflowHookText = readText('plugins/workflow/hooks/workflow-hooks.json') ?? '';
 
-  // 1. THE SKILL — in the orchestrate pair, gone from the workflow pair.
-  for (const [label, file] of [
-    ['Claude', 'plugins/orchestrate/skills/orchestrate/SKILL.md'],
-    ['Codex/OpenCode', 'plugins/orchestrate-agents/skills/orchestrate/SKILL.md'],
-  ]) {
-    if (!exists(file)) fail(`${label} orchestrate plugin must ship ${file}`);
+  // 1. THE SKILL — one copy, in the orchestrate plugin, gone from the workflow
+  //    pair. Both manifests point at this same tree, so there is no second copy
+  //    to keep in sync and no generator to run.
+  if (!exists('plugins/orchestrate/skills/orchestrate/SKILL.md')) {
+    fail('the orchestrate plugin must ship plugins/orchestrate/skills/orchestrate/SKILL.md');
   }
   for (const stale of [
     'plugins/workflow/skills/orchestrate',
@@ -847,22 +875,20 @@ for (const filePath of activeContractFiles) {
   //    session that does not. Any of these reappearing restores the automatic
   //    pressure the operator turned off, so name each one explicitly rather than
   //    leaving it to the reader to notice an added file.
-  for (const dir of ['plugins/orchestrate', 'plugins/orchestrate-agents']) {
-    for (const activationPath of [
-      `${dir}/always-on.md`,
-      `${dir}/.nanoclaw-always-on.md`,
-      `${dir}/hooks`,
-    ]) {
-      if (exists(activationPath)) {
-        fail(`${activationPath} must not exist; ${dir} is invoke-only, with no standing directive and no hooks`);
-      }
+  for (const activationPath of [
+    'plugins/orchestrate/always-on.md',
+    'plugins/orchestrate/.nanoclaw-always-on.md',
+    'plugins/orchestrate/hooks',
+  ]) {
+    if (exists(activationPath)) {
+      fail(`${activationPath} must not exist; plugins/orchestrate is invoke-only, with no standing directive and no hooks`);
     }
   }
   if (orchestrateClaudeManifest?.hooks !== undefined) {
     fail('plugins/orchestrate/.claude-plugin/plugin.json must not declare hooks; /orchestrate is invoke-only');
   }
   if (orchestrateCodexManifest?.hooks !== undefined) {
-    fail('plugins/orchestrate-agents/.codex-plugin/plugin.json must not declare hooks; /orchestrate is invoke-only');
+    fail('plugins/orchestrate/.codex-plugin/plugin.json must not declare hooks; /orchestrate is invoke-only');
   }
   if (exists('plugins/workflow/always-on.md')) {
     fail('plugins/workflow/always-on.md must not exist; the orchestrate directive was removed, not relocated');
@@ -892,10 +918,8 @@ for (const filePath of activeContractFiles) {
   if (workflowHookText.includes('dispatch-first')) {
     fail('plugins/workflow/hooks/workflow-hooks.json must not register the dispatch-first guard; it would gate direct work');
   }
-  for (const skillFile of [
-    'plugins/orchestrate/skills/orchestrate/SKILL.md',
-    'plugins/orchestrate-agents/skills/orchestrate/SKILL.md',
-  ]) {
+  {
+    const skillFile = 'plugins/orchestrate/skills/orchestrate/SKILL.md';
     const text = readText(skillFile);
     if (text !== undefined && /dispatch-first/.test(text)) {
       fail(`${skillFile} must not reference the dispatch-first guard; it no longer exists`);
@@ -919,54 +943,66 @@ for (const filePath of activeContractFiles) {
     fail('plugins/workflow/hooks/guards/opencode-guard.ts must stay in the workflow plugin');
   }
 
-  // The worker role and its transport stay with bootstrap-workflow; orchestrate
-  // dispatches TO them. The helper is mirrored (not moved) because the skill
-  // names it by a plugin-relative path.
-  if (!exists('plugins/workflow/scripts/frontier-worker.mjs')) {
-    fail('plugins/workflow/scripts/frontier-worker.mjs must stay in the workflow plugin');
-  }
-  for (const mirror of [
-    'plugins/orchestrate/scripts/frontier-worker.mjs',
-    'plugins/orchestrate-agents/scripts/frontier-worker.mjs',
+  // 4. NO HELPER CLI, ANYWHERE. `/orchestrate` used to name
+  //    `../../scripts/frontier-worker.mjs`, a Node wrapper that shelled out to
+  //    `claude -p` / `codex exec` with a validated model and effort — which meant
+  //    every plugin whose skill named it had to carry its own mirror of the
+  //    transport AND the generated policy module the transport imported. The
+  //    rewritten skill dispatches through the runtime's own sub-agent tool, so
+  //    there is no helper to mirror and no policy to render. A copy left in any
+  //    plugin is a script the skill no longer names and nothing regenerates.
+  for (const plugin of [
+    'plugins/workflow',
+    'plugins/workflow-agents',
+    'plugins/orchestrate',
   ]) {
-    if (!exists(mirror)) {
-      fail(`${mirror} must ship; the orchestrate skill names ../../scripts/frontier-worker.mjs, which cannot resolve into another plugin`);
+    for (const basename of ['frontier-worker.mjs', 'worker-policy.generated.mjs', 'worker-policy.mjs']) {
+      if (exists(`${plugin}/scripts/${basename}`)) {
+        fail(`${plugin}/scripts/${basename} is retired; /orchestrate dispatches through the runtime's own sub-agent tool`);
+      }
     }
   }
-  // frontier-worker.mjs statically imports ./worker-policy.generated.mjs for its
-  // model ids and tier efforts. A static import of a file the installed cache
-  // does not materialize is a load-time crash, not a missing feature, so every
-  // plugin shipping the transport must ship the generated policy beside it. The
-  // VALUES are gated by parity-lint (generated == the one policy file); this is
-  // the co-location half.
-  if (!exists(POLICY_PATH)) {
-    fail(`${POLICY_PATH} must stay in the workflow plugin; it is the one source of the worker model/effort policy`);
+  // The orchestrate plugin ships no scripts at all: a skill, five effort shims,
+  // two manifests. Nothing here needs generating, so nothing here runs.
+  if (exists('plugins/orchestrate/scripts')) {
+    fail('plugins/orchestrate/scripts must not exist; the plugin is a skill plus five effort shims, with no code');
   }
-  for (const plugin of POLICY_CONSUMER_PLUGINS) {
-    const generated = `${plugin}/scripts/${GENERATED_POLICY_BASENAME}`;
-    if (!exists(generated)) {
-      fail(`${generated} must ship; ${plugin}/scripts/frontier-worker.mjs statically imports it and a plugin cannot import across the boundary`);
-    }
+  // …and no `shared/` either. Its old copy existed because the skill opened by
+  // reading the workflow contract across a plugin boundary; the rewritten skill
+  // is self-contained.
+  if (exists('plugins/orchestrate/skills/shared')) {
+    fail('plugins/orchestrate/skills/shared must not exist; the orchestrate skill is self-contained and reads no shared contract');
   }
 
-  // Manifest shape.
-  if (orchestrateClaudeManifest?.name !== 'bootstrap-orchestrate') {
-    fail('plugins/orchestrate/.claude-plugin/plugin.json name must be bootstrap-orchestrate');
+  // Manifest shape. ONE directory, TWO manifests, one name — the `wwbd` shape.
+  // The name must match on both sides or `codex plugin add bootstrap-orchestrate`
+  // and `/plugin install bootstrap-orchestrate` would install different things.
+  for (const [label, manifestPath, manifest] of [
+    ['Claude', 'plugins/orchestrate/.claude-plugin/plugin.json', orchestrateClaudeManifest],
+    ['Codex', 'plugins/orchestrate/.codex-plugin/plugin.json', orchestrateCodexManifest],
+  ]) {
+    if (manifest?.name !== 'bootstrap-orchestrate') {
+      fail(`${manifestPath} name must be bootstrap-orchestrate`);
+    }
+    if (normalizeSource(manifest?.skills) !== './skills') {
+      fail(`${manifestPath} skills must point at ./skills/ (${label})`);
+    }
   }
-  if (orchestrateCodexManifest?.name !== 'bootstrap-orchestrate-agents') {
-    fail('plugins/orchestrate-agents/.codex-plugin/plugin.json name must be bootstrap-orchestrate-agents');
+  if (orchestrateClaudeManifest?.version !== orchestrateCodexManifest?.version) {
+    fail(
+      `plugins/orchestrate Claude and Codex manifests must share one version (${orchestrateClaudeManifest?.version} !== ${orchestrateCodexManifest?.version})`,
+    );
   }
-  if (normalizeSource(orchestrateClaudeManifest?.skills) !== './skills') {
-    fail('plugins/orchestrate/.claude-plugin/plugin.json skills must point at ./skills/');
-  }
-  if (normalizeSource(orchestrateCodexManifest?.skills) !== './skills') {
-    fail('plugins/orchestrate-agents/.codex-plugin/plugin.json skills must point at ./skills/');
-  }
-  if (exists('plugins/orchestrate-agents/.claude-plugin')) {
-    fail('plugins/orchestrate-agents must not contain .claude-plugin metadata');
-  }
-  if (exists('plugins/orchestrate/.codex-plugin')) {
-    fail('plugins/orchestrate must not contain .codex-plugin metadata');
+  // Claude also auto-discovers `agents/` from the plugin root, so the declaration
+  // is belt-and-braces — but an explicit one that points at a directory the
+  // plugin does not ship fails silently, as a dispatch to a subagent_type that
+  // does not resolve.
+  {
+    const declared = orchestrateClaudeManifest?.agents;
+    const roots = Array.isArray(declared) ? declared : [declared];
+    if (!roots.includes('./agents')) {
+      fail('plugins/orchestrate/.claude-plugin/plugin.json must declare "agents": ["./agents"]');
+    }
   }
 
   // NO `nanoclaw-plugin.json` here, deliberately — do not "fix" this by adding one.
@@ -978,8 +1014,8 @@ for (const filePath of activeContractFiles) {
   // to the SDK at :2710; the header at :1727-1731 says that pass-through is what
   // makes the SDK load plugin-declared hooks). `discoverPlugins` walks three
   // levels, so `plugins/bootstrap/plugins/wwbd` is found and its
-  // `wwbd-hooks.json` loads with no NanoClaw change at all. The orchestrate pair
-  // declares no hooks, so there is nothing to load for it either way.
+  // `wwbd-hooks.json` loads with no NanoClaw change at all. The orchestrate
+  // plugin declares no hooks, so there is nothing to load for it either way.
   //
   // `nanoclaw-plugin.json`'s `preToolUseGuards` is a DE-DUPLICATION signal with
   // exactly one consumer — `preToolUseGuards.includes('bash-email')` at
@@ -997,8 +1033,7 @@ for (const filePath of activeContractFiles) {
 }
 
 checkSkillMarkdownLinks(codexSkillsRoot);
-checkSkillMarkdownLinks(orchestrateClaudeSkillsRoot);
-checkSkillMarkdownLinks(orchestrateCodexSkillsRoot);
+checkSkillMarkdownLinks(orchestrateSkillsRoot);
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/wwbd/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/concise/skills'));
 checkSkillMarkdownLinks(claudeSkillsRoot);

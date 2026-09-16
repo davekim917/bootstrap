@@ -9,30 +9,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PLUGINS } from './lib.mjs';
-import {
-  WORKER_AGENT,
-  frontmatterScalar,
-  parseAgentDef,
-  renderCodexAgentToml,
-} from '../../plugins/workflow-agents/scripts/codex-agent-toml.mjs';
-import {
-  GENERATED_POLICY_BASENAME,
-  POLICY_CONSUMER_PLUGINS,
-  POLICY_PATH,
-  applyAgentDefPolicy,
-  loadWorkerPolicy,
-  policyProseTokens,
-  renderPolicyModule,
-} from '../../plugins/workflow-agents/scripts/worker-policy.mjs';
-
-/** Repo root, derived from wherever the plugins tree is (lib.mjs honours an override). */
-const REPO = path.dirname(PLUGINS);
 
 /**
  * The workflow pair's public surface. `orchestrate` is NOT here: it ships in its
- * own plugin pair (bootstrap-orchestrate / bootstrap-orchestrate-agents) so the
- * operator can disable automatic delegation pressure while the explicitly-invoked
- * team skills keep working. Its inventory is EXPECTED_ORCHESTRATE_SKILLS.
+ * own plugin (bootstrap-orchestrate) so the operator can disable automatic
+ * delegation pressure while the explicitly-invoked team skills keep working. Its
+ * inventory is EXPECTED_ORCHESTRATE_SKILLS.
  */
 export const EXPECTED_SKILLS = Object.freeze([
   'team-auto',
@@ -46,8 +28,21 @@ export const EXPECTED_SKILLS = Object.freeze([
 
 export const EXPECTED_ORCHESTRATE_SKILLS = Object.freeze(['orchestrate']);
 
-/** Worker tiers retired in 5.x; their return in any contract copy is a regression. */
-const RETIRED_WORKER_POLICY = ['worker-fast', 'worker-high', 'worker-codex', 'gpt-5.6-luna'];
+/**
+ * Named worker roles and tiers, all retired. `worker-frontier` is the newest
+ * arrival: it was the single named role the whole delegation contract pointed at,
+ * with a policy file rendering its model and effort. `/orchestrate` now names a
+ * model and an effort per dispatch instead, and the five `delegate-<level>` shims
+ * it dispatches to carry no instructions — so any of these reappearing in a
+ * contract is a role growing back.
+ */
+const RETIRED_WORKER_POLICY = [
+  'worker-fast',
+  'worker-high',
+  'worker-codex',
+  'worker-frontier',
+  'gpt-5.6-luna',
+];
 
 export const RETIRED_SKILLS = Object.freeze([
   'best-practice-check',
@@ -69,8 +64,11 @@ export const SHARED_CONTRACTS = Object.freeze([
 
 const CLAUDE_ROOT = path.join(PLUGINS, 'workflow', 'skills');
 const AGENT_ROOT = path.join(PLUGINS, 'workflow-agents', 'skills');
-const ORCHESTRATE_CLAUDE_ROOT = path.join(PLUGINS, 'orchestrate', 'skills');
-const ORCHESTRATE_AGENT_ROOT = path.join(PLUGINS, 'orchestrate-agents', 'skills');
+/** One tree, both runtimes — the orchestrate plugin is no longer a Claude/Codex pair. */
+const ORCHESTRATE_ROOT = path.join(PLUGINS, 'orchestrate', 'skills');
+/** The five effort shims live beside the skill, not under it. */
+const ORCHESTRATE_AGENTS_ROOT = path.join(PLUGINS, 'orchestrate', 'agents');
+const EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
 
 export function normalizeWhitespace(value) {
   return value.replace(/\\\s*\n/g, ' ').replace(/\s+/g, ' ').trim();
@@ -105,21 +103,17 @@ function requireTokens(failures, label, content, tokens) {
 export function evaluateContracts({
   claudeRoot = CLAUDE_ROOT,
   agentRoot = AGENT_ROOT,
-  orchestrateClaudeRoot = ORCHESTRATE_CLAUDE_ROOT,
-  orchestrateAgentRoot = ORCHESTRATE_AGENT_ROOT,
+  orchestrateRoot = ORCHESTRATE_ROOT,
+  orchestrateAgentsRoot = ORCHESTRATE_AGENTS_ROOT,
 } = {}) {
   const failures = [];
   const checks = [];
-  // Loaded once and threaded through: every model/effort assertion below is
-  // derived from it, so the gate demands whatever the policy file says today.
-  const policy = loadWorkerPolicy(REPO);
   const workflowInventories = [
     ['Claude', claudeRoot, skillInventory(claudeRoot), EXPECTED_SKILLS, 'seven team skills'],
     ['Codex/OpenCode', agentRoot, skillInventory(agentRoot), EXPECTED_SKILLS, 'seven team skills'],
   ];
   const orchestrateInventories = [
-    ['Claude/orchestrate', orchestrateClaudeRoot, skillInventory(orchestrateClaudeRoot), EXPECTED_ORCHESTRATE_SKILLS, 'the orchestrate skill'],
-    ['Codex/OpenCode/orchestrate', orchestrateAgentRoot, skillInventory(orchestrateAgentRoot), EXPECTED_ORCHESTRATE_SKILLS, 'the orchestrate skill'],
+    ['orchestrate', orchestrateRoot, skillInventory(orchestrateRoot), EXPECTED_ORCHESTRATE_SKILLS, 'the orchestrate skill'],
   ];
   const inventories = [...workflowInventories, ...orchestrateInventories];
 
@@ -143,24 +137,24 @@ export function evaluateContracts({
     }
   }
 
-  // THE CRUX OF THE ORCHESTRATE SPLIT.
+  // The seven team-* skills open with "Read `../shared/workflow-contract.md`
+  // first". A relative path cannot leave a plugin: an installed marketplace cache
+  // materializes only the plugin's own subtree, so `plugins/workflow-agents`
+  // reaching into `plugins/workflow` would resolve in this checkout and be
+  // MISSING on every real install — and a missing contract reference does not
+  // fail loudly. The skills would quietly degrade to whatever the model remembers
+  // of the contract.
   //
-  // `skills/orchestrate/SKILL.md` opens with "Read `../shared/workflow-contract.md`
-  // first", and that contract is shared with the seven team-* skills. A relative
-  // path cannot leave a plugin: an installed marketplace cache materializes only
-  // the plugin's own subtree, so `plugins/orchestrate` reaching into
-  // `plugins/workflow` would resolve in this checkout and be MISSING on every real
-  // install — and a missing contract reference does not fail loudly. The skill
-  // would quietly degrade to whatever the model remembers of the contract.
-  //
-  // So each plugin carries its own copy, generated from one canonical tree
+  // So the Codex tree carries its own copy, generated from the canonical tree
   // (plugins/workflow/skills/shared) by sync-agent-skills.mjs. The cost of that
-  // choice is drift, and THIS is the gate that pays it: every copy compared
-  // byte-for-byte against the canonical one, in every tree that has it.
+  // choice is drift, and THIS is the gate that pays it: the copy compared
+  // byte-for-byte against the canonical one.
+  //
+  // The orchestrate plugin is NOT in this list any more. It used to carry two more
+  // copies because `/orchestrate` opened by reading the same contract; the
+  // rewritten skill states its whole procedure inline and reads nothing.
   const sharedRoots = [
     ['Codex/OpenCode', agentRoot],
-    ['Claude/orchestrate', orchestrateClaudeRoot],
-    ['Codex/OpenCode/orchestrate', orchestrateAgentRoot],
   ];
   for (const shared of SHARED_CONTRACTS) {
     const claudePath = path.join(claudeRoot, 'shared', shared);
@@ -241,39 +235,35 @@ export function evaluateContracts({
     }
   }
 
-  // The orchestrate skill: its own pair only.
+  // The orchestrate skill: its own plugin only.
+  //
+  // What this gate is FOR, now that there is no policy file to derive from. The
+  // skill is a parameterized delegation prompt, and the parts that make it one
+  // are the parts that quietly rot: the four parameters it fills, the three
+  // runtime dispatch lines (drop one and that runtime silently has no
+  // instruction), the single-thread rule, and the instruction that the sub-agent
+  // does not review its own work — which is the whole reason the coordinator
+  // tests. Prose that merely reads well would pass none of these.
   for (const [label, root] of orchestrateInventories.map(([l, r]) => [l, r])) {
-    const ownershipPath = path.join(root, 'orchestrate', 'SKILL.md');
-    if (!fs.existsSync(ownershipPath)) continue;
-    const ownership = fs.readFileSync(ownershipPath, 'utf8');
-    requireTokens(failures, `${label}/orchestrate`, ownership, [
-      'worker-frontier',
-      // Policy-derived, not literals: flipping worker-policy.json changes what
-      // this gate demands, so the skill has to be updated with it instead of the
-      // gate being edited afterwards to match.
-      policy.claude.model, policy.codex.model,
-      `default worker at \`${policy.claude.effort}\` effort`,
-      `${policy.claude.escalation.label} or ${policy.claude.label}`,
-      `${policy.codex.escalation.label} or ${policy.codex.label}`,
-      'same retained session', 'artifact author', '../../scripts/frontier-worker.mjs',
-      'Sonnet/xhigh or Terra/xhigh', 'no file-count or cheap-first hurdle',
-      'approved worker floor',
-      'Never choose a worker below that floor',
+    const skillPath = path.join(root, 'orchestrate', 'SKILL.md');
+    if (!fs.existsSync(skillPath)) continue;
+    const skill = fs.readFileSync(skillPath, 'utf8');
+    requireTokens(failures, `${label}/orchestrate`, skill, [
+      '{model}', '{effort_level}', '{rounds}', '{done}',
+      'low | medium | high | xhigh | max',
+      'one continuous thread',
+      'not to test or review its work',
+      'Claude Code:', 'Codex:', 'OpenCode:',
+      'bootstrap-orchestrate:delegate-{effort_level}',
+      'spawn_agent', 'reasoning_effort',
+      'Never spawn a second agent for a follow-up',
     ]);
     for (const retired of RETIRED_WORKER_POLICY) {
-      if (ownership.includes(retired)) failures.push(`${label}/orchestrate: retired worker policy ${retired}`);
-    }
-    // `../../scripts/frontier-worker.mjs` is plugin-relative. It resolves only if
-    // this plugin carries its own mirror of the helper — the skill's reference
-    // would otherwise point into bootstrap-workflow, which an installed cache
-    // cannot see.
-    const helper = path.join(root, '..', 'scripts', 'frontier-worker.mjs');
-    if (!fs.existsSync(helper)) {
-      failures.push(`${label}/orchestrate: SKILL.md names ../../scripts/frontier-worker.mjs but ${path.relative(PLUGINS, helper)} is missing`);
-    } else {
-      checks.push(`${label}/orchestrate: plugin-relative frontier-worker.mjs resolves`);
+      if (skill.includes(retired)) failures.push(`${label}/orchestrate: retired worker policy ${retired}`);
     }
   }
+
+  checkEffortShims(failures, checks, orchestrateAgentsRoot);
 
   // The team-* skills: the workflow pair only.
   for (const [label, root] of workflowInventories.map(([l, r]) => [l, r])) {
@@ -301,127 +291,65 @@ export function evaluateContracts({
     ]);
   }
 
-  checkWorkerAgentTwin(failures, checks, policy);
-  checkWorkerPolicyModules(failures, checks, policy);
-  checkWorkerPolicyProse(failures, checks, policy, inventories);
-
   return { pass: failures.length === 0, checks, failures };
 }
 
 /**
- * The worker role is one agent def, shipped to both runtimes. Claude reads
- * `plugins/workflow/agents/<name>.md` (auto-discovered from the plugin root);
- * Codex has no plugin-agent mechanism at all, so it gets a generated role TOML
- * that `scripts/install-agent-roles.mjs` places in `<CODEX_HOME>/agents/`,
- * driven by the plugin's own SessionStart hook so a bare install needs no
- * manual step (`scripts/session-install-roles.mjs`).
+ * The five effort shims `/orchestrate` dispatches to.
  *
- * Byte-identity is impossible across the two formats, so what is checked is the
- * DERIVATION: the TOML must be exactly what the generator produces from the .md
- * right now, and its model must be the Codex model the generator declares. That
- * makes an edit to either side fail here instead of silently forking the role.
+ * They exist for one runtime limitation: Claude Code's Agent tool takes a `model`
+ * per call but not an `effort`, so effort can only be pinned in an agent
+ * definition's frontmatter. Five near-identical files is the smallest thing that
+ * lets a caller ask for any level.
+ *
+ * The risk they carry is becoming roles again — someone adds a model, or a
+ * paragraph of instructions, and the "pick a model per dispatch" property is gone
+ * without anything failing. So the assertion is their emptiness: `model: inherit`,
+ * the effort the filename claims, and a body short enough that it cannot be
+ * carrying a contract. The old `worker-frontier.md` had a 12-line behavioural
+ * block; that is the shape being kept out.
  */
-function checkWorkerAgentTwin(failures, checks, policy) {
-  const source = path.join(PLUGINS, 'workflow', 'agents', `${WORKER_AGENT}.md`);
-  const twin = path.join(PLUGINS, 'workflow-agents', 'agents', `${WORKER_AGENT}.toml`);
-  for (const [label, file] of [['Claude', source], ['Codex/OpenCode', twin]]) {
-    if (!fs.existsSync(file)) {
-      failures.push(`${label}/agents: ${WORKER_AGENT} must ship with the plugin (${path.relative(PLUGINS, file)})`);
-      return;
-    }
-  }
-
-  const markdown = fs.readFileSync(source, 'utf8');
-  const { frontmatter } = parseAgentDef(markdown);
-  if (frontmatterScalar(frontmatter, 'name') !== WORKER_AGENT) {
-    failures.push(`Claude/agents: ${WORKER_AGENT}.md must declare \`name: ${WORKER_AGENT}\``);
-  }
-
-  // The def's own policy fields must already be what the policy file renders.
-  // Checked BEFORE the TOML so a stale def reports itself rather than showing up
-  // only as a mismatched Codex model.
-  if (applyAgentDefPolicy(markdown, policy) !== markdown) {
-    failures.push(
-      `Claude/agents: ${WORKER_AGENT}.md model/effort/"Runs on" no longer match ${POLICY_PATH} — ` +
-        'regenerate: node plugins/workflow-agents/scripts/sync-agent-skills.mjs',
-    );
-  } else {
-    checks.push(`agents/${WORKER_AGENT}: Claude def model/effort derive from ${POLICY_PATH}`);
-  }
-
-  const expected = renderCodexAgentToml(markdown, policy.codex.model);
-  if (fs.readFileSync(twin, 'utf8') !== expected) {
-    failures.push(
-      `Codex/OpenCode/agents: ${WORKER_AGENT}.toml is not the current render of ${WORKER_AGENT}.md — ` +
-        'regenerate: node plugins/workflow-agents/scripts/sync-agent-skills.mjs',
-    );
+function checkEffortShims(failures, checks, agentsRoot) {
+  if (!fs.existsSync(agentsRoot)) {
+    failures.push(`orchestrate/agents: missing ${path.relative(PLUGINS, agentsRoot)}; /orchestrate has nothing to dispatch to`);
     return;
   }
-  checks.push(`agents/${WORKER_AGENT}: Codex role TOML derives from the Claude def`);
-}
-
-/**
- * The generated policy module every frontier-worker.mjs imports.
- *
- * The transport used to carry the model ids as literals in four copies. Now it
- * imports them, and this is the gate that makes the import trustworthy: each
- * plugin must ship a copy, and each copy must be exactly what the policy file
- * renders today. A hand-edit to a copy and a policy edit without a regenerate
- * both fail here, and neither needs this gate to know a single model name.
- */
-function checkWorkerPolicyModules(failures, checks, policy) {
-  const expected = renderPolicyModule(policy);
-  let allCurrent = true;
-  for (const plugin of POLICY_CONSUMER_PLUGINS) {
-    const file = path.join(REPO, plugin, 'scripts', GENERATED_POLICY_BASENAME);
-    const relative = path.relative(REPO, file);
-    if (!fs.existsSync(file)) {
-      failures.push(`${relative}: must ship beside frontier-worker.mjs; it imports it and a plugin cannot read across the boundary`);
-      allCurrent = false;
-      continue;
+  const found = fs.readdirSync(agentsRoot).filter((name) => name.endsWith('.md')).sort();
+  const expected = EFFORT_LEVELS.map((level) => `delegate-${level}.md`).sort();
+  if (JSON.stringify(found) !== JSON.stringify(expected)) {
+    failures.push(`orchestrate/agents: expected exactly ${expected.join(', ')}; found ${found.join(', ') || '(nothing)'}`);
+    return;
+  }
+  let allClean = true;
+  for (const level of EFFORT_LEVELS) {
+    const file = path.join(agentsRoot, `delegate-${level}.md`);
+    const text = fs.readFileSync(file, 'utf8');
+    const fields = frontmatterFields(text);
+    if (fields?.get('name') !== `delegate-${level}`) {
+      failures.push(`orchestrate/agents/delegate-${level}.md: name must be delegate-${level}`);
+      allClean = false;
     }
-    if (fs.readFileSync(file, 'utf8') !== expected) {
+    if (fields?.get('model') !== 'inherit') {
       failures.push(
-        `${relative}: not the current render of ${POLICY_PATH} — ` +
-          'regenerate: node plugins/workflow-agents/scripts/sync-agent-skills.mjs',
+        `orchestrate/agents/delegate-${level}.md: model must be \`inherit\` — a pinned model turns the `
+          + 'shim back into a role and takes the model choice away from the dispatch',
       );
-      allCurrent = false;
+      allClean = false;
     }
-  }
-  if (allCurrent) {
-    checks.push(`worker policy: ${GENERATED_POLICY_BASENAME} derives from ${POLICY_PATH} in ${POLICY_CONSUMER_PLUGINS.length} plugins`);
-  }
-}
-
-/**
- * The prose surfaces that state the policy in words.
- *
- * `workflow-contract.md` weaves "Opus/Sol" and "Fable/Astra" through whole
- * paragraphs as adjectives; carving a generated block out of that would mean
- * rewriting the contract, so the prose stays hand-authored and this asserts it
- * still names the CURRENT roster. `orchestrate/SKILL.md` carries the policy too
- * and is checked more precisely above, against the exact model ids and the
- * "default worker at `<effort>` effort" phrase. Same limit either way, and the
- * same as NanoClaw's scripts/dispatch-default-docs.test.ts: it proves the doc
- * states the current policy, not that it carries no sentence contradicting it.
- */
-function checkWorkerPolicyProse(failures, checks, policy, inventories) {
-  const { shortLabels, efforts } = policyProseTokens(policy);
-  const surfaces = inventories.map(
-    ([label, root]) => [`${label}/workflow-contract`, path.join(root, 'shared', 'workflow-contract.md')],
-  );
-  for (const [label, file] of surfaces) {
-    if (!fs.existsSync(file)) continue;
-    const content = fs.readFileSync(file, 'utf8');
-    const missing = [...shortLabels, ...efforts].filter((token) => !content.includes(token));
-    if (missing.length > 0) {
+    if (fields?.get('effort') !== level) {
+      failures.push(`orchestrate/agents/delegate-${level}.md: effort must be \`${level}\`; the filename is the level it pins`);
+      allClean = false;
+    }
+    const body = text.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
+    if (body.split('\n').filter((line) => line.trim()).length > 2) {
       failures.push(
-        `${label}: prose no longer names the current worker policy (${POLICY_PATH}); missing ${missing.map((t) => JSON.stringify(t)).join(', ')}`,
+        `orchestrate/agents/delegate-${level}.md: body must stay at most two lines — a shim carries no `
+          + 'instructions of its own, and prose here becomes a role no dispatch can override',
       );
-    } else {
-      checks.push(`${label}: prose names the current worker policy tiers and efforts`);
+      allClean = false;
     }
   }
+  if (allClean) checks.push(`orchestrate/agents: ${EFFORT_LEVELS.length} effort shims, model: inherit, no instructions`);
 }
 
 function main() {
