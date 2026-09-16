@@ -1,0 +1,159 @@
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'fs';
+import {
+    GATE_CLAIM_DIR,
+    abandonGateClaim,
+    claimGateRequest,
+    gateClaimKey,
+    publishGateClaim,
+} from './block-destructive-core';
+
+// ── One approval card per tool call ──
+//
+// A Codex tool call dispatches every matched PreToolUse handler CONCURRENTLY
+// (`FuturesUnordered` in codex-rs 0.154.0 `hooks/src/engine/dispatcher.rs`),
+// with no ordering and no short-circuit on a deny. Measured on a real 0.154.0
+// run: two handlers started 0.7 ms apart with the SAME `tool_use_id`. These
+// tests pin the claim protocol that turns that into one approval card.
+
+function clean(): void {
+    rmSync(GATE_CLAIM_DIR, { recursive: true, force: true });
+}
+
+beforeEach(clean);
+afterEach(clean);
+
+describe('gateClaimKey', () => {
+    test('two handlers of the SAME tool call, same gate, collide', () => {
+        expect(gateClaimKey('exec-1', 'request_destructive_gate', 'rm -rf /x')).toBe(
+            gateClaimKey('exec-1', 'request_destructive_gate', 'rm -rf /x'),
+        );
+    });
+
+    test('different tool calls do NOT collide', () => {
+        expect(gateClaimKey('exec-1', 'request_destructive_gate', 'rm -rf /x')).not.toBe(
+            gateClaimKey('exec-2', 'request_destructive_gate', 'rm -rf /x'),
+        );
+    });
+
+    test('one tool call needing TWO different approvals keeps two cards', () => {
+        // A command that is both destructive and an outbound email send must
+        // still raise one card per gate — collapsing them would answer one
+        // question with the other's approval.
+        expect(gateClaimKey('exec-1', 'request_destructive_gate', 'x')).not.toBe(
+            gateClaimKey('exec-1', 'request_bash_gate', 'x'),
+        );
+    });
+
+    test('a different command under one tool call keeps its own card', () => {
+        expect(gateClaimKey('exec-1', 'request_destructive_gate', 'rm -rf /a')).not.toBe(
+            gateClaimKey('exec-1', 'request_destructive_gate', 'rm -rf /b'),
+        );
+    });
+});
+
+describe('claimGateRequest', () => {
+    test('the FIRST caller owns the claim', () => {
+        expect(claimGateRequest(gateClaimKey('exec-1', 'a', 'c'))).toEqual({ owner: true });
+    });
+
+    test('a second caller waits and gets the owner’s requestId', () => {
+        const key = gateClaimKey('exec-1', 'a', 'c');
+        expect(claimGateRequest(key)).toEqual({ owner: true });
+        publishGateClaim(key, 'gate-123-abc');
+        expect(claimGateRequest(key)).toEqual({ owner: false, requestId: 'gate-123-abc' });
+    });
+
+    test('a second caller on a DIFFERENT tool call owns its own claim', () => {
+        const first = gateClaimKey('exec-1', 'a', 'c');
+        claimGateRequest(first);
+        publishGateClaim(first, 'gate-1');
+        expect(claimGateRequest(gateClaimKey('exec-2', 'a', 'c'))).toEqual({ owner: true });
+    });
+
+    test('an ABANDONED claim lets the peer take over rather than wait it out', () => {
+        // The owner staged nothing — session DBs broken, or it crashed. The peer
+        // must not sit for the full publish window and must not be told to poll
+        // a requestId that does not exist.
+        const key = gateClaimKey('exec-1', 'a', 'c');
+        claimGateRequest(key);
+        abandonGateClaim(key);
+        const start = Date.now();
+        const claim = claimGateRequest(key);
+        // Taking the freed lock is the ideal answer; falling through to
+        // `requestId: null` is the acceptable one. Both stage their own request,
+        // which is the fail-closed direction — two cards beats no gate.
+        expect(claim.owner === true || claim.requestId === null).toBe(true);
+        expect(Date.now() - start).toBeLessThan(15_000);
+    });
+
+    test('publishing is ATOMIC — a loser never reads a half-written id', () => {
+        // The id is written to `<claim>.tmp` and renamed, so `<claim>` only ever
+        // exists complete. A loser reading a truncated id would poll a
+        // nonexistent request and time out at 60 minutes.
+        const key = gateClaimKey('exec-1', 'a', 'c');
+        claimGateRequest(key);
+        publishGateClaim(key, 'gate-atomic-1');
+        expect(readFileSync(`${GATE_CLAIM_DIR}/${key}`, 'utf-8')).toBe('gate-atomic-1');
+        expect(existsSync(`${GATE_CLAIM_DIR}/${key}.tmp`)).toBe(false);
+    });
+
+    test('a stale claim from an earlier session is swept, not honoured', () => {
+        // A requestId older than the 60-minute gate window names a decision
+        // nobody is going to make. Polling it would hang the new tool call for
+        // an hour; sweeping it means this call stages a fresh card.
+        const key = gateClaimKey('exec-old', 'a', 'c');
+        mkdirSync(GATE_CLAIM_DIR, { recursive: true });
+        for (const p of [`${GATE_CLAIM_DIR}/${key}`, `${GATE_CLAIM_DIR}/${key}.lock`]) {
+            writeFileSync(p, 'gate-ancient');
+            const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+            utimesSync(p, old, old);
+        }
+        expect(claimGateRequest(key)).toEqual({ owner: true });
+    });
+
+    test('a FRESH claim from a live peer is not swept', () => {
+        const key = gateClaimKey('exec-fresh', 'a', 'c');
+        claimGateRequest(key);
+        publishGateClaim(key, 'gate-fresh');
+        expect(claimGateRequest(gateClaimKey('exec-other', 'a', 'c'))).toEqual({ owner: true });
+        expect(readFileSync(`${GATE_CLAIM_DIR}/${key}`, 'utf-8')).toBe('gate-fresh');
+    });
+});
+
+describe('claimGateRequest across real PROCESSES', () => {
+    // The whole point: the two guards are separate processes that codex starts
+    // within a millisecond of each other. An in-process test cannot exercise the
+    // O_EXCL race that decides which one stages the card.
+    test('exactly one of N concurrent processes owns the claim', async () => {
+        const key = gateClaimKey('exec-race', 'request_destructive_gate', 'rm -rf /x');
+        const script = `${import.meta.dir}/__gate-claim-race.ts`;
+        writeFileSync(
+            script,
+            [
+                `import { claimGateRequest, publishGateClaim } from '${import.meta.dir}/block-destructive-core';`,
+                `const key = process.argv[2];`,
+                `const claim = claimGateRequest(key);`,
+                `if (claim.owner) { Bun.sleepSync(120); publishGateClaim(key, 'gate-race-winner'); }`,
+                `console.log(JSON.stringify(claim));`,
+            ].join('\n'),
+        );
+        try {
+            const results = await Promise.all(
+                [0, 1, 2, 3].map(async () => {
+                    const proc = Bun.spawn(['bun', script, key], { stdout: 'pipe', stderr: 'pipe' });
+                    const out = await new Response(proc.stdout).text();
+                    await proc.exited;
+                    return JSON.parse(out.trim()) as { owner: boolean; requestId?: string | null };
+                }),
+            );
+            expect(results.filter((r) => r.owner)).toHaveLength(1);
+            // Every loser waited for the owner's id rather than staging its own.
+            for (const loser of results.filter((r) => !r.owner)) {
+                expect(loser.requestId).toBe('gate-race-winner');
+            }
+        } finally {
+            rmSync(script, { force: true });
+        }
+    }, 30_000);
+});
