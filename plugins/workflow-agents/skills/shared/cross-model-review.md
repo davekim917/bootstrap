@@ -29,7 +29,7 @@ codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="
 When the artifact author is Codex, invoke Claude with:
 
 ```sh
-claude -p --model claude-fable-5-1 --effort medium --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json
+claude -p --model claude-fable-5-1 --effort medium --safe-mode --no-session-persistence --tools "" --strict-mcp-config --output-format json
 ```
 
 Pass the review prompt and source bundle on stdin. Run each external reviewer in the foreground and
@@ -131,7 +131,7 @@ Ask for exactly one JSON object, and enforce it at the CLI boundary — `--outpu
 only shapes the response envelope, it does not constrain content to a schema:
 
 ```sh
-claude -p --model claude-fable-5-1 --effort medium --safe-mode --no-session-persistence --permission-mode plan --tools "" --strict-mcp-config --output-format json \
+claude -p --model claude-fable-5-1 --effort medium --safe-mode --no-session-persistence --tools "" --strict-mcp-config --output-format json \
   --json-schema '{"type":"object","required":["verdict","findings"],"properties":{"verdict":{"enum":["clear","must_fix","degraded"]},"findings":{"type":"array","items":{"type":"object","required":["severity","requirement","evidence","failure_mode","smallest_fix","confidence"],"properties":{"severity":{"enum":["MUST-FIX","SHOULD-FIX"]},"requirement":{"type":"string"},"evidence":{"type":"string"},"failure_mode":{"type":"string"},"smallest_fix":{"type":"string"},"confidence":{"type":"number","minimum":0,"maximum":1}}}}}}'
 ```
 

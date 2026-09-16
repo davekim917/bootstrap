@@ -535,11 +535,11 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.7.0') {
-  fail(`bootstrap-workflow release must be version 5.7.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.7.1') {
+  fail(`bootstrap-workflow release must be version 5.7.1 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.7.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.7.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.7.1') {
+  fail(`bootstrap-workflow-agents release must be version 2.7.1 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
 if (orchestrateClaudeManifest?.version !== '2.0.2') {
@@ -753,7 +753,6 @@ const crossModelTokens = [
   '--effort medium',
   '--safe-mode',
   '--no-session-persistence',
-  '--permission-mode plan',
   '--tools ""',
   '--strict-mcp-config',
   '--output-format json',
@@ -773,6 +772,9 @@ for (const contractPath of [
     '--dangerously-skip-permissions',
     '--dangerously-bypass-approvals-and-sandbox',
     '--permission-mode bypassPermissions',
+    // Plan mode framed a one-shot reviewer as a planning session; `--tools ""`
+    // is the read-only guarantee, so the flag is left out entirely.
+    '--permission-mode plan',
   ];
   const forbidden = forbiddenTokens.filter((token) => content?.includes(token));
   if (forbidden.length > 0) {
