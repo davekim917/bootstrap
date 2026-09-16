@@ -1602,6 +1602,23 @@ function sweepStaleClaims(nowMs: number): void {
 }
 
 /**
+ * Which `delivered.status` values mean a human has ANSWERED the card.
+ *
+ * Extracted and exported because this predicate, not the SQLite plumbing around
+ * it, is where the bug was: an earlier revision treated the mere PRESENCE of a
+ * row as decided, which made every `pending` card — the live, unanswered state —
+ * look settled. The DB path is a hardcoded container mount, so the round trip
+ * cannot be driven from a unit test; the predicate can, exhaustively.
+ *
+ * An unknown status is NOT decided: a future status this code has never heard of
+ * is more likely a new in-flight state than a new terminal one, and guessing
+ * "decided" is the answer that silently duplicates approval cards.
+ */
+export function isDecidedGateStatus(status: string | null | undefined): boolean {
+    return status === 'delivered' || status === 'failed';
+}
+
+/**
  * Has this requestId ALREADY been decided?
  *
  * A live peer publishes an id that nothing has answered yet, so a published id
@@ -1615,6 +1632,18 @@ function sweepStaleClaims(nowMs: number): void {
  * no-attacker case — a `tool_use_id` repeating inside the sweep window would
  * otherwise reuse the earlier decision.)
  *
+ * DECIDED means `delivered` or `failed` — NOT `pending`. The host writes a
+ * `pending` row the moment it posts the card and leaves it there for the whole
+ * decision window (nanoclaw `src/modules/bash-gate/index.ts` →
+ * `src/modules/mailbox/ops/delivery.ts`), so `pending` is precisely the state a
+ * loser SHOULD wait on. Counting it as decided fails safe but reintroduces the
+ * duplicate cards this whole mechanism removes: every loser arriving more than
+ * one host poll (~1s) after the owner staged would raise its own card, and a
+ * command needing both the destructive and the email gate would raise four.
+ * Every other reader agrees — `pollDeliveredTable` below, and nanoclaw's
+ * `container/agent-runner/src/db/delivery-acks.ts`, both treat `pending` as
+ * unresolved.
+ *
  * Unreadable DB, missing table, anything unexpected: answer TRUE. "I could not
  * check" must refuse the shortcut and make the caller stage its own card, never
  * wave it through.
@@ -1626,8 +1655,11 @@ export function gateRequestAlreadyDecided(requestId: string): boolean {
     try {
         db = new Database(NANOCLAW_INBOUND_DB, { readonly: true });
         db.exec('PRAGMA busy_timeout = 2000');
-        const row = db.prepare('SELECT status FROM delivered WHERE message_out_id = ?').get(requestId);
-        return row !== null && row !== undefined;
+        const row = db.prepare('SELECT status FROM delivered WHERE message_out_id = ?').get(requestId) as
+            | { status?: string }
+            | undefined
+            | null;
+        return isDecidedGateStatus(row?.status);
     } catch {
         return true;
     } finally {
