@@ -29,12 +29,14 @@ export const EXPECTED_SKILLS = Object.freeze([
 export const EXPECTED_ORCHESTRATE_SKILLS = Object.freeze(['orchestrate']);
 
 /**
- * Named worker roles and tiers, all retired. `worker-frontier` is the newest
- * arrival: it was the single named role the whole delegation contract pointed at,
- * with a policy file rendering its model and effort. `/orchestrate` now names a
- * model and an effort per dispatch instead, and the five `worker-<level>` shims
- * it dispatches to carry no instructions — so any of these reappearing in a
- * contract is a role growing back.
+ * Retired worker ROLE names. `worker-frontier` is the newest arrival: it was the
+ * single named role the whole delegation contract pointed at, with a policy file
+ * rendering its model and effort. `/orchestrate` now names a model and an effort
+ * per dispatch instead, and the five `worker-<level>` shims it dispatches to
+ * carry no instructions — so any of these reappearing is a role growing back.
+ *
+ * Checked in BOTH the workflow contract and the orchestrate skill, because a
+ * role name has no legitimate use in either.
  *
  * `worker-high` was on this list and is REMOVED, deliberately: it is now a live
  * shim name (`agents/worker-high.md`). Leaving it would fail the gate on any doc
@@ -43,10 +45,25 @@ export const EXPECTED_ORCHESTRATE_SKILLS = Object.freeze(['orchestrate']);
  * with no model and no instructions behind it. Every name that stays is one no
  * shim can claim, because none of them is an effort level.
  */
-const RETIRED_WORKER_POLICY = [
+const RETIRED_WORKER_ROLES = [
   'worker-fast',
   'worker-codex',
   'worker-frontier',
+];
+
+/**
+ * Model ids that were WORKER TIERS in the retired ladder — checked in the
+ * contract only.
+ *
+ * Split out from the role names because a model id, unlike a role name, has a
+ * legitimate use: `/orchestrate` maps short names to full ids, and `luna` is one
+ * of the four it maps. Naming the id there is the skill working; naming it in
+ * the CONTRACT would mean a tier had been reinstated, which is the thing worth
+ * catching. Keeping one combined list made the gate fail on the mapping table —
+ * the same collision `worker-high` caused, and the same resolution: narrow the
+ * check to where the name still means what the gate thinks it means.
+ */
+const RETIRED_WORKER_TIER_MODELS = [
   'gpt-5.6-luna',
 ];
 
@@ -236,7 +253,7 @@ export function evaluateContracts({
       'Factual corrections and test-detail refinements do not reset authorization',
       'no mandatory exact test skeleton', 'human interruptions', 'escaped defects',
     ]);
-    for (const retired of RETIRED_WORKER_POLICY) {
+    for (const retired of [...RETIRED_WORKER_ROLES, ...RETIRED_WORKER_TIER_MODELS]) {
       if (workflow.includes(retired)) failures.push(`${label}/workflow: retired worker policy ${retired}`);
     }
   }
@@ -287,7 +304,7 @@ export function evaluateContracts({
       'every later round is SendMessage to that name',
       'codex:codex-rescue',
       '--model <full id> --effort {effort_level} --write --wait',
-      'every later round asks it to `--resume --wait`',
+      'Every later round asks it to `--resume --wait`',
       'spawn_agent', 'reasoning_effort',
       'Every later round goes to that agent id',
       'agent "worker-{effort_level}" when that agent exists',
@@ -298,6 +315,16 @@ export function evaluateContracts({
       // in the transcript says so.
       'a specific version cannot be named; say so if one was asked for',
       '`max` is not accepted there — use `xhigh` and say so',
+      // The id mapping, and what silence means. The line accepts short names but
+      // the Codex companion expands only `spark`, so an unresolved `sol` reaches
+      // Codex as typed; and codex-rescue's rule for a failed call is to return
+      // NOTHING. Together those produce a blank round with no error, which a
+      // coordinator reads as "no news" and follows with another round. Both
+      // halves are needed: the mapping so the call succeeds, the empty-result
+      // rule so a failure is still reported when it does not.
+      'astra → gpt-6-astra, sol → gpt-5.6-sol, terra → gpt-5.6-terra, luna → gpt-5.6-luna',
+      'if it does not resolve, stop and say so',
+      'An empty result from codex-rescue means the call failed: say so rather than starting another round',
       'If the plugin is not installed, stop and say so — do not substitute a model',
       'if the tool exposes no model or reasoning_effort field, say so and stop',
       'An Anthropic model cannot be dispatched from Codex; say so and stop',
@@ -307,7 +334,7 @@ export function evaluateContracts({
       // concurrent Codex run silently hijacks round two.
       'resumes the latest Codex thread in this repository',
     ]);
-    for (const retired of RETIRED_WORKER_POLICY) {
+    for (const retired of RETIRED_WORKER_ROLES) {
       if (skill.includes(retired)) failures.push(`${label}/orchestrate: retired worker policy ${retired}`);
     }
   }

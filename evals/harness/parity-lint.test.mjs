@@ -163,6 +163,9 @@ test('contract gate rejects dropping any capability refusal or degradation', (t)
   for (const refusal of [
     'a specific version cannot be named; say so if one was asked for',
     '`max` is not accepted there — use `xhigh` and say so',
+    'astra → gpt-6-astra, sol → gpt-5.6-sol, terra → gpt-5.6-terra, luna → gpt-5.6-luna',
+    'if it does not resolve, stop and say so',
+    'An empty result from codex-rescue means the call failed: say so rather than starting another round.',
     'If the plugin is not installed, stop and say so — do not substitute a model.',
     'if the tool exposes no model or reasoning_effort field, say so and stop',
     'An Anthropic model cannot be dispatched from Codex; say so and stop.',
@@ -172,10 +175,21 @@ test('contract gate rejects dropping any capability refusal or degradation', (t)
     const roots = copiedContracts(t);
     const skill = path.join(roots.orchestrateRoot, 'orchestrate/SKILL.md');
     const text = fs.readFileSync(skill, 'utf8');
+
+    // The unmodified copy must PASS first. Without this, an iteration whose
+    // fixture is broken for an unrelated reason satisfies the pass === false
+    // assertion below and the whole loop proves nothing.
+    assert.equal(evaluateContracts(roots).pass, true, 'fixture must start healthy');
     assert.ok(text.includes(refusal), `fixture must contain: ${refusal}`);
+
     fs.writeFileSync(skill, text.replace(refusal, ''));
     const result = evaluateContracts(roots);
     assert.equal(result.pass, false, `dropping "${refusal}" must fail the gate`);
+    // …and it must fail BECAUSE of this sentence, not incidentally.
+    assert.ok(
+      result.failures.some((failure) => failure.includes(refusal.replace(/\.$/, ''))),
+      `the failure must name the dropped sentence; got:\n${result.failures.join('\n')}`,
+    );
   }
 });
 
