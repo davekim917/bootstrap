@@ -79,7 +79,7 @@ well as the runtime:
 | Runtime | Model | Route | Caveat |
 |---|---|---|---|
 | Claude Code | Anthropic | `Agent` tool, `bootstrap-orchestrate:worker-<level>`, then `SendMessage` each round | family alias only (`fable`/`opus`/`sonnet`/`haiku`); no specific version |
-| Claude Code | OpenAI | the Codex plugin's `codex:codex-rescue` agent, `--resume --wait` each round | `max` becomes `xhigh`; resume takes the latest Codex thread in the repo |
+| Claude Code | OpenAI | the Codex plugin's `codex:codex-rescue` agent, `--resume --wait` each round | short name resolved to a full id; `max` becomes `xhigh`; resume takes the latest Codex thread in the repo |
 | Codex | OpenAI | `spawn_agent`, then the same agent id each round | stops if the tool exposes no `model`/`reasoning_effort` |
 | Codex | Anthropic | not possible — the skill says so and stops | |
 | OpenCode | parent's | `task` tool, agent `worker-<level>` if present, else the default sub-agent | nothing installs the shims on a bare OpenCode host, so effort may not be settable |
@@ -93,6 +93,12 @@ Codex cannot run an Anthropic model at all. The Agent tool takes only a family a
 different model or a different effort than the caller asked for is the costliest failure
 this skill could have, so each of those sentences is gated by its own drift token and a
 mutation test that deletes it and requires the gate to fail.
+
+On the OpenAI row: the skill carries the short-name-to-id mapping itself (`sol` →
+`gpt-5.6-sol`, and the other three), because the Codex companion expands only `spark` and
+passes anything else through as typed. An unresolved name reaches Codex verbatim, and
+codex-rescue returns nothing when a call fails — so the skill also says that an empty
+result means failure, rather than a quiet round that invites another one.
 
 On the last row: nothing in this repo installs the effort shims onto an OpenCode host —
 a Codex-shaped manifest cannot ship agents, and OpenCode would not read `model: inherit`
