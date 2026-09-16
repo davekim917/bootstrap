@@ -1,30 +1,18 @@
 #!/usr/bin/env node
 /**
- * Generate every mechanically-derived plugin artifact from its canonical Claude
+ * Generate the Codex/OpenCode workflow skills tree from its canonical Claude
  * source.
  *
- * There are two plugin PAIRS, and this script drives both:
+ *   bootstrap-workflow (plugins/workflow) → bootstrap-workflow-agents (plugins/workflow-agents)
  *
- *   bootstrap-workflow      (plugins/workflow)      → bootstrap-workflow-agents
- *   bootstrap-orchestrate   (plugins/orchestrate)   → bootstrap-orchestrate-agents
- *
- * It also maintains the CROSS-PAIR copies. `/orchestrate` reads
- * `../shared/workflow-contract.md`, and that contract is shared with the seven
- * `team-*` skills — but a relative path cannot leave a plugin: an installed
- * marketplace cache materializes only the plugin's own subtree, so
- * `plugins/orchestrate` reaching into `plugins/workflow` would resolve in this
+ * The seven `team-*` skills and the shared contracts are authored once in
+ * `plugins/workflow/skills/` and copied here with only schema/path
+ * substitutions. `skills/shared/` is copied rather than referenced across the
+ * plugin boundary: an installed marketplace cache materializes only the plugin's
+ * own subtree, so a relative path leaving the plugin would resolve in this
  * checkout and be missing on every real install (the same reason the guard cores
  * are vendored rather than cross-imported — scripts/vendor-guards.mjs:11-16).
- * So the orchestrate pair carries its own byte-identical copy of `skills/shared/`,
- * generated here from the canonical `plugins/workflow/skills/shared/` and gated
- * by evals/harness/parity-lint.mjs, which fails if any copy diverges.
- *
- * It also renders the WORKER MODEL/EFFORT POLICY. One hand-edited file
- * (plugins/workflow/worker-policy.json) is the source for the worker agent def's
- * `model`/`effort` frontmatter and its "Runs on X at Y effort." sentence, the
- * Codex role TOML's model and retargeted description, and the
- * `worker-policy.generated.mjs` module each frontier-worker.mjs imports. See
- * ./worker-policy.mjs.
+ * `evals/harness/parity-lint.mjs` fails if a copy drifts.
  *
  * Usage:
  *   node plugins/workflow-agents/scripts/sync-agent-skills.mjs
@@ -34,19 +22,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { WORKER_AGENT, renderCodexAgentToml } from './codex-agent-toml.mjs';
-import {
-  GENERATED_POLICY_BASENAME,
-  POLICY_CONSUMER_PLUGINS,
-  POLICY_PATH,
-  applyAgentDefPolicy,
-  loadWorkerPolicy,
-  renderPolicyModule,
-} from './worker-policy.mjs';
-
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-/** The one canonical home of every shared contract file, for both pairs. */
+/** The one canonical home of every shared contract file. */
 export const CANONICAL_SHARED = path.join(REPO, 'plugins/workflow/skills/shared');
 
 export const TEAM_SKILLS = [
@@ -59,8 +37,6 @@ export const TEAM_SKILLS = [
   'team-retro',
 ];
 
-export const ORCHESTRATE_SKILLS = ['orchestrate'];
-
 const SHARED = [
   'workflow-contract.md',
   'cross-model-review.md',
@@ -69,33 +45,8 @@ const SHARED = [
   'references/codex-review-output.schema.json',
 ];
 
-/**
- * Each pair: a canonical Claude plugin whose skills are authored by hand, and a
- * generated Codex/OpenCode twin. `shared/` in BOTH trees is generated from
- * CANONICAL_SHARED — which means the orchestrate pair's copy is generated even
- * on its Claude side, because its canonical source lives in the other plugin.
- */
-/** The one canonical worker-transport helper, mirrored into the other plugins. */
-export const HELPER_SOURCE = path.join(REPO, 'plugins/workflow/scripts/frontier-worker.mjs');
-
-export const PAIRS = [
-  {
-    name: 'workflow',
-    skills: TEAM_SKILLS,
-    claude: path.join(REPO, 'plugins/workflow'),
-    agents: path.join(REPO, 'plugins/workflow-agents'),
-    // The canonical Claude tree authors its own shared/ in place.
-    generateClaudeShared: false,
-  },
-  {
-    name: 'orchestrate',
-    skills: ORCHESTRATE_SKILLS,
-    claude: path.join(REPO, 'plugins/orchestrate'),
-    agents: path.join(REPO, 'plugins/orchestrate-agents'),
-    generateClaudeShared: true,
-  },
-];
-
+export const CLAUDE_SKILLS = path.join(REPO, 'plugins/workflow/skills');
+export const AGENT_SKILLS = path.join(REPO, 'plugins/workflow-agents/skills');
 
 /** Mechanical substitutions for schema/path differences only. */
 export function transformSkill(text) {
@@ -106,30 +57,20 @@ export function transformSkill(text) {
 }
 
 /**
- * What a generated skills tree must contain, keyed by path relative to that
- * tree's `skills/` root.
- *
- * `transform` is applied to SKILL.md only. For the Codex/OpenCode twin it is
- * `transformSkill` (schema/path substitutions); for the orchestrate pair's own
- * Claude `shared/` copy there is no transform at all — those files must stay
- * byte-identical to the canonical ones, which is exactly what parity-lint checks.
+ * What the generated skills tree must contain, keyed by path relative to its
+ * `skills/` root. `transform` is applied to SKILL.md only; the shared contracts
+ * stay byte-identical, which is exactly what parity-lint checks.
  */
-function expectedFiles({ skillSource, skills, transform, includeSkills = true }) {
+function expectedFiles() {
   const files = new Map();
-  if (includeSkills) {
-    for (const skill of skills) {
-      const source = path.join(skillSource, skill, 'SKILL.md');
-      if (!fs.existsSync(source)) {
-        throw new Error(`missing canonical skill: ${source}`);
-      }
-      files.set(path.join(skill, 'SKILL.md'), transform(fs.readFileSync(source, 'utf8')));
-    }
+  for (const skill of TEAM_SKILLS) {
+    const source = path.join(CLAUDE_SKILLS, skill, 'SKILL.md');
+    if (!fs.existsSync(source)) throw new Error(`missing canonical skill: ${source}`);
+    files.set(path.join(skill, 'SKILL.md'), transformSkill(fs.readFileSync(source, 'utf8')));
   }
   for (const name of SHARED) {
     const source = path.join(CANONICAL_SHARED, name);
-    if (!fs.existsSync(source)) {
-      throw new Error(`missing canonical shared contract: ${source}`);
-    }
+    if (!fs.existsSync(source)) throw new Error(`missing canonical shared contract: ${source}`);
     files.set(path.join('shared', name), fs.readFileSync(source, 'utf8'));
   }
   return files;
@@ -190,7 +131,7 @@ function removeUnexpectedEmptyDirectories(root, expected) {
 }
 
 /**
- * Reconcile one generated tree against its expectation. Returns the failure
+ * Reconcile the generated tree against its expectation. Returns the failure
  * lines a `--check` run should print; in write mode it writes and returns [].
  */
 function reconcile({ label, root, expected, expectedTopLevel, check }) {
@@ -238,146 +179,15 @@ function reconcile({ label, root, expected, expectedTopLevel, check }) {
   return problems;
 }
 
-/**
- * Write one rendered artifact; returns a failure line under --check when the
- * file on disk is not byte-identical to what the source of truth renders.
- *
- * This is the shape every worker-policy artifact takes, and it is what turns
- * the gates from "assert the literal string `gpt-5.6-sol`" into "assert
- * generated == source": a hand-edit of the output and a stale regeneration both
- * fail here, and neither needs the gate to know what the policy says.
- */
-function writeGenerated({ label, target, content, check }) {
-  const current = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : null;
-  if (current === content) return null;
-  if (check) {
-    return `${label}: stale or missing ${path.relative(REPO, target)} — regenerate: `
-      + 'node plugins/workflow-agents/scripts/sync-agent-skills.mjs';
-  }
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, content);
-  return null;
-}
-
-/** Copy one file verbatim; returns a failure line under --check when stale. */
-function mirrorFile({ label, source, target, check }) {
-  if (!fs.existsSync(source)) throw new Error(`missing canonical file: ${source}`);
-  const content = fs.readFileSync(source);
-  if (fs.existsSync(target) && content.equals(fs.readFileSync(target))) return null;
-  if (check) return `${label}: stale or missing ${path.relative(REPO, target)}`;
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, content);
-  return null;
-}
-
 function main() {
   const check = process.argv.includes('--check');
-  const problems = [];
-  let skillCount = 0;
-
-  // The worker model/effort policy. Loaded (and validated) first: every artifact
-  // below that names a model or an effort is rendered from it.
-  const policy = loadWorkerPolicy(REPO);
-  const policyModule = renderPolicyModule(policy);
-  for (const plugin of POLICY_CONSUMER_PLUGINS) {
-    const problem = writeGenerated({
-      label: `sync-agent-skills[policy:${path.basename(plugin)}]`,
-      target: path.join(REPO, plugin, 'scripts', GENERATED_POLICY_BASENAME),
-      content: policyModule,
-      check,
-    });
-    if (problem) problems.push(problem);
-  }
-
-  for (const pair of PAIRS) {
-    skillCount += pair.skills.length;
-
-    // Codex/OpenCode twin: transformed skills + shared contracts.
-    problems.push(...reconcile({
-      label: `sync-agent-skills[${pair.name}-agents]`,
-      root: path.join(pair.agents, 'skills'),
-      expected: expectedFiles({
-        skillSource: path.join(pair.claude, 'skills'),
-        skills: pair.skills,
-        transform: transformSkill,
-      }),
-      expectedTopLevel: new Set([...pair.skills, 'shared']),
-      check,
-    }));
-
-    // The orchestrate pair's Claude `shared/` is generated too: its canonical
-    // source lives in plugins/workflow, and a relative path cannot cross a
-    // plugin boundary on an installed cache. Skills there stay hand-authored.
-    if (pair.generateClaudeShared) {
-      problems.push(...reconcile({
-        label: `sync-agent-skills[${pair.name}-shared]`,
-        root: path.join(pair.claude, 'skills', 'shared'),
-        expected: new Map(
-          [...expectedFiles({ skills: [], transform: (t) => t, includeSkills: false })]
-            .map(([relative, content]) => [path.relative('shared', relative), content]),
-        ),
-        expectedTopLevel: new Set(['references']),
-        check,
-      }));
-    }
-
-    // The build transport is authored once beside the canonical workflow plugin
-    // and mirrored into every plugin whose orchestrate skill names it.
-    if (pair.name !== 'workflow') {
-      for (const target of [pair.claude, pair.agents]) {
-        const problem = mirrorFile({
-          label: `sync-agent-skills[${pair.name}]`,
-          source: HELPER_SOURCE,
-          target: path.join(target, 'scripts', 'frontier-worker.mjs'),
-          check,
-        });
-        if (problem) problems.push(problem);
-      }
-    }
-  }
-
-  // workflow-agents keeps its own copy of the helper (it ships the scripts/ dir
-  // the README documents), generated from the same canonical source.
-  {
-    const problem = mirrorFile({
-      label: 'sync-agent-skills[workflow-agents]',
-      source: HELPER_SOURCE,
-      target: path.join(REPO, 'plugins/workflow-agents/scripts/frontier-worker.mjs'),
-      check,
-    });
-    if (problem) problems.push(problem);
-  }
-
-  // The worker role: one Claude agent def in, one Codex role TOML out.
-  //
-  // The def's `model:`/`effort:` scalars and its closing "Runs on X at Y effort."
-  // sentence come from the policy; the rest of the file is hand-authored, so the
-  // policy is applied to it in place rather than the whole def being rendered.
-  // The TOML is then rendered from the POLICY-APPLIED def, so a stale def cannot
-  // leak a stale model into the Codex half — the def reports its own drift.
-  const agentSource = path.join(REPO, `plugins/workflow/agents/${WORKER_AGENT}.md`);
-  const agentTarget = path.join(REPO, `plugins/workflow-agents/agents/${WORKER_AGENT}.toml`);
-  if (!fs.existsSync(agentSource)) throw new Error(`missing canonical agent def: ${agentSource}`);
-  const agentDef = applyAgentDefPolicy(fs.readFileSync(agentSource, 'utf8'), policy);
-  {
-    const problem = writeGenerated({
-      label: `sync-agent-skills[policy:agents/${WORKER_AGENT}.md]`,
-      target: agentSource,
-      content: agentDef,
-      check,
-    });
-    if (problem) problems.push(problem);
-  }
-  const agentToml = renderCodexAgentToml(agentDef, policy.codex.model);
-  const currentToml = fs.existsSync(agentTarget) ? fs.readFileSync(agentTarget, 'utf8') : null;
-  if (currentToml !== agentToml) {
-    if (check) {
-      problems.push(`sync-agent-skills: stale or missing agents/${WORKER_AGENT}.toml`);
-    } else {
-      fs.mkdirSync(path.dirname(agentTarget), { recursive: true });
-      fs.writeFileSync(agentTarget, agentToml);
-    }
-  }
+  const problems = reconcile({
+    label: 'sync-agent-skills[workflow-agents]',
+    root: AGENT_SKILLS,
+    expected: expectedFiles(),
+    expectedTopLevel: new Set([...TEAM_SKILLS, 'shared']),
+    check,
+  });
 
   if (problems.length > 0) {
     for (const problem of problems) console.error(problem);
@@ -386,9 +196,8 @@ function main() {
 
   const action = check ? 'verified' : 'generated';
   console.log(
-    `sync-agent-skills: ${action} ${skillCount} skills across ${PAIRS.length} plugin pairs, `
-    + `${SHARED.length} shared contracts per tree, 1 agent role and the worker policy `
-    + `(${POLICY_PATH}) in ${POLICY_CONSUMER_PLUGINS.length} plugins`,
+    `sync-agent-skills: ${action} ${TEAM_SKILLS.length} skills and ${SHARED.length} shared contracts `
+    + 'in plugins/workflow-agents',
   );
 }
 

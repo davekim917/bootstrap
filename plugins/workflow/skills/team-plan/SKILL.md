@@ -6,7 +6,7 @@ description: Ground a minimal technical plan and review consequential decisions.
 # /team-plan — Ground the outcome
 
 Read `../shared/workflow-contract.md` and `../shared/cross-model-review.md` first.
-The retained frontier owner investigates and designs; the coordinator carries logistics and status.
+The retained sub-agent investigates and designs; the coordinator carries logistics and status.
 
 1. Read the relevant source and instructions in full. Ground outcome, scope, existing approval,
    constraints and observable acceptance criteria in the conversation and evidence.
@@ -20,4 +20,4 @@ The retained frontier owner investigates and designs; the coordinator carries lo
    not cover the work; factual or test-detail revisions do not restart approval.
 
 A planning-only request authorizes investigation and planning artifacts, not product implementation.
-Resume the same frontier owner for an authorized build; do not discard its technical context.
+Resume the same sub-agent for an authorized build; do not discard its technical context.

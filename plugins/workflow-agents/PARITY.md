@@ -3,11 +3,10 @@
 `plugins/workflow/skills/` is the canonical workflow source.
 `plugins/workflow-agents/skills/` is the generated Codex/OpenCode distribution.
 
-`orchestrate` is NOT in this inventory. It ships in its own plugin pair
-(`plugins/orchestrate` / `plugins/orchestrate-agents`) so the operator can disable automatic
-delegation pressure while these seven skills keep working; see `README.md`. The same generator
-drives that pair, and it also generates that pair's copy of `shared/` from the canonical tree
-below, because a plugin-relative path cannot cross a plugin boundary on an installed cache.
+`orchestrate` is NOT in this inventory. It ships in its own plugin (`plugins/orchestrate`, one
+directory with both manifests) so the operator can disable delegation while these seven skills keep
+working; see `README.md`. Nothing about that plugin is generated: it is a skill plus five effort
+shims, with no code and no copied contract.
 
 The user-facing inventory here is exactly:
 
@@ -27,10 +26,8 @@ The generator also mirrors these shared contracts byte-for-byte:
 - `shared/references/codex-adversarial-prompt.md`
 - `shared/references/codex-review-output.schema.json`
 
-Those same files are mirrored into `plugins/orchestrate/skills/shared/` and
-`plugins/orchestrate-agents/skills/shared/`. Every copy is compared byte-for-byte against
-`plugins/workflow/skills/shared/` by `evals/harness/parity-lint.mjs` and
-`scripts/check-plugin-boundaries.mjs`.
+The copy here is compared byte-for-byte against `plugins/workflow/skills/shared/` by
+`evals/harness/parity-lint.mjs` and `scripts/check-plugin-boundaries.mjs`.
 
 All runtime dispatch belongs in concise runtime sections inside the canonical skill text. The
 shared behavior stays runtime-neutral. The generator performs only schema/path substitutions; do
@@ -51,9 +48,14 @@ cannot survive as generated-tree residue.
 Generated from the Claude tree — regenerate, never hand-edit:
 
 - `skills/**`
-- `scripts/frontier-worker.mjs`
-- `agents/worker-frontier.toml` (rendered from `plugins/workflow/agents/worker-frontier.md`)
 - `hooks/guards/*-core.ts` (vendored by `scripts/vendor-guards.mjs`)
+
+There is no `agents/` directory here any more. Codex reads named roles only from
+`<CODEX_HOME>/agents/<name>.toml`, so shipping a role meant generating a TOML and copying it into
+the user's home from a `SessionStart` hook. `/orchestrate` names a model and an effort per dispatch
+instead of naming a role, so the role, its generator, its installer, its `SessionStart` hook and the
+`worker-policy.json` that rendered its model all went together. `scripts/check-plugin-boundaries.mjs`
+asserts each of them stays gone, and that this plugin declares `PreToolUse` and nothing else.
 
 `dispatch-first-core.ts` is not vendored here. The guard it belonged to has been deleted outright:
 automatic delegation pressure is off, and a gate that blocks a coordinator from reading source
@@ -63,6 +65,6 @@ Hand-maintained, because Codex has no counterpart in the Claude plugin — Claud
 `agents/` from the plugin root, and Codex reads roles only from `<CODEX_HOME>/agents/`:
 
 - `hooks/workflow-hooks.json` and `hooks/codex-guard.ts`
-- `scripts/install-agent-roles.mjs`, `scripts/session-install-roles.mjs`, `scripts/ownership.mjs`
-- `scripts/codex-agent-toml.mjs`, `scripts/sync-agent-skills.mjs`
+- `scripts/ownership.mjs` (the ownership marker `scripts/retire-bootstrap-agents.mjs` reads)
+- `scripts/sync-agent-skills.mjs`
 - `.codex-plugin/plugin.json`, `marketplace-entry.json`, this file

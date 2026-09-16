@@ -62,7 +62,7 @@ before it can become `MUST-FIX`.
 
 ## Correction rule
 
-Return accepted findings to the same retained frontier owner. Use the shared default maximum of 3
+Return accepted findings to the same retained sub-agent. Use the shared default maximum of 3
 corrective rounds across the task, with one reconsideration on a repeated failure signature.
 Re-run affected checks and review the changed surface as risk requires. Stop on exhausted budget,
 no progress or repeated workflow-created obstruction, not merely a second productive failure.

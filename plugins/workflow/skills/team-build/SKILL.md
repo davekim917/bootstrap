@@ -1,17 +1,17 @@
 ---
 name: team-build
-description: Build, test and repair authorized work in the retained frontier session.
+description: Build, test and repair authorized work in one retained sub-agent session.
 ---
 
 # /team-build — Complete the authorized change
 
 Read `../shared/workflow-contract.md` first. Read the plan if present and ground implementation
 authority in the conversation. Stop dependent work only for a missing scope, product, trust or
-irreversible decision. Keep the same frontier owner through build, tests and fixes.
+irreversible decision. Keep the same sub-agent through build, tests and fixes.
 
 1. Inspect git state and preserve unrelated changes. Record existing authority and owner settings.
 2. Inspect current source; implement the smallest complete change. The owner uses tools directly.
-   Only brief logistical or mechanical actions execute directly; substantive work uses the frontier owner.
+   Only brief logistical or mechanical actions execute directly; substantive work uses the sub-agent.
 3. Add meaningful acceptance/regression tests when practical. Confirm the expected failure before
    the fix when useful; use proportional alternatives for mechanical edits or unisolatable behavior.
 4. Diagnose unexpected failures with `/team-debug`; apply the shared maximum of 3 corrective rounds

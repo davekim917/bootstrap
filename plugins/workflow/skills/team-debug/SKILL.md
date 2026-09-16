@@ -27,7 +27,7 @@ Read `../shared/workflow-contract.md` first.
    permanent check (or the dated reason there is none), and remaining risk. When inside a planned
    workflow, append this evidence to `run.md`.
 
-Keep diagnosis and repair in the retained frontier owner session. Use the shared maximum of 3
+Keep diagnosis and repair in the retained sub-agent session. Use the shared maximum of 3
 corrective rounds across the task. On a repeated failure signature, reconsider the hypothesis or
 test premise once. Stop on no progress, exhausted budget or repeated workflow-created obstruction;
 a second productive failure alone is not a stop. Complexity needs an external failure boundary.
