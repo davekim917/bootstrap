@@ -15,10 +15,9 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.6.0 | The seven `team-*` skills, the `worker-frontier` role, and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.6.0 | The same, runtime-neutral |
-| Claude Code | `bootstrap-orchestrate` | 1.2.0 | `/orchestrate`, an invoke-only skill: hand one task to a retained frontier sub-agent |
-| Codex / OpenCode | `bootstrap-orchestrate-agents` | 1.2.0 | The same, runtime-neutral |
+| Claude Code | `bootstrap-workflow` | 5.7.0 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.7.0 | The same, runtime-neutral |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.0.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.3.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
@@ -28,12 +27,10 @@ Automatic delegation pressure is off. Working directly is the normal mode: nothi
 tells a session to reach for a sub-agent, and nothing gates a session that reads
 source, runs a check, or implements a fix itself.
 
-`bootstrap-orchestrate` is a **skills-only** plugin — the same shape as `concise`.
-It ships `/orchestrate` and nothing that activates on its own: no `always-on.md`,
-no `SessionStart` hook, no `hooks` field in either manifest. Invoke it when you want
-one retained frontier sub-agent to own a task end to end — "use a frontier sub-agent
-for this", "delegate this to a frontier worker in one continuous thread", or plain
-`/orchestrate`.
+`bootstrap-orchestrate` activates nothing on its own: no `always-on.md`, no
+`SessionStart` hook, no `hooks` field in either manifest. Invoke it when you want one
+sub-agent to do all the implementation in a single thread — "use an opus subagent
+with high effort", "delegate this to fable", or plain `/orchestrate`.
 
 Two mechanisms used to create the pressure, and both were deleted rather than moved:
 the standing `SessionStart` directive that told every session to load the skill, and
@@ -41,9 +38,35 @@ the `dispatch-first` PreToolUse guard, which warned and then BLOCKED a coordinat
 that read implementation source or ran a check before dispatching.
 
 The `team-*` skills still delegate when you invoke one — the shared workflow contract
-they load says to hand substantive work to a retained frontier owner. That is
-deliberate: `/team-build` is an explicit request for the delegated workflow. What is
-gone is the *automatic* pressure, not delegation itself.
+they load says to hand substantive work to a sub-agent and keep it for the whole task.
+That is deliberate: `/team-build` is an explicit request for the delegated workflow.
+What is gone is the *automatic* pressure, not delegation itself.
+
+### What `/orchestrate` is
+
+A parameterized delegation prompt, and nothing else. You give it a model and an effort
+level; it dispatches ONE sub-agent, hands it the brief, and keeps that same sub-agent
+for every later round. You coordinate and test; the sub-agent is told not to test or
+review its own work, so the verification comes from outside it.
+
+| Parameter | Meaning | Default |
+|---|---|---|
+| `{model}` | the sub-agent's model, as this runtime names it | this session's model |
+| `{effort_level}` | `low` \| `medium` \| `high` \| `xhigh` \| `max` | this session's effort |
+| `{rounds}` | coordinate→delegate cycles before stopping | 3 |
+| `{done}` | the completion signal | the sub-agent says the work is complete |
+
+There is no role behind it, no approved model floor, and no helper CLI. Dispatch goes
+through whatever the runtime already has: Claude Code's `Agent` tool, Codex's
+`spawn_agent`, OpenCode's `task` tool.
+
+The one thing the plugin ships besides the skill is five near-empty agent definitions,
+`agents/delegate-<level>.md`. They exist because Claude Code's `Agent` tool takes a
+`model` per call but not an `effort` — effort can only be pinned in an agent
+definition's frontmatter. So each shim pins one level, sets `model: inherit` so the
+dispatch still chooses the model, and carries a single line of body. They are not
+roles, and the drift gates assert exactly that: five files, `model: inherit`, and a
+body too short to hold a contract.
 
 `scripts/plugin-enablement.mjs` prints the composed session for any plugin set, and
 `scripts/plugin-enablement.test.mjs` resolves and RUNS the hooks each state registers,
@@ -55,7 +78,7 @@ node scripts/plugin-enablement.mjs bootstrap-workflow bootstrap-orchestrate  # e
 ```
 
 The workflow plugins expose the seven team skills; `/orchestrate` ships beside them
-in the orchestrate pair:
+in its own plugin:
 
 | Skill | Purpose |
 |---|---|
@@ -133,117 +156,36 @@ non-zero exits, and malformed or empty output are recorded distinctly in `run.md
 does not retry automatically or call a same-family pass “diverse.” Manual work asks the user
 whether to proceed with degraded coverage; `/team-auto` stops once.
 
-## One-week frontier-owner trial
+## Delegating work
 
-Ordinary coordinators run Sonnet/xhigh or Terra/xhigh and directly perform only brief logistical
-or mechanical actions. Delegate substantive design, implementation, research/synthesis, debugging,
-technical planning and judgment-heavy review to frontier models by default. No file-count or
-cheap-first hurdle applies, and task length alone does not justify a downgrade. Ambiguity, novel
-design, visual taste, security, concurrency and high-consequence judgments favor frontier quality.
+The `team-*` skills hand substantive work — design, implementation, research,
+debugging, judgment-heavy review — to a sub-agent, and keep that same sub-agent for
+the whole task. Independent review still starts in a fresh context, because a reviewer
+is chosen for independence from the artifact's author.
 
-One retained `worker-frontier` owns investigation, design, build, tests and repair. Its worker
-floor is Claude Fable 5.1 or Opus 5, and Codex GPT-6 Astra or GPT-5.6 Sol. Opus/Sol are the
-default worker at `high` effort; Fable/Astra are the escalation, selected on explicit human request
-or when the task shape calls for the top model's judgment, and they run at `low`/`medium` unless
-reasoning depth is also needed. The choice is made once at task start based on user
-direction, task/model fit, observed trial results, or provider availability. Never delegate
-substantive work below that floor. Record the actual model, effort, reason and checks; if no
-approved worker is available, report the limitation instead of silently downgrading. There is one
-worker role and no retry ladder.
+There is no approved model floor and no named worker role. Pick the model and the
+effort at dispatch from the task shape, record what you actually picked, and retain it
+for that sub-agent's build/test/fix loop. `shared/workflow-contract.md` carries the
+effort rubric: `low` for mechanical work, the dispatched default for bounded
+implementation, `high` for debugging without a known root cause or a trust-boundary
+change, `xhigh` when `high` did not resolve it, `max` only on evidence that `xhigh`
+was insufficient.
 
-Launch ordinary coordinator sessions with:
+The previous release pinned all of this to one hand-edited JSON policy file in the
+workflow plugin. It rendered a named worker agent definition, a Codex role TOML, a
+`SessionStart` installer that copied the TOML into the user's Codex home, and a Node
+CLI transport mirrored into four plugins. Every piece of that is deleted. Naming a
+model and an effort at dispatch is the thing the policy existed to decide, and the
+runtime's own sub-agent tool is the transport. Upgrading needs no cleanup on your
+side: the role only ever reached a Codex home through that installer, and
+`node scripts/retire-bootstrap-agents.mjs` still removes marker-owned leftovers.
 
-```sh
-claude --model sonnet --effort xhigh
-codex --model gpt-5.6-terra -c 'model_reasoning_effort="xhigh"'
-```
+Record saved defaults, requested settings and actual runtime metadata separately: a
+saved setting does not prove what the session ran at. Existing conversational approval
+survives factual and test-detail plan refinements; new product, scope, trust and
+destructive boundaries keep their gates. Reuse evidence only for the unchanged
+artifact, environment and command, and invalidate it after relevant changes.
 
-Worker effort defaults by tier: `high` on Opus/Sol, `medium` on Fable/Astra. Escalating the model
-does not also escalate the effort. Validate actual runtime metadata separately from saved settings.
-Choose native or CLI ownership at task start: native handles stay with their parent; helper
-`--resume` accepts only its own CLI UUID. An approved alternate model uses helper `--model` from
-the start because the native Codex worker is model-pinned. Never silently replay work after a
-transport switch fails.
-
-### Changing the worker policy
-
-The models and efforts above live in ONE hand-edited file,
-`plugins/workflow/worker-policy.json`. Everything mechanical is rendered from it: the worker agent
-def's `model`/`effort` frontmatter and its "Runs on X at Y effort." sentence, the generated Codex
-role TOML, and the `worker-policy.generated.mjs` module each plugin's `frontier-worker.mjs` imports
-for `MODELS` / `defaultEffortFor` / the `--help` policy sentence. The drift gates assert
-*generated == source*, so none of them names a model by hand any more.
-
-```sh
-$EDITOR plugins/workflow/worker-policy.json                # 1. the only hand edit
-node plugins/workflow-agents/scripts/sync-agent-skills.mjs # 2. regenerate
-node scripts/check-parity.mjs                              # 3. what still needs a human
-```
-
-Step 3 is the point. The gate names exactly which **prose** surfaces still state the old policy —
-`skills/shared/workflow-contract.md` and both `orchestrate/SKILL.md`s weave the tier names through
-whole paragraphs, so they stay hand-authored and the gate only proves they name the current roster.
-Update them, re-run, commit.
-
-Downstream, NanoClaw pins the role at container spawn and carries a vendored copy, so a flip is not
-live for agent containers until its vendor step runs there too (in the nanoclaw checkout:
-`pnpm exec tsx scripts/vendor-workflow-agent.ts`, then a PR).
-
-The cross-model **review** lane (`skills/shared/cross-model-review.md`) is deliberately not derived
-from this file: a reviewer is chosen for independence from the artifact's author, not for the worker
-tier.
-
-### The worker role
-
-Both **workflow** plugins ship the `worker-frontier` agent definition, so `/orchestrate` has a worker
-to dispatch to on a bare install with no host setup. The role stays with `bootstrap-workflow`:
-`/orchestrate` dispatches to it, and disabling the orchestrate plugin must not remove the worker the
-`team-*` skills also use.
-
-**Claude.** `plugins/workflow/agents/worker-frontier.md` is auto-discovered from the plugin root —
-no `plugin.json` entry, nothing to install. Claude Code namespaces plugin agents, so it appears as
-`bootstrap-workflow:worker-frontier`. A host that also installs the role in user scope
-(`~/.claude/agents/worker-frontier.md`) exposes the bare `worker-frontier` as well. Prefer the
-qualified name: it is the plugin's copy, and a plugin update refreshes it, while the user-scope file
-is a separate copy nothing in the plugin maintains. Use the bare name only where the qualified one
-is not offered — a NanoClaw container, for instance. They are one role, not two workers.
-
-**Codex / OpenCode.** A Codex plugin can ship skills, MCP servers, browser extensions and hooks —
-not agents. Codex reads named roles only from `<CODEX_HOME>/agents/<name>.toml`, so the role TOML is
-generated into `plugins/workflow-agents/agents/` and copied there by the plugin's own `SessionStart`
-hook. Installing the plugin is the whole install: the hook runs before the first turn of every
-Codex session, so `worker-frontier` is on disk before `/orchestrate` can dispatch to it. It is
-idempotent and silent — an already-current role writes nothing — always exits 0, and never fails a
-session, whatever it finds on disk. Codex asks once to trust the plugin's hooks, the same prompt the
-safety guard already requires.
-
-The same installer is still a command, for a dry run or a home Codex is not currently using:
-
-```sh
-node plugins/workflow-agents/scripts/install-agent-roles.mjs            # dry run, shows what it would write
-node plugins/workflow-agents/scripts/install-agent-roles.mjs --apply    # write into $CODEX_HOME/agents
-```
-
-It is fail-closed about ownership. Every file it writes carries
-`# managed by bootstrap-workflow-agents agent-sync` on line 1, and it overwrites only files carrying
-that same marker. A role owned by another manager — on a NanoClaw host,
-`# managed by nanoclaw codex-sync` owns this exact filename — or a hand-written one with no marker
-is reported and refused, never clobbered. The command reports refusals and exits 1; the hook makes
-the same decision and stays quiet, because on a NanoClaw host the refusal is the correct steady
-state and a role that manager maintains is already there.
-
-The TOML is generated from the Claude `.md`, never hand-edited: run
-`node plugins/workflow-agents/scripts/sync-agent-skills.mjs` after changing the def. `parity-lint`
-fails when the two have forked.
-
-Existing conversational approval survives factual and test-detail plan refinements. New product,
-scope, trust and destructive boundaries retain their gates. Tests target observable acceptance;
-there is no required exact test skeleton or repeated stage-by-stage test ceremony. Reuse evidence
-only for the unchanged artifact, relevant environment and command; invalidate it after relevant changes.
-
-Record usage per accepted task (including failed attempts), elapsed time, repair rounds, escaped
-defects and human interruptions with reasons. Mark unavailable measurements unknown. Review the
-trial after one week using observed outcomes; this release does not claim measured savings.
 
 ## Install
 
@@ -262,7 +204,7 @@ trial after one week using observed outcomes; this release does not claim measur
 ```bash
 codex plugin marketplace add davekim917/bootstrap --ref main
 codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
-codex plugin add bootstrap-orchestrate-agents@davekim917-bootstrap
+codex plugin add bootstrap-orchestrate@davekim917-bootstrap
 codex plugin add wwbd@davekim917-bootstrap
 codex plugin add concise@davekim917-bootstrap
 ```
@@ -272,7 +214,7 @@ For a local checkout at `~/plugins/bootstrap`:
 ```bash
 codex plugin marketplace add ~/plugins/bootstrap
 codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
-codex plugin add bootstrap-orchestrate-agents@davekim917-bootstrap
+codex plugin add bootstrap-orchestrate@davekim917-bootstrap
 codex plugin add wwbd@davekim917-bootstrap
 ```
 
@@ -281,7 +223,7 @@ skills or agent definitions into a user home.
 
 `codex plugin add` is what writes the `[plugins."<name>@davekim917-bootstrap"]` stanza with
 `enabled = true` into `~/.codex/config.toml`. Enablement is **per plugin and opt-in**, so an
-existing Codex install does not pick up `bootstrap-orchestrate-agents` when the marketplace gains
+existing Codex install does not pick up `bootstrap-orchestrate` when the marketplace gains
 it — run the `add` above (or add the stanza by hand) once per host.
 
 ### Reaching NanoClaw containers
@@ -289,8 +231,8 @@ it — run the `add` above (or add the stanza by hand) once per host.
 Container Claude agents need no NanoClaw change. `discoverPlugins` walks `~/plugins` three levels
 deep for a `.claude-plugin/plugin.json` and hands each hit to the SDK as a `plugins:` entry, which
 is what loads a plugin's declared hooks; `plugins/bootstrap/plugins/wwbd` matches at the third
-level. The orchestrate pair declares no hooks at all, so there is nothing to load for it. Neither
-plugin ships a `nanoclaw-plugin.json`, and neither should: that file's
+level. The orchestrate plugin declares no hooks at all, so there is nothing to load for it.
+Neither plugin ships a `nanoclaw-plugin.json`, and neither should: that file's
 `preToolUseGuards` is a de-duplication signal telling NanoClaw to stand down one of its OWN
 built-in gates, and `bash-email` is the only value anything consumes. `check-plugin-boundaries`
 fails if one appears in the orchestrate plugin.
@@ -352,23 +294,24 @@ Claude, Codex/NanoClaw, or OpenCode sessions after cleanup so cached definitions
 
 - Claude's workflow plugin installs from `plugins/workflow`.
 - Codex/OpenCode's workflow plugin installs from `plugins/workflow-agents`.
-- `/orchestrate` installs from `plugins/orchestrate` (Claude) and `plugins/orchestrate-agents`
-  (Codex/OpenCode) as a skills-only plugin: invoke-only, with no standing directive and no hooks,
-  so it can be disabled without touching the `team-*` skills or any safety guard.
-- `skills/shared/` is carried by all four plugins, not shared by reference: an installed
+- `/orchestrate` installs from `plugins/orchestrate` on every runtime — one directory with both
+  manifests, the `wwbd` shape. It is invoke-only, with no standing directive, no hooks and no
+  scripts, so it can be disabled without touching the `team-*` skills or any safety guard.
+- `skills/shared/` is carried by BOTH workflow plugins, not shared by reference: an installed
   marketplace cache materializes only the plugin's own subtree, so a relative path cannot cross a
-  plugin boundary. `sync-agent-skills.mjs` generates every copy from
-  `plugins/workflow/skills/shared`, and `parity-lint` fails on any divergence.
+  plugin boundary. `sync-agent-skills.mjs` generates the Codex copy from
+  `plugins/workflow/skills/shared`, and `parity-lint` fails on any divergence. The orchestrate
+  plugin reads no shared contract, so it carries none.
 - Claude and Codex can also install the shared `plugins/wwbd` advisory plugin.
 - Reviewer identities are bounded prompt roles, never globally installed permanent agents.
 - Mechanically portable skills and shared contracts are generated from the Claude source tree.
 - Shared destructive and protected-file guards are authored once and vendored to the agent plugin.
 - Both plugins retain destructive-command, outbound-email, self-approval, managed-clone,
   Snowflake-connector, and protected-file safety checks.
-- `bootstrap-workflow-agents` declares exactly two hook events: `PreToolUse` for those safety
-  checks and `SessionStart` for the role install. `check-plugin-boundaries` enforces that closed
-  list. `wwbd` declares `SessionStart` only, for its standing directive; the orchestrate pair
-  declares no hooks at all.
+- `bootstrap-workflow-agents` declares exactly one hook event, `PreToolUse`, for those safety
+  checks. `check-plugin-boundaries` enforces that closed list — the `SessionStart` entry that used
+  to install a worker role into the user's Codex home went with the role. `wwbd` declares
+  `SessionStart` only, for its standing directive; `bootstrap-orchestrate` declares no hooks at all.
 - Planning and review artifacts are workflow contracts, not filesystem safety boundaries.
 
 ## Repository structure
@@ -381,7 +324,6 @@ bootstrap/
 │   ├── workflow/
 │   ├── workflow-agents/
 │   ├── orchestrate/
-│   ├── orchestrate-agents/
 │   ├── wwbd/
 │   └── concise/
 ├── evals/
@@ -395,7 +337,6 @@ bootstrap/
 node --test scripts/retire-bootstrap-agents.test.mjs
 node --test scripts/plugin-enablement.test.mjs
 node --test evals/harness/*.test.mjs
-node --test plugins/workflow-agents/scripts/*.test.mjs
 node scripts/check-plugin-boundaries.mjs
 node scripts/check-parity.mjs
 
@@ -409,7 +350,7 @@ marker-owned retired agents still active in Claude, Codex sibling-home, or OpenC
 ## Prerequisites
 
 - Claude Code for `bootstrap-workflow` and `bootstrap-orchestrate`
-- Codex with native plugin support for `bootstrap-workflow-agents` and `bootstrap-orchestrate-agents`
+- Codex with native plugin support for `bootstrap-workflow-agents` and `bootstrap-orchestrate`
 - Bun for TypeScript hooks
 
 ## License

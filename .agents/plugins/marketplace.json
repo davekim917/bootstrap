@@ -6,8 +6,8 @@
   "plugins": [
     {
       "name": "bootstrap-workflow-agents",
-      "version": "2.6.0",
-      "description": "One retained frontier owner, proportional independent review, and bounded safe publication.",
+      "version": "2.7.0",
+      "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
       "source": {
         "source": "local",
         "path": "./plugins/workflow-agents"
@@ -19,12 +19,12 @@
       "category": "Coding"
     },
     {
-      "name": "bootstrap-orchestrate-agents",
-      "version": "1.2.0",
-      "description": "The /orchestrate skill for Codex and OpenCode: hand one task to a retained frontier sub-agent. Invoke-only \u2014 no standing directive, no hooks.",
+      "name": "bootstrap-orchestrate",
+      "version": "2.0.0",
+      "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Invoke-only.",
       "source": {
         "source": "local",
-        "path": "./plugins/orchestrate-agents"
+        "path": "./plugins/orchestrate"
       },
       "policy": {
         "installation": "AVAILABLE",
