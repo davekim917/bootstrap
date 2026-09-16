@@ -155,13 +155,19 @@ test('contract gate rejects a dropped cross-provider dispatch line', (t) => {
   assert.ok(result.failures.some((f) => f.includes('Claude Code, OpenAI model')), result.failures.join('\n'));
 });
 
-test('contract gate rejects dropping either model-substitution refusal', (t) => {
-  // The costliest silent failure this skill can have: the caller names a model
-  // the runtime cannot dispatch, and the coordinator quietly uses the nearest one
-  // it CAN reach and reports success. Both refusals must be un-droppable.
+test('contract gate rejects dropping any capability refusal or degradation', (t) => {
+  // The costliest silent failure this skill can have: the caller names a model or
+  // an effort the runtime cannot honour, and the coordinator quietly substitutes
+  // the nearest thing it CAN reach and reports success. Every one of these
+  // sentences is the instruction to say so instead, and none may be droppable.
   for (const refusal of [
-    'If that plugin is not installed, stop and say so — do not substitute a model.',
+    'a specific version cannot be named; say so if one was asked for',
+    '`max` is not accepted there — use `xhigh` and say so',
+    'If the plugin is not installed, stop and say so — do not substitute a model.',
+    'if the tool exposes no model or reasoning_effort field, say so and stop',
     'An Anthropic model cannot be dispatched from Codex; say so and stop.',
+    'say in one line that effort could not be set',
+    'resumes the latest Codex thread in this repository',
   ]) {
     const roots = copiedContracts(t);
     const skill = path.join(roots.orchestrateRoot, 'orchestrate/SKILL.md');

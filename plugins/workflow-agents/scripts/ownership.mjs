@@ -1,18 +1,23 @@
 /**
- * Who owns a generated agent role file.
+ * Who owns an agent role file this plugin wrote in the past.
  *
- * This lives INSIDE the plugin on purpose. A marketplace install materializes
- * only `plugins/workflow-agents/`, so anything the plugin needs at runtime —
- * `install-agent-roles.mjs` and the renderer it calls — must resolve within
- * this directory. The repo-level `scripts/retire-bootstrap-agents.mjs` imports
- * the marker FROM here, never the other way round: the repo always has the
- * plugin, but the plugin never has the repo.
+ * NOTHING IN THIS PLUGIN WRITES ONE ANY MORE. The installer that did
+ * (`install-agent-roles.mjs`, run by a `SessionStart` hook) and the role it
+ * wrote (`worker-frontier`) were both deleted in workflow 5.7.0, when
+ * `/orchestrate` moved to naming a model and an effort per dispatch. The marker
+ * survives them because the files they left in users' Codex homes do: the
+ * repo-level `scripts/retire-bootstrap-agents.mjs` is now the only consumer, and
+ * it matches on exactly this string to decide what it may delete.
  *
- * The marker is this plugin's identity in a shared directory. Every role file
- * written by the installer carries it on line 1, and the installer overwrites
- * only files carrying exactly it — a file marked by another manager (NanoClaw's
- * `# managed by nanoclaw codex-sync` owns this same filename on a NanoClaw
- * host) or unmarked is refused.
+ * So the reason it lives here has changed. It is no longer a runtime dependency
+ * of the plugin — it is this plugin's signature on files already on disk
+ * elsewhere, and moving or rewording it would orphan every one of them. Treat
+ * the string as frozen.
+ *
+ * Marker semantics, unchanged: a role file carries it on line 1, and only files
+ * carrying exactly it may be overwritten or removed. A file marked by another
+ * manager (NanoClaw's `# managed by nanoclaw codex-sync` owns this same filename
+ * on a NanoClaw host) or unmarked is reported and refused.
  */
 export const OWNERSHIP_MARKER = '# managed by bootstrap-workflow-agents agent-sync';
 

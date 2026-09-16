@@ -993,16 +993,29 @@ for (const filePath of activeContractFiles) {
       `plugins/orchestrate Claude and Codex manifests must share one version (${orchestrateClaudeManifest?.version} !== ${orchestrateCodexManifest?.version})`,
     );
   }
-  // Claude also auto-discovers `agents/` from the plugin root, so the declaration
-  // is belt-and-braces — but an explicit one that points at a directory the
-  // plugin does not ship fails silently, as a dispatch to a subagent_type that
-  // does not resolve.
-  {
-    const declared = orchestrateClaudeManifest?.agents;
-    const roots = Array.isArray(declared) ? declared : [declared];
-    if (!roots.includes('./agents')) {
-      fail('plugins/orchestrate/.claude-plugin/plugin.json must declare "agents": ["./agents"]');
-    }
+  // The manifest must declare NO `agents` field, and this is the opposite of what
+  // it said a moment ago — worth the space, because the obvious "be explicit"
+  // instinct produces a plugin that silently ships no agents at all.
+  //
+  // Claude 2.1.273's manifest schema takes each `agents` entry as a path to ONE
+  // agent `.md` file, so `"agents": ["./agents"]` is rejected outright:
+  // `claude plugin validate` reports `agents.0: Invalid input`. The schema's own
+  // note adds the second half — "When set, the agents/ directory is not
+  // auto-loaded" — so a declaration that an install tolerates but does not
+  // understand TURNS OFF the auto-discovery that was working, and every
+  // `bootstrap-orchestrate:worker-<level>` dispatch resolves to nothing.
+  //
+  // Auto-discovery of `agents/` is what the workflow plugin relied on for
+  // `worker-frontier`, and it needs no declaration. `check-parity` runs
+  // `claude plugin validate` over every plugin directory when the CLI is
+  // available, which is the gate that catches the schema half; this is the half
+  // that survives the CLI being absent.
+  if (orchestrateClaudeManifest?.agents !== undefined) {
+    fail(
+      'plugins/orchestrate/.claude-plugin/plugin.json must NOT declare an `agents` field; '
+        + 'Claude rejects a directory entry (`agents.0: Invalid input`) and stops auto-loading '
+        + 'agents/ whenever the field is set, which silently removes every worker shim',
+    );
   }
 
   // NO `nanoclaw-plugin.json` here, deliberately — do not "fix" this by adding one.

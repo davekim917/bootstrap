@@ -88,13 +88,55 @@ test('unmanaged retired-name collision and unrelated agents are preserved', (t) 
     'impeccable-frontend',
   ].map((name) => writeAgent(home, `.codex/agents/${name}.toml`));
 
+  // Neighbours that must survive, because they share the `worker-` prefix with
+  // the newly-retired `worker-frontier` and are the LIVE effort shims. Retiring
+  // by prefix instead of by exact basename would delete the current product.
+  const shims = ['worker-low', 'worker-medium', 'worker-high', 'worker-xhigh', 'worker-max']
+    .map((name) => writeAgent(home, `.codex/agents/${name}.toml`));
+
   const result = runRetirement({ home, stateRoot, apply: true, now: fixedNow });
 
   assert.deepEqual(result.targets, []);
   assert.deepEqual(result.unmanagedCollisions.map((entry) => entry.source), [unmanaged.target]);
   assert.equal(fs.existsSync(unmanaged.target), true);
   for (const agent of unrelated) assert.equal(fs.existsSync(agent.target), true);
+  for (const shim of shims) assert.equal(fs.existsSync(shim.target), true);
   assert.equal(fs.existsSync(managedButNotRetired.target), true);
+});
+
+test('the retired worker role is removed from a Codex home the old installer wrote to', (t) => {
+  // workflow 5.7.0 deleted `worker-frontier` and the SessionStart hook that
+  // copied it into `<CODEX_HOME>/agents/`. Deleting the plugin's copy does not
+  // touch the user's, which stays on disk pinned to the old model and still
+  // offered as an agent type — so this list is the only thing that removes it,
+  // and the README's upgrade claim rests on this test.
+  const { home, stateRoot } = fixture(t);
+  const { target, content } = writeAgent(home, '.codex/agents/worker-frontier.toml');
+
+  const result = runRetirement({ home, stateRoot, apply: true, now: fixedNow });
+
+  assert.deepEqual(result.removed, [target]);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(
+    fs.readFileSync(path.join(result.quarantineRoot, '.codex', 'agents', 'worker-frontier.toml'), 'utf8'),
+    content,
+    'and it is quarantined first, like every other retired role',
+  );
+});
+
+test('a hand-written worker-frontier is reported, never clobbered', (t) => {
+  // The NanoClaw case: on a host where another manager owns this exact filename,
+  // refusing is the correct steady state. Same rule as the advisor roles, but
+  // worth its own test because this basename is the one most likely to exist
+  // under a different manager's marker.
+  const { home, stateRoot } = fixture(t);
+  const { target } = writeAgent(home, '.codex/agents/worker-frontier.toml', { managed: false });
+
+  const result = runRetirement({ home, stateRoot, apply: true, now: fixedNow });
+
+  assert.deepEqual(result.targets, []);
+  assert.deepEqual(result.unmanagedCollisions.map((entry) => entry.source), [target]);
+  assert.equal(fs.existsSync(target), true);
 });
 
 test('same basename in multiple active homes has collision-free quarantine paths', (t) => {

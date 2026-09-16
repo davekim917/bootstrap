@@ -76,21 +76,37 @@ There is no role behind it, no approved model floor, and no helper CLI. Dispatch
 through whatever the runtime already has, and the route depends on the model family as
 well as the runtime:
 
-| Runtime | Model | Route |
-|---|---|---|
-| Claude Code | Anthropic | `Agent` tool, `bootstrap-orchestrate:worker-<level>`, then `SendMessage` each round |
-| Claude Code | OpenAI | the Codex plugin's `codex:codex-rescue` agent, `--resume` each round |
-| Codex | OpenAI | `spawn_agent`, then the same agent id each round |
-| Codex | Anthropic | not possible — the skill says so and stops |
-| OpenCode | parent's | `task` tool, agent `worker-<level>` |
+| Runtime | Model | Route | Caveat |
+|---|---|---|---|
+| Claude Code | Anthropic | `Agent` tool, `bootstrap-orchestrate:worker-<level>`, then `SendMessage` each round | family alias only (`fable`/`opus`/`sonnet`/`haiku`); no specific version |
+| Claude Code | OpenAI | the Codex plugin's `codex:codex-rescue` agent, `--resume --wait` each round | `max` becomes `xhigh`; resume takes the latest Codex thread in the repo |
+| Codex | OpenAI | `spawn_agent`, then the same agent id each round | stops if the tool exposes no `model`/`reasoning_effort` |
+| Codex | Anthropic | not possible — the skill says so and stops | |
+| OpenCode | parent's | `task` tool, agent `worker-<level>` if present, else the default sub-agent | nothing installs the shims on a bare OpenCode host, so effort may not be settable |
 
-The two gaps are refusals, not fallbacks. Claude Code's own `Agent` tool cannot run an
-OpenAI model, so asking for one routes out to the Codex plugin; if that plugin is not
-installed the skill stops rather than substituting. Codex cannot run an Anthropic model
-at all. Quietly dispatching the nearest reachable model would hand the caller a
-different model than they asked for with nothing saying so, which is the costliest
-silent failure this skill could have — so both refusals are gated by their own drift
-tokens and a mutation test.
+Every caveat above is a **refusal or an announced degradation, never a silent
+substitution** — that is the single design rule of the dispatch block. Claude Code's own
+`Agent` tool cannot run an OpenAI model, so asking for one routes out to the Codex
+plugin, and if that plugin is missing the skill stops instead of picking something else.
+Codex cannot run an Anthropic model at all. The Agent tool takes only a family alias, so
+`/orchestrate claude-opus-5 …` gets `opus` and is told so. Quietly handing back a
+different model or a different effort than the caller asked for is the costliest failure
+this skill could have, so each of those sentences is gated by its own drift token and a
+mutation test that deletes it and requires the gate to fail.
+
+On the last row: nothing in this repo installs the effort shims onto an OpenCode host —
+a Codex-shaped manifest cannot ship agents, and OpenCode would not read `model: inherit`
+or `effort` from one anyway. The skill therefore degrades out loud rather than pinning an
+effort it cannot pin.
+
+On the Codex row: `spawn_agent` does accept `model` and `reasoning_effort`
+(`SpawnAgentArgs`, codex-rs 0.154.0, `core/src/tools/handlers/multi_agents/spawn.rs:229-230`
+and `multi_agents_v2/spawn.rs:284-285`), and they are exposed by default —
+`multi_agent_v2.expose_spawn_agent_model_overrides` defaults to `true`
+(`core/src/config/mod.rs:1308`, reached through the `Default` impl at 1316-1322). Turn
+that key off and the tool schema drops both properties outright
+(`core/src/tools/handlers/multi_agents_spec.rs:111-114`), which is why the skill checks
+for them and stops rather than spawning an inherited-model agent and saying nothing.
 
 The one thing the plugin ships besides the skill is five near-empty agent definitions,
 `agents/worker-<level>.md`. They exist because Claude Code's `Agent` tool takes a
@@ -210,7 +226,9 @@ CLI transport mirrored into four plugins. Every piece of that is deleted. Naming
 model and an effort at dispatch is the thing the policy existed to decide, and the
 runtime's own sub-agent tool is the transport. Upgrading needs no cleanup on your
 side: the role only ever reached a Codex home through that installer, and
-`node scripts/retire-bootstrap-agents.mjs` still removes marker-owned leftovers.
+`node scripts/retire-bootstrap-agents.mjs` removes marker-owned leftovers, and
+`worker-frontier` is on its list — a home the old installer wrote to keeps that file
+otherwise, still pinned to the old model and still offered as an agent type.
 
 Record saved defaults, requested settings and actual runtime metadata separately: a
 saved setting does not prove what the session ran at. Existing conversational approval
@@ -303,8 +321,10 @@ a NanoClaw always-on ruleset.
 
 ## Upgrading from pre-4.0 / pre-1.0
 
-Older Bootstrap releases leaked six permanent Codex agent definitions into active runtime homes.
-Version 4.0.0/1.0.0 no longer ships permanent agents. Preview the marker-safe cleanup:
+Older Bootstrap releases leaked permanent Codex agent definitions into active runtime homes: six
+advisor roles before 4.0.0/1.0.0, and `worker-frontier` up to workflow 5.6.0, installed by a
+`SessionStart` hook this release removes. No version ships a permanent agent now. Preview the
+marker-safe cleanup:
 
 ```bash
 node scripts/retire-bootstrap-agents.mjs
@@ -316,7 +336,7 @@ Then apply it:
 node scripts/retire-bootstrap-agents.mjs --apply
 ```
 
-Dry-run is the default. Apply mode removes only the six retired basenames carrying the exact
+Dry-run is the default. Apply mode removes only the seven retired basenames carrying the exact
 Bootstrap ownership marker. Before deletion it writes a timestamped quarantine preserving each
 file's full home-relative path and a manifest containing its absolute source and SHA-256 hash.
 Unmanaged collisions, unrelated agents, and plugin caches are preserved. Restart affected

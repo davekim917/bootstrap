@@ -18,8 +18,10 @@ fresh context.
 
 ### Autonomous effort selection
 
-The autonomous effort vocabulary is `low`, `medium`, `high`, `xhigh`, and `max` for both provider
-families. Do not treat `ultracode` as an effort; it is a separate Claude-session mode.
+The autonomous effort vocabulary is `low`, `medium`, `high`, `xhigh`, and `max`. `max` is not
+universally available: dispatching an OpenAI model from a Claude session goes through the Codex
+companion, whose accepted efforts stop at `xhigh`, so `max` there means `xhigh` and the coordinator
+says so. Do not treat `ultracode` as an effort; it is a separate Claude-session mode.
 
 This rubric governs effort on the dispatched sub-agent, not the coordinating session — the user is
 free to run any model at any effort as the coordinator. Effort is the primary cost lever on a

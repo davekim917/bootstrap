@@ -65,8 +65,61 @@ for (const c of CHECKS) {
   }
 }
 
+/**
+ * MANIFEST VALIDATION — `claude plugin validate`, over every plugin directory.
+ *
+ * Added because a manifest can be invalid in a way no gate in this repo would
+ * notice: `"agents": ["./agents"]` looks obviously right, is rejected by Claude's
+ * own schema (`agents.0: Invalid input`), and — whether an install refuses the
+ * plugin or merely stops auto-loading `agents/` — leaves every
+ * `bootstrap-orchestrate:worker-<level>` dispatch resolving to nothing. Our own
+ * gate asserted the broken value, so all six rows above were green while the
+ * plugin could not ship its agents.
+ *
+ * The validator is the only thing that knows the current schema, so it is the
+ * only honest check. It is also not a dependency of this repo: CI or a
+ * contributor may not have the Claude CLI, and a missing CLI must not read as a
+ * failure. It skips with a message instead, and the boundaries gate keeps a
+ * hand-written assertion for the one rule we know, so the skip is not total.
+ */
+function validateManifests() {
+  const probe = spawnSync('claude', ['--version'], { encoding: 'utf8' });
+  if (probe.error || probe.status !== 0) {
+    console.log('\n=== manifests (claude plugin validate) ===');
+    console.log('—  claude CLI not available, skipped (the boundaries gate still checks what it can)');
+    return 0;
+  }
+
+  const pluginsRoot = path.join(REPO, 'plugins');
+  const dirs = fs.existsSync(pluginsRoot)
+    ? fs.readdirSync(pluginsRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory()
+          && fs.existsSync(path.join(pluginsRoot, entry.name, '.claude-plugin', 'plugin.json')))
+        .map((entry) => `plugins/${entry.name}`)
+        .sort()
+    : [];
+
+  console.log(`\n=== manifests (claude plugin validate, ${probe.stdout.trim()}) ===`);
+  let bad = 0;
+  for (const dir of dirs) {
+    // The CLI exits 0 even when validation fails, so its OUTPUT is the verdict.
+    const r = spawnSync('claude', ['plugin', 'validate', dir], { cwd: REPO, encoding: 'utf8' });
+    const output = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    if (r.status !== 0 || /Validation failed|Invalid input|✘/.test(output)) {
+      bad++;
+      console.error(`✗ ${dir}`);
+      console.error(output.trim());
+    } else {
+      console.log(`✓ ${dir}`);
+    }
+  }
+  return bad;
+}
+
+failed += validateManifests();
+
 if (failed > 0) {
   console.error(`\n[check-parity] ${failed} drift check(s) FAILED — regenerate the stale artifact(s) and re-commit.`);
   process.exit(1);
 }
-console.log('\n[check-parity] ✓ all artifacts (hooks · skills · boundaries) in sync.');
+console.log('\n[check-parity] ✓ all artifacts (hooks · skills · boundaries · manifests) in sync.');

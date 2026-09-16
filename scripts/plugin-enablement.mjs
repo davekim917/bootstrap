@@ -79,29 +79,44 @@ export function resolveSkills(pluginRoots) {
 
 /**
  * The sub-agent names a session can dispatch to: the union over enabled plugins
- * of the `.md` files under each agents root.
+ * of the agent definitions each one offers.
  *
- * Roots come from the manifest's `agents` declaration, falling back to the
- * conventional `agents/` directory — Claude Code auto-discovers that one, so a
- * plugin can ship agents without declaring them and the composition must see
- * them either way. Names are the `name:` frontmatter where present, else the
- * basename; the host namespaces them as `<plugin>:<name>`, which this does not
- * model because what the split turns on is whether the definition is offered at
- * all.
+ * This models Claude's rule exactly, because the rule has a trapdoor in it. With
+ * NO `agents` field, the conventional `agents/` directory is auto-loaded. With
+ * the field SET, each entry is a path to one agent `.md` FILE, and `agents/` is
+ * no longer auto-loaded — so a declaration naming the directory does not widen
+ * what loads, it silently empties it. (Claude 2.1.273 also rejects a directory
+ * entry at validation time; `check-parity` runs `claude plugin validate` for
+ * that half.) Modelling the fallback as "declaration or directory, whichever is
+ * there" would make a broken manifest resolve fine here and fail only on a real
+ * install — the precise failure this function exists to catch.
+ *
+ * Names are the `name:` frontmatter where present, else the basename. The host
+ * namespaces them as `<plugin>:<name>`, which this does not model, because what
+ * the split turns on is whether the definition is offered at all.
  */
 export function resolveAgents(pluginRoots) {
   const names = new Set();
+  const addFile = (file) => {
+    if (!file.endsWith('.md') || !fs.existsSync(file) || !fs.statSync(file).isFile()) return;
+    const text = fs.readFileSync(file, 'utf8');
+    const declaredName = /^name:[ \t]*(\S.*?)[ \t]*$/m.exec(text.split('\n---')[0] ?? '');
+    names.add(declaredName ? declaredName[1] : path.basename(file, '.md'));
+  };
+
   for (const pluginRoot of pluginRoots) {
-    const declared = manifest(pluginRoot)?.agents ?? ['./agents'];
-    for (const rel of Array.isArray(declared) ? declared : [declared]) {
-      const root = path.resolve(pluginRoot, rel);
+    const declared = manifest(pluginRoot)?.agents;
+    if (declared === undefined) {
+      // Auto-discovery: the whole `agents/` directory.
+      const root = path.join(pluginRoot, 'agents');
       if (!fs.existsSync(root)) continue;
-      for (const entry of fs.readdirSync(root)) {
-        if (!entry.endsWith('.md')) continue;
-        const text = fs.readFileSync(path.join(root, entry), 'utf8');
-        const declaredName = /^name:[ \t]*(\S.*?)[ \t]*$/m.exec(text.split('\n---')[0] ?? '');
-        names.add(declaredName ? declaredName[1] : entry.replace(/\.md$/, ''));
-      }
+      for (const entry of fs.readdirSync(root)) addFile(path.join(root, entry));
+      continue;
+    }
+    // Declared: each entry is one FILE, and auto-discovery is off. A directory
+    // entry therefore contributes nothing at all.
+    for (const rel of Array.isArray(declared) ? declared : [declared]) {
+      addFile(path.resolve(pluginRoot, rel));
     }
   }
   return [...names].sort();

@@ -12,6 +12,20 @@ import { OWNERSHIP_MARKER } from '../plugins/workflow-agents/scripts/ownership.m
 // of the plugin never contains the repo, so the dependency can only run this
 // way (plugins/workflow-agents/scripts/ownership.mjs).
 export { OWNERSHIP_MARKER } from '../plugins/workflow-agents/scripts/ownership.mjs';
+/**
+ * Every agent basename a past Bootstrap release installed into a user's runtime
+ * home and no longer ships. Two generations of them:
+ *
+ *  - The six advisor roles, removed in 4.0.0/1.0.0.
+ *  - `worker-frontier`, removed in workflow 5.7.0. It reached a Codex home a
+ *    different way — the plugin's own SessionStart hook ran an installer on
+ *    every session — so deleting the plugin's copy leaves the user's copy
+ *    behind, still pinned to the old model and still offered as an agent type.
+ *    Nothing else removes it; this list is why the README can claim it does.
+ *
+ * Only files carrying the exact ownership marker are touched, so a role another
+ * manager owns, or a hand-written one, is reported and refused.
+ */
 export const RETIRED_AGENT_NAMES = Object.freeze([
   'architecture-advisor',
   'code-review-specialist',
@@ -19,6 +33,7 @@ export const RETIRED_AGENT_NAMES = Object.freeze([
   'cto-advisor',
   'performance-analyzer',
   'security-reviewer',
+  'worker-frontier',
 ]);
 
 const RETIRED = new Set(RETIRED_AGENT_NAMES);

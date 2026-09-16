@@ -61,10 +61,13 @@ asserts each of them stays gone, and that this plugin declares `PreToolUse` and 
 automatic delegation pressure is off, and a gate that blocks a coordinator from reading source
 before dispatching is exactly what an operator working directly must not hit. Do not re-add it.
 
-Hand-maintained, because Codex has no counterpart in the Claude plugin — Claude auto-discovers
-`agents/` from the plugin root, and Codex reads roles only from `<CODEX_HOME>/agents/`:
+Hand-maintained, because the Claude plugin has no counterpart to generate them from:
 
-- `hooks/workflow-hooks.json` and `hooks/codex-guard.ts`
-- `scripts/ownership.mjs` (the ownership marker `scripts/retire-bootstrap-agents.mjs` reads)
-- `scripts/sync-agent-skills.mjs`
-- `.codex-plugin/plugin.json`, `marketplace-entry.json`, this file
+- `hooks/workflow-hooks.json` and `hooks/codex-guard.ts` — Codex's hook manifest resolves
+  `${PLUGIN_ROOT}`, not `${CLAUDE_PLUGIN_ROOT}`, so the two manifests cannot be one file.
+- `scripts/ownership.mjs` — the ownership marker, kept only so
+  `scripts/retire-bootstrap-agents.mjs` can recognise role files this plugin wrote into users'
+  Codex homes before 5.7.0. Nothing writes one now. The string is frozen: rewording it orphans
+  every file already carrying it.
+- `scripts/sync-agent-skills.mjs` — the generator itself.
+- `.codex-plugin/plugin.json`, `marketplace-entry.json`, this file.
