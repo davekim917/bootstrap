@@ -1,6 +1,6 @@
 # Shared workflow contract
 
-Applies to orchestrate and all seven team skills during the one-week frontier-owner trial.
+Applies to all seven team skills.
 
 ## Ownership and judgment
 
@@ -8,50 +8,34 @@ Specialized QA/release technical owners retain their explicit judgment, independ
 sole-verdict authority until separately migrated; ordinary-coordinator instructions do not
 replace those contracts or downgrade those roles.
 
-Ordinary coordinators are Sonnet/xhigh or Terra/xhigh. Direct coordinator work is limited to
-brief logistical or mechanical actions. Delegate substantive design, implementation,
-research/synthesis, debugging, technical planning and judgment-heavy review to a retained worker
-from the approved floor: Fable 5.1 or Opus 5 for Claude, Astra 6 or Sol for Codex. Opus 5 and Sol
-are the default worker, at `high` effort. Fable 5.1 and Astra 6 are the escalation: select them on
-explicit human request, or when the task shape calls for the top model's judgment. Ambiguity,
-novel design, visual taste, security, concurrency and high-consequence judgment are that set.
-Choose once at task start based on user direction, task/model fit, observed trial results, or
-provider availability, then retain that same owner. Record the actual model, effort, selection
-reason and checks. Independent review still uses its own fresh context.
+Direct coordinator work is limited to brief logistical or mechanical actions.
+Delegate substantive design, implementation, research/synthesis, debugging, technical planning
+and judgment-heavy review to a sub-agent, and keep one sub-agent for the whole task rather than
+starting a new one per step.
+Use a plain native sub-agent, or `/orchestrate` when the request names a model and an effort.
+Record the actual model, effort, selection reason and checks. Independent review still uses its own
+fresh context.
 
 ### Autonomous effort selection
 
-The complete autonomous worker vocabulary is `low`, `medium`, `high`, `xhigh`, and `max` for
-both provider families. `ultra` is deliberately excluded from autonomous selection. A coordinator
-may use Codex `ultra` only after the current human explicitly directs it (for example, “delegate
-this to an ultra worker”): record that instruction and invoke the helper with
-`--human-directed-ultra true`. Never infer the directive from task difficulty, retries, urgency,
-or a prior human preference. Do not treat `ultracode` as a worker effort either; it is a separate
-Claude-session mode.
+The autonomous effort vocabulary is `low`, `medium`, `high`, `xhigh`, and `max` for both provider
+families. Do not treat `ultracode` as an effort; it is a separate Claude-session mode.
 
-This rubric governs effort on the dispatched worker, not the coordinating session — the user is
-free to run any model at any effort as the coordinator. Each worker tier carries its own measured
-cost/quality default (next paragraph). Because workers are frontier models (Fable/Opus/Astra/Sol),
-effort level on them is the primary cost lever. Anthropic's API defaults to `high` for current
-models; OpenAI defaults GPT-5.5/5.6 to `medium`. Select the level at dispatch from observable task
-shape, then retain it for that owner's build/test/fix loop.
+This rubric governs effort on the dispatched sub-agent, not the coordinating session — the user is
+free to run any model at any effort as the coordinator. Effort is the primary cost lever on a
+sub-agent. Anthropic's API defaults to `high` for current models; OpenAI defaults GPT-5.5/5.6 to
+`medium`. Select the level at dispatch from observable task shape, then retain it for that
+sub-agent's build/test/fix loop.
 
-The triggers below have two default columns, one per worker tier. On the default Opus/Sol worker,
-read the "stay at" row as `high`: `low` for mechanical work, `xhigh` for an elusive failure. On an
-escalated Fable/Astra worker, read it as `medium`: `low` for mechanical work, `high` only when
-reasoning depth is also needed, `xhigh` rare, `max` only with evidence that `xhigh` was
-insufficient. Escalating the model does not also escalate the effort — model tier buys judgment,
-effort buys reasoning depth; stack both only when the task shape demands both. Escalation is by
-judgment shape, never by effort row: `high` and `xhigh` are ordinary Opus/Sol levels, so on an
-Opus/Sol worker already sitting at `high` the "Step to `high`" triggers below change no effort —
-they are the cue to consider escalating the model instead.
+Read the rows below against the default the dispatch names. Model tier buys judgment and effort
+buys reasoning depth; stack both only when the task shape demands both.
 
 Step down to `low`:
 - Focused single-file lookup or grep
 - Mechanical edit with zero judgment (rename, format fix, known substitution)
 - Narrow check with a known answer (does file X exist, what's the value of Y)
 
-Stay at the tier default (`high` on Opus/Sol, `medium` on Fable/Astra):
+Stay at the dispatched default:
 - Bounded implementation with clear acceptance criteria
 - Ordinary research with a known approach
 - Test writing for understood behavior
@@ -74,24 +58,11 @@ escalation.
 
 Fix missing context, contradictory instructions, and unclear completion criteria before raising
 effort. Do not use severity labels, a failed command, or a desire to retry as a proxy for harder
-reasoning. There is no automatic effort ladder: an owner continues at its selected level unless a
+reasoning. There is no automatic effort ladder: a sub-agent continues at its selected level unless a
 meaningful phase boundary or demonstrated insufficiency justifies a newly recorded override.
 
-### Dispatch-first gate
+### Scope of direct work
 
-Before the coordinator reads nontrivial implementation source, inspects a deployment or log,
-chooses/runs a diagnostic or regression check, or makes a technical correctness judgment, it must
-dispatch the retained frontier owner. The coordinator may read the request, find a source location,
-check status/authorization, create the worktree or claim, and pass existing evidence; it must not
-use that setup to pre-solve the task. Record either `frontier owner dispatched` with its model and
-effort, or the narrow direct action and why it is purely logistical/mechanical. This applies to
-scheduled work and incident recovery too. A useful technical conclusion reached directly by a
-Sonnet/Terra coordinator is still a trial-policy miss, not an exception created after the fact.
-
-Never delegate substantive work below the approved Opus/Sol floor. This covers discovery,
-implementation, verification, repair, scheduled tasks and review; Sonnet, Terra, Luna and routine
-cheap subagents are not worker substitutes. If no approved worker is available, report and obtain
-a recovery decision; no silent downgrade, extra worker tier or automatic retry ladder.
 Use the smallest mechanism satisfying the requirements and failure boundaries. Prefer existing
 primitives; justify complexity by evidenced scale, concurrency, security or failure impact.
 Never weaken trust, authorization, credential, destructive-action or data-loss safeguards.
@@ -99,21 +70,16 @@ Read exact source and applicable instructions; verify relevant changing external
 
 ## Session and effort continuity
 
-Choose native dispatch or the CLI helper at task start. A model-pinned native Codex worker cannot
-become an alternate model through prompting; start an approved alternate with helper `--model`. Retain native child handles within the
-spawning parent; follow-ups preserve existing effort unless a runtime explicitly supports updates.
-Native effort overrides apply at spawn only. When mid-task effort changes or CLI resume are
-needed, start a helper-owned CLI session and retain its exact UUID, runtime and runtime home.
-Helper `--resume` accepts only its own CLI session UUID, never a native child handle. These
-transports cannot resume each other's sessions. A failed switch does not authorize silent restart,
-replay or replacement: preserve current work and obtain an explicit recovery decision.
+A model-pinned native sub-agent cannot become an alternate model through prompting; pick the model
+at spawn. Retain native child handles within the spawning parent; follow-ups preserve existing
+effort unless a runtime explicitly supports updates. Native effort overrides apply at spawn only. A
+failed switch does not authorize silent restart, replay or replacement: preserve current work and
+obtain an explicit recovery decision.
 
 Record saved defaults, requested settings and actual runtime metadata separately. Saved settings
 do not prove active session behavior; mark missing actual model/effort evidence unverified. Use
-supported native settings for explicit overrides, not prompt wording. The helper rejects anything
-outside the shared five-level autonomous vocabulary, except Codex `ultra` with the recorded direct
-human directive and `--human-directed-ultra true`; report every other preflight failure rather than
-falling back or emulating an effort change in prose.
+supported native settings for explicit overrides, not prompt wording. Report a preflight failure
+rather than falling back or emulating an effort change in prose.
 
 ## Scope and approval
 

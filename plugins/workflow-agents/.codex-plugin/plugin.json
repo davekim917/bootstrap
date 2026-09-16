@@ -1,7 +1,7 @@
 {
   "name": "bootstrap-workflow-agents",
-  "version": "2.6.0",
-  "description": "One retained frontier owner, proportional independent review, and bounded safe publication.",
+  "version": "2.7.0",
+  "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
   "author": {
     "name": "David Kim"
   },
@@ -22,7 +22,7 @@
   "interface": {
     "displayName": "Bootstrap Agent Workflow",
     "shortDescription": "Codex-native delivery workflow skills",
-    "longDescription": "A coordinator handles logistics while one frontier owner investigates, builds, tests and repairs; independent review and existing publication gates remain.",
+    "longDescription": "A coordinator handles logistics while one retained sub-agent investigates, builds, tests and repairs; independent review and existing publication gates remain.",
     "developerName": "David Kim",
     "category": "Coding",
     "capabilities": [
