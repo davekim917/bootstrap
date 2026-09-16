@@ -28,7 +28,7 @@
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
-import { realpathSync, existsSync, unlinkSync } from 'fs';
+import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { homedir } from 'os';
 import { resolve as pathResolve } from 'path';
@@ -1513,6 +1513,240 @@ export function consumeGateApproval(command: string): boolean {
     }
 }
 
+// ── One approval card per tool call (cross-process claim) ────────────────────
+// A Codex tool call dispatches EVERY matched PreToolUse handler, and it does so
+// CONCURRENTLY: `execute_handlers_with_metadata` pushes each handler onto a
+// `FuturesUnordered` before awaiting any of them, and `should_block` is a plain
+// `.any()` over all the results — there is no ordering and no short-circuit on a
+// deny (codex-rs 0.154.0 `hooks/src/engine/dispatcher.rs`,
+// `hooks/src/events/pre_tool_use.rs`). Measured on a real 0.154.0 run: two
+// PreToolUse handlers started 0.7 ms apart and received the SAME `tool_use_id`.
+//
+// In a NanoClaw container there are two such handlers — the in-tree chain and
+// this plugin's `codex-guard.ts` — and both reach the session-DB gate. Without a
+// claim, one gated command raises TWO approval cards, each needing its own
+// answer. It fails closed (both must approve), but it doubles approval traffic
+// on exactly the commands that matter most.
+//
+// Deduping HERE, at the approval layer, rather than by silencing one chain, is
+// what keeps it safe: both chains still evaluate the command in full, so no
+// guard's coverage depends on the other running, and a third PreToolUse handler
+// would join the same claim rather than add a third card.
+//
+// The protocol is two files per claim, in a shared /tmp dir, and it has to work
+// between separate PROCESSES that start within a millisecond of each other:
+//
+//   <claim>.lock   created with O_EXCL. Exactly one process wins it and becomes
+//                  the OWNER: it stages the request and publishes the id.
+//   <claim>        written as `<claim>.tmp` then RENAMED, so it never exists in
+//                  a half-written state. Losers read it to learn the owner's
+//                  requestId and then poll the same decision.
+//
+// A loser that never sees `<claim>` appear — the owner crashed, or failed to
+// stage — falls back to staging its own request. Two cards is a worse
+// experience; no gate at all is a security failure, so the fallback is the
+// fail-closed direction.
+
+export const GATE_CLAIM_DIR = `${GATE_DIR}/claims`;
+
+/** How long a loser waits for the owner to publish its requestId. */
+const CLAIM_PUBLISH_TIMEOUT_MS = 15_000;
+const CLAIM_POLL_INTERVAL_MS = 25;
+/** Claims older than this are swept; matches the 60-minute gate window. */
+const CLAIM_MAX_AGE_MS = 60 * 60 * 1000;
+
+/**
+ * Identity of ONE approval card: the tool call, plus which gate is asking.
+ *
+ * `toolUseId` is what makes two handlers of the same tool call collide and two
+ * different tool calls not. `action` is in the key so a single tool call that
+ * legitimately needs two DIFFERENT approvals — a destructive gate and an
+ * outbound-email gate — still raises one card each rather than collapsing into
+ * whichever staged first and answering one question with the other's approval.
+ *
+ * The COMMAND is deliberately NOT in the key, and leaving it in was a real bug
+ * caught before this shipped. The two guards do not see the same command string:
+ * NanoClaw's in-tree chain runs its Bash sanitizer FIRST and gates on the
+ * rewritten `unset <secret-vars> 2>/dev/null; <original>` form, while this
+ * adapter gates on the raw command from the hook input — codex hands every
+ * handler the same `input_json`, built once before any of them runs. Keying on
+ * the command therefore produced two different keys for one tool call and both
+ * guards staged anyway, exactly the behaviour the claim exists to remove. One
+ * tool call is one command, so (toolUseId, action) is both sufficient and the
+ * only thing the two chains can agree on.
+ */
+export function gateClaimKey(toolUseId: string, action: string): string {
+    return createHash('sha256').update(`${toolUseId}\u0000${action}`).digest('hex').slice(0, 32);
+}
+
+/** Remove claim files older than the gate window. Best-effort, never throws. */
+function sweepStaleClaims(nowMs: number): void {
+    let entries: string[];
+    try {
+        entries = readdirSync(GATE_CLAIM_DIR);
+    } catch {
+        return;
+    }
+    for (const entry of entries) {
+        const full = `${GATE_CLAIM_DIR}/${entry}`;
+        try {
+            if (nowMs - statSync(full).mtimeMs > CLAIM_MAX_AGE_MS) unlinkSync(full);
+        } catch {
+            // Gone already, or not ours to remove.
+        }
+    }
+}
+
+/**
+ * Which `delivered.status` values mean a human has ANSWERED the card.
+ *
+ * Extracted and exported because this predicate, not the SQLite plumbing around
+ * it, is where the bug was: an earlier revision treated the mere PRESENCE of a
+ * row as decided, which made every `pending` card — the live, unanswered state —
+ * look settled. The DB path is a hardcoded container mount, so the round trip
+ * cannot be driven from a unit test; the predicate can, exhaustively.
+ *
+ * An unknown status is NOT decided: a future status this code has never heard of
+ * is more likely a new in-flight state than a new terminal one, and guessing
+ * "decided" is the answer that silently duplicates approval cards.
+ */
+export function isDecidedGateStatus(status: string | null | undefined): boolean {
+    return status === 'delivered' || status === 'failed';
+}
+
+/**
+ * Has this requestId ALREADY been decided?
+ *
+ * A live peer publishes an id that nothing has answered yet, so a published id
+ * that already carries a `delivered` row is not a peer to wait on — it is a past
+ * decision being replayed, and honouring it would hand this tool call an
+ * approval a human gave to a different command.
+ *
+ * The claim directory lives under /tmp, which an agent can write to, so this is
+ * the one check that cannot be skipped: without it, planting a claim pointing at
+ * any previously-approved requestId skips the gate outright. (It also covers the
+ * no-attacker case — a `tool_use_id` repeating inside the sweep window would
+ * otherwise reuse the earlier decision.)
+ *
+ * DECIDED means `delivered` or `failed` — NOT `pending`. The host writes a
+ * `pending` row the moment it posts the card and leaves it there for the whole
+ * decision window (nanoclaw `src/modules/bash-gate/index.ts` →
+ * `src/modules/mailbox/ops/delivery.ts`), so `pending` is precisely the state a
+ * loser SHOULD wait on. Counting it as decided fails safe but reintroduces the
+ * duplicate cards this whole mechanism removes: every loser arriving more than
+ * one host poll (~1s) after the owner staged would raise its own card, and a
+ * command needing both the destructive and the email gate would raise four.
+ * Every other reader agrees — `pollDeliveredTable` below, and nanoclaw's
+ * `container/agent-runner/src/db/delivery-acks.ts`, both treat `pending` as
+ * unresolved.
+ *
+ * Unreadable DB, missing table, anything unexpected: answer TRUE. "I could not
+ * check" must refuse the shortcut and make the caller stage its own card, never
+ * wave it through.
+ */
+export function gateRequestAlreadyDecided(requestId: string): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+    let db: import('bun:sqlite').Database | undefined;
+    try {
+        db = new Database(NANOCLAW_INBOUND_DB, { readonly: true });
+        db.exec('PRAGMA busy_timeout = 2000');
+        const row = db.prepare('SELECT status FROM delivered WHERE message_out_id = ?').get(requestId) as
+            | { status?: string }
+            | undefined
+            | null;
+        return isDecidedGateStatus(row?.status);
+    } catch {
+        return true;
+    } finally {
+        try {
+            db?.close();
+        } catch {
+            // Nothing left to do.
+        }
+    }
+}
+
+export type GateClaim =
+    | { owner: true }
+    /** Another process owns the card; poll `requestId` for the shared decision. */
+    | { owner: false; requestId: string }
+    /** Nobody published in time — stage your own request (fail-closed). */
+    | { owner: false; requestId: null };
+
+/**
+ * Claim the right to stage the approval card for `key`, or find out who did.
+ *
+ * The winner MUST follow up with `publishGateClaim` (on a successful stage) or
+ * `abandonGateClaim` (on a failure), or every peer waits out
+ * CLAIM_PUBLISH_TIMEOUT_MS and stages its own.
+ *
+ * Any filesystem failure answers `{ owner: true }`: unable to coordinate means
+ * behaving exactly as this code did before the claim existed.
+ */
+export function claimGateRequest(key: string, nowMs: number = Date.now()): GateClaim {
+    const lockPath = `${GATE_CLAIM_DIR}/${key}.lock`;
+    const claimPath = `${GATE_CLAIM_DIR}/${key}`;
+    try {
+        mkdirSync(GATE_CLAIM_DIR, { recursive: true });
+        sweepStaleClaims(nowMs);
+    } catch {
+        return { owner: true };
+    }
+
+    try {
+        closeSync(openSync(lockPath, 'wx'));
+        return { owner: true };
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') return { owner: true };
+    }
+
+    // Someone else holds the lock. Wait for them to publish the requestId.
+    const deadline = nowMs + CLAIM_PUBLISH_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+        try {
+            const requestId = readFileSync(claimPath, 'utf-8').trim();
+            if (requestId) return { owner: false, requestId };
+        } catch {
+            // Not published yet, or the owner abandoned it — the lock's absence
+            // means the latter, and racing for it now would just duplicate the
+            // wait, so keep polling until the deadline either way.
+        }
+        if (!existsSync(lockPath)) break;
+        sleepSync(CLAIM_POLL_INTERVAL_MS);
+    }
+    // One last look: the owner may have published between the final read and
+    // the lock disappearing.
+    try {
+        const requestId = readFileSync(claimPath, 'utf-8').trim();
+        if (requestId) return { owner: false, requestId };
+    } catch {
+        // Genuinely nothing published.
+    }
+    return { owner: false, requestId: null };
+}
+
+/** Publish the owner's requestId, atomically, so losers can poll the same decision. */
+export function publishGateClaim(key: string, requestId: string): void {
+    const claimPath = `${GATE_CLAIM_DIR}/${key}`;
+    try {
+        // Written then renamed: a loser must never read a half-written id.
+        writeFileSync(`${claimPath}.tmp`, requestId);
+        renameSync(`${claimPath}.tmp`, claimPath);
+    } catch {
+        // A loser falls back to staging its own request — two cards, never none.
+    }
+}
+
+/** Release a claim the owner could not stage, so a peer can take it over. */
+export function abandonGateClaim(key: string): void {
+    try {
+        unlinkSync(`${GATE_CLAIM_DIR}/${key}.lock`);
+    } catch {
+        // Never created, or already gone.
+    }
+}
+
 // ── NanoClaw session-DB approval gate ────────────────────────────────────────
 // NOT a side-channel IPC: this rides NanoClaw v2's sole IO surface — the two
 // session DBs ("everything is a message"). Direct writes to /workspace/outbound.db
@@ -1659,17 +1893,37 @@ export function runGateRequest(
         // passes a distinct summary (the from/to/cc/bcc/body card) so the approver
         // sees structured fields, at parity with Claude's in-tree card (S-QA2).
         summary?: string;
+        // The tool call this gate belongs to (`tool_use_id` from the PreToolUse
+        // hook input). When given, concurrently-dispatched guards for the SAME
+        // tool call share ONE approval card instead of raising one each — see
+        // `claimGateRequest`. Omitted, behaviour is exactly as before.
+        toolUseId?: string;
     },
 ): GateDecision {
+    const key = opts.toolUseId ? gateClaimKey(opts.toolUseId, opts.action) : null;
+    if (key) {
+        const claim = claimGateRequest(key);
+        if (!claim.owner && claim.requestId && !gateRequestAlreadyDecided(claim.requestId)) {
+            // A peer guard already staged this exact card. Wait on ITS decision
+            // so the human answers once and both guards honour that one answer.
+            return pollDeliveredTable(claim.requestId, 60 * 60 * 1000);
+        }
+        // Either we own the claim, or nobody published in time. Both stage
+        // below; the second case is the fail-closed fallback (two cards beats
+        // no gate).
+    }
+
     let requestId: string;
     try {
         requestId = writeGateRequest(reason, opts.summary ?? reason, command, opts.action);
     } catch (err) {
         // If we can't even stage the request, the session DBs are in a broken
         // state. Deny rather than silently allowing — the gate is fail-closed.
+        if (key) abandonGateClaim(key);
         opts.onStageError?.(err);
         return 'denied';
     }
+    if (key) publishGateClaim(key, requestId);
 
     return pollDeliveredTable(requestId, 60 * 60 * 1000); // 60 min, matches host BASH_GATE_TIMEOUT_MS
 }
@@ -1678,17 +1932,23 @@ export function runGateRequest(
  * NanoClaw destructive-command session-DB approval gate. Thin wrapper over
  * runGateRequest with action='request_destructive_gate'.
  *
- * SIGNATURE IS LOAD-BEARING — `(command, reason, onStageError?)`. Existing
- * callers (block-destructive.ts, opencode-guard.ts) pass the onStageError
- * callback as the 3rd positional arg. Do NOT add a positional `action` here;
- * route action selection through runGateRequest instead.
+ * SIGNATURE IS LOAD-BEARING — `(command, reason, onStageError?, toolUseId?)`.
+ * Existing callers (block-destructive.ts, opencode-guard.ts) pass the
+ * onStageError callback as the 3rd positional arg. Do NOT add a positional
+ * `action` here; route action selection through runGateRequest instead.
+ *
+ * `toolUseId` is APPENDED rather than folded into an options object for the same
+ * reason: a caller on an older container image passes three arguments and keeps
+ * working, and a caller that passes four gets one approval card per tool call
+ * even when two guards gate the same command concurrently.
  */
 export function runNanoclawGate(
     command: string,
     reason: string,
     onStageError?: (err: unknown) => void,
+    toolUseId?: string,
 ): GateDecision {
-    return runGateRequest(command, reason, { action: 'request_destructive_gate', onStageError });
+    return runGateRequest(command, reason, { action: 'request_destructive_gate', onStageError, toolUseId });
 }
 
 /**
@@ -1708,6 +1968,7 @@ export function runEmailGate(
     reason: string,
     onStageError?: (err: unknown) => void,
     summary?: string,
+    toolUseId?: string,
 ): GateDecision {
-    return runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary });
+    return runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId });
 }
