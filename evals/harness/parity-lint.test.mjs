@@ -141,6 +141,38 @@ test('contract gate rejects a named worker role reappearing in the orchestrate s
   assert.ok(result.failures.some((failure) => failure.includes('retired worker policy worker-frontier')), result.failures.join('\n'));
 });
 
+test('contract gate rejects a dropped cross-provider dispatch line', (t) => {
+  // Dispatch is runtime x model family, not runtime. Asking Claude Code for an
+  // OpenAI model has its own route; delete that line and the skill looks intact
+  // while that whole combination has no instruction at all.
+  const roots = copiedContracts(t);
+  assert.equal(evaluateContracts(roots).pass, true);
+  const skill = path.join(roots.orchestrateRoot, 'orchestrate/SKILL.md');
+  const text = fs.readFileSync(skill, 'utf8');
+  fs.writeFileSync(skill, text.split('\n').filter((line) => !line.startsWith('- Claude Code, OpenAI model')).join('\n'));
+  const result = evaluateContracts(roots);
+  assert.equal(result.pass, false);
+  assert.ok(result.failures.some((f) => f.includes('Claude Code, OpenAI model')), result.failures.join('\n'));
+});
+
+test('contract gate rejects dropping either model-substitution refusal', (t) => {
+  // The costliest silent failure this skill can have: the caller names a model
+  // the runtime cannot dispatch, and the coordinator quietly uses the nearest one
+  // it CAN reach and reports success. Both refusals must be un-droppable.
+  for (const refusal of [
+    'If that plugin is not installed, stop and say so — do not substitute a model.',
+    'An Anthropic model cannot be dispatched from Codex; say so and stop.',
+  ]) {
+    const roots = copiedContracts(t);
+    const skill = path.join(roots.orchestrateRoot, 'orchestrate/SKILL.md');
+    const text = fs.readFileSync(skill, 'utf8');
+    assert.ok(text.includes(refusal), `fixture must contain: ${refusal}`);
+    fs.writeFileSync(skill, text.replace(refusal, ''));
+    const result = evaluateContracts(roots);
+    assert.equal(result.pass, false, `dropping "${refusal}" must fail the gate`);
+  }
+});
+
 test('contract gate rejects an effort shim that pins a model', (t) => {
   // The shim exists ONLY to pin an effort Claude's Agent tool cannot pass
   // per-call. A `model:` here would silently override what the dispatch asked
