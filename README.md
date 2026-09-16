@@ -72,33 +72,23 @@ analytics, check claims against sources for a document. You say in one line whic
 check you chose. Neither half works alone: a sub-agent that does not self-check plus
 a coordinator that does not check it ships unverified work.
 
-There is no role behind it, no approved model floor, and no helper CLI. Dispatch goes
-through whatever the runtime already has, and the route depends on the model family as
-well as the runtime:
+There is no role behind it, no approved model floor, no helper CLI, and no
+cross-provider hop: a Claude session dispatches Anthropic models, a Codex session
+dispatches OpenAI models, and each refuses the other out loud. Dispatch goes through
+whatever the runtime already has:
 
-| Runtime | Model | Route | Caveat |
-|---|---|---|---|
-| Claude Code | Anthropic | `Agent` tool, `bootstrap-orchestrate:worker-<level>`, then `SendMessage` each round | family alias only (`fable`/`opus`/`sonnet`/`haiku`); no specific version |
-| Claude Code | OpenAI | the Codex plugin's `codex:codex-rescue` agent, `--resume --wait` each round | short name resolved to a full id; `max` becomes `xhigh`; resume takes the latest Codex thread in the repo |
-| Codex | OpenAI | `spawn_agent`, then the same agent id each round | stops if the tool exposes no `model`/`reasoning_effort` |
-| Codex | Anthropic | not possible — the skill says so and stops | |
-| OpenCode | parent's | `task` tool, agent `worker-<level>` if present, else the default sub-agent | nothing installs the shims on a bare OpenCode host, so effort may not be settable |
+| Runtime | Route | Caveat |
+|---|---|---|
+| Claude Code | `Agent` tool, `bootstrap-orchestrate:worker-<level>`, then `SendMessage` each round | family alias only (`fable`/`opus`/`sonnet`/`haiku`); no specific version; an OpenAI model is refused |
+| Codex | `spawn_agent` with `model` + `reasoning_effort`, then the same agent id each round | stops if the tool exposes no `model`/`reasoning_effort`; an Anthropic model is refused |
+| OpenCode | `task` tool, agent `worker-<level>` if present, else the default sub-agent | nothing installs the shims on a bare OpenCode host, so effort may not be settable |
 
 Every caveat above is a **refusal or an announced degradation, never a silent
-substitution** — that is the single design rule of the dispatch block. Claude Code's own
-`Agent` tool cannot run an OpenAI model, so asking for one routes out to the Codex
-plugin, and if that plugin is missing the skill stops instead of picking something else.
-Codex cannot run an Anthropic model at all. The Agent tool takes only a family alias, so
-`/orchestrate claude-opus-5 …` gets `opus` and is told so. Quietly handing back a
-different model or a different effort than the caller asked for is the costliest failure
-this skill could have, so each of those sentences is gated by its own drift token and a
-mutation test that deletes it and requires the gate to fail.
-
-On the OpenAI row: the skill carries the short-name-to-id mapping itself (`sol` →
-`gpt-5.6-sol`, and the other three), because the Codex companion expands only `spark` and
-passes anything else through as typed. An unresolved name reaches Codex verbatim, and
-codex-rescue returns nothing when a call fails — so the skill also says that an empty
-result means failure, rather than a quiet round that invites another one.
+substitution** — that is the single design rule of the dispatch block. The Agent tool
+takes only a family alias, so `/orchestrate claude-opus-5 …` gets `opus` and is told so.
+Quietly handing back a different model or a different effort than the caller asked for
+is the costliest failure this skill could have, so each of those sentences is gated by
+its own drift token and a mutation test that deletes it and requires the gate to fail.
 
 On the last row: nothing in this repo installs the effort shims onto an OpenCode host —
 a Codex-shaped manifest cannot ship agents, and OpenCode would not read `model: inherit`

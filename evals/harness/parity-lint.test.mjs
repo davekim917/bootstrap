@@ -149,10 +149,10 @@ test('contract gate rejects a dropped cross-provider dispatch line', (t) => {
   assert.equal(evaluateContracts(roots).pass, true);
   const skill = path.join(roots.orchestrateRoot, 'orchestrate/SKILL.md');
   const text = fs.readFileSync(skill, 'utf8');
-  fs.writeFileSync(skill, text.split('\n').filter((line) => !line.startsWith('- Claude Code, OpenAI model')).join('\n'));
+  fs.writeFileSync(skill, text.split('\n').filter((line) => !line.startsWith('- Codex:')).join('\n'));
   const result = evaluateContracts(roots);
   assert.equal(result.pass, false);
-  assert.ok(result.failures.some((f) => f.includes('Claude Code, OpenAI model')), result.failures.join('\n'));
+  assert.ok(result.failures.some((f) => f.includes('Codex:')), result.failures.join('\n'));
 });
 
 test('contract gate rejects dropping any capability refusal or degradation', (t) => {
@@ -162,15 +162,10 @@ test('contract gate rejects dropping any capability refusal or degradation', (t)
   // sentences is the instruction to say so instead, and none may be droppable.
   for (const refusal of [
     'a specific version cannot be named; say so if one was asked for',
-    '`max` is not accepted there — use `xhigh` and say so',
-    'astra → gpt-6-astra, sol → gpt-5.6-sol, terra → gpt-5.6-terra, luna → gpt-5.6-luna',
-    'if it does not resolve, stop and say so',
-    'An empty result from codex-rescue means the call failed: say so rather than starting another round.',
-    'If the plugin is not installed, stop and say so — do not substitute a model.',
+    'An OpenAI model cannot be dispatched from Claude Code; say so and stop.',
     'if the tool exposes no model or reasoning_effort field, say so and stop',
     'An Anthropic model cannot be dispatched from Codex; say so and stop.',
     'say in one line that effort could not be set',
-    'resumes the latest Codex thread in this repository',
   ]) {
     const roots = copiedContracts(t);
     const skill = path.join(roots.orchestrateRoot, 'orchestrate/SKILL.md');

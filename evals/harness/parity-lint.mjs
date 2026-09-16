@@ -56,12 +56,12 @@ const RETIRED_WORKER_ROLES = [
  * contract only.
  *
  * Split out from the role names because a model id, unlike a role name, has a
- * legitimate use: `/orchestrate` maps short names to full ids, and `luna` is one
- * of the four it maps. Naming the id there is the skill working; naming it in
- * the CONTRACT would mean a tier had been reinstated, which is the thing worth
- * catching. Keeping one combined list made the gate fail on the mapping table —
- * the same collision `worker-high` caused, and the same resolution: narrow the
- * check to where the name still means what the gate thinks it means.
+ * legitimate use: `/orchestrate <model> …` may name any model the runtime
+ * accepts, `luna` included. Naming the id in the skill is the skill working;
+ * naming it in the CONTRACT would mean a tier had been reinstated, which is the
+ * thing worth catching — the same collision `worker-high` caused, and the same
+ * resolution: narrow the check to where the name still means what the gate
+ * thinks it means.
  */
 const RETIRED_WORKER_TIER_MODELS = [
   'gpt-5.6-luna',
@@ -296,43 +296,26 @@ export function evaluateContracts({
       'Verification is whatever the deliverable demands',
       'Say in one line which check you chose',
       'not to test or review its own work',
-      // Runtime × model family. Each line is named by its own prefix so a
-      // deleted one fails as itself rather than as a vague missing token.
-      'Claude Code, Anthropic model', 'Claude Code, OpenAI model',
-      'Codex, OpenAI model', 'OpenCode:',
+      // One line per runtime, each named by its own prefix so a deleted one
+      // fails as itself rather than as a vague missing token. There is no
+      // cross-provider hop: a Claude session dispatches Anthropic models, a
+      // Codex session dispatches OpenAI models, and each refuses the other.
+      'Claude Code:', 'Codex:', 'OpenCode:',
       'bootstrap-orchestrate:worker-{effort_level}',
       'every later round is SendMessage to that name',
-      'codex:codex-rescue',
-      '--model <full id> --effort {effort_level} --write --wait',
-      'Every later round asks it to `--resume --wait`',
       'spawn_agent', 'reasoning_effort',
       'Every later round goes to that agent id',
       'agent "worker-{effort_level}" when that agent exists',
-      // The four REFUSALS and DEGRADATIONS. Each one covers a capability the
-      // runtime does not have, and each names what to do instead — route, stop,
-      // or degrade out loud. The shared failure they prevent is silence: the
+      // The REFUSALS and DEGRADATIONS. Each one covers a capability the
+      // runtime does not have, and each names what to do instead — stop, or
+      // degrade out loud. The shared failure they prevent is silence: the
       // caller asks for a model or an effort, gets something else, and nothing
       // in the transcript says so.
       'a specific version cannot be named; say so if one was asked for',
-      '`max` is not accepted there — use `xhigh` and say so',
-      // The id mapping, and what silence means. The line accepts short names but
-      // the Codex companion expands only `spark`, so an unresolved `sol` reaches
-      // Codex as typed; and codex-rescue's rule for a failed call is to return
-      // NOTHING. Together those produce a blank round with no error, which a
-      // coordinator reads as "no news" and follows with another round. Both
-      // halves are needed: the mapping so the call succeeds, the empty-result
-      // rule so a failure is still reported when it does not.
-      'astra → gpt-6-astra, sol → gpt-5.6-sol, terra → gpt-5.6-terra, luna → gpt-5.6-luna',
-      'if it does not resolve, stop and say so',
-      'An empty result from codex-rescue means the call failed: say so rather than starting another round',
-      'If the plugin is not installed, stop and say so — do not substitute a model',
+      'An OpenAI model cannot be dispatched from Claude Code; say so and stop',
       'if the tool exposes no model or reasoning_effort field, say so and stop',
       'An Anthropic model cannot be dispatched from Codex; say so and stop',
       'say in one line that effort could not be set',
-      // The resume caveat is a correctness constraint on the caller, not a
-      // nicety: resume picks the latest Codex thread in the repo, so a
-      // concurrent Codex run silently hijacks round two.
-      'resumes the latest Codex thread in this repository',
     ]);
     for (const retired of RETIRED_WORKER_ROLES) {
       if (skill.includes(retired)) failures.push(`${label}/orchestrate: retired worker policy ${retired}`);
