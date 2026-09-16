@@ -581,7 +581,7 @@ for (const unexpectedDir of ['commands']) {
 {
   const dir = 'plugins/orchestrate/agents';
   const root = path.join(repoRoot, dir);
-  const expected = EFFORT_LEVELS.map((level) => `delegate-${level}.md`).sort();
+  const expected = EFFORT_LEVELS.map((level) => `worker-${level}.md`).sort();
   if (!exists(dir)) {
     fail(`${dir} must ship the five effort shims so /orchestrate can dispatch on a bare install`);
   } else {
@@ -603,7 +603,7 @@ for (const unexpectedDir of ['commands']) {
             + 'level back into a role and takes the model choice away from the dispatch',
         );
       }
-      const level = path.parse(name).name.replace(/^delegate-/, '');
+      const level = path.parse(name).name.replace(/^worker-/, '');
       if (!new RegExp(`^effort:\\s*${level}\\s*$`, 'm').test(text)) {
         fail(`${dir}/${name} must declare \`effort: ${level}\`; the filename is the level it pins`);
       }

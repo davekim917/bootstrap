@@ -32,13 +32,19 @@ export const EXPECTED_ORCHESTRATE_SKILLS = Object.freeze(['orchestrate']);
  * Named worker roles and tiers, all retired. `worker-frontier` is the newest
  * arrival: it was the single named role the whole delegation contract pointed at,
  * with a policy file rendering its model and effort. `/orchestrate` now names a
- * model and an effort per dispatch instead, and the five `delegate-<level>` shims
+ * model and an effort per dispatch instead, and the five `worker-<level>` shims
  * it dispatches to carry no instructions — so any of these reappearing in a
  * contract is a role growing back.
+ *
+ * `worker-high` was on this list and is REMOVED, deliberately: it is now a live
+ * shim name (`agents/worker-high.md`). Leaving it would fail the gate on any doc
+ * that legitimately names the shim, and the two are not the same thing — the
+ * retired `worker-high` was a cheap tier in a ladder, this one is an effort level
+ * with no model and no instructions behind it. Every name that stays is one no
+ * shim can claim, because none of them is an effort level.
  */
 const RETIRED_WORKER_POLICY = [
   'worker-fast',
-  'worker-high',
   'worker-codex',
   'worker-frontier',
   'gpt-5.6-luna',
@@ -239,24 +245,38 @@ export function evaluateContracts({
   //
   // What this gate is FOR, now that there is no policy file to derive from. The
   // skill is a parameterized delegation prompt, and the parts that make it one
-  // are the parts that quietly rot: the four parameters it fills, the three
-  // runtime dispatch lines (drop one and that runtime silently has no
-  // instruction), the single-thread rule, and the instruction that the sub-agent
-  // does not review its own work — which is the whole reason the coordinator
-  // tests. Prose that merely reads well would pass none of these.
+  // are the parts that quietly rot:
+  //
+  //  - the four parameters, and the positional parse that fills the first two
+  //    from the invocation;
+  //  - the three runtime dispatch lines — drop one and that runtime silently has
+  //    no instruction at all, which reads as the skill simply not working there;
+  //  - the retained thread, asserted per runtime, because "same sub-agent every
+  //    round" is the one property a coordinator drifts away from first;
+  //  - the instruction that the sub-agent does not review its own work, and the
+  //    coordinator's derived verification step, which is the thing that replaces
+  //    it. Either half alone is worse than neither: a sub-agent that does not
+  //    self-check and a coordinator that does not check it ships unverified work.
+  //
+  // Prose that merely reads well would pass none of these.
   for (const [label, root] of orchestrateInventories.map(([l, r]) => [l, r])) {
     const skillPath = path.join(root, 'orchestrate', 'SKILL.md');
     if (!fs.existsSync(skillPath)) continue;
     const skill = fs.readFileSync(skillPath, 'utf8');
     requireTokens(failures, `${label}/orchestrate`, skill, [
-      '{model}', '{effort_level}', '{rounds}', '{done}',
-      'low | medium | high | xhigh | max',
+      '{model}', '{effort_level}', '{rounds}', '{done}', '{task}',
+      'the first two words after /orchestrate are {model} and {effort_level}',
       'one continuous thread',
-      'not to test or review its work',
+      'You coordinate and verify; you do not do the work yourself',
+      'Verification is whatever the deliverable demands',
+      'Say in one line which check you chose',
+      'not to test or review its own work',
       'Claude Code:', 'Codex:', 'OpenCode:',
-      'bootstrap-orchestrate:delegate-{effort_level}',
+      'bootstrap-orchestrate:worker-{effort_level}',
+      'every later round is SendMessage to that name',
       'spawn_agent', 'reasoning_effort',
-      'Never spawn a second agent for a follow-up',
+      'every later round goes to that agent id',
+      'agent "worker-{effort_level}"',
     ]);
     for (const retired of RETIRED_WORKER_POLICY) {
       if (skill.includes(retired)) failures.push(`${label}/orchestrate: retired worker policy ${retired}`);
@@ -315,35 +335,35 @@ function checkEffortShims(failures, checks, agentsRoot) {
     return;
   }
   const found = fs.readdirSync(agentsRoot).filter((name) => name.endsWith('.md')).sort();
-  const expected = EFFORT_LEVELS.map((level) => `delegate-${level}.md`).sort();
+  const expected = EFFORT_LEVELS.map((level) => `worker-${level}.md`).sort();
   if (JSON.stringify(found) !== JSON.stringify(expected)) {
     failures.push(`orchestrate/agents: expected exactly ${expected.join(', ')}; found ${found.join(', ') || '(nothing)'}`);
     return;
   }
   let allClean = true;
   for (const level of EFFORT_LEVELS) {
-    const file = path.join(agentsRoot, `delegate-${level}.md`);
+    const file = path.join(agentsRoot, `worker-${level}.md`);
     const text = fs.readFileSync(file, 'utf8');
     const fields = frontmatterFields(text);
-    if (fields?.get('name') !== `delegate-${level}`) {
-      failures.push(`orchestrate/agents/delegate-${level}.md: name must be delegate-${level}`);
+    if (fields?.get('name') !== `worker-${level}`) {
+      failures.push(`orchestrate/agents/worker-${level}.md: name must be worker-${level}`);
       allClean = false;
     }
     if (fields?.get('model') !== 'inherit') {
       failures.push(
-        `orchestrate/agents/delegate-${level}.md: model must be \`inherit\` — a pinned model turns the `
+        `orchestrate/agents/worker-${level}.md: model must be \`inherit\` — a pinned model turns the `
           + 'shim back into a role and takes the model choice away from the dispatch',
       );
       allClean = false;
     }
     if (fields?.get('effort') !== level) {
-      failures.push(`orchestrate/agents/delegate-${level}.md: effort must be \`${level}\`; the filename is the level it pins`);
+      failures.push(`orchestrate/agents/worker-${level}.md: effort must be \`${level}\`; the filename is the level it pins`);
       allClean = false;
     }
     const body = text.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
     if (body.split('\n').filter((line) => line.trim()).length > 2) {
       failures.push(
-        `orchestrate/agents/delegate-${level}.md: body must stay at most two lines — a shim carries no `
+        `orchestrate/agents/worker-${level}.md: body must stay at most two lines — a shim carries no `
           + 'instructions of its own, and prose here becomes a role no dispatch can override',
       );
       allClean = false;

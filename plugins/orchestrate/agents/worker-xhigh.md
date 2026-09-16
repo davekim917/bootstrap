@@ -1,5 +1,5 @@
 ---
-name: delegate-xhigh
+name: worker-xhigh
 description: Effort shim for /orchestrate — a sub-agent that inherits the parent's tools and runs at xhigh effort on whatever model the dispatch names. Not a role; carries no instructions of its own.
 model: inherit
 effort: xhigh
