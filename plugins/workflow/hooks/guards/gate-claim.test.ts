@@ -2,7 +2,11 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'fs';
 import {
     GATE_CLAIM_DIR,
+    GATE_DIR,
     abandonGateClaim,
+    claimedGateRowMatches,
+    computeGateHash,
+    consumeGateApproval,
     claimGateRequest,
     gateClaimKey,
     gateRequestAlreadyDecided,
@@ -211,5 +215,58 @@ describe('isDecidedGateStatus', () => {
         // that silently duplicates cards.
         expect(isDecidedGateStatus('queued')).toBe(false);
         expect(isDecidedGateStatus('')).toBe(false);
+    });
+});
+
+// ── nanoclaw #858: nothing in agent-writable /tmp can grant an approval ──
+
+describe('consumeGateApproval is retired', () => {
+    test('a planted marker for the exact command grants nothing, and is left alone', () => {
+        // The old reader unlinked `<GATE_DIR>/<hash>` and answered true, so any
+        // process that could create that one file self-approved the command.
+        const command = 'rm -rf /workspace/agent/important';
+        mkdirSync(GATE_DIR, { recursive: true });
+        const marker = `${GATE_DIR}/${computeGateHash(command)}`;
+        writeFileSync(marker, '');
+        try {
+            expect(consumeGateApproval(command)).toBe(false);
+            // Not consumed either: the function no longer touches the filesystem.
+            expect(existsSync(marker)).toBe(true);
+        } finally {
+            rmSync(marker, { force: true });
+        }
+    });
+});
+
+describe('claimedGateRowMatches binds a claim to the command the human sees', () => {
+    const action = 'request_destructive_gate';
+    const command = 'rm -rf /workspace/agent/important';
+    const row = (over: Record<string, unknown> = {}): string =>
+        JSON.stringify({ action, requestId: 'gate-1', label: 'x', summary: 'x', command, ...over });
+
+    test('same action and same command: the peer card is ours', () => {
+        expect(claimedGateRowMatches(row(), action, command)).toBe(true);
+    });
+
+    test('a planted claim whose card shows an innocuous command is refused', () => {
+        expect(claimedGateRowMatches(row({ command: 'echo hello' }), action, command)).toBe(false);
+    });
+
+    test('a suffix or prefix of the real command is NOT a match', () => {
+        // Near-matches are how one card would approve another command.
+        expect(claimedGateRowMatches(row({ command: `true; ${command}` }), action, command)).toBe(false);
+        expect(claimedGateRowMatches(row({ command: command.slice(0, -1) }), action, command)).toBe(false);
+    });
+
+    test('a different gate (email vs destructive) is refused', () => {
+        expect(claimedGateRowMatches(row({ action: 'request_bash_gate' }), action, command)).toBe(false);
+    });
+
+    test('missing, unparsable or non-object content is refused', () => {
+        expect(claimedGateRowMatches(undefined, action, command)).toBe(false);
+        expect(claimedGateRowMatches(null, action, command)).toBe(false);
+        expect(claimedGateRowMatches('not json', action, command)).toBe(false);
+        expect(claimedGateRowMatches('"a string"', action, command)).toBe(false);
+        expect(claimedGateRowMatches('null', action, command)).toBe(false);
     });
 });
