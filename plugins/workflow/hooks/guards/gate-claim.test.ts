@@ -2,7 +2,10 @@ import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'fs';
 import {
     GATE_CLAIM_DIR,
+    GATE_DIR,
     abandonGateClaim,
+    computeGateHash,
+    consumeGateApproval,
     claimGateRequest,
     gateClaimKey,
     gateRequestAlreadyDecided,
@@ -211,5 +214,25 @@ describe('isDecidedGateStatus', () => {
         // that silently duplicates cards.
         expect(isDecidedGateStatus('queued')).toBe(false);
         expect(isDecidedGateStatus('')).toBe(false);
+    });
+});
+
+// ── nanoclaw #858: nothing in agent-writable /tmp can grant an approval ──
+
+describe('consumeGateApproval is retired', () => {
+    test('a planted marker for the exact command grants nothing, and is left alone', () => {
+        // The old reader unlinked `<GATE_DIR>/<hash>` and answered true, so any
+        // process that could create that one file self-approved the command.
+        const command = 'rm -rf /workspace/agent/important';
+        mkdirSync(GATE_DIR, { recursive: true });
+        const marker = `${GATE_DIR}/${computeGateHash(command)}`;
+        writeFileSync(marker, '');
+        try {
+            expect(consumeGateApproval(command)).toBe(false);
+            // Not consumed either: the function no longer touches the filesystem.
+            expect(existsSync(marker)).toBe(true);
+        } finally {
+            rmSync(marker, { force: true });
+        }
     });
 });
