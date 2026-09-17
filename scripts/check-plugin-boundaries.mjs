@@ -250,6 +250,8 @@ const orchestrateClaudeManifest = readJson('plugins/orchestrate/.claude-plugin/p
 const orchestrateCodexManifest = readJson('plugins/orchestrate/.codex-plugin/plugin.json');
 const wwbdClaudeManifest = readJson('plugins/wwbd/.claude-plugin/plugin.json');
 const wwbdCodexManifest = readJson('plugins/wwbd/.codex-plugin/plugin.json');
+const wwedClaudeManifest = readJson('plugins/wwed/.claude-plugin/plugin.json');
+const wwedCodexManifest = readJson('plugins/wwed/.codex-plugin/plugin.json');
 const conciseClaudeManifest = readJson('plugins/concise/.claude-plugin/plugin.json');
 const conciseCodexManifest = readJson('plugins/concise/.codex-plugin/plugin.json');
 const codexCopyPasteEntry = readJson('plugins/workflow-agents/marketplace-entry.json');
@@ -286,6 +288,7 @@ const codexRoster = new Map([
   ['bootstrap-workflow-agents', './plugins/workflow-agents'],
   ['bootstrap-orchestrate', './plugins/orchestrate'],
   ['wwbd', './plugins/wwbd'],
+  ['wwed', './plugins/wwed'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
 ]);
@@ -320,6 +323,15 @@ if (!codexWwbdEntry) {
   );
 }
 
+const codexWwedEntry = codexEntries.find((entry) => entry.name === 'wwed');
+if (!codexWwedEntry) {
+  fail('.agents/plugins/marketplace.json must register wwed');
+} else if (codexWwedEntry.version !== wwedCodexManifest?.version) {
+  fail(
+    `wwed version must match between .agents marketplace and .codex-plugin manifest (${codexWwedEntry.version} !== ${wwedCodexManifest?.version})`,
+  );
+}
+
 const codexConciseEntry = codexEntries.find((entry) => entry.name === 'concise');
 if (!codexConciseEntry) {
   fail('.agents/plugins/marketplace.json must register concise');
@@ -344,6 +356,7 @@ const claudeRoster = new Map([
   ['bootstrap-workflow', './plugins/workflow'],
   ['bootstrap-orchestrate', './plugins/orchestrate'],
   ['wwbd', './plugins/wwbd'],
+  ['wwed', './plugins/wwed'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
 ]);
@@ -378,6 +391,15 @@ if (!claudeWwbdEntry) {
   );
 }
 
+const claudeWwedEntry = claudeEntries.find((entry) => entry.name === 'wwed');
+if (!claudeWwedEntry) {
+  fail('.claude-plugin/marketplace.json must register wwed');
+} else if (claudeWwedEntry.version !== wwedClaudeManifest?.version) {
+  fail(
+    `wwed version must match between .claude-plugin marketplace and plugin manifest (${claudeWwedEntry.version} !== ${wwedClaudeManifest?.version})`,
+  );
+}
+
 const claudeConciseEntry = claudeEntries.find((entry) => entry.name === 'concise');
 if (!claudeConciseEntry) {
   fail('.claude-plugin/marketplace.json must register concise');
@@ -406,9 +428,28 @@ if (!exists('plugins/wwbd/skills/wwbd/SKILL.md')) {
 if (!exists('plugins/wwbd/always-on.md')) {
   fail('plugins/wwbd must ship always-on.md (the SessionStart nudge)');
 }
-// wwbd is the one plugin that still ships a standing directive, and it reaches
-// BOTH runtimes from its own hooks — the Claude manifest's wwbd-hooks.json and
-// the Codex manifest's wwbd-codex-hooks.json (separate files because Codex does
+// wwed is the same shape as wwbd: single-source, both manifests, always-on.
+if (wwedClaudeManifest?.name !== 'wwed') {
+  fail('plugins/wwed/.claude-plugin/plugin.json name must be wwed');
+}
+if (wwedCodexManifest?.name !== 'wwed') {
+  fail('plugins/wwed/.codex-plugin/plugin.json name must be wwed');
+}
+if (wwedClaudeManifest?.version !== wwedCodexManifest?.version) {
+  fail(
+    `wwed Claude and Codex manifests must share one version (${wwedClaudeManifest?.version} !== ${wwedCodexManifest?.version})`,
+  );
+}
+if (!exists('plugins/wwed/skills/wwed/SKILL.md')) {
+  fail('plugins/wwed must ship skills/wwed/SKILL.md');
+}
+if (!exists('plugins/wwed/always-on.md')) {
+  fail('plugins/wwed must ship always-on.md (the SessionStart nudge)');
+}
+
+// wwbd and wwed are the plugins that ship a standing directive, and each reaches
+// BOTH runtimes from its own hooks — the Claude manifest's <name>-hooks.json and
+// the Codex manifest's <name>-codex-hooks.json (separate files because Codex does
 // not expand ${CLAUDE_PLUGIN_ROOT}). checkAlwaysOnDelivery enforces that, and
 // enforces that no host-specific delivery file exists anywhere in the repo.
 checkAlwaysOnDelivery();

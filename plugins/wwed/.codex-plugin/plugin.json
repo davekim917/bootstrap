@@ -1,0 +1,36 @@
+{
+  "name": "wwed",
+  "version": "1.0.0",
+  "description": "What Would Elon Do — execution and simplification judgment run through Musk's five-step algorithm (question the requirement, delete, simplify, accelerate, automate), fenced off from human gates and irreversible surfaces.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "judgment",
+    "simplification",
+    "deletion",
+    "cycle-time",
+    "advisory",
+    "elon"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/wwed-codex-hooks.json",
+  "interface": {
+    "displayName": "WWED — What Would Elon Do",
+    "shortDescription": "Subtraction and cycle-time advisory skill",
+    "longDescription": "Runs Musk's five-step algorithm over a proposal in order — question the requirement, delete the part or process, simplify, accelerate, automate — with an explicit fence around human gates, money, privacy, irreversible data and the verification loop.",
+    "developerName": "David Kim",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/davekim917/bootstrap",
+    "defaultPrompt": [
+      "What would Elon delete from this plan?",
+      "Run the algorithm over this process."
+    ],
+    "brandColor": "#7f1d1d"
+  }
+}
