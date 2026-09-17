@@ -19,6 +19,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.7.1 | The same, runtime-neutral |
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.0.2 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.3.0 | Boris Cherny-inspired engineering-judgment advisory skill |
+| Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
 ### Delegation is invoke-only
@@ -236,6 +237,7 @@ artifact, environment and command, and invalidate it after relevant changes.
 /plugin install bootstrap-workflow@davekim917-bootstrap
 /plugin install bootstrap-orchestrate@davekim917-bootstrap
 /plugin install wwbd@davekim917-bootstrap
+/plugin install wwed@davekim917-bootstrap
 /plugin install concise@davekim917-bootstrap
 ```
 
@@ -246,6 +248,7 @@ codex plugin marketplace add davekim917/bootstrap --ref main
 codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
 codex plugin add bootstrap-orchestrate@davekim917-bootstrap
 codex plugin add wwbd@davekim917-bootstrap
+codex plugin add wwed@davekim917-bootstrap
 codex plugin add concise@davekim917-bootstrap
 ```
 
@@ -256,6 +259,7 @@ codex plugin marketplace add ~/plugins/bootstrap
 codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
 codex plugin add bootstrap-orchestrate@davekim917-bootstrap
 codex plugin add wwbd@davekim917-bootstrap
+codex plugin add wwed@davekim917-bootstrap
 ```
 
 Codex loads the plugin from its cache through `.codex-plugin/plugin.json`; do not copy workflow
@@ -282,7 +286,7 @@ session so its WWBD skill is available. Verify installation with `codex plugin l
 Both runtimes get the same SessionStart reminder from the plugin's own hook; Codex additionally
 discovers the advisory skill through its native plugin skill loader.
 
-WWBD is the only plugin here that still ships a standing directive, and it shows how one is
+WWBD and WWED are the only plugins here that ship a standing directive, and they show how one is
 delivered: **the runtime's own plugin declares a `SessionStart` command hook that cats the
 `always-on.md` in its own plugin root**, and the hook's stdout is injected into the model's
 context. Claude's `hooks/wwbd-hooks.json` resolves `${CLAUDE_PLUGIN_ROOT}`; the Codex manifest

@@ -20,7 +20,7 @@
     {
       "name": "wwbd",
       "source": "./plugins/wwbd",
-      "description": "What Would Boris Do \u2014 engineering-judgment advisory skill channeling Boris Cherny's published guidance, with an always-on nudge to consult it before architecture/design/build decisions.",
+      "description": "What Would Boris Do — engineering-judgment advisory skill channeling Boris Cherny's published guidance, with an always-on nudge to consult it before architecture/design/build decisions.",
       "version": "1.3.0"
     },
     {
@@ -32,7 +32,13 @@
     {
       "name": "instruction-audit",
       "source": "./plugins/instruction-audit",
-      "description": "Read-only audit of the always-on instruction surface \u2014 host and container \u2014 for context waste, dead rules, cross-layer contradictions, and unclear authority.",
+      "description": "Read-only audit of the always-on instruction surface — host and container — for context waste, dead rules, cross-layer contradictions, and unclear authority.",
+      "version": "1.0.0"
+    },
+    {
+      "name": "wwed",
+      "source": "./plugins/wwed",
+      "description": "What Would Elon Do — execution and simplification judgment run through Musk's five-step algorithm (question the requirement, delete, simplify, accelerate, automate), fenced off from human gates and irreversible surfaces. Complements wwbd; ships an always-on nudge like it.",
       "version": "1.0.0"
     }
   ]
