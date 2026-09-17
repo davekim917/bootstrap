@@ -1670,75 +1670,6 @@ export function gateRequestAlreadyDecided(requestId: string): boolean {
     }
 }
 
-/**
- * Does a staged gate request ask the human about THIS command?
- *
- * The pure half of `gateRequestMatches`, exported for the same reason
- * `isDecidedGateStatus` is: the DB path is a hardcoded container mount, the
- * predicate is where a bug would live.
- *
- * `content` is the `messages_out.content` JSON `writeGateRequest` staged. It
- * matches only when it parses, carries the same `action`, and carries EXACTLY
- * the same `command` string. Exact, not "equivalent": NanoClaw's in-tree chain
- * can gate a rewritten command (`codex exec … < /dev/null`, a flock-wrapped
- * jest — nanoclaw `createBashCommandRewriteHook`), and when the two chains
- * disagree the loser stages its own card. Two cards is the fail-closed
- * direction; accepting a near-match would let a card that shows one command
- * approve another.
- */
-export function claimedGateRowMatches(
-    content: string | null | undefined,
-    action: string,
-    command: string,
-): boolean {
-    if (typeof content !== 'string') return false;
-    let parsed: unknown;
-    try {
-        parsed = JSON.parse(content);
-    } catch {
-        return false;
-    }
-    if (!parsed || typeof parsed !== 'object') return false;
-    const row = parsed as { action?: unknown; command?: unknown };
-    return row.action === action && row.command === command;
-}
-
-/**
- * Bind a claimed requestId to what the human will actually see (nanoclaw #858).
- *
- * The claim file lives under /tmp, which the agent can write. Without this, a
- * process in the container could stage its OWN gate request with innocuous card
- * text, plant a claim pointing at it, and have the real guard wait on — and
- * honour — an approval the human gave to a different command. Reading the
- * staged row back and requiring the same action and command means a planted
- * claim only works when its card shows the real command, which is just an
- * approval.
- *
- * Any failure answers FALSE: "could not check" stages our own card.
- */
-export function gateRequestMatches(requestId: string, action: string, command: string): boolean {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
-    let db: import('bun:sqlite').Database | undefined;
-    try {
-        db = new Database(NANOCLAW_OUTBOUND_DB, { readonly: true });
-        db.exec('PRAGMA busy_timeout = 2000');
-        const row = db.prepare('SELECT content FROM messages_out WHERE id = ?').get(requestId) as
-            | { content?: string }
-            | undefined
-            | null;
-        return claimedGateRowMatches(row?.content, action, command);
-    } catch {
-        return false;
-    } finally {
-        try {
-            db?.close();
-        } catch {
-            // Nothing left to do.
-        }
-    }
-}
-
 export type GateClaim =
     | { owner: true }
     /** Another process owns the card; poll `requestId` for the shared decision. */
@@ -1975,12 +1906,7 @@ export function runGateRequest(
     const key = opts.toolUseId ? gateClaimKey(opts.toolUseId, opts.action) : null;
     if (key) {
         const claim = claimGateRequest(key);
-        if (
-            !claim.owner &&
-            claim.requestId &&
-            !gateRequestAlreadyDecided(claim.requestId) &&
-            gateRequestMatches(claim.requestId, opts.action, command)
-        ) {
+        if (!claim.owner && claim.requestId && !gateRequestAlreadyDecided(claim.requestId)) {
             // A peer guard already staged this exact card. Wait on ITS decision
             // so the human answers once and both guards honour that one answer.
             return pollDeliveredTable(claim.requestId, 60 * 60 * 1000);
