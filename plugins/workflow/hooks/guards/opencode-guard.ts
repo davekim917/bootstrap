@@ -29,7 +29,6 @@ import {
   evaluateSnowflakeConnector,
   runNanoclawGate,
   runEmailGate,
-  consumeGateApproval,
   IS_NANOCLAW,
 } from './block-destructive-core';
 import { evaluateEmailSend, evaluateEmailToolCall } from './email-gate-core';
@@ -142,13 +141,9 @@ export function gateBashOrThrow(command: string): void {
   if (verdict.action === 'gate') {
     const reason = verdict.reason ?? 'requires approval';
 
-    // Gate-file bypass (parity with the Claude hook; rarely set in-container).
-    if (consumeGateApproval(command)) {
-      const after = evaluateBashCommand(command, { skipGate: true });
-      if (after.action === 'block') throw new Error(after.reason ?? reason);
-      // Fall through to the email gate below — an approved destructive verb in
-      // the same command line must still be email-gated if it also sends mail.
-    } else if (IS_NANOCLAW) {
+    // No gate-file shortcut: the /tmp marker was agent-writable and nothing ever
+    // wrote it legitimately (nanoclaw #858). The session-DB gate is the only path.
+    if (IS_NANOCLAW) {
       // session-DB approval gate: blocks until the host's approver decides (or 60-min timeout).
       const decision = runNanoclawGate(command, reason);
       if (decision === 'approved') {

@@ -1497,8 +1497,8 @@ export function evaluateBashCommand(
 
 // ── Legacy gate-file compatibility ────────────────────────────────────────────
 // Current local Claude and Codex adapters use their native `ask` permission
-// decision, not this agent-writable marker. These exports remain for the
-// NanoClaw runner contract while older container images are phased out.
+// decision. The agent-writable marker below is retired — see
+// `consumeGateApproval`. GATE_DIR itself still hosts the claim files.
 
 export const GATE_DIR = '/tmp/.claude-destructive-gate';
 
@@ -1506,15 +1506,18 @@ export function computeGateHash(command: string): string {
     return createHash('sha256').update(command).digest('hex').slice(0, 16);
 }
 
-export function consumeGateApproval(command: string): boolean {
-    const hash = computeGateHash(command);
-    const approvalPath = `${GATE_DIR}/${hash}`;
-    try {
-        unlinkSync(approvalPath);  // atomic: delete = consume approval in one syscall
-        return true;
-    } catch {
-        return false;  // ENOENT or any other error → no approval
-    }
+export function consumeGateApproval(_command: string): boolean {
+    // RETIRED (nanoclaw #858). This used to unlink `<GATE_DIR>/<hash(command)>`
+    // and answer true, which made the caller skip the approval gate outright.
+    // GATE_DIR is under /tmp — agent-writable — and NOTHING in either tree ever
+    // wrote that marker: the only real approval path is the session-DB gate
+    // (`runGateRequest`), whose decision the HOST writes to inbound.db. So the
+    // read granted nothing legitimate and was a pure self-approval door for any
+    // process in the container that could create one file. It now answers false
+    // unconditionally. The export stays because NanoClaw's in-tree Codex chain
+    // validates its presence at load (codex-hooks/runner.ts `validateGuardCore`)
+    // and older container images still call it.
+    return false;
 }
 
 // ── One approval card per tool call (cross-process claim) ────────────────────
