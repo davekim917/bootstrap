@@ -4,11 +4,9 @@ description: Delegate a task to one sub-agent of the model and effort you name, 
 ---
 Parse the invocation: the first two words after /orchestrate are {model} and {effort_level} when they are a model name and an effort level; anything after that is {task}. If either is absent, the dispatch router below picks it. {rounds} defaults to 3 and {done} to "the sub-agent says the work is complete" — the task text may override both ("stop after 5 rounds", "until the numbers reconcile").
 
-Before the first dispatch, on Claude Code or Codex, pipe {task} into `node <this skill's directory>/scripts/pick-dispatch.mjs --runtime <claude|codex> --actual "<model> <effort>"`, naming whatever the invocation gave (or `none`). It classifies the task against `references/dispatch-rubric.json` and prints JSON.
-- A model and effort named in the invocation always win; the script only logs its pick next to them.
-- Otherwise, when it prints `"decision": "route"`, use its `pick.model` and `pick.effort` for any part the invocation left out, and say the pick in one line.
-- Otherwise (`ask`, `unavailable`, or the script is missing or fails), use this session's own model or effort for the missing part.
-- Whatever the source, never dispatch Fable or Astra above `high`, or Opus or Sol above `xhigh`; lower it to that cap.
+Model and effort left out of the invocation are picked from `references/dispatch-rubric.json`:
+- Claude Code: leave them out of the Agent call — omit `model`, use subagent_type `general-purpose` for a missing effort. The plugin's spawn hook fills them from the rubric (and caps them) on every sub-agent spawn.
+- Codex: before the first dispatch, pipe {task} into `node <this skill's directory>/scripts/pick-dispatch.mjs --runtime codex --actual "<model> <effort>"` (naming whatever the invocation gave, or `none`). On `"decision": "route"`, use its `pick.model` / `pick.effort` for the missing part and say the pick in one line; otherwise use this session's own. Never Astra above `high` or Sol above `xhigh`.
 
 Use a {model} sub-agent with {effort_level} effort to do all of the work on {task} in one continuous thread. You coordinate and verify; you do not do the work yourself.
 
@@ -17,6 +15,6 @@ Verification is whatever the deliverable demands, decided from {task} before the
 Each round: pass the sub-agent the original brief plus your findings and the latest artifact (screenshot, output, query result) — minimal, no technical opinions or details. Instruct it not to test or review its own work: work toward the goal, fix what it finds, stop after implementation, recap very briefly. Stop after {rounds} rounds, or when {done}.
 
 Dispatch on this runtime:
-- Claude Code: Agent tool, subagent_type "bootstrap-orchestrate:worker-{effort_level}", model = the family alias for {model} (fable, opus, sonnet, haiku — a specific version cannot be named; say so if one was asked for), a fixed name; every later round is SendMessage to that name.
+- Claude Code: Agent tool, subagent_type "bootstrap-orchestrate:worker-{effort_level}" (or `general-purpose` when effort was left to the rubric), model = the family alias for {model} (fable, opus, sonnet, haiku — a specific version cannot be named; say so if one was asked for; omitted when left to the rubric), a fixed name; every later round is SendMessage to that name.
 - Codex: spawn_agent with model {model} and reasoning_effort {effort_level}; every later round goes to that agent id.
 - OpenCode: task tool with agent "worker-{effort_level}" when that agent exists; if it does not, dispatch the default sub-agent and say in one line that effort could not be set. The sub-agent runs the parent's model either way.
