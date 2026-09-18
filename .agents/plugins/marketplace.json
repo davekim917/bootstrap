@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "bootstrap-workflow-agents",
-      "version": "2.7.2",
+      "version": "2.7.3",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
       "source": {
         "source": "local",

@@ -26,6 +26,10 @@ When the artifact author is Claude, invoke Codex with settings that do not inher
 codex exec --ignore-user-config --model gpt-6-astra -c 'model_reasoning_effort="medium"' --ephemeral --yolo
 ```
 
+If Codex answers with its usage limit and `CODEX_FALLBACK_HOMES` is set (a colon-separated list of
+spare Codex logins), rerun the same command with `CODEX_HOME` set to each listed home in turn before
+treating Codex as unavailable. A usage limit on one login says nothing about the others.
+
 When the artifact author is Codex, invoke Claude with:
 
 ```sh
