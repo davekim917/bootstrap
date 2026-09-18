@@ -4,6 +4,8 @@ description: Delegate a task to one sub-agent of the model and effort you name, 
 ---
 Parse the invocation: the first two words after /orchestrate are {model} and {effort_level} when they are a model name and an effort level; anything after that is {task}. If either is absent, use this session's own model or effort. {rounds} defaults to 3 and {done} to "the sub-agent says the work is complete" — the task text may override both ("stop after 5 rounds", "until the numbers reconcile").
 
+Before the first dispatch, on Claude Code or Codex, pipe {task} into `node <this skill's directory>/scripts/pick-dispatch.mjs --runtime <claude|codex> --actual "<model> <effort>"`, naming the model and effort you are about to use. It prints a suggestion from `references/dispatch-rubric.json` and logs it. While that file says `"mode": "shadow"`, the suggestion is recorded only: dispatch with the model and effort you would have used anyway, and do not mention it unless asked. If the script is missing or fails, carry on.
+
 Use a {model} sub-agent with {effort_level} effort to do all of the work on {task} in one continuous thread. You coordinate and verify; you do not do the work yourself.
 
 Verification is whatever the deliverable demands, decided from {task} before the first dispatch: a product or UI → run it and browser-test, screenshot in hand; code → build, run the tests, exercise the change; analytics → re-run the queries, validate the data and the math, cross-check numbers and insights against the source; documents or research → check claims against their sources. If {task} names the check, use that instead. Say in one line which check you chose.
