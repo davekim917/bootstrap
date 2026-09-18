@@ -201,19 +201,21 @@ test('disabled: no sub-agent definition survives without the orchestrate plugin'
   assert.deepEqual(resolveAgents(DISABLED), []);
 });
 
-test('the orchestrate plugin registers no hooks and no standing directive, on either side', () => {
-  // Invoke-only, asserted through the manifests rather than the file tree: a
-  // hooks field is what a runtime acts on, and an unreferenced hooks file is
-  // inert. Both are checked, because a declared-but-missing file and an
-  // undeclared-but-present file fail differently.
-  for (const [label, manifestPath] of [
-    ['Claude', 'plugins/orchestrate/.claude-plugin/plugin.json'],
-    ['Codex', 'plugins/orchestrate/.codex-plugin/plugin.json'],
-  ]) {
-    const manifest = JSON.parse(fs.readFileSync(path.join(REPO, manifestPath), 'utf8'));
-    assert.equal(manifest.hooks, undefined, `${label} manifest must declare no hooks`);
-  }
-  assert.ok(!fs.existsSync(path.join(REPO, 'plugins/orchestrate/hooks')), 'plugins/orchestrate/hooks must not exist');
+test('the orchestrate plugin registers only its spawn router and no standing directive', () => {
+  // Invoke-only for delegation: no SessionStart directive, no always-on file.
+  // The one hook it owns is the Claude PreToolUse spawn router on Agent|Task —
+  // it rewrites a sub-agent's model/effort from the dispatch rubric and never
+  // blocks. Codex carries no hook (its router step lives in the skill).
+  const claude = JSON.parse(fs.readFileSync(path.join(REPO, 'plugins/orchestrate/.claude-plugin/plugin.json'), 'utf8'));
+  assert.equal(claude.hooks, './hooks/hooks.json');
+  const hooks = JSON.parse(fs.readFileSync(path.join(REPO, 'plugins/orchestrate/hooks/hooks.json'), 'utf8')).hooks;
+  assert.deepEqual(Object.keys(hooks), ['PreToolUse']);
+  assert.deepEqual(
+    hooks.PreToolUse.map((h) => h.matcher),
+    ['Agent|Task'],
+  );
+  const codex = JSON.parse(fs.readFileSync(path.join(REPO, 'plugins/orchestrate/.codex-plugin/plugin.json'), 'utf8'));
+  assert.equal(codex.hooks, undefined, 'Codex manifest must declare no hooks');
   assert.ok(
     !fs.existsSync(path.join(REPO, 'plugins/orchestrate/always-on.md')),
     'plugins/orchestrate/always-on.md must not exist',
@@ -307,8 +309,8 @@ test('MUTATION: the delegation-contract checks fail when their property is broke
 test('enabled: the PreToolUse composition is the workflow plugin\'s safety guards and nothing else', () => {
   // The whole registered chain, tool by tool, with orchestrate enabled. Order is
   // observable — an earlier guard's decision ends the chain — so it is asserted
-  // too. Every entry belongs to bootstrap-workflow: the orchestrate plugin
-  // contributes no PreToolUse hook at all.
+  // too. Every entry belongs to bootstrap-workflow except the orchestrate
+  // spawn router, which rewrites (never blocks) Agent spawns after the guard.
   const EXPECTED = {
     Read: ['guards/block-destructive.ts'],
     Bash: ['guards/block-destructive.ts'],
@@ -319,17 +321,19 @@ test('enabled: the PreToolUse composition is the workflow plugin\'s safety guard
     Edit: ['guards/block-destructive.ts', 'guards/file-protection.ts'],
     MultiEdit: ['guards/block-destructive.ts', 'guards/file-protection.ts'],
     AskUserQuestion: ['guards/block-destructive.ts', 'guards/block-askuser-during-auto.ts'],
-    Agent: ['guards/block-destructive.ts'],
+    Agent: ['guards/block-destructive.ts', 'hooks/route-spawn.mjs'],
   };
   for (const [tool, expected] of Object.entries(EXPECTED)) {
     const hooks = hooksForTool(ENABLED, tool);
     assert.deepEqual(
-      hooks.map((hook) => hook.command.split(' ').at(-1)),
+      hooks.map((hook) => hook.command.split(' ').at(-1).replaceAll('"', '').split('/').slice(-2).join('/')),
       expected,
       `PreToolUse chain for ${tool}`,
     );
     for (const hook of hooks) {
-      assert.equal(hook.plugin, 'workflow', `${tool} hook must come from bootstrap-workflow`);
+      // The orchestrate spawn router is the one non-guard entry, and only on Agent.
+      const expectedPlugin = hook.command.includes('route-spawn.mjs') && tool === 'Agent' ? 'orchestrate' : 'workflow';
+      assert.equal(hook.plugin, expectedPlugin, `${tool} hook must come from ${expectedPlugin}`);
     }
   }
 });

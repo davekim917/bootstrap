@@ -583,11 +583,11 @@ if (codexManifest?.version !== '2.7.2') {
   fail(`bootstrap-workflow-agents release must be version 2.7.2 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
-if (orchestrateClaudeManifest?.version !== '2.2.0') {
-  fail(`bootstrap-orchestrate release must be version 2.2.0 (found ${orchestrateClaudeManifest?.version})`);
+if (orchestrateClaudeManifest?.version !== '2.3.0') {
+  fail(`bootstrap-orchestrate release must be version 2.3.0 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '2.2.0') {
-  fail(`bootstrap-orchestrate .codex-plugin release must be version 2.2.0 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '2.3.0') {
+  fail(`bootstrap-orchestrate .codex-plugin release must be version 2.3.0 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -921,14 +921,32 @@ for (const filePath of activeContractFiles) {
   for (const activationPath of [
     'plugins/orchestrate/always-on.md',
     'plugins/orchestrate/.nanoclaw-always-on.md',
-    'plugins/orchestrate/hooks',
   ]) {
     if (exists(activationPath)) {
       fail(`${activationPath} must not exist; plugins/orchestrate is invoke-only, with no standing directive and no hooks`);
     }
   }
-  if (orchestrateClaudeManifest?.hooks !== undefined) {
-    fail('plugins/orchestrate/.claude-plugin/plugin.json must not declare hooks; /orchestrate is invoke-only');
+  // The one hook allowed: the Claude spawn router (PreToolUse on Agent|Task),
+  // which rewrites a sub-agent's model/effort and never activates or gates a
+  // session. Anything else under hooks/ — a SessionStart directive above all —
+  // restores the pressure the operator turned off.
+  if (orchestrateClaudeManifest?.hooks !== undefined && orchestrateClaudeManifest.hooks !== './hooks/hooks.json') {
+    fail('plugins/orchestrate/.claude-plugin/plugin.json may declare only ./hooks/hooks.json (the spawn router)');
+  }
+  if (exists('plugins/orchestrate/hooks')) {
+    const files = fs.readdirSync(path.join(repoRoot, 'plugins/orchestrate/hooks')).sort();
+    if (JSON.stringify(files) !== JSON.stringify(['hooks.json', 'route-spawn.mjs'])) {
+      fail(`plugins/orchestrate/hooks must hold only hooks.json + route-spawn.mjs (found ${files.join(', ')})`);
+    }
+    const registered = JSON.parse(fs.readFileSync(path.join(repoRoot, 'plugins/orchestrate/hooks/hooks.json'), 'utf8')).hooks ?? {};
+    const events = Object.keys(registered);
+    const entries = registered.PreToolUse ?? [];
+    const ok =
+      JSON.stringify(events) === JSON.stringify(['PreToolUse']) &&
+      entries.length === 1 &&
+      entries[0].matcher === 'Agent|Task' &&
+      (entries[0].hooks ?? []).every((h) => typeof h.command === 'string' && h.command.includes('route-spawn.mjs'));
+    if (!ok) fail('plugins/orchestrate/hooks/hooks.json may register only the PreToolUse Agent|Task spawn router');
   }
   if (orchestrateCodexManifest?.hooks !== undefined) {
     fail('plugins/orchestrate/.codex-plugin/plugin.json must not declare hooks; /orchestrate is invoke-only');
