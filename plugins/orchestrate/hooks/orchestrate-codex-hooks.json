@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"Before spawn_agent with no model named: pipe the task into node '${PLUGIN_ROOT}/skills/orchestrate/scripts/pick-dispatch.mjs' --runtime codex; on decision route, use its pick.model + pick.effort.\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
