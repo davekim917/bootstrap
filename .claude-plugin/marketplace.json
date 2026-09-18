@@ -15,7 +15,7 @@
       "name": "bootstrap-orchestrate",
       "source": "./plugins/orchestrate",
       "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Invoke-only.",
-      "version": "2.3.0"
+      "version": "2.3.1"
     },
     {
       "name": "wwbd",
