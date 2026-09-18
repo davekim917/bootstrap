@@ -1,7 +1,7 @@
 {
   "_about": "The operator's model/effort dispatch preferences for /orchestrate. pick-dispatch.mjs asks a classifier which option fits a task brief. Edit freely: options, criteria, tiers, caps and thresholds are all data. Criteria describe what the BRIEF says, never how hard the task will turn out to be \u2014 a classifier can only see the text.",
   "version": 5,
-  "mode": "shadow",
+  "mode": "active",
   "tiers": {
     "judgment": {
       "claude": "fable",
