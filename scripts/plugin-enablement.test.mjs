@@ -205,7 +205,9 @@ test('the orchestrate plugin registers only its spawn router and no standing dir
   // Invoke-only for delegation: no SessionStart directive, no always-on file.
   // The one hook it owns is the Claude PreToolUse spawn router on Agent|Task —
   // it rewrites a sub-agent's model/effort from the dispatch rubric and never
-  // blocks. Codex carries no hook (its router step lives in the skill).
+  // blocks. Codex carries one SessionStart line pointing spawn_agent at the
+  // picker (its PreToolUse cannot read or rewrite a spawn); the Claude-composed
+  // session below still gets no SessionStart output.
   const claude = JSON.parse(fs.readFileSync(path.join(REPO, 'plugins/orchestrate/.claude-plugin/plugin.json'), 'utf8'));
   assert.equal(claude.hooks, './hooks/orchestrate-hooks.json');
   const hooks = JSON.parse(fs.readFileSync(path.join(REPO, 'plugins/orchestrate/hooks/orchestrate-hooks.json'), 'utf8')).hooks;
@@ -215,7 +217,7 @@ test('the orchestrate plugin registers only its spawn router and no standing dir
     ['Agent|Task'],
   );
   const codex = JSON.parse(fs.readFileSync(path.join(REPO, 'plugins/orchestrate/.codex-plugin/plugin.json'), 'utf8'));
-  assert.equal(codex.hooks, undefined, 'Codex manifest must declare no hooks');
+  assert.equal(codex.hooks, './hooks/orchestrate-codex-hooks.json');
   assert.ok(
     !fs.existsSync(path.join(REPO, 'plugins/orchestrate/always-on.md')),
     'plugins/orchestrate/always-on.md must not exist',
@@ -365,6 +367,18 @@ function codexSessionStartCommands(pluginName) {
     .filter((hook) => hook.type === 'command' && typeof hook.command === 'string')
     .map((hook) => hook.command.replaceAll('${PLUGIN_ROOT}', pluginRoot));
 }
+
+test('orchestrate: the Codex SessionStart hook prints exactly one picker line with a runnable path', () => {
+  const commands = codexSessionStartCommands('bootstrap-orchestrate');
+  assert.equal(commands.length, 1);
+  const result = runHookCommand(commands[0], '{}');
+  assert.equal(result.exitCode, 0, result.stderr);
+  const lines = result.stdout.trim().split('\n');
+  assert.equal(lines.length, 1, 'must be one line');
+  const scriptPath = lines[0].match(/node '([^']+pick-dispatch\.mjs)'/)?.[1];
+  assert.ok(scriptPath && fs.existsSync(scriptPath), `picker path must resolve: ${lines[0]}`);
+  assert.match(lines[0], /--runtime codex/);
+});
 
 test('wwbd: the Codex SessionStart hook prints the standing directive when run', () => {
   const commands = codexSessionStartCommands('wwbd');
