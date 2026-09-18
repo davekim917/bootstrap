@@ -207,8 +207,8 @@ test('the orchestrate plugin registers only its spawn router and no standing dir
   // it rewrites a sub-agent's model/effort from the dispatch rubric and never
   // blocks. Codex carries no hook (its router step lives in the skill).
   const claude = JSON.parse(fs.readFileSync(path.join(REPO, 'plugins/orchestrate/.claude-plugin/plugin.json'), 'utf8'));
-  assert.equal(claude.hooks, './hooks/hooks.json');
-  const hooks = JSON.parse(fs.readFileSync(path.join(REPO, 'plugins/orchestrate/hooks/hooks.json'), 'utf8')).hooks;
+  assert.equal(claude.hooks, './hooks/orchestrate-hooks.json');
+  const hooks = JSON.parse(fs.readFileSync(path.join(REPO, 'plugins/orchestrate/hooks/orchestrate-hooks.json'), 'utf8')).hooks;
   assert.deepEqual(Object.keys(hooks), ['PreToolUse']);
   assert.deepEqual(
     hooks.PreToolUse.map((h) => h.matcher),
