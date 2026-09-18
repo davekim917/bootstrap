@@ -1,0 +1,36 @@
+{
+  "_about": "The operator's model/effort dispatch preferences for /orchestrate. pick-dispatch.mjs asks a classifier which option fits a task brief. Edit freely: options, criteria, tiers, caps and thresholds are all data. Criteria describe what the BRIEF says, never how hard the task will turn out to be — a classifier can only see the text.",
+  "version": 4,
+  "mode": "shadow",
+  "tiers": {
+    "judgment": { "claude": "fable", "codex": "gpt-6-astra", "maxEffort": "high" },
+    "workhorse": { "claude": "opus", "codex": "gpt-5.6-sol", "maxEffort": "xhigh" }
+  },
+  "thresholds": { "route": 0.7 },
+  "options": {
+    "judgment-high": {
+      "tier": "judgment", "effort": "high",
+      "criteria": "The brief asks for an architecture or design decision where the approach has not been chosen and it lists constraints or trade-offs to weigh; OR it describes a failure that spans several components, concurrency, or intermittent behaviour with no named cause; OR it says an earlier medium-effort attempt failed."
+    },
+    "judgment-medium": {
+      "tier": "judgment", "effort": "medium",
+      "criteria": "The brief asks to review or critique a plan, spec, design document or RFC; OR to diagnose a symptom in one area with no named cause; OR to decide how to handle a security-sensitive change or a data migration; OR to build a new feature or product where the brief states the goal but leaves the approach open."
+    },
+    "judgment-low": {
+      "tier": "judgment", "effort": "low",
+      "criteria": "The brief asks to review a code change or pull request of any size; OR for a second opinion on a stated decision; OR to answer a question by reading code (find where something happens, explain why); OR to implement a described change, possibly across several files, with a stated goal or acceptance criteria; OR to write tests for existing code."
+    },
+    "workhorse-medium": {
+      "tier": "workhorse", "effort": "medium",
+      "criteria": "The brief names both the bug and its fix; OR asks for a change confined to one file or function; OR asks for a document, spec or brief written up from facts and decisions it already states."
+    },
+    "workhorse-low": {
+      "tier": "workhorse", "effort": "low",
+      "criteria": "The brief asks for a rename, a move, or applying a supplied patch or exact spec; OR running a named sequence of commands; OR triage, classification, a summary, or short copy."
+    },
+    "ask": {
+      "tier": null, "effort": null,
+      "criteria": "None of the other options fits, or the brief names no artifact and no action."
+    }
+  }
+}
