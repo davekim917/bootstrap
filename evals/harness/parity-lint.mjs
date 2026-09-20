@@ -252,6 +252,10 @@ export function evaluateContracts({
       'reconsider the root cause or test premise once',
       'Factual corrections and test-detail refinements do not reset authorization',
       'no mandatory exact test skeleton', 'human interruptions', 'escaped defects',
+      'The retained owner implements, runs the checks and repairs failures',
+      'Owner testing is not independent review',
+      'Honor an explicit user override naming the check or its verification owner',
+      'fork_turns: "none"', 'Resume the same agent id for build, test and repair',
     ]);
     for (const retired of [...RETIRED_WORKER_ROLES, ...RETIRED_WORKER_TIER_MODELS]) {
       if (workflow.includes(retired)) failures.push(`${label}/workflow: retired worker policy ${retired}`);
@@ -275,10 +279,9 @@ export function evaluateContracts({
   //    non-Anthropic model at input validation and spawn_agent errors on an
   //    unknown id, so the tool's own error is the report and a sentence would
   //    only restate it;
-  //  - the instruction that the sub-agent does not review its own work, and the
-  //    coordinator's derived verification step, which is the thing that replaces
-  //    it. Either half alone is worse than neither: a sub-agent that does not
-  //    self-check and a coordinator that does not check it ships unverified work.
+  //  - retained owner verification, explicit user overrides and separate fresh
+  //    independent review. Testing by the author is necessary acceptance evidence,
+  //    but cannot substitute for an independent review verdict.
   //
   // Prose that merely reads well would pass none of these.
   for (const [label, root] of orchestrateInventories.map(([l, r]) => [l, r])) {
@@ -289,10 +292,15 @@ export function evaluateContracts({
       '{model}', '{effort_level}', '{rounds}', '{done}', '{task}',
       'the first two words after /orchestrate are {model} and {effort_level}',
       'one continuous thread',
-      'You coordinate and verify; you do not do the work yourself',
+      'You coordinate and verify evidence',
+      'The retained owner implements, runs the checks and repairs failures',
       'Verification is whatever the deliverable demands',
       'Say in one line which check you chose',
-      'not to test or review its own work',
+      'check or its verification owner, honor that explicit user override',
+      'Owner testing is not independent review',
+      'use a separate reviewer with fresh context',
+      'fork_turns: "none"',
+      'including build, test and repair',
       // One line per runtime, each named by its own prefix so a deleted one
       // fails as itself rather than as a vague missing token. There is no
       // cross-provider hop and no refusal prose for one: each runtime's own
@@ -309,6 +317,9 @@ export function evaluateContracts({
       'a specific version cannot be named; say so if one was asked for',
       'say in one line that effort could not be set',
     ]);
+    if (/not to test|stop after implementation/i.test(skill)) {
+      failures.push(`${label}/orchestrate: conflicting owner verification prohibition`);
+    }
     for (const retired of RETIRED_WORKER_ROLES) {
       if (skill.includes(retired)) failures.push(`${label}/orchestrate: retired worker policy ${retired}`);
     }

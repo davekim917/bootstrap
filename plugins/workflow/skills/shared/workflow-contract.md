@@ -15,6 +15,12 @@ starting a new one per step.
 Use a plain native sub-agent, or `/orchestrate` when the request names a model and an effort.
 Record the actual model, effort, selection reason and checks. Independent review still uses its own
 fresh context.
+The retained owner implements, runs the checks and repairs failures. The coordinator verifies
+acceptance evidence without duplicating substantive owner work. Owner testing is not independent
+review. Honor an explicit user override naming the check or its verification owner.
+For a new bounded Codex worker, set `fork_turns: "none"` and supply a self-contained brief with
+scope, authority, paths, acceptance criteria and relevant evidence. Resume the same agent id for
+build, test and repair; a stage boundary does not justify a replacement.
 
 ### Autonomous effort selection
 

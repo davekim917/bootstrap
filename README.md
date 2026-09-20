@@ -15,9 +15,9 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.7.3 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.7.3 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.0.2 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
+| Claude Code | `bootstrap-workflow` | 5.7.4 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.7.4 | The same, runtime-neutral |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.4.1 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.3.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
@@ -60,18 +60,18 @@ sub-agent, hands it the brief, and keeps that same sub-agent for every later rou
 | `{model}` | the sub-agent's model, as this runtime names it | this session's model |
 | `{effort_level}` | the effort the sub-agent runs at | this session's effort |
 | `{rounds}` | coordinate→delegate cycles before stopping | 3 |
-| `{done}` | the completion signal | the sub-agent says the work is complete |
+| `{done}` | the completion signal | the deliverable is complete with acceptance evidence |
 
 The task text can override the last two: "stop after 5 rounds", "until the numbers
 reconcile".
 
-The division of labour is the point. The sub-agent does all of the work and is told
-NOT to test or review it. You do not do the work; you verify it, and you pick the
-check from the deliverable before the first dispatch — run it and browser-test a UI,
-build and run the tests for code, re-run the queries and cross-check the math for
-analytics, check claims against sources for a document. You say in one line which
-check you chose. Neither half works alone: a sub-agent that does not self-check plus
-a coordinator that does not check it ships unverified work.
+The retained owner implements, tests and repairs in one session. The coordinator
+selects the deliverable's check before dispatch and verifies the reported artifact,
+command, result and limitations. An explicit user choice of check or verification
+owner takes precedence. Independent review, when required, uses a separate reviewer
+with fresh context; owner testing does not establish independence. New bounded
+Codex workers use `fork_turns: "none"` with a self-contained brief; followups resume
+the same worker through build, test and repair.
 
 There is no role behind it, no approved model floor, no helper CLI, and no
 cross-provider hop: a Claude session dispatches Anthropic models and a Codex session
@@ -82,7 +82,7 @@ whatever the runtime already has:
 | Runtime | Route | Caveat |
 |---|---|---|
 | Claude Code | `Agent` tool, `bootstrap-orchestrate:worker-<level>`, then `SendMessage` each round | family alias only (`fable`/`opus`/`sonnet`/`haiku`); no specific version |
-| Codex | `spawn_agent` with `model` + `reasoning_effort`, then the same agent id each round | |
+| Codex | `spawn_agent` with `model` + `reasoning_effort` + `fork_turns: "none"`, then the same agent id each round | |
 | OpenCode | `task` tool, agent `worker-<level>` if present, else the default sub-agent | nothing installs the shims on a bare OpenCode host, so effort may not be settable |
 
 The two caveats are the two places a runtime would degrade silently: the Agent tool
