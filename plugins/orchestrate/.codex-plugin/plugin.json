@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-orchestrate",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Invoke-only.",
   "author": {
     "name": "David Kim"
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Bootstrap Orchestrate",
     "shortDescription": "Delegate one task to a sub-agent you choose",
-    "longDescription": "Name a model and an effort level, and one sub-agent does all the implementation in a single continuous thread while you coordinate and test. Invoke-only: nothing loads it on its own.",
+    "longDescription": "Name a model and an effort level, and one retained sub-agent implements, tests and repairs in a continuous thread while you coordinate and verify evidence. Independent review stays separate. Invoke-only.",
     "developerName": "David Kim",
     "category": "Coding",
     "capabilities": [
@@ -30,7 +30,7 @@
     "websiteURL": "https://github.com/davekim917/bootstrap",
     "defaultPrompt": [
       "Use an opus sub-agent with high effort for this task.",
-      "Delegate this to a sub-agent and test the result yourself."
+      "Delegate this to one retained sub-agent to build, test and repair; verify its evidence."
     ],
     "brandColor": "#111827"
   }
