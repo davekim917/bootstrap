@@ -220,3 +220,33 @@ test('EXPECTED_SKILLS and EXPECTED_ORCHESTRATE_SKILLS are disjoint', () => {
   const overlap = EXPECTED_SKILLS.filter((skill) => EXPECTED_ORCHESTRATE_SKILLS.includes(skill));
   assert.deepEqual(overlap, []);
 });
+
+for (const [name, token] of [
+  ['owner testing', 'The retained owner implements, runs the checks and repairs failures'],
+  ['verification owner override', 'check or its verification owner, honor that explicit user override'],
+  ['independent review', 'use a separate reviewer with fresh context'],
+  ['bounded fresh context', 'fork_turns: "none"'],
+  ['retained repair session', 'including build, test and repair'],
+]) {
+  test(`orchestrate gate rejects loss of ${name}`, (t) => {
+    const roots = copiedContracts(t);
+    assert.equal(evaluateContracts(roots).pass, true);
+    const target = path.join(roots.orchestrateRoot, 'orchestrate/SKILL.md');
+    const original = fs.readFileSync(target, 'utf8');
+    assert.ok(original.includes(token));
+    fs.writeFileSync(target, original.replace(token, 'removed-contract'));
+    const result = evaluateContracts(roots);
+    assert.equal(result.pass, false);
+    assert.ok(result.failures.some((failure) => failure.includes(JSON.stringify(token))));
+  });
+}
+
+test('orchestrate gate rejects reinstated worker-testing prohibition', (t) => {
+  const roots = copiedContracts(t);
+  assert.equal(evaluateContracts(roots).pass, true);
+  fs.appendFileSync(path.join(roots.orchestrateRoot, 'orchestrate/SKILL.md'),
+    '\nInstruct the worker not to test its own work.\n');
+  const result = evaluateContracts(roots);
+  assert.equal(result.pass, false);
+  assert.ok(result.failures.some((failure) => failure.includes('conflicting owner verification prohibition')));
+});
