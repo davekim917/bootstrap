@@ -15,9 +15,9 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.7.4 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.7.4 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.4.1 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
+| Claude Code | `bootstrap-workflow` | 5.7.5 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.7.5 | The same, runtime-neutral |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.4.3 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.3.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
@@ -28,10 +28,11 @@ Automatic delegation pressure is off. Working directly is the normal mode: nothi
 tells a session to reach for a sub-agent, and nothing gates a session that reads
 source, runs a check, or implements a fix itself.
 
-`bootstrap-orchestrate` activates nothing on its own: no `always-on.md`, no
-`SessionStart` hook, no `hooks` field in either manifest. Invoke it when you want one
-sub-agent to do all the work in a single thread — `/orchestrate opus high <task>`, or
-"use an opus subagent at high effort to …".
+`bootstrap-orchestrate` adds no standing delegation directive or dispatch-first gate.
+Its hooks only route omitted model/effort fields and validate explicit Codex context;
+the Codex `SessionStart` entry is a one-line reminder for the opt-in picker. Invoke the
+skill when you want one sub-agent to do all the work in a single thread —
+`/orchestrate opus high <task>`, or "use an opus subagent at high effort to …".
 
 Two mechanisms used to create the pressure, and both were deleted rather than moved:
 the standing `SessionStart` directive that told every session to load the skill, and
@@ -275,7 +276,12 @@ it — run the `add` above (or add the stanza by hand) once per host.
 Container Claude agents need no NanoClaw change. `discoverPlugins` walks `~/plugins` three levels
 deep for a `.claude-plugin/plugin.json` and hands each hit to the SDK as a `plugins:` entry, which
 is what loads a plugin's declared hooks; `plugins/bootstrap/plugins/wwbd` matches at the third
-level. The orchestrate plugin declares no hooks at all, so there is nothing to load for it.
+level. For both Claude and Codex mappings, the shared picker keeps a container's inherited, scoped
+native HTTPS proxy and never replaces it with the host's default OneCLI agent. Only a plain host
+picker with neither inherited proxy nor direct authentication uses that existing OneCLI agent for
+the fixed TypeSafe request. A container whose scoped route is missing gets an unavailable pick; it
+cannot borrow the host identity. The guard recognizes Docker/Podman marker files and NanoClaw's
+existing per-spawn `NANOCLAW_ASSISTANT_NAME` environment marker.
 Neither plugin ships a `nanoclaw-plugin.json`, and neither should: that file's
 `preToolUseGuards` is a de-duplication signal telling NanoClaw to stand down one of its OWN
 built-in gates, and `bash-email` is the only value anything consumes. `check-plugin-boundaries`
@@ -357,7 +363,8 @@ Claude, Codex/NanoClaw, or OpenCode sessions after cleanup so cached definitions
 - `bootstrap-workflow-agents` declares exactly one hook event, `PreToolUse`, for those safety
   checks. `check-plugin-boundaries` enforces that closed list — the `SessionStart` entry that used
   to install a worker role into the user's Codex home went with the role. `wwbd` declares
-  `SessionStart` only, for its standing directive; `bootstrap-orchestrate` declares no hooks at all.
+  `SessionStart` only, for its standing directive; `bootstrap-orchestrate` uses only its bounded
+  spawn routing, context validation, and Codex picker-reminder hooks.
 - Planning and review artifacts are workflow contracts, not filesystem safety boundaries.
 
 ## Repository structure
