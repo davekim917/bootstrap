@@ -89,7 +89,7 @@ test('a role type keeps its role and only gets a model', () => {
   assert.deepEqual([out.model, out.subagent_type], ['opus', 'Explore']);
 });
 
-test('fallback preserves a custom role and its native model inheritance', () => {
+test('no override preserves a custom role and its native model inheritance', () => {
   const picked = resolveDispatch({ decision: 'unavailable', pick: null }, 'claude');
   assert.equal(rewriteClaudeSpawn({ subagent_type: 'qa-adjudicator', prompt: 'p' }, picked, rubric), null);
 });
@@ -118,36 +118,40 @@ test('a usable Jev route is preserved with classifier provenance', () => {
   assert.deepEqual(resolveDispatch(picked, 'codex'), { ...picked, provenance: 'jev' });
 });
 
-test('unavailable, abstaining, and unusable routes get concrete runtime fallbacks', () => {
+test('unavailable, abstaining, and unusable routes become an actionable native no-override', () => {
   const cases = [
     { decision: 'unavailable', pick: null },
-    { decision: 'ask', pick: { option: 'ask' } },
+    { decision: 'ask', pick: { option: 'ask', model: 'opus', effort: 'low' } },
     { decision: 'route', pick: { model: '', effort: 'high' } },
     { decision: 'route', pick: { model: 'opus', effort: 'unsupported' } },
   ];
   for (const raw of cases) {
     const claude = resolveDispatch(raw, 'claude');
     const codex = resolveDispatch(raw, 'codex');
-    assert.deepEqual([claude.decision, claude.pick, claude.provenance, claude.fallbackFrom], [
-      'fallback', { model: 'opus', effort: 'high' }, 'fallback', raw.decision,
+    assert.deepEqual([claude.decision, claude.pick, claude.provenance, claude.inheritFrom], [
+      'inherit', null, 'native', raw.decision,
     ]);
-    assert.deepEqual([codex.decision, codex.pick, codex.provenance, codex.fallbackFrom], [
-      'fallback', { model: 'gpt-5.6-sol', effort: 'high' }, 'fallback', raw.decision,
+    assert.deepEqual([codex.decision, codex.pick, codex.provenance, codex.inheritFrom], [
+      'inherit', null, 'native', raw.decision,
     ]);
   }
 });
 
-test('fallback fills only missing roleless fields and preserves explicit model and effort', () => {
+test('no override adds no model or effort shim while independent caps remain', () => {
   const picked = resolveDispatch({ decision: 'ask', pick: { option: 'ask' } }, 'claude');
-  const explicitModel = rewriteClaudeSpawn({ model: 'fable', prompt: 'p' }, picked, rubric);
-  assert.deepEqual([explicitModel.model, explicitModel.subagent_type], [
-    'fable', 'bootstrap-orchestrate:worker-high',
-  ]);
-  const explicitEffort = rewriteClaudeSpawn({
-    subagent_type: 'bootstrap-orchestrate:worker-low', prompt: 'p',
+  for (const input of [
+    { prompt: 'p' },
+    { model: 'fable', prompt: 'p' },
+    { subagent_type: 'bootstrap-orchestrate:worker-low', prompt: 'p' },
+    { subagent_type: 'qa-adjudicator', prompt: 'p' },
+  ]) {
+    assert.equal(rewriteClaudeSpawn(input, picked, rubric), null);
+  }
+  const capped = rewriteClaudeSpawn({
+    model: 'fable', subagent_type: 'bootstrap-orchestrate:worker-max', prompt: 'p',
   }, picked, rubric);
-  assert.deepEqual([explicitEffort.model, explicitEffort.subagent_type], [
-    'opus', 'bootstrap-orchestrate:worker-low',
+  assert.deepEqual([capped.model, capped.subagent_type], [
+    'fable', 'bootstrap-orchestrate:worker-high',
   ]);
 });
 

@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "bootstrap-workflow-agents",
-      "version": "2.7.6",
+      "version": "2.7.7",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
       "source": {
         "source": "local",
@@ -20,7 +20,7 @@
     },
     {
       "name": "bootstrap-orchestrate",
-      "version": "2.4.4",
+      "version": "2.4.5",
       "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Invoke-only.",
       "source": {
         "source": "local",
