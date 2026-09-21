@@ -256,6 +256,7 @@ export function evaluateContracts({
       'Owner testing is not independent review',
       'Honor an explicit user override naming the check or its verification owner',
       'fork_turns: "none"', 'Resume the same agent id for build, test and repair',
+      'A native concurrency/capacity rejection ends the dispatch burst', 'normal summary/checkpoint', 'native completion/close notification for an accepted handle', 'native limit-change notice', 'duplicate notices permit no extra attempt', 'Completion is not acceptance',
     ]);
     for (const retired of [...RETIRED_WORKER_ROLES, ...RETIRED_WORKER_TIER_MODELS]) {
       if (workflow.includes(retired)) failures.push(`${label}/workflow: retired worker policy ${retired}`);
@@ -301,6 +302,7 @@ export function evaluateContracts({
       'use a separate reviewer with fresh context',
       'fork_turns: "none"',
       'including build, test and repair',
+      'A native concurrency/capacity rejection ends the dispatch burst', 'normal summary/checkpoint', 'native completion/close notification for an accepted handle', 'native limit-change notice', 'duplicate notices permit no extra attempt', 'Completion is not acceptance',
       // One line per runtime, each named by its own prefix so a deleted one
       // fails as itself rather than as a vague missing token. There is no
       // cross-provider hop and no refusal prose for one: each runtime's own

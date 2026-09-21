@@ -113,6 +113,8 @@ for (const [name, file, from, to, expected] of [
   ['evidence invalidation', 'shared/workflow-contract.md', 'Invalidate affected evidence', 'Retain every result', 'Invalidate affected evidence'],
   ['productive repair budget', 'shared/workflow-contract.md', 'maximum of 3 corrective rounds', 'maximum of 1 corrective round', '3 corrective rounds'],
   ['scope continuity', 'shared/workflow-contract.md', 'Factual corrections and test-detail refinements do not reset authorization', 'Every edit requires new approval', 'do not reset authorization'],
+  ['capacity admission stop', 'shared/workflow-contract.md', 'A native concurrency/capacity rejection ends the dispatch burst', 'Retry rejected spawns immediately', 'ends the dispatch burst'],
+  ['deferred work visibility', 'shared/workflow-contract.md', 'normal summary/checkpoint', 'private scratch', 'normal summary/checkpoint'],
 ]) {
   test(`contract gate rejects loss of ${name} even with identical runtime copies`, (t) => {
     const roots = copiedContracts(t);
@@ -227,6 +229,8 @@ for (const [name, token] of [
   ['independent review', 'use a separate reviewer with fresh context'],
   ['bounded fresh context', 'fork_turns: "none"'],
   ['retained repair session', 'including build, test and repair'],
+  ['capacity admission stop', 'A native concurrency/capacity rejection ends the dispatch burst'],
+  ['accepted-handle resume', 'native completion/close notification for an accepted handle'],
 ]) {
   test(`orchestrate gate rejects loss of ${name}`, (t) => {
     const roots = copiedContracts(t);
