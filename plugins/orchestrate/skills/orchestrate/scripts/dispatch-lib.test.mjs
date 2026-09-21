@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { capEffort, loadRubric, pick, requestSystemOne, rewriteClaudeSpawn } from './dispatch-lib.mjs';
 
@@ -26,9 +28,12 @@ function response(value, status = 200) {
   return { ok: status >= 200 && status < 300, status, text: async () => JSON.stringify(value) };
 }
 
-function fakeSpawn({ stdout = '', stderr = '', code = 0, delay = 0, hang = false, error = null } = {}) {
+function fakeSpawn({
+  stdout = '', stderr = '', code = 0, delay = 0, hang = false, error = null, closeOnKill = true,
+} = {}) {
   const calls = [];
   let killed = false;
+  let unrefed = false;
   const spawnImpl = (command, args, options) => {
     const child = new EventEmitter();
     child.stdout = new PassThrough();
@@ -37,9 +42,10 @@ function fakeSpawn({ stdout = '', stderr = '', code = 0, delay = 0, hang = false
     child.stdin = new Writable({ write(chunk, _encoding, done) { input += chunk.toString(); done(); } });
     child.kill = () => {
       killed = true;
-      queueMicrotask(() => child.emit('close', null));
+      if (closeOnKill) queueMicrotask(() => child.emit('close', null));
       return true;
     };
+    child.unref = () => { unrefed = true; };
     calls.push({ command, args, options, child, get input() { return input; } });
     queueMicrotask(() => {
       if (error) child.emit('error', error);
@@ -53,7 +59,7 @@ function fakeSpawn({ stdout = '', stderr = '', code = 0, delay = 0, hang = false
     });
     return child;
   };
-  return { spawnImpl, calls, wasKilled: () => killed };
+  return { spawnImpl, calls, wasKilled: () => killed, wasUnrefed: () => unrefed };
 }
 
 test('a roleless spawn with nothing named gets the picked model and effort shim', () => {
@@ -114,7 +120,23 @@ test('host transport sends the request through OneCLI stdin and returns a valida
   assert.deepEqual(call.args.slice(0, 2), ['run', '--']);
   assert.equal(call.args.some((arg) => arg.includes('synthetic transport test')), false);
   assert.equal(call.options.env.ORCHESTRATE_ONECLI_TRANSPORT, '1');
-  assert.equal(JSON.parse(call.input).body.state.task_brief, 'synthetic transport test');
+  const wire = JSON.parse(call.input);
+  assert.equal(wire.body.state.task_brief, 'synthetic transport test');
+  assert.equal(Number.isInteger(wire.deadline), true);
+  assert.equal(wire.timeoutMs, undefined);
+});
+
+test('the real helper and parent parser agree on the stdin/envelope wire contract', async () => {
+  const helperPreload = fileURLToPath(new URL('./dispatch-fetch-preload.test.mjs', import.meta.url));
+  const spawnImpl = (command, args, options) => {
+    assert.equal(command, 'onecli');
+    assert.deepEqual(args.slice(0, 3), ['run', '--', process.execPath]);
+    return spawn(process.execPath, ['--import', helperPreload, args[3], args[4]], options);
+  };
+  const out = await requestSystemOne(requestBody('synthetic helper wire task'), {
+    env: {}, spawnImpl, existsSync: () => false, timeoutMs: 1000,
+  });
+  assert.deepEqual(out, answer);
 });
 
 test('an inherited API key stays on the direct path without spawning OneCLI', async () => {
@@ -150,14 +172,18 @@ test('the OneCLI helper marker prevents recursive wrapping', async () => {
 });
 
 test('an unscoped fleet container cannot borrow the host default OneCLI identity', async () => {
-  await assert.rejects(
-    requestSystemOne(requestBody(), {
-      env: {},
-      existsSync: (marker) => marker === '/.dockerenv',
-      spawnImpl: () => { throw new Error('must not spawn'); },
-    }),
-    { message: 'OneCLI host transport unavailable in container' },
-  );
+  for (const options of [
+    { env: {}, existsSync: (marker) => marker === '/.dockerenv' },
+    { env: { NANOCLAW_ASSISTANT_NAME: 'synthetic-agent' }, existsSync: () => false },
+  ]) {
+    await assert.rejects(
+      requestSystemOne(requestBody(), {
+        ...options,
+        spawnImpl: () => { throw new Error('must not spawn'); },
+      }),
+      { message: 'OneCLI host transport unavailable in container' },
+    );
+  }
 });
 
 test('invalid request payloads are rejected before any network or subprocess call', async () => {
@@ -173,13 +199,23 @@ test('invalid request payloads are rejected before any network or subprocess cal
   assert.equal(spawned, 0);
 });
 
-test('a timeout kills and reaps the OneCLI subprocess within the total deadline', async () => {
-  const fake = fakeSpawn({ hang: true });
+test('a timeout settles and releases the OneCLI subprocess even when close never arrives', async () => {
+  const fake = fakeSpawn({ hang: true, closeOnKill: false });
+  let watchdog;
   await assert.rejects(
-    requestSystemOne(requestBody(), { env: {}, spawnImpl: fake.spawnImpl, existsSync: () => false, timeoutMs: 15 }),
+    Promise.race([
+      requestSystemOne(requestBody(), {
+        env: {}, spawnImpl: fake.spawnImpl, existsSync: () => false, timeoutMs: 15,
+      }),
+      new Promise((_, reject) => { watchdog = setTimeout(() => reject(new Error('test watchdog fired')), 100); }),
+    ]).finally(() => clearTimeout(watchdog)),
     /TypeSafe request timed out/,
   );
   assert.equal(fake.wasKilled(), true);
+  assert.equal(fake.wasUnrefed(), true);
+  assert.equal(fake.calls[0].child.stdin.destroyed, true);
+  assert.equal(fake.calls[0].child.stdout.destroyed, true);
+  assert.equal(fake.calls[0].child.stderr.destroyed, true);
 });
 
 test('an absent OneCLI binary fails closed to picker-unavailable without diagnostics', async () => {
