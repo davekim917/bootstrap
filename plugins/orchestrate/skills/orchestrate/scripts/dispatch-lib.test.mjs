@@ -5,7 +5,14 @@ import { PassThrough, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { capEffort, loadRubric, pick, requestSystemOne, rewriteClaudeSpawn } from './dispatch-lib.mjs';
+import {
+  capEffort,
+  loadRubric,
+  pick,
+  requestSystemOne,
+  resolveDispatch,
+  rewriteClaudeSpawn,
+} from './dispatch-lib.mjs';
 
 const rubric = loadRubric();
 const route = (model, effort) => ({ decision: 'route', pick: { model, effort } });
@@ -82,6 +89,11 @@ test('a role type keeps its role and only gets a model', () => {
   assert.deepEqual([out.model, out.subagent_type], ['opus', 'Explore']);
 });
 
+test('fallback preserves a custom role and its native model inheritance', () => {
+  const picked = resolveDispatch({ decision: 'unavailable', pick: null }, 'claude');
+  assert.equal(rewriteClaudeSpawn({ subagent_type: 'qa-adjudicator', prompt: 'p' }, picked, rubric), null);
+});
+
 test('an explicit model is never replaced; a roleless spawn still gets the effort, capped to that model', () => {
   const out = rewriteClaudeSpawn({ model: 'fable', prompt: 'p' }, route('opus', 'xhigh'), rubric);
   assert.deepEqual([out.model, out.subagent_type], ['fable', 'bootstrap-orchestrate:worker-high']);
@@ -99,6 +111,44 @@ test('no route (ask / unavailable / null) leaves a spawn untouched', () => {
   for (const p of [null, { decision: 'ask', pick: { model: 'opus', effort: 'low' } }, { decision: 'unavailable', pick: null }]) {
     assert.equal(rewriteClaudeSpawn({ prompt: 'p' }, p, rubric), null);
   }
+});
+
+test('a usable Jev route is preserved with classifier provenance', () => {
+  const picked = { runtime: 'codex', decision: 'route', pick: { model: 'gpt-6-astra', effort: 'high' }, confidence: 0.99 };
+  assert.deepEqual(resolveDispatch(picked, 'codex'), { ...picked, provenance: 'jev' });
+});
+
+test('unavailable, abstaining, and unusable routes get concrete runtime fallbacks', () => {
+  const cases = [
+    { decision: 'unavailable', pick: null },
+    { decision: 'ask', pick: { option: 'ask' } },
+    { decision: 'route', pick: { model: '', effort: 'high' } },
+    { decision: 'route', pick: { model: 'opus', effort: 'unsupported' } },
+  ];
+  for (const raw of cases) {
+    const claude = resolveDispatch(raw, 'claude');
+    const codex = resolveDispatch(raw, 'codex');
+    assert.deepEqual([claude.decision, claude.pick, claude.provenance, claude.fallbackFrom], [
+      'fallback', { model: 'opus', effort: 'high' }, 'fallback', raw.decision,
+    ]);
+    assert.deepEqual([codex.decision, codex.pick, codex.provenance, codex.fallbackFrom], [
+      'fallback', { model: 'gpt-5.6-sol', effort: 'high' }, 'fallback', raw.decision,
+    ]);
+  }
+});
+
+test('fallback fills only missing roleless fields and preserves explicit model and effort', () => {
+  const picked = resolveDispatch({ decision: 'ask', pick: { option: 'ask' } }, 'claude');
+  const explicitModel = rewriteClaudeSpawn({ model: 'fable', prompt: 'p' }, picked, rubric);
+  assert.deepEqual([explicitModel.model, explicitModel.subagent_type], [
+    'fable', 'bootstrap-orchestrate:worker-high',
+  ]);
+  const explicitEffort = rewriteClaudeSpawn({
+    subagent_type: 'bootstrap-orchestrate:worker-low', prompt: 'p',
+  }, picked, rubric);
+  assert.deepEqual([explicitEffort.model, explicitEffort.subagent_type], [
+    'opus', 'bootstrap-orchestrate:worker-low',
+  ]);
 });
 
 test('capEffort lowers only above the cap', () => {
