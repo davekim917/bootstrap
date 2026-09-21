@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo \"Before spawn_agent with no model named: pipe the task into node '${PLUGIN_ROOT}/skills/orchestrate/scripts/pick-dispatch.mjs' --runtime codex; on decision route, use its pick.model + pick.effort.\"",
+            "command": "echo \"Before spawn_agent with a missing model or effort: pipe the task into node '${PLUGIN_ROOT}/skills/orchestrate/scripts/pick-dispatch.mjs' --runtime codex; use its concrete pick only for missing fields. Jev routes carry provenance jev; unavailable, abstaining, or unusable picks return Sol/high with provenance fallback. Preserve explicit model, effort, role, and retained workers.\"",
             "timeout": 5
           }
         ]
