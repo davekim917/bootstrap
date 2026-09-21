@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const CHECKS = [
+  { name: 'context  (native Codex spawn controls)', argv: ['--test', 'plugins/orchestrate/hooks/require-codex-context.test.mjs'] },
   { name: 'hooks    (vendor-guards --check)', argv: ['scripts/vendor-guards.mjs', '--check'] },
   { name: 'skills:gen (sync-agent-skills --check)', argv: ['plugins/workflow-agents/scripts/sync-agent-skills.mjs', '--check'] },
   { name: 'split    (orchestrate enable/disable proof)', argv: ['--test', 'scripts/plugin-enablement.test.mjs'] },
