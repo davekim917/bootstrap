@@ -53,13 +53,15 @@ A parameterized delegation prompt, and nothing else.
 ```
 
 The first two words are the model and the effort when they look like one; everything
-after is the task. Leave either out and it uses the session's own. It dispatches ONE
+after is the task. Leave either out and the picker fills it. A confident usable Jev route wins;
+when Jev is unavailable, abstains, or returns no usable route, the bounded fallback is Opus/high
+on Claude and GPT-5.6 Sol/high on Codex. It dispatches ONE
 sub-agent, hands it the brief, and keeps that same sub-agent for every later round.
 
 | Parameter | Meaning | Default |
 |---|---|---|
-| `{model}` | the sub-agent's model, as this runtime names it | this session's model |
-| `{effort_level}` | the effort the sub-agent runs at | this session's effort |
+| `{model}` | the sub-agent's model, as this runtime names it | picker; runtime fallback on no usable route |
+| `{effort_level}` | the effort the sub-agent runs at | picker; `high` on fallback |
 | `{rounds}` | coordinate→delegate cycles before stopping | 3 |
 | `{done}` | the completion signal | the deliverable is complete with acceptance evidence |
 
@@ -95,6 +97,12 @@ On the last row: nothing in this repo installs the effort shims onto an OpenCode
 a Codex-shaped manifest cannot ship agents, and OpenCode would not read `model: inherit`
 or `effort` from one anyway. The skill therefore degrades out loud rather than pinning an
 effort it cannot pin.
+
+Fallback fills only fields omitted by a plain or effort-shim dispatch. It never replaces an
+explicit model or effort, a custom role's native model inheritance, or a retained worker handle,
+and it does not authorize a model retry ladder or a capacity bypass. Picker output records
+`provenance: "jev"` for a confident usable route and `provenance: "fallback"` plus the original
+decision for fallback selection.
 
 On the Codex row: `spawn_agent` accepts `model` and `reasoning_effort` (`SpawnAgentArgs`,
 codex-rs 0.154.0, `core/src/tools/handlers/multi_agents/spawn.rs:229-230`), exposed by

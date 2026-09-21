@@ -2,7 +2,7 @@
 // Claude Code PreToolUse hook on Agent/Task: route every sub-agent spawn —
 // autonomous or via /orchestrate — through the dispatch rubric. Fills the model
 // (and, for a roleless spawn, the effort) the call left out; never blocks. Any
-// failure prints nothing, so the spawn runs exactly as the agent wrote it.
+// classifier failure or abstention uses the bounded Opus/high fallback.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +19,9 @@ try {
   const task = [input.description, input.prompt].filter((s) => typeof s === 'string').join('\n\n');
   // Only ask when something is missing; an explicit model + shim needs caps alone.
   const needsPick = !input.model || !input.subagent_type || input.subagent_type === 'general-purpose';
-  const picked = needsPick ? await lib.pick(task, 'claude', { timeoutMs: 3000, rubric }) : null;
+  const picked = needsPick
+    ? lib.resolveDispatch(await lib.pick(task, 'claude', { timeoutMs: 3000, rubric }), 'claude')
+    : null;
   const updated = lib.rewriteClaudeSpawn(input, picked, rubric);
   lib.logDispatch({
     source: 'spawn-hook',

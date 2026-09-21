@@ -13,6 +13,11 @@ Delegate substantive design, implementation, research/synthesis, debugging, tech
 and judgment-heavy review to a sub-agent, and keep one sub-agent for the whole task rather than
 starting a new one per step.
 Use a plain native sub-agent, or `/orchestrate` when the request names a model and an effort.
+When a model or effort is missing, preserve any confident usable picker route. If the picker is
+unavailable, abstains, or returns no usable route, fill only missing fields on a plain or effort-shim
+dispatch with Opus/high on Claude or GPT-5.6 Sol/high on Codex. Never replace an explicit model,
+effort, custom role, or retained worker handle; a fallback is not permission for a retry ladder or
+a capacity bypass.
 Record the actual model, effort, selection reason and checks. Independent review still uses its own
 fresh context.
 The retained owner implements, runs the checks and repairs failures. The coordinator verifies

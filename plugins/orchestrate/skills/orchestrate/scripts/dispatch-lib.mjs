@@ -15,6 +15,10 @@ const ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 const ONECLI_TRANSPORT = 'ORCHESTRATE_ONECLI_TRANSPORT';
 const MAX_TRANSPORT_OUTPUT = 1024 * 1024;
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+export const FALLBACK_DISPATCH = Object.freeze({
+  claude: Object.freeze({ model: 'opus', effort: 'high' }),
+  codex: Object.freeze({ model: 'gpt-5.6-sol', effort: 'high' }),
+});
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 function remainingMs(deadline) {
@@ -241,6 +245,30 @@ export async function pick(task, runtime, {
   return out;
 }
 
+/**
+ * Turn a classifier result into a concrete dispatch. A confident usable Jev
+ * route is preserved. Abstention, transport failure, and malformed routes use
+ * the runtime's bounded fallback with explicit provenance.
+ */
+export function resolveDispatch(picked, runtime) {
+  const route = picked?.pick;
+  if (picked?.decision === 'route'
+    && typeof route?.model === 'string' && route.model
+    && EFFORTS.includes(route?.effort)) {
+    return { ...picked, provenance: 'jev' };
+  }
+  const fallback = FALLBACK_DISPATCH[runtime];
+  if (!fallback) throw new Error(`unsupported dispatch runtime: ${runtime}`);
+  return {
+    ...(picked ?? { runtime, decision: 'unavailable', pick: null }),
+    runtime,
+    decision: 'fallback',
+    pick: { ...fallback },
+    provenance: 'fallback',
+    fallbackFrom: picked?.decision ?? 'unavailable',
+  };
+}
+
 function logPath() {
   if (process.env.ORCHESTRATE_DISPATCH_LOG) return process.env.ORCHESTRATE_DISPATCH_LOG;
   const home = os.homedir();
@@ -268,17 +296,20 @@ const SHIM = /^bootstrap-orchestrate:worker-(low|medium|high|xhigh|max)$/;
  * a `bootstrap-orchestrate:worker-<effort>` shim type, the only way the Agent
  * tool takes effort) only for a roleless spawn — no subagent_type or
  * `general-purpose`. A role type (Explore, Plan, any custom agent) keeps its
- * role and can only get a model. An explicit shim type keeps its effort. The
- * rubric caps apply to whatever results. Returns null when nothing changes.
+ * role and may get a confident classifier model, but fallback never overrides
+ * a role's native model inheritance. An explicit shim type keeps its effort.
+ * The rubric caps apply to whatever results. Returns null when nothing changes.
  */
 export function rewriteClaudeSpawn(input, picked, rubric) {
   const out = { ...input };
   const type = typeof input.subagent_type === 'string' ? input.subagent_type : '';
   const roleless = type === '' || type === 'general-purpose';
   const shim = type.match(SHIM);
-  const route = picked?.decision === 'route' && picked.pick?.model ? picked.pick : null;
+  const route = ['route', 'fallback'].includes(picked?.decision) && picked.pick?.model
+    ? picked.pick
+    : null;
 
-  if (!out.model && route) out.model = route.model;
+  if (!out.model && route && (roleless || shim || picked.decision === 'route')) out.model = route.model;
   let effort = shim ? shim[1] : roleless && route ? route.effort : undefined;
   const tier = out.model ? tierOf(rubric, 'claude', out.model) : undefined;
   if (effort && tier) effort = capEffort(effort, tier.maxEffort);

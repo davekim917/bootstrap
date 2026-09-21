@@ -3,12 +3,12 @@
 //
 //   echo "<task brief>" | node pick-dispatch.mjs --runtime claude|codex [--actual "<model> <effort>"]
 //
-// Prints one JSON object and always exits 0: a missing key, a network error or a
-// bad answer yields decision "unavailable", and the caller carries on exactly as
-// it would without this script. Each run is logged next to what was dispatched.
+// Prints one JSON object and always exits 0. A confident usable classifier route
+// is preserved; abstention, a missing transport, or a bad answer yields the
+// runtime's explicit bounded fallback. Each run is logged next to what was dispatched.
 import fs from 'node:fs';
 
-import { logDispatch, pick } from './dispatch-lib.mjs';
+import { logDispatch, pick, resolveDispatch } from './dispatch-lib.mjs';
 
 function arg(name) {
   const i = process.argv.indexOf(`--${name}`);
@@ -18,6 +18,6 @@ function arg(name) {
 const runtime = arg('runtime') === 'codex' ? 'codex' : 'claude';
 const actual = arg('actual') ?? null;
 const task = fs.readFileSync(0, 'utf8').trim();
-const out = { ...(await pick(task, runtime)), actual };
+const out = { ...resolveDispatch(await pick(task, runtime), runtime), actual };
 process.stdout.write(JSON.stringify(out) + '\n');
 logDispatch({ source: 'skill', task: task.slice(0, 2000), ...out });
