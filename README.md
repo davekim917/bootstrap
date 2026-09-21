@@ -53,15 +53,16 @@ A parameterized delegation prompt, and nothing else.
 ```
 
 The first two words are the model and the effort when they look like one; everything
-after is the task. Leave either out and the picker fills it. A confident usable Jev route wins;
-when Jev is unavailable, abstains, or returns no usable route, the bounded fallback is Opus/high
-on Claude and GPT-5.6 Sol/high on Codex. It dispatches ONE
+after is the task. Leave either out and a confident usable Jev route may fill it. When Jev is
+unavailable, abstains, or returns no usable route, the workflow adds no override: the coordinator
+may make its normal task-based choice, or leave the field omitted for the runtime's native
+inheritance and configuration. It dispatches ONE
 sub-agent, hands it the brief, and keeps that same sub-agent for every later round.
 
 | Parameter | Meaning | Default |
 |---|---|---|
-| `{model}` | the sub-agent's model, as this runtime names it | picker; runtime fallback on no usable route |
-| `{effort_level}` | the effort the sub-agent runs at | picker; `high` on fallback |
+| `{model}` | the sub-agent's model, as this runtime names it | confident picker route, normal coordinator choice, or native inheritance |
+| `{effort_level}` | the effort the sub-agent runs at | confident picker route, deliberate coordinator choice, or native configuration |
 | `{rounds}` | coordinate→delegate cycles before stopping | 3 |
 | `{done}` | the completion signal | the deliverable is complete with acceptance evidence |
 
@@ -98,11 +99,12 @@ a Codex-shaped manifest cannot ship agents, and OpenCode would not read `model: 
 or `effort` from one anyway. The skill therefore degrades out loud rather than pinning an
 effort it cannot pin.
 
-Fallback fills only fields omitted by a plain or effort-shim dispatch. It never replaces an
-explicit model or effort, a custom role's native model inheritance, or a retained worker handle,
-and it does not authorize a model retry ladder or a capacity bypass. Picker output records
-`provenance: "jev"` for a confident usable route and `provenance: "fallback"` plus the original
-decision for fallback selection.
+Picker abstention or failure does not choose a model or effort. Output records `decision: "inherit"`,
+`pick: null`, and `provenance: "native"` so a raw low-confidence suggestion cannot be mistaken for
+an effective route. Existing explicit choices stay intact subject to the existing compatibility
+caps; a coordinator may still deliberately select a normal model, role, or effort shim from the
+task. Fields it leaves omitted follow the client's native inheritance and configuration rather
+than a workflow-owned fallback.
 
 On the Codex row: `spawn_agent` accepts `model` and `reasoning_effort` (`SpawnAgentArgs`,
 codex-rs 0.154.0, `core/src/tools/handlers/multi_agents/spawn.rs:229-230`), exposed by

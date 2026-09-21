@@ -2,7 +2,7 @@
 // Claude Code PreToolUse hook on Agent/Task: route every sub-agent spawn —
 // autonomous or via /orchestrate — through the dispatch rubric. Fills the model
 // (and, for a roleless spawn, the effort) the call left out; never blocks. Any
-// classifier failure or abstention uses the bounded Opus/high fallback.
+// classifier failure or abstention adds no model or effort; existing caps remain.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

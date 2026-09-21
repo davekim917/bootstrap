@@ -4,8 +4,8 @@
 //   echo "<task brief>" | node pick-dispatch.mjs --runtime claude|codex [--actual "<model> <effort>"]
 //
 // Prints one JSON object and always exits 0. A confident usable classifier route
-// is preserved; abstention, a missing transport, or a bad answer yields the
-// runtime's explicit bounded fallback. Each run is logged next to what was dispatched.
+// is preserved; abstention, a missing transport, or a bad answer yields an
+// explicit no-override decision. Each run is logged next to what was dispatched.
 import fs from 'node:fs';
 
 import { logDispatch, pick, resolveDispatch } from './dispatch-lib.mjs';
