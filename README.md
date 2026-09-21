@@ -280,7 +280,8 @@ level. For both Claude and Codex mappings, the shared picker keeps a container's
 native HTTPS proxy and never replaces it with the host's default OneCLI agent. Only a plain host
 picker with neither inherited proxy nor direct authentication uses that existing OneCLI agent for
 the fixed TypeSafe request. A container whose scoped route is missing gets an unavailable pick; it
-cannot borrow the host identity.
+cannot borrow the host identity. The guard recognizes Docker/Podman marker files and NanoClaw's
+existing per-spawn `NANOCLAW_ASSISTANT_NAME` environment marker.
 Neither plugin ships a `nanoclaw-plugin.json`, and neither should: that file's
 `preToolUseGuards` is a de-duplication signal telling NanoClaw to stand down one of its OWN
 built-in gates, and `bash-email` is the only value anything consumes. `check-plugin-boundaries`

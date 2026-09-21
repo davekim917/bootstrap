@@ -28,8 +28,10 @@ function hasInheritedTransport(env) {
   return nativeProxy && Boolean(env.HTTPS_PROXY || env.https_proxy);
 }
 
-function isContainerRuntime(existsSync) {
-  return ['/.dockerenv', '/run/.containerenv'].some((marker) => existsSync(marker));
+function isContainerRuntime(env, existsSync) {
+  // NanoClaw src/container-runner.ts:6620-6629 injects this on every container spawn.
+  return Boolean(env.NANOCLAW_ASSISTANT_NAME)
+    || ['/.dockerenv', '/run/.containerenv'].some((marker) => existsSync(marker));
 }
 
 function validateRequestBody(body) {
@@ -69,6 +71,13 @@ function killProcessGroup(child) {
   } catch {
     try { child.kill('SIGKILL'); } catch { /* already gone */ }
   }
+}
+
+function releaseChild(child) {
+  for (const stream of [child.stdin, child.stdout, child.stderr]) {
+    try { stream?.destroy(); } catch { /* best-effort handle release */ }
+  }
+  try { child.unref?.(); } catch { /* best-effort handle release */ }
 }
 
 function parseOnecliEnvelope(stdout) {
@@ -120,6 +129,8 @@ function onecliRequest(body, deadline, { env = process.env, spawnImpl = spawn } 
     const timer = setTimeout(() => {
       timedOut = true;
       killProcessGroup(child);
+      releaseChild(child);
+      finish(new Error('TypeSafe request timed out'));
     }, remainingMs(deadline));
 
     child.stdout?.setEncoding('utf8');
@@ -143,7 +154,7 @@ function onecliRequest(body, deadline, { env = process.env, spawnImpl = spawn } 
       catch (err) { finish(err); }
     });
     child.stdin?.on('error', () => {});
-    child.stdin?.end(JSON.stringify({ body, timeoutMs: remainingMs(deadline) }));
+    child.stdin?.end(JSON.stringify({ body, deadline }));
   });
 }
 
@@ -160,7 +171,7 @@ export async function requestSystemOne(body, {
   if (hasInheritedTransport(env)) return directRequest(body, deadline, { env, fetchImpl });
   // A fleet container must never borrow the host's default OneCLI identity when
   // its scoped route is missing. It fails open to an unavailable pick instead.
-  if (isContainerRuntime(existsSync)) throw new Error('OneCLI host transport unavailable in container');
+  if (isContainerRuntime(env, existsSync)) throw new Error('OneCLI host transport unavailable in container');
   return onecliRequest(body, deadline, { env, spawnImpl });
 }
 
@@ -278,14 +289,13 @@ export function rewriteClaudeSpawn(input, picked, rubric) {
 async function runOnecliHelper() {
   try {
     const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-    if (!Number.isInteger(input?.timeoutMs) || input.timeoutMs < 1) throw new Error();
+    if (!Number.isInteger(input?.deadline) || input.deadline < 1) throw new Error();
     validateRequestBody(input.body);
-    const deadline = Date.now() + input.timeoutMs;
     const headers = { 'Content-Type': 'application/json' };
     const res = await fetch(ENDPOINT, {
       method: 'POST',
       headers,
-      signal: AbortSignal.timeout(remainingMs(deadline)),
+      signal: AbortSignal.timeout(remainingMs(input.deadline)),
       body: JSON.stringify(input.body),
     });
     const body = res.ok ? await res.text() : '';
