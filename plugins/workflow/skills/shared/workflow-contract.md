@@ -26,6 +26,8 @@ restrictions still apply. Supply a self-contained brief with
 scope, authority, paths, acceptance criteria and relevant evidence. Resume the same agent id for
 build, test and repair; a stage boundary does not justify a replacement.
 
+A native concurrency/capacity rejection ends the dispatch burst. Record unstarted work and its original deadline; retain accepted worker handles. Never change names, models, effort or owners to bypass the limit. A new native completion/close notification for an accepted handle, or an explicit capacity change, permits one admission attempt; it does not prove a free slot. Rejection stops the burst until another such change; duplicate notices permit no extra attempt. Preserve failed-worker evidence and make one owned recovery decision; send test repairs to the same live owner. Completion is not acceptance: keep artifact checks and required independent review.
+
 ### Autonomous effort selection
 
 The autonomous effort vocabulary is `low`, `medium`, `high`, `xhigh`, and `max`. `max` is not
