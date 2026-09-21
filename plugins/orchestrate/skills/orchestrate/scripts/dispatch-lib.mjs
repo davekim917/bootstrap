@@ -141,6 +141,8 @@ function onecliRequest(body, deadline, { env = process.env, spawnImpl = spawn } 
         outputTooLarge = true;
         stdout = '';
         killProcessGroup(child);
+        releaseChild(child);
+        finish(new Error('invalid OneCLI transport response'));
       }
     });
     // Intentionally drain and discard diagnostics: they may describe proxy state.

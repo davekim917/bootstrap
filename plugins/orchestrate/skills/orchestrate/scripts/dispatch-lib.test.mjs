@@ -29,7 +29,8 @@ function response(value, status = 200) {
 }
 
 function fakeSpawn({
-  stdout = '', stderr = '', code = 0, delay = 0, hang = false, error = null, closeOnKill = true,
+  stdout = '', stderr = '', code = 0, delay = 0, hang = false, error = null,
+  closeOnKill = true, emitClose = true,
 } = {}) {
   const calls = [];
   let killed = false;
@@ -52,9 +53,11 @@ function fakeSpawn({
       else if (!hang) setTimeout(() => {
         if (stdout) child.stdout.write(stdout);
         if (stderr) child.stderr.write(stderr);
-        child.stdout.end();
-        child.stderr.end();
-        child.emit('close', code);
+        if (emitClose) {
+          child.stdout.end();
+          child.stderr.end();
+          child.emit('close', code);
+        }
       }, delay);
     });
     return child;
@@ -127,14 +130,14 @@ test('host transport sends the request through OneCLI stdin and returns a valida
 });
 
 test('the real helper and parent parser agree on the stdin/envelope wire contract', async () => {
-  const helperPreload = fileURLToPath(new URL('./dispatch-fetch-preload.test.mjs', import.meta.url));
+  const helperPreload = fileURLToPath(new URL('./dispatch-fetch-preload.fixture.mjs', import.meta.url));
   const spawnImpl = (command, args, options) => {
     assert.equal(command, 'onecli');
     assert.deepEqual(args.slice(0, 3), ['run', '--', process.execPath]);
     return spawn(process.execPath, ['--import', helperPreload, args[3], args[4]], options);
   };
   const out = await requestSystemOne(requestBody('synthetic helper wire task'), {
-    env: {}, spawnImpl, existsSync: () => false, timeoutMs: 1000,
+    env: {}, spawnImpl, existsSync: () => false, timeoutMs: 15000,
   });
   assert.deepEqual(out, answer);
 });
@@ -210,6 +213,27 @@ test('a timeout settles and releases the OneCLI subprocess even when close never
       new Promise((_, reject) => { watchdog = setTimeout(() => reject(new Error('test watchdog fired')), 100); }),
     ]).finally(() => clearTimeout(watchdog)),
     /TypeSafe request timed out/,
+  );
+  assert.equal(fake.wasKilled(), true);
+  assert.equal(fake.wasUnrefed(), true);
+  assert.equal(fake.calls[0].child.stdin.destroyed, true);
+  assert.equal(fake.calls[0].child.stdout.destroyed, true);
+  assert.equal(fake.calls[0].child.stderr.destroyed, true);
+});
+
+test('oversized output settles immediately with the correct reason even when close never arrives', async () => {
+  const fake = fakeSpawn({
+    stdout: 'x'.repeat(1024 * 1024 + 1), closeOnKill: false, emitClose: false,
+  });
+  let watchdog;
+  await assert.rejects(
+    Promise.race([
+      requestSystemOne(requestBody(), {
+        env: {}, spawnImpl: fake.spawnImpl, existsSync: () => false, timeoutMs: 1000,
+      }),
+      new Promise((_, reject) => { watchdog = setTimeout(() => reject(new Error('test watchdog fired')), 100); }),
+    ]).finally(() => clearTimeout(watchdog)),
+    { message: 'invalid OneCLI transport response' },
   );
   assert.equal(fake.wasKilled(), true);
   assert.equal(fake.wasUnrefed(), true);
