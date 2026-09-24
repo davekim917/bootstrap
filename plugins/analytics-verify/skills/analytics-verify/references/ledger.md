@@ -90,7 +90,8 @@ A source date (`as_of`, `retrieved`, `effective`) more than a day after `--today
   - Displays it can't read exactly fail with "rephrase": spelled-out numbers with
     hundred, thousand or dozen, negated qualifiers ("not over 50"), a spaced minus
     after a word ("Revenue - 7%", which may be a dash), and an unsigned money amount
-    alone in parentheses ("($50)", "(USD 50)"), which accounting uses for a negative.
+    alone in parentheses ("($50)", "USD (50)", "(50 EUR)": a currency symbol or a common
+    ISO code before, inside or after), which accounting uses for a negative.
     Write "-$50" or name the loss. Other numbers in parentheses read normally: a
     percentage, a signed amount, a review count after a rating ("4.6 (1,947)"), a year
     ("survey (2024)"). A bare "(1,234)" reads as positive, so write a negative with its sign.

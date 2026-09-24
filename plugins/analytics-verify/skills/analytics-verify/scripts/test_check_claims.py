@@ -843,7 +843,8 @@ class ReviewRegressionsRound6(LedgerCase):
     def test_an_amount_alone_in_parentheses_is_refused(self):
         for text in ('Net income was ($50).', 'Net income was $(50).', 'Net income was (USD 50).',
                      'Net income was ($1.2M).', 'Net income was (Rs50).', 'Net income was $ (50).',
-                     'Net income was (50 USD).', 'Net income was (US$50).'):
+                     'Net income was (50 USD).', 'Net income was (US$50).', 'Net income was USD (50).',
+                     'Net income was EUR(1,234).', 'Net income was (50) EUR.', 'Net income was (SEK1200).'):
             toks = cc.tokenize(cc.normalize(text))[0]
             self.assertEqual(len(toks), 1, text)
             self.assertIn('parentheses', toks[0].problem or '', text)
@@ -1003,7 +1004,9 @@ class RealReportFalseAlarms(LedgerCase):
         for text, values in (('4.6 (1,947)', [Decimal('4.6'), Decimal(1947)]),
                              ('4.2 (3.1k)', [Decimal('4.2'), Decimal(3100)]),
                              ('Sources: industry survey (2024); menus', [Decimal(2024)]),
-                             ('Net income was (1,234).', [Decimal(1234)])):
+                             ('Net income was (1,234).', [Decimal(1234)]),
+                             ('Best of NYC (2024)', [Decimal(2024)]),
+                             ('We told us (2024) twice', [Decimal(2024)])):
             toks = cc.tokenize(cc.normalize(text))[0]
             self.assertEqual([t.problem for t in toks], [None] * len(values), text)
             self.assertEqual([t.value for t in toks], values, text)

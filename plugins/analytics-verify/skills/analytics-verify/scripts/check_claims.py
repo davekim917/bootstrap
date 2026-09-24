@@ -262,11 +262,17 @@ def _accounting(text, lead, end, sign, pct):
     if not close:
         return None
     inner = text[lead:end]
-    before = text[max(0, lead - 3):lead - 1].rstrip()   # "$(50)" or "$ (50)"
-    money = (any(_is_currency(ch) for ch in inner) or close.group(1)
-             or re.match(r'(?:[A-Z]{3}|[Rr]s|US)(?![a-z])', inner)
-             or (before and _is_currency(before[-1])))
+    # A currency mark before, inside or after the parentheses: "USD (50)", "$(50)",
+    # "(Rs50)", "(50 USD)", "(50) EUR".
+    window = text[max(0, lead - 6):lead - 1] + ' ' + inner + text[end:end + close.end() + 5]
+    money = (any(_is_currency(ch) for ch in window)
+             or any(w in _CURRENCY_CODES for w in re.findall(r'(?<![A-Za-z])[A-Z]{3}(?![A-Za-z])', window))
+             or re.match(r'(?:[Rr]s|US)(?=[\d$])', inner))
     return 'a money amount alone in parentheses (an accounting negative?)' if money else None
+
+
+# Codes that mark money next to parentheses. A closed list, so "NYC (2024)" is not money.
+_CURRENCY_CODES = frozenset('USD EUR GBP JPY CNY INR CAD AUD NZD CHF SEK NOK DKK MXN BRL ZAR HKD SGD KRW'.split())
 
 
 def _qualifiers(text, lead, end):
