@@ -256,11 +256,16 @@ def _accounting(text, lead, end, sign, pct):
     """An unsigned money amount alone in parentheses ("($50)", "$(50)", "(USD 50)") is how
     accounting writes a negative. Without a currency mark, parentheses are a note: a review
     count after a rating ("4.6 (1,947)") or a year after a source ("survey (2024)")."""
-    if sign or pct or not lead or text[lead - 1] != '(' or text[end:end + 1] != ')':
+    if sign or pct or not lead or text[lead - 1] != '(':
+        return None
+    close = re.match(r'( ?[A-Z]{3})?\)', text[end:end + 5])  # "(50)" or "(50 USD)"
+    if not close:
         return None
     inner = text[lead:end]
-    money = (any(_is_currency(ch) for ch in inner) or re.match(r'[A-Z]{3}(?![a-z])', inner)
-             or (lead >= 2 and _is_currency(text[lead - 2])))
+    before = text[max(0, lead - 3):lead - 1].rstrip()   # "$(50)" or "$ (50)"
+    money = (any(_is_currency(ch) for ch in inner) or close.group(1)
+             or re.match(r'(?:[A-Z]{3}|[Rr]s|US)(?![a-z])', inner)
+             or (before and _is_currency(before[-1])))
     return 'a money amount alone in parentheses (an accounting negative?)' if money else None
 
 

@@ -842,7 +842,8 @@ class ReviewRegressionsRound6(LedgerCase):
 
     def test_an_amount_alone_in_parentheses_is_refused(self):
         for text in ('Net income was ($50).', 'Net income was $(50).', 'Net income was (USD 50).',
-                     'Net income was ($1.2M).'):
+                     'Net income was ($1.2M).', 'Net income was (Rs50).', 'Net income was $ (50).',
+                     'Net income was (50 USD).', 'Net income was (US$50).'):
             toks = cc.tokenize(cc.normalize(text))[0]
             self.assertEqual(len(toks), 1, text)
             self.assertIn('parentheses', toks[0].problem or '', text)
