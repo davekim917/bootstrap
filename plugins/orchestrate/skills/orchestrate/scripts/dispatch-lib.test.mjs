@@ -116,43 +116,77 @@ function agentTree(files) {
 }
 const role = (name, model, extra = '') => `---\nname: ${name}\ndescription: d\n${model === undefined ? '' : `model: ${model}\n`}${extra}---\nbody\n`;
 
-test('roleModelIntent reads the pinned model of project and user roles, recursively and by frontmatter name', () => {
+const intentOf = (found, pinned, complete = true) => ({ found, pinned, fillable: found && pinned === null && complete, complete });
+
+test('roleModelIntent reads the effective project or user definition, recursively and by frontmatter name only', () => {
   const root = agentTree({
+    'proj/.git/HEAD': 'ref: refs/heads/main\n',
     'proj/.claude/agents/qa-design-critic.md': role('qa-design-critic', 'claude-fable-5-1[1m]', 'effort: medium\n'),
-    'proj/.claude/agents/review/smoke.md': role('qa-smoke-worker', '"opus"  # floating alias'),
+    'proj/.claude/agents/a/b/c/d/e/f/smoke.md': role('qa-smoke-worker', '"opus"  # floating alias'),
     'proj/.claude/agents/open.md': role('researcher', undefined),
     'proj/.claude/agents/inherits.md': role('inheritor', 'Inherit'),
     'proj/.claude/agents/nameless.md': '---\nmodel: fable\n---\n',
+    'proj/.claude/agents/not-frontmatter.md': 'name: loose\nmodel: opus\n',
     'home/.claude/agents/user-role.md': role('user-role', 'opus'),
     'cfg/agents/configured.md': role('configured', 'fable'),
   });
   const opts = { cwd: path.join(root, 'proj', 'src', 'deep'), home: path.join(root, 'home'), env: {} };
-  assert.deepEqual(roleModelIntent('qa-design-critic', opts), { found: true, pinned: 'claude-fable-5-1[1m]', fillable: false });
-  assert.deepEqual(roleModelIntent('qa-smoke-worker', opts), { found: true, pinned: 'opus', fillable: false });
-  assert.deepEqual(roleModelIntent('researcher', opts), { found: true, pinned: null, fillable: true });
-  assert.deepEqual(roleModelIntent('inheritor', opts), { found: true, pinned: null, fillable: true });
-  assert.deepEqual(roleModelIntent('nameless', opts), { found: true, pinned: 'fable', fillable: false });
-  assert.deepEqual(roleModelIntent('user-role', opts), { found: true, pinned: 'opus', fillable: false });
+  assert.deepEqual(roleModelIntent('qa-design-critic', opts), intentOf(true, 'claude-fable-5-1[1m]'));
+  assert.deepEqual(roleModelIntent('qa-smoke-worker', opts), intentOf(true, 'opus'), 'no depth limit');
+  assert.deepEqual(roleModelIntent('researcher', opts), intentOf(true, null));
+  assert.deepEqual(roleModelIntent('inheritor', opts), intentOf(true, null));
+  assert.deepEqual(roleModelIntent('user-role', opts), intentOf(true, 'opus'));
+  // Claude Code skips a file without `name`; its stem is not a role identity.
+  for (const type of ['nameless', 'not-frontmatter', 'loose']) assert.deepEqual(roleModelIntent(type, opts), intentOf(false, null));
   // CLAUDE_CONFIG_DIR replaces ~/.claude as the user scope.
   const cfg = { ...opts, env: { CLAUDE_CONFIG_DIR: path.join(root, 'cfg') } };
-  assert.deepEqual(roleModelIntent('configured', cfg), { found: true, pinned: 'fable', fillable: false });
+  assert.deepEqual(roleModelIntent('configured', cfg), intentOf(true, 'fable'));
   assert.equal(roleModelIntent('user-role', cfg).found, false);
 });
 
-test('roleModelIntent never opens a role it cannot read, and any pinned duplicate wins', () => {
+test('roleModelIntent follows Claude Code precedence: closest project scope, then user; nothing above the repo root', () => {
   const root = agentTree({
-    'proj/.claude/agents/a.md': role('dup', undefined),
-    'proj/sub/.claude/agents/b.md': role('dup', 'fable'),
-    'proj/.claude/agents/not-frontmatter.md': 'name: loose\nmodel: opus\n',
+    'outer/.claude/agents/x.md': role('above-repo', 'fable'),
+    'outer/proj/.git/HEAD': 'x\n',
+    'outer/proj/.claude/agents/near-open.md': role('shadowed', undefined),
+    'outer/proj/.claude/agents/dup-a.md': role('dup', undefined),
+    'outer/proj/.claude/agents/dup-b.md': role('dup', 'fable'),
+    'outer/proj/.claude/agents/ancestor.md': role('nested', undefined),
+    'outer/proj/sub/.claude/agents/closer.md': role('nested', 'opus'),
+    'outer/proj/.claude/agents/pinned-here.md': role('user-open', 'fable'),
+    'home/.claude/agents/shadowed.md': role('shadowed', 'opus'),
+    'home/.claude/agents/user-open.md': role('user-open', undefined),
   });
-  const opts = { cwd: path.join(root, 'proj', 'sub'), home: path.join(root, 'nohome'), env: {} };
-  const closed = { found: false, pinned: null, fillable: false };
+  const opts = { cwd: path.join(root, 'outer', 'proj', 'sub'), home: path.join(root, 'home'), env: {} };
+  assert.deepEqual(roleModelIntent('shadowed', opts), intentOf(true, null), 'project beats a pinned user role');
+  assert.deepEqual(roleModelIntent('user-open', opts), intentOf(true, 'fable'), 'project pin beats an open user role');
+  assert.deepEqual(roleModelIntent('nested', opts), intentOf(true, 'opus'), 'closest project dir wins');
+  assert.deepEqual(roleModelIntent('dup', opts), intentOf(true, 'fable'), 'a pin in the winning scope is kept');
+  assert.deepEqual(roleModelIntent('above-repo', opts), intentOf(false, null), 'no scan above the repo root');
+});
+
+test('roleModelIntent never opens a role it cannot read or finish scanning', () => {
+  const root = agentTree({
+    'proj/.git/HEAD': 'x\n',
+    'proj/.claude/agents/open.md': role('researcher', undefined),
+    'proj/.claude/agents/more.md': role('other', undefined),
+  });
+  const opts = { cwd: path.join(root, 'proj'), home: path.join(root, 'nohome'), env: {} };
   for (const type of ['Explore', 'Plan', 'bootstrap-workflow:reviewer', 'missing', '', undefined]) {
-    assert.deepEqual(roleModelIntent(type, opts), closed);
+    assert.deepEqual(roleModelIntent(type, opts), intentOf(false, null));
   }
-  assert.deepEqual(roleModelIntent('dup', opts), { found: true, pinned: 'fable', fillable: false });
-  // A file with no frontmatter block matches on its stem and pins nothing it can prove.
-  assert.deepEqual(roleModelIntent('not-frontmatter', opts), { found: true, pinned: null, fillable: true });
+  assert.equal(roleModelIntent('researcher', opts).fillable, true);
+  // Any bound hit leaves the scan incomplete, which is never fillable.
+  assert.deepEqual(roleModelIntent('researcher', { ...opts, maxFiles: 1 }), { ...intentOf(false, null, false) });
+  assert.equal(roleModelIntent('researcher', { ...opts, budgetMs: -1 }).fillable, false);
+  // A frontmatter block that does not close within the read bound is unreadable.
+  const big = agentTree({
+    'proj/.git/HEAD': 'x\n',
+    'proj/.claude/agents/open.md': role('researcher', undefined),
+    'proj/.claude/agents/huge.md': `---\nname: researcher\ndescription: ${'x'.repeat(20000)}\nmodel: fable\n---\n`,
+  });
+  const r = roleModelIntent('researcher', { cwd: path.join(big, 'proj'), home: path.join(big, 'nohome'), env: {} });
+  assert.deepEqual([r.fillable, r.complete], [false, false]);
 });
 
 function runHook(event, env) {
@@ -169,6 +203,7 @@ test('the installed hook leaves a pinned named role untouched without consulting
   const root = agentTree({
     'proj/.claude/agents/qa-design-critic.md': role('qa-design-critic', 'claude-fable-5-1[1m]', 'effort: medium\n'),
     'proj/.claude/agents/qa-smoke-worker.md': role('qa-smoke-worker', 'opus', 'effort: medium\n'),
+    'proj/.claude/agents/open.md': role('researcher', undefined),
   });
   const log = path.join(root, 'dispatch-log.jsonl');
   const env = { HOME: path.join(root, 'home'), ORCHESTRATE_DISPATCH_LOG: log };
