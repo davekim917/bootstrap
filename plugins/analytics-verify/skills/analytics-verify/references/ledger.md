@@ -38,6 +38,8 @@ relative to the ledger's folder.
 | `web` | `url`, `retrieved`, `entity` | `entity` is the exact business, place or body. `effective` is the date of the evidence itself; without it, the check warns that the source is undated. |
 | `doc` | `ref` | Who said it, where and when. |
 
+A source date (`as_of`, `retrieved`, `effective`) more than a day after `--today` fails.
+
 ## Claims
 
 - **`id`**: letters, digits and `_` only, so relations can use it.
@@ -100,6 +102,8 @@ relative to the ledger's folder.
   - Line-start list markers and URLs are also skipped.
   - A number inside an anchor that nothing accounts for fails. A range ("12-15 days")
     is two claims sharing one anchor.
+  - An anchor holds exactly one number that shows its claim's value. "Revenue was 5;
+    headcount was 5" is two claims with two anchors.
   - An `exempt` snippet must be more than one bare number: an address, a phone number,
     a product name, or an illustration that isn't a finding ("someone with 2 accounts").
 - Each anchor is in the deliverable, and every appearance shows the claim's value. For
@@ -124,7 +128,7 @@ relative to the ledger's folder.
 check     LEDGER DELIVERABLE...          # all files share one ledger
 scaffold  RESULT.csv --source q1 --key Year [--columns A,B] [--prefix new_]
 reproduce DELIVERED.csv RERUN.csv --key Year [--rel-tol 0.001] [--abs-tol 0]
-changed   OLD NEW [--old-ledger A --new-ledger B]
+changed   OLD NEW [--old-ledger A --new-ledger B]   # link destinations count as text
 hash      FILE...
 receipt   verify-r2.md claims.json DELIVERABLE...
 ```

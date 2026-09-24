@@ -64,16 +64,19 @@ class _HTMLText(html.parser.HTMLParser):
         'figcaption', 'caption', 'aside', 'main', 'nav', 'figure',
     }
 
-    def __init__(self):
+    def __init__(self, links=False):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.skip = 0
+        self.links = links
 
     def handle_starttag(self, tag, attrs):
         if tag in self.SKIP:
             self.skip += 1
         elif tag in self.BLOCK:
             self.parts.append('\n')
+        elif tag == 'a' and self.links and not self.skip and dict(attrs).get('href'):
+            self.parts.append(f' [link]({dict(attrs)["href"]}) ')
 
     def handle_endtag(self, tag):
         if tag in self.SKIP:
@@ -86,7 +89,7 @@ class _HTMLText(html.parser.HTMLParser):
             self.parts.append(data)
 
 
-def read_text(path: str) -> str:
+def read_text(path: str, links=False) -> str:
     ext = os.path.splitext(path)[1].lower()
     if ext in ('.csv', '.tsv', '.xlsx', '.xls', '.json', '.parquet'):
         raise InputError(f'{path}: a table is checked with `reproduce`; run `check` on the prose that presents it')
@@ -106,7 +109,7 @@ def read_text(path: str) -> str:
     with open(path, encoding='utf-8') as f:
         raw = f.read()
     if ext in ('.html', '.htm'):
-        parser = _HTMLText()
+        parser = _HTMLText(links)
         parser.feed(raw)
         parser.close()
         return ''.join(parser.parts)
@@ -760,6 +763,9 @@ class Claim:
 
 
 def check_ledger(ledger, base, today, stale_days, f: Findings):
+    def future(d):  # a day of slack: the author and this host may be in different time zones
+        return d is not None and d > today + dt.timedelta(days=1)
+
     """Schema, source metadata, cell binding, quotes, derived values and relations.
     Returns {claim_id: Claim}."""
     if not isinstance(ledger, dict):
@@ -785,6 +791,8 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
                 f.fail('source', f'{sid}: "as_of" is required: the exact cutoff the query ran to')
             elif not (stamp := _parse_stamp(as_of)):
                 f.fail('source', f'{sid}: as_of "{as_of}" is not an ISO date or datetime')
+            elif future(stamp.date()):
+                f.fail('source', f'{sid}: as_of {as_of} is in the future')
             elif stamp.tzinfo is None or not re.search(r'[T ]\d', str(as_of).strip()):
                 f.warn('source', f'{sid}: as_of "{as_of}" has no time and timezone; a date alone hides a partial day')
         elif kind == 'file':
@@ -796,16 +804,22 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
                 f.warn('source', f'{sid}: no "as_of"; say when the file was produced')
             elif not _parse_date(src.get('as_of')):
                 f.warn('source', f'{sid}: as_of "{src.get("as_of")}" is not a date; if the cutoff is unknown, say so in the deliverable')
+            elif future(_parse_date(src.get('as_of'))):
+                f.fail('source', f'{sid}: as_of {src.get("as_of")} is in the future')
         elif kind == 'web':
             if not re.match(r'https?://', str(src.get('url', ''))):
                 f.fail('source', f'{sid}: a web source needs an http(s) "url"')
             if not _parse_date(src.get('retrieved')):
                 f.fail('source', f'{sid}: "retrieved" must be an ISO date')
+            elif future(_parse_date(src.get('retrieved'))):
+                f.fail('source', f'{sid}: retrieved {src.get("retrieved")} is in the future')
             if not src.get('entity'):
                 f.fail('source', f'{sid}: name the exact business, place or body the page is about ("entity")')
             effective = _parse_date(src.get('effective'))
             if not effective:
                 f.warn('stale', f'{sid}: undated evidence; treat it as stale until it is re-checked live')
+            elif future(effective):
+                f.fail('source', f'{sid}: effective {effective} is in the future')
             elif (today - effective).days > stale_days:
                 f.warn('stale', f'{sid}: evidence dated {effective} is over {stale_days} days old')
         elif kind == 'doc':
@@ -1038,6 +1052,9 @@ def check_deliverables(paths, claims, exempt, f: Findings):
                             note = f' (the source gives only "{claim.bound}" this value)' if claim.bound else ''
                             f.fail('anchor', f'{claim.id}: "{na}" shows {got}; the ledger value is '
                                              f'{claim.raw.get("value")}{claim.unit or ""}{note}')
+                        elif len(shown_value) > 1:
+                            f.fail('anchor', f'{claim.id}: "{na}" holds {len(shown_value)} numbers that show this value; '
+                                             'shorten it to the one this claim is about')
                         elif not re.search(r'[A-Za-z0-9]', _residue(texts[p][s:e], shown_value, s)):
                             f.fail('anchor', f'{claim.id}: "{na}" is a bare number; include the words (or row key) that say what it counts')
                     elif claim.when is not None:
@@ -1233,10 +1250,15 @@ def cmd_reproduce(args):
 # ---------------------------------------------------------------- changed
 
 def _units(path):
+    """Sentences for `changed`. Link destinations stay in: `check` skips them, but a swapped
+    citation is exactly what a re-check must see."""
     out = []
-    for line in read_text(path).splitlines():
+    for line in read_text(path, links=True).splitlines():
         for part in re.split(r'(?<=[.!?])\s+(?=[A-Z0-9"\'(])', line):
+            urls = re.findall(r'\]\(([^)\s]+)', part) + [u for u in _URL.findall(part) if not part.count(f']({u}')]
             n = normalize(part).replace(BOUNDARY, '').strip()
+            if urls:
+                n = f'{n} <{" ".join(urls)}>'.strip()
             if n:
                 out.append(n)
     return out

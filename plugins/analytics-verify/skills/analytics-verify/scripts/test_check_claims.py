@@ -895,5 +895,47 @@ class ReviewRegressionsPr28(LedgerCase):
         self.assertIn('Exemptions removed: none', out)
 
 
+
+class ReviewRegressionsPr28Round2(LedgerCase):
+    """Codex review of the published PR, round 2."""
+
+    def test_one_claim_cannot_account_for_two_equal_numbers(self):
+        claim = {'id': 'rev', 'value': 5, 'source': 'w', 'quote': 'revenue: 5', 'anchors': ['Revenue was 5; headcount was 5']}
+        code, out = self.check(self.led([claim]), 'Revenue was 5; headcount was 5.')
+        self.assertEqual(code, 1)
+        self.assertIn('holds 2 numbers that show this value', out)
+
+    def test_changed_sees_a_swapped_link(self):
+        for ext, old, new in (('md', 'Open late [per its site](https://a.test/hours).', 'Open late [per its site](https://b.test/hours).'),
+                              ('md', 'Open late, per https://a.test/hours today.', 'Open late, per https://b.test/hours today.'),
+                              ('html', '<p>Open late <a href="https://a.test/hours">per its site</a>.</p>',
+                               '<p>Open late <a href="https://b.test/hours">per its site</a>.</p>')):
+            code, out = run(['changed', self.write(f'old.{ext}', old), self.write(f'new.{ext}', new)])
+            self.assertEqual(code, 0)
+            self.assertIn('+ ', out, ext)
+            self.assertIn('https://b.test/hours', out, ext)
+            self.assertNotIn('(none)', out, ext)
+
+    def test_links_still_do_not_count_as_numbers(self):
+        code, out = self.check(self.led([]), 'See [the 2025 list](https://a.test/2025/top-50).')
+        self.assertIn('"2025"', out)
+        self.assertNotIn('"50"', out)
+
+    def test_source_dates_in_the_future_fail(self):
+        web = {'type': 'web', 'url': 'https://x.test', 'entity': 'Bar X, Riverton'}
+        for src, needle in (({**web, 'retrieved': '2099-01-01', 'effective': '2026-09-01'}, 'retrieved 2099-01-01 is in the future'),
+                            ({**web, 'retrieved': '2026-09-24', 'effective': '2099-01-01'}, 'effective 2099-01-01 is in the future'),
+                            ({'type': 'query', 'sql': 'q.sql', 'result': 't.csv', 'grain': 'account',
+                              'as_of': '2099-01-01T00:00:00Z'}, 'as_of 2099-01-01T00:00:00Z is in the future'),
+                            ({'type': 'file', 'path': 't.csv', 'as_of': '2099-01-01'}, 'as_of 2099-01-01 is in the future')):
+            led = self.led([], sources={'s': src}, files={'q.sql': 'select 1', 't.csv': 'k,v\na,1\n'})
+            code, out = run(['check', led, self.write('d.md', 'Nothing here.'), '--today', '2026-09-24'])
+            self.assertEqual(code, 1, needle)
+            self.assertIn(needle, out)
+        led = self.led([], sources={'s': {**web, 'retrieved': '2026-09-25', 'effective': '2026-09-01'}})
+        code, out = run(['check', led, self.write('d.md', 'Nothing here.'), '--today', '2026-09-24'])
+        self.assertNotIn('in the future', out)
+
+
 if __name__ == '__main__':
     unittest.main()
