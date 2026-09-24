@@ -118,6 +118,7 @@ def read_text(path: str, links=False) -> str:
 
 _TRANSLATE = str.maketrans({
     '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"', '\u2212': '-', '\u00a0': ' ',
+    '\u2010': '-', '\u2011': '-',  # typographic hyphens: "plus\u2011sized" is one word
 })
 _MD_LINK = re.compile(r'\[([^\]]*)\]\([^)]*\)')
 _URL = re.compile(r'(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/\S*', re.I)
@@ -281,12 +282,18 @@ def _qualifiers(text, lead, end):
     return op, end, problem, used
 
 
+_FRACTIONS = frozenset('half halves third thirds quarter quarters fourth fourths fifth fifths sixth sixths '
+                       'seventh sevenths eighth eighths ninth ninths tenth tenths'.split())
+_ABSORB = 'absorb'  # a qualified lone "one": not a number, but it owns its qualifier
+
+
 def _word_numbers(text):
     """Spelled-out numbers as (start, end, value, problem). Single words and tens-units
     ("twenty-five") are read; anything with hundred, thousand, dozen and the like is
     refused ("write it in digits") rather than half-read. "one" alone is not a number,
-    or every "no one" would need a claim, unless a qualifier is attached ("at least one",
-    "one or more")."""
+    or every "no one" would need a claim; a qualifier attached to it ("at least one", "one
+    or more") belongs to it and is not left over. Spelled fractions ("one-third") are
+    refused."""
     words = [(m.start(), m.end(), m.group(0).lower()) for m in re.finditer(r'[A-Za-z]+', text)]
     vocab = set(_SMALL) | set(_TENS) | _WORD_SCALES
     out, i, n = [], 0, len(words)
@@ -301,6 +308,10 @@ def _word_numbers(text):
         seq = words[i:j]
         names = [w for _, _, w in seq if w != 'and']
         start, end = seq[0][0], seq[-1][1]
+        if j < n and text[end:words[j][0]] == '-' and words[j][2] in _FRACTIONS:
+            out.append((start, words[j][1], None, 'write it in digits'))  # "one-third"
+            i = j + 1
+            continue
         if names == ['a']:
             i = j
             continue
@@ -308,7 +319,7 @@ def _word_numbers(text):
             out.append((start, end, None, 'write it in digits'))
         elif names == ['one']:
             if _PREFIX.search(text[max(0, start - 30):start]) or _SUFFIX.match(text, end):
-                out.append((start, end, 1, None))  # "at least one", "one or more"
+                out.append((start, end, None, _ABSORB))  # "at least one": no number, no leftover bound
         elif len(names) == 1 and names[0] in _SMALL:
             out.append((start, end, _SMALL[names[0]], None))
         elif len(names) == 1 and names[0] in _TENS:
@@ -375,6 +386,8 @@ def tokenize(text: str):
         end, mult, pct = _suffixes(text, e)
         op, end, qproblem, spans = _qualifiers(text, lead, end)
         used += spans
+        if problem == _ABSORB:
+            continue
         v = Decimal(value) * mult if value is not None else Decimal(0)
         tokens.append(Token(s, end, text[s:end], v, mult, pct, sign, op, problem or sign_problem or qproblem))
     tokens.sort(key=lambda t: t.start)

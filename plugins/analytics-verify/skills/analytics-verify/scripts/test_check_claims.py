@@ -1013,18 +1013,24 @@ class RealReportFalseAlarms(LedgerCase):
             self.assertEqual([t.problem for t in toks], [None] * len(values), text)
             self.assertEqual([t.value for t in toks], values, text)
 
-    def test_at_least_one_is_a_number(self):
+    def test_a_qualified_one_owns_its_qualifier(self):
+        # "one" is never a checked number; a qualifier attached to it is not left over.
         toks = cc.tokenize(cc.normalize('Each store here has at least one of three traits.'))[0]
-        self.assertEqual([(t.value, t.op, t.problem) for t in toks], [(1, 'gte', None), (3, 'eq', None)])
+        self.assertEqual([(t.value, t.op, t.problem) for t in toks], [(3, 'eq', None)])
         # Codex round 4: a hyphenated word is not a suffix ("plus-sized"), for digits too.
         self.assertEqual(cc.tokenize(cc.normalize('one plus-sized store'))[0], [])
         for text, op in (('1 plus-sized store', 'eq'), ('5 plus stores', 'gte')):
             toks = cc.tokenize(cc.normalize(text))[0]
             self.assertEqual([(t.op, t.problem) for t in toks], [(op, None)], text)
         self.assertIn('attached to no number', cc.tokenize(cc.normalize('3 or more-ish stores'))[0][0].problem)
-        for text, op in (('one or more stores', 'gte'), ('one+ stores', 'gte'), ('one and up', 'gte')):
+        for text in ('one or more stores', 'one+ stores', 'one and up', 'one plus\u2011sized store'):
+            self.assertEqual(cc.tokenize(cc.normalize(text))[0], [], text)
+        # Codex round 5: typographic hyphens, and spelled fractions.
+        toks = cc.tokenize(cc.normalize('1 plus\u2011sized store'))[0]
+        self.assertEqual([(t.op, t.problem) for t in toks], [('eq', None)])
+        for text in ('at least one-third of users', 'two-thirds of stores', 'one\u2011half of them'):
             toks = cc.tokenize(cc.normalize(text))[0]
-            self.assertEqual([(t.value, t.op, t.problem) for t in toks], [(1, op, None)], text)
+            self.assertEqual([t.problem for t in toks], ['write it in digits'], text)
         self.assertEqual(cc.tokenize(cc.normalize('No one else stocks it.'))[0], [])
         self.assertEqual(cc.tokenize(cc.normalize('One of the best bars.'))[0], [])
 

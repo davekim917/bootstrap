@@ -83,7 +83,9 @@ A source date (`as_of`, `retrieved`, `effective`) more than a day after `--today
 - Every number in the deliverable is accounted for: it is the value of a claim whose
   anchor holds it, a label of that claim, or inside an `exempt` snippet.
   - This includes years, dates, `1e6`, currency codes (`USD1200`, `SEK1200`) and
-    spelled-out numbers from "two" to "ninety-nine".
+    spelled-out numbers from "two" to "ninety-nine". A lone "one" is not checked, and a
+    qualifier attached to it ("at least one") belongs to it. Spelled fractions ("one-third")
+    fail: write them in digits.
   - A digit run right after other letters is an identifier and is skipped (Q1, H2,
     B03001, Acme01), unless the letters are three capitals, which read as a currency
     code. The output lists every identifier it skipped.
