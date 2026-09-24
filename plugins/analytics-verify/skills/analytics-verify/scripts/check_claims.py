@@ -763,11 +763,11 @@ class Claim:
 
 
 def check_ledger(ledger, base, today, stale_days, f: Findings):
+    """Schema, source metadata, cell binding, quotes, derived values and relations.
+    Returns {claim_id: Claim}."""
     def future(d):  # a day of slack: the author and this host may be in different time zones
         return d is not None and d > today + dt.timedelta(days=1)
 
-    """Schema, source metadata, cell binding, quotes, derived values and relations.
-    Returns {claim_id: Claim}."""
     if not isinstance(ledger, dict):
         raise InputError('the ledger must be a JSON object')
     sources = ledger.get('sources') or {}
@@ -1018,8 +1018,16 @@ def check_deliverables(paths, claims, exempt, f: Findings):
     texts = {p: normalize(read_text(p)) for p in paths}
     tokenized = {p: tokenize(t) for p, t in texts.items()}
     tokens = {p: tokenized[p][0] for p in paths}
-    accounted = {p: set() for p in paths}   # indices of tokens some claim accounts for
+    owner = {p: {} for p in paths}          # index -> the one claim whose value or date it states
+    labelled = {p: set() for p in paths}    # indices a claim reads as a row or name label
     in_anchor = {p: {} for p in paths}      # index -> ids of claims whose anchor holds it
+
+    def own(p, i, claim, na):
+        """A number in the deliverable states one fact: it belongs to exactly one claim."""
+        held = owner[p].setdefault(i, claim.id)
+        if held != claim.id:
+            f.fail('anchor', f'{claim.id}: "{na}" shows {tokens[p][i].text}, which already states {held}; '
+                             'one number is one fact, so give each claim its own occurrence')
     exempt_spans = {p: [] for p in paths}
     labels_used = 0
 
@@ -1045,8 +1053,10 @@ def check_deliverables(paths, claims, exempt, f: Findings):
                     if claim.value is not None:
                         for i, t in inside:
                             if displays(t, claim.value, claim.unit, claim.magnitude, claim.bound):
-                                accounted[p].add(i)
-                                shown_value.append(t)
+                                shown_value.append((i, t))
+                        if len(shown_value) == 1:
+                            own(p, shown_value[0][0], claim, na)
+                        shown_value = [t for _, t in shown_value]
                         if not shown_value:
                             got = ', '.join(t.text for _, t in inside) or 'no whole number'
                             note = f' (the source gives only "{claim.bound}" this value)' if claim.bound else ''
@@ -1066,12 +1076,13 @@ def check_deliverables(paths, claims, exempt, f: Findings):
                                 f.fail('anchor', f'{claim.id}: "{na}" shows {shown}; the date is {claim.raw.get("value")}')
                             for i, t in inside:
                                 if ds <= t.start - s and t.end - s <= de:
-                                    accounted[p].add(i)
+                                    own(p, i, claim, na)
                         if not any(ok for *_, ok, _ in dates):
                             f.fail('anchor', f'{claim.id}: "{na}" shows no part of {claim.raw.get("value")}')
                     for i, t in inside:
-                        if i not in accounted[p] and t.op == 'eq' and not t.pct and not t.sign and t.value in claim.labels:
-                            accounted[p].add(i)
+                        if i not in owner[p] and i not in labelled[p] and t.op == 'eq' and not t.pct and not t.sign \
+                                and t.value in claim.labels:
+                            labelled[p].add(i)
                             labels_used += 1
             if not found:
                 f.fail('anchor', f'{claim.id}: "{na}" is not in the deliverable (edited since the ledger was written?)')
@@ -1101,7 +1112,7 @@ def check_deliverables(paths, claims, exempt, f: Findings):
                 f.fail('unclear', f'"{t.text}" can\'t be read exactly ({t.problem}). Rephrase it with digits and a '
                                   f'plain qualifier, or exempt it if it isn\'t a quantity: ...{around}...')
                 continue
-            if i in accounted[p]:
+            if i in owner[p] or i in labelled[p]:
                 continue
             if i in in_anchor[p]:
                 f.fail('unbound', f'"{t.text}" sits in the anchor for {", ".join(in_anchor[p][i])} but no claim '
@@ -1296,6 +1307,7 @@ def cmd_changed(args):
             nxt = {k for k, c in cb.items() if 'expr' in c and expr_names(str(c['expr'])) & frontier} - moved - deps
             deps |= nxt
             frontier = nxt
+
         def rel_text(r):
             return str(r.get('expr') if isinstance(r, dict) else r)
 

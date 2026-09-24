@@ -905,6 +905,24 @@ class ReviewRegressionsPr28Round2(LedgerCase):
         self.assertEqual(code, 1)
         self.assertIn('holds 2 numbers that show this value', out)
 
+    def test_two_claims_cannot_share_one_number(self):
+        # Codex round 3: the mirror of the case above.
+        rev = {'id': 'rev', 'value': 5, 'source': 'w', 'quote': 'revenue: 5', 'anchors': ['Revenue was 5']}
+        head = {'id': 'head', 'value': 5, 'source': 'w', 'quote': 'headcount: 5', 'anchors': ['Revenue was 5']}
+        code, out = self.check(self.led([rev, head]), 'Revenue was 5.')
+        self.assertEqual(code, 1)
+        self.assertIn('head: "Revenue was 5" shows 5, which already states rev', out)
+        head['anchors'] = ['headcount was 5']
+        code, out = self.check(self.led([rev, head]), 'Revenue was 5; headcount was 5.')
+        self.assertEqual(code, 0, out)
+
+    def test_two_date_claims_cannot_share_one_date(self):
+        a = {'id': 'cutoff', 'value': '2026-09-23', 'source': 'd', 'anchors': ['thru 9/23']}
+        b = {'id': 'launch', 'value': '2026-09-23', 'source': 'd', 'anchors': ['thru 9/23']}
+        code, out = self.check(self.led([a, b]), 'Numbers thru 9/23.')
+        self.assertEqual(code, 1)
+        self.assertIn('which already states cutoff', out)
+
     def test_changed_sees_a_swapped_link(self):
         for ext, old, new in (('md', 'Open late [per its site](https://a.test/hours).', 'Open late [per its site](https://b.test/hours).'),
                               ('md', 'Open late, per https://a.test/hours today.', 'Open late, per https://b.test/hours today.'),
