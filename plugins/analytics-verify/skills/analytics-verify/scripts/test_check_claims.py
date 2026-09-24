@@ -716,6 +716,14 @@ class ReceiptRound2(ReceiptCase):
         self.assertEqual(code, 1)
         self.assertIn('open item(s) under "Wrong"', out)
 
+    def test_a_finding_written_only_as_a_subheading_counts(self):
+        # Codex round 4 on the published PR.
+        body = SECTIONS.replace('| Where | Deliverable says | Actually | Evidence |\n|---|---|---|---|\n',
+                                '### Revenue is overstated\n')
+        code, out = self.receipt(self.header() + body)
+        self.assertEqual(code, 1)
+        self.assertIn('CLEAR with 1 open item(s) under "Wrong"', out)
+
     def test_hash_command_output_can_fill_the_header(self):
         head = (f'artifact-sha256: {cc.sha256(self.doc)}  {self.doc}\nledger-sha256: {cc.sha256(self.led)}  claims.json\n'
                 'verdict: CLEAR\nverifier: gpt-6-sol (fresh codex exec session)\n\n')
@@ -915,6 +923,29 @@ class ReviewRegressionsPr28Round2(LedgerCase):
         head['anchors'] = ['headcount was 5']
         code, out = self.check(self.led([rev, head]), 'Revenue was 5; headcount was 5.')
         self.assertEqual(code, 0, out)
+
+    def test_a_label_cannot_also_be_a_value_in_either_order(self):
+        # Codex round 4: "#5 ranking had 1 winner" -- the 5 names the ranking.
+        winners = {'id': 'winners', 'value': 1, 'source': 'w', 'quote': 'ranking 5 had 1 winner', 'labels': [5],
+                   'anchors': ['#5 ranking had 1 winner']}
+        head = {'id': 'head', 'value': 5, 'source': 'w', 'quote': 'headcount: 5', 'anchors': ['#5 ranking']}
+        for claims in ([winners, head], [head, winners]):
+            code, out = self.check(self.led(claims), '#5 ranking had 1 winner.')
+            self.assertEqual(code, 1, [c['id'] for c in claims])
+            self.assertIn('winners: reads 5 as a label, but it states head', out)
+
+    def test_labels_are_still_shared(self):
+        a = {'id': 'a', 'value': 64, 'source': 'w', 'quote': '2016: 64 new', 'labels': [2016], 'anchors': ['2016: 64 new']}
+        b = {'id': 'b', 'value': 57, 'source': 'w', 'quote': '2016: 57 services', 'labels': [2016],
+             'anchors': ['2016: 64 new, 57 services']}
+        code, out = self.check(self.led([a, b]), '2016: 64 new, 57 services.')
+        self.assertEqual(code, 0, out)
+
+    def test_an_exemption_cannot_cover_a_claimed_number(self):
+        rev = {'id': 'rev', 'value': 5, 'source': 'w', 'quote': 'revenue: 5', 'anchors': ['Revenue was 5']}
+        code, out = self.check(self.led([rev], exempt=['Revenue was 5']), 'Revenue was 5.')
+        self.assertEqual(code, 1)
+        self.assertIn('"Revenue was 5" covers 5, which states rev', out)
 
     def test_two_date_claims_cannot_share_one_date(self):
         a = {'id': 'cutoff', 'value': '2026-09-23', 'source': 'd', 'anchors': ['thru 9/23']}

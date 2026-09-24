@@ -102,9 +102,10 @@ A source date (`as_of`, `retrieved`, `effective`) more than a day after `--today
   - Line-start list markers and URLs are also skipped.
   - A number inside an anchor that nothing accounts for fails. A range ("12-15 days")
     is two claims sharing one anchor.
-  - One number states one fact. An anchor holds exactly one number that shows its
-    claim's value, and no two claims can show through the same number: "Revenue was 5;
-    headcount was 5" is two claims, each anchored to its own 5. Labels can be shared.
+  - One number has one role: a value or date owned by exactly one claim, a label any
+    number of claims can share, or part of an `exempt` snippet. An anchor holds exactly
+    one number that shows its claim's value, and no two claims can show through the same
+    number: "Revenue was 5; headcount was 5" is two claims, each anchored to its own 5.
   - An `exempt` snippet must be more than one bare number: an address, a phone number,
     a product name, or an illustration that isn't a finding ("someone with 2 accounts").
 - Each anchor is in the deliverable, and every appearance shows the claim's value. For

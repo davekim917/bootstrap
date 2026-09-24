@@ -1018,8 +1018,12 @@ def check_deliverables(paths, claims, exempt, f: Findings):
     texts = {p: normalize(read_text(p)) for p in paths}
     tokenized = {p: tokenize(t) for p, t in texts.items()}
     tokens = {p: tokenized[p][0] for p in paths}
+    # Every number has one role: a value or date owned by exactly one claim, a label (a row
+    # key or a name) any number of claims may share, or part of an exempt snippet. Labels
+    # are settled after ownership, so the order of claims cannot change the result.
     owner = {p: {} for p in paths}          # index -> the one claim whose value or date it states
-    labelled = {p: set() for p in paths}    # indices a claim reads as a row or name label
+    labelled = {p: set() for p in paths}    # indices read as a row or name label
+    label_wanted = []                       # (p, index, claim) waiting for ownership to settle
     in_anchor = {p: {} for p in paths}      # index -> ids of claims whose anchor holds it
 
     def own(p, i, claim, na):
@@ -1080,12 +1084,21 @@ def check_deliverables(paths, claims, exempt, f: Findings):
                         if not any(ok for *_, ok, _ in dates):
                             f.fail('anchor', f'{claim.id}: "{na}" shows no part of {claim.raw.get("value")}')
                     for i, t in inside:
-                        if i not in owner[p] and i not in labelled[p] and t.op == 'eq' and not t.pct and not t.sign \
-                                and t.value in claim.labels:
-                            labelled[p].add(i)
-                            labels_used += 1
+                        if t.op == 'eq' and not t.pct and not t.sign and t.value in claim.labels:
+                            label_wanted.append((p, i, claim))
             if not found:
                 f.fail('anchor', f'{claim.id}: "{na}" is not in the deliverable (edited since the ledger was written?)')
+
+    for p, i, claim in label_wanted:
+        held = owner[p].get(i)
+        if held == claim.id:
+            continue  # the claim's own value, which its row key happens to repeat
+        if held:
+            f.fail('anchor', f'{claim.id}: reads {tokens[p][i].text} as a label, but it states {held}; '
+                             'one number has one role')
+        elif i not in labelled[p]:
+            labelled[p].add(i)
+            labels_used += 1
 
     for snippet in exempt or []:
         ns = normalize(str(snippet))
@@ -1100,6 +1113,10 @@ def check_deliverables(paths, claims, exempt, f: Findings):
             continue
         for p, span in hits:
             exempt_spans[p].append(span)
+            for i, held in owner[p].items():
+                if span[0] <= tokens[p][i].start and tokens[p][i].end <= span[1]:
+                    f.fail('exempt', f'"{ns}" covers {tokens[p][i].text}, which states {held}; '
+                                     'exempt only names, addresses and phone numbers')
 
     total = 0
     for p in paths:
@@ -1359,7 +1376,8 @@ def _open_findings(lines):
         if heading:
             depth, title = len(heading.group(1)), heading.group(2).strip().lower()
             if current and depth > level:
-                continue  # a subheading inside an open section stays in it
+                counts[current] += 1  # a finding written as a subheading is still a finding
+                continue
             current = next((k for k in _OPEN_SECTIONS if title.startswith(k)), None)
             level = depth
             if current:
