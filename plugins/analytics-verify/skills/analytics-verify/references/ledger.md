@@ -86,11 +86,14 @@ relative to the ledger's folder.
     B03001, Brugal01), unless the letters are three capitals, which read as a currency
     code. The output lists every identifier it skipped.
   - Displays it can't read exactly fail with "rephrase": spelled-out numbers with
-    hundred, thousand or dozen, negated qualifiers ("not over 50"), a spaced minus after
-    a word ("Revenue - 7%", which may be a dash), and any number whose clause holds a
-    qualifier other than the one right next to it ("50 accounts or more", "up to about
-    50"). "Over", "under", "above" and "below" count only right next to a number, so
-    "over the last 12 months" is fine.
+    hundred, thousand or dozen, negated qualifiers ("not over 50"), and a spaced minus
+    after a word ("Revenue - 7%", which may be a dash).
+  - Each number reads the one qualifier attached to it (right before or right after).
+    Bound wording attached to no number ("up to a total of 50", "50 accounts or more")
+    makes every number in its sentence fail. Approximation words and "over", "under",
+    "above" and "below" count only when attached, so "surveyed 50 customers about
+    onboarding" and "over the last 12 months" read fine. A bullet or a blank line ends
+    a sentence.
   - Line-start list markers and URLs are also skipped.
   - A number inside an anchor that nothing accounts for fails. A range ("12-15 days")
     is two claims sharing one anchor.

@@ -803,5 +803,28 @@ class ReviewRegressionsRound4(LedgerCase):
         self.assertIn('the quote shows 50 exactly; drop "bound"', out)
 
 
+
+class ReviewRegressionsRound5(LedgerCase):
+    """Inputs that passed after round 4 and must not, and correct sentences it refused
+    (Codex review, round 5)."""
+
+    def test_leftover_bound_wording_anywhere_in_the_sentence(self):
+        for quote in ('up to a total of about 50 accounts', '50 active enterprise customer accounts or more',
+                      'up to approx. 50 accounts'):
+            claim = {'id': 'm', 'value': 50, 'source': 'w', 'quote': quote, 'anchors': ['Exactly 50 accounts']}
+            code, out = self.check(self.led([claim]), 'Exactly 50 accounts.')
+            self.assertEqual(code, 1, quote)
+            self.assertIn('attached to no number', out, quote)
+
+    def test_ordinary_wording_still_reads(self):
+        for text in ('We surveyed 50 customers about onboarding', 'Revenue rose from USD 50 to about USD 70',
+                     'over the last 12 months', 'at least 50 of the 70 accounts', '2013 <1K, 2014 17K'):
+            self.assertFalse([t for t in cc.tokenize(cc.normalize(text))[0] if t.problem], text)
+
+    def test_a_bullet_or_paragraph_ends_the_sentence(self):
+        toks = cc.tokenize(cc.normalize('- 50 accounts\n- up to 70 more planned'))[0]
+        self.assertEqual([(t.text, t.op, t.problem) for t in toks], [('50', 'eq', None), ('70', 'lte', None)])
+
+
 if __name__ == '__main__':
     unittest.main()

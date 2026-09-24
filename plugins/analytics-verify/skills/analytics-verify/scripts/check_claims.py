@@ -120,6 +120,7 @@ _MD_LINK = re.compile(r'\[([^\]]*)\]\([^)]*\)')
 _URL = re.compile(r'(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/\S*', re.I)
 _CHAT_TOKEN = re.compile(r'<(?:[@#!][^>]*|t:\d+(?::[A-Za-z])?)>')
 _LIST_MARKER = re.compile(r'^[ \t]*(?:\d{1,3}[.)]|[-*\u2022+])[ \t]+', re.M)
+BOUNDARY = '\u2016'  # marks a bullet or paragraph start in normalized text; ends a sentence
 _FOOTNOTE = re.compile(r'\[\d{1,3}\]')
 
 
@@ -130,11 +131,14 @@ def normalize(text: str) -> str:
     t = _CHAT_TOKEN.sub(' ', t)
     t = _MD_LINK.sub(r'\1', t)
     t = _URL.sub(' ', t)
-    t = _LIST_MARKER.sub('', t)
+    t = re.sub(r'\n[ \t]*\n', f'\n{BOUNDARY} ', t)
+    t = _LIST_MARKER.sub(f'{BOUNDARY} ', t)
     t = _FOOTNOTE.sub(' ', t)
     for mark in ('**', '__', '`', '*'):
         t = t.replace(mark, '')
-    return re.sub(r'\s+', ' ', t).strip()
+    t = re.sub(r'\s+', ' ', t)
+    t = re.sub(f'({BOUNDARY} ?)+', f'{BOUNDARY} ', t)
+    return t.strip(f' {BOUNDARY}')
 
 
 # ---------------------------------------------------------------- number tokens
@@ -166,14 +170,16 @@ _PREFIX_OP = {
 _SUFFIX = re.compile(
     r'\s*(\+|or more\b|or greater\b|or higher\b|or above\b|or over\b|and up\b|and above\b|and over\b|plus\b|'
     r'or less\b|or fewer\b|or lower\b|or below\b|or under\b)', re.I)
-# Every qualifier the clause scan counts. "over", "under", "above" and "below" count only
-# right next to a number ("over the last 12 months" is ordinary wording).
-_QUALIFIER_WORDS = re.compile(
+# Bound wording. Attached to a number, it is read; left over anywhere in a sentence, it makes
+# every number in that sentence unreadable, since its number can't be told. Approximation words
+# ("about 50") and "over/under/above/below" count only when attached: "surveyed 50 customers
+# about onboarding" and "over the last 12 months" are ordinary wording.
+_FREE_BOUND = re.compile(
     r'(?<![A-Za-z])(no more than|not more than|no less than|not less than|no fewer than|not fewer than|'
     r'more than|greater than|less than|fewer than|exceeding|at least|at most|up to|a minimum of|minimum of|'
-    r'a maximum of|maximum of|minimum|maximum|about|around|approximately|approx|roughly|nearly|almost|'
-    r'or more|or greater|or higher|or above|or over|and up|and above|and over|plus|or less|or fewer|or lower|'
-    r'or below|or under)(?![A-Za-z])|~|\u2248|<=|>=|\u2264|\u2265|(?<![-=])[<>](?!=)', re.I)
+    r'a maximum of|maximum of|minimum|maximum|or more|or greater|or higher|or above|or over|and up|'
+    r'and above|and over|or less|or fewer|or lower|or below|or under)(?![A-Za-z])', re.I)
+_SENTENCE_END = re.compile(BOUNDARY + r'|[.!?;](?=\s+[A-Z"(\u2016]|\s*$)')
 _BOUND_OPS = {'>=': 'gte', 'gte': 'gte', '>': 'gt', 'gt': 'gt', '<=': 'lte', 'lte': 'lte', '<': 'lt', 'lt': 'lt'}
 _NEGATION = re.compile(r"(\bnot|\bnever|n't|\bhardly|\bbarely|\bno)\s*$", re.I)
 PCT_UNITS = {'%', 'pct', 'percent', 'pp', 'percentage points'}
@@ -244,16 +250,17 @@ def _lead(text, start):
 
 
 def _qualifiers(text, lead, end):
-    """Comparator for the number spanning [lead, end). Returns (op, new_end, problem).
-    Exactly one qualifier right next to the number is read. Any other qualifier in the
-    same clause (a second one, or one a few words away) is refused, not dropped."""
+    """The qualifier attached to the number spanning [lead, end): one prefix or one suffix.
+    Returns (op, new_end, problem, used spans). Wording left over in the sentence is
+    judged later, once every number has claimed its own qualifier."""
     op, problem, used = 'eq', None, []
-    pre = text[max(0, lead - 30):lead]
+    base = max(0, lead - 30)
+    pre = text[base:lead]
     m = _PREFIX.search(pre)
     if m:
         word = re.sub(r'\s+', ' ', m.group(1).lower()).rstrip('.')
         op = _PREFIX_OP.get(word, 'eq')  # about/around/~/roughly: still exact at the shown precision
-        used.append((max(0, lead - 30) + m.start(1), max(0, lead - 30) + m.end(1)))
+        used.append((base + m.start(1), base + m.end(1)))
         if not word.startswith(('no ', 'not ')) and _NEGATION.search(pre[:m.start()]):
             problem = f'a negated qualifier ("{pre[max(0, m.start() - 12):].strip()}")'
     elif _NEGATION.search(pre) and not re.search(r'\bno\s*$', pre, re.I):
@@ -264,27 +271,10 @@ def _qualifiers(text, lead, end):
         suffix_op = 'lte' if word.startswith(('or less', 'or fewer', 'or lower', 'or below', 'or under')) else 'gte'
         if m:
             problem = problem or 'two qualifiers on one number'
-        op, used = suffix_op, used + [(sm.start(1), sm.end(1))]
+        op = suffix_op
+        used.append((sm.start(1), sm.end(1)))
         end = sm.end()
-    # The clause around the number: back to the previous number or punctuation, forward to
-    # the next, at most four words each way.
-    back = re.split(r'[\d.,;:!?()]', text[max(0, lead - 40):lead])[-1]
-    back_start = lead - len(back)
-    back_words = back.split()
-    if len(back_words) > 4:
-        back_start = lead - len(back) + back.index(back_words[-4])
-    fwd = re.split(r'[\d.,;:!?()]', text[end:end + 40], maxsplit=1)[0]
-    fwd_words = fwd.split()
-    fwd_end = end + (fwd.index(fwd_words[3]) + len(fwd_words[3]) if len(fwd_words) > 4 else len(fwd))
-    for q in _QUALIFIER_WORDS.finditer(text, back_start, fwd_end):
-        if any(a <= q.start() and q.end() <= b for a, b in used):
-            continue
-        after = text[q.end():q.end() + 4].lstrip()
-        if q.start() >= end and after[:1] and (after[0].isdigit() or _is_currency(after[0])):
-            continue  # it qualifies the next number ("2013 <1K")
-        problem = problem or f'"{q.group(0)}" is in its clause but not the one qualifier next to it'
-        break
-    return op, end, problem
+    return op, end, problem, used
 
 
 def _word_numbers(text):
@@ -344,6 +334,7 @@ def tokenize(text: str):
     capitals (a currency code such as SEK1200) or a currency word, which are quantities."""
     tokens: list[Token] = []
     skipped: list[str] = []
+    used: list[tuple[int, int]] = []
     for m in _NUM.finditer(text):
         s, e = m.span()
         if s and (text[s - 1].isalpha() or text[s - 1] == '_'):
@@ -367,7 +358,8 @@ def tokenize(text: str):
         raw = m.group(0).replace(',', '')
         value = Decimal(raw)
         end, mult, pct = _suffixes(text, e)
-        op, end, problem = _qualifiers(text, lead, end)
+        op, end, problem, spans = _qualifiers(text, lead, end)
+        used += spans
         step = Decimal(1).scaleb(value.as_tuple().exponent) * mult
         tokens.append(Token(s, end, text[s:end], value * mult, step, pct, sign, op, sign_problem or problem))
     for s, e, value, problem in _word_numbers(text):
@@ -375,11 +367,25 @@ def tokenize(text: str):
             continue  # "5 million": the digits already carry the word as their scale
         lead, sign, sign_problem = _lead(text, s)
         end, mult, pct = _suffixes(text, e)
-        op, end, qproblem = _qualifiers(text, lead, end)
+        op, end, qproblem, spans = _qualifiers(text, lead, end)
+        used += spans
         v = Decimal(value) * mult if value is not None else Decimal(0)
         tokens.append(Token(s, end, text[s:end], v, mult, pct, sign, op, problem or sign_problem or qproblem))
     tokens.sort(key=lambda t: t.start)
+    _refuse_leftover_bounds(text, tokens, used)
     return tokens, skipped
+
+
+def _refuse_leftover_bounds(text, tokens, used):
+    """Bound wording no number claimed makes every number in its sentence unreadable."""
+    cuts = [0] + [m.end() for m in _SENTENCE_END.finditer(text)] + [len(text)]
+    for a, b in zip(cuts, cuts[1:]):
+        for q in _FREE_BOUND.finditer(text, a, b):
+            if any(x <= q.start() and q.end() <= y for x, y in used):
+                continue
+            for t in tokens:
+                if a <= t.start < b and not t.problem:
+                    t.problem = f'"{q.group(0)}" in the same sentence is attached to no number'
 
 
 def _unit_value(tok: Token, value: Decimal, unit, magnitude: bool):
@@ -1210,7 +1216,7 @@ def _units(path):
     out = []
     for line in read_text(path).splitlines():
         for part in re.split(r'(?<=[.!?])\s+(?=[A-Z0-9"\'(])', line):
-            n = normalize(part)
+            n = normalize(part).replace(BOUNDARY, '').strip()
             if n:
                 out.append(n)
     return out
