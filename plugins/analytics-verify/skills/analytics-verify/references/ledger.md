@@ -89,12 +89,11 @@ A source date (`as_of`, `retrieved`, `effective`) more than a day after `--today
     code. The output lists every identifier it skipped.
   - Displays it can't read exactly fail with "rephrase": spelled-out numbers with
     hundred, thousand or dozen, negated qualifiers ("not over 50"), a spaced minus
-    after a word ("Revenue - 7%", which may be a dash), and an unsigned money amount
-    alone in parentheses ("($50)", "USD (50)", "(50 EUR)": a currency symbol or a common
-    ISO code before, inside or after), which accounting uses for a negative.
-    Write "-$50" or name the loss. Other numbers in parentheses read normally: a
-    percentage, a signed amount, a review count after a rating ("4.6 (1,947)"), a year
-    ("survey (2024)"). A bare "(1,234)" reads as positive, so write a negative with its sign.
+    after a word ("Revenue - 7%", which may be a dash).
+  - Numbers in parentheses read as written: "4.6 (1,947)", "survey (2024)", "($50)" is
+    50. A negative value in the ledger needs a signed display ("-$50") or
+    `"magnitude": true`. The check can't tell that "($50)" means a loss when the ledger
+    also says 50; write negatives with their sign.
   - Each number reads the one qualifier attached to it (right before or right after).
     Bound wording attached to no number ("up to a total of 50", "50 accounts or more")
     makes every number in its sentence fail. Approximation words and "over", "under",

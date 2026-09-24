@@ -252,29 +252,6 @@ def _lead(text, start):
     return lead, '', None
 
 
-def _accounting(text, lead, end, sign, pct):
-    """An unsigned money amount alone in parentheses ("($50)", "$(50)", "(USD 50)") is how
-    accounting writes a negative. Without a currency mark, parentheses are a note: a review
-    count after a rating ("4.6 (1,947)") or a year after a source ("survey (2024)")."""
-    if sign or pct or not lead or text[lead - 1] != '(':
-        return None
-    close = re.match(r'( ?[A-Z]{3})?\)', text[end:end + 5])  # "(50)" or "(50 USD)"
-    if not close:
-        return None
-    inner = text[lead:end]
-    # A currency mark before, inside or after the parentheses: "USD (50)", "$(50)",
-    # "(Rs50)", "(50 USD)", "(50) EUR".
-    window = text[max(0, lead - 6):lead - 1] + ' ' + inner + text[end:end + close.end() + 5]
-    money = (any(_is_currency(ch) for ch in window)
-             or any(w in _CURRENCY_CODES for w in re.findall(r'(?<![A-Za-z])[A-Z]{3}(?![A-Za-z])', window))
-             or re.match(r'(?:[Rr]s|US)(?=[\d$])', inner))
-    return 'a money amount alone in parentheses (an accounting negative?)' if money else None
-
-
-# Codes that mark money next to parentheses. A closed list, so "NYC (2024)" is not money.
-_CURRENCY_CODES = frozenset('USD EUR GBP JPY CNY INR CAD AUD NZD CHF SEK NOK DKK MXN BRL ZAR HKD SGD KRW'.split())
-
-
 def _qualifiers(text, lead, end):
     """The qualifier attached to the number spanning [lead, end): one prefix or one suffix.
     Returns (op, new_end, problem, used spans). Wording left over in the sentence is
@@ -307,7 +284,8 @@ def _word_numbers(text):
     """Spelled-out numbers as (start, end, value, problem). Single words and tens-units
     ("twenty-five") are read; anything with hundred, thousand, dozen and the like is
     refused ("write it in digits") rather than half-read. "one" alone is not a number,
-    or every "no one" would need a claim, unless a qualifier is attached ("at least one")."""
+    or every "no one" would need a claim, unless a qualifier is attached ("at least one",
+    "one or more")."""
     words = [(m.start(), m.end(), m.group(0).lower()) for m in re.finditer(r'[A-Za-z]+', text)]
     vocab = set(_SMALL) | set(_TENS) | _WORD_SCALES
     out, i, n = [], 0, len(words)
@@ -328,8 +306,8 @@ def _word_numbers(text):
         if any(w in _WORD_SCALES for w in names) or 'a' in names or 'and' in [w for _, _, w in seq]:
             out.append((start, end, None, 'write it in digits'))
         elif names == ['one']:
-            if _PREFIX.search(text[max(0, start - 30):start]):
-                out.append((start, end, 1, None))
+            if _PREFIX.search(text[max(0, start - 30):start]) or _SUFFIX.match(text, end):
+                out.append((start, end, 1, None))  # "at least one", "one or more"
         elif len(names) == 1 and names[0] in _SMALL:
             out.append((start, end, _SMALL[names[0]], None))
         elif len(names) == 1 and names[0] in _TENS:
@@ -385,7 +363,6 @@ def tokenize(text: str):
         raw = m.group(0).replace(',', '')
         value = Decimal(raw)
         end, mult, pct = _suffixes(text, e)
-        sign_problem = sign_problem or _accounting(text, lead, end, sign, pct)
         op, end, problem, spans = _qualifiers(text, lead, end)
         used += spans
         step = Decimal(1).scaleb(value.as_tuple().exponent) * mult
