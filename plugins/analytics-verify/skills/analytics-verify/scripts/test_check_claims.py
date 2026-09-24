@@ -1016,6 +1016,12 @@ class RealReportFalseAlarms(LedgerCase):
     def test_at_least_one_is_a_number(self):
         toks = cc.tokenize(cc.normalize('Each store here has at least one of three traits.'))[0]
         self.assertEqual([(t.value, t.op, t.problem) for t in toks], [(1, 'gte', None), (3, 'eq', None)])
+        # Codex round 4: a hyphenated word is not a suffix ("plus-sized"), for digits too.
+        self.assertEqual(cc.tokenize(cc.normalize('one plus-sized store'))[0], [])
+        for text, op in (('1 plus-sized store', 'eq'), ('5 plus stores', 'gte')):
+            toks = cc.tokenize(cc.normalize(text))[0]
+            self.assertEqual([(t.op, t.problem) for t in toks], [(op, None)], text)
+        self.assertIn('attached to no number', cc.tokenize(cc.normalize('3 or more-ish stores'))[0][0].problem)
         for text, op in (('one or more stores', 'gte'), ('one+ stores', 'gte'), ('one and up', 'gte')):
             toks = cc.tokenize(cc.normalize(text))[0]
             self.assertEqual([(t.value, t.op, t.problem) for t in toks], [(1, op, None)], text)

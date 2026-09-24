@@ -170,9 +170,10 @@ _PREFIX_OP = {
     'maximum of': 'lte', 'max': 'lte', '<=': 'lte', '≤': 'lte',
     'nearly': 'near', 'almost': 'near',
 }
+# A word suffix must end the word: "plus-sized" is not "plus".
 _SUFFIX = re.compile(
-    r'\s*(\+|or more\b|or greater\b|or higher\b|or above\b|or over\b|and up\b|and above\b|and over\b|plus\b|'
-    r'or less\b|or fewer\b|or lower\b|or below\b|or under\b)', re.I)
+    r'\s*(\+|(?:or more|or greater|or higher|or above|or over|and up|and above|and over|plus|'
+    r'or less|or fewer|or lower|or below|or under)(?![\w-]))', re.I)
 # Bound wording. Attached to a number, it is read; left over anywhere in a sentence, it makes
 # every number in that sentence unreadable, since its number can't be told. Approximation words
 # ("about 50") and "over/under/above/below" count only when attached: "surveyed 50 customers
