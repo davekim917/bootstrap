@@ -70,7 +70,8 @@ You get the output of `check_claims.py changed`.
 
 1. Confirm each earlier finding's fix landed.
 2. Check every `+` line, every changed claim and every claim derived from one, using
-   steps 3–5.
+   steps 3–5. A removed or edited relation needs a reason: removing a failing check is
+   not a fix. Every added exemption must be a name, address or phone, not a quantity.
 3. Run `check` on the whole final file and read it once end to end. A fix can make a
    sentence it didn't touch false.
 4. Write a new report with the new hashes.

@@ -33,7 +33,7 @@ relative to the ledger's folder.
 
 | type | required | notes |
 |---|---|---|
-| `query` | `sql`, `result`, `as_of`, `grain` | `as_of` is the exact cutoff, with time and timezone. `grain` is what one row counts. |
+| `query` | `sql`, `result`, `as_of`, `grain` | `as_of` is the exact cutoff, an ISO datetime with timezone (a value that doesn't parse fails; a date alone warns). `grain` is what one row counts. |
 | `file` | `path` | Give an `as_of` too. |
 | `web` | `url`, `retrieved`, `entity` | `entity` is the exact business, place or body. `effective` is the date of the evidence itself; without it, the check warns that the source is undated. |
 | `doc` | `ref` | Who said it, where and when. |
@@ -86,8 +86,11 @@ relative to the ledger's folder.
     B03001, Acme01), unless the letters are three capitals, which read as a currency
     code. The output lists every identifier it skipped.
   - Displays it can't read exactly fail with "rephrase": spelled-out numbers with
-    hundred, thousand or dozen, negated qualifiers ("not over 50"), and a spaced minus
-    after a word ("Revenue - 7%", which may be a dash).
+    hundred, thousand or dozen, negated qualifiers ("not over 50"), a spaced minus
+    after a word ("Revenue - 7%", which may be a dash), and an unsigned amount alone in
+    parentheses ("($50)", "(1,234)"), which accounting uses for a negative. Write
+    "-$50" or name the loss. A percentage or an explicitly signed amount in parentheses
+    ("(64.2%)", "(+69K)") reads normally.
   - Each number reads the one qualifier attached to it (right before or right after).
     Bound wording attached to no number ("up to a total of 50", "50 accounts or more")
     makes every number in its sentence fail. Approximation words and "over", "under",

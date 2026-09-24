@@ -13,6 +13,8 @@ import shutil
 import tempfile
 import unittest
 
+from decimal import Decimal
+
 import check_claims as cc
 
 DELIVERED_CSV = """Year,New Online customers,New Studio customers (first service),"New customers, unique across Online + Studio",Studio service appointments
@@ -824,6 +826,73 @@ class ReviewRegressionsRound5(LedgerCase):
     def test_a_bullet_or_paragraph_ends_the_sentence(self):
         toks = cc.tokenize(cc.normalize('- 50 accounts\n- up to 70 more planned'))[0]
         self.assertEqual([(t.text, t.op, t.problem) for t in toks], [('50', 'eq', None), ('70', 'lte', None)])
+
+
+
+class ReviewRegressionsRound6(LedgerCase):
+    """Accounting notation (Codex GitHub review)."""
+
+    def test_an_amount_alone_in_parentheses_is_refused(self):
+        for text in ('Net income was ($50).', 'Net income was $(50).', 'Net income was (USD 50).',
+                     'Net income was (1,234).', 'Net income was ($1.2M).'):
+            toks = cc.tokenize(cc.normalize(text))[0]
+            self.assertEqual(len(toks), 1, text)
+            self.assertIn('parentheses', toks[0].problem or '', text)
+        for value in (50, -50):
+            claim = {'id': 'ni', 'value': value, 'source': 'w', 'quote': 'net income: -$50', 'anchors': ['($50)']}
+            code, out = self.check(self.led([claim]), 'Net income was ($50).')
+            self.assertEqual(code, 1, value)
+            self.assertIn("can't be read exactly (an amount alone in parentheses", out)
+
+    def test_percentages_and_signed_amounts_in_parentheses_still_read(self):
+        for text, value in (('41,380 of 64,452 (64.2%)', Decimal('64.2')), ('the unique total (+69K)', Decimal(69000)),
+                            ('a loss (-$50)', Decimal(50))):
+            tok = cc.tokenize(cc.normalize(text))[0][-1]
+            self.assertIsNone(tok.problem, text)
+            self.assertEqual(tok.value, value, text)
+
+
+
+class ReviewRegressionsPr28(LedgerCase):
+    """Codex review of the published PR, round 1."""
+
+    def query_led(self, as_of):
+        src = {'q': {'type': 'query', 'sql': 'q.sql', 'result': 't.csv', 'as_of': as_of, 'grain': 'account'}}
+        return self.led([], sources=src, files={'q.sql': 'select 1', 't.csv': 'k,v\na,1\n'})
+
+    def test_a_malformed_query_cutoff_fails(self):
+        for as_of in ('not-a-dateT99:99+99:99', '2026-09-23T25:00:00Z', '2026-09-23T17:00:00-07:00 or so'):
+            code, out = self.check(self.query_led(as_of), 'Nothing here.')
+            self.assertEqual(code, 1, as_of)
+            self.assertIn('is not an ISO date or datetime', out, as_of)
+
+    def test_valid_cutoffs_pass_or_warn_as_documented(self):
+        for as_of in ('2026-09-23T17:00:00-07:00', '2026-09-24T00:30:00Z'):
+            code, out = self.check(self.query_led(as_of), 'Nothing here.')
+            self.assertEqual(code, 0, out)
+            self.assertNotIn('as_of', out)
+        for as_of in ('2026-09-23', '2026-09-23T17:00:00'):
+            code, out = self.check(self.query_led(as_of), 'Nothing here.')
+            self.assertEqual(code, 0, out)
+            self.assertIn('has no time and timezone', out)
+
+    def test_dates_with_trailing_text_are_not_dates(self):
+        self.assertIsNone(cc._parse_date('2026-09-24garbage'))
+        self.assertEqual(cc._parse_date('2026-09-24T12:00:00Z'), cc.dt.date(2026, 9, 24))
+
+    def test_changed_reports_relation_and_exemption_edits(self):
+        base = {'sources': {}, 'claims': [{'id': 'a', 'value': 1, 'source': 'd'}],
+                'relations': ['a + b == c', 'a <= c'], 'exempt': ['100 Main St']}
+        edited = {**base, 'relations': ['a + b >= c'], 'exempt': ['100 Main St', '7 stores']}
+        old_l, new_l = self.write('old.json', base), self.write('new.json', edited)
+        doc = self.write('d.md', 'Same.')
+        code, out = run(['changed', doc, doc, '--old-ledger', old_l, '--new-ledger', new_l])
+        self.assertEqual(code, 0)
+        self.assertIn('Claims changed, added or removed: none', out)
+        self.assertIn('Relations added or edited: a + b >= c', out)
+        self.assertIn('Relations removed or edited: a + b == c; a <= c', out)
+        self.assertIn('Exemptions added: 7 stores', out)
+        self.assertIn('Exemptions removed: none', out)
 
 
 if __name__ == '__main__':

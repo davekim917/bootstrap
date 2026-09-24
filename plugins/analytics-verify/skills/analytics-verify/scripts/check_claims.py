@@ -249,6 +249,14 @@ def _lead(text, start):
     return lead, '', None
 
 
+def _accounting(text, lead, end, sign, pct):
+    """An unsigned amount alone in parentheses ("($50)", "$(50)", "(1,234)") is how
+    accounting writes a negative, and elsewhere a note; either reading could be wrong."""
+    if sign or pct or not lead or text[lead - 1] != '(' or text[end:end + 1] != ')':
+        return None
+    return 'an amount alone in parentheses (an accounting negative, or a note?)'
+
+
 def _qualifiers(text, lead, end):
     """The qualifier attached to the number spanning [lead, end): one prefix or one suffix.
     Returns (op, new_end, problem, used spans). Wording left over in the sentence is
@@ -358,6 +366,7 @@ def tokenize(text: str):
         raw = m.group(0).replace(',', '')
         value = Decimal(raw)
         end, mult, pct = _suffixes(text, e)
+        sign_problem = sign_problem or _accounting(text, lead, end, sign, pct)
         op, end, problem, spans = _qualifiers(text, lead, end)
         used += spans
         step = Decimal(1).scaleb(value.as_tuple().exponent) * mult
@@ -595,13 +604,22 @@ def load_table(path):
     return header, body
 
 
-def _parse_date(value):
+def _parse_stamp(value):
+    """The whole value as an ISO date or datetime, or None: nothing trailing is ignored."""
     if not isinstance(value, str):
         return None
+    s = value.strip()
+    if s.endswith(('Z', 'z')):
+        s = s[:-1] + '+00:00'
     try:
-        return dt.date.fromisoformat(value.strip()[:10])
+        return dt.datetime.fromisoformat(s)
     except ValueError:
         return None
+
+
+def _parse_date(value):
+    stamp = _parse_stamp(value)
+    return stamp.date() if stamp else None
 
 
 class _Eval:
@@ -765,7 +783,9 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
             as_of = src.get('as_of')
             if not as_of:
                 f.fail('source', f'{sid}: "as_of" is required: the exact cutoff the query ran to')
-            elif not re.search(r'T\d{2}:\d{2}.*(Z|[+-]\d{2}:?\d{2})$', str(as_of)):
+            elif not (stamp := _parse_stamp(as_of)):
+                f.fail('source', f'{sid}: as_of "{as_of}" is not an ISO date or datetime')
+            elif stamp.tzinfo is None or not re.search(r'[T ]\d', str(as_of).strip()):
                 f.warn('source', f'{sid}: as_of "{as_of}" has no time and timezone; a date alone hides a partial day')
         elif kind == 'file':
             if not src.get('path'):
@@ -1254,11 +1274,23 @@ def cmd_changed(args):
             nxt = {k for k, c in cb.items() if 'expr' in c and expr_names(str(c['expr'])) & frontier} - moved - deps
             deps |= nxt
             frontier = nxt
-        rels = [r.get('expr') if isinstance(r, dict) else r for r in lb.get('relations') or []]
-        hit_rels = [str(r) for r in rels if expr_names(str(r)) & (moved | deps)]
+        def rel_text(r):
+            return str(r.get('expr') if isinstance(r, dict) else r)
+
+        def listed(ledger, key):
+            return {json.dumps(x, sort_keys=True, default=str): x for x in ledger.get(key) or []}
+
+        rels = [rel_text(r) for r in lb.get('relations') or []]
+        hit_rels = [r for r in rels if expr_names(r) & (moved | deps)]
+        ra, rb = listed(la, 'relations'), listed(lb, 'relations')
+        ea, eb = listed(la, 'exempt'), listed(lb, 'exempt')
         print('Claims changed, added or removed: ' + (', '.join(sorted(k for k in moved if k)) or 'none'))
         print('Claims derived from them: ' + (', '.join(sorted(deps)) or 'none'))
         print('Relations touching them: ' + ('; '.join(hit_rels) or 'none'))
+        print('Relations added or edited: ' + ('; '.join(rel_text(rb[k]) for k in rb if k not in ra) or 'none'))
+        print('Relations removed or edited: ' + ('; '.join(rel_text(ra[k]) for k in ra if k not in rb) or 'none'))
+        print('Exemptions added: ' + ('; '.join(str(eb[k]) for k in eb if k not in ea) or 'none'))
+        print('Exemptions removed: ' + ('; '.join(str(ea[k]) for k in ea if k not in eb) or 'none'))
     print('Then run `check` on the whole final deliverable: a change can falsify a sentence it did not touch.')
     return 0
 
