@@ -140,57 +140,141 @@ def normalize(text: str) -> str:
 # ---------------------------------------------------------------- number tokens
 
 _NUM = re.compile(r'(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?')
-_CURRENCY_CODES = {'usd', 'us', 'eur', 'gbp', 'cad', 'aud', 'nzd', 'jpy', 'inr', 'rs', 'mxn', 'chf', 'cny', 'sgd', 'hkd'}
 _SCALE = re.compile(r'\s?(thousand|million|billion|trillion)\b|(bn|mm|[kKmMbB])(?![A-Za-z])')
 _SCALE_MULT = {'thousand': Decimal(10) ** 3, 'million': Decimal(10) ** 6, 'billion': Decimal(10) ** 9,
                'trillion': Decimal(10) ** 12, 'k': Decimal(10) ** 3, 'm': Decimal(10) ** 6,
                'mm': Decimal(10) ** 6, 'b': Decimal(10) ** 9, 'bn': Decimal(10) ** 9}
 _PCT = re.compile(r'\s?(%|percent\b|per cent\b|pct\b|pp\b|percentage points?\b)', re.I)
-_CMP = re.compile(
-    r'(not more than|not less than|not fewer than|more than|greater than|over|above|exceeding|at least|'
-    r'no less than|no fewer than|less than|fewer than|under|below|at most|up to|no more than|about|'
-    r'around|approximately|approx\.?|roughly|nearly|almost|~|\u2248|<=|>=|\u2264|\u2265|<|>)\s*$',
+# The only qualifiers read. Anything else next to a number that looks like one is refused,
+# not guessed at: a false "exact" is the failure this script exists to prevent.
+_PREFIX = re.compile(
+    r'(no more than|not more than|no less than|not less than|no fewer than|not fewer than|more than|'
+    r'greater than|over|above|exceeding|at least|a minimum of|minimum of|min\.|less than|fewer than|'
+    r'under|below|at most|up to|a maximum of|maximum of|max\.|about|around|approximately|approx\.?|'
+    r'roughly|nearly|almost|~|≈|<=|>=|≤|≥|<|>)\s*$',
     re.I,
 )
-_CMP_OP = {
+_PREFIX_OP = {
     'more than': 'gt', 'greater than': 'gt', 'over': 'gt', 'above': 'gt', 'exceeding': 'gt', '>': 'gt',
-    'at least': 'gte', 'no less than': 'gte', 'no fewer than': 'gte', 'not less than': 'gte',
-    'not fewer than': 'gte', '>=': 'gte', '\u2265': 'gte',
+    'at least': 'gte', 'no less than': 'gte', 'not less than': 'gte', 'no fewer than': 'gte',
+    'not fewer than': 'gte', 'a minimum of': 'gte', 'minimum of': 'gte', 'min': 'gte', '>=': 'gte', '≥': 'gte',
     'less than': 'lt', 'fewer than': 'lt', 'under': 'lt', 'below': 'lt', '<': 'lt',
-    'at most': 'lte', 'up to': 'lte', 'no more than': 'lte', 'not more than': 'lte', '<=': 'lte', '\u2264': 'lte',
+    'at most': 'lte', 'up to': 'lte', 'no more than': 'lte', 'not more than': 'lte', 'a maximum of': 'lte',
+    'maximum of': 'lte', 'max': 'lte', '<=': 'lte', '≤': 'lte',
     'nearly': 'near', 'almost': 'near',
 }
+_SUFFIX = re.compile(
+    r'\s*(\+|or more\b|or greater\b|or higher\b|or above\b|or over\b|and up\b|and above\b|and over\b|plus\b|'
+    r'or less\b|or fewer\b|or lower\b|or below\b|or under\b)', re.I)
+_NEGATION = re.compile(r"(\bnot|\bnever|n't|\bhardly|\bbarely|\bno)\s*$", re.I)
 PCT_UNITS = {'%', 'pct', 'percent', 'pp', 'percentage points'}
 
 _SMALL = {w: i for i, w in enumerate(
     'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen '
     'sixteen seventeen eighteen nineteen'.split())}
 _TENS = {'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60, 'seventy': 70, 'eighty': 80, 'ninety': 90}
-_BIG = {'thousand': 10 ** 3, 'million': 10 ** 6, 'billion': 10 ** 9}
-_NUMBER_WORDS = set(_SMALL) | set(_TENS) | set(_BIG) | {'hundred', 'dozen'}
+_WORD_SCALES = {'hundred', 'thousand', 'million', 'billion', 'trillion', 'dozen', 'dozens', 'hundreds',
+                'thousands', 'millions', 'billions'}
 
 
 class Token:
-    __slots__ = ('start', 'end', 'text', 'value', 'step', 'pct', 'sign', 'op')
+    __slots__ = ('start', 'end', 'text', 'value', 'step', 'pct', 'sign', 'op', 'problem')
 
-    def __init__(self, start, end, text, value, step, pct=False, sign='', op='eq'):
+    def __init__(self, start, end, text, value, step, pct=False, sign='', op='eq', problem=None):
         self.start, self.end, self.text = start, end, text
         self.value, self.step, self.pct, self.sign, self.op = value, step, pct, sign, op
+        self.problem = problem
 
     def __repr__(self):
-        return f'Token({self.text!r}, {self.sign}{self.value}, op={self.op})'
+        return f'Token({self.text!r}, {self.sign}{self.value}, op={self.op}{", " + self.problem if self.problem else ""})'
 
 
-def _comparator(text: str, lead: int) -> str:
-    m = _CMP.search(text[max(0, lead - 24):lead])
-    if not m:
-        return 'eq'
-    word = re.sub(r'\s+', ' ', m.group(1).lower()).rstrip('.')
-    return _CMP_OP.get(word, 'eq')  # about/around/~/roughly: still exact at the shown precision
+def _is_currency(ch):
+    return bool(ch) and unicodedata.category(ch) == 'Sc'
+
+
+def _lead(text, start):
+    """Walk left over currency symbols and a sign. Returns (lead, sign, problem)."""
+    lead = start
+    while lead and (_is_currency(text[lead - 1]) or text[lead - 1] == ' ' and lead >= 2 and _is_currency(text[lead - 2])):
+        lead -= 1
+    j = lead
+    while j and text[j - 1] == ' ':
+        j -= 1
+    if j and text[j - 1] in '+-':
+        k = j - 1
+        while k and text[k - 1] == ' ':
+            k -= 1
+        if k == 0 or not text[k - 1].isalnum():
+            lead = j - 1
+            while lead and _is_currency(text[lead - 1]):
+                lead -= 1
+            return lead, text[j - 1], None
+    return lead, '', None
+
+
+def _qualifiers(text, lead, end):
+    """Comparator for the number spanning [lead, end). Returns (op, new_end, problem)."""
+    op, problem = 'eq', None
+    pre = text[max(0, lead - 30):lead]
+    m = _PREFIX.search(pre)
+    if m:
+        word = re.sub(r'\s+', ' ', m.group(1).lower()).rstrip('.')
+        op = _PREFIX_OP.get(word, 'eq')  # about/around/~/roughly: still exact at the shown precision
+        if not word.startswith(('no ', 'not ')) and _NEGATION.search(pre[:m.start()]):
+            problem = f'a negated qualifier ("{pre[max(0, m.start() - 12):].strip()}")'
+    elif _NEGATION.search(pre) and not re.search(r'\bno\s*$', pre, re.I):
+        problem = f'a negation right before it ("{pre[-12:].strip()}")'
+    sm = _SUFFIX.match(text, end)
+    if sm:
+        word = sm.group(1).lower()
+        suffix_op = 'lte' if word.startswith(('or less', 'or fewer', 'or lower', 'or below', 'or under')) else 'gte'
+        if op not in ('eq', suffix_op):
+            problem = 'two qualifiers that disagree'
+        op, end = suffix_op, sm.end()
+    return op, end, problem
+
+
+def _word_numbers(text):
+    """Spelled-out numbers as (start, end, value, problem). Single words and tens-units
+    ("twenty-five") are read; anything with hundred, thousand, dozen and the like is
+    refused ("write it in digits") rather than half-read. "one" alone is not a number,
+    or every "no one" would need a claim."""
+    words = [(m.start(), m.end(), m.group(0).lower()) for m in re.finditer(r'[A-Za-z]+', text)]
+    vocab = set(_SMALL) | set(_TENS) | _WORD_SCALES
+    out, i, n = [], 0, len(words)
+    while i < n:
+        if words[i][2] not in vocab and not (words[i][2] == 'a' and i + 1 < n and words[i + 1][2] in _WORD_SCALES):
+            i += 1
+            continue
+        j = i + 1
+        while j < n and text[words[j - 1][1]:words[j][0]] in (' ', '-', ' and ') and (
+                words[j][2] in vocab or (words[j][2] == 'and' and j + 1 < n and words[j + 1][2] in vocab)):
+            j += 1
+        seq = words[i:j]
+        names = [w for _, _, w in seq if w != 'and']
+        start, end = seq[0][0], seq[-1][1]
+        if names == ['a']:
+            i = j
+            continue
+        if any(w in _WORD_SCALES for w in names) or 'a' in names or 'and' in [w for _, _, w in seq]:
+            out.append((start, end, None, 'write it in digits'))
+        elif names == ['one']:
+            pass
+        elif len(names) == 1 and names[0] in _SMALL:
+            out.append((start, end, _SMALL[names[0]], None))
+        elif len(names) == 1 and names[0] in _TENS:
+            out.append((start, end, _TENS[names[0]], None))
+        elif len(names) == 2 and names[0] in _TENS and names[1] in _SMALL and 0 < _SMALL[names[1]] < 10:
+            out.append((start, end, _TENS[names[0]] + _SMALL[names[1]], None))
+        else:
+            out.append((start, end, None, 'write it in digits'))
+        i = j
+    return out
 
 
 def _suffixes(text, end):
-    """Scale, percent and a trailing "+" after a number. Returns (end, mult, pct, plus)."""
+    """Scale and percent after a number. Returns (end, mult, pct)."""
     mult = Decimal(1)
     sm = _SCALE.match(text, end)
     if sm:
@@ -199,95 +283,48 @@ def _suffixes(text, end):
     pm = _PCT.match(text, end)
     if pm:
         end = pm.end()
-    plus = end < len(text) and text[end] == '+'
-    return end + (1 if plus else 0), mult, bool(pm), plus
-
-
-def _word_numbers(text):
-    """Spelled-out quantities as (start, end, value). "one" counts only inside a larger
-    phrase ("one hundred"), and "a" only before a multiplier ("a dozen"), or every
-    "no one" and "a store" would need a claim."""
-    words = [(m.start(), m.end(), m.group(0).lower()) for m in re.finditer(r'[A-Za-z]+', text)]
-    multipliers = {'hundred', 'dozen'} | set(_BIG)
-    out, i, n = [], 0, len(words)
-    while i < n:
-        seq, j = [], i
-        while j < n:
-            s, e, w = words[j]
-            if seq:
-                gap = text[seq[-1][1]:s]
-                if not (gap in (' ', '-') or (gap == ' and ' and seq[-1][2] == 'hundred')):
-                    break
-            if w == 'and' and seq and seq[-1][2] == 'hundred':
-                j += 1
-                continue
-            if w == 'a' and not seq and j + 1 < n and words[j + 1][2] in multipliers and text[e:words[j + 1][0]] == ' ':
-                seq.append(words[j])
-            elif w in _NUMBER_WORDS:
-                seq.append(words[j])
-            else:
-                break
-            j += 1
-        names = [w for _, _, w in seq]
-        if not seq or names == ['one']:
-            i = max(j, i + 1)
-            continue
-        total, current = 0, 0
-        for w in names:
-            if w in _SMALL:
-                current += _SMALL[w]
-            elif w in _TENS:
-                current += _TENS[w]
-            elif w == 'a':
-                current = 1
-            elif w == 'hundred':
-                current = max(current, 1) * 100
-            elif w == 'dozen':
-                current = max(current, 1) * 12
-            else:
-                total += max(current, 1) * _BIG[w]
-                current = 0
-        out.append((seq[0][0], seq[-1][1], total + current))
-        i = j
-    return out
+    return end, mult, bool(pm)
 
 
 def tokenize(text: str):
     """Every number in normalized text, and the identifiers skipped. A digit run right after
-    letters (Q1, H2, B03001) is an identifier, unless the letters are a currency code."""
+    letters is an identifier (Q1, H2, B03001, Brugal01), unless the letters are three
+    capitals (a currency code such as SEK1200) or a currency word, which are quantities."""
     tokens: list[Token] = []
     skipped: list[str] = []
     for m in _NUM.finditer(text):
         s, e = m.span()
-        lead = s
         if s and (text[s - 1].isalpha() or text[s - 1] == '_'):
             j = s
             while j and text[j - 1].isalpha():
                 j -= 1
-            if text[j:s].lower() in _CURRENCY_CODES and (j == 0 or not text[j - 1].isalnum()):
-                lead = j
-            else:
+            prefix = text[j:s]
+            standalone = j == 0 or not text[j - 1].isalnum()
+            if not (standalone and (re.fullmatch(r'[A-Z]{3}', prefix) or prefix.lower() in ('rs', 'us'))):
                 skipped.append(text[j:e])
                 continue
-        sign = ''
-        if lead and text[lead - 1] in '$\u20ac\u00a3':
-            lead -= 1
-        if lead and text[lead - 1] in '+-' and (lead < 2 or not text[lead - 2].isalnum()):
-            sign, lead = text[lead - 1], lead - 1
-        if lead and text[lead - 1] in '$\u20ac\u00a3':
-            lead -= 1
+            lead, sign = j, ''
+            k = j
+            while k and text[k - 1] == ' ':
+                k -= 1
+            if k and text[k - 1] in '+-' and (k < 2 or not text[k - 2].isalnum()):
+                lead, sign = k - 1, text[k - 1]
+        else:
+            lead, sign, _ = _lead(text, s)
         raw = m.group(0).replace(',', '')
         value = Decimal(raw)
-        end, mult, pct, plus = _suffixes(text, e)
+        end, mult, pct = _suffixes(text, e)
+        op, end, problem = _qualifiers(text, lead, end)
         step = Decimal(1).scaleb(value.as_tuple().exponent) * mult
-        op = 'gte' if plus else _comparator(text, lead)
-        tokens.append(Token(s, end, text[s:end], value * mult, step, pct, sign, op))
-    for s, e, value in _word_numbers(text):
+        tokens.append(Token(s, end, text[s:end], value * mult, step, pct, sign, op, problem))
+    for s, e, value, problem in _word_numbers(text):
         if any(t.start < e and s < t.end for t in tokens):
             continue  # "5 million": the digits already carry the word as their scale
-        end, mult, pct, plus = _suffixes(text, e)
-        op = 'gte' if plus else _comparator(text, s)
-        tokens.append(Token(s, end, text[s:end], Decimal(value) * mult, mult, pct, '', op))
+        lead, sign, _ = _lead(text, s)
+        end, mult, pct = _suffixes(text, e)
+        op, end, qproblem = _qualifiers(text, lead, end)
+        v = Decimal(value) * mult if value is not None else Decimal(0)
+        tokens.append(Token(s, end, text[s:end], v, mult, pct, sign, op, problem or qproblem))
     tokens.sort(key=lambda t: t.start)
     return tokens, skipped
 
@@ -317,7 +354,9 @@ def _shown(tok: Token) -> Decimal:
 def displays(tok: Token, value: Decimal, unit=None, magnitude=False, bound=None) -> bool:
     """Whether a displayed number faithfully shows a ledger value: equal at the precision
     shown, or true under the comparator shown. A value the source gives only as a bound
-    ("50+") is shown faithfully only with that same bound."""
+    ("50+") is shown faithfully only with that same bound and number."""
+    if tok.problem:
+        return False
     v = _unit_value(tok, value, unit, magnitude)
     if v is None:
         return False
@@ -343,8 +382,10 @@ _MONTHS = {m: i for i, m in enumerate(
     'jan feb mar apr may jun jul aug sep oct nov dec'.split(), start=1)}
 _MON = r'(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?'
 _DATE_PATTERNS = [
+    ('iso', re.compile(r'\b(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?')),
     ('ymd', re.compile(r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b')),
     ('mdy', re.compile(r'\b(\d{1,2})/(\d{1,2})(?:/(\d{4}|\d{2}))?\b')),
+    ('dMy', re.compile(r'\b(\d{1,2})(?:st|nd|rd|th)?\s+' + _MON + r'(?:,?\s+(\d{4}))?\b', re.I)),
     ('Mdy', re.compile(r'\b' + _MON + r'\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4}))?', re.I)),
     ('My', re.compile(r'\b' + _MON + r'\s+(\d{4})\b', re.I)),
     ('hm12', re.compile(r'\b(\d{1,2})(?::(\d{2}))?\s?(a\.?m\.?|p\.?m\.?)(?![A-Za-z])', re.I)),
@@ -362,9 +403,19 @@ def parse_when(value):
         if len(text) == 10:
             return dt.date.fromisoformat(text), None
         stamp = dt.datetime.fromisoformat(text)
-        return stamp.date(), stamp.time()
+        return stamp.date(), stamp.timetz()
     except ValueError:
         return None
+
+
+def _same_offset(shown, clock):
+    """A shown UTC offset must match the claim's; no shown offset is not checked here."""
+    if not shown:
+        return True
+    if clock.tzinfo is None:
+        return False
+    minutes = 0 if shown == 'Z' else (1 if shown[0] == '+' else -1) * (int(shown[1:3]) * 60 + int(shown[-2:]))
+    return clock.utcoffset() == dt.timedelta(minutes=minutes)
 
 
 def _year(s):
@@ -382,7 +433,12 @@ def date_matches(segment: str, when):
             if any(m.start() < e and s < m.end() for s, e in taken):
                 continue
             g = m.groups()
-            if kind == 'ymd':
+            if kind == 'iso':
+                ok = ((int(g[0]), int(g[1]), int(g[2])) == (day.year, day.month, day.day) and clock is not None
+                      and (int(g[3]), int(g[4])) == (clock.hour, clock.minute) and _same_offset(g[5], clock))
+            elif kind == 'dMy':
+                ok = (_MONTHS[g[1][:3].lower()], int(g[0])) == (day.month, day.day) and (g[2] is None or int(g[2]) == day.year)
+            elif kind == 'ymd':
                 ok = (int(g[0]), int(g[1]), int(g[2])) == (day.year, day.month, day.day)
             elif kind == 'mdy':
                 ok = (int(g[0]), int(g[1])) == (day.month, day.day) and (g[2] is None or _year(g[2]) == day.year)
@@ -435,15 +491,15 @@ def cell_number(cell):
     """(Decimal, shape) for a table cell. shape records % and currency marks so a unit
     change is not mistaken for equality. Decimal is None for text and non-finite values."""
     s = str(cell).strip()
-    shape = ('%' if s.endswith('%') else '') + ('$' if s.startswith(('$', '-$')) else '')
-    core = s.rstrip('%').replace(',', '').replace('$', '').replace(' ', '')
+    shape = ('%' if s.endswith('%') else '') + ''.join(sorted({ch for ch in s if _is_currency(ch)}))
+    core = ''.join(ch for ch in s.rstrip('%') if not _is_currency(ch)).replace(',', '').replace(' ', '')
     return dec(core), shape
 
 
 def load_json(path):
     try:
         with open(path, encoding='utf-8') as f:
-            return json.load(f)
+            return json.load(f, parse_float=Decimal)
     except FileNotFoundError:
         raise InputError(f'{path}: not found')
     except json.JSONDecodeError as exc:
@@ -455,9 +511,11 @@ def load_table(path):
     a dict reader would silently keep only one of two same-named columns."""
     try:
         with open(path, newline='', encoding='utf-8-sig') as fh:
-            rows = list(csv.reader(fh))
+            rows = list(csv.reader(fh, strict=True))
     except FileNotFoundError:
         raise InputError(f'{path}: not found')
+    except csv.Error as exc:
+        raise InputError(f'{path}: malformed CSV ({exc})')
     if not rows:
         raise InputError(f'{path}: empty')
     header = [h.strip() for h in rows[0]]
@@ -466,7 +524,7 @@ def load_table(path):
         raise InputError(f'{path}: duplicate column name(s) {dups}')
     body = []
     for n, row in enumerate(rows[1:], start=2):
-        if not any(c.strip() for c in row):
+        if not row:
             continue
         if len(row) != len(header):
             raise InputError(f'{path}: line {n} has {len(row)} fields; the header has {len(header)}')
@@ -487,8 +545,9 @@ class _Eval:
     OPS = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b,
            ast.Mult: lambda a, b: a * b, ast.Div: lambda a, b: a / b}
 
-    def __init__(self, values):
+    def __init__(self, values, source=''):
         self.values = values
+        self.source = source
 
     def run(self, node):
         if isinstance(node, ast.Expression):
@@ -502,7 +561,7 @@ class _Eval:
             v = self.run(node.operand)
             return -v if isinstance(node.op, ast.USub) else v
         if isinstance(node, ast.Constant) and dec(node.value) is not None:
-            return dec(node.value)
+            return dec(ast.get_source_segment(self.source, node) or node.value)
         if isinstance(node, ast.Name):
             if node.id not in self.values:
                 raise ValueError(f'unknown or non-numeric claim "{node.id}"')
@@ -521,7 +580,7 @@ def expr_names(expr: str) -> set[str]:
 def evaluate(expr: str, values: dict) -> Decimal:
     with localcontext() as ctx:
         ctx.prec = 50
-        return _Eval(values).run(ast.parse(expr, mode='eval'))
+        return _Eval(values, expr).run(ast.parse(expr, mode='eval'))
 
 
 _REL_OPS = {ast.Eq: '==', ast.LtE: '<=', ast.GtE: '>=', ast.Lt: '<', ast.Gt: '>'}
@@ -533,8 +592,8 @@ def check_relation(expr: str, values: dict, tolerance: Decimal):
         raise ValueError('a relation is one comparison: ==, <=, >=, < or >')
     with localcontext() as ctx:
         ctx.prec = 50
-        left = _Eval(values).run(tree.left)
-        right = _Eval(values).run(tree.comparators[0])
+        left = _Eval(values, expr).run(tree.left)
+        right = _Eval(values, expr).run(tree.comparators[0])
     op = _REL_OPS[type(tree.ops[0])]
     if op == '==':
         ok = abs(left - right) <= tolerance
@@ -591,6 +650,14 @@ def _locate(claim, src, tables: _Tables):
         return hits[0][column], None
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         return None, f'cannot read {table}: {exc}'
+
+
+def _where_labels(raw):
+    """Numbers in a claim's row key, which its file has just confirmed."""
+    out = set()
+    for v in (raw.get('locate') or {}).get('where', {}).values():
+        out |= _number_labels(v)
+    return out
 
 
 def _number_labels(text):
@@ -687,10 +754,6 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
             f.fail('claim', f'{cid}: give "anchors" or "omit", not both')
         elif anchors is None and not (isinstance(omit, str) and omit.strip()):
             f.fail('omitted', f'{cid}: not shown in the deliverable. Add "anchors", or "omit" with the reason it is left out')
-        loc = raw.get('locate')
-        if isinstance(loc, dict) and isinstance(loc.get('where'), dict):
-            for v in loc['where'].values():
-                claim.labels |= _number_labels(v)
         quote = raw.get('quote')
         for label in raw.get('labels') or []:
             d = dec(label)
@@ -705,33 +768,55 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
             f.fail('claim', f'{cid}: source "{raw["source"]}" is not declared')
             continue
         kind = src.get('type')
-        if kind in ('query', 'file') and claim.value is not None:
-            if 'locate' not in raw:
-                f.fail('retyped', f'{cid}: a number from {raw["source"]} must be read from its file ("locate"), not typed')
-            else:
-                cell, err = _locate(raw, src, tables)
-                if err:
-                    f.fail('bind', f'{cid}: {err}')
+        table = src.get('result') or src.get('path')
+        if 'locate' in raw and kind not in ('query', 'file'):
+            f.fail('bind', f'{cid}: "locate" reads a query or file source; {raw["source"]} is {kind}')
+        elif kind in ('query', 'file') and claim.value is not None and 'locate' not in raw:
+            f.fail('retyped', f'{cid}: a number from {raw["source"]} must be read from its file ("locate"), not typed')
+        elif kind in ('query', 'file') and 'locate' in raw:
+            cell, err = _locate(raw, src, tables)
+            if err:
+                f.fail('bind', f'{cid}: {err}')
+            elif claim.value is None:
+                if str(cell).strip() != str(value).strip():
+                    f.fail('bind', f'{cid}: ledger says {value!r} but {table} says {cell!r}')
                 else:
-                    got = dec(cell) if isinstance(cell, (int, float)) else cell_number(cell)[0]
-                    if got is None:
-                        f.fail('bind', f'{cid}: the located cell is empty or not a finite number ({cell!r})')
-                    elif got != claim.value:
-                        f.fail('bind', f'{cid}: ledger says {value} but {src.get("result") or src.get("path")} says {cell}')
+                    claim.labels |= _where_labels(raw)
+            else:
+                if isinstance(cell, (int, float, Decimal)) and not isinstance(cell, bool):
+                    got, shape = dec(cell), ''
+                else:
+                    got, shape = cell_number(cell)
+                if got is None:
+                    f.fail('bind', f'{cid}: the located cell is empty or not a finite number ({cell!r})')
+                elif got != claim.value:
+                    f.fail('bind', f'{cid}: ledger says {value} but {table} says {cell}')
+                elif '%' in shape and (claim.unit or '').strip().lower() not in PCT_UNITS:
+                    f.fail('bind', f'{cid}: the cell is a percentage ({cell}); set "unit": "%"')
+                else:
+                    claim.labels |= _where_labels(raw)
         if kind == 'web' and not (isinstance(quote, str) and quote.strip()):
             f.fail('quote', f'{cid}: a web claim needs the exact source text it rests on ("quote")')
         elif isinstance(quote, str) and quote.strip() and claim.value is not None:
             shown = tokenize(normalize(quote))[0]
-            exact = [t for t in shown if t.op in ('eq',) and displays(t, claim.value, claim.unit, claim.magnitude)]
+            exact = [t for t in shown if t.op == 'eq' and displays(t, claim.value, claim.unit, claim.magnitude)]
             bounds = [t for t in shown if t.op != 'eq' and displays(t, claim.value, claim.unit, claim.magnitude, bound=t.op)]
+            unclear = [t for t in shown if t.problem]
             if exact:
                 pass
             elif bounds:
-                claim.bound = bounds[0].op  # the source gives only a bound ("50+"); displays must keep it
+                t = bounds[0]
+                if _unit_value(t, claim.value, claim.unit, claim.magnitude) != _shown(t):
+                    f.fail('quote', f'{cid}: the source gives only "{t.text}"; the value must be that number exactly')
+                else:
+                    claim.bound = t.op  # the source gives only a bound ("50+"); every display must keep it
+            elif unclear:
+                f.fail('quote', f'{cid}: the quote shows {unclear[0].text!r}, which can\'t be read exactly ({unclear[0].problem})')
             else:
                 f.fail('quote', f'{cid}: the quote does not show {value} ({quote.strip()[:80]!r})')
 
     numeric = {k: c.value for k, c in by_id.items() if c.value is not None}
+    bounded = {k for k, c in by_id.items() if c.bound}
     for cid, claim in by_id.items():
         if 'expr' not in claim.raw:
             continue
@@ -739,6 +824,9 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
         names = expr_names(expr)
         if not names:
             f.fail('derived', f'{cid}: "expr" must derive from other claims; a bare number needs a source')
+            continue
+        if names & bounded:
+            f.fail('derived', f'{cid}: derives from {", ".join(sorted(names & bounded))}, which the source gives only as a bound')
             continue
         try:
             got = evaluate(expr, numeric)
@@ -752,6 +840,9 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
     for i, rel in enumerate(ledger.get('relations') or []):
         expr = rel.get('expr') if isinstance(rel, dict) else rel
         tol = dec(rel.get('tolerance', 0)) if isinstance(rel, dict) else Decimal(0)
+        if expr_names(str(expr)) & bounded:
+            f.fail('relation', f'{expr}: uses {", ".join(sorted(expr_names(str(expr)) & bounded))}, which the source gives only as a bound')
+            continue
         try:
             ok, left, right = check_relation(str(expr), numeric, tol if tol is not None else Decimal(0))
         except (ValueError, SyntaxError, ArithmeticError) as exc:
@@ -877,9 +968,15 @@ def check_deliverables(paths, claims, exempt, f: Findings):
     for p in paths:
         for i, t in enumerate(tokens[p]):
             total += 1
-            if i in accounted[p] or any(s <= t.start and t.end <= e for s, e in exempt_spans[p]):
+            if any(s <= t.start and t.end <= e for s, e in exempt_spans[p]):
                 continue
             around = texts[p][max(0, t.start - 50):t.end + 50]
+            if t.problem:
+                f.fail('unclear', f'"{t.text}" can\'t be read exactly ({t.problem}). Rephrase it with digits and a '
+                                  f'plain qualifier, or exempt it if it isn\'t a quantity: ...{around}...')
+                continue
+            if i in accounted[p]:
+                continue
             if i in in_anchor[p]:
                 f.fail('unbound', f'"{t.text}" sits in the anchor for {", ".join(in_anchor[p][i])} but no claim '
                                   f'accounts for it: give it its own claim (a range is two claims), or a label '
@@ -941,7 +1038,7 @@ def cmd_scaffold(args):
             seen.add(cid)
             claim = {
                 'id': cid,
-                'value': int(value) if value == value.to_integral_value() else float(value),
+                'value': int(value) if value == value.to_integral_value() else str(value),
                 'source': args.source,
                 'locate': {'where': {k: row[k] for k in keys}, 'column': col},
                 'anchors': [],
@@ -1058,10 +1155,10 @@ def cmd_changed(args):
         ca = {c.get('id'): c for c in la.get('claims') or [] if isinstance(c, dict)}
         cb = {c.get('id'): c for c in lb.get('claims') or [] if isinstance(c, dict)}
         moved = {k for k in ca.keys() | cb.keys()
-                 if json.dumps(ca.get(k), sort_keys=True) != json.dumps(cb.get(k), sort_keys=True)}
+                 if json.dumps(ca.get(k), sort_keys=True, default=str) != json.dumps(cb.get(k), sort_keys=True, default=str)}
         sa, sb = la.get('sources') or {}, lb.get('sources') or {}
         src_moved = {k for k in sa.keys() | sb.keys()
-                     if json.dumps(sa.get(k), sort_keys=True) != json.dumps(sb.get(k), sort_keys=True)}
+                     if json.dumps(sa.get(k), sort_keys=True, default=str) != json.dumps(sb.get(k), sort_keys=True, default=str)}
         moved |= {k for k, c in cb.items() if c.get('source') in src_moved}
         deps, frontier = set(), set(moved)
         while frontier:
@@ -1098,29 +1195,31 @@ _OPEN_SECTIONS = ('wrong', 'stale', 'unsupported')
 
 
 def _open_findings(lines):
-    """Lines of real content under the Wrong / Stale / Unsupported headings."""
-    counts, current, in_table = {}, None, False
-    for line in lines:
-        heading = re.match(r'^\s*#{2,}\s*(.*)$', line)
+    """Lines of real content under the Wrong / Stale / Unsupported headings, including
+    their subheadings. A table's first row counts as its header only when a separator
+    row follows it."""
+    counts, current, level = {}, None, 0
+    for n, line in enumerate(lines):
+        heading = re.match(r'^\s*(#{1,6})\s*(.*)$', line)
         if heading:
-            title = heading.group(1).strip().lower()
+            depth, title = len(heading.group(1)), heading.group(2).strip().lower()
+            if current and depth > level:
+                continue  # a subheading inside an open section stays in it
             current = next((k for k in _OPEN_SECTIONS if title.startswith(k)), None)
+            level = depth
             if current:
                 counts.setdefault(current, 0)
-            in_table = False
             continue
         if current is None:
             continue
         s = line.strip()
         if not s or re.fullmatch(r'[-*]?\s*\(?(none|n/a|nothing)\)?\.?', s, re.I):
-            in_table = False
             continue
-        if s.startswith('|'):
-            if re.fullmatch(r'\|?[\s:|-]+\|?', s):
-                continue
-            if not in_table:
-                in_table = True  # the table's header row
-                continue
+        if s.startswith('|') and re.fullmatch(r'\|?[\s:|-]+\|?', s):
+            continue
+        nxt = lines[n + 1].strip() if n + 1 < len(lines) else ''
+        if s.startswith('|') and re.fullmatch(r'\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?', nxt):
+            continue  # a header row
         counts[current] += 1
     return counts
 
@@ -1149,7 +1248,8 @@ def cmd_receipt(args):
     for p in args.deliverables:
         if sha256(p) not in arts:
             f.fail('receipt', f'{p} is not the file that was verified (edited after the check, or never checked)')
-    if [v.lower() for v in fields.get('ledger-sha256', [''])][:1] != [sha256(args.ledger)]:
+    ledger_hash = (fields.get('ledger-sha256') or [''])[0].split()
+    if not ledger_hash or ledger_hash[0].lower() != sha256(args.ledger):
         f.fail('receipt', f'{args.ledger} is not the ledger that was verified')
     verdict = (fields.get('verdict') or [''])[0].upper()
     who = (fields.get('verifier') or [''])[0]

@@ -36,14 +36,18 @@ If you're unsure, use the full loop.
 2. **Keep a ledger as you work:** `claims.json` next to the deliverable, in the format
    in [references/ledger.md](references/ledger.md).
    - Numbers are read from result files, never typed. `scaffold` turns a result CSV
-     into claims that point at their cells.
+     into claims that point at their cells. When a report renders from a data file
+     (a list of accounts, say), have the same script write `claims.json` from that
+     data, so the ledger and the report can't drift apart.
    - Every web fact carries the source's own words, the exact business and location,
      and the date of the evidence.
    - Every sentence that combines numbers ("did both", "of which", "brings the total
      to") gets a `relations` entry.
    - Every row, year and segment the ask expects is shown, or `omit`ted with a reason.
    - Every number in the deliverable is accounted for, including years, dates and
-     spelled-out counts. A range is two claims.
+     spelled-out counts. A range is two claims. Write large or compound numbers in
+     digits ("200", not "two hundred"), and state bounds plainly ("at least 50", not
+     "not under 50"): the check refuses what it can't read exactly.
 3. **Run the mechanical checks until they pass.** The script is
    `scripts/check_claims.py` in this skill's directory:
    ```

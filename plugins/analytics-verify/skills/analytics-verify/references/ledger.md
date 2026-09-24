@@ -41,27 +41,30 @@ relative to the ledger's folder.
 ## Claims
 
 - **`id`**: letters, digits and `_` only, so relations can use it.
-- **`value`**: a number, or text for a non-numeric fact. A text value that is an ISO
-  date or datetime also checks that the numbers in its anchors come from that date.
+- **`value`**: a number, a numeric string (for exact decimals: `"90071992547409.93"`), or
+  text for a non-numeric fact. A text value that is an ISO date or datetime also checks
+  that the numbers in its anchors come from that date.
 - **`source` or `expr`**: exactly one. `expr` derives the value from other claims
   (`+ - * /`, parentheses, numbers) and must equal `value`.
-- **`locate`** (required for a number from a `query` or `file` source): where to read
-  it.
+- **`locate`** (required for a number from a `query` or `file` source, refused for any
+  other source): where to read it. A text value is compared with the cell as text. A
+  cell written as a percentage needs `"unit": "%"`.
   - For a CSV, `{"where": {"<col>": "<value>"}, "column": "<col>"}`. Exactly one row
     must match.
   - For JSON, `{"json": "[0].field"}`.
 - **`quote`** (required for `web`): the source's own words. For a number, the quote must
   show it exactly. If the quote gives only a bound ("50+ mojitos & drinks"), the claim
-  may only repeat that bound ("50+", not "50" or "more than 50"). The verifier checks
-  that the quote actually supports the claim.
+  may only repeat that bound ("50+", not "50" or "more than 50"), its value must be the
+  bound's number exactly, and no `expr` or relation may use it. The verifier checks that
+  the quote actually supports the claim.
 - **`unit`**: set it to `%` or `ratio` for percentages. A `%` display only matches a
   `%` or `ratio` claim, and a ratio is multiplied by 100.
 - **`magnitude`**: `true` lets an unsigned display show a negative value ("fell 6.6%" for
   -6.6). Without it, signs must match, and "+7" never shows -7.
 - **`labels`**: numbers that name something in the anchor rather than state a value
   ("#42 on the **50** Best list"). Each must appear as a number in this claim's `quote`.
-  Numbers in a claim's `locate.where` values are labels automatically: the row key
-  "2014" in "2014 17K", checked against the file.
+  Numbers in a claim's `locate.where` values are labels automatically once the file
+  confirms the row: the row key "2014" in "2014 17K".
 - **`anchors` or `omit`**: exactly one.
   - `anchors` are text copied from the deliverable that shows this claim, with the words
     around the number ("106K did both", not "106K").
@@ -71,10 +74,13 @@ relative to the ledger's folder.
 
 - Every number in the deliverable is accounted for: it is the value of a claim whose
   anchor holds it, a label of that claim, or inside an `exempt` snippet.
-  - This includes years, dates, `1e6`, `USD1200` and spelled-out counts ("six", "two
-    hundred").
+  - This includes years, dates, `1e6`, currency codes (`USD1200`, `SEK1200`) and
+    spelled-out numbers from "two" to "ninety-nine".
   - A digit run right after other letters is an identifier and is skipped (Q1, H2,
-    B03001). The output lists every one it skipped.
+    B03001, Brugal01), unless the letters are three capitals, which read as a currency
+    code. The output lists every identifier it skipped.
+  - Displays it can't read exactly fail with "rephrase": spelled-out numbers with
+    hundred, thousand or dozen, and negated qualifiers ("not over 50").
   - Line-start list markers and URLs are also skipped.
   - A number inside an anchor that nothing accounts for fails. A range ("12-15 days")
     is two claims sharing one anchor.
@@ -86,7 +92,10 @@ relative to the ledger's folder.
   - The shown number must equal the value rounded to the precision displayed: `1.97M`
     matches 1,966,205.
   - A comparator must be true: "more than 80%" fails for 73.7, "<1K" passes for 191, and
-    "50+" passes for 50.
+    "50+" passes for 50. The qualifiers read are: more than, over, above, exceeding, at
+    least, a minimum of, less than, fewer than, under, below, at most, up to, a maximum
+    of, no more than, no less than, nearly, almost; and after the number, "+", "or more",
+    "and up", "plus", "or less", "or fewer".
   - "About", "around" and "~" don't loosen the match.
 - Each claim is shown or omitted on purpose.
 - Every relation holds (`==`, `<=`, `>=`, `<`, `>`, with an optional `"tolerance"`).

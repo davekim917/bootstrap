@@ -344,9 +344,10 @@ class Displays(unittest.TestCase):
         self.assertTrue(self.ok('1e6 units', 1000000))
         self.assertFalse(self.ok('1e6 units', 1))
         self.assertTrue(self.ok('USD1200', 1200))
-        self.assertTrue(self.ok('Two hundred customers', 200))
-        self.assertTrue(self.ok('two hundred and five', 205))
+        self.assertTrue(self.ok('twenty-five customers', 25))
         self.assertEqual(cc.tokenize(cc.normalize('no one ordered a one-off'))[0], [])
+        for phrase in ('Two hundred customers', 'One thousand and five', 'One million and one', 'a dozen'):
+            self.assertEqual(self.tok(phrase).problem, 'write it in digits', phrase)
 
     def test_signs_are_kept(self):
         self.assertFalse(self.ok('+7 dollars', -7))
@@ -597,6 +598,123 @@ class ReceiptParsing(Tmp):
         code, out = self.receipt(self.header() + '## Confirmed\n- all\n')
         self.assertEqual(code, 1)
         self.assertIn('no "Wrong" section', out)
+
+
+
+class ReviewRegressionsRound2(Tmp):
+    """Inputs that passed after round 1 and must not (Codex review, round 2)."""
+
+    def led(self, claims, sources=None, files=None, **extra):
+        for name, body in (files or {}).items():
+            self.write(name, body)
+        base = {'d': {'type': 'doc', 'ref': 'ops log'},
+                'w': {'type': 'web', 'url': 'https://x.test', 'retrieved': '2026-09-24', 'effective': '2026-09-01',
+                      'entity': 'Bar X, Miami'}}
+        return self.write('claims.json', {'sources': {**base, **(sources or {})}, 'claims': claims, **extra})
+
+    def check(self, led, text):
+        return run(['check', led, self.write('d.md', text)])
+
+    def test_row_labels_need_a_confirmed_file_row(self):
+        claim = {'id': 'x', 'value': 7, 'source': 'd', 'locate': {'where': {'fake': 999}, 'column': 'v'},
+                 'anchors': ['7 stores sold 999 units']}
+        code, out = self.check(self.led([claim]), '7 stores sold 999 units.')
+        self.assertEqual(code, 1)
+        self.assertIn('"locate" reads a query or file source', out)
+        self.assertIn('"999" sits in the anchor', out)
+
+    def test_bounds_do_not_pass_through_derivation_or_rounding(self):
+        a = {'id': 'a', 'value': 50, 'source': 'w', 'quote': '50+ drinks', 'omit': 'intermediate'}
+        b = {'id': 'b', 'value': 50, 'expr': 'a', 'anchors': ['Exactly 50 drinks']}
+        code, out = self.check(self.led([a, b]), 'Exactly 50 drinks.')
+        self.assertIn('which the source gives only as a bound', out)
+        c = {'id': 'c', 'value': 50.4, 'source': 'w', 'quote': 'at least 50 drinks', 'anchors': ['at least 50 drinks']}
+        code, out = self.check(self.led([c]), 'It has at least 50 drinks.')
+        self.assertIn('the value must be that number exactly', out)
+
+    def test_other_bound_forms_are_bounds(self):
+        for quote in ('50 or more drinks', 'a minimum of 50 drinks', '50 and up'):
+            claim = {'id': 'm', 'value': 50, 'source': 'w', 'quote': quote, 'anchors': ['Exactly 50 drinks']}
+            code, out = self.check(self.led([claim]), 'Exactly 50 drinks.')
+            self.assertEqual(code, 1, quote)
+            self.assertIn('the source gives only "gte" this value', out, quote)
+
+    def test_negated_qualifiers_are_refused(self):
+        claim = {'id': 'm', 'value': 60, 'source': 'w', 'quote': '60 drinks', 'anchors': ['not over 50 drinks']}
+        code, out = self.check(self.led([claim]), 'It pours not over 50 drinks.')
+        self.assertEqual(code, 1)
+        self.assertIn('can\'t be read exactly (a negated qualifier', out)
+
+    def test_decimal_lexemes_survive_json_and_expressions(self):
+        files = {'s.json': '{"v": 9007199254740993.0}'}
+        src = {'j': {'type': 'file', 'path': 's.json', 'as_of': '2026-09-24T00:00:00Z'}}
+        claim = {'id': 'x', 'value': 9007199254740992, 'source': 'j', 'locate': {'json': 'v'},
+                 'anchors': ['total 9007199254740992']}
+        code, out = self.check(self.led([claim], src, files), 'The total 9007199254740992.')
+        self.assertIn('ledger says 9007199254740992 but s.json says 9007199254740993.0', out)
+        self.assertEqual(cc.evaluate('a + 9007199254740993.0', {'a': cc.dec(0)}), cc.dec('9007199254740993.0'))
+
+    def test_scaffold_keeps_exact_decimals(self):
+        self.write('t.csv', 'k,v\na,90071992547409.93\n')
+        code, out = run(['scaffold', os.path.join(self.dir, 't.csv'), '--source', 'f', '--key', 'k'])
+        self.assertIn('"value": "90071992547409.93"', out)
+
+    def test_percent_cells_need_a_percent_unit(self):
+        files = {'t.csv': 'k,v\nchurn,50%\n'}
+        src = {'f': {'type': 'file', 'path': 't.csv', 'as_of': '2026-09-24T00:00:00Z'}}
+        claim = {'id': 'x', 'value': 50, 'unit': 'ratio', 'source': 'f',
+                 'locate': {'where': {'k': 'churn'}, 'column': 'v'}, 'anchors': ['Churn: 5000%']}
+        code, out = self.check(self.led([claim], src, files), 'Churn: 5000%.')
+        self.assertIn('the cell is a percentage', out)
+
+    def test_three_letter_currency_codes_are_quantities(self):
+        for code_ in ('SEK', 'BRL', 'ZAR', 'NOK'):
+            code, out = self.check(self.led([]), f'Revenue: {code_}1200.')
+            self.assertEqual(code, 1, code_)
+            self.assertIn('"1200" is not bound', out)
+
+    def test_explicit_negatives_are_kept(self):
+        for text in ('Balance: -\u00a57 dollars', 'Balance: \u2212 7 dollars', 'Balance: -seven dollars'):
+            claim = {'id': 'x', 'value': 7, 'source': 'w', 'quote': '7 dollars', 'anchors': [cc.normalize(text)]}
+            code, out = self.check(self.led([claim]), text)
+            self.assertEqual(code, 1, text)
+
+    def test_iso_and_day_month_dates_are_read(self):
+        claim = {'id': 'cut', 'value': '2026-09-23T17:00:00-07:00', 'source': 'd',
+                 'anchors': ['As of 2026-09-23T17:00:00-07:00']}
+        code, out = self.check(self.led([claim]), 'As of 2026-09-23T17:00:00-07:00.')
+        self.assertEqual(code, 0, out)
+        claim = {'id': 'day', 'value': '2026-09-23', 'source': 'd', 'anchors': ['on 23 September 2026']}
+        code, out = self.check(self.led([claim]), 'Signed on 23 September 2026.')
+        self.assertEqual(code, 0, out)
+
+
+class TablesRound2(Tmp):
+    def test_ragged_or_unterminated_rows_are_refused(self):
+        good = self.write('a.csv', 'id,v\nx,1\n')
+        for bad in ('id,v\nx,1\n,,\n', 'id,v\nx,"1\n'):
+            code, out = run(['reproduce', good, self.write('b.csv', bad), '--key', 'id'])
+            self.assertEqual(code, 2, bad)
+
+    def test_signed_currency_is_a_unit_change(self):
+        code, out = run(['reproduce', self.write('a.csv', 'id,v\nr,+$5\n'), self.write('b.csv', 'id,v\nr,5\n'),
+                         '--key', 'id'])
+        self.assertEqual(code, 1)
+
+
+class ReceiptRound2(ReceiptParsing):
+    def test_findings_under_a_subheading_still_count(self):
+        body = SECTIONS.replace('| Where | Deliverable says | Actually | Evidence |\n|---|---|---|---|\n',
+                                '### Revenue\n- Revenue is unsupported\n')
+        code, out = self.receipt(self.header() + body)
+        self.assertEqual(code, 1)
+        self.assertIn('open item(s) under "Wrong"', out)
+
+    def test_hash_command_output_can_fill_the_header(self):
+        head = (f'artifact-sha256: {cc.sha256(self.doc)}  {self.doc}\nledger-sha256: {cc.sha256(self.led)}  claims.json\n'
+                'verdict: CLEAR\nverifier: gpt-6-sol (fresh codex exec session)\n\n')
+        code, out = self.receipt(head + SECTIONS)
+        self.assertEqual(code, 0, out)
 
 
 if __name__ == '__main__':
