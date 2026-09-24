@@ -106,15 +106,12 @@ caps; a coordinator may still deliberately select a normal model, role, or effor
 task. Fields it leaves omitted follow the client's native inheritance and configuration rather
 than a workflow-owned fallback.
 
-A named role keeps the model its own definition pins. Claude Code gives a per-call `model`
-precedence over a role's `model` frontmatter, so the spawn hook fills a model for a named role
-(anything other than `general-purpose` or an effort shim) only when it can read that role's
-effective definition and it leaves the model open (`inherit` or no field). It finds the definition
-the way Claude Code does: every `.claude/agents/` from the working directory up to the repository
-root, closest first, then the user `agents/` directory; recursive; identity is the frontmatter
-`name` alone. A role it cannot read — built-ins such as `Explore`, plugin-scoped, managed and
-`--agents` roles — keeps its native model and skips the picker call, and so does any scan that
-hits its file, time or frontmatter-size bound.
+A named role is never rewritten. Claude Code gives a per-call `model` precedence over a role's
+own `model` frontmatter, `inherit` included, and a role's effective definition can live where a
+hook cannot read it (managed settings, `--agents`). So the spawn hook fills model and effort only
+for a roleless spawn (`general-purpose` or no type) or an effort shim; any other `subagent_type` —
+built-ins such as `Explore`, project/user custom roles, plugin roles — keeps its installed model
+and costs no picker call. To route a named role, name its model in the call.
 
 On the Codex row: `spawn_agent` accepts `model` and `reasoning_effort` (`SpawnAgentArgs`,
 codex-rs 0.154.0, `core/src/tools/handlers/multi_agents/spawn.rs:229-230`), exposed by

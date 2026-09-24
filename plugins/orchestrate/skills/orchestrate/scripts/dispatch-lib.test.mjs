@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +15,6 @@ import {
   requestSystemOne,
   resolveDispatch,
   rewriteClaudeSpawn,
-  roleModelIntent,
 } from './dispatch-lib.mjs';
 
 const rubric = loadRubric();
@@ -88,137 +87,40 @@ test('general-purpose counts as roleless', () => {
   assert.deepEqual([out.model, out.subagent_type], ['fable', 'bootstrap-orchestrate:worker-low']);
 });
 
-test('a named role whose definition leaves the model open keeps its role and only gets a model', () => {
-  const out = rewriteClaudeSpawn({ subagent_type: 'researcher', prompt: 'p' }, route('opus', 'low'), rubric, { roleFillable: true });
-  assert.deepEqual([out.model, out.subagent_type], ['opus', 'researcher']);
-});
+// Named roles: built-in, project/user custom (pinned, `inherit` or no model
+// field), and plugin-scoped. A per-call model outranks the role's own model, so
+// a confident route must never be written into one.
+const NAMED_ROLES = ['Explore', 'Plan', 'qa-design-critic', 'qa-smoke-worker', 'qa-adjudicator', 'researcher', 'codex:codex-rescue'];
 
-test('a named role keeps its installed model unless its definition is known to leave it open', () => {
-  // Pinned roles (qa-design-critic on Fable, qa-smoke-worker on Opus) and roles
-  // whose definition cannot be read (built-in Explore, plugin-scoped roles).
-  for (const subagent_type of ['qa-design-critic', 'qa-smoke-worker', 'Explore', 'some-plugin:reviewer']) {
-    assert.equal(rewriteClaudeSpawn({ subagent_type, prompt: 'p' }, route('opus', 'high'), rubric), null);
-    assert.equal(rewriteClaudeSpawn({ subagent_type, prompt: 'p' }, route('opus', 'high'), rubric, { roleFillable: false }), null);
+test('a named role is never rewritten, even on a confident route', () => {
+  for (const subagent_type of NAMED_ROLES) {
+    for (const r of [route('opus', 'low'), route('fable', 'high'), route('opus', 'max')]) {
+      assert.equal(rewriteClaudeSpawn({ subagent_type, prompt: 'p' }, r, rubric), null, subagent_type);
+    }
   }
 });
 
-test('an explicit tool-call model on a named role is never replaced', () => {
-  assert.equal(rewriteClaudeSpawn({ subagent_type: 'researcher', model: 'fable', prompt: 'p' }, route('opus', 'high'), rubric, { roleFillable: true }), null);
+test('an explicit tool-call model on a named role is kept as given', () => {
+  assert.equal(rewriteClaudeSpawn({ subagent_type: 'qa-smoke-worker', model: 'fable', prompt: 'p' }, route('opus', 'xhigh'), rubric), null);
 });
 
-function agentTree(files) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-roles-'));
-  for (const [rel, body] of Object.entries(files)) {
-    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
-    fs.writeFileSync(path.join(root, rel), body);
-  }
-  return root;
-}
-const role = (name, model, extra = '') => `---\nname: ${name}\ndescription: d\n${model === undefined ? '' : `model: ${model}\n`}${extra}---\nbody\n`;
-
-const intentOf = (found, pinned, complete = true) => ({ found, pinned, fillable: found && pinned === null && complete, complete });
-
-test('roleModelIntent reads the effective project or user definition, recursively and by frontmatter name only', () => {
-  const root = agentTree({
-    'proj/.git/HEAD': 'ref: refs/heads/main\n',
-    'proj/.claude/agents/qa-design-critic.md': role('qa-design-critic', 'claude-fable-5-1[1m]', 'effort: medium\n'),
-    'proj/.claude/agents/a/b/c/d/e/f/smoke.md': role('qa-smoke-worker', '"opus"  # floating alias'),
-    'proj/.claude/agents/open.md': role('researcher', undefined),
-    'proj/.claude/agents/inherits.md': role('inheritor', 'Inherit'),
-    'proj/.claude/agents/nameless.md': '---\nmodel: fable\n---\n',
-    'proj/.claude/agents/not-frontmatter.md': 'name: loose\nmodel: opus\n',
-    'home/.claude/agents/user-role.md': role('user-role', 'opus'),
-    'cfg/agents/configured.md': role('configured', 'fable'),
-  });
-  const opts = { cwd: path.join(root, 'proj', 'src', 'deep'), home: path.join(root, 'home'), env: {} };
-  assert.deepEqual(roleModelIntent('qa-design-critic', opts), intentOf(true, 'claude-fable-5-1[1m]'));
-  assert.deepEqual(roleModelIntent('qa-smoke-worker', opts), intentOf(true, 'opus'), 'no depth limit');
-  assert.deepEqual(roleModelIntent('researcher', opts), intentOf(true, null));
-  assert.deepEqual(roleModelIntent('inheritor', opts), intentOf(true, null));
-  assert.deepEqual(roleModelIntent('user-role', opts), intentOf(true, 'opus'));
-  // Claude Code skips a file without `name`; its stem is not a role identity.
-  for (const type of ['nameless', 'not-frontmatter', 'loose']) assert.deepEqual(roleModelIntent(type, opts), intentOf(false, null));
-  // CLAUDE_CONFIG_DIR replaces ~/.claude as the user scope.
-  const cfg = { ...opts, env: { CLAUDE_CONFIG_DIR: path.join(root, 'cfg') } };
-  assert.deepEqual(roleModelIntent('configured', cfg), intentOf(true, 'fable'));
-  assert.equal(roleModelIntent('user-role', cfg).found, false);
-});
-
-test('roleModelIntent follows Claude Code precedence: closest project scope, then user; nothing above the repo root', () => {
-  const root = agentTree({
-    'outer/.claude/agents/x.md': role('above-repo', 'fable'),
-    'outer/proj/.git/HEAD': 'x\n',
-    'outer/proj/.claude/agents/near-open.md': role('shadowed', undefined),
-    'outer/proj/.claude/agents/dup-a.md': role('dup', undefined),
-    'outer/proj/.claude/agents/dup-b.md': role('dup', 'fable'),
-    'outer/proj/.claude/agents/ancestor.md': role('nested', undefined),
-    'outer/proj/sub/.claude/agents/closer.md': role('nested', 'opus'),
-    'outer/proj/.claude/agents/pinned-here.md': role('user-open', 'fable'),
-    'home/.claude/agents/shadowed.md': role('shadowed', 'opus'),
-    'home/.claude/agents/user-open.md': role('user-open', undefined),
-  });
-  const opts = { cwd: path.join(root, 'outer', 'proj', 'sub'), home: path.join(root, 'home'), env: {} };
-  assert.deepEqual(roleModelIntent('shadowed', opts), intentOf(true, null), 'project beats a pinned user role');
-  assert.deepEqual(roleModelIntent('user-open', opts), intentOf(true, 'fable'), 'project pin beats an open user role');
-  assert.deepEqual(roleModelIntent('nested', opts), intentOf(true, 'opus'), 'closest project dir wins');
-  assert.deepEqual(roleModelIntent('dup', opts), intentOf(true, 'fable'), 'a pin in the winning scope is kept');
-  assert.deepEqual(roleModelIntent('above-repo', opts), intentOf(false, null), 'no scan above the repo root');
-});
-
-test('roleModelIntent never opens a role it cannot read or finish scanning', () => {
-  const root = agentTree({
-    'proj/.git/HEAD': 'x\n',
-    'proj/.claude/agents/open.md': role('researcher', undefined),
-    'proj/.claude/agents/more.md': role('other', undefined),
-  });
-  const opts = { cwd: path.join(root, 'proj'), home: path.join(root, 'nohome'), env: {} };
-  for (const type of ['Explore', 'Plan', 'bootstrap-workflow:reviewer', 'missing', '', undefined]) {
-    assert.deepEqual(roleModelIntent(type, opts), intentOf(false, null));
-  }
-  assert.equal(roleModelIntent('researcher', opts).fillable, true);
-  // Any bound hit leaves the scan incomplete, which is never fillable.
-  assert.deepEqual(roleModelIntent('researcher', { ...opts, maxFiles: 1 }), { ...intentOf(false, null, false) });
-  assert.equal(roleModelIntent('researcher', { ...opts, budgetMs: -1 }).fillable, false);
-  // A frontmatter block that does not close within the read bound is unreadable.
-  const big = agentTree({
-    'proj/.git/HEAD': 'x\n',
-    'proj/.claude/agents/open.md': role('researcher', undefined),
-    'proj/.claude/agents/huge.md': `---\nname: researcher\ndescription: ${'x'.repeat(20000)}\nmodel: fable\n---\n`,
-  });
-  const r = roleModelIntent('researcher', { cwd: path.join(big, 'proj'), home: path.join(big, 'nohome'), env: {} });
-  assert.deepEqual([r.fillable, r.complete], [false, false]);
-});
-
-function runHook(event, env) {
-  const hook = fileURLToPath(new URL('../../../hooks/route-spawn.mjs', import.meta.url));
-  const r = spawnSync(process.execPath, [hook], {
-    input: JSON.stringify(event), encoding: 'utf8', timeout: 15000,
-    env: { PATH: process.env.PATH, ...env },
-  });
-  assert.equal(r.status, 0, r.stderr);
-  return r.stdout;
-}
-
-test('the installed hook leaves a pinned named role untouched without consulting the picker', () => {
-  const root = agentTree({
-    'proj/.claude/agents/qa-design-critic.md': role('qa-design-critic', 'claude-fable-5-1[1m]', 'effort: medium\n'),
-    'proj/.claude/agents/qa-smoke-worker.md': role('qa-smoke-worker', 'opus', 'effort: medium\n'),
-    'proj/.claude/agents/open.md': role('researcher', undefined),
-  });
+test('the installed hook leaves every named role untouched and never consults the picker', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));
   const log = path.join(root, 'dispatch-log.jsonl');
-  const env = { HOME: path.join(root, 'home'), ORCHESTRATE_DISPATCH_LOG: log };
-  for (const subagent_type of ['qa-design-critic', 'qa-smoke-worker']) {
-    const out = runHook({
-      tool_name: 'Agent', cwd: path.join(root, 'proj'),
-      tool_input: { subagent_type, description: 'challenge', prompt: 'attack the campaign evidence' },
-    }, env);
-    assert.equal(out, '');
+  const hook = fileURLToPath(new URL('../../../hooks/route-spawn.mjs', import.meta.url));
+  for (const subagent_type of NAMED_ROLES) {
+    const r = spawnSync(process.execPath, [hook], {
+      input: JSON.stringify({ tool_name: 'Agent', cwd: root, tool_input: { subagent_type, description: 'd', prompt: 'challenge the evidence' } }),
+      encoding: 'utf8',
+      timeout: 15000,
+      // No transport at all: a picker call here could only fail, and would show as decision "inherit".
+      env: { PATH: process.env.PATH, HOME: root, ORCHESTRATE_DISPATCH_LOG: log },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, '', subagent_type);
   }
   const entries = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  assert.deepEqual(entries.map((e) => [e.decision, e.after, e.role.pinned]), [
-    ['role-intent', null, 'claude-fable-5-1[1m]'],
-    ['role-intent', null, 'opus'],
-  ]);
+  assert.deepEqual(entries.map((e) => [e.before.subagent_type, e.decision, e.after]), NAMED_ROLES.map((t) => [t, 'named-role', null]));
 });
 
 test('no override preserves a custom role and its native model inheritance', () => {
