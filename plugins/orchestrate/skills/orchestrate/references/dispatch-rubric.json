@@ -1,6 +1,6 @@
 {
-  "_about": "The operator's model/effort dispatch preferences for /orchestrate. pick-dispatch.mjs asks a classifier which option fits a task brief. Edit freely: options, criteria, tiers, caps and thresholds are all data. Criteria describe what the BRIEF says, never how hard the task will turn out to be \u2014 a classifier can only see the text.",
-  "version": 5,
+  "_about": "The operator's model/effort dispatch preferences for /orchestrate. pick-dispatch.mjs asks a classifier which option fits a task brief. Edit freely: options, criteria, tiers, caps and thresholds are all data. Criteria describe what the BRIEF says, never how hard the task will turn out to be — a classifier can only see the text.",
+  "version": 6,
   "mode": "active",
   "tiers": {
     "judgment": {
@@ -21,12 +21,12 @@
     "judgment-high": {
       "tier": "judgment",
       "effort": "high",
-      "criteria": "The brief asks for an architecture or design decision where the approach has not been chosen and it lists constraints or trade-offs to weigh; OR it describes a failure that spans several components, concurrency, or intermittent behaviour with no named cause; OR it says an earlier medium-effort attempt failed."
+      "criteria": "The brief asks for an architecture or design decision where the approach has not been chosen and it lists constraints or trade-offs to weigh; OR it says an earlier high-effort attempt failed, or that the same problem has already failed twice."
     },
     "judgment-medium": {
       "tier": "judgment",
       "effort": "medium",
-      "criteria": "The brief asks to review or critique a plan, spec, design document or RFC; OR to diagnose a symptom in one area with no named cause; OR to decide how to handle a security-sensitive change or a data migration; OR to build a new feature or product where the brief states the goal but leaves the approach open."
+      "criteria": "The brief asks to review or critique a plan, spec, design document or RFC; OR to build something with no existing pattern in the codebase, where the brief states the goal but leaves the approach open; OR a long run that will not be supervised, or a large change that coordinates several sub-agents; OR to decide how to handle a security-sensitive change or a data migration."
     },
     "judgment-low": {
       "tier": "judgment",
@@ -36,7 +36,7 @@
     "workhorse-high": {
       "tier": "workhorse",
       "effort": "high",
-      "criteria": "The brief asks to implement a described change or fix, possibly across several files, with a stated goal or acceptance criteria; OR to write tests for existing code."
+      "criteria": "The brief asks to implement a described change or fix, possibly across several files, with a stated goal or acceptance criteria; OR to write tests for existing code; OR to diagnose a failure with no named cause, in one area or across several components, including concurrency or intermittent behaviour; OR it says an earlier medium-effort attempt failed."
     },
     "workhorse-medium": {
       "tier": "workhorse",
@@ -46,7 +46,7 @@
     "workhorse-low": {
       "tier": "workhorse",
       "effort": "low",
-      "criteria": "The brief asks for a rename, a move, or applying a supplied patch or exact spec; OR running a named sequence of commands; OR triage, classification, a summary, or short copy."
+      "criteria": "The brief asks for a rename, a move, or applying a supplied patch or exact spec; OR running a named sequence of commands; OR triage, classification, a summary, or short copy; OR a code lookup: find where something happens in the code, or explain why existing code behaves as it does, with no change requested."
     },
     "ask": {
       "tier": null,
@@ -54,5 +54,5 @@
       "criteria": "None of the other options fits, or the brief names no artifact and no action."
     }
   },
-  "_evidence": "v5 (2026-09-18): implementation routes to workhorse-high, not judgment-low. Blind head-to-head on 5 real merged repo tasks: Opus-high preferred 4/5 by a cross-vendor reviewer (scores 41 vs 37), Fable-low only 6% cheaper and 30% faster; Fable-low stopped early and shipped one incomplete fix. Reviews stay judgment-low (CodeRabbit 2026-09-01: Fable low recall >= high)."
+  "_evidence": "v6 (2026-09-24): aligned with Anthropic's 'What a task costs on Opus 5.5' (2026-09-22): Opus 5.5 is the daily driver for feature work and debugging; raise effort before changing models; Fable 5.1 for no-existing-pattern problems, long unsupervised runs, large multi-subagent changes, or after Opus-high fails the same problem twice. Diagnosis moves to workhorse-high; code-reading questions to workhorse-low. Operator rule: never Sonnet or Haiku, Opus low is the floor. PR review stays judgment-low pending the Opus-vs-Fable review head-to-head. v5 (2026-09-18): implementation routes to workhorse-high, not judgment-low. Blind head-to-head on 5 real merged repo tasks: Opus-high preferred 4/5 by a cross-vendor reviewer (scores 41 vs 37), Fable-low only 6% cheaper and 30% faster; Fable-low stopped early and shipped one incomplete fix. Reviews stay judgment-low (CodeRabbit 2026-09-01: Fable low recall >= high)."
 }
