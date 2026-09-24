@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-orchestrate",
-  "version": "2.4.5",
+  "version": "2.4.6",
   "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Invoke-only.",
   "author": {
     "name": "David Kim"

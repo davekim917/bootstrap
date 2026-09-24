@@ -17,7 +17,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 |---|---|---:|---|
 | Claude Code | `bootstrap-workflow` | 5.7.5 | The seven `team-*` skills and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.7.5 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.4.3 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.4.6 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.3.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
@@ -105,6 +105,14 @@ an effective route. Existing explicit choices stay intact subject to the existin
 caps; a coordinator may still deliberately select a normal model, role, or effort shim from the
 task. Fields it leaves omitted follow the client's native inheritance and configuration rather
 than a workflow-owned fallback.
+
+A named role keeps the model its own definition pins. Claude Code gives a per-call `model`
+precedence over a role's `model` frontmatter, so the spawn hook fills a model for a named role
+(anything other than `general-purpose` or an effort shim) only when it finds that role's
+definition in a project `.claude/agents/` (from the working directory upward) or the user
+`agents/` directory and no matching definition pins a concrete model (`inherit` or no field
+leaves it open). A role it cannot read — built-ins such as `Explore`, plugin-scoped and
+`--agents` roles — keeps its native model, and the hook skips the picker call for it.
 
 On the Codex row: `spawn_agent` accepts `model` and `reasoning_effort` (`SpawnAgentArgs`,
 codex-rs 0.154.0, `core/src/tools/handlers/multi_agents/spawn.rs:229-230`), exposed by
