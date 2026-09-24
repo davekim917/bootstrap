@@ -842,7 +842,7 @@ class ReviewRegressionsRound6(LedgerCase):
 
     def test_an_amount_alone_in_parentheses_is_refused(self):
         for text in ('Net income was ($50).', 'Net income was $(50).', 'Net income was (USD 50).',
-                     'Net income was (1,234).', 'Net income was ($1.2M).'):
+                     'Net income was ($1.2M).'):
             toks = cc.tokenize(cc.normalize(text))[0]
             self.assertEqual(len(toks), 1, text)
             self.assertIn('parentheses', toks[0].problem or '', text)
@@ -850,7 +850,7 @@ class ReviewRegressionsRound6(LedgerCase):
             claim = {'id': 'ni', 'value': value, 'source': 'w', 'quote': 'net income: -$50', 'anchors': ['($50)']}
             code, out = self.check(self.led([claim]), 'Net income was ($50).')
             self.assertEqual(code, 1, value)
-            self.assertIn("can't be read exactly (an amount alone in parentheses", out)
+            self.assertIn("can't be read exactly (a money amount alone in parentheses", out)
 
     def test_percentages_and_signed_amounts_in_parentheses_still_read(self):
         for text, value in (('41,380 of 64,452 (64.2%)', Decimal('64.2')), ('the unique total (+69K)', Decimal(69000)),
@@ -992,6 +992,26 @@ class ReviewRegressionsPr28Round2(LedgerCase):
         led = self.led([], sources={'s': {**web, 'retrieved': '2026-09-25', 'effective': '2026-09-01'}})
         code, out = run(['check', led, self.write('d.md', 'Nothing here.'), '--today', '2026-09-24'])
         self.assertNotIn('in the future', out)
+
+
+
+class RealReportFalseAlarms(LedgerCase):
+    """Normal copy in a shipped insight report that 1.0.0 refused."""
+
+    def test_notes_in_parentheses_read_normally(self):
+        for text, values in (('4.6 (1,947)', [Decimal('4.6'), Decimal(1947)]),
+                             ('4.2 (3.1k)', [Decimal('4.2'), Decimal(3100)]),
+                             ('Sources: industry survey (2024); menus', [Decimal(2024)]),
+                             ('Net income was (1,234).', [Decimal(1234)])):
+            toks = cc.tokenize(cc.normalize(text))[0]
+            self.assertEqual([t.problem for t in toks], [None] * len(values), text)
+            self.assertEqual([t.value for t in toks], values, text)
+
+    def test_at_least_one_is_a_number(self):
+        toks = cc.tokenize(cc.normalize('Each store here has at least one of three traits.'))[0]
+        self.assertEqual([(t.value, t.op, t.problem) for t in toks], [(1, 'gte', None), (3, 'eq', None)])
+        self.assertEqual(cc.tokenize(cc.normalize('No one else stocks it.'))[0], [])
+        self.assertEqual(cc.tokenize(cc.normalize('One of the best bars.'))[0], [])
 
 
 if __name__ == '__main__':

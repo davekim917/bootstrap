@@ -253,11 +253,15 @@ def _lead(text, start):
 
 
 def _accounting(text, lead, end, sign, pct):
-    """An unsigned amount alone in parentheses ("($50)", "$(50)", "(1,234)") is how
-    accounting writes a negative, and elsewhere a note; either reading could be wrong."""
+    """An unsigned money amount alone in parentheses ("($50)", "$(50)", "(USD 50)") is how
+    accounting writes a negative. Without a currency mark, parentheses are a note: a review
+    count after a rating ("4.6 (1,947)") or a year after a source ("survey (2024)")."""
     if sign or pct or not lead or text[lead - 1] != '(' or text[end:end + 1] != ')':
         return None
-    return 'an amount alone in parentheses (an accounting negative, or a note?)'
+    inner = text[lead:end]
+    money = (any(_is_currency(ch) for ch in inner) or re.match(r'[A-Z]{3}(?![a-z])', inner)
+             or (lead >= 2 and _is_currency(text[lead - 2])))
+    return 'a money amount alone in parentheses (an accounting negative?)' if money else None
 
 
 def _qualifiers(text, lead, end):
@@ -292,7 +296,7 @@ def _word_numbers(text):
     """Spelled-out numbers as (start, end, value, problem). Single words and tens-units
     ("twenty-five") are read; anything with hundred, thousand, dozen and the like is
     refused ("write it in digits") rather than half-read. "one" alone is not a number,
-    or every "no one" would need a claim."""
+    or every "no one" would need a claim, unless a qualifier is attached ("at least one")."""
     words = [(m.start(), m.end(), m.group(0).lower()) for m in re.finditer(r'[A-Za-z]+', text)]
     vocab = set(_SMALL) | set(_TENS) | _WORD_SCALES
     out, i, n = [], 0, len(words)
@@ -313,7 +317,8 @@ def _word_numbers(text):
         if any(w in _WORD_SCALES for w in names) or 'a' in names or 'and' in [w for _, _, w in seq]:
             out.append((start, end, None, 'write it in digits'))
         elif names == ['one']:
-            pass
+            if _PREFIX.search(text[max(0, start - 30):start]):
+                out.append((start, end, 1, None))
         elif len(names) == 1 and names[0] in _SMALL:
             out.append((start, end, _SMALL[names[0]], None))
         elif len(names) == 1 and names[0] in _TENS:
