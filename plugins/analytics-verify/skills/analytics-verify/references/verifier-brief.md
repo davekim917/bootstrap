@@ -38,6 +38,8 @@ claim. After that, use them only to explain a disagreement.
 ## Report
 
 Write `verify-r<N>.md` next to the deliverable. Don't edit the deliverable or the ledger.
+The four header lines go at the very top of the file, not in a code block, and appear
+nowhere else in it.
 
 ```
 artifact-sha256: <check_claims.py hash <deliverable>; one line per file>
@@ -54,7 +56,8 @@ verdict: CLEAR | CHANGES
 ## Not checked, and why
 ```
 
-- `verdict: CLEAR` only when Wrong and Unsupported are both empty.
+- `verdict: CLEAR` only when Wrong, Stale or overstated, and Unsupported are all empty
+  (write "none" under an empty heading). Stale items get reworded or qualified first.
 - In `verifier:`, name the model you're actually running on. Write "unknown" if you can't
   tell. If you were meant to be a different model family from the author and you're not,
   say so.

@@ -51,10 +51,17 @@ relative to the ledger's folder.
     must match.
   - For JSON, `{"json": "[0].field"}`.
 - **`quote`** (required for `web`): the source's own words. For a number, the quote must
-  show it. The quote's own qualifiers count, and the verifier checks that the quote
-  actually supports the claim.
+  show it exactly. If the quote gives only a bound ("50+ mojitos & drinks"), the claim
+  may only repeat that bound ("50+", not "50" or "more than 50"). The verifier checks
+  that the quote actually supports the claim.
 - **`unit`**: set it to `%` or `ratio` for percentages. A `%` display only matches a
   `%` or `ratio` claim, and a ratio is multiplied by 100.
+- **`magnitude`**: `true` lets an unsigned display show a negative value ("fell 6.6%" for
+  -6.6). Without it, signs must match, and "+7" never shows -7.
+- **`labels`**: numbers that name something in the anchor rather than state a value
+  ("#42 on the **50** Best list"). Each must appear as a number in this claim's `quote`.
+  Numbers in a claim's `locate.where` values are labels automatically: the row key
+  "2014" in "2014 17K", checked against the file.
 - **`anchors` or `omit`**: exactly one.
   - `anchors` are text copied from the deliverable that shows this claim, with the words
     around the number ("106K did both", not "106K").
@@ -62,11 +69,20 @@ relative to the ledger's folder.
 
 ## What `check` enforces
 
-- Every number in the deliverable sits inside an anchor or an `exempt` snippet.
-  - This includes years, dates and spelled-out counts ("six").
-  - A digit run right after a letter is an identifier and is skipped (Q1, H2, v2).
+- Every number in the deliverable is accounted for: it is the value of a claim whose
+  anchor holds it, a label of that claim, or inside an `exempt` snippet.
+  - This includes years, dates, `1e6`, `USD1200` and spelled-out counts ("six", "two
+    hundred").
+  - A digit run right after other letters is an identifier and is skipped (Q1, H2,
+    B03001). The output lists every one it skipped.
   - Line-start list markers and URLs are also skipped.
-- Each anchor is in the deliverable, and every appearance shows the claim's value.
+  - A number inside an anchor that nothing accounts for fails. A range ("12-15 days")
+    is two claims sharing one anchor.
+  - An `exempt` snippet must be more than one bare number: an address, a phone number,
+    or a product name.
+- Each anchor is in the deliverable, and every appearance shows the claim's value. For
+  a date claim, each date shown is checked field by field: "9/23" must be September 23,
+  and "5pm" must be the claim's hour.
   - The shown number must equal the value rounded to the precision displayed: `1.97M`
     matches 1,966,205.
   - A comparator must be true: "more than 80%" fails for 73.7, "<1K" passes for 191, and
@@ -74,6 +90,8 @@ relative to the ledger's folder.
   - "About", "around" and "~" don't loosen the match.
 - Each claim is shown or omitted on purpose.
 - Every relation holds (`==`, `<=`, `>=`, `<`, `>`, with an optional `"tolerance"`).
+- Every `expr` claim derives from other claims, with no circles, down to sourced claims.
+- Arithmetic is exact decimal: 1,000,000,001 is not 1,000,000,000.
 
 ## Commands
 
@@ -91,4 +109,9 @@ Exit status: 0 pass, 1 findings, 2 input the script can't check.
 - `check` reads Markdown, text and HTML. It reads PDF only when `pdftotext` is
   installed; otherwise check the HTML or Markdown the PDF is rendered from.
 - `reproduce` compares on declared keys and reports duplicate keys, missing rows,
-  null-versus-zero, and each cell that moved within tolerance (as drift, not a match).
+  null-versus-zero, unit changes (`50%` vs `50`), and each cell that moved within
+  tolerance (as drift, not a match). It refuses a table with duplicate column names or
+  ragged rows.
+- `receipt` reads only the header block at the very top of the report, and fails if
+  those fields appear anywhere else. It also fails a CLEAR report that still lists
+  items under Wrong, Stale or Unsupported.

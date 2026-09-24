@@ -42,6 +42,8 @@ If you're unsure, use the full loop.
    - Every sentence that combines numbers ("did both", "of which", "brings the total
      to") gets a `relations` entry.
    - Every row, year and segment the ask expects is shown, or `omit`ted with a reason.
+   - Every number in the deliverable is accounted for, including years, dates and
+     spelled-out counts. A range is two claims.
 3. **Run the mechanical checks until they pass.** The script is
    `scripts/check_claims.py` in this skill's directory:
    ```
@@ -71,8 +73,10 @@ If you're unsure, use the full loop.
    rounds and deliver with the open disagreements listed for the requester to decide.
 6. **Deliver with a receipt and a one-line stamp.** Run
    `check_claims.py receipt verify-r<N>.md claims.json <deliverable>` first. PASS means
-   the verifier's receipt covers these exact bytes; any later edit sends you back to
-   step 5. The stamp says what ran, who checked, and what wasn't checked:
+   the verifier's report covers these exact bytes with a clean verdict; any later edit
+   sends you back to step 5. Put the stamp in your message to the requester, not inside
+   the verified file (that would change its bytes). The stamp says what ran, who
+   checked, and what wasn't checked:
    > Verified: ledger PASS (41 numbers, 3 relations), CSV reproduces exactly; checked
    > by gpt-6-sol in a fresh Codex session, CLEAR after 2 rounds. Not checked: store
    > shelf stock.
@@ -105,5 +109,6 @@ retyped or rounded away from their file, displays that overstate their source, s
 that don't hold, dropped rows, queries that don't reproduce, undated or old evidence
 (as a warning), and files edited after verification. It can't catch wrong evidence (a
 miscounted menu), a true number in a false sentence, wrong unit words, or stale facts
-about people and places. Those are the verifier's job, and enforcement is
-instruction-only: a human should still see the stamp before anything leaves.
+about people and places. Those are the verifier's job. Enforcement is
+instruction-only, and a receipt shows what a verifier wrote, not who wrote it, so a
+human should still see the stamp before anything leaves.

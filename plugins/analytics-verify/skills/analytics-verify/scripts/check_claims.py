@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Mechanical claim checks for analytics deliverables. Python 3.8+, standard library only.
 
-A PASS means every number in the deliverable is bound to a claim in the ledger and
-every claim is bound to its source. It is not an independent verification: a wrong
+A PASS means every number in the deliverable is accounted for by a claim in the ledger
+and every claim is bound to its source. It is not an independent verification: a wrong
 source, a misread menu, or a false sentence built from correct numbers all pass.
 
-  check     LEDGER DELIVERABLE...   bind numbers to claims and claims to sources
+  check     LEDGER DELIVERABLE...   account for every number; bind claims to sources
   scaffold  RESULT.csv --source ID --key COL[,COL] [--columns A,B] [--prefix P]
   reproduce DELIVERED.csv RERUN.csv --key COL[,COL] [--rel-tol X] [--abs-tol Y]
   changed   OLD NEW [--old-ledger A --new-ledger B]
@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import unicodedata
+from decimal import Decimal, InvalidOperation, localcontext
 
 MECHANICAL_ONLY = (
     'Mechanical check only: it shows the numbers match the ledger and the ledger matches '
@@ -39,6 +40,18 @@ MECHANICAL_ONLY = (
 
 class InputError(Exception):
     """The input cannot be checked at all (exit 2), as opposed to a finding (exit 1)."""
+
+
+def dec(value) -> Decimal | None:
+    """Exact decimal of a JSON number or numeric string; None for anything else,
+    including booleans, NaN and infinities."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        d = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return None
+    return d if d.is_finite() else None
 
 
 # ---------------------------------------------------------------- text extraction
@@ -104,7 +117,7 @@ _TRANSLATE = str.maketrans({
     '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"', '\u2212': '-', '\u00a0': ' ',
 })
 _MD_LINK = re.compile(r'\[([^\]]*)\]\([^)]*\)')
-_URL = re.compile(r'(?:https?://|www\.)\S+')
+_URL = re.compile(r'(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/\S*', re.I)
 _CHAT_TOKEN = re.compile(r'<(?:[@#!][^>]*|t:\d+(?::[A-Za-z])?)>')
 _LIST_MARKER = re.compile(r'^[ \t]*(?:\d{1,3}[.)]|[-*\u2022+])[ \t]+', re.M)
 _FOOTNOTE = re.compile(r'\[\d{1,3}\]')
@@ -126,48 +139,46 @@ def normalize(text: str) -> str:
 
 # ---------------------------------------------------------------- number tokens
 
-_NUM = re.compile(r'(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+')
-_UNITS = {
-    'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9,
-    'ten': 10, 'eleven': 11, 'twelve': 12, 'thirteen': 13, 'fourteen': 14, 'fifteen': 15,
-    'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19, 'dozen': 12, 'hundred': 100,
-}
-_ONES = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9}
-_TENS = {'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60, 'seventy': 70, 'eighty': 80, 'ninety': 90}
-# "one" is left out on purpose: "one-off", "no one" and "one of" would make every report fail.
-_WORD_NUM = re.compile(
-    r'\b(?:(' + '|'.join(_TENS) + r')(?:[- ](' + '|'.join(_ONES) + r'))?|(' + '|'.join(_UNITS) + r'))\b',
-    re.I,
-)
+_NUM = re.compile(r'(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?')
+_CURRENCY_CODES = {'usd', 'us', 'eur', 'gbp', 'cad', 'aud', 'nzd', 'jpy', 'inr', 'rs', 'mxn', 'chf', 'cny', 'sgd', 'hkd'}
 _SCALE = re.compile(r'\s?(thousand|million|billion|trillion)\b|(bn|mm|[kKmMbB])(?![A-Za-z])')
-_SCALE_MULT = {'thousand': 1e3, 'million': 1e6, 'billion': 1e9, 'trillion': 1e12,
-               'k': 1e3, 'm': 1e6, 'mm': 1e6, 'b': 1e9, 'bn': 1e9}
+_SCALE_MULT = {'thousand': Decimal(10) ** 3, 'million': Decimal(10) ** 6, 'billion': Decimal(10) ** 9,
+               'trillion': Decimal(10) ** 12, 'k': Decimal(10) ** 3, 'm': Decimal(10) ** 6,
+               'mm': Decimal(10) ** 6, 'b': Decimal(10) ** 9, 'bn': Decimal(10) ** 9}
 _PCT = re.compile(r'\s?(%|percent\b|per cent\b|pct\b|pp\b|percentage points?\b)', re.I)
 _CMP = re.compile(
-    r'(more than|greater than|over|above|exceeding|at least|no less than|no fewer than|less than|'
-    r'fewer than|under|below|at most|up to|no more than|about|around|approximately|approx\.?|'
-    r'roughly|nearly|almost|~|\u2248|<=|>=|\u2264|\u2265|<|>)\s*$',
+    r'(not more than|not less than|not fewer than|more than|greater than|over|above|exceeding|at least|'
+    r'no less than|no fewer than|less than|fewer than|under|below|at most|up to|no more than|about|'
+    r'around|approximately|approx\.?|roughly|nearly|almost|~|\u2248|<=|>=|\u2264|\u2265|<|>)\s*$',
     re.I,
 )
 _CMP_OP = {
     'more than': 'gt', 'greater than': 'gt', 'over': 'gt', 'above': 'gt', 'exceeding': 'gt', '>': 'gt',
-    'at least': 'gte', 'no less than': 'gte', 'no fewer than': 'gte', '>=': 'gte', '\u2265': 'gte',
+    'at least': 'gte', 'no less than': 'gte', 'no fewer than': 'gte', 'not less than': 'gte',
+    'not fewer than': 'gte', '>=': 'gte', '\u2265': 'gte',
     'less than': 'lt', 'fewer than': 'lt', 'under': 'lt', 'below': 'lt', '<': 'lt',
-    'at most': 'lte', 'up to': 'lte', 'no more than': 'lte', '<=': 'lte', '\u2264': 'lte',
+    'at most': 'lte', 'up to': 'lte', 'no more than': 'lte', 'not more than': 'lte', '<=': 'lte', '\u2264': 'lte',
     'nearly': 'near', 'almost': 'near',
 }
 PCT_UNITS = {'%', 'pct', 'percent', 'pp', 'percentage points'}
 
+_SMALL = {w: i for i, w in enumerate(
+    'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen '
+    'sixteen seventeen eighteen nineteen'.split())}
+_TENS = {'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60, 'seventy': 70, 'eighty': 80, 'ninety': 90}
+_BIG = {'thousand': 10 ** 3, 'million': 10 ** 6, 'billion': 10 ** 9}
+_NUMBER_WORDS = set(_SMALL) | set(_TENS) | set(_BIG) | {'hundred', 'dozen'}
+
 
 class Token:
-    __slots__ = ('start', 'end', 'text', 'value', 'step', 'pct', 'neg', 'op')
+    __slots__ = ('start', 'end', 'text', 'value', 'step', 'pct', 'sign', 'op')
 
-    def __init__(self, start, end, text, value, step, pct=False, neg=False, op='eq'):
+    def __init__(self, start, end, text, value, step, pct=False, sign='', op='eq'):
         self.start, self.end, self.text = start, end, text
-        self.value, self.step, self.pct, self.neg, self.op = value, step, pct, neg, op
+        self.value, self.step, self.pct, self.sign, self.op = value, step, pct, sign, op
 
     def __repr__(self):
-        return f'Token({self.text!r}, {self.value}, op={self.op})'
+        return f'Token({self.text!r}, {self.sign}{self.value}, op={self.op})'
 
 
 def _comparator(text: str, lead: int) -> str:
@@ -178,71 +189,141 @@ def _comparator(text: str, lead: int) -> str:
     return _CMP_OP.get(word, 'eq')  # about/around/~/roughly: still exact at the shown precision
 
 
-def tokenize(text: str) -> list[Token]:
-    """Every number in normalized text. A digit run directly after a letter (Q1, H2, v2)
-    is an identifier, not a quantity; nothing else is skipped."""
-    tokens: list[Token] = []
-    for m in _NUM.finditer(text):
-        s, e = m.start(), m.end()
-        prev = text[s - 1] if s else ''
-        if prev.isalpha() or prev == '_':
+def _suffixes(text, end):
+    """Scale, percent and a trailing "+" after a number. Returns (end, mult, pct, plus)."""
+    mult = Decimal(1)
+    sm = _SCALE.match(text, end)
+    if sm:
+        mult = _SCALE_MULT[(sm.group(1) or sm.group(2)).lower()]
+        end = sm.end()
+    pm = _PCT.match(text, end)
+    if pm:
+        end = pm.end()
+    plus = end < len(text) and text[end] == '+'
+    return end + (1 if plus else 0), mult, bool(pm), plus
+
+
+def _word_numbers(text):
+    """Spelled-out quantities as (start, end, value). "one" counts only inside a larger
+    phrase ("one hundred"), and "a" only before a multiplier ("a dozen"), or every
+    "no one" and "a store" would need a claim."""
+    words = [(m.start(), m.end(), m.group(0).lower()) for m in re.finditer(r'[A-Za-z]+', text)]
+    multipliers = {'hundred', 'dozen'} | set(_BIG)
+    out, i, n = [], 0, len(words)
+    while i < n:
+        seq, j = [], i
+        while j < n:
+            s, e, w = words[j]
+            if seq:
+                gap = text[seq[-1][1]:s]
+                if not (gap in (' ', '-') or (gap == ' and ' and seq[-1][2] == 'hundred')):
+                    break
+            if w == 'and' and seq and seq[-1][2] == 'hundred':
+                j += 1
+                continue
+            if w == 'a' and not seq and j + 1 < n and words[j + 1][2] in multipliers and text[e:words[j + 1][0]] == ' ':
+                seq.append(words[j])
+            elif w in _NUMBER_WORDS:
+                seq.append(words[j])
+            else:
+                break
+            j += 1
+        names = [w for _, _, w in seq]
+        if not seq or names == ['one']:
+            i = max(j, i + 1)
             continue
-        lead, neg = s, False
-        if prev in '$\u20ac\u00a3':
-            lead = s - 1
-        if lead and text[lead - 1] == '-' and (lead < 2 or not text[lead - 2].isalnum()):
-            neg, lead = True, lead - 1
+        total, current = 0, 0
+        for w in names:
+            if w in _SMALL:
+                current += _SMALL[w]
+            elif w in _TENS:
+                current += _TENS[w]
+            elif w == 'a':
+                current = 1
+            elif w == 'hundred':
+                current = max(current, 1) * 100
+            elif w == 'dozen':
+                current = max(current, 1) * 12
+            else:
+                total += max(current, 1) * _BIG[w]
+                current = 0
+        out.append((seq[0][0], seq[-1][1], total + current))
+        i = j
+    return out
+
+
+def tokenize(text: str):
+    """Every number in normalized text, and the identifiers skipped. A digit run right after
+    letters (Q1, H2, B03001) is an identifier, unless the letters are a currency code."""
+    tokens: list[Token] = []
+    skipped: list[str] = []
+    for m in _NUM.finditer(text):
+        s, e = m.span()
+        lead = s
+        if s and (text[s - 1].isalpha() or text[s - 1] == '_'):
+            j = s
+            while j and text[j - 1].isalpha():
+                j -= 1
+            if text[j:s].lower() in _CURRENCY_CODES and (j == 0 or not text[j - 1].isalnum()):
+                lead = j
+            else:
+                skipped.append(text[j:e])
+                continue
+        sign = ''
         if lead and text[lead - 1] in '$\u20ac\u00a3':
             lead -= 1
-        raw = m.group(0)
-        decimals = len(raw.split('.', 1)[1]) if '.' in raw else 0
-        mult = 1.0
-        end = e
-        sm = _SCALE.match(text, end)
-        if sm:
-            mult = _SCALE_MULT[(sm.group(1) or sm.group(2)).lower()]
-            end = sm.end()
-        pm = _PCT.match(text, end)
-        pct = bool(pm)
-        if pm:
-            end = pm.end()
-        op = _comparator(text, lead)
-        if end < len(text) and text[end] == '+':
-            op, end = 'gte', end + 1
-        value = float(raw.replace(',', '')) * mult
-        tokens.append(Token(s, end, text[s:end], -value if neg else value, (10 ** -decimals) * mult, pct, neg, op))
-    for m in _WORD_NUM.finditer(text):
-        if m.group(3):
-            value = _UNITS[m.group(3).lower()]
-        else:
-            value = _TENS[m.group(1).lower()] + (_ONES[m.group(2).lower()] if m.group(2) else 0)
-        tokens.append(Token(m.start(), m.end(), m.group(0), float(value), 1.0, op=_comparator(text, m.start())))
+        if lead and text[lead - 1] in '+-' and (lead < 2 or not text[lead - 2].isalnum()):
+            sign, lead = text[lead - 1], lead - 1
+        if lead and text[lead - 1] in '$\u20ac\u00a3':
+            lead -= 1
+        raw = m.group(0).replace(',', '')
+        value = Decimal(raw)
+        end, mult, pct, plus = _suffixes(text, e)
+        step = Decimal(1).scaleb(value.as_tuple().exponent) * mult
+        op = 'gte' if plus else _comparator(text, lead)
+        tokens.append(Token(s, end, text[s:end], value * mult, step, pct, sign, op))
+    for s, e, value in _word_numbers(text):
+        if any(t.start < e and s < t.end for t in tokens):
+            continue  # "5 million": the digits already carry the word as their scale
+        end, mult, pct, plus = _suffixes(text, e)
+        op = 'gte' if plus else _comparator(text, s)
+        tokens.append(Token(s, end, text[s:end], Decimal(value) * mult, mult, pct, '', op))
     tokens.sort(key=lambda t: t.start)
-    return tokens
+    return tokens, skipped
 
 
-def _close(a: float, b: float) -> bool:
-    return abs(a - b) <= 1e-9 * max(1.0, abs(a), abs(b))
-
-
-def token_matches(tok: Token, value, unit) -> bool:
-    """Whether a displayed number is a faithful display of a ledger value: the same
-    after rounding to the precision shown, or true under the comparator shown."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return False
+def _unit_value(tok: Token, value: Decimal, unit, magnitude: bool):
+    """The ledger value in the token's terms, or None when they can't be compared."""
     unit = (unit or '').strip().lower()
-    v = float(value)
+    v = value
     if tok.pct:
         if unit == 'ratio':
             v *= 100
         elif unit not in PCT_UNITS:
-            return False
+            return None
     elif unit in PCT_UNITS or unit == 'ratio':
+        return None
+    if v < 0 and not tok.sign:
+        if not magnitude:
+            return None  # an unsigned display of a negative value needs "magnitude": true
+        v = -v
+    return v
+
+
+def _shown(tok: Token) -> Decimal:
+    return -tok.value if tok.sign == '-' else tok.value
+
+
+def displays(tok: Token, value: Decimal, unit=None, magnitude=False, bound=None) -> bool:
+    """Whether a displayed number faithfully shows a ledger value: equal at the precision
+    shown, or true under the comparator shown. A value the source gives only as a bound
+    ("50+") is shown faithfully only with that same bound."""
+    v = _unit_value(tok, value, unit, magnitude)
+    if v is None:
         return False
-    x = tok.value
-    if not tok.neg and v < 0:
-        v = -v  # "fell 6.6%" displays a negative change without its sign
-    half = tok.step / 2 * (1 + 1e-9) + 1e-12
+    x, half = _shown(tok), tok.step / 2
+    if bound:
+        return tok.op == bound and abs(v - x) <= half
     if tok.op == 'gt':
         return v > x
     if tok.op == 'gte':
@@ -252,21 +333,73 @@ def token_matches(tok: Token, value, unit) -> bool:
     if tok.op == 'lte':
         return v <= x
     if tok.op == 'near':
-        return v <= x + 1e-12 and abs(v - x) <= half
+        return v <= x and abs(v - x) <= half
     return abs(v - x) <= half
 
 
-def _date_parts(value: str):
-    try:
-        text = value.strip().replace('Z', '+00:00')
-        if len(text) == 10:
-            d = dt.date.fromisoformat(text)
-            return {d.year, d.year % 100, d.month, d.day}
-        t = dt.datetime.fromisoformat(text)
-    except (ValueError, AttributeError):
+# ---------------------------------------------------------------- dates
+
+_MONTHS = {m: i for i, m in enumerate(
+    'jan feb mar apr may jun jul aug sep oct nov dec'.split(), start=1)}
+_MON = r'(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?'
+_DATE_PATTERNS = [
+    ('ymd', re.compile(r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b')),
+    ('mdy', re.compile(r'\b(\d{1,2})/(\d{1,2})(?:/(\d{4}|\d{2}))?\b')),
+    ('Mdy', re.compile(r'\b' + _MON + r'\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:,?\s+(\d{4}))?', re.I)),
+    ('My', re.compile(r'\b' + _MON + r'\s+(\d{4})\b', re.I)),
+    ('hm12', re.compile(r'\b(\d{1,2})(?::(\d{2}))?\s?(a\.?m\.?|p\.?m\.?)(?![A-Za-z])', re.I)),
+    ('hm24', re.compile(r'\b(\d{1,2}):(\d{2})\b')),
+    ('y', re.compile(r'\b(1[89]\d{2}|2[01]\d{2})\b')),
+]
+
+
+def parse_when(value):
+    """(date, time or None) for an ISO date or datetime string, else None."""
+    if not isinstance(value, str):
         return None
-    hour12 = t.hour % 12 or 12
-    return {t.year, t.year % 100, t.month, t.day, t.hour, hour12, t.minute}
+    text = value.strip().replace('Z', '+00:00')
+    try:
+        if len(text) == 10:
+            return dt.date.fromisoformat(text), None
+        stamp = dt.datetime.fromisoformat(text)
+        return stamp.date(), stamp.time()
+    except ValueError:
+        return None
+
+
+def _year(s):
+    y = int(s)
+    return y + 2000 if y < 100 else y
+
+
+def date_matches(segment: str, when):
+    """Date displays in an anchor, each checked in its own role (month as month, day as
+    day). Returns a list of (start, end, ok, shown)."""
+    day, clock = when
+    taken, out = [], []
+    for kind, rx in _DATE_PATTERNS:
+        for m in rx.finditer(segment):
+            if any(m.start() < e and s < m.end() for s, e in taken):
+                continue
+            g = m.groups()
+            if kind == 'ymd':
+                ok = (int(g[0]), int(g[1]), int(g[2])) == (day.year, day.month, day.day)
+            elif kind == 'mdy':
+                ok = (int(g[0]), int(g[1])) == (day.month, day.day) and (g[2] is None or _year(g[2]) == day.year)
+            elif kind == 'Mdy':
+                ok = (_MONTHS[g[0][:3].lower()], int(g[1])) == (day.month, day.day) and (g[2] is None or int(g[2]) == day.year)
+            elif kind == 'My':
+                ok = (_MONTHS[g[0][:3].lower()], int(g[1])) == (day.month, day.year)
+            elif kind == 'hm12':
+                hour = int(g[0]) % 12 + (12 if g[2].lower().startswith('p') else 0)
+                ok = clock is not None and (hour, int(g[1] or 0)) == (clock.hour, clock.minute)
+            elif kind == 'hm24':
+                ok = clock is not None and (int(g[0]), int(g[1])) == (clock.hour, clock.minute)
+            else:
+                ok = int(g[0]) == day.year
+            taken.append(m.span())
+            out.append((m.start(), m.end(), ok, m.group(0)))
+    return out
 
 
 # ---------------------------------------------------------------- ledger
@@ -298,20 +431,13 @@ class Findings:
         return 1 if self.fails else 0
 
 
-def _num(cell):
-    if cell is None:
-        return None
-    s = str(cell).strip().replace(',', '').replace('$', '').replace('%', '').replace(' ', '')
-    if s == '':
-        return None
-    try:
-        return float(s)
-    except ValueError:
-        return None
-
-
-def _is_number(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
+def cell_number(cell):
+    """(Decimal, shape) for a table cell. shape records % and currency marks so a unit
+    change is not mistaken for equality. Decimal is None for text and non-finite values."""
+    s = str(cell).strip()
+    shape = ('%' if s.endswith('%') else '') + ('$' if s.startswith(('$', '-$')) else '')
+    core = s.rstrip('%').replace(',', '').replace('$', '').replace(' ', '')
+    return dec(core), shape
 
 
 def load_json(path):
@@ -324,6 +450,30 @@ def load_json(path):
         raise InputError(f'{path}: not valid JSON ({exc})')
 
 
+def load_table(path):
+    """A CSV as (header, rows). Duplicate column names or ragged rows make it unusable:
+    a dict reader would silently keep only one of two same-named columns."""
+    try:
+        with open(path, newline='', encoding='utf-8-sig') as fh:
+            rows = list(csv.reader(fh))
+    except FileNotFoundError:
+        raise InputError(f'{path}: not found')
+    if not rows:
+        raise InputError(f'{path}: empty')
+    header = [h.strip() for h in rows[0]]
+    dups = sorted({h for h in header if header.count(h) > 1})
+    if dups:
+        raise InputError(f'{path}: duplicate column name(s) {dups}')
+    body = []
+    for n, row in enumerate(rows[1:], start=2):
+        if not any(c.strip() for c in row):
+            continue
+        if len(row) != len(header):
+            raise InputError(f'{path}: line {n} has {len(row)} fields; the header has {len(header)}')
+        body.append(dict(zip(header, row)))
+    return header, body
+
+
 def _parse_date(value):
     if not isinstance(value, str):
         return None
@@ -333,29 +483,30 @@ def _parse_date(value):
         return None
 
 
-class _Eval(ast.NodeVisitor):
+class _Eval:
     OPS = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b,
            ast.Mult: lambda a, b: a * b, ast.Div: lambda a, b: a / b}
 
     def __init__(self, values):
         self.values = values
-        self.names: set[str] = set()
 
     def run(self, node):
         if isinstance(node, ast.Expression):
             return self.run(node.body)
         if isinstance(node, ast.BinOp) and type(node.op) in self.OPS:
-            return self.OPS[type(node.op)](self.run(node.left), self.run(node.right))
+            left, right = self.run(node.left), self.run(node.right)
+            if isinstance(node.op, ast.Div) and right == 0:
+                raise ValueError('division by zero')
+            return self.OPS[type(node.op)](left, right)
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
             v = self.run(node.operand)
             return -v if isinstance(node.op, ast.USub) else v
-        if isinstance(node, ast.Constant) and _is_number(node.value):
-            return float(node.value)
+        if isinstance(node, ast.Constant) and dec(node.value) is not None:
+            return dec(node.value)
         if isinstance(node, ast.Name):
-            self.names.add(node.id)
             if node.id not in self.values:
                 raise ValueError(f'unknown or non-numeric claim "{node.id}"')
-            return float(self.values[node.id])
+            return self.values[node.id]
         raise ValueError('only claim ids, numbers, + - * / and parentheses are allowed')
 
 
@@ -367,22 +518,26 @@ def expr_names(expr: str) -> set[str]:
     return {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
 
 
-def evaluate(expr: str, values: dict) -> float:
-    return _Eval(values).run(ast.parse(expr, mode='eval'))
+def evaluate(expr: str, values: dict) -> Decimal:
+    with localcontext() as ctx:
+        ctx.prec = 50
+        return _Eval(values).run(ast.parse(expr, mode='eval'))
 
 
 _REL_OPS = {ast.Eq: '==', ast.LtE: '<=', ast.GtE: '>=', ast.Lt: '<', ast.Gt: '>'}
 
 
-def check_relation(expr: str, values: dict, tolerance: float):
+def check_relation(expr: str, values: dict, tolerance: Decimal):
     tree = ast.parse(expr, mode='eval').body
     if not (isinstance(tree, ast.Compare) and len(tree.ops) == 1 and type(tree.ops[0]) in _REL_OPS):
         raise ValueError('a relation is one comparison: ==, <=, >=, < or >')
-    left = _Eval(values).run(tree.left)
-    right = _Eval(values).run(tree.comparators[0])
+    with localcontext() as ctx:
+        ctx.prec = 50
+        left = _Eval(values).run(tree.left)
+        right = _Eval(values).run(tree.comparators[0])
     op = _REL_OPS[type(tree.ops[0])]
     if op == '==':
-        ok = abs(left - right) <= tolerance or _close(left, right)
+        ok = abs(left - right) <= tolerance
     else:
         ok = {'<=': left <= right, '>=': left >= right, '<': left < right, '>': left > right}[op]
     return ok, left, right
@@ -399,8 +554,7 @@ class _Tables:
     def rows(self, rel):
         p = self.path(rel)
         if p not in self.cache:
-            with open(p, newline='', encoding='utf-8-sig') as f:
-                self.cache[p] = list(csv.DictReader(f))
+            self.cache[p] = load_table(p)
         return self.cache[p]
 
     def json(self, rel):
@@ -413,10 +567,7 @@ class _Tables:
 def _json_get(doc, path):
     cur = doc
     for part in re.findall(r'[^.\[\]]+|\[\d+\]', path):
-        if part.startswith('['):
-            cur = cur[int(part[1:-1])]
-        else:
-            cur = cur[part]
+        cur = cur[int(part[1:-1])] if part.startswith('[') else cur[part]
     return cur
 
 
@@ -430,23 +581,39 @@ def _locate(claim, src, tables: _Tables):
         if 'json' in loc:
             return _json_get(tables.json(table), loc['json']), None
         where, column = loc.get('where') or {}, loc.get('column')
-        rows = tables.rows(table)
-        if rows and column not in rows[0]:
-            return None, f'column "{column}" is not in {table}'
-        for key in where:
-            if rows and key not in rows[0]:
-                return None, f'where-column "{key}" is not in {table}'
-        hits = [r for r in rows if all((r.get(k) or '').strip() == str(v).strip() for k, v in where.items())]
+        header, rows = tables.rows(table)
+        for col in [column, *where]:
+            if col not in header:
+                return None, f'column "{col}" is not in {table}'
+        hits = [r for r in rows if all(r[k].strip() == str(v).strip() for k, v in where.items())]
         if len(hits) != 1:
             return None, f'{len(hits)} rows of {table} match {where}; exactly one must'
-        return hits[0].get(column), None
-    except (OSError, KeyError, IndexError, TypeError, ValueError) as exc:
+        return hits[0][column], None
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
         return None, f'cannot read {table}: {exc}'
+
+
+def _number_labels(text):
+    return {t.value for t in tokenize(normalize(str(text)))[0] if not t.pct and not t.sign}
+
+
+class Claim:
+    """A ledger claim with everything the deliverable check needs."""
+
+    def __init__(self, raw):
+        self.raw = raw
+        self.id = raw['id']
+        self.value = dec(raw.get('value'))
+        self.when = parse_when(raw.get('value')) if self.value is None else None
+        self.unit = raw.get('unit')
+        self.magnitude = raw.get('magnitude') is True
+        self.bound = None
+        self.labels: set[Decimal] = set()
 
 
 def check_ledger(ledger, base, today, stale_days, f: Findings):
     """Schema, source metadata, cell binding, quotes, derived values and relations.
-    Returns {claim_id: claim} for the claims that are usable downstream."""
+    Returns {claim_id: Claim}."""
     if not isinstance(ledger, dict):
         raise InputError('the ledger must be a JSON object')
     sources = ledger.get('sources') or {}
@@ -495,81 +662,126 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
         else:
             f.fail('source', f'{sid}: type must be query, file, web or doc')
 
-    by_id: dict[str, dict] = {}
-    for i, claim in enumerate(claims):
-        if not isinstance(claim, dict):
+    by_id: dict[str, Claim] = {}
+    for i, raw in enumerate(claims):
+        if not isinstance(raw, dict):
             f.fail('claim', f'claims[{i}] is not an object')
             continue
-        cid = claim.get('id')
+        cid = raw.get('id')
         if not isinstance(cid, str) or not _ID.match(cid):
             f.fail('claim', f'claims[{i}]: id must look like a variable name (letters, digits, _)')
             continue
         if cid in by_id:
             f.fail('claim', f'{cid}: duplicate id')
             continue
+        claim = Claim(raw)
         by_id[cid] = claim
-        value = claim.get('value')
-        if not (_is_number(value) or (isinstance(value, str) and value.strip())):
-            f.fail('claim', f'{cid}: value must be a number or non-empty text')
-        has_src, has_expr = 'source' in claim, 'expr' in claim
+        value = raw.get('value')
+        if claim.value is None and not (isinstance(value, str) and value.strip() and dec(value) is None):
+            f.fail('claim', f'{cid}: value must be a finite number or non-empty text')
+        has_src, has_expr = 'source' in raw, 'expr' in raw
         if has_src == has_expr:
             f.fail('claim', f'{cid}: give exactly one of "source" or "expr"')
-        anchors, omit = claim.get('anchors'), claim.get('omit')
+        anchors, omit = raw.get('anchors'), raw.get('omit')
         if anchors is not None and omit is not None:
             f.fail('claim', f'{cid}: give "anchors" or "omit", not both')
         elif anchors is None and not (isinstance(omit, str) and omit.strip()):
             f.fail('omitted', f'{cid}: not shown in the deliverable. Add "anchors", or "omit" with the reason it is left out')
-        if has_src:
-            src = sources.get(claim['source'])
-            if not isinstance(src, dict):
-                f.fail('claim', f'{cid}: source "{claim["source"]}" is not declared')
-                continue
-            kind = src.get('type')
-            if kind in ('query', 'file') and _is_number(value):
-                if 'locate' not in claim:
-                    f.fail('retyped', f'{cid}: a number from {claim["source"]} must be read from its file ("locate"), not typed')
+        loc = raw.get('locate')
+        if isinstance(loc, dict) and isinstance(loc.get('where'), dict):
+            for v in loc['where'].values():
+                claim.labels |= _number_labels(v)
+        quote = raw.get('quote')
+        for label in raw.get('labels') or []:
+            d = dec(label)
+            if d is None or d not in (_number_labels(quote) if quote else set()):
+                f.fail('label', f'{cid}: label {label!r} must appear as a number in this claim\'s "quote"')
+            else:
+                claim.labels.add(d)
+        if not has_src:
+            continue
+        src = sources.get(raw['source'])
+        if not isinstance(src, dict):
+            f.fail('claim', f'{cid}: source "{raw["source"]}" is not declared')
+            continue
+        kind = src.get('type')
+        if kind in ('query', 'file') and claim.value is not None:
+            if 'locate' not in raw:
+                f.fail('retyped', f'{cid}: a number from {raw["source"]} must be read from its file ("locate"), not typed')
+            else:
+                cell, err = _locate(raw, src, tables)
+                if err:
+                    f.fail('bind', f'{cid}: {err}')
                 else:
-                    cell, err = _locate(claim, src, tables)
-                    if err:
-                        f.fail('bind', f'{cid}: {err}')
-                    else:
-                        got = _num(cell) if not _is_number(cell) else float(cell)
-                        if got is None:
-                            f.fail('bind', f'{cid}: the located cell is empty or not a number ({cell!r})')
-                        elif not _close(got, float(value)):
-                            f.fail('bind', f'{cid}: ledger says {value} but {src.get("result") or src.get("path")} says {cell}')
-            if kind == 'web':
-                quote = claim.get('quote')
-                if not (isinstance(quote, str) and quote.strip()):
-                    f.fail('quote', f'{cid}: a web claim needs the exact source text it rests on ("quote")')
-                elif _is_number(value):
-                    shown = tokenize(normalize(quote))
-                    if not any(token_matches(t, value, claim.get('unit')) for t in shown):
-                        f.fail('quote', f'{cid}: the quote does not show {value} ({quote.strip()[:80]!r})')
+                    got = dec(cell) if isinstance(cell, (int, float)) else cell_number(cell)[0]
+                    if got is None:
+                        f.fail('bind', f'{cid}: the located cell is empty or not a finite number ({cell!r})')
+                    elif got != claim.value:
+                        f.fail('bind', f'{cid}: ledger says {value} but {src.get("result") or src.get("path")} says {cell}')
+        if kind == 'web' and not (isinstance(quote, str) and quote.strip()):
+            f.fail('quote', f'{cid}: a web claim needs the exact source text it rests on ("quote")')
+        elif isinstance(quote, str) and quote.strip() and claim.value is not None:
+            shown = tokenize(normalize(quote))[0]
+            exact = [t for t in shown if t.op in ('eq',) and displays(t, claim.value, claim.unit, claim.magnitude)]
+            bounds = [t for t in shown if t.op != 'eq' and displays(t, claim.value, claim.unit, claim.magnitude, bound=t.op)]
+            if exact:
+                pass
+            elif bounds:
+                claim.bound = bounds[0].op  # the source gives only a bound ("50+"); displays must keep it
+            else:
+                f.fail('quote', f'{cid}: the quote does not show {value} ({quote.strip()[:80]!r})')
 
-    numeric = {k: float(c['value']) for k, c in by_id.items() if _is_number(c.get('value'))}
+    numeric = {k: c.value for k, c in by_id.items() if c.value is not None}
     for cid, claim in by_id.items():
-        if 'expr' not in claim:
+        if 'expr' not in claim.raw:
+            continue
+        expr = str(claim.raw['expr'])
+        names = expr_names(expr)
+        if not names:
+            f.fail('derived', f'{cid}: "expr" must derive from other claims; a bare number needs a source')
             continue
         try:
-            got = evaluate(str(claim['expr']), numeric)
-        except (ValueError, SyntaxError, ZeroDivisionError) as exc:
-            f.fail('derived', f'{cid}: cannot evaluate {claim["expr"]!r}: {exc}')
+            got = evaluate(expr, numeric)
+        except (ValueError, SyntaxError, ArithmeticError) as exc:
+            f.fail('derived', f'{cid}: cannot evaluate {expr!r}: {exc}')
             continue
-        if not _is_number(claim.get('value')) or not _close(got, float(claim['value'])):
-            f.fail('derived', f'{cid}: {claim["expr"]} = {got:g}, ledger says {claim.get("value")}')
+        if claim.value is None or got != claim.value:
+            f.fail('derived', f'{cid}: {expr} = {got}, ledger says {claim.raw.get("value")}')
+    _check_derivation_roots(by_id, f)
 
     for i, rel in enumerate(ledger.get('relations') or []):
         expr = rel.get('expr') if isinstance(rel, dict) else rel
-        tol = float(rel.get('tolerance', 0)) if isinstance(rel, dict) else 0.0
+        tol = dec(rel.get('tolerance', 0)) if isinstance(rel, dict) else Decimal(0)
         try:
-            ok, left, right = check_relation(str(expr), numeric, tol)
-        except (ValueError, SyntaxError, ZeroDivisionError) as exc:
+            ok, left, right = check_relation(str(expr), numeric, tol if tol is not None else Decimal(0))
+        except (ValueError, SyntaxError, ArithmeticError) as exc:
             f.fail('relation', f'relations[{i}] {expr!r}: {exc}')
             continue
         if not ok:
-            f.fail('relation', f'{expr}: left side is {left:g}, right side is {right:g}')
+            f.fail('relation', f'{expr}: left side is {left}, right side is {right}')
     return by_id
+
+
+def _check_derivation_roots(by_id, f: Findings):
+    """Every derived claim must bottom out in sourced claims, with no cycles."""
+    state: dict[str, str] = {}
+
+    def visit(cid, path):
+        claim = by_id.get(cid)
+        if claim is None or 'expr' not in claim.raw:
+            return
+        if state.get(cid) == 'done':
+            return
+        if state.get(cid) == 'active':
+            f.fail('derived', f'{" -> ".join(path + [cid])}: claims derive from each other in a circle')
+            return
+        state[cid] = 'active'
+        for name in expr_names(str(claim.raw['expr'])):
+            visit(name, path + [cid])
+        state[cid] = 'done'
+
+    for cid in by_id:
+        visit(cid, [])
 
 
 def _occurrences(text, needle):
@@ -580,81 +792,117 @@ def _occurrences(text, needle):
     return out
 
 
+def _residue(snippet, tokens_inside, start):
+    """The snippet with the given numbers blanked out."""
+    rest = list(snippet)
+    for t in tokens_inside:
+        for k in range(t.start - start, t.end - start):
+            if 0 <= k < len(rest):
+                rest[k] = ' '
+    return ''.join(rest)
+
+
 def check_deliverables(paths, claims, exempt, f: Findings):
     texts = {p: normalize(read_text(p)) for p in paths}
-    tokens = {p: tokenize(t) for p, t in texts.items()}
-    covered = {p: [] for p in paths}  # (start, end) spans
-    text_bound = []
-    numeric_claims = [c for c in claims.values() if _is_number(c.get('value'))]
+    tokenized = {p: tokenize(t) for p, t in texts.items()}
+    tokens = {p: tokenized[p][0] for p in paths}
+    accounted = {p: set() for p in paths}   # indices of tokens some claim accounts for
+    in_anchor = {p: {} for p in paths}      # index -> ids of claims whose anchor holds it
+    exempt_spans = {p: [] for p in paths}
+    labels_used = 0
 
-    for cid, claim in claims.items():
-        anchors = claim.get('anchors')
+    for claim in claims.values():
+        anchors = claim.raw.get('anchors')
         if anchors is None:
             continue
         if isinstance(anchors, str):
             anchors = [anchors]
         if not isinstance(anchors, list) or not anchors:
-            f.fail('anchor', f'{cid}: "anchors" must be a non-empty list of text copied from the deliverable')
+            f.fail('anchor', f'{claim.id}: "anchors" must be a non-empty list of text copied from the deliverable')
             continue
-        value, unit = claim.get('value'), claim.get('unit')
-        dates = _date_parts(value) if isinstance(value, str) else None
         for anchor in anchors:
             na = normalize(str(anchor))
             found = False
             for p in paths:
                 for (s, e) in _occurrences(texts[p], na):
                     found = True
-                    covered[p].append((s, e))
-                    inside = [t for t in tokens[p] if t.start >= s and t.end <= e]
-                    if _is_number(value):
-                        hits = [t for t in inside if token_matches(t, value, unit)]
-                        if not hits:
-                            shown = ', '.join(t.text for t in inside) or 'no whole number'
-                            f.fail('anchor', f'{cid}: "{na}" shows {shown}; the ledger value is {value}{unit or ""}')
-                            continue
-                        rest = na
-                        for t in hits[:1]:
-                            rest = rest.replace(t.text, '', 1)
-                        if not re.search(r'[A-Za-z0-9]', rest):
-                            f.fail('anchor', f'{cid}: "{na}" is a bare number; include the words that say what it counts')
-                    elif dates is not None:
-                        bad = [t.text for t in inside if int(abs(t.value)) not in dates or t.value != int(t.value)]
-                        if bad:
-                            f.fail('anchor', f'{cid}: "{na}" shows {", ".join(bad)}, which is not part of {value}')
-                    elif inside:
-                        text_bound.append(f'{cid}: {", ".join(t.text for t in inside)} in "{na}"')
+                    inside = [(i, t) for i, t in enumerate(tokens[p]) if t.start >= s and t.end <= e]
+                    for i, _ in inside:
+                        in_anchor[p].setdefault(i, []).append(claim.id)
+                    shown_value = []
+                    if claim.value is not None:
+                        for i, t in inside:
+                            if displays(t, claim.value, claim.unit, claim.magnitude, claim.bound):
+                                accounted[p].add(i)
+                                shown_value.append(t)
+                        if not shown_value:
+                            got = ', '.join(t.text for _, t in inside) or 'no whole number'
+                            note = f' (the source gives only "{claim.bound}" this value)' if claim.bound else ''
+                            f.fail('anchor', f'{claim.id}: "{na}" shows {got}; the ledger value is '
+                                             f'{claim.raw.get("value")}{claim.unit or ""}{note}')
+                        elif not re.search(r'[A-Za-z0-9]', _residue(texts[p][s:e], shown_value, s)):
+                            f.fail('anchor', f'{claim.id}: "{na}" is a bare number; include the words that say what it counts')
+                    elif claim.when is not None:
+                        dates = date_matches(texts[p][s:e], claim.when)
+                        for ds, de, ok, shown in dates:
+                            if not ok:
+                                f.fail('anchor', f'{claim.id}: "{na}" shows {shown}; the date is {claim.raw.get("value")}')
+                            for i, t in inside:
+                                if ds <= t.start - s and t.end - s <= de:
+                                    accounted[p].add(i)
+                        if not any(ok for *_, ok, _ in dates):
+                            f.fail('anchor', f'{claim.id}: "{na}" shows no part of {claim.raw.get("value")}')
+                    for i, t in inside:
+                        if i not in accounted[p] and t.op == 'eq' and not t.pct and not t.sign and t.value in claim.labels:
+                            accounted[p].add(i)
+                            labels_used += 1
             if not found:
-                f.fail('anchor', f'{cid}: "{na}" is not in the deliverable (edited since the ledger was written?)')
+                f.fail('anchor', f'{claim.id}: "{na}" is not in the deliverable (edited since the ledger was written?)')
 
     for snippet in exempt or []:
         ns = normalize(str(snippet))
         hits = [(p, span) for p in paths for span in _occurrences(texts[p], ns)]
         if not hits:
             f.warn('exempt', f'"{ns}" is not in the deliverable; remove it from "exempt"')
+            continue
+        p0, (s0, e0) = hits[0]
+        inside0 = [t for t in tokens[p0] if t.start >= s0 and t.end <= e0]
+        if len(inside0) < 2 and not re.search(r'[A-Za-z]', _residue(texts[p0][s0:e0], inside0, s0)):
+            f.fail('exempt', f'"{ns}" is a bare number; exempt the address, phone or name it belongs to')
+            continue
         for p, span in hits:
-            covered[p].append(span)
+            exempt_spans[p].append(span)
 
     total = 0
     for p in paths:
-        for t in tokens[p]:
+        for i, t in enumerate(tokens[p]):
             total += 1
-            if any(s <= t.start and t.end <= e for s, e in covered[p]):
+            if i in accounted[p] or any(s <= t.start and t.end <= e for s, e in exempt_spans[p]):
                 continue
             around = texts[p][max(0, t.start - 50):t.end + 50]
-            cands = [c['id'] for c in numeric_claims if token_matches(t, c['value'], c.get('unit'))][:3]
+            if i in in_anchor[p]:
+                f.fail('unbound', f'"{t.text}" sits in the anchor for {", ".join(in_anchor[p][i])} but no claim '
+                                  f'accounts for it: give it its own claim (a range is two claims), or a label '
+                                  f'if it names the row: ...{around}...')
+                continue
+            cands = [c.id for c in claims.values() if c.value is not None
+                     and displays(t, c.value, c.unit, c.magnitude, c.bound)][:3]
             hint = f' (value matches {", ".join(cands)}: anchor it)' if cands else ''
             f.fail('unbound', f'"{t.text}" is not bound to any claim{hint}: ...{around}...')
-    for line in text_bound:
-        f.note('text', f'numbers bound to a text claim, unchecked here: {line}')
+        skipped = tokenized[p][1]
+        if skipped:
+            shown = ', '.join(sorted(set(skipped))[:12])
+            f.note('skipped', f'{p}: read as identifiers, not quantities: {shown}')
+    if labels_used:
+        f.note('labels', f'{labels_used} number(s) accepted as row or name labels; the verifier should read them')
     return total
 
 
 def cmd_check(args):
-    ledger_path = args.ledger
-    ledger = load_json(ledger_path)
+    ledger = load_json(args.ledger)
     today = dt.date.fromisoformat(args.today) if args.today else dt.date.today()
     f = Findings()
-    claims = check_ledger(ledger, os.path.dirname(os.path.abspath(ledger_path)), today, args.stale_days, f)
+    claims = check_ledger(ledger, os.path.dirname(os.path.abspath(args.ledger)), today, args.stale_days, f)
     total = check_deliverables(args.deliverables, claims, ledger.get('exempt'), f)
     rels = len(ledger.get('relations') or [])
     return f.emit(f'{total} number(s) in {len(args.deliverables)} file(s), {len(claims)} claim(s), {rels} relation(s).')
@@ -668,21 +916,21 @@ def _slug(text):
 
 
 def cmd_scaffold(args):
-    with open(args.result, newline='', encoding='utf-8-sig') as fh:
-        rows = list(csv.DictReader(fh))
+    header, rows = load_table(args.result)
     if not rows:
         raise InputError(f'{args.result}: no rows')
     keys = [k.strip() for k in args.key.split(',')]
     for k in keys:
-        if k not in rows[0]:
+        if k not in header:
             raise InputError(f'--key {k} is not a column of {args.result}')
-    columns = [c.strip() for c in args.columns.split(',')] if args.columns else [c for c in rows[0] if c not in keys]
+    columns = [c.strip() for c in args.columns.split(',')] if args.columns else [c for c in header if c not in keys]
+    for col in columns:
+        if col not in header:
+            raise InputError(f'--columns {col} is not a column of {args.result}')
     out, seen = [], set()
     for row in rows:
         for col in columns:
-            if col not in row:
-                raise InputError(f'--columns {col} is not a column of {args.result}')
-            value = _num(row[col])
+            value, shape = cell_number(row[col])
             if value is None:
                 print(f'skipped non-numeric {col} at {[row[k] for k in keys]}: {row[col]!r}', file=sys.stderr)
                 continue
@@ -691,13 +939,16 @@ def cmd_scaffold(args):
             while cid in seen:
                 cid, n = f'{base}_{n}', n + 1
             seen.add(cid)
-            out.append({
+            claim = {
                 'id': cid,
-                'value': int(value) if value == int(value) else value,
+                'value': int(value) if value == value.to_integral_value() else float(value),
                 'source': args.source,
                 'locate': {'where': {k: row[k] for k in keys}, 'column': col},
                 'anchors': [],
-            })
+            }
+            if '%' in shape:
+                claim['unit'] = '%'
+            out.append(claim)
     json.dump(out, sys.stdout, indent=2)
     print()
     print(f'{len(out)} claim(s). Fill each "anchors" with the text that shows it, or replace it with "omit".', file=sys.stderr)
@@ -707,14 +958,12 @@ def cmd_scaffold(args):
 # ---------------------------------------------------------------- reproduce
 
 def cmd_reproduce(args):
-    def load(path):
-        with open(path, newline='', encoding='utf-8-sig') as fh:
-            reader = csv.DictReader(fh)
-            return list(reader.fieldnames or []), list(reader)
-
-    cols_a, rows_a = load(args.delivered)
-    cols_b, rows_b = load(args.rerun)
+    cols_a, rows_a = load_table(args.delivered)
+    cols_b, rows_b = load_table(args.rerun)
     keys = [k.strip() for k in args.key.split(',')]
+    rel_tol, abs_tol = dec(args.rel_tol), dec(args.abs_tol)
+    if rel_tol is None or abs_tol is None or rel_tol < 0 or abs_tol < 0:
+        raise InputError('--rel-tol and --abs-tol must be finite and non-negative')
     f = Findings()
     for side, cols in (('delivered', cols_a), ('rerun', cols_b)):
         for k in keys:
@@ -730,7 +979,7 @@ def cmd_reproduce(args):
     def index(rows, side):
         idx = {}
         for r in rows:
-            k = tuple((r.get(c) or '').strip() for c in keys)
+            k = tuple(r[c].strip() for c in keys)
             if k in idx:
                 f.fail('key', f'{side} has key {k} more than once')
             idx[k] = r
@@ -749,24 +998,24 @@ def cmd_reproduce(args):
         if k not in b:
             continue
         for c in shared:
-            va, vb = (a[k].get(c) or '').strip(), (b[k].get(c) or '').strip()
+            va, vb = a[k][c].strip(), b[k][c].strip()
             if va == vb:
                 continue
-            na, nb = _num(va), _num(vb)
+            (na, shape_a), (nb, shape_b) = cell_number(va), cell_number(vb)
             if (va == '') != (vb == ''):
                 f.fail('null', f'{k} {c}: delivered {va!r}, rerun {vb!r} (empty is not zero)')
-            elif na is None or nb is None:
+            elif na is None or nb is None or shape_a != shape_b:
                 f.fail('value', f'{k} {c}: delivered {va!r}, rerun {vb!r}')
-            elif _close(na, nb):
-                continue
-            elif abs(na - nb) <= max(args.abs_tol, args.rel_tol * max(abs(na), abs(nb))):
+            elif na == nb:
+                continue  # same number, different formatting
+            elif abs(na - nb) <= max(abs_tol, rel_tol * max(abs(na), abs(nb))):
                 drift += 1
-                f.warn('drift', f'{k} {c}: delivered {va}, rerun {vb} ({nb - na:+g})')
+                f.warn('drift', f'{k} {c}: delivered {va}, rerun {vb} ({nb - na:+})')
             else:
-                f.fail('value', f'{k} {c}: delivered {va}, rerun {vb} ({nb - na:+g})')
+                f.fail('value', f'{k} {c}: delivered {va}, rerun {vb} ({nb - na:+})')
     summary = f'{len(a)} row(s) x {len(shared)} column(s) compared on {", ".join(keys)}.'
     if drift and not f.fails:
-        summary += (f' {drift} cell(s) differ within tolerance (rel {args.rel_tol:g}, abs {args.abs_tol:g}):'
+        summary += (f' {drift} cell(s) differ within tolerance (rel {args.rel_tol}, abs {args.abs_tol}):'
                     ' report them as live-data drift, not as a match.')
     for line in f.fails + f.warns:
         print(line)
@@ -788,6 +1037,8 @@ def _units(path):
 
 
 def cmd_changed(args):
+    if bool(args.old_ledger) != bool(args.new_ledger):
+        raise InputError('pass both --old-ledger and --new-ledger, or neither')
     old, new = _units(args.old), _units(args.new)
     sm = difflib.SequenceMatcher(None, old, new, autojunk=False)
     changed = 0
@@ -802,17 +1053,15 @@ def cmd_changed(args):
             changed += 1
     if not changed:
         print('  (none)')
-    if bool(args.old_ledger) != bool(args.new_ledger):
-        raise InputError('pass both --old-ledger and --new-ledger, or neither')
     if args.old_ledger:
         la, lb = load_json(args.old_ledger), load_json(args.new_ledger)
         ca = {c.get('id'): c for c in la.get('claims') or [] if isinstance(c, dict)}
         cb = {c.get('id'): c for c in lb.get('claims') or [] if isinstance(c, dict)}
         moved = {k for k in ca.keys() | cb.keys()
                  if json.dumps(ca.get(k), sort_keys=True) != json.dumps(cb.get(k), sort_keys=True)}
-        src_moved = {k for k in (la.get('sources') or {}).keys() | (lb.get('sources') or {}).keys()
-                     if json.dumps((la.get('sources') or {}).get(k), sort_keys=True)
-                     != json.dumps((lb.get('sources') or {}).get(k), sort_keys=True)}
+        sa, sb = la.get('sources') or {}, lb.get('sources') or {}
+        src_moved = {k for k in sa.keys() | sb.keys()
+                     if json.dumps(sa.get(k), sort_keys=True) != json.dumps(sb.get(k), sort_keys=True)}
         moved |= {k for k, c in cb.items() if c.get('source') in src_moved}
         deps, frontier = set(), set(moved)
         while frontier:
@@ -820,7 +1069,7 @@ def cmd_changed(args):
             deps |= nxt
             frontier = nxt
         rels = [r.get('expr') if isinstance(r, dict) else r for r in lb.get('relations') or []]
-        hit_rels = [r for r in rels if expr_names(str(r)) & (moved | deps)]
+        hit_rels = [str(r) for r in rels if expr_names(str(r)) & (moved | deps)]
         print('Claims changed, added or removed: ' + (', '.join(sorted(k for k in moved if k)) or 'none'))
         print('Claims derived from them: ' + (', '.join(sorted(deps)) or 'none'))
         print('Relations touching them: ' + ('; '.join(hit_rels) or 'none'))
@@ -844,32 +1093,82 @@ def cmd_hash(args):
     return 0
 
 
+_META = re.compile(r'^\s*(artifact-sha256|ledger-sha256|verifier|verdict)\s*:\s*(.*?)\s*$', re.I)
+_OPEN_SECTIONS = ('wrong', 'stale', 'unsupported')
+
+
+def _open_findings(lines):
+    """Lines of real content under the Wrong / Stale / Unsupported headings."""
+    counts, current, in_table = {}, None, False
+    for line in lines:
+        heading = re.match(r'^\s*#{2,}\s*(.*)$', line)
+        if heading:
+            title = heading.group(1).strip().lower()
+            current = next((k for k in _OPEN_SECTIONS if title.startswith(k)), None)
+            if current:
+                counts.setdefault(current, 0)
+            in_table = False
+            continue
+        if current is None:
+            continue
+        s = line.strip()
+        if not s or re.fullmatch(r'[-*]?\s*\(?(none|n/a|nothing)\)?\.?', s, re.I):
+            in_table = False
+            continue
+        if s.startswith('|'):
+            if re.fullmatch(r'\|?[\s:|-]+\|?', s):
+                continue
+            if not in_table:
+                in_table = True  # the table's header row
+                continue
+        counts[current] += 1
+    return counts
+
+
 def cmd_receipt(args):
     with open(args.report, encoding='utf-8') as fh:
-        report = fh.read()
-    arts = set(re.findall(r'artifact-sha256:\s*`?([0-9a-f]{64})', report, re.I))
-    ledgers = set(re.findall(r'ledger-sha256:\s*`?([0-9a-f]{64})', report, re.I))
-    verdicts = re.findall(r'^\W*verdict:\s*\**\s*([A-Z]+)', report, re.I | re.M)
-    verifier = re.findall(r'^\W*verifier:\s*(.+)$', report, re.I | re.M)
+        lines = fh.read().splitlines()
     f = Findings()
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    header = []
+    while i < len(lines) and _META.match(lines[i]):
+        header.append(_META.match(lines[i]).groups())
+        i += 1
+    for line in lines[i:]:
+        if _META.match(line):
+            f.fail('receipt', f'"{line.strip()[:60]}" is outside the header block at the top of the report')
+    fields: dict[str, list[str]] = {}
+    for key, value in header:
+        fields.setdefault(key.lower(), []).append(value.strip('`* '))
+    for key in ('ledger-sha256', 'verifier', 'verdict'):
+        if len(fields.get(key, [])) != 1:
+            f.fail('receipt', f'the header needs exactly one "{key}:" line (found {len(fields.get(key, []))})')
+    arts = {v.split()[0].lower() for v in fields.get('artifact-sha256', []) if v}
     for p in args.deliverables:
-        if sha256(p) not in {a.lower() for a in arts}:
+        if sha256(p) not in arts:
             f.fail('receipt', f'{p} is not the file that was verified (edited after the check, or never checked)')
-    if sha256(args.ledger) not in {x.lower() for x in ledgers}:
+    if [v.lower() for v in fields.get('ledger-sha256', [''])][:1] != [sha256(args.ledger)]:
         f.fail('receipt', f'{args.ledger} is not the ledger that was verified')
-    if not verdicts:
-        f.fail('receipt', 'no "verdict:" line')
-    elif verdicts[-1].upper() != 'CLEAR':
-        f.fail('receipt', f'verdict is {verdicts[-1].upper()}, not CLEAR')
-    who = verifier[-1].strip() if verifier else ''
+    verdict = (fields.get('verdict') or [''])[0].upper()
+    who = (fields.get('verifier') or [''])[0]
+    if verdict != 'CLEAR':
+        f.fail('receipt', f'verdict is {verdict or "missing"}, not CLEAR')
     if not who:
-        f.fail('receipt', 'no "verifier:" line naming the model that checked it')
+        f.fail('receipt', 'no verifier named')
+    open_counts = _open_findings(lines[i:])
+    for section in _OPEN_SECTIONS:
+        if section not in open_counts:
+            f.fail('receipt', f'the report has no "{section.capitalize()}" section')
+        elif open_counts[section] and verdict == 'CLEAR':
+            f.fail('receipt', f'CLEAR with {open_counts[section]} open item(s) under "{section.capitalize()}"')
     for line in f.fails:
         print(line)
     if f.fails:
-        print('RESULT: FAIL: this receipt does not cover these exact files.')
+        print('RESULT: FAIL: this receipt does not cover these exact files with a clean verdict.')
         return 1
-    print(f'RESULT: PASS: verified as-is by {who}.')
+    print(f'RESULT: PASS: verified as-is by {who}. A receipt shows what a verifier wrote, not who wrote it.')
     return 0
 
 
@@ -879,7 +1178,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='cmd', required=True)
 
-    p = sub.add_parser('check', help='bind every number to a claim and every claim to a source')
+    p = sub.add_parser('check', help='account for every number and bind every claim to a source')
     p.add_argument('ledger')
     p.add_argument('deliverables', nargs='+')
     p.add_argument('--stale-days', type=int, default=365)
@@ -898,8 +1197,8 @@ def main(argv=None):
     p.add_argument('delivered')
     p.add_argument('rerun')
     p.add_argument('--key', required=True)
-    p.add_argument('--rel-tol', type=float, default=0.0)
-    p.add_argument('--abs-tol', type=float, default=0.0)
+    p.add_argument('--rel-tol', default='0')
+    p.add_argument('--abs-tol', default='0')
     p.set_defaults(fn=cmd_reproduce)
 
     p = sub.add_parser('changed', help='list what a fix pass changed, for the re-check')

@@ -74,6 +74,21 @@ couple notes for the all-channel estimate
 """
 
 
+SECTIONS = '''## Wrong
+| Where | Deliverable says | Actually | Evidence |
+|---|---|---|---|
+
+## Stale or overstated
+none
+
+## Unsupported
+none
+
+## Confirmed
+- every number
+'''
+
+
 def run(argv):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -251,7 +266,7 @@ class XzoReplay(Tmp):
 
     def test_spelled_out_count_is_checked(self):
         led = self.ledger([{'id': 'cmc_rum', 'value': 5, 'source': 'cmc', 'quote': 'five of the ten cocktails use rum',
-                            'anchors': ['Six of the ten cocktails are rum']}], exempt=['ten cocktails'])
+                            'labels': [10], 'anchors': ['Six of the ten cocktails are rum']}])
         code, out = run(['check', led, self.write('r.md', 'Six of the ten cocktails are rum.')])
         self.assertEqual(code, 1)
         self.assertIn('shows Six', out)
@@ -288,36 +303,56 @@ class XzoReplay(Tmp):
 
 class Displays(unittest.TestCase):
     def tok(self, text):
-        toks = cc.tokenize(cc.normalize(text))
+        toks = cc.tokenize(cc.normalize(text))[0]
         self.assertEqual(len(toks), 1, toks)
         return toks[0]
 
+    def ok(self, text, value, unit=None, **kw):
+        return cc.displays(self.tok(text), cc.dec(value), unit, **kw)
+
     def test_rounding_to_shown_precision(self):
-        self.assertTrue(cc.token_matches(self.tok('1.97M'), 1966205, None))
-        self.assertFalse(cc.token_matches(self.tok('1.97M'), 1980000, None))
-        self.assertTrue(cc.token_matches(self.tok('$24.99'), 24.99, 'USD'))
+        self.assertTrue(self.ok('1.97M', 1966205))
+        self.assertFalse(self.ok('1.97M', 1980000))
+        self.assertTrue(self.ok('$24.99', 24.99, 'USD'))
+        self.assertFalse(self.ok('1,000,000,001', 1000000000))
 
     def test_approximate_words_do_not_loosen(self):
-        self.assertFalse(cc.token_matches(self.tok('about 80%'), 76.2, '%'))
-        self.assertTrue(cc.token_matches(self.tok('about 76%'), 76.2, '%'))
+        self.assertFalse(self.ok('about 80%', 76.2, '%'))
+        self.assertTrue(self.ok('about 76%', 76.2, '%'))
 
     def test_comparators(self):
-        self.assertTrue(cc.token_matches(self.tok('<1K'), 191, None))
-        self.assertFalse(cc.token_matches(self.tok('<1K'), 1200, None))
-        self.assertTrue(cc.token_matches(self.tok('50+'), 50, None))
-        self.assertFalse(cc.token_matches(self.tok('more than 50'), 50, None))
-        self.assertFalse(cc.token_matches(self.tok('nearly 30'), 30.4, None))
+        self.assertTrue(self.ok('<1K', 191))
+        self.assertFalse(self.ok('<1K', 1200))
+        self.assertTrue(self.ok('50+', 50))
+        self.assertFalse(self.ok('more than 50', 50))
+        self.assertFalse(self.ok('nearly 30', 30.4))
+        self.assertTrue(self.ok('not more than 80%', 73.7, '%'))
+        self.assertFalse(self.ok('not more than 80%', 81, '%'))
 
     def test_percent_needs_a_percent_claim(self):
-        self.assertTrue(cc.token_matches(self.tok('73.7%'), 0.737, 'ratio'))
-        self.assertFalse(cc.token_matches(self.tok('73.7%'), 73.7, None))
-        self.assertFalse(cc.token_matches(self.tok('73.7'), 73.7, '%'))
+        self.assertTrue(self.ok('73.7%', 0.737, 'ratio'))
+        self.assertFalse(self.ok('73.7%', 73.7))
+        self.assertFalse(self.ok('73.7', 73.7, '%'))
+        self.assertTrue(self.ok('Six percent', 6, '%'))
 
-    def test_identifiers_are_not_quantities(self):
-        self.assertEqual(cc.tokenize(cc.normalize("Q1's combined column, H2 and v2")), [])
+    def test_identifiers_are_not_quantities_but_are_reported(self):
+        toks, skipped = cc.tokenize(cc.normalize("Q1's combined column, H2 and table B03001"))
+        self.assertEqual(toks, [])
+        self.assertEqual(skipped, ['Q1', 'H2', 'B03001'])
 
-    def test_unsigned_display_of_a_decline(self):
-        self.assertTrue(cc.token_matches(self.tok('fell 6.6%'), -6.6, '%'))
+    def test_full_numeric_forms(self):
+        self.assertTrue(self.ok('1e6 units', 1000000))
+        self.assertFalse(self.ok('1e6 units', 1))
+        self.assertTrue(self.ok('USD1200', 1200))
+        self.assertTrue(self.ok('Two hundred customers', 200))
+        self.assertTrue(self.ok('two hundred and five', 205))
+        self.assertEqual(cc.tokenize(cc.normalize('no one ordered a one-off'))[0], [])
+
+    def test_signs_are_kept(self):
+        self.assertFalse(self.ok('+7 dollars', -7))
+        self.assertFalse(self.ok('fell 6.6%', -6.6, '%'))
+        self.assertTrue(self.ok('fell 6.6%', -6.6, '%', magnitude=True))
+        self.assertTrue(self.ok('-6.6%', -6.6, '%'))
 
 
 class Mechanics(Tmp):
@@ -366,7 +401,7 @@ class Mechanics(Tmp):
                           'anchors': ['thru ~5pm PT 9/24']}], sources=src)
         code, out = run(['check', led, self.write('d.md', 'Numbers thru ~5pm PT 9/24.')])
         self.assertEqual(code, 1)
-        self.assertIn('shows 24', out)
+        self.assertIn('shows 9/24', out)
 
     def test_undated_web_evidence_is_flagged_stale(self):
         src = {'w': {'type': 'web', 'url': 'https://x.test', 'retrieved': '2026-09-24', 'entity': 'El Patio'}}
@@ -390,12 +425,14 @@ class Mechanics(Tmp):
         self.assertEqual(claims[0], {'id': 'v_a', 'value': 1966205, 'source': 'f',
                                      'locate': {'where': {'k': 'a'}, 'column': 'v'}, 'anchors': []})
 
+    def report(self, doc, led, verdict='CLEAR', body=SECTIONS):
+        return '\n'.join([f'artifact-sha256: {cc.sha256(doc)}', f'ledger-sha256: {cc.sha256(led)}',
+                          f'verdict: {verdict}', 'verifier: gpt-6-sol (fresh codex exec session)', '', body])
+
     def test_receipt_binds_to_exact_bytes(self):
         led = self.base([])
         doc = self.write('d.md', 'final text')
-        report = self.write('verify.md', '\n'.join([
-            f'artifact-sha256: {cc.sha256(doc)}', f'ledger-sha256: {cc.sha256(led)}',
-            'verdict: CLEAR', 'verifier: gpt-6-sol (Codex CLI, fresh session)']))
+        report = self.write('verify.md', self.report(doc, led))
         self.assertEqual(run(['receipt', report, led, doc])[0], 0)
         self.write('d.md', 'final text, edited after the check')
         code, out = run(['receipt', report, led, doc])
@@ -419,6 +456,147 @@ class Mechanics(Tmp):
         code, out = run(['check', led, os.path.join(self.dir, 't.csv')])
         self.assertEqual(code, 2)
         self.assertIn('reproduce', out)
+
+
+
+class ReviewRegressions(Tmp):
+    """Inputs that passed an earlier version and must not (Codex review, round 1)."""
+
+    SRC = {'f': {'type': 'file', 'path': 't.csv', 'as_of': '2026-09-24T12:00:00Z'},
+           'w': {'type': 'web', 'url': 'https://x.test', 'retrieved': '2026-09-24', 'effective': '2026-09-01',
+                 'entity': 'Mojitos Cuban Cuisine, Calle 8'},
+           'd': {'type': 'doc', 'ref': 'ops log'}}
+
+    def led(self, claims, **extra):
+        self.write('t.csv', 'k,v\na,7\nb,12\nc,15\n')
+        return self.write('claims.json', {'sources': self.SRC, 'claims': claims, **extra})
+
+    def cell(self, cid, key, anchor):
+        return {'id': cid, 'value': {'a': 7, 'b': 12, 'c': 15}[key], 'source': 'f',
+                'locate': {'where': {'k': key}, 'column': 'v'}, 'anchors': [anchor]}
+
+    def check(self, led, text):
+        return run(['check', led, self.write('d.md', text)])
+
+    def test_extra_number_inside_an_anchor_is_unbound(self):
+        code, out = self.check(self.led([self.cell('x', 'a', '7 stores sold 999 units')]), '7 stores sold 999 units.')
+        self.assertEqual(code, 1)
+        self.assertIn('"999" sits in the anchor for x but no claim accounts for it', out)
+
+    def test_a_range_is_two_claims(self):
+        one = self.led([self.cell('lo', 'b', 'Range: 12-15 days')])
+        self.assertEqual(self.check(one, 'Range: 12-15 days.')[0], 1)
+        two = self.led([self.cell('lo', 'b', 'Range: 12-15 days'), self.cell('hi', 'c', 'Range: 12-15 days')])
+        code, out = self.check(two, 'Range: 12-15 days.')
+        self.assertEqual(code, 0, out)
+
+    def test_text_claims_do_not_silence_numbers(self):
+        claim = {'id': 'award', 'value': 'ranked on the list', 'source': 'd', 'anchors': ['#42 on the 50 Best list']}
+        self.assertEqual(self.check(self.led([claim]), 'La Trova is #42 on the 50 Best list.')[0], 1)
+        claim.update({'quote': 'No. 42, North America 50 Best', 'labels': [42, 50]})
+        code, out = self.check(self.led([claim]), 'La Trova is #42 on the 50 Best list.')
+        self.assertEqual(code, 0, out)
+        claim['labels'] = [42, 51]
+        code, out = self.check(self.led([claim]), 'La Trova is #42 on the 50 Best list.')
+        self.assertIn("label 51 must appear as a number in this claim's", out)
+
+    def test_a_quoted_bound_does_not_establish_a_larger_value(self):
+        claim = {'id': 'm', 'value': 500, 'source': 'w', 'quote': '50+ mojitos & drinks', 'anchors': ['500 drinks']}
+        code, out = self.check(self.led([claim]), 'The menu lists 500 drinks.')
+        self.assertEqual(code, 1)
+        self.assertIn('the quote does not show 500', out)
+        claim.update({'value': 50, 'anchors': ['50 drinks']})
+        code, out = self.check(self.led([claim]), 'The menu lists 50 drinks.')
+        self.assertIn('the source gives only "gte" this value', out)
+
+    def test_derived_claims_need_a_sourced_root(self):
+        circle = [{'id': 'a', 'value': 999, 'expr': 'b', 'anchors': ['999 sales']},
+                  {'id': 'b', 'value': 999, 'expr': 'a', 'omit': 'intermediate'}]
+        code, out = self.check(self.led(circle), '999 sales.')
+        self.assertEqual(code, 1)
+        self.assertIn('claims derive from each other in a circle', out)
+        constant = [{'id': 'a', 'value': 999, 'expr': '999', 'anchors': ['999 sales']}]
+        code, out = self.check(self.led(constant), '999 sales.')
+        self.assertIn('a bare number needs a source', out)
+
+    def test_glued_currency_code_needs_a_claim(self):
+        code, out = self.check(self.led([]), 'Revenue: USD1200.')
+        self.assertEqual(code, 1)
+        self.assertIn('"1200" is not bound', out)
+
+    def test_dates_are_checked_in_their_roles(self):
+        claim = {'id': 'cut', 'value': '2026-09-23', 'source': 'd', 'anchors': ['As of 2026-09-09']}
+        code, out = self.check(self.led([claim]), 'As of 2026-09-09.')
+        self.assertEqual(code, 1)
+        self.assertIn('shows 2026-09-09', out)
+        claim = {'id': 'cut', 'value': '2026-09-23T18:00:00-07:00', 'source': 'd', 'anchors': ['thru ~5pm PT 9/23']}
+        code, out = self.check(self.led([claim]), 'Numbers thru ~5pm PT 9/23.')
+        self.assertIn('shows 5pm', out)
+
+    def test_bare_number_exemption_is_refused(self):
+        code, out = self.check(self.led([], exempt=['2026']), 'In 2026 we grew.')
+        self.assertIn('"2026" is a bare number', out)
+        code, out = self.check(self.led([], exempt=['(305) 555-0100']), 'Call (305) 555-0100.')
+        self.assertEqual(code, 0, out)
+
+
+class ReproduceExactly(Tmp):
+    def compare(self, a, b, *flags):
+        return run(['reproduce', self.write('a.csv', a), self.write('b.csv', b), '--key', 'id', *flags])
+
+    def test_large_and_float_edge_values_are_not_equal(self):
+        for x, y in (('1000000000', '1000000001'), ('9007199254740992', '9007199254740993'),
+                     ('50%', '50'), ('inf', '999'), ('$5', '5')):
+            code, out = self.compare(f'id,v\nr,{x}\n', f'id,v\nr,{y}\n')
+            self.assertEqual(code, 1, (x, y, out))
+
+    def test_formatting_only_difference_is_equal(self):
+        code, out = self.compare('id,v\nr,"1,000"\n', 'id,v\nr,1000\n')
+        self.assertEqual(code, 0, out)
+        self.assertIn('RESULT: PASS:', out)
+
+    def test_duplicate_or_ragged_columns_are_refused(self):
+        code, out = self.compare('id,v,v\nx,1,7\n', 'id,v,v\nx,999,7\n')
+        self.assertEqual(code, 2)
+        self.assertIn('duplicate column', out)
+        code, out = self.compare('id,v\nx,1,7\n', 'id,v\nx,1\n')
+        self.assertEqual(code, 2)
+
+
+class ReceiptParsing(Tmp):
+    def setUp(self):
+        super().setUp()
+        self.led = self.write('claims.json', {'sources': {}, 'claims': []})
+        self.doc = self.write('d.md', 'final text')
+
+    def header(self, verdict='CLEAR', doc_hash=None):
+        return (f'artifact-sha256: {doc_hash or cc.sha256(self.doc)}\nledger-sha256: {cc.sha256(self.led)}\n'
+                f'verdict: {verdict}\nverifier: gpt-6-sol (fresh codex exec session)\n\n')
+
+    def receipt(self, text):
+        return run(['receipt', self.write('verify.md', text), self.led, self.doc])
+
+    def test_clean_report_passes(self):
+        code, out = self.receipt(self.header() + SECTIONS)
+        self.assertEqual(code, 0, out)
+
+    def test_quoted_example_cannot_override_the_header(self):
+        forged = (self.header('CHANGES', doc_hash='0' * 64) + SECTIONS
+                  + '```\n' + self.header() + '```\n')
+        code, out = self.receipt(forged)
+        self.assertEqual(code, 1)
+        self.assertIn('outside the header block', out)
+
+    def test_clear_with_open_findings_fails(self):
+        body = SECTIONS.replace('## Stale or overstated\nnone', '## Stale or overstated\n- El Patio menu is undated')
+        code, out = self.receipt(self.header() + body)
+        self.assertEqual(code, 1)
+        self.assertIn('CLEAR with 1 open item(s) under "Stale"', out)
+
+    def test_missing_sections_fail(self):
+        code, out = self.receipt(self.header() + '## Confirmed\n- all\n')
+        self.assertEqual(code, 1)
+        self.assertIn('no "Wrong" section', out)
 
 
 if __name__ == '__main__':
