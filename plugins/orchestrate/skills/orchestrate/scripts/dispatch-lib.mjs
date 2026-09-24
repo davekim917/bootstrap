@@ -283,134 +283,15 @@ export function logDispatch(entry) {
 }
 
 const SHIM = /^bootstrap-orchestrate:worker-(low|medium|high|xhigh|max)$/;
-// Bounds on the role-definition scan. Hitting any of them leaves the scan
-// incomplete, and an incomplete scan never opens a role to a pick.
-const MAX_AGENT_FILES = 2000;
-const MAX_FRONTMATTER_BYTES = 16 * 1024;
-const SCAN_BUDGET_MS = 1500;
 
 /** A spawn with no role of its own: the picker may fill model and effort. */
 export function isRoleless(type) {
   return !type || type === 'general-purpose';
 }
 
-/** The effort shims are this plugin's own roles and always `model: inherit`. */
-export function isShim(type) {
-  return typeof type === 'string' && SHIM.test(type);
-}
-
-/** Leading frontmatter as {name, model}; null for a file with none; {unreadable} when it cannot be read. */
-function readFrontmatter(file) {
-  let fd;
-  try {
-    fd = fs.openSync(file, 'r');
-    const buf = Buffer.alloc(MAX_FRONTMATTER_BYTES);
-    const text = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, 0)).toString('utf8');
-    const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
-    // An opened block that never closes within the bound cannot be read safely.
-    if (!m) return /^---\r?\n/.test(text) ? { unreadable: true } : null;
-    const field = (key) => {
-      const line = m[1].split(/\r?\n/).find((l) => l.startsWith(`${key}:`));
-      if (!line) return undefined;
-      return line.slice(key.length + 1).replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2');
-    };
-    return { name: field('name'), model: field('model') };
-  } catch {
-    return { unreadable: true };
-  } finally {
-    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* already closed */ }
-  }
-}
-
-/**
- * Markdown files under one agents directory, recursively, the way Claude Code
- * scans it. Returns null when the walk is incomplete (a bound was hit or a
- * readable-looking directory could not be listed).
- */
-function agentFiles(dir, budget) {
-  const files = [];
-  const walk = (d) => {
-    let entries;
-    try {
-      entries = fs.readdirSync(d, { withFileTypes: true });
-    } catch (err) {
-      return d === dir && err?.code === 'ENOENT'; // an absent scope is complete and empty
-    }
-    for (const e of entries) {
-      if (Date.now() > budget.deadline || budget.files >= budget.maxFiles) return false;
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) {
-        if (!walk(p)) return false;
-      } else if (e.isFile() && e.name.endsWith('.md')) {
-        budget.files += 1;
-        files.push(p);
-      }
-    }
-    return true;
-  };
-  return walk(dir) ? files : null;
-}
-
-/** Project scope: `.claude/agents/` from cwd up to the repository root (cwd alone outside a repo). */
-function projectAgentDirs(cwd) {
-  const chain = [];
-  for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
-    chain.push(d);
-    if (fs.existsSync(path.join(d, '.git'))) return chain.map((c) => path.join(c, '.claude', 'agents'));
-    if (path.dirname(d) === d) return [path.join(path.resolve(cwd), '.claude', 'agents')];
-  }
-}
-
-/**
- * What a named Claude role's effective definition says about its model.
- *
- * Claude Code resolves a sub-agent's model as: the per-invocation `model`
- * parameter, then the definition's `model` frontmatter (`inherit` = the parent's
- * model), then CLAUDE_CODE_SUBAGENT_MODEL, then the parent's model
- * (code.claude.com/docs/en/sub-agents, "Choose a model"). So a filled tool-call
- * model silently replaces a role's pinned model.
- *
- * The effective definition is found the way that page describes: project roles
- * in every `.claude/agents/` from `cwd` up to the repository root, closest
- * first, then the user scope (`CLAUDE_CONFIG_DIR`, else `~/.claude`) `agents/`;
- * each scanned recursively; identity is the frontmatter `name` only (a file
- * without one is not a role). The first scope that defines the name wins; two
- * definitions in that scope count as pinned if either pins.
- *
- * Returns { found, pinned, fillable, complete }. `fillable` is true only when
- * the scan completed within its bounds, the effective definition was found,
- * and it leaves the model open. A role it cannot read — built-ins such as
- * Explore, plugin-scoped, managed or `--agents` roles — keeps its native model.
- */
-export function roleModelIntent(type, {
-  cwd = process.cwd(),
-  home = os.homedir(),
-  env = process.env,
-  budgetMs = SCAN_BUDGET_MS,
-  maxFiles = MAX_AGENT_FILES,
-} = {}) {
-  const intent = { found: false, pinned: null, fillable: false, complete: true };
-  if (typeof type !== 'string' || !type || type.includes(':')) return intent;
-  const scopes = [
-    ...projectAgentDirs(cwd),
-    path.join(env.CLAUDE_CONFIG_DIR || path.join(home, '.claude'), 'agents'),
-  ];
-  const budget = { files: 0, maxFiles, deadline: Date.now() + budgetMs };
-  for (const dir of [...new Set(scopes)]) {
-    const files = agentFiles(dir, budget);
-    if (files === null) return { ...intent, complete: false };
-    for (const file of files) {
-      if (Date.now() > budget.deadline) return { ...intent, complete: false };
-      const fm = readFrontmatter(file);
-      if (fm?.unreadable) return { ...intent, complete: false };
-      if (!fm || fm.name !== type) continue;
-      intent.found = true;
-      if (fm.model && fm.model.toLowerCase() !== 'inherit') intent.pinned ??= fm.model;
-    }
-    if (intent.found) break; // a higher-priority scope shadows the rest
-  }
-  intent.fillable = intent.found && intent.pinned === null;
-  return intent;
+/** A named role — neither roleless nor one of this plugin's effort shims. */
+export function isNamedRole(type) {
+  return !isRoleless(type) && !(typeof type === 'string' && SHIM.test(type));
 }
 
 /**
@@ -419,21 +300,24 @@ export function roleModelIntent(type, {
  * Fills only what the spawn left out: `model` when absent; effort (expressed as
  * a `bootstrap-orchestrate:worker-<effort>` shim type, the only way the Agent
  * tool takes effort) only for a roleless spawn — no subagent_type or
- * `general-purpose`. A named role (Explore, Plan, any custom agent) keeps its
- * role and effort, and gets a confident classifier model only when
- * `roleFillable` says its own definition leaves the model open (see
- * roleModelIntent); otherwise its installed model intent stands. An explicit
- * shim type keeps its effort. No-override decisions add no model or effort; the
+ * `general-purpose`. A named role (Explore, Plan, any custom or plugin agent)
+ * is never rewritten: Claude Code gives a per-call `model` precedence over the
+ * role's own `model` frontmatter (including `inherit`), and a role's effective
+ * definition can live where a hook cannot see it (managed settings, `--agents`),
+ * so any filled model could silently replace the role's installed intent
+ * (code.claude.com/docs/en/sub-agents, "Choose a model"). An explicit shim type
+ * keeps its effort. No-override decisions add no model or effort; the
  * independent model-effort caps still apply. Returns null when nothing changes.
  */
-export function rewriteClaudeSpawn(input, picked, rubric, { roleFillable = false } = {}) {
+export function rewriteClaudeSpawn(input, picked, rubric) {
   const out = { ...input };
   const type = typeof input.subagent_type === 'string' ? input.subagent_type : '';
   const roleless = isRoleless(type);
   const shim = type.match(SHIM);
+  if (!roleless && !shim) return null;
   const route = picked?.decision === 'route' && picked.pick?.model ? picked.pick : null;
 
-  if (!out.model && route && (roleless || shim || roleFillable)) out.model = route.model;
+  if (!out.model && route) out.model = route.model;
   let effort = shim ? shim[1] : roleless && route ? route.effort : undefined;
   const tier = out.model ? tierOf(rubric, 'claude', out.model) : undefined;
   if (effort && tier) effort = capEffort(effort, tier.maxEffort);
