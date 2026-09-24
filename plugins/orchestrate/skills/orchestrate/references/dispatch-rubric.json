@@ -31,12 +31,12 @@
     "judgment-low": {
       "tier": "judgment",
       "effort": "low",
-      "criteria": "The brief asks to review a code change or pull request of any size; OR for a second opinion on a stated decision; OR to answer a question by reading code (find where something happens, explain why)."
+      "criteria": "The brief asks for a second opinion on a stated decision."
     },
     "workhorse-high": {
       "tier": "workhorse",
       "effort": "high",
-      "criteria": "The brief asks to implement a described change or fix, possibly across several files, with a stated goal or acceptance criteria; OR to write tests for existing code; OR to diagnose a failure with no named cause, in one area or across several components, including concurrency or intermittent behaviour; OR it says an earlier medium-effort attempt failed."
+      "criteria": "The brief asks to implement a described change or fix, possibly across several files, with a stated goal or acceptance criteria; OR to write tests for existing code; OR to review a code change or pull request of any size; OR to diagnose a failure with no named cause, in one area or across several components, including concurrency or intermittent behaviour; OR it says an earlier medium-effort attempt failed."
     },
     "workhorse-medium": {
       "tier": "workhorse",
@@ -54,5 +54,5 @@
       "criteria": "None of the other options fits, or the brief names no artifact and no action."
     }
   },
-  "_evidence": "v6 (2026-09-24): aligned with Anthropic's 'What a task costs on Opus 5.5' (2026-09-22): Opus 5.5 is the daily driver for feature work and debugging; raise effort before changing models; Fable 5.1 for no-existing-pattern problems, long unsupervised runs, large multi-subagent changes, or after Opus-high fails the same problem twice. Diagnosis moves to workhorse-high; code-reading questions to workhorse-low. Operator rule: never Sonnet or Haiku, Opus low is the floor. PR review stays judgment-low pending the Opus-vs-Fable review head-to-head. v5 (2026-09-18): implementation routes to workhorse-high, not judgment-low. Blind head-to-head on 5 real merged repo tasks: Opus-high preferred 4/5 by a cross-vendor reviewer (scores 41 vs 37), Fable-low only 6% cheaper and 30% faster; Fable-low stopped early and shipped one incomplete fix. Reviews stay judgment-low (CodeRabbit 2026-09-01: Fable low recall >= high)."
+  "_evidence": "v6 (2026-09-24): aligned with Anthropic's 'What a task costs on Opus 5.5' (2026-09-22): Opus 5.5 is the daily driver for feature work and debugging; raise effort before changing models; Fable 5.1 for no-existing-pattern problems, long unsupervised runs, large multi-subagent changes, or after Opus-high fails the same problem twice. Diagnosis moves to workhorse-high; code-reading questions to workhorse-low. Operator rule: never Sonnet or Haiku, Opus low is the floor. PR review moves to workhorse-high: blind head-to-head on 10 real merged PRs (33 defects confirmed by later fix commits; same read-only prompt, no sub-agents; GPT-6 judge, anonymised): real defects found (known + verified extra) Opus-high 23, Opus-medium 22, Fable-low 19; known-defect recall 10/33, 7/33, 10/33; invalid findings 2, 0, 1; list cost $10.96, $8.82, $23.35 (Fable-low dearer on 10/10 PRs); wall 18.5, 13.6, 26.9 min. One run per arm per PR, so recall gaps are within noise; the cost gap is not. This supersedes the CodeRabbit 2026-09-01 low-vs-high result for choosing the model. v5 (2026-09-18): implementation routes to workhorse-high, not judgment-low. Blind head-to-head on 5 real merged repo tasks: Opus-high preferred 4/5 by a cross-vendor reviewer (scores 41 vs 37), Fable-low only 6% cheaper and 30% faster; Fable-low stopped early and shipped one incomplete fix. Reviews stay judgment-low (CodeRabbit 2026-09-01: Fable low recall >= high)."
 }
