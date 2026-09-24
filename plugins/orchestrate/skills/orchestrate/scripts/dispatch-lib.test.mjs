@@ -383,5 +383,5 @@ test('the same successful picker response resolves runtime-specific Claude and C
   const claude = await pick('implement a synthetic transport repair', 'claude', { rubric, requestImpl });
   const codex = await pick('implement a synthetic transport repair', 'codex', { rubric, requestImpl });
   assert.deepEqual([claude.decision, claude.pick.model, claude.pick.effort], ['route', 'opus', 'medium']);
-  assert.deepEqual([codex.decision, codex.pick.model, codex.pick.effort], ['route', 'gpt-5.6-sol', 'medium']);
+  assert.deepEqual([codex.decision, codex.pick.model, codex.pick.effort], ['route', 'gpt-6-sol', 'medium']);
 });
