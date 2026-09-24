@@ -166,12 +166,14 @@ _PREFIX_OP = {
 _SUFFIX = re.compile(
     r'\s*(\+|or more\b|or greater\b|or higher\b|or above\b|or over\b|and up\b|and above\b|and over\b|plus\b|'
     r'or less\b|or fewer\b|or lower\b|or below\b|or under\b)', re.I)
-_LOOSE_PREFIX = re.compile(
-    r'(?<![A-Za-z])(at least|at most|no more than|no less than|no fewer than|not more than|not less than|'
-    r'up to|a minimum of|a maximum of|minimum|maximum)(?![A-Za-z])', re.I)
-_LOOSE_SUFFIX = re.compile(
-    r'(?<![A-Za-z])(or more|or less|or fewer|or greater|or higher|or lower|or above|or below|and up|and above|'
-    r'and over|at least|at most|minimum|maximum)(?![A-Za-z])', re.I)
+# Every qualifier the clause scan counts. "over", "under", "above" and "below" count only
+# right next to a number ("over the last 12 months" is ordinary wording).
+_QUALIFIER_WORDS = re.compile(
+    r'(?<![A-Za-z])(no more than|not more than|no less than|not less than|no fewer than|not fewer than|'
+    r'more than|greater than|less than|fewer than|exceeding|at least|at most|up to|a minimum of|minimum of|'
+    r'a maximum of|maximum of|minimum|maximum|about|around|approximately|approx|roughly|nearly|almost|'
+    r'or more|or greater|or higher|or above|or over|and up|and above|and over|plus|or less|or fewer|or lower|'
+    r'or below|or under)(?![A-Za-z])|~|\u2248|<=|>=|\u2264|\u2265|(?<![-=])[<>](?!=)', re.I)
 _BOUND_OPS = {'>=': 'gte', 'gte': 'gte', '>': 'gt', 'gt': 'gt', '<=': 'lte', 'lte': 'lte', '<': 'lt', 'lt': 'lt'}
 _NEGATION = re.compile(r"(\bnot|\bnever|n't|\bhardly|\bbarely|\bno)\s*$", re.I)
 PCT_UNITS = {'%', 'pct', 'percent', 'pp', 'percentage points'}
@@ -212,14 +214,19 @@ def _lead(text, start):
         code = re.search(r'(?<![A-Za-z])[A-Z]{3} $', text[max(0, lead - 5):lead])
         if code:
             lead -= len(code.group(0))
+    if lead < start and _is_currency(text[lead]):
+        glued = re.search(r'(?<![A-Za-z])[A-Z]{1,3}$', text[:lead])
+        if glued:
+            lead -= len(glued.group(0))  # US$50, C$50
     if lead and text[lead - 1] in '+-':
         before = text[lead - 2] if lead >= 2 else ''
         if before.isalnum():
             return lead, '', None
+        sign = text[lead - 1]
         lead -= 1
         while lead and _is_currency(text[lead - 1]):
             lead -= 1
-        return lead, text[lead] if text[lead] in '+-' else text[lead:start].strip()[:1], None
+        return lead, sign, None
     j = lead
     while j and text[j - 1] == ' ':
         j -= 1
@@ -237,33 +244,46 @@ def _lead(text, start):
 
 
 def _qualifiers(text, lead, end):
-    """Comparator for the number spanning [lead, end). Returns (op, new_end, problem)."""
-    op, problem = 'eq', None
+    """Comparator for the number spanning [lead, end). Returns (op, new_end, problem).
+    Exactly one qualifier right next to the number is read. Any other qualifier in the
+    same clause (a second one, or one a few words away) is refused, not dropped."""
+    op, problem, used = 'eq', None, []
     pre = text[max(0, lead - 30):lead]
     m = _PREFIX.search(pre)
     if m:
         word = re.sub(r'\s+', ' ', m.group(1).lower()).rstrip('.')
         op = _PREFIX_OP.get(word, 'eq')  # about/around/~/roughly: still exact at the shown precision
+        used.append((max(0, lead - 30) + m.start(1), max(0, lead - 30) + m.end(1)))
         if not word.startswith(('no ', 'not ')) and _NEGATION.search(pre[:m.start()]):
             problem = f'a negated qualifier ("{pre[max(0, m.start() - 12):].strip()}")'
     elif _NEGATION.search(pre) and not re.search(r'\bno\s*$', pre, re.I):
         problem = f'a negation right before it ("{pre[-12:].strip()}")'
-    else:
-        loose = list(_LOOSE_PREFIX.finditer(pre))
-        if loose and not re.search(r'\d', pre[loose[-1].end():]) and len(pre[loose[-1].end():].split()) <= 3:
-            problem = f'"{loose[-1].group(1)}" is not next to the number'
     sm = _SUFFIX.match(text, end)
     if sm:
         word = sm.group(1).lower()
         suffix_op = 'lte' if word.startswith(('or less', 'or fewer', 'or lower', 'or below', 'or under')) else 'gte'
-        if op not in ('eq', suffix_op):
-            problem = 'two qualifiers that disagree'
-        op, end = suffix_op, sm.end()
-    else:
-        ahead = re.split(r'[\d.;:!?()]', text[end:end + 40], maxsplit=1)[0]
-        loose = _LOOSE_SUFFIX.search(ahead)
-        if loose and len(ahead[:loose.start()].split()) <= 3:
-            problem = problem or f'"{loose.group(1)}" is not next to the number'
+        if m:
+            problem = problem or 'two qualifiers on one number'
+        op, used = suffix_op, used + [(sm.start(1), sm.end(1))]
+        end = sm.end()
+    # The clause around the number: back to the previous number or punctuation, forward to
+    # the next, at most four words each way.
+    back = re.split(r'[\d.,;:!?()]', text[max(0, lead - 40):lead])[-1]
+    back_start = lead - len(back)
+    back_words = back.split()
+    if len(back_words) > 4:
+        back_start = lead - len(back) + back.index(back_words[-4])
+    fwd = re.split(r'[\d.,;:!?()]', text[end:end + 40], maxsplit=1)[0]
+    fwd_words = fwd.split()
+    fwd_end = end + (fwd.index(fwd_words[3]) + len(fwd_words[3]) if len(fwd_words) > 4 else len(fwd))
+    for q in _QUALIFIER_WORDS.finditer(text, back_start, fwd_end):
+        if any(a <= q.start() and q.end() <= b for a, b in used):
+            continue
+        after = text[q.end():q.end() + 4].lstrip()
+        if q.start() >= end and after[:1] and (after[0].isdigit() or _is_currency(after[0])):
+            continue  # it qualifies the next number ("2013 <1K")
+        problem = problem or f'"{q.group(0)}" is in its clause but not the one qualifier next to it'
+        break
     return op, end, problem
 
 
@@ -848,6 +868,10 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
             declared = _BOUND_OPS.get(str(raw.get('bound', '')).strip().lower())
             if raw.get('bound') is not None and not declared:
                 f.fail('quote', f'{cid}: "bound" must be one of >=, >, <=, <')
+            elif declared and exact:
+                f.fail('quote', f'{cid}: the quote shows {value} exactly; drop "bound"')
+            elif declared and bounds and bounds[0].op != declared:
+                f.fail('quote', f'{cid}: "bound" says {raw["bound"]} but the quote says "{bounds[0].text}"')
             elif declared:
                 same = [t for t in shown if _unit_value(t, claim.value, claim.unit, claim.magnitude) == _shown(t)]
                 if same:

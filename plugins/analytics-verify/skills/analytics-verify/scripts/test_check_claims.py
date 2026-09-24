@@ -770,5 +770,38 @@ class ReviewRegressionsRound3(LedgerCase):
         self.assertIn('resting on a doc source', out)
 
 
+
+class ReviewRegressionsRound4(LedgerCase):
+    """Inputs that passed after round 3 and must not (Codex review, round 4)."""
+
+    def test_a_sign_after_a_currency_symbol_is_kept(self):
+        files = {'s.json': '{"v": 7000000}'}
+        src = {'j': {'type': 'file', 'path': 's.json', 'as_of': '2026-09-24T00:00:00Z'}}
+        claim = {'id': 'x', 'value': 7000000, 'source': 'j', 'locate': {'json': 'v'}, 'anchors': ['Net income $-7 million']}
+        code, out = self.check(self.led([claim], src, files), 'Net income $-7 million.')
+        self.assertEqual(code, 1)
+
+    def test_every_qualifier_in_the_clause_counts(self):
+        for quote in ('more than US$50 revenue', '50 accounts or over', 'up to about 50 accounts'):
+            claim = {'id': 'm', 'value': 50, 'source': 'w', 'quote': quote, 'anchors': ['Exactly 50 accounts']}
+            code, out = self.check(self.led([claim]), 'Exactly 50 accounts.')
+            self.assertEqual(code, 1, quote)
+        for text in ('50 accounts or over', 'up to about 50 accounts'):
+            self.assertIsNotNone(cc.tokenize(cc.normalize(text))[0][0].problem, text)
+
+    def test_ordinary_wording_is_not_a_qualifier(self):
+        for text in ('over the last 12 months', '2013 <1K, 2014 17K', 'at least 50 of the 70 accounts'):
+            self.assertFalse([t for t in cc.tokenize(cc.normalize(text))[0] if t.problem], text)
+
+    def test_a_declared_bound_cannot_contradict_the_quote(self):
+        claim = {'id': 'm', 'value': 50, 'source': 'w', 'quote': 'at most 50 accounts', 'bound': '>=',
+                 'anchors': ['at least 50 accounts']}
+        code, out = self.check(self.led([claim]), 'It has at least 50 accounts.')
+        self.assertIn('"bound" says >= but the quote says', out)
+        claim.update({'quote': '50 accounts', 'bound': '>='})
+        code, out = self.check(self.led([claim]), 'It has at least 50 accounts.')
+        self.assertIn('the quote shows 50 exactly; drop "bound"', out)
+
+
 if __name__ == '__main__':
     unittest.main()

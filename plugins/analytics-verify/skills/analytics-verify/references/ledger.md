@@ -62,7 +62,8 @@ relative to the ledger's folder.
 - **`unit`**: set it to `%` or `ratio` for percentages. A `%` display only matches a
   `%` or `ratio` claim, and a ratio is multiplied by 100.
 - **`bound`**: `>=`, `>`, `<=` or `<`, for a source that states only a bound in wording
-  the check won't read. The quote must still show the number.
+  the check won't read. The quote must still show the number, and `bound` can't be set
+  when the quote's own wording already reads (exactly, or as a different bound).
 - **`magnitude`**: `true` lets an unsigned display show a negative value ("fell 6.6%" for
   -6.6). Without it, signs must match, and "+7" never shows -7.
 - **`labels`**: numbers that name something in the anchor rather than state a value
@@ -85,9 +86,11 @@ relative to the ledger's folder.
     B03001, Brugal01), unless the letters are three capitals, which read as a currency
     code. The output lists every identifier it skipped.
   - Displays it can't read exactly fail with "rephrase": spelled-out numbers with
-    hundred, thousand or dozen, negated qualifiers ("not over 50"), a qualifier that
-    isn't next to its number ("50 accounts or more"), and a spaced minus after a word
-    ("Revenue - 7%", which may be a dash).
+    hundred, thousand or dozen, negated qualifiers ("not over 50"), a spaced minus after
+    a word ("Revenue - 7%", which may be a dash), and any number whose clause holds a
+    qualifier other than the one right next to it ("50 accounts or more", "up to about
+    50"). "Over", "under", "above" and "below" count only right next to a number, so
+    "over the last 12 months" is fine.
   - Line-start list markers and URLs are also skipped.
   - A number inside an anchor that nothing accounts for fails. A range ("12-15 days")
     is two claims sharing one anchor.
