@@ -1,0 +1,22 @@
+{
+  "name": "analytics-verify",
+  "version": "1.0.0",
+  "description": "Verification loop for analytics and research deliverables: claim ledger, mechanical check script, independent verifier on a fresh context, re-check of every fix, and a receipt bound to the exact file sent.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "analytics",
+    "verification",
+    "data-quality",
+    "fact-check",
+    "review",
+    "reproducibility"
+  ],
+  "skills": [
+    "./skills"
+  ],
+  "hooks": "./hooks/analytics-verify-hooks.json"
+}
