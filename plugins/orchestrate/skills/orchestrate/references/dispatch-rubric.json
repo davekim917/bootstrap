@@ -21,22 +21,27 @@
     "judgment-high": {
       "tier": "judgment",
       "effort": "high",
-      "criteria": "The brief asks for an architecture or design decision where the approach has not been chosen and it lists constraints or trade-offs to weigh; OR it says an earlier high-effort attempt failed, or that the same problem has already failed twice."
+      "criteria": "The brief asks for an architecture or design decision where the approach has not been chosen and it lists constraints or trade-offs to weigh; OR it says an attempt at the maximum (xhigh) effort level already failed; OR it says the same problem has already failed two or more times."
     },
     "judgment-medium": {
       "tier": "judgment",
       "effort": "medium",
-      "criteria": "The brief asks to review or critique a plan, spec, design document or RFC; OR to build something with no existing pattern in the codebase, where the brief states the goal but leaves the approach open; OR a long run that will not be supervised, or a large change that coordinates several sub-agents; OR to decide how to handle a security-sensitive change or a data migration."
+      "criteria": "The brief asks to decide how to handle a security-sensitive change or a data migration."
     },
     "judgment-low": {
       "tier": "judgment",
       "effort": "low",
       "criteria": "The brief asks for a second opinion on a stated decision."
     },
+    "workhorse-xhigh": {
+      "tier": "workhorse",
+      "effort": "xhigh",
+      "criteria": "The brief asks to build something with no existing pattern in the codebase, where it states the goal but leaves the approach open; OR it says exactly one earlier attempt failed at high effort and asks to try again."
+    },
     "workhorse-high": {
       "tier": "workhorse",
       "effort": "high",
-      "criteria": "The brief asks to implement a described change or fix, possibly across several files, with a stated goal or acceptance criteria; OR to write tests for existing code; OR to review a code change or pull request of any size; OR to diagnose a failure with no named cause, in one area or across several components, including concurrency or intermittent behaviour; OR it says an earlier medium-effort attempt failed."
+      "criteria": "The brief asks to implement a described change or fix, possibly across several files, with a stated goal or acceptance criteria; OR to write tests for existing code; OR to review a code change or pull request of any size; OR to review or critique a plan, spec, design document or RFC; OR to diagnose a failure with no named cause, in one area or across several components, including concurrency or intermittent behaviour; OR it says an earlier medium-effort attempt failed."
     },
     "workhorse-medium": {
       "tier": "workhorse",
@@ -54,5 +59,5 @@
       "criteria": "None of the other options fits, or the brief names no artifact and no action."
     }
   },
-  "_evidence": "v6 (2026-09-24): aligned with Anthropic's 'What a task costs on Opus 5.5' (2026-09-22): Opus 5.5 is the daily driver for feature work and debugging; raise effort before changing models; Fable 5.1 for no-existing-pattern problems, long unsupervised runs, large multi-subagent changes, or after Opus-high fails the same problem twice. Diagnosis moves to workhorse-high; code-reading questions to workhorse-low. Operator rule: never Sonnet or Haiku, Opus low is the floor. PR review moves to workhorse-high: blind head-to-head on 10 real merged PRs (33 defects confirmed by later fix commits; same read-only prompt, no sub-agents; GPT-6 judge, anonymised): real defects found (known + verified extra) Opus-high 23, Opus-medium 22, Fable-low 19; known-defect recall 10/33, 7/33, 10/33; invalid findings 2, 0, 1; list cost $10.96, $8.82, $23.35 (Fable-low dearer on 10/10 PRs); wall 18.5, 13.6, 26.9 min. One run per arm per PR, so recall gaps are within noise; the cost gap is not. This supersedes the CodeRabbit 2026-09-01 low-vs-high result for choosing the model. v5 (2026-09-18): implementation routes to workhorse-high, not judgment-low. Blind head-to-head on 5 real merged repo tasks: Opus-high preferred 4/5 by a cross-vendor reviewer (scores 41 vs 37), Fable-low only 6% cheaper and 30% faster; Fable-low stopped early and shipped one incomplete fix. Reviews stay judgment-low (CodeRabbit 2026-09-01: Fable low recall >= high)."
+  "_evidence": "v6 (2026-09-24): Opus is the ladder (medium → high → xhigh) before Fable, per the operator and Anthropic's 'raise effort before you change models'. Fable keeps only architecture decisions, security/migration calls, second opinions, and escalation after an xhigh attempt (or two high attempts) fail. Plan/spec review and no-existing-pattern builds are Opus (high, xhigh). The 'long unsupervised or multi-subagent run' criterion is dropped: run length says nothing about the kind of work, and it is where Fable's 2.5x price compounds most. Aligned with Anthropic's 'What a task costs on Opus 5.5' (2026-09-22): Opus 5.5 is the daily driver for feature work and debugging; raise effort before changing models; Fable 5.1 for no-existing-pattern problems, long unsupervised runs, large multi-subagent changes, or after Opus-high fails the same problem twice. Diagnosis moves to workhorse-high; code-reading questions to workhorse-low. Operator rule: never Sonnet or Haiku, Opus low is the floor. PR review moves to workhorse-high: blind head-to-head on 10 real merged PRs (33 defects confirmed by later fix commits; same read-only prompt, no sub-agents; GPT-6 judge, anonymised): real defects found (known + verified extra) Opus-high 23, Opus-medium 22, Fable-low 19; known-defect recall 10/33, 7/33, 10/33; invalid findings 2, 0, 1; list cost $10.96, $8.82, $23.35 (Fable-low dearer on 10/10 PRs); wall 18.5, 13.6, 26.9 min. One run per arm per PR, so recall gaps are within noise; the cost gap is not. This supersedes the CodeRabbit 2026-09-01 low-vs-high result for choosing the model. v5 (2026-09-18): implementation routes to workhorse-high, not judgment-low. Blind head-to-head on 5 real merged repo tasks: Opus-high preferred 4/5 by a cross-vendor reviewer (scores 41 vs 37), Fable-low only 6% cheaper and 30% faster; Fable-low stopped early and shipped one incomplete fix. Reviews stay judgment-low (CodeRabbit 2026-09-01: Fable low recall >= high)."
 }
