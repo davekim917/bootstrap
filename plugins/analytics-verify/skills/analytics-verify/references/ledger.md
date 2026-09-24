@@ -54,11 +54,15 @@ relative to the ledger's folder.
   - For JSON, `{"json": "[0].field"}`.
 - **`quote`** (required for `web`): the source's own words. For a number, the quote must
   show it exactly. If the quote gives only a bound ("50+ mojitos & drinks"), the claim
-  may only repeat that bound ("50+", not "50" or "more than 50"), its value must be the
-  bound's number exactly, and no `expr` or relation may use it. The verifier checks that
+  may only repeat that bound ("50+", not "50" or "more than 50", nor a rounded "at most
+  1K" for "at most 1,499"), its value must be the bound's number exactly, and no `expr`
+  or relation may use it. When the quote's wording is one the check won't read ("50
+  accounts or more"), declare the bound yourself: `"bound": ">="`. The verifier checks that
   the quote actually supports the claim.
 - **`unit`**: set it to `%` or `ratio` for percentages. A `%` display only matches a
   `%` or `ratio` claim, and a ratio is multiplied by 100.
+- **`bound`**: `>=`, `>`, `<=` or `<`, for a source that states only a bound in wording
+  the check won't read. The quote must still show the number.
 - **`magnitude`**: `true` lets an unsigned display show a negative value ("fell 6.6%" for
   -6.6). Without it, signs must match, and "+7" never shows -7.
 - **`labels`**: numbers that name something in the anchor rather than state a value
@@ -68,7 +72,8 @@ relative to the ledger's folder.
 - **`anchors` or `omit`**: exactly one.
   - `anchors` are text copied from the deliverable that shows this claim, with the words
     around the number ("106K did both", not "106K").
-  - `omit` is the reason the claim isn't shown.
+  - `omit` is the reason the claim isn't shown. "In the attached table only" is a normal
+    reason for cells the prose doesn't repeat.
 
 ## What `check` enforces
 
@@ -80,12 +85,14 @@ relative to the ledger's folder.
     B03001, Brugal01), unless the letters are three capitals, which read as a currency
     code. The output lists every identifier it skipped.
   - Displays it can't read exactly fail with "rephrase": spelled-out numbers with
-    hundred, thousand or dozen, and negated qualifiers ("not over 50").
+    hundred, thousand or dozen, negated qualifiers ("not over 50"), a qualifier that
+    isn't next to its number ("50 accounts or more"), and a spaced minus after a word
+    ("Revenue - 7%", which may be a dash).
   - Line-start list markers and URLs are also skipped.
   - A number inside an anchor that nothing accounts for fails. A range ("12-15 days")
     is two claims sharing one anchor.
   - An `exempt` snippet must be more than one bare number: an address, a phone number,
-    or a product name.
+    a product name, or an illustration that isn't a finding ("someone with 2 accounts").
 - Each anchor is in the deliverable, and every appearance shows the claim's value. For
   a date claim, each date shown is checked field by field: "9/23" must be September 23,
   and "5pm" must be the claim's hour.

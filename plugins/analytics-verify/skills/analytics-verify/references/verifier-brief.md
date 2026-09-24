@@ -16,6 +16,8 @@ claim. After that, use them only to explain a disagreement.
 2. **Run the mechanical checks:** `check`, plus `reproduce` when there's a table. The
    script is `scripts/check_claims.py` in the `analytics-verify` skill. A FAIL is a
    finding. A PASS only shows the claims are bound to sources, not that they're true.
+   Read its NOTE lines: claims resting on a `doc` source, identifiers it skipped and
+   labels it accepted are yours to check by hand.
 3. **Re-derive the headline numbers yourself.** Write your own query from the ask and
    the table documentation, not from the author's SQL. Match the population, grain and
    cutoff, then compare. Read the author's SQL only to explain a difference. Two outputs

@@ -148,7 +148,7 @@ _PCT = re.compile(r'\s?(%|percent\b|per cent\b|pct\b|pp\b|percentage points?\b)'
 # The only qualifiers read. Anything else next to a number that looks like one is refused,
 # not guessed at: a false "exact" is the failure this script exists to prevent.
 _PREFIX = re.compile(
-    r'(no more than|not more than|no less than|not less than|no fewer than|not fewer than|more than|'
+    r'(?<![A-Za-z])(no more than|not more than|no less than|not less than|no fewer than|not fewer than|more than|'
     r'greater than|over|above|exceeding|at least|a minimum of|minimum of|min\.|less than|fewer than|'
     r'under|below|at most|up to|a maximum of|maximum of|max\.|about|around|approximately|approx\.?|'
     r'roughly|nearly|almost|~|≈|<=|>=|≤|≥|<|>)\s*$',
@@ -166,6 +166,13 @@ _PREFIX_OP = {
 _SUFFIX = re.compile(
     r'\s*(\+|or more\b|or greater\b|or higher\b|or above\b|or over\b|and up\b|and above\b|and over\b|plus\b|'
     r'or less\b|or fewer\b|or lower\b|or below\b|or under\b)', re.I)
+_LOOSE_PREFIX = re.compile(
+    r'(?<![A-Za-z])(at least|at most|no more than|no less than|no fewer than|not more than|not less than|'
+    r'up to|a minimum of|a maximum of|minimum|maximum)(?![A-Za-z])', re.I)
+_LOOSE_SUFFIX = re.compile(
+    r'(?<![A-Za-z])(or more|or less|or fewer|or greater|or higher|or lower|or above|or below|and up|and above|'
+    r'and over|at least|at most|minimum|maximum)(?![A-Za-z])', re.I)
+_BOUND_OPS = {'>=': 'gte', 'gte': 'gte', '>': 'gt', 'gt': 'gt', '<=': 'lte', 'lte': 'lte', '<': 'lt', 'lt': 'lt'}
 _NEGATION = re.compile(r"(\bnot|\bnever|n't|\bhardly|\bbarely|\bno)\s*$", re.I)
 PCT_UNITS = {'%', 'pct', 'percent', 'pp', 'percentage points'}
 
@@ -194,22 +201,38 @@ def _is_currency(ch):
 
 
 def _lead(text, start):
-    """Walk left over currency symbols and a sign. Returns (lead, sign, problem)."""
+    """Walk left from a number over a currency symbol or code and a sign.
+    Returns (lead, sign, problem). A "-" attached to the number is a sign unless a
+    letter or digit touches it ("5-7", "Q3-5"). A detached one ("- 7") is a sign after
+    punctuation, a range after a digit, and refused after a word: it could be a dash."""
     lead = start
-    while lead and (_is_currency(text[lead - 1]) or text[lead - 1] == ' ' and lead >= 2 and _is_currency(text[lead - 2])):
+    while lead and (_is_currency(text[lead - 1]) or (text[lead - 1] == ' ' and lead >= 2 and _is_currency(text[lead - 2]))):
         lead -= 1
+    if lead == start:
+        code = re.search(r'(?<![A-Za-z])[A-Z]{3} $', text[max(0, lead - 5):lead])
+        if code:
+            lead -= len(code.group(0))
+    if lead and text[lead - 1] in '+-':
+        before = text[lead - 2] if lead >= 2 else ''
+        if before.isalnum():
+            return lead, '', None
+        lead -= 1
+        while lead and _is_currency(text[lead - 1]):
+            lead -= 1
+        return lead, text[lead] if text[lead] in '+-' else text[lead:start].strip()[:1], None
     j = lead
     while j and text[j - 1] == ' ':
         j -= 1
-    if j and text[j - 1] in '+-':
+    if j < lead and j and text[j - 1] in '+-':
         k = j - 1
         while k and text[k - 1] == ' ':
             k -= 1
-        if k == 0 or not text[k - 1].isalnum():
-            lead = j - 1
-            while lead and _is_currency(text[lead - 1]):
-                lead -= 1
-            return lead, text[j - 1], None
+        before = text[k - 1] if k else ''
+        if before.isdigit():
+            return lead, '', None
+        if before.isalpha():
+            return j - 1, '', 'a detached "+" or "-" after a word (a sign, or a dash?)'
+        return j - 1, text[j - 1], None
     return lead, '', None
 
 
@@ -225,6 +248,10 @@ def _qualifiers(text, lead, end):
             problem = f'a negated qualifier ("{pre[max(0, m.start() - 12):].strip()}")'
     elif _NEGATION.search(pre) and not re.search(r'\bno\s*$', pre, re.I):
         problem = f'a negation right before it ("{pre[-12:].strip()}")'
+    else:
+        loose = list(_LOOSE_PREFIX.finditer(pre))
+        if loose and not re.search(r'\d', pre[loose[-1].end():]) and len(pre[loose[-1].end():].split()) <= 3:
+            problem = f'"{loose[-1].group(1)}" is not next to the number'
     sm = _SUFFIX.match(text, end)
     if sm:
         word = sm.group(1).lower()
@@ -232,6 +259,11 @@ def _qualifiers(text, lead, end):
         if op not in ('eq', suffix_op):
             problem = 'two qualifiers that disagree'
         op, end = suffix_op, sm.end()
+    else:
+        ahead = re.split(r'[\d.;:!?()]', text[end:end + 40], maxsplit=1)[0]
+        loose = _LOOSE_SUFFIX.search(ahead)
+        if loose and len(ahead[:loose.start()].split()) <= 3:
+            problem = problem or f'"{loose.group(1)}" is not next to the number'
     return op, end, problem
 
 
@@ -309,22 +341,23 @@ def tokenize(text: str):
                 k -= 1
             if k and text[k - 1] in '+-' and (k < 2 or not text[k - 2].isalnum()):
                 lead, sign = k - 1, text[k - 1]
+            sign_problem = None
         else:
-            lead, sign, _ = _lead(text, s)
+            lead, sign, sign_problem = _lead(text, s)
         raw = m.group(0).replace(',', '')
         value = Decimal(raw)
         end, mult, pct = _suffixes(text, e)
         op, end, problem = _qualifiers(text, lead, end)
         step = Decimal(1).scaleb(value.as_tuple().exponent) * mult
-        tokens.append(Token(s, end, text[s:end], value * mult, step, pct, sign, op, problem))
+        tokens.append(Token(s, end, text[s:end], value * mult, step, pct, sign, op, sign_problem or problem))
     for s, e, value, problem in _word_numbers(text):
         if any(t.start < e and s < t.end for t in tokens):
             continue  # "5 million": the digits already carry the word as their scale
-        lead, sign, _ = _lead(text, s)
+        lead, sign, sign_problem = _lead(text, s)
         end, mult, pct = _suffixes(text, e)
         op, end, qproblem = _qualifiers(text, lead, end)
         v = Decimal(value) * mult if value is not None else Decimal(0)
-        tokens.append(Token(s, end, text[s:end], v, mult, pct, sign, op, problem or qproblem))
+        tokens.append(Token(s, end, text[s:end], v, mult, pct, sign, op, problem or sign_problem or qproblem))
     tokens.sort(key=lambda t: t.start)
     return tokens, skipped
 
@@ -362,7 +395,7 @@ def displays(tok: Token, value: Decimal, unit=None, magnitude=False, bound=None)
         return False
     x, half = _shown(tok), tok.step / 2
     if bound:
-        return tok.op == bound and abs(v - x) <= half
+        return tok.op == bound and v == x  # a rounded threshold is a different, stronger claim
     if tok.op == 'gt':
         return v > x
     if tok.op == 'gte':
@@ -382,7 +415,7 @@ _MONTHS = {m: i for i, m in enumerate(
     'jan feb mar apr may jun jul aug sep oct nov dec'.split(), start=1)}
 _MON = r'(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?'
 _DATE_PATTERNS = [
-    ('iso', re.compile(r'\b(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?')),
+    ('iso', re.compile(r'\b(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:?\d{2})?')),
     ('ymd', re.compile(r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b')),
     ('mdy', re.compile(r'\b(\d{1,2})/(\d{1,2})(?:/(\d{4}|\d{2}))?\b')),
     ('dMy', re.compile(r'\b(\d{1,2})(?:st|nd|rd|th)?\s+' + _MON + r'(?:,?\s+(\d{4}))?\b', re.I)),
@@ -434,8 +467,12 @@ def date_matches(segment: str, when):
                 continue
             g = m.groups()
             if kind == 'iso':
+                frac = (g[6] or '').ljust(6, '0')
                 ok = ((int(g[0]), int(g[1]), int(g[2])) == (day.year, day.month, day.day) and clock is not None
-                      and (int(g[3]), int(g[4])) == (clock.hour, clock.minute) and _same_offset(g[5], clock))
+                      and (int(g[3]), int(g[4])) == (clock.hour, clock.minute)
+                      and (g[5] is None or int(g[5]) == clock.second)
+                      and (g[6] is None or (frac[6:].strip('0') == '' and int(frac[:6]) == clock.microsecond))
+                      and _same_offset(g[7], clock))
             elif kind == 'dMy':
                 ok = (_MONTHS[g[1][:3].lower()], int(g[0])) == (day.month, day.day) and (g[2] is None or int(g[2]) == day.year)
             elif kind == 'ymd':
@@ -711,6 +748,8 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
                 f.fail('source', f'{sid}: {src["path"]} does not exist')
             if not src.get('as_of'):
                 f.warn('source', f'{sid}: no "as_of"; say when the file was produced')
+            elif not _parse_date(src.get('as_of')):
+                f.warn('source', f'{sid}: as_of "{src.get("as_of")}" is not a date; if the cutoff is unknown, say so in the deliverable')
         elif kind == 'web':
             if not re.match(r'https?://', str(src.get('url', ''))):
                 f.fail('source', f'{sid}: a web source needs an http(s) "url"')
@@ -800,9 +839,22 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
         elif isinstance(quote, str) and quote.strip() and claim.value is not None:
             shown = tokenize(normalize(quote))[0]
             exact = [t for t in shown if t.op == 'eq' and displays(t, claim.value, claim.unit, claim.magnitude)]
-            bounds = [t for t in shown if t.op != 'eq' and displays(t, claim.value, claim.unit, claim.magnitude, bound=t.op)]
+            bounds = []
+            for t in shown:
+                v = None if t.op == 'eq' or t.problem else _unit_value(t, claim.value, claim.unit, claim.magnitude)
+                if v is not None and abs(v - _shown(t)) <= t.step / 2:
+                    bounds.append(t)
             unclear = [t for t in shown if t.problem]
-            if exact:
+            declared = _BOUND_OPS.get(str(raw.get('bound', '')).strip().lower())
+            if raw.get('bound') is not None and not declared:
+                f.fail('quote', f'{cid}: "bound" must be one of >=, >, <=, <')
+            elif declared:
+                same = [t for t in shown if _unit_value(t, claim.value, claim.unit, claim.magnitude) == _shown(t)]
+                if same:
+                    claim.bound = declared
+                else:
+                    f.fail('quote', f'{cid}: the quote does not show {value}, the bound "bound" declares')
+            elif exact:
                 pass
             elif bounds:
                 t = bounds[0]
@@ -811,10 +863,15 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
                 else:
                     claim.bound = t.op  # the source gives only a bound ("50+"); every display must keep it
             elif unclear:
-                f.fail('quote', f'{cid}: the quote shows {unclear[0].text!r}, which can\'t be read exactly ({unclear[0].problem})')
+                f.fail('quote', f'{cid}: the quote shows {unclear[0].text!r}, which can\'t be read exactly '
+                                f'({unclear[0].problem}). If the source gives a bound, declare it: "bound": ">="')
             else:
                 f.fail('quote', f'{cid}: the quote does not show {value} ({quote.strip()[:80]!r})')
 
+    on_doc = sorted(k for k, c in by_id.items()
+                    if isinstance(sources.get(c.raw.get('source')), dict) and sources[c.raw['source']].get('type') == 'doc')
+    if on_doc:
+        f.note('doc', f'resting on a doc source, which this script can\'t check: {", ".join(on_doc)}')
     numeric = {k: c.value for k, c in by_id.items() if c.value is not None}
     bounded = {k for k, c in by_id.items() if c.bound}
     for cid, claim in by_id.items():
@@ -932,9 +989,11 @@ def check_deliverables(paths, claims, exempt, f: Findings):
                             f.fail('anchor', f'{claim.id}: "{na}" shows {got}; the ledger value is '
                                              f'{claim.raw.get("value")}{claim.unit or ""}{note}')
                         elif not re.search(r'[A-Za-z0-9]', _residue(texts[p][s:e], shown_value, s)):
-                            f.fail('anchor', f'{claim.id}: "{na}" is a bare number; include the words that say what it counts')
+                            f.fail('anchor', f'{claim.id}: "{na}" is a bare number; include the words (or row key) that say what it counts')
                     elif claim.when is not None:
                         dates = date_matches(texts[p][s:e], claim.when)
+                        if claim.when[1] is not None and re.search(r'(~|\babout|\baround|\bapprox|\broughly)\s*\d', texts[p][max(0, s - 12):e], re.I):
+                            f.warn('cutoff', f'{claim.id}: "{na}" gives an approximate time; state the exact cutoff')
                         for ds, de, ok, shown in dates:
                             if not ok:
                                 f.fail('anchor', f'{claim.id}: "{na}" shows {shown}; the date is {claim.raw.get("value")}')

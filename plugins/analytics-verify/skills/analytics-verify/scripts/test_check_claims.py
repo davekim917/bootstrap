@@ -564,7 +564,7 @@ class ReproduceExactly(Tmp):
         self.assertEqual(code, 2)
 
 
-class ReceiptParsing(Tmp):
+class ReceiptCase(Tmp):
     def setUp(self):
         super().setUp()
         self.led = self.write('claims.json', {'sources': {}, 'claims': []})
@@ -577,6 +577,8 @@ class ReceiptParsing(Tmp):
     def receipt(self, text):
         return run(['receipt', self.write('verify.md', text), self.led, self.doc])
 
+
+class ReceiptParsing(ReceiptCase):
     def test_clean_report_passes(self):
         code, out = self.receipt(self.header() + SECTIONS)
         self.assertEqual(code, 0, out)
@@ -601,9 +603,7 @@ class ReceiptParsing(Tmp):
 
 
 
-class ReviewRegressionsRound2(Tmp):
-    """Inputs that passed after round 1 and must not (Codex review, round 2)."""
-
+class LedgerCase(Tmp):
     def led(self, claims, sources=None, files=None, **extra):
         for name, body in (files or {}).items():
             self.write(name, body)
@@ -614,6 +614,10 @@ class ReviewRegressionsRound2(Tmp):
 
     def check(self, led, text):
         return run(['check', led, self.write('d.md', text)])
+
+
+class ReviewRegressionsRound2(LedgerCase):
+    """Inputs that passed after round 1 and must not (Codex review, round 2)."""
 
     def test_row_labels_need_a_confirmed_file_row(self):
         claim = {'id': 'x', 'value': 7, 'source': 'd', 'locate': {'where': {'fake': 999}, 'column': 'v'},
@@ -702,7 +706,7 @@ class TablesRound2(Tmp):
         self.assertEqual(code, 1)
 
 
-class ReceiptRound2(ReceiptParsing):
+class ReceiptRound2(ReceiptCase):
     def test_findings_under_a_subheading_still_count(self):
         body = SECTIONS.replace('| Where | Deliverable says | Actually | Evidence |\n|---|---|---|---|\n',
                                 '### Revenue\n- Revenue is unsupported\n')
@@ -715,6 +719,55 @@ class ReceiptRound2(ReceiptParsing):
                 'verdict: CLEAR\nverifier: gpt-6-sol (fresh codex exec session)\n\n')
         code, out = self.receipt(head + SECTIONS)
         self.assertEqual(code, 0, out)
+
+
+
+class ReviewRegressionsRound3(LedgerCase):
+    """Inputs that passed after round 2 and must not (Codex review, round 3)."""
+
+    def jled(self, value, anchor, **claim_extra):
+        files = {'s.json': json.dumps({'v': value})}
+        src = {'j': {'type': 'file', 'path': 's.json', 'as_of': '2026-09-24T00:00:00Z'}}
+        claim = {'id': 'x', 'value': value, 'source': 'j', 'locate': {'json': 'v'}, 'anchors': [anchor], **claim_extra}
+        return self.led([claim], src, files)
+
+    def test_a_sign_after_a_word_is_kept(self):
+        code, out = self.check(self.jled(7000000, 'Net income -$7 million'), 'Net income -$7 million.')
+        self.assertEqual(code, 1)
+        code, out = self.check(self.jled(7000000, 'Revenue - 7 million'), 'Revenue - 7 million.')
+        self.assertIn('a detached "+" or "-" after a word', out)
+
+    def test_a_bound_is_repeated_not_rounded(self):
+        claim = {'id': 'm', 'value': 1499, 'source': 'w', 'quote': 'at most 1499 accounts', 'anchors': ['At most 1K accounts']}
+        code, out = self.check(self.led([claim]), 'At most 1K accounts.')
+        self.assertEqual(code, 1)
+
+    def test_detached_qualifiers_are_refused_or_read(self):
+        claim = {'id': 'm', 'value': 50, 'source': 'w', 'quote': 'at least USD 50 revenue', 'anchors': ['Exactly USD 50 revenue']}
+        self.assertEqual(self.check(self.led([claim]), 'Exactly USD 50 revenue.')[0], 1)
+        claim = {'id': 'm', 'value': 50, 'source': 'w', 'quote': '50 accounts or more', 'anchors': ['Exactly 50 accounts']}
+        code, out = self.check(self.led([claim]), 'Exactly 50 accounts.')
+        self.assertIn('If the source gives a bound, declare it', out)
+        claim.update({'bound': '>=', 'anchors': ['at least 50 accounts']})
+        code, out = self.check(self.led([claim]), 'It has at least 50 accounts.')
+        self.assertEqual(code, 0, out)
+
+    def test_qualifiers_do_not_match_inside_words(self):
+        code, out = self.check(self.jled(60000000, 'Turnover $50M'), 'Turnover $50M.')
+        self.assertEqual(code, 1)
+
+    def test_iso_seconds_are_checked(self):
+        claim = {'id': 'cut', 'value': '2026-09-23T17:00:00-07:00', 'source': 'd',
+                 'anchors': ['As of 2026-09-23T17:00:59-07:00']}
+        code, out = self.check(self.led([claim]), 'As of 2026-09-23T17:00:59-07:00.')
+        self.assertEqual(code, 1)
+
+    def test_approximate_cutoff_warns(self):
+        claim = {'id': 'cut', 'value': '2026-09-23T17:00:00-07:00', 'source': 'd', 'anchors': ['thru ~5pm PT 9/23']}
+        code, out = self.check(self.led([claim]), 'Numbers thru ~5pm PT 9/23.')
+        self.assertEqual(code, 0, out)
+        self.assertIn('gives an approximate time', out)
+        self.assertIn('resting on a doc source', out)
 
 
 if __name__ == '__main__':
