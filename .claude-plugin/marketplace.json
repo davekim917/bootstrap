@@ -40,6 +40,12 @@
       "source": "./plugins/wwed",
       "description": "What Would Elon Do \u2014 execution and simplification judgment run through Musk's five-step algorithm (question the requirement, delete, simplify, accelerate, automate), fenced off from human gates and irreversible surfaces. Complements wwbd; ships an always-on nudge like it.",
       "version": "1.0.0"
+    },
+    {
+      "name": "analytics-verify",
+      "source": "./plugins/analytics-verify",
+      "description": "Claim ledger, check script and independent verifier for analytics and research deliverables, with an always-on nudge to run it before numbers leave.",
+      "version": "1.0.0"
     }
   ]
 }

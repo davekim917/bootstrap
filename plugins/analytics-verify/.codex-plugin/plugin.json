@@ -1,0 +1,36 @@
+{
+  "name": "analytics-verify",
+  "version": "1.0.0",
+  "description": "Verification loop for analytics and research deliverables: claim ledger, mechanical check script, independent verifier on a fresh context, re-check of every fix, and a receipt bound to the exact file sent.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "analytics",
+    "verification",
+    "data-quality",
+    "fact-check",
+    "review",
+    "reproducibility"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/analytics-verify-codex-hooks.json",
+  "interface": {
+    "displayName": "Analytics verify",
+    "shortDescription": "Claim ledger, check script and independent verifier for analytics",
+    "longDescription": "Binds every number and fact in an analytics deliverable to its source, checks the binding with a script, hands the deliverable to an independent verifier on a fresh context, re-checks every fix, and ties the verifier's receipt to the exact file that is sent.",
+    "developerName": "David Kim",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/davekim917/bootstrap",
+    "defaultPrompt": [
+      "Verify this analysis before I send it.",
+      "Cross-check these numbers as an independent verifier."
+    ],
+    "brandColor": "#0f766e"
+  }
+}

@@ -52,3 +52,6 @@ jobs:
 
       - name: Prove the orchestrate plugin's composition in both enablement states
         run: node --test scripts/plugin-enablement.test.mjs
+
+      - name: Run the analytics-verify check script tests
+        run: python3 -m unittest discover -s plugins/analytics-verify/skills/analytics-verify/scripts -p 'test_*.py'

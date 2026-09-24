@@ -252,6 +252,8 @@ const wwbdClaudeManifest = readJson('plugins/wwbd/.claude-plugin/plugin.json');
 const wwbdCodexManifest = readJson('plugins/wwbd/.codex-plugin/plugin.json');
 const wwedClaudeManifest = readJson('plugins/wwed/.claude-plugin/plugin.json');
 const wwedCodexManifest = readJson('plugins/wwed/.codex-plugin/plugin.json');
+const analyticsVerifyClaudeManifest = readJson('plugins/analytics-verify/.claude-plugin/plugin.json');
+const analyticsVerifyCodexManifest = readJson('plugins/analytics-verify/.codex-plugin/plugin.json');
 const conciseClaudeManifest = readJson('plugins/concise/.claude-plugin/plugin.json');
 const conciseCodexManifest = readJson('plugins/concise/.codex-plugin/plugin.json');
 const codexCopyPasteEntry = readJson('plugins/workflow-agents/marketplace-entry.json');
@@ -289,6 +291,7 @@ const codexRoster = new Map([
   ['bootstrap-orchestrate', './plugins/orchestrate'],
   ['wwbd', './plugins/wwbd'],
   ['wwed', './plugins/wwed'],
+  ['analytics-verify', './plugins/analytics-verify'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
 ]);
@@ -332,6 +335,15 @@ if (!codexWwedEntry) {
   );
 }
 
+const codexAnalyticsVerifyEntry = codexEntries.find((entry) => entry.name === 'analytics-verify');
+if (!codexAnalyticsVerifyEntry) {
+  fail('.agents/plugins/marketplace.json must register analytics-verify');
+} else if (codexAnalyticsVerifyEntry.version !== analyticsVerifyCodexManifest?.version) {
+  fail(
+    `analytics-verify version must match between .agents marketplace and .codex-plugin manifest (${codexAnalyticsVerifyEntry.version} !== ${analyticsVerifyCodexManifest?.version})`,
+  );
+}
+
 const codexConciseEntry = codexEntries.find((entry) => entry.name === 'concise');
 if (!codexConciseEntry) {
   fail('.agents/plugins/marketplace.json must register concise');
@@ -357,6 +369,7 @@ const claudeRoster = new Map([
   ['bootstrap-orchestrate', './plugins/orchestrate'],
   ['wwbd', './plugins/wwbd'],
   ['wwed', './plugins/wwed'],
+  ['analytics-verify', './plugins/analytics-verify'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
 ]);
@@ -397,6 +410,15 @@ if (!claudeWwedEntry) {
 } else if (claudeWwedEntry.version !== wwedClaudeManifest?.version) {
   fail(
     `wwed version must match between .claude-plugin marketplace and plugin manifest (${claudeWwedEntry.version} !== ${wwedClaudeManifest?.version})`,
+  );
+}
+
+const claudeAnalyticsVerifyEntry = claudeEntries.find((entry) => entry.name === 'analytics-verify');
+if (!claudeAnalyticsVerifyEntry) {
+  fail('.claude-plugin/marketplace.json must register analytics-verify');
+} else if (claudeAnalyticsVerifyEntry.version !== analyticsVerifyClaudeManifest?.version) {
+  fail(
+    `analytics-verify version must match between .claude-plugin marketplace and plugin manifest (${claudeAnalyticsVerifyEntry.version} !== ${analyticsVerifyClaudeManifest?.version})`,
   );
 }
 
@@ -447,7 +469,31 @@ if (!exists('plugins/wwed/always-on.md')) {
   fail('plugins/wwed must ship always-on.md (the SessionStart nudge)');
 }
 
-// wwbd and wwed are the plugins that ship a standing directive, and each reaches
+// analytics-verify is the same shape again, plus the check script its skill runs.
+if (analyticsVerifyClaudeManifest?.name !== 'analytics-verify') {
+  fail('plugins/analytics-verify/.claude-plugin/plugin.json name must be analytics-verify');
+}
+if (analyticsVerifyCodexManifest?.name !== 'analytics-verify') {
+  fail('plugins/analytics-verify/.codex-plugin/plugin.json name must be analytics-verify');
+}
+if (analyticsVerifyClaudeManifest?.version !== analyticsVerifyCodexManifest?.version) {
+  fail(
+    `analytics-verify Claude and Codex manifests must share one version (${analyticsVerifyClaudeManifest?.version} !== ${analyticsVerifyCodexManifest?.version})`,
+  );
+}
+for (const file of [
+  'skills/analytics-verify/SKILL.md',
+  'skills/analytics-verify/scripts/check_claims.py',
+  'skills/analytics-verify/references/ledger.md',
+  'skills/analytics-verify/references/verifier-brief.md',
+  'always-on.md',
+]) {
+  if (!exists(`plugins/analytics-verify/${file}`)) {
+    fail(`plugins/analytics-verify must ship ${file}`);
+  }
+}
+
+// wwbd, wwed and analytics-verify are the plugins that ship a standing directive, and each reaches
 // BOTH runtimes from its own hooks — the Claude manifest's <name>-hooks.json and
 // the Codex manifest's <name>-codex-hooks.json (separate files because Codex does
 // not expand ${CLAUDE_PLUGIN_ROOT}). checkAlwaysOnDelivery enforces that, and

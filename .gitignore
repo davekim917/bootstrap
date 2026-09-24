@@ -10,3 +10,5 @@ hooks/state/
 .impeccable/
 
 .claude/worktrees/
+__pycache__/
+*.pyc
