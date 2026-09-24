@@ -283,6 +283,80 @@ export function logDispatch(entry) {
 }
 
 const SHIM = /^bootstrap-orchestrate:worker-(low|medium|high|xhigh|max)$/;
+const MAX_AGENT_FILES = 500;
+
+/** A spawn with no role of its own: the picker may fill model and effort. */
+export function isRoleless(type) {
+  return !type || type === 'general-purpose';
+}
+
+/** The effort shims are this plugin's own roles and always `model: inherit`. */
+export function isShim(type) {
+  return typeof type === 'string' && SHIM.test(type);
+}
+
+function frontmatterField(text, field) {
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m) return undefined;
+  const line = m[1].split(/\r?\n/).find((l) => l.startsWith(`${field}:`));
+  if (!line) return undefined;
+  return line.slice(field.length + 1).replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2');
+}
+
+function agentFiles(dir, depth = 0, acc = []) {
+  if (depth > 4 || acc.length >= MAX_AGENT_FILES) return acc;
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return acc; }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) agentFiles(p, depth + 1, acc);
+    else if (e.isFile() && e.name.endsWith('.md') && acc.length < MAX_AGENT_FILES) acc.push(p);
+  }
+  return acc;
+}
+
+/**
+ * What a named Claude role's own definition says about its model.
+ *
+ * Claude Code resolves a sub-agent's model as: the per-invocation `model`
+ * parameter, then the definition's `model` frontmatter (`inherit` = the parent's
+ * model), then CLAUDE_CODE_SUBAGENT_MODEL, then the parent's model
+ * (code.claude.com/docs/en/sub-agents, "Choose a model"). So a filled tool-call
+ * model silently replaces a role's pinned model. Definitions are searched where
+ * Claude Code loads project and user roles — every `.claude/agents/` from `cwd`
+ * upward, and the user config dir's `agents/`, recursively, matched on the
+ * frontmatter `name` (the file stem when a file has none).
+ *
+ * Returns { found, pinned, fillable }. `fillable` is true only when at least one
+ * definition was found and none pins a concrete model: a role we cannot read
+ * (built-ins such as Explore, plugin-scoped or `--agents` roles) keeps its
+ * native model, and any conflicting pinned definition wins.
+ */
+export function roleModelIntent(type, {
+  cwd = process.cwd(),
+  home = os.homedir(),
+  env = process.env,
+} = {}) {
+  const intent = { found: false, pinned: null, fillable: false };
+  if (typeof type !== 'string' || !type || type.includes(':')) return intent;
+  const dirs = [];
+  for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
+    dirs.push(path.join(d, '.claude', 'agents'));
+    if (path.dirname(d) === d) break;
+  }
+  dirs.push(path.join(env.CLAUDE_CONFIG_DIR || path.join(home, '.claude'), 'agents'));
+  for (const file of [...new Set(dirs)].flatMap((d) => agentFiles(d))) {
+    let text;
+    try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
+    const name = frontmatterField(text, 'name') || path.basename(file, '.md');
+    if (name !== type) continue;
+    intent.found = true;
+    const model = frontmatterField(text, 'model');
+    if (model && model.toLowerCase() !== 'inherit') intent.pinned ??= model;
+  }
+  intent.fillable = intent.found && intent.pinned === null;
+  return intent;
+}
 
 /**
  * Claude Agent-tool input → the input to run, given a pick (or null).
@@ -290,19 +364,21 @@ const SHIM = /^bootstrap-orchestrate:worker-(low|medium|high|xhigh|max)$/;
  * Fills only what the spawn left out: `model` when absent; effort (expressed as
  * a `bootstrap-orchestrate:worker-<effort>` shim type, the only way the Agent
  * tool takes effort) only for a roleless spawn — no subagent_type or
- * `general-purpose`. A role type (Explore, Plan, any custom agent) keeps its
- * role and may get a confident classifier model. An explicit shim type keeps
- * its effort. No-override decisions add no model or effort; the independent
- * model-effort caps still apply. Returns null when nothing changes.
+ * `general-purpose`. A named role (Explore, Plan, any custom agent) keeps its
+ * role and effort, and gets a confident classifier model only when
+ * `roleFillable` says its own definition leaves the model open (see
+ * roleModelIntent); otherwise its installed model intent stands. An explicit
+ * shim type keeps its effort. No-override decisions add no model or effort; the
+ * independent model-effort caps still apply. Returns null when nothing changes.
  */
-export function rewriteClaudeSpawn(input, picked, rubric) {
+export function rewriteClaudeSpawn(input, picked, rubric, { roleFillable = false } = {}) {
   const out = { ...input };
   const type = typeof input.subagent_type === 'string' ? input.subagent_type : '';
-  const roleless = type === '' || type === 'general-purpose';
+  const roleless = isRoleless(type);
   const shim = type.match(SHIM);
   const route = picked?.decision === 'route' && picked.pick?.model ? picked.pick : null;
 
-  if (!out.model && route) out.model = route.model;
+  if (!out.model && route && (roleless || shim || roleFillable)) out.model = route.model;
   let effort = shim ? shim[1] : roleless && route ? route.effort : undefined;
   const tier = out.model ? tierOf(rubric, 'claude', out.model) : undefined;
   if (effort && tier) effort = capEffort(effort, tier.maxEffort);
