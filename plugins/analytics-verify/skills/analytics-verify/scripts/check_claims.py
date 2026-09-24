@@ -443,7 +443,7 @@ def displays(tok: Token, value: Decimal, unit=None, magnitude=False, bound=None)
     if tok.op == 'lte':
         return v <= x
     if tok.op == 'near':
-        return v <= x and abs(v - x) <= half
+        return v < x and abs(v - x) <= half  # "nearly 50" says below 50, and close to it
     return abs(v - x) <= half
 
 

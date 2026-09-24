@@ -118,7 +118,8 @@ A source date (`as_of`, `retrieved`, `effective`) more than a day after `--today
     least, a minimum of, less than, fewer than, under, below, at most, up to, a maximum
     of, no more than, no less than, nearly, almost; and after the number, "+", "or more",
     "and up", "plus", "or less", "or fewer".
-  - "About", "around" and "~" don't loosen the match.
+  - "About", "around" and "~" don't loosen the match. "Nearly" and "almost" mean below
+    the number and within its rounding: "nearly 50" fails for 50 and for 49.4.
 - Each claim is shown or omitted on purpose.
 - Every relation holds (`==`, `<=`, `>=`, `<`, `>`, with an optional `"tolerance"`).
 - Every `expr` claim derives from other claims, with no circles, down to sourced claims.

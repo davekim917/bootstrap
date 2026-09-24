@@ -947,6 +947,14 @@ class ReviewRegressionsPr28Round2(LedgerCase):
         self.assertEqual(code, 1)
         self.assertIn('"Revenue was 5" covers 5, which states rev', out)
 
+    def test_nearly_excludes_the_threshold(self):
+        # Codex round 5: "nearly 50" asserts a value below 50.
+        for text in ('nearly 50 accounts', 'almost 50 accounts'):
+            tok = cc.tokenize(cc.normalize(text))[0][0]
+            self.assertFalse(cc.displays(tok, Decimal(50)), text)
+            self.assertTrue(cc.displays(tok, Decimal('49.6')), text)
+            self.assertFalse(cc.displays(tok, Decimal('49.4')), text)
+
     def test_two_date_claims_cannot_share_one_date(self):
         a = {'id': 'cutoff', 'value': '2026-09-23', 'source': 'd', 'anchors': ['thru 9/23']}
         b = {'id': 'launch', 'value': '2026-09-23', 'source': 'd', 'anchors': ['thru 9/23']}
