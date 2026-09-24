@@ -108,11 +108,13 @@ than a workflow-owned fallback.
 
 A named role keeps the model its own definition pins. Claude Code gives a per-call `model`
 precedence over a role's `model` frontmatter, so the spawn hook fills a model for a named role
-(anything other than `general-purpose` or an effort shim) only when it finds that role's
-definition in a project `.claude/agents/` (from the working directory upward) or the user
-`agents/` directory and no matching definition pins a concrete model (`inherit` or no field
-leaves it open). A role it cannot read — built-ins such as `Explore`, plugin-scoped and
-`--agents` roles — keeps its native model, and the hook skips the picker call for it.
+(anything other than `general-purpose` or an effort shim) only when it can read that role's
+effective definition and it leaves the model open (`inherit` or no field). It finds the definition
+the way Claude Code does: every `.claude/agents/` from the working directory up to the repository
+root, closest first, then the user `agents/` directory; recursive; identity is the frontmatter
+`name` alone. A role it cannot read — built-ins such as `Explore`, plugin-scoped, managed and
+`--agents` roles — keeps its native model and skips the picker call, and so does any scan that
+hits its file, time or frontmatter-size bound.
 
 On the Codex row: `spawn_agent` accepts `model` and `reasoning_effort` (`SpawnAgentArgs`,
 codex-rs 0.154.0, `core/src/tools/handlers/multi_agents/spawn.rs:229-230`), exposed by

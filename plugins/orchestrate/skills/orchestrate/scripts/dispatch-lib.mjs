@@ -283,7 +283,11 @@ export function logDispatch(entry) {
 }
 
 const SHIM = /^bootstrap-orchestrate:worker-(low|medium|high|xhigh|max)$/;
-const MAX_AGENT_FILES = 500;
+// Bounds on the role-definition scan. Hitting any of them leaves the scan
+// incomplete, and an incomplete scan never opens a role to a pick.
+const MAX_AGENT_FILES = 2000;
+const MAX_FRONTMATTER_BYTES = 16 * 1024;
+const SCAN_BUDGET_MS = 1500;
 
 /** A spawn with no role of its own: the picker may fill model and effort. */
 export function isRoleless(type) {
@@ -295,64 +299,115 @@ export function isShim(type) {
   return typeof type === 'string' && SHIM.test(type);
 }
 
-function frontmatterField(text, field) {
-  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!m) return undefined;
-  const line = m[1].split(/\r?\n/).find((l) => l.startsWith(`${field}:`));
-  if (!line) return undefined;
-  return line.slice(field.length + 1).replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2');
-}
-
-function agentFiles(dir, depth = 0, acc = []) {
-  if (depth > 4 || acc.length >= MAX_AGENT_FILES) return acc;
-  let entries = [];
-  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return acc; }
-  for (const e of entries) {
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) agentFiles(p, depth + 1, acc);
-    else if (e.isFile() && e.name.endsWith('.md') && acc.length < MAX_AGENT_FILES) acc.push(p);
+/** Leading frontmatter as {name, model}; null for a file with none; {unreadable} when it cannot be read. */
+function readFrontmatter(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(MAX_FRONTMATTER_BYTES);
+    const text = buf.subarray(0, fs.readSync(fd, buf, 0, buf.length, 0)).toString('utf8');
+    const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+    // An opened block that never closes within the bound cannot be read safely.
+    if (!m) return /^---\r?\n/.test(text) ? { unreadable: true } : null;
+    const field = (key) => {
+      const line = m[1].split(/\r?\n/).find((l) => l.startsWith(`${key}:`));
+      if (!line) return undefined;
+      return line.slice(key.length + 1).replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2');
+    };
+    return { name: field('name'), model: field('model') };
+  } catch {
+    return { unreadable: true };
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* already closed */ }
   }
-  return acc;
 }
 
 /**
- * What a named Claude role's own definition says about its model.
+ * Markdown files under one agents directory, recursively, the way Claude Code
+ * scans it. Returns null when the walk is incomplete (a bound was hit or a
+ * readable-looking directory could not be listed).
+ */
+function agentFiles(dir, budget) {
+  const files = [];
+  const walk = (d) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch (err) {
+      return d === dir && err?.code === 'ENOENT'; // an absent scope is complete and empty
+    }
+    for (const e of entries) {
+      if (Date.now() > budget.deadline || budget.files >= budget.maxFiles) return false;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) {
+        if (!walk(p)) return false;
+      } else if (e.isFile() && e.name.endsWith('.md')) {
+        budget.files += 1;
+        files.push(p);
+      }
+    }
+    return true;
+  };
+  return walk(dir) ? files : null;
+}
+
+/** Project scope: `.claude/agents/` from cwd up to the repository root (cwd alone outside a repo). */
+function projectAgentDirs(cwd) {
+  const chain = [];
+  for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
+    chain.push(d);
+    if (fs.existsSync(path.join(d, '.git'))) return chain.map((c) => path.join(c, '.claude', 'agents'));
+    if (path.dirname(d) === d) return [path.join(path.resolve(cwd), '.claude', 'agents')];
+  }
+}
+
+/**
+ * What a named Claude role's effective definition says about its model.
  *
  * Claude Code resolves a sub-agent's model as: the per-invocation `model`
  * parameter, then the definition's `model` frontmatter (`inherit` = the parent's
  * model), then CLAUDE_CODE_SUBAGENT_MODEL, then the parent's model
  * (code.claude.com/docs/en/sub-agents, "Choose a model"). So a filled tool-call
- * model silently replaces a role's pinned model. Definitions are searched where
- * Claude Code loads project and user roles — every `.claude/agents/` from `cwd`
- * upward, and the user config dir's `agents/`, recursively, matched on the
- * frontmatter `name` (the file stem when a file has none).
+ * model silently replaces a role's pinned model.
  *
- * Returns { found, pinned, fillable }. `fillable` is true only when at least one
- * definition was found and none pins a concrete model: a role we cannot read
- * (built-ins such as Explore, plugin-scoped or `--agents` roles) keeps its
- * native model, and any conflicting pinned definition wins.
+ * The effective definition is found the way that page describes: project roles
+ * in every `.claude/agents/` from `cwd` up to the repository root, closest
+ * first, then the user scope (`CLAUDE_CONFIG_DIR`, else `~/.claude`) `agents/`;
+ * each scanned recursively; identity is the frontmatter `name` only (a file
+ * without one is not a role). The first scope that defines the name wins; two
+ * definitions in that scope count as pinned if either pins.
+ *
+ * Returns { found, pinned, fillable, complete }. `fillable` is true only when
+ * the scan completed within its bounds, the effective definition was found,
+ * and it leaves the model open. A role it cannot read — built-ins such as
+ * Explore, plugin-scoped, managed or `--agents` roles — keeps its native model.
  */
 export function roleModelIntent(type, {
   cwd = process.cwd(),
   home = os.homedir(),
   env = process.env,
+  budgetMs = SCAN_BUDGET_MS,
+  maxFiles = MAX_AGENT_FILES,
 } = {}) {
-  const intent = { found: false, pinned: null, fillable: false };
+  const intent = { found: false, pinned: null, fillable: false, complete: true };
   if (typeof type !== 'string' || !type || type.includes(':')) return intent;
-  const dirs = [];
-  for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
-    dirs.push(path.join(d, '.claude', 'agents'));
-    if (path.dirname(d) === d) break;
-  }
-  dirs.push(path.join(env.CLAUDE_CONFIG_DIR || path.join(home, '.claude'), 'agents'));
-  for (const file of [...new Set(dirs)].flatMap((d) => agentFiles(d))) {
-    let text;
-    try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
-    const name = frontmatterField(text, 'name') || path.basename(file, '.md');
-    if (name !== type) continue;
-    intent.found = true;
-    const model = frontmatterField(text, 'model');
-    if (model && model.toLowerCase() !== 'inherit') intent.pinned ??= model;
+  const scopes = [
+    ...projectAgentDirs(cwd),
+    path.join(env.CLAUDE_CONFIG_DIR || path.join(home, '.claude'), 'agents'),
+  ];
+  const budget = { files: 0, maxFiles, deadline: Date.now() + budgetMs };
+  for (const dir of [...new Set(scopes)]) {
+    const files = agentFiles(dir, budget);
+    if (files === null) return { ...intent, complete: false };
+    for (const file of files) {
+      if (Date.now() > budget.deadline) return { ...intent, complete: false };
+      const fm = readFrontmatter(file);
+      if (fm?.unreadable) return { ...intent, complete: false };
+      if (!fm || fm.name !== type) continue;
+      intent.found = true;
+      if (fm.model && fm.model.toLowerCase() !== 'inherit') intent.pinned ??= fm.model;
+    }
+    if (intent.found) break; // a higher-priority scope shadows the rest
   }
   intent.fillable = intent.found && intent.pinned === null;
   return intent;
