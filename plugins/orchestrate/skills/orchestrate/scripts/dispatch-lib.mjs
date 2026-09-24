@@ -284,22 +284,37 @@ export function logDispatch(entry) {
 
 const SHIM = /^bootstrap-orchestrate:worker-(low|medium|high|xhigh|max)$/;
 
+/** A spawn with no role of its own: the picker may fill model and effort. */
+export function isRoleless(type) {
+  return !type || type === 'general-purpose';
+}
+
+/** A named role — neither roleless nor one of this plugin's effort shims. */
+export function isNamedRole(type) {
+  return !isRoleless(type) && !(typeof type === 'string' && SHIM.test(type));
+}
+
 /**
  * Claude Agent-tool input → the input to run, given a pick (or null).
  *
  * Fills only what the spawn left out: `model` when absent; effort (expressed as
  * a `bootstrap-orchestrate:worker-<effort>` shim type, the only way the Agent
  * tool takes effort) only for a roleless spawn — no subagent_type or
- * `general-purpose`. A role type (Explore, Plan, any custom agent) keeps its
- * role and may get a confident classifier model. An explicit shim type keeps
- * its effort. No-override decisions add no model or effort; the independent
- * model-effort caps still apply. Returns null when nothing changes.
+ * `general-purpose`. A named role (Explore, Plan, any custom or plugin agent)
+ * is never rewritten: Claude Code gives a per-call `model` precedence over the
+ * role's own `model` frontmatter (including `inherit`), and a role's effective
+ * definition can live where a hook cannot see it (managed settings, `--agents`),
+ * so any filled model could silently replace the role's installed intent
+ * (code.claude.com/docs/en/sub-agents, "Choose a model"). An explicit shim type
+ * keeps its effort. No-override decisions add no model or effort; the
+ * independent model-effort caps still apply. Returns null when nothing changes.
  */
 export function rewriteClaudeSpawn(input, picked, rubric) {
   const out = { ...input };
   const type = typeof input.subagent_type === 'string' ? input.subagent_type : '';
-  const roleless = type === '' || type === 'general-purpose';
+  const roleless = isRoleless(type);
   const shim = type.match(SHIM);
+  if (!roleless && !shim) return null;
   const route = picked?.decision === 'route' && picked.pick?.model ? picked.pick : null;
 
   if (!out.model && route) out.model = route.model;

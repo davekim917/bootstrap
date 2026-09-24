@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { test } from 'node:test';
@@ -84,9 +87,40 @@ test('general-purpose counts as roleless', () => {
   assert.deepEqual([out.model, out.subagent_type], ['fable', 'bootstrap-orchestrate:worker-low']);
 });
 
-test('a role type keeps its role and only gets a model', () => {
-  const out = rewriteClaudeSpawn({ subagent_type: 'Explore', prompt: 'p' }, route('opus', 'low'), rubric);
-  assert.deepEqual([out.model, out.subagent_type], ['opus', 'Explore']);
+// Named roles: built-in, project/user custom (pinned, `inherit` or no model
+// field), and plugin-scoped. A per-call model outranks the role's own model, so
+// a confident route must never be written into one.
+const NAMED_ROLES = ['Explore', 'Plan', 'qa-design-critic', 'qa-smoke-worker', 'qa-adjudicator', 'researcher', 'codex:codex-rescue'];
+
+test('a named role is never rewritten, even on a confident route', () => {
+  for (const subagent_type of NAMED_ROLES) {
+    for (const r of [route('opus', 'low'), route('fable', 'high'), route('opus', 'max')]) {
+      assert.equal(rewriteClaudeSpawn({ subagent_type, prompt: 'p' }, r, rubric), null, subagent_type);
+    }
+  }
+});
+
+test('an explicit tool-call model on a named role is kept as given', () => {
+  assert.equal(rewriteClaudeSpawn({ subagent_type: 'qa-smoke-worker', model: 'fable', prompt: 'p' }, route('opus', 'xhigh'), rubric), null);
+});
+
+test('the installed hook leaves every named role untouched and never consults the picker', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));
+  const log = path.join(root, 'dispatch-log.jsonl');
+  const hook = fileURLToPath(new URL('../../../hooks/route-spawn.mjs', import.meta.url));
+  for (const subagent_type of NAMED_ROLES) {
+    const r = spawnSync(process.execPath, [hook], {
+      input: JSON.stringify({ tool_name: 'Agent', cwd: root, tool_input: { subagent_type, description: 'd', prompt: 'challenge the evidence' } }),
+      encoding: 'utf8',
+      timeout: 15000,
+      // No transport at all: a picker call here could only fail, and would show as decision "inherit".
+      env: { PATH: process.env.PATH, HOME: root, ORCHESTRATE_DISPATCH_LOG: log },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout, '', subagent_type);
+  }
+  const entries = fs.readFileSync(log, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(entries.map((e) => [e.before.subagent_type, e.decision, e.after]), NAMED_ROLES.map((t) => [t, 'named-role', null]));
 });
 
 test('no override preserves a custom role and its native model inheritance', () => {
