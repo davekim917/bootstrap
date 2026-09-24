@@ -20,6 +20,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.5.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.3.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
+| Claude Code / Codex | `analytics-verify` | 1.0.0 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
 ### Delegation is invoke-only
@@ -256,6 +257,7 @@ artifact, environment and command, and invalidate it after relevant changes.
 /plugin install bootstrap-orchestrate@davekim917-bootstrap
 /plugin install wwbd@davekim917-bootstrap
 /plugin install wwed@davekim917-bootstrap
+/plugin install analytics-verify@davekim917-bootstrap
 /plugin install concise@davekim917-bootstrap
 ```
 
@@ -267,6 +269,7 @@ codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
 codex plugin add bootstrap-orchestrate@davekim917-bootstrap
 codex plugin add wwbd@davekim917-bootstrap
 codex plugin add wwed@davekim917-bootstrap
+codex plugin add analytics-verify@davekim917-bootstrap
 codex plugin add concise@davekim917-bootstrap
 ```
 
@@ -278,6 +281,7 @@ codex plugin add bootstrap-workflow-agents@davekim917-bootstrap
 codex plugin add bootstrap-orchestrate@davekim917-bootstrap
 codex plugin add wwbd@davekim917-bootstrap
 codex plugin add wwed@davekim917-bootstrap
+codex plugin add analytics-verify@davekim917-bootstrap
 ```
 
 Codex loads the plugin from its cache through `.codex-plugin/plugin.json`; do not copy workflow
