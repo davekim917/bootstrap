@@ -786,6 +786,18 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
         raise InputError('the ledger needs "sources" (object) and "claims" (list)')
     tables = _Tables(base)
 
+    ask = ledger.get('ask')
+    if not isinstance(ask, dict):
+        f.fail('ask', 'the ledger needs "ask": the request, where it came from, the measure and the '
+                      'assumptions, written before any query (see references/ledger.md)')
+    else:
+        for field in ('request', 'from', 'measure'):
+            if not (isinstance(ask.get(field), str) and ask[field].strip()):
+                f.fail('ask', f'"ask" needs "{field}"')
+        assumptions = ask.get('assumptions')
+        if not isinstance(assumptions, list) or not all(isinstance(a, str) and a.strip() for a in assumptions):
+            f.fail('ask', '"ask" needs "assumptions": a list of what would change the answer, [] if none')
+
     for sid, src in sources.items():
         kind = src.get('type') if isinstance(src, dict) else None
         if kind == 'query':
@@ -1345,6 +1357,8 @@ def cmd_changed(args):
         hit_rels = [r for r in rels if expr_names(r) & (moved | deps)]
         ra, rb = listed(la, 'relations'), listed(lb, 'relations')
         ea, eb = listed(la, 'exempt'), listed(lb, 'exempt')
+        ask_moved = json.dumps(la.get('ask'), sort_keys=True, default=str) != json.dumps(lb.get('ask'), sort_keys=True, default=str)
+        print('Ask changed: ' + ('yes, so re-check the question first' if ask_moved else 'no'))
         print('Claims changed, added or removed: ' + (', '.join(sorted(k for k in moved if k)) or 'none'))
         print('Claims derived from them: ' + (', '.join(sorted(deps)) or 'none'))
         print('Relations touching them: ' + ('; '.join(hit_rels) or 'none'))
@@ -1407,6 +1421,22 @@ def _open_findings(lines):
     return counts
 
 
+def _has_frame(lines):
+    """A "Frame" heading outside code fences, with at least one line of content under it."""
+    fenced, in_frame = False, False
+    for line in lines:
+        if line.strip().startswith('```'):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        if re.match(r'^\s*#{1,6}\s', line):
+            in_frame = bool(re.match(r'^\s*#{1,6}\s*frame\b', line, re.I))
+        elif in_frame and line.strip():
+            return True
+    return False
+
+
 def cmd_receipt(args):
     with open(args.report, encoding='utf-8') as fh:
         lines = fh.read().splitlines()
@@ -1440,6 +1470,9 @@ def cmd_receipt(args):
         f.fail('receipt', f'verdict is {verdict or "missing"}, not CLEAR')
     if not who:
         f.fail('receipt', 'no verifier named')
+    if not _has_frame(lines[i:]):
+        f.fail('receipt', 'the report has no "Frame" section with content: the question the verifier checked '
+                          'the deliverable against')
     open_counts = _open_findings(lines[i:])
     for section in _OPEN_SECTIONS:
         if section not in open_counts:

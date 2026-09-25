@@ -17,6 +17,9 @@ from decimal import Decimal
 
 import check_claims as cc
 
+ASK = {'request': 'How many new customers have we had, by year?', 'from': 'the CFO email, 2026-09-22',
+       'measure': 'new customer accounts, Online and Studio deduplicated, by calendar year', 'assumptions': []}
+
 DELIVERED_CSV = """Year,New Online customers,New Studio customers (first service),"New customers, unique across Online + Studio",Studio service appointments
 2013,412,0,412,0
 2014,8310,0,8310,0
@@ -76,7 +79,10 @@ couple notes for the all-channel estimate
 """
 
 
-SECTIONS = '''## Wrong
+SECTIONS = '''## Frame
+The request asks for new customer accounts by year; the deliverable answers that measure.
+
+## Wrong
 | Where | Deliverable says | Actually | Evidence |
 |---|---|---|---|
 
@@ -106,6 +112,8 @@ class Tmp(unittest.TestCase):
         shutil.rmtree(self.dir)
 
     def write(self, name, content):
+        if isinstance(content, dict) and 'claims' in content and 'ask' not in content:
+            content = {'ask': ASK, **content}  # every ledger needs one; tests of "ask" set it explicitly
         path = os.path.join(self.dir, name)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content if isinstance(content, str) else json.dumps(content, indent=1))
@@ -1035,6 +1043,52 @@ class RealReportFalseAlarms(LedgerCase):
             self.assertEqual([t.problem for t in toks], ['write it in digits'], text)
         self.assertEqual(cc.tokenize(cc.normalize('No one else stocks it.'))[0], [])
         self.assertEqual(cc.tokenize(cc.normalize('One of the best bars.'))[0], [])
+
+
+
+class FrameFirst(LedgerCase):
+    """The question comes before the numbers: the ledger states it, the verifier's report
+    names it, and an edit to it is reported."""
+
+    def test_a_ledger_without_an_ask_fails(self):
+        code, out = self.check(self.led([], ask=None), 'Nothing here.')
+        self.assertEqual(code, 1)
+        self.assertIn('the ledger needs "ask"', out)
+
+    def test_each_ask_field_is_required(self):
+        for field in ('request', 'from', 'measure'):
+            ask = {**ASK, field: ' '}
+            code, out = self.check(self.led([], ask=ask), 'Nothing here.')
+            self.assertEqual(code, 1, field)
+            self.assertIn(f'"ask" needs "{field}"', out)
+        for assumptions in (None, 'none', [''], [3]):
+            code, out = self.check(self.led([], ask={**ASK, 'assumptions': assumptions}), 'Nothing here.')
+            self.assertEqual(code, 1, assumptions)
+            self.assertIn('"ask" needs "assumptions"', out)
+        code, out = self.check(self.led([], ask={**ASK, 'assumptions': ['accounts, not people']}), 'Nothing here.')
+        self.assertEqual(code, 0, out)
+
+    def test_changed_reports_an_edited_ask(self):
+        doc = self.write('d.md', 'Same.')
+        old = self.write('old.json', {'ask': ASK, 'sources': {}, 'claims': []})
+        new = self.write('new.json', {'ask': {**ASK, 'measure': 'shipments to retailers'}, 'sources': {}, 'claims': []})
+        code, out = run(['changed', doc, doc, '--old-ledger', old, '--new-ledger', new])
+        self.assertIn('Ask changed: yes', out)
+        code, out = run(['changed', doc, doc, '--old-ledger', old, '--new-ledger', old])
+        self.assertIn('Ask changed: no', out)
+
+
+class ReceiptFrame(ReceiptCase):
+    def test_a_report_without_a_frame_fails(self):
+        body = SECTIONS.split('## Wrong', 1)[1]
+        for frame in ('', '## Frame\n\n', '```\n## Frame\nquoted\n```\n'):
+            code, out = self.receipt(self.header() + frame + '## Wrong' + body)
+            self.assertEqual(code, 1, repr(frame))
+            self.assertIn('no "Frame" section', out)
+
+    def test_a_report_with_a_frame_passes(self):
+        code, out = self.receipt(self.header() + SECTIONS)
+        self.assertEqual(code, 0, out)
 
 
 if __name__ == '__main__':

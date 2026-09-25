@@ -1,6 +1,6 @@
 {
   "name": "analytics-verify",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Verification loop for analytics and research deliverables: claim ledger, mechanical check script, independent verifier on a fresh context, re-check of every fix, and a receipt bound to the exact file sent.",
   "author": {
     "name": "David Kim"
