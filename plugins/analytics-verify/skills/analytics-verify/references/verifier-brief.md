@@ -112,7 +112,7 @@ You get the output of `check_claims.py changed`.
 1. If it says the ask changed, start again at step 1.
 2. Confirm each earlier finding's fix landed.
 3. Check every `+` line, every changed claim and every claim derived from one, using
-   steps 2 and 6–8. A removed or edited relation needs a reason: removing a failing
+   steps 2–3 and 6–10. A removed or edited relation needs a reason: removing a failing
    check is not a fix. Every added exemption must be a name, address or phone, not a
    quantity.
 4. Run `check` on the whole final file and read it once end to end. A fix can make a
