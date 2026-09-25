@@ -45,8 +45,8 @@ If you're unsure, use the full loop.
      to") gets a `relations` entry.
    - Every row, year and segment the ask expects is shown, or `omit`ted with a reason.
    - Every number in the deliverable is accounted for, including years, dates and
-     spelled-out counts. A range is two claims. Write large or compound numbers in
-     digits ("200", not "two hundred"), and state bounds plainly ("at least 50", not
+     spelled-out counts. A range is two claims. Write large or compound numbers and
+     fractions in digits ("200", not "two hundred"; "75%", not "three quarters"), and state bounds plainly ("at least 50", not
      "not under 50"): the check refuses what it can't read exactly.
 3. **Run the mechanical checks until they pass.** The script is
    `scripts/check_claims.py` in this skill's directory:
