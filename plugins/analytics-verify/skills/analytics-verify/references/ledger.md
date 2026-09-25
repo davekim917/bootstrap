@@ -5,6 +5,12 @@ relative to the ledger's folder.
 
 ```json
 {
+  "ask": {
+    "request": "How many new customers have we had since launch, by year?",
+    "from": "the CFO's email, 2026-09-22",
+    "measure": "new customer accounts (first completed order), Online and Studio combined and deduplicated, by calendar year, through 2026-09-23 17:00 PT",
+    "assumptions": ["a customer is an account, so someone with two accounts counts twice"]
+  },
   "sources": {
     "q1":  {"type": "query", "sql": "query.sql", "result": "results.csv",
             "as_of": "2026-09-23T17:00:00-07:00", "grain": "customer account"},
@@ -28,6 +34,24 @@ relative to the ledger's folder.
   "exempt": ["100 Main St", "(555) 555-0100"]
 }
 ```
+
+## Ask
+
+What the deliverable has to answer, written before any query. The verifier checks the
+deliverable against it, and checks it against the request itself.
+
+- **`request`**: the ask in the requester's own words.
+- **`from`**: where the request came from (message, thread, call transcript), so the
+  verifier can read it.
+- **`measure`**: exactly what is counted or summed and on what basis (retail sales or
+  shipments to the retailer, product sales or product plus shipping), for which
+  population, grain and period.
+- **`assumptions`**: a list of every assumption that would change the answer, `[]` if
+  there are none.
+
+The check fails a ledger without `request`, `from` and `measure`, or without an
+`assumptions` list. `changed` reports an edited ask, and the verifier starts over from
+the question.
 
 ## Sources
 
@@ -149,5 +173,8 @@ Exit status: 0 pass, 1 findings, 2 input the script can't check.
   tolerance (as drift, not a match). It refuses a table with duplicate column names or
   ragged rows.
 - `receipt` reads only the header block at the very top of the report, and fails if
-  those fields appear anywhere else. It also fails a CLEAR report that still lists
-  items under Wrong, Stale or Unsupported.
+  those fields appear anywhere else. It also fails a report that doesn't open with a
+  `## Frame` section right after the header giving `Question:`, `Measure:` and `Answers
+  it:` once each, and a CLEAR report that still lists items under Wrong, Stale or Unsupported or
+  whose `Answers it:` isn't "yes". It shows the Frame names a question and a measure, not
+  that they're right.
