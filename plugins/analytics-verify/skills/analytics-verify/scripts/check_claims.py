@@ -1421,13 +1421,30 @@ def _open_findings(lines):
     return counts
 
 
+def _fenced(lines):
+    """For each line, whether it is part of a fenced code block, delimiters included.
+
+    CommonMark fences: three or more backticks or tildes, indented at most three spaces.
+    The closing fence uses the same character, at least as many of them, and nothing
+    else. An unclosed fence runs to the end of the file."""
+    out, fence = [], None
+    for line in lines:
+        m = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
+        if fence is None:
+            if m and not (m.group(1)[0] == '`' and '`' in m.group(2)):
+                fence = m.group(1)
+            out.append(fence is not None)
+        else:
+            out.append(True)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not m.group(2).strip():
+                fence = None
+    return out
+
+
 def _has_frame(lines):
     """A "Frame" heading outside code fences, with at least one line of content under it."""
-    fenced, in_frame = False, False
-    for line in lines:
-        if line.strip().startswith('```'):
-            fenced = not fenced
-            continue
+    in_frame = False
+    for line, fenced in zip(lines, _fenced(lines)):
         if fenced:
             continue
         if re.match(r'^\s*#{1,6}\s', line):

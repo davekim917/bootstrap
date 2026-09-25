@@ -1081,14 +1081,31 @@ class FrameFirst(LedgerCase):
 class ReceiptFrame(ReceiptCase):
     def test_a_report_without_a_frame_fails(self):
         body = SECTIONS.split('## Wrong', 1)[1]
-        for frame in ('', '## Frame\n\n', '```\n## Frame\nquoted\n```\n'):
+        for frame in ('', '## Frame\n\n', '```\n## Frame\nquoted\n```\n',
+                      '~~~markdown\n## Frame\nquoted\n~~~\n',
+                      '````\n```\n## Frame\nquoted\n````\n',  # the inner ``` doesn't close a 4-backtick fence
+                      '~~~\n## Frame\nquoted\n```\n~~~\n'):  # nor does a backtick fence close a tilde one
             code, out = self.receipt(self.header() + frame + '## Wrong' + body)
             self.assertEqual(code, 1, repr(frame))
             self.assertIn('no "Frame" section', out)
 
+    def test_an_unclosed_fence_runs_to_the_end(self):
+        code, out = self.receipt(self.header() + '~~~\n' + SECTIONS)
+        self.assertEqual(code, 1)
+        self.assertIn('no "Frame" section', out)
+
     def test_a_report_with_a_frame_passes(self):
         code, out = self.receipt(self.header() + SECTIONS)
         self.assertEqual(code, 0, out)
+        code, out = self.receipt(self.header() + SECTIONS + '\n~~~\n## Frame\nan example\n~~~\n')
+        self.assertEqual(code, 0, out)
+
+    def test_a_code_block_cannot_hide_a_finding(self):
+        hidden = SECTIONS.replace('|---|---|---|---|\n',
+                                  '|---|---|---|---|\n~~~\n## Confirmed\n~~~\n| Total | 5 | 7 | q1 |\n')
+        code, out = self.receipt(self.header() + hidden)
+        self.assertEqual(code, 1, out)
+        self.assertIn('Wrong', out)
 
 
 if __name__ == '__main__':
