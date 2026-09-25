@@ -46,6 +46,12 @@
       "source": "./plugins/analytics-verify",
       "description": "Claim ledger, check script and independent verifier for analytics and research deliverables, with an always-on nudge to run it before numbers leave.",
       "version": "1.2.0"
+    },
+    {
+      "name": "test-audit",
+      "source": "./plugins/test-audit",
+      "description": "Authoring gate and evidence-first audit workflow for tests, with an always-on nudge to run the gate and never weaken an existing test. Adapted from OpenClaw (MIT).",
+      "version": "1.0.0"
     }
   ]
 }

@@ -1,0 +1,36 @@
+{
+  "name": "test-audit",
+  "version": "1.0.0",
+  "description": "Authoring gate and evidence-first audit workflow for tests: junk patterns, retention bar, containment before pruning, and preservation proof before any deletion, with an always-on nudge. Adapted from OpenClaw (MIT).",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "testing",
+    "test-quality",
+    "review",
+    "vitest",
+    "pytest",
+    "dbt"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/test-audit-codex-hooks.json",
+  "interface": {
+    "displayName": "Test audit",
+    "shortDescription": "Authoring gate and evidence-first audit for tests",
+    "longDescription": "Gates every new or changed test on the behavior it protects and the regression it catches, audits existing tests for junk patterns with a complete evidence record, contains external side effects before pruning, and requires the remaining test to catch a representative fault before a duplicate is deleted.",
+    "developerName": "David Kim",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/davekim917/bootstrap",
+    "defaultPrompt": [
+      "Run the test-audit authoring gate on the tests I just added.",
+      "Audit the tests in this module and classify each one with evidence."
+    ],
+    "brandColor": "#7c3aed"
+  }
+}

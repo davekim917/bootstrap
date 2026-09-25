@@ -254,6 +254,8 @@ const wwedClaudeManifest = readJson('plugins/wwed/.claude-plugin/plugin.json');
 const wwedCodexManifest = readJson('plugins/wwed/.codex-plugin/plugin.json');
 const analyticsVerifyClaudeManifest = readJson('plugins/analytics-verify/.claude-plugin/plugin.json');
 const analyticsVerifyCodexManifest = readJson('plugins/analytics-verify/.codex-plugin/plugin.json');
+const testAuditClaudeManifest = readJson('plugins/test-audit/.claude-plugin/plugin.json');
+const testAuditCodexManifest = readJson('plugins/test-audit/.codex-plugin/plugin.json');
 const conciseClaudeManifest = readJson('plugins/concise/.claude-plugin/plugin.json');
 const conciseCodexManifest = readJson('plugins/concise/.codex-plugin/plugin.json');
 const codexCopyPasteEntry = readJson('plugins/workflow-agents/marketplace-entry.json');
@@ -292,6 +294,7 @@ const codexRoster = new Map([
   ['wwbd', './plugins/wwbd'],
   ['wwed', './plugins/wwed'],
   ['analytics-verify', './plugins/analytics-verify'],
+  ['test-audit', './plugins/test-audit'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
 ]);
@@ -344,6 +347,15 @@ if (!codexAnalyticsVerifyEntry) {
   );
 }
 
+const codexTestAuditEntry = codexEntries.find((entry) => entry.name === 'test-audit');
+if (!codexTestAuditEntry) {
+  fail('.agents/plugins/marketplace.json must register test-audit');
+} else if (codexTestAuditEntry.version !== testAuditCodexManifest?.version) {
+  fail(
+    `test-audit version must match between .agents marketplace and .codex-plugin manifest (${codexTestAuditEntry.version} !== ${testAuditCodexManifest?.version})`,
+  );
+}
+
 const codexConciseEntry = codexEntries.find((entry) => entry.name === 'concise');
 if (!codexConciseEntry) {
   fail('.agents/plugins/marketplace.json must register concise');
@@ -370,6 +382,7 @@ const claudeRoster = new Map([
   ['wwbd', './plugins/wwbd'],
   ['wwed', './plugins/wwed'],
   ['analytics-verify', './plugins/analytics-verify'],
+  ['test-audit', './plugins/test-audit'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
 ]);
@@ -419,6 +432,15 @@ if (!claudeAnalyticsVerifyEntry) {
 } else if (claudeAnalyticsVerifyEntry.version !== analyticsVerifyClaudeManifest?.version) {
   fail(
     `analytics-verify version must match between .claude-plugin marketplace and plugin manifest (${claudeAnalyticsVerifyEntry.version} !== ${analyticsVerifyClaudeManifest?.version})`,
+  );
+}
+
+const claudeTestAuditEntry = claudeEntries.find((entry) => entry.name === 'test-audit');
+if (!claudeTestAuditEntry) {
+  fail('.claude-plugin/marketplace.json must register test-audit');
+} else if (claudeTestAuditEntry.version !== testAuditClaudeManifest?.version) {
+  fail(
+    `test-audit version must match between .claude-plugin marketplace and plugin manifest (${claudeTestAuditEntry.version} !== ${testAuditClaudeManifest?.version})`,
   );
 }
 
@@ -493,7 +515,37 @@ for (const file of [
   }
 }
 
-// wwbd, wwed and analytics-verify are the plugins that ship a standing directive, and each reaches
+// test-audit is the same shape, plus the adapted-material notices its MIT source requires.
+if (testAuditClaudeManifest?.name !== 'test-audit') {
+  fail('plugins/test-audit/.claude-plugin/plugin.json name must be test-audit');
+}
+if (testAuditCodexManifest?.name !== 'test-audit') {
+  fail('plugins/test-audit/.codex-plugin/plugin.json name must be test-audit');
+}
+if (testAuditClaudeManifest?.version !== testAuditCodexManifest?.version) {
+  fail(
+    `test-audit Claude and Codex manifests must share one version (${testAuditClaudeManifest?.version} !== ${testAuditCodexManifest?.version})`,
+  );
+}
+for (const file of [
+  'skills/test-audit/SKILL.md',
+  'skills/test-audit/references/campaign.md',
+  'skills/test-audit/references/stacks.md',
+  'always-on.md',
+  'NOTICE.md',
+  'LICENSE-OPENCLAW',
+]) {
+  if (!exists(`plugins/test-audit/${file}`)) {
+    fail(`plugins/test-audit must ship ${file}`);
+  }
+}
+requireTextTokens(
+  'plugins/test-audit/LICENSE-OPENCLAW',
+  ['Copyright (c) 2026 OpenClaw Foundation', 'Permission is hereby granted, free of charge'],
+  'the adapted-material license notice',
+);
+
+// wwbd, wwed, analytics-verify and test-audit are the plugins that ship a standing directive, and each reaches
 // BOTH runtimes from its own hooks — the Claude manifest's <name>-hooks.json and
 // the Codex manifest's <name>-codex-hooks.json (separate files because Codex does
 // not expand ${CLAUDE_PLUGIN_ROOT}). checkAlwaysOnDelivery enforces that, and
@@ -1174,6 +1226,7 @@ checkSkillMarkdownLinks(codexSkillsRoot);
 checkSkillMarkdownLinks(orchestrateSkillsRoot);
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/wwbd/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/concise/skills'));
+checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/test-audit/skills'));
 checkSkillMarkdownLinks(claudeSkillsRoot);
 
 for (const skillName of codexSkills) {
