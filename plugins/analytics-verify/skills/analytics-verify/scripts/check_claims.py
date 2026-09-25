@@ -1218,8 +1218,11 @@ def _clip(text, n):
 
 def _section(lines, j):
     """The label above line j: a Markdown table's header row; else the nearest heading
-    (a # line, an HTML heading, or a line that is all bold); for a list item, a nearer
-    lead-in line wins."""
+    (a # line, an HTML heading, or a line that is all bold); for a list item, its parent
+    item or a nearer lead-in line wins. These are the structures deliverables here use.
+    Others (Setext headings, HTML table headers, PDF layout) get no label, on purpose:
+    matching a renderer structure by structure never ends, and the verifier reads the
+    deliverable itself for those."""
     raw = lines[j][0]
     if '|' in raw:
         for h in range(j - 1, 0, -1):
@@ -1265,12 +1268,11 @@ def _line_ends(raw, text):
             out.append(ch)
     lead = len(out) - len(''.join(out).lstrip(f' {BOUNDARY}'))
     cleaned = ''.join(out).strip(f' {BOUNDARY}')
-    filled = [j for j, line in enumerate(raw) if line.strip()]
-    if cleaned == text and len(marks) == len(filled):
-        ends, k = [], 0
-        for j, line in enumerate(raw):
+    if cleaned == text and len(marks) == sum(1 for line in raw if line.strip()):
+        ends, k, m = [], 0, 0
+        for line in raw:
             if line.strip():
-                k = min(max(marks[filled.index(j)] - lead, 0), len(text))
+                k, m = min(max(marks[m] - lead, 0), len(text)), m + 1
             ends.append(k)
         return ends
     if len(raw) <= 400:

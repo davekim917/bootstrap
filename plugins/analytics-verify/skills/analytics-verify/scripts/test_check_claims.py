@@ -1268,11 +1268,14 @@ class Labels(LedgerCase):
             for i, ch in enumerate(text):
                 if ch not in ' ' + cc.BOUNDARY:
                     self.assertEqual(bisect.bisect_right(got, i), bisect.bisect_right(ref, i), (raw, i))
-        long = self.write('long.md', '\n'.join(f'Line {k}: region {k % 17} was {k * 13}K, see https://x.test/{k}'
-                                              if k % 7 else '' for k in range(3000)))
-        start = time.time()
-        cc._labels_doc(long)
-        self.assertLess(time.time() - start, 20)  # the per-prefix mapping took about 40s here
+        def seconds(n):
+            raw = [f'Line {k}: region {k % 17} was {k * 13}K, see https://x.test/{k}' if k % 7 else '' for k in range(n)]
+            text = cc.normalize('\n'.join(raw))
+            start = time.perf_counter()
+            cc._line_ends(raw, text)
+            return time.perf_counter() - start
+        small, large = seconds(3000), seconds(30000)
+        self.assertLess(large, 30 * max(small, 0.005))  # linear: about 10x for 10x the lines; quadratic: 100x
 
     def test_an_anchor_missing_from_the_deliverable_is_flagged(self):
         code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, '2021 179K')], 'Nothing here.')
