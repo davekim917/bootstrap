@@ -45,7 +45,7 @@
       "name": "analytics-verify",
       "source": "./plugins/analytics-verify",
       "description": "Claim ledger, check script and independent verifier for analytics and research deliverables, with an always-on nudge to run it before numbers leave.",
-      "version": "1.2.0"
+      "version": "1.2.1"
     },
     {
       "name": "test-audit",

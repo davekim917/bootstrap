@@ -67,7 +67,11 @@ Work in this order. A number can only be right for a question you've pinned down
    - absence claims and descriptions nobody sourced
 9. **For SQL, also check:** join fan-out, distinct entity counts, denominators that shift
    between groups, partial periods, the cutoff's timezone, nulls versus zeros, and gaps
-   in source coverage by period.
+   in source coverage by period. For every date a finding rests on (an age, an order of
+   events, a window), confirm which event it records: created, updated, answered or
+   shipped. A record updated in place keeps its created date, so "answered a year
+   before" can be a new answer in an old record. Check the table docs or how the column
+   behaves, not its name.
 10. **Check the conclusions.** Each insight or recommendation follows from the numbers
     shown, is no stronger than the evidence, and holds up against the obvious other
     explanation.
