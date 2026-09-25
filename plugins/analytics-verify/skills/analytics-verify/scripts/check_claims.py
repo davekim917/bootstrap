@@ -1421,24 +1421,29 @@ def _open_findings(lines):
     return counts
 
 
-_FRAME_TEMPLATE = 'the question in your own words'
+_FRAME_FIELDS = ('question', 'measure', 'answers it')
 
 
-def _opens_with_frame(body):
-    """The report opens with its Frame: the first non-blank line after the header is
-    exactly "## Frame", and the next is visible prose, at least three words once HTML
-    comments and list or quote markers are stripped, and not the template's placeholder.
-    Position, not Markdown parsing, decides which heading counts, so an example quoted
-    further down can't stand in for it. This shows a Frame was written, not that it's
-    right: that is the reader's call."""
+def _frame_gaps(body):
+    """What the report's opening Frame is missing, or [] when it's complete.
+
+    The first non-blank line after the header must be exactly "## Frame", and the
+    section under it must give a value for each of "Question:", "Measure:" and "Answers
+    it:" (list markers, quote markers and bold allowed; a value in <angle brackets> is
+    the template's placeholder). Position decides which heading counts, so an example
+    quoted further down can't stand in for it. This shows the Frame names a question and
+    a measure, not that they are right: that is the reader's call."""
     rest = [line for line in body if line.strip()]
-    if len(rest) < 2 or not re.fullmatch(r'##[ \t]+frame[ \t]*', rest[0], re.I):
-        return False
-    text = re.sub(r'<!--.*?-->', ' ', rest[1])
-    if '<!--' in text or re.match(r'\s*(#|`{3}|~{3})', text):
-        return False
-    text = re.sub(r'^[\s>*+-]*(\d+[.)]\s*)?', '', text)
-    return len(re.findall(r'[^\W\d_]{2,}', text)) >= 3 and not text.lower().startswith(_FRAME_TEMPLATE)
+    if not rest or not re.fullmatch(r'##[ \t]+frame[ \t]*', rest[0], re.I):
+        return ['a "## Frame" heading as the first line after the header']
+    found = set()
+    for line in rest[1:]:
+        if line.lstrip().startswith('#'):
+            break
+        m = re.match(r'^[\s>+-]*(question|measure|answers it)\s*:\s*(.*)$', re.sub(r'[*_]', '', line), re.I)
+        if m and re.search(r'[^\W\d_]', m.group(2)) and not m.group(2).lstrip().startswith('<'):
+            found.add(m.group(1).lower())
+    return [f'a "{f.capitalize()}:" line' for f in _FRAME_FIELDS if f not in found]
 
 
 def cmd_receipt(args):
@@ -1474,9 +1479,10 @@ def cmd_receipt(args):
         f.fail('receipt', f'verdict is {verdict or "missing"}, not CLEAR')
     if not who:
         f.fail('receipt', 'no verifier named')
-    if not _opens_with_frame(lines[i:]):
-        f.fail('receipt', 'the report must open with a "## Frame" section right after the header, starting with a '
-                          'line of prose: the question the verifier checked the deliverable against')
+    gaps = _frame_gaps(lines[i:])
+    if gaps:
+        f.fail('receipt', 'the report must open with its Frame, the question the verifier checked the deliverable '
+                          'against; missing: ' + ', '.join(gaps))
     open_counts = _open_findings(lines[i:])
     for section in _OPEN_SECTIONS:
         if section not in open_counts:

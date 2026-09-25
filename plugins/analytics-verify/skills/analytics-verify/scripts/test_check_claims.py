@@ -9,6 +9,7 @@ import csv
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -80,7 +81,9 @@ couple notes for the all-channel estimate
 
 
 SECTIONS = '''## Frame
-The request asks for new customer accounts by year; the deliverable answers that measure.
+Question: new customers since launch, by year, for the board deck.
+Measure: new customer accounts (first completed order), Online and Studio deduplicated, by calendar year.
+Answers it: yes.
 
 ## Wrong
 | Where | Deliverable says | Actually | Evidence |
@@ -1079,40 +1082,49 @@ class FrameFirst(LedgerCase):
 
 
 class ReceiptFrame(ReceiptCase):
-    """The report opens with its Frame, right after the header. Position decides, so no
-    quoted or rendered-away example can stand in for it."""
-    MSG = 'must open with a "## Frame" section'
+    """The report opens with its Frame, right after the header, naming the question, the
+    measure and whether the deliverable answers it. Position decides which heading
+    counts, so an example quoted further down can't stand in for it."""
+    FRAME = SECTIONS.split('## Wrong', 1)[0]
+    BODY = '## Wrong' + SECTIONS.split('## Wrong', 1)[1]
 
-    def test_a_report_that_does_not_open_with_a_frame_fails(self):
-        body = SECTIONS.split('## Wrong', 1)[1]
-        for frame in ('', '## Frame\n\n', '## Frame\n## Frame\ntext\n',
-                      '```\n## Frame\nquoted\n```\n', '~~~markdown\n## Frame\nquoted\n~~~\n',
-                      '    ## Frame\n    example only\n',  # indented code, not a heading
-                      '<!--\n## Frame\nhidden\n-->\n', '> ## Frame\n> quoted\n',
-                      '# Report\n\n## Frame\ntext\n', '### Frame\ntext\n',
-                      # a Frame that renders as nothing, or is the template's placeholder
-                      '## Frame\n<!-- TODO -->\n', '## Frame\n<!--\nTODO: fill in the question\n-->\n',
-                      '## Frame\n```\n```\n', '## Frame\n~~~text\nThe question is revenue.\n~~~\n',
-                      '## Frame\n- TBD\n', '## Frame\n...\n',
-                      '## Frame\nThe question in your own words, the measure and its basis, and whether '
-                      'the deliverable answers it.\n'):
-            code, out = self.receipt(self.header() + frame + '## Wrong' + body)
-            self.assertEqual(code, 1, repr(frame))
-            self.assertIn(self.MSG, out, repr(frame))
+    def assert_fails(self, text, missing):
+        code, out = self.receipt(self.header() + text)
+        self.assertEqual(code, 1, repr(text))
+        self.assertIn('must open with its Frame', out, repr(text))
+        self.assertIn(missing, out, repr(text))
 
-    def test_a_frame_after_other_sections_fails(self):
-        wrong_first = SECTIONS.split('## Wrong', 1)[1]
-        frame = SECTIONS.split('## Wrong', 1)[0]
-        code, out = self.receipt(self.header() + '## Wrong' + wrong_first + '\n' + frame)
-        self.assertEqual(code, 1)
-        self.assertIn(self.MSG, out)
+    def test_the_frame_heading_must_come_first(self):
+        self.assert_fails(self.BODY, 'a "## Frame" heading')
+        self.assert_fails(self.BODY + '\n' + self.FRAME, 'a "## Frame" heading')
+        for before in ('# Report\n\n', '### Frame\nQuestion: q\n\n', '```\n', '~~~markdown\n', '    ',
+                       '<!--\n', '> '):
+            self.assert_fails(before + self.FRAME + self.BODY, 'a "## Frame" heading')
 
-    def test_a_report_that_opens_with_a_frame_passes(self):
-        for text in (SECTIONS, '\n\n' + SECTIONS.replace('## Frame', '##  frame '),
-                     SECTIONS + '\n~~~\n## Frame\nan example\n~~~\n',
-                     SECTIONS.replace('The request asks', '- **Question:** the request asks'),
-                     SECTIONS.replace('The request asks', '<!-- r2 --> The request asks'),
-                     SECTIONS.replace('The request asks', 'La demande porte sur les nouveaux comptes; the request asks')):
+    def test_each_field_needs_a_value(self):
+        for field in ('Question', 'Measure', 'Answers it'):
+            lines = [l for l in self.FRAME.splitlines() if not l.startswith(field + ':')]
+            self.assert_fails('\n'.join(lines) + '\n\n' + self.BODY, f'"{field}:"')
+        for bad in ('Measure:', 'Measure: <what is counted or summed>', 'Measure: 42', '<!-- Measure: accounts -->',
+                    'The measure is accounts.'):
+            frame = re.sub(r'^Measure:.*$', bad, self.FRAME, flags=re.M)
+            self.assert_fails(frame + self.BODY, '"Measure:"')
+
+    def test_a_vague_frame_fails(self):
+        self.assert_fails('## Frame\nThe report answers the requested question.\n\n' + self.BODY, '"Question:"')
+
+    def test_fields_below_the_next_heading_do_not_count(self):
+        frame = self.FRAME.replace('Answers it: yes.\n', '')
+        self.assert_fails(frame + self.BODY + '\nAnswers it: yes.\n', '"Answers it:"')
+
+    def test_a_complete_frame_passes(self):
+        variants = (SECTIONS,
+                    '\n\n' + SECTIONS.replace('## Frame', '##  frame '),
+                    SECTIONS.replace('Question:', '- **Question:**').replace('Measure:', '- **Measure:**')
+                            .replace('Answers it:', '- **Answers it:**'),
+                    SECTIONS.replace('Question:', '> question :'),
+                    SECTIONS + '\n~~~\n## Frame\nan example\n~~~\n')
+        for text in variants:
             code, out = self.receipt(self.header() + text)
             self.assertEqual(code, 0, out)
 

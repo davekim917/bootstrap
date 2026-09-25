@@ -39,8 +39,9 @@ Work in this order. A number can only be right for a question you've pinned down
    Material the request didn't ask for is a finding when it buries the answer.
 4. **List the claims from the deliverable alone.** Include every number, and also names,
    dates, rankings, "has / doesn't have", who owns or runs what, what's on a menu or a
-   shelf, and the current status of people and places. Only then open the ledger. Any
-   claim you listed that has no ledger entry is Unsupported.
+   shelf, and the current status of people and places. Only then open the ledger's
+   claims (you've already read its `ask`). Any claim you listed that has no ledger entry
+   is Unsupported.
 5. **Run the mechanical checks:** `check`, plus `reproduce` when there's a table. The
    script is `scripts/check_claims.py` in the `analytics-verify` skill. A FAIL is a
    finding. A PASS only shows the claims are bound to sources, not that they're true.
@@ -81,8 +82,9 @@ verifier: <your actual model and how you ran, e.g. "gpt-6-sol, fresh codex exec 
 verdict: CLEAR | CHANGES
 
 ## Frame
-The question in your own words, the measure and its basis, and whether the deliverable
-answers it.
+Question: <the request in your own words, and what the requester will do with it>
+Measure: <what is counted or summed, on what basis, for which population, grain and period>
+Answers it: <yes, partly or no, and why>
 
 ## Wrong
 | Where | Deliverable says | Actually | Evidence |
@@ -93,7 +95,8 @@ answers it.
 ## Not checked, and why
 ```
 
-- A wrong measure, basis or scope goes under Wrong, not in Frame.
+- The Frame states the question you checked against, from step 1. A wrong measure, basis
+  or scope goes under Wrong, not in Frame.
 - `verdict: CLEAR` only when Wrong, Stale or overstated, and Unsupported are all empty
   (write "none" under an empty heading). Stale items get reworded or qualified first.
 - In `verifier:`, name the model you're actually running on. Write "unknown" if you can't
