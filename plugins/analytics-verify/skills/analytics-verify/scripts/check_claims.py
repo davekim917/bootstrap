@@ -1367,12 +1367,13 @@ def _data_label(raw, sources):
 
 def cmd_labels(args):
     ledger = load_json(args.ledger)
-    if not isinstance(ledger, dict):
-        raise InputError(f'{args.ledger}: a ledger is a JSON object (see references/ledger.md)')
-    sources = ledger.get('sources') if isinstance(ledger.get('sources'), dict) else {}
+    if not isinstance(ledger, dict) or not isinstance(ledger.get('sources'), dict) \
+            or not isinstance(ledger.get('claims'), list):
+        raise InputError('the ledger needs "sources" (object) and "claims" (list)')  # as check_ledger
+    sources = ledger['sources']
     docs = [_labels_doc(p) for p in args.deliverables]
     rows = []
-    for raw in ledger.get('claims') or []:
+    for raw in ledger['claims']:
         if not isinstance(raw, dict):
             continue
         anchors = raw.get('anchors')

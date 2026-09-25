@@ -1304,9 +1304,12 @@ class Labels(LedgerCase):
                                 'Sales\f\n2024: 10K\n')
         self.assertNotIn('not found', out)
 
-    def test_a_ledger_that_is_not_an_object_is_unusable_input(self):
-        code, out = run(['labels', self.write('claims.json', []), self.write('d.md', 'x')])
-        self.assertEqual(code, 2)
+    def test_a_malformed_ledger_is_unusable_input(self):
+        for ledger in ([], {'sources': {}, 'claims': 5}, {'sources': {}, 'claims': {'a': 1}}, {'claims': []}):
+            with open(os.path.join(self.dir, 'bad.json'), 'w') as fh:
+                json.dump(ledger, fh)
+            code, out = run(['labels', os.path.join(self.dir, 'bad.json'), self.write('d.md', 'x')])
+            self.assertEqual(code, 2, ledger)
 
     def test_a_wide_table_header_is_shown_whole(self):
         head = '| Year | New Online customers | New Studio customers (first service) | Studio service appointments |'
