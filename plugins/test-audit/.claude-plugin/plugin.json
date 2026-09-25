@@ -1,0 +1,22 @@
+{
+  "name": "test-audit",
+  "version": "1.0.0",
+  "description": "Authoring gate and evidence-first audit workflow for tests: junk patterns, retention bar, containment before pruning, and preservation proof before any deletion, with an always-on nudge. Adapted from OpenClaw (MIT).",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "testing",
+    "test-quality",
+    "review",
+    "vitest",
+    "pytest",
+    "dbt"
+  ],
+  "skills": [
+    "./skills"
+  ],
+  "hooks": "./hooks/test-audit-hooks.json"
+}
