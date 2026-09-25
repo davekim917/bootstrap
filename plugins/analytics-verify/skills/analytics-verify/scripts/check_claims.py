@@ -1240,7 +1240,8 @@ def _section(lines, j):
     - A pipe table row: the table's header row.
     - A list item: its parent item, else the first line above the list (a heading, or a
       lead-in such as "by yr:"). Only list items and blank lines are crossed.
-    - Prose: the heading directly above its paragraph, with only blank lines between.
+    - Prose: the heading directly above its paragraph, with only blank lines between;
+      or, when the paragraph is a wrapped list item, that item's text.
     Other structures (HTML table headers, PDF layout) get '', and the verifier reads the
     deliverable for those."""
     raw = lines[j][0]
@@ -1268,6 +1269,8 @@ def _section(lines, j):
         head = _heading(lines, h)
         if head is not None:
             return head
+        if _BULLET.match(lines[h][0]):
+            return lines[h][1]  # the number continues this list item's text
         h -= 1  # the number's own paragraph
     while h >= 0 and not lines[h][1]:
         h -= 1
@@ -1280,9 +1283,11 @@ _EOL = '\ue000'  # private-use mark for the end of a line, stripped before anyth
 def _line_ends(raw, text):
     """Where each raw line ends in `text` (= normalize of the lines joined), in one pass:
     mark the end of every non-empty line, normalize once, then strip the marks while
-    noting where each fell. The stripped result must equal `text` exactly; when some
-    construct defeats the marks, fall back to normalizing each prefix (exact, quadratic)
-    for short files; for long ones return None, and labels shows no headings."""
+    noting where each fell. The stripped result must equal `text` exactly and every mark
+    must survive; when some construct defeats the marks (a link split across lines),
+    return None and labels shows no headings for that file. Normalizing each prefix
+    instead is neither linear nor exact: a construct completed on a later line can make
+    a longer prefix normalize shorter."""
     marked = normalize('\n'.join(line + ' ' + _EOL if line.strip() else line for line in raw))
     out, marks = [], []
     for ch in marked:
@@ -1305,9 +1310,7 @@ def _line_ends(raw, text):
                 k, m = min(max(marks[m] - lead, 0), len(text)), m + 1
             ends.append(k)
         return ends
-    if len(raw) <= 400:
-        return [len(normalize('\n'.join(raw[:j + 1]))) for j in range(len(raw))]
-    return None  # no exact map in bounded time: show no headings rather than guessed ones
+    return None  # no verified map: labels shows no headings rather than guessed ones
 
 
 def _labels_doc(path):

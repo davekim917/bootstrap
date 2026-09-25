@@ -1259,11 +1259,14 @@ class Labels(LedgerCase):
         rng = random.Random(7)
         bits = ['Revenue 12K', '**bold**', '- item 5', '  - nested 7', '1. first', '', '   ', '| a | b |', '|---|---|',
                 'see https://x.test/p', '[link](https://y.test) 3%', '**', '# Head', '> quote 9', '<@U1> hi 4',
-                'end [1]', '`code 8`']
-        for _ in range(300):
+                'end [1]', '`code 8`', 'See [deck](deck/q3', '.pdf) here.', '[the', 'deck](d.pdf)', '<@U1', '2>']
+        for _ in range(1500):
             raw = [rng.choice(bits) for _ in range(rng.randint(1, 30))]
             text = cc.normalize('\n'.join(raw))
             got = cc._line_ends(raw, text)
+            if got is None:
+                continue  # unverifiable map: labels shows no headings for this file
+            self.assertEqual(got, sorted(got))
             ref = [len(cc.normalize('\n'.join(raw[:j + 1]))) for j in range(len(raw))]
             for i, ch in enumerate(text):
                 if ch not in ' ' + cc.BOUNDARY:
@@ -1316,6 +1319,11 @@ class Labels(LedgerCase):
         text = head + '\n|---|---|---|---|\n| 2021 | 158K | 25K | 88K |\n'
         code, out = self.labels([self.cell('a21', 88415, '2021', self.APPT, '25K | 88K')], text)
         self.assertIn('Studio service appointments | > ', out)
+
+    def test_a_wrapped_list_item_shows_its_own_text(self):
+        text = '## Studio\n\n- Customers were\n  2019: 126K\n- Appointments totaled\n  2020: 184K\n'
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, '2020: 184K')], text)
+        self.assertTrue(self.entries(out)[0].startswith('Appointments totaled > <<2020: 184K>>'), out)
 
     def test_an_anchor_missing_from_the_deliverable_is_flagged(self):
         code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, '2021 179K')], 'Nothing here.')
