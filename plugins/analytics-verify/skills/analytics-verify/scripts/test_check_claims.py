@@ -1117,6 +1117,16 @@ class ReceiptFrame(ReceiptCase):
         frame = self.FRAME.replace('Answers it: yes.\n', '')
         self.assert_fails(frame + self.BODY + '\nAnswers it: yes.\n', '"Answers it:"')
 
+    def test_clear_needs_answers_it_yes(self):
+        for answer in ('no, the BigBox basis is wrong.', 'partly: 2019 only.', 'Not fully.', 'yesterday, mostly'):
+            text = SECTIONS.replace('Answers it: yes.', 'Answers it: ' + answer)
+            code, out = self.receipt(self.header() + text)
+            self.assertEqual(code, 1, answer)
+            self.assertIn('CLEAR, but the Frame says', out)
+        for answer in ('Yes.', 'yes: all years and channels.', '**yes**'):
+            code, out = self.receipt(self.header() + SECTIONS.replace('Answers it: yes.', 'Answers it: ' + answer))
+            self.assertEqual(code, 0, out)
+
     def test_a_complete_frame_passes(self):
         variants = (SECTIONS,
                     '\n\n' + SECTIONS.replace('## Frame', '##  frame '),

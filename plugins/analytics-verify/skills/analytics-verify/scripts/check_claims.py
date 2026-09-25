@@ -1424,8 +1424,8 @@ def _open_findings(lines):
 _FRAME_FIELDS = ('question', 'measure', 'answers it')
 
 
-def _frame_gaps(body):
-    """What the report's opening Frame is missing, or [] when it's complete.
+def _frame(body):
+    """The report's opening Frame: (what it is missing, its field values).
 
     The first non-blank line after the header must be exactly "## Frame", and the
     section under it must give a value for each of "Question:", "Measure:" and "Answers
@@ -1435,15 +1435,15 @@ def _frame_gaps(body):
     a measure, not that they are right: that is the reader's call."""
     rest = [line for line in body if line.strip()]
     if not rest or not re.fullmatch(r'##[ \t]+frame[ \t]*', rest[0], re.I):
-        return ['a "## Frame" heading as the first line after the header']
-    found = set()
+        return ['a "## Frame" heading as the first line after the header'], {}
+    found = {}
     for line in rest[1:]:
         if line.lstrip().startswith('#'):
             break
         m = re.match(r'^[\s>+-]*(question|measure|answers it)\s*:\s*(.*)$', re.sub(r'[*_]', '', line), re.I)
         if m and re.search(r'[^\W\d_]', m.group(2)) and not m.group(2).lstrip().startswith('<'):
-            found.add(m.group(1).lower())
-    return [f'a "{f.capitalize()}:" line' for f in _FRAME_FIELDS if f not in found]
+            found.setdefault(m.group(1).lower(), m.group(2).strip())
+    return [f'a "{f.capitalize()}:" line' for f in _FRAME_FIELDS if f not in found], found
 
 
 def cmd_receipt(args):
@@ -1479,10 +1479,13 @@ def cmd_receipt(args):
         f.fail('receipt', f'verdict is {verdict or "missing"}, not CLEAR')
     if not who:
         f.fail('receipt', 'no verifier named')
-    gaps = _frame_gaps(lines[i:])
+    gaps, frame = _frame(lines[i:])
     if gaps:
         f.fail('receipt', 'the report must open with its Frame, the question the verifier checked the deliverable '
                           'against; missing: ' + ', '.join(gaps))
+    elif verdict == 'CLEAR' and not re.match(r'yes\b', frame['answers it'], re.I):
+        f.fail('receipt', f'CLEAR, but the Frame says "Answers it: {frame["answers it"][:40]}": partly or no means '
+                          'a finding is still open')
     open_counts = _open_findings(lines[i:])
     for section in _OPEN_SECTIONS:
         if section not in open_counts:

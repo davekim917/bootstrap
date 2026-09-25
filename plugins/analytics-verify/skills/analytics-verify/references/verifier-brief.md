@@ -98,7 +98,9 @@ Answers it: <yes, partly or no, and why>
 - The Frame states the question you checked against, from step 1. A wrong measure, basis
   or scope goes under Wrong, not in Frame.
 - `verdict: CLEAR` only when Wrong, Stale or overstated, and Unsupported are all empty
-  (write "none" under an empty heading). Stale items get reworded or qualified first.
+  (write "none" under an empty heading) and `Answers it:` starts with "yes". A deliverable
+  that answers only part of the question has an open finding. Stale items get reworded or
+  qualified first.
 - In `verifier:`, name the model you're actually running on. Write "unknown" if you can't
   tell. If you were meant to be a different model family from the author and you're not,
   say so.
