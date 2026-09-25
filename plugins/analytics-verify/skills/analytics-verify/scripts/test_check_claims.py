@@ -1079,26 +1079,33 @@ class FrameFirst(LedgerCase):
 
 
 class ReceiptFrame(ReceiptCase):
-    def test_a_report_without_a_frame_fails(self):
+    """The report opens with its Frame, right after the header. Position decides, so no
+    quoted or rendered-away example can stand in for it."""
+    MSG = 'must open with a "## Frame" section'
+
+    def test_a_report_that_does_not_open_with_a_frame_fails(self):
         body = SECTIONS.split('## Wrong', 1)[1]
-        for frame in ('', '## Frame\n\n', '```\n## Frame\nquoted\n```\n',
-                      '~~~markdown\n## Frame\nquoted\n~~~\n',
-                      '````\n```\n## Frame\nquoted\n````\n',  # the inner ``` doesn't close a 4-backtick fence
-                      '~~~\n## Frame\nquoted\n```\n~~~\n'):  # nor does a backtick fence close a tilde one
+        for frame in ('', '## Frame\n\n', '## Frame\n## Frame\ntext\n',
+                      '```\n## Frame\nquoted\n```\n', '~~~markdown\n## Frame\nquoted\n~~~\n',
+                      '    ## Frame\n    example only\n',  # indented code, not a heading
+                      '<!--\n## Frame\nhidden\n-->\n', '> ## Frame\n> quoted\n',
+                      '# Report\n\n## Frame\ntext\n', '### Frame\ntext\n'):
             code, out = self.receipt(self.header() + frame + '## Wrong' + body)
             self.assertEqual(code, 1, repr(frame))
-            self.assertIn('no "Frame" section', out)
+            self.assertIn(self.MSG, out, repr(frame))
 
-    def test_an_unclosed_fence_runs_to_the_end(self):
-        code, out = self.receipt(self.header() + '~~~\n' + SECTIONS)
+    def test_a_frame_after_other_sections_fails(self):
+        wrong_first = SECTIONS.split('## Wrong', 1)[1]
+        frame = SECTIONS.split('## Wrong', 1)[0]
+        code, out = self.receipt(self.header() + '## Wrong' + wrong_first + '\n' + frame)
         self.assertEqual(code, 1)
-        self.assertIn('no "Frame" section', out)
+        self.assertIn(self.MSG, out)
 
-    def test_a_report_with_a_frame_passes(self):
-        code, out = self.receipt(self.header() + SECTIONS)
-        self.assertEqual(code, 0, out)
-        code, out = self.receipt(self.header() + SECTIONS + '\n~~~\n## Frame\nan example\n~~~\n')
-        self.assertEqual(code, 0, out)
+    def test_a_report_that_opens_with_a_frame_passes(self):
+        for text in (SECTIONS, '\n\n' + SECTIONS.replace('## Frame', '##  frame '),
+                     SECTIONS + '\n~~~\n## Frame\nan example\n~~~\n'):
+            code, out = self.receipt(self.header() + text)
+            self.assertEqual(code, 0, out)
 
     def test_a_code_block_cannot_hide_a_finding(self):
         hidden = SECTIONS.replace('|---|---|---|---|\n',

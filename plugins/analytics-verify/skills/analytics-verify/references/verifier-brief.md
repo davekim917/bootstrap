@@ -72,7 +72,7 @@ Work in this order. A number can only be right for a question you've pinned down
 
 Write `verify-r<N>.md` next to the deliverable. Don't edit the deliverable or the ledger.
 The four header lines go at the very top of the file, not in a code block, and appear
-nowhere else in it.
+nowhere else in it. `## Frame` comes right after them, before any other heading.
 
 ```
 artifact-sha256: <check_claims.py hash <deliverable>; one line per file>

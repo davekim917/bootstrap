@@ -173,5 +173,6 @@ Exit status: 0 pass, 1 findings, 2 input the script can't check.
   tolerance (as drift, not a match). It refuses a table with duplicate column names or
   ragged rows.
 - `receipt` reads only the header block at the very top of the report, and fails if
-  those fields appear anywhere else. It also fails a CLEAR report that still lists
-  items under Wrong, Stale or Unsupported.
+  those fields appear anywhere else. It also fails a report that doesn't open with a
+  `## Frame` section with content right after the header, and a CLEAR report that still
+  lists items under Wrong, Stale or Unsupported.
