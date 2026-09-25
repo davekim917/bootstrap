@@ -1232,6 +1232,21 @@ class Labels(LedgerCase):
         self.assertIn('<<2021 158K>>', entries[1])
         self.assertNotIn('# ', cc.read_text(self.write('e.html', html)))  # heading marks are for labels only
 
+    def test_matches_are_exactly_the_ones_check_sees(self):
+        claim = {'id': 'c', 'value': 50, 'source': 'd', 'anchors': ['Customers 50']}
+        docs = ('Customers 50 here.\n\n## Staff\n\nCustomers\n\n50 employees\n',   # a paragraph break
+                'Customers 50 here.\n- Customers\n- 50 employees\n',                   # a list item
+                'Customers\n50 here, wrapped.\n\nCustomers 50 again.\n')               # a soft wrap does match
+        for text in docs:
+            code, out = self.labels([claim], text)
+            seen = cc.normalize(cc.read_text(self.write('d.md', text))).count('Customers 50')
+            self.assertEqual(len(self.entries(out)), seen, text)
+
+    def test_a_table_without_outer_pipes_shows_its_header_row(self):
+        text = 'Segment | Appointments\n--- | ---\nNew | 158K\n'
+        code, out = self.labels([self.cell('o21', 158227, '2021', 'New Online customers', 'New | 158K')], text)
+        self.assertIn('Segment | Appointments > <<New | 158K>>', out)
+
     def test_an_anchor_missing_from_the_deliverable_is_flagged(self):
         code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, '2021 179K')], 'Nothing here.')
         self.assertEqual(code, 0)

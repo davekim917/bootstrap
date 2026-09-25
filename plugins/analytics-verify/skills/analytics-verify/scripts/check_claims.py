@@ -1221,9 +1221,9 @@ def _section(lines, j):
     (a # line, an HTML heading, or a line that is all bold); for a list item, a nearer
     lead-in line wins."""
     raw = lines[j][0]
-    if raw.lstrip().startswith('|'):
+    if '|' in raw:
         for h in range(j - 1, 0, -1):
-            if not lines[h][0].lstrip().startswith('|'):
+            if '|' not in lines[h][0]:
                 break
             if _TABLE_SEP.match(lines[h][0]):
                 return lines[h - 1][1]
@@ -1238,23 +1238,34 @@ def _section(lines, j):
     return ''
 
 
+def _labels_doc(path):
+    """A deliverable as `labels` reads it: check's own normalized text, so it finds exactly
+    the appearances `check` accepts; the lines, with HTML headings marked, to name the
+    label above a match; and where each line ends in that text, to map a match to it."""
+    raw = read_text(path).splitlines()
+    marked = _labels_text(path).splitlines()
+    lines = [(line, normalize(line)) for line in marked] if len(marked) == len(raw) else \
+        [(line, normalize(line)) for line in raw]
+    ends = [len(normalize('\n'.join(raw[:j + 1]))) for j in range(len(raw))]
+    return lines, normalize('\n'.join(raw)), ends
+
+
 def _where_shown(doc, anchor):
     """Every place an anchor appears in one file, as (offset, label above, text around).
-    Lines are normalized one by one and joined, so an anchor that wraps across lines
-    matches as it does in `check`, and each match maps back to the line it starts on.
-    Every appearance, because a repeated anchor is how a number lands under a second
-    label unnoticed. Display only: a miss costs context, never a verdict."""
-    lines, text, starts = doc
-    offsets = [p for p, _ in starts]
+    Every one, because a repeated anchor is how a number lands under a second label
+    unnoticed. Display only: a miss costs context, never a verdict."""
+    lines, text, ends = doc
     found, i = [], text.find(anchor) if anchor else -1
     while i >= 0:
-        first = bisect.bisect_right(offsets, i) - 1
-        last = bisect.bisect_right(offsets, i + len(anchor) - 1)
-        j, line_end = starts[first][1], (offsets[last] - 1 if last < len(offsets) else len(text))
-        before, after = text[offsets[first]:i], text[i + len(anchor):line_end]
+        j = min(bisect.bisect_right(ends, i), len(lines) - 1)
+        last = bisect.bisect_right(ends, i + len(anchor) - 1)
+        b0 = max(text.rfind(BOUNDARY, 0, i) + 1, ends[j - 1] if j else 0)
+        b1 = text.find(BOUNDARY, i + len(anchor))
+        b1 = min(b1 if b1 >= 0 else len(text), ends[last] if last < len(ends) else len(text))
+        before, after = text[b0:i].lstrip(), text[i + len(anchor):b1].rstrip()
         around = ((('...' + before[-40:]) if len(before) > 40 else before) + f'<<{anchor}>>'
                   + (' ' if after[:1].isspace() else '') + _clip(after, 24))
-        found.append((i, _section(lines, j), around))
+        found.append((i, _section(lines, j) if lines else '', around))
         i = text.find(anchor, i + len(anchor))
     return found
 
@@ -1281,15 +1292,7 @@ def _data_label(raw, sources):
 def cmd_labels(args):
     ledger = load_json(args.ledger)
     sources = ledger.get('sources') if isinstance(ledger.get('sources'), dict) else {}
-    docs = []
-    for p in args.deliverables:
-        lines = [(line, normalize(line)) for line in _labels_text(p).splitlines()]
-        starts, pos = [], 0
-        for j, (_, norm) in enumerate(lines):
-            if norm:
-                starts.append((pos, j))
-                pos += len(norm) + 1
-        docs.append((lines, ' '.join(n for _, n in lines if n), starts or [(0, 0)]))
+    docs = [_labels_doc(p) for p in args.deliverables]
     rows = []
     for raw in ledger.get('claims') or []:
         if not isinstance(raw, dict):
