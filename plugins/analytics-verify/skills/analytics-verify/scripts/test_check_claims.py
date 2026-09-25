@@ -837,28 +837,32 @@ class ReviewRegressionsRound5(LedgerCase):
 
 
 
-class ReviewRegressionsRound6(LedgerCase):
-    """Accounting notation (Codex GitHub review)."""
+class ParenthesesReadAsWritten(LedgerCase):
+    """A number in parentheses reads as written. The guard against a loss shown unsigned is
+    the ledger's sign: a negative value needs a signed display or "magnitude": true."""
 
-    def test_an_amount_alone_in_parentheses_is_refused(self):
-        for text in ('Net income was ($50).', 'Net income was $(50).', 'Net income was (USD 50).',
-                     'Net income was (1,234).', 'Net income was ($1.2M).'):
-            toks = cc.tokenize(cc.normalize(text))[0]
-            self.assertEqual(len(toks), 1, text)
-            self.assertIn('parentheses', toks[0].problem or '', text)
-        for value in (50, -50):
-            claim = {'id': 'ni', 'value': value, 'source': 'w', 'quote': 'net income: -$50', 'anchors': ['($50)']}
-            code, out = self.check(self.led([claim]), 'Net income was ($50).')
-            self.assertEqual(code, 1, value)
-            self.assertIn("can't be read exactly (an amount alone in parentheses", out)
+    def test_a_negative_ledger_value_fails_an_unsigned_display(self):
+        claim = {'id': 'ni', 'value': -50, 'source': 'w', 'quote': 'net income: -$50', 'anchors': ['Net income was ($50)']}
+        code, out = self.check(self.led([claim]), 'Net income was ($50).')
+        self.assertEqual(code, 1)
+        self.assertIn('ni: "Net income was ($50)" shows 50; the ledger value is -50', out)
+        claim['magnitude'] = True
+        code, out = self.check(self.led([claim]), 'Net income was ($50).')
+        self.assertEqual(code, 0, out)
 
-    def test_percentages_and_signed_amounts_in_parentheses_still_read(self):
+    def test_a_wrong_positive_ledger_passes_mechanically(self):
+        # The source says -$50 and the ledger says 50: only the verifier catches this.
+        claim = {'id': 'ni', 'value': 50, 'source': 'w', 'quote': 'net income: $50', 'anchors': ['Net income was ($50)']}
+        code, out = self.check(self.led([claim]), 'Net income was ($50).')
+        self.assertEqual(code, 0, out)
+
+    def test_parenthesized_numbers_read_normally(self):
         for text, value in (('41,380 of 64,452 (64.2%)', Decimal('64.2')), ('the unique total (+69K)', Decimal(69000)),
-                            ('a loss (-$50)', Decimal(50))):
+                            ('a loss (-$50)', Decimal(50)), ('Net income was ($50).', Decimal(50)),
+                            ('Revenue reported in USD. (2024) was a good year.', Decimal(2024))):
             tok = cc.tokenize(cc.normalize(text))[0][-1]
             self.assertIsNone(tok.problem, text)
             self.assertEqual(tok.value, value, text)
-
 
 
 class ReviewRegressionsPr28(LedgerCase):
@@ -992,6 +996,45 @@ class ReviewRegressionsPr28Round2(LedgerCase):
         led = self.led([], sources={'s': {**web, 'retrieved': '2026-09-25', 'effective': '2026-09-01'}})
         code, out = run(['check', led, self.write('d.md', 'Nothing here.'), '--today', '2026-09-24'])
         self.assertNotIn('in the future', out)
+
+
+
+class RealReportFalseAlarms(LedgerCase):
+    """Normal copy in a shipped insight report that 1.0.0 refused."""
+
+    def test_notes_in_parentheses_read_normally(self):
+        for text, values in (('4.6 (1,947)', [Decimal('4.6'), Decimal(1947)]),
+                             ('4.2 (3.1k)', [Decimal('4.2'), Decimal(3100)]),
+                             ('Sources: industry survey (2024); menus', [Decimal(2024)]),
+                             ('Net income was (1,234).', [Decimal(1234)]),
+                             ('Best of NYC (2024)', [Decimal(2024)]),
+                             ('We told us (2024) twice', [Decimal(2024)])):
+            toks = cc.tokenize(cc.normalize(text))[0]
+            self.assertEqual([t.problem for t in toks], [None] * len(values), text)
+            self.assertEqual([t.value for t in toks], values, text)
+
+    def test_a_qualified_one_owns_its_qualifier(self):
+        # "one" is never a checked number; a qualifier attached to it is not left over.
+        toks = cc.tokenize(cc.normalize('Each store here has at least one of three traits.'))[0]
+        self.assertEqual([(t.value, t.op, t.problem) for t in toks], [(3, 'eq', None)])
+        # Codex round 4: a hyphenated word is not a suffix ("plus-sized"), for digits too.
+        self.assertEqual(cc.tokenize(cc.normalize('one plus-sized store'))[0], [])
+        for text, op in (('1 plus-sized store', 'eq'), ('5 plus stores', 'gte')):
+            toks = cc.tokenize(cc.normalize(text))[0]
+            self.assertEqual([(t.op, t.problem) for t in toks], [(op, None)], text)
+        self.assertIn('attached to no number', cc.tokenize(cc.normalize('3 or more-ish stores'))[0][0].problem)
+        for text in ('one or more stores', 'one+ stores', 'one and up', 'one plus\u2011sized store'):
+            self.assertEqual(cc.tokenize(cc.normalize(text))[0], [], text)
+        # Codex round 5: typographic hyphens, and spelled fractions.
+        toks = cc.tokenize(cc.normalize('1 plus\u2011sized store'))[0]
+        self.assertEqual([(t.op, t.problem) for t in toks], [('eq', None)])
+        for text in ('at least one-third of users', 'two-thirds of stores', 'one\u2011half of them',
+                     'one-eleventh of it', 'one-twentieth of it', 'one-hundredth of it', 'twenty-one-hundredths',
+                     'one-twenty-fifth of it'):
+            toks = cc.tokenize(cc.normalize(text))[0]
+            self.assertEqual([t.problem for t in toks], ['write it in digits'], text)
+        self.assertEqual(cc.tokenize(cc.normalize('No one else stocks it.'))[0], [])
+        self.assertEqual(cc.tokenize(cc.normalize('One of the best bars.'))[0], [])
 
 
 if __name__ == '__main__':

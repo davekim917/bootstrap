@@ -83,16 +83,20 @@ A source date (`as_of`, `retrieved`, `effective`) more than a day after `--today
 - Every number in the deliverable is accounted for: it is the value of a claim whose
   anchor holds it, a label of that claim, or inside an `exempt` snippet.
   - This includes years, dates, `1e6`, currency codes (`USD1200`, `SEK1200`) and
-    spelled-out numbers from "two" to "ninety-nine".
+    spelled-out numbers from "two" to "ninety-nine". A lone "one" is not checked, and a
+    qualifier attached to it ("at least one") belongs to it. Hyphenated spelled fractions
+    ("one-third") fail. Spaced ones aren't recognized: "three quarters" reads as 3 and
+    "a quarter" as no number. Write every fraction in digits (75%, 1/3).
   - A digit run right after other letters is an identifier and is skipped (Q1, H2,
     B03001, Acme01), unless the letters are three capitals, which read as a currency
     code. The output lists every identifier it skipped.
   - Displays it can't read exactly fail with "rephrase": spelled-out numbers with
     hundred, thousand or dozen, negated qualifiers ("not over 50"), a spaced minus
-    after a word ("Revenue - 7%", which may be a dash), and an unsigned amount alone in
-    parentheses ("($50)", "(1,234)"), which accounting uses for a negative. Write
-    "-$50" or name the loss. A percentage or an explicitly signed amount in parentheses
-    ("(64.2%)", "(+69K)") reads normally.
+    after a word ("Revenue - 7%", which may be a dash).
+  - Numbers in parentheses read as written: "4.6 (1,947)", "survey (2024)", "($50)" is
+    50. A negative value in the ledger needs a signed display ("-$50") or
+    `"magnitude": true`. The check can't tell that "($50)" means a loss when the ledger
+    also says 50; write negatives with their sign.
   - Each number reads the one qualifier attached to it (right before or right after).
     Bound wording attached to no number ("up to a total of 50", "50 accounts or more")
     makes every number in its sentence fail. Approximation words and "over", "under",
