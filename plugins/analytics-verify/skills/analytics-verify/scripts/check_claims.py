@@ -118,6 +118,7 @@ def read_text(path: str, links=False) -> str:
 
 _TRANSLATE = str.maketrans({
     '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"', '\u2212': '-', '\u00a0': ' ',
+    '\u2010': '-', '\u2011': '-',  # typographic hyphens: "plus\u2011sized" is one word
 })
 _MD_LINK = re.compile(r'\[([^\]]*)\]\([^)]*\)')
 _URL = re.compile(r'(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}/\S*', re.I)
@@ -170,9 +171,10 @@ _PREFIX_OP = {
     'maximum of': 'lte', 'max': 'lte', '<=': 'lte', '≤': 'lte',
     'nearly': 'near', 'almost': 'near',
 }
+# A word suffix must end the word: "plus-sized" is not "plus".
 _SUFFIX = re.compile(
-    r'\s*(\+|or more\b|or greater\b|or higher\b|or above\b|or over\b|and up\b|and above\b|and over\b|plus\b|'
-    r'or less\b|or fewer\b|or lower\b|or below\b|or under\b)', re.I)
+    r'\s*(\+|(?:or more|or greater|or higher|or above|or over|and up|and above|and over|plus|'
+    r'or less|or fewer|or lower|or below|or under)(?![\w-]))', re.I)
 # Bound wording. Attached to a number, it is read; left over anywhere in a sentence, it makes
 # every number in that sentence unreadable, since its number can't be told. Approximation words
 # ("about 50") and "over/under/above/below" count only when attached: "surveyed 50 customers
@@ -252,14 +254,6 @@ def _lead(text, start):
     return lead, '', None
 
 
-def _accounting(text, lead, end, sign, pct):
-    """An unsigned amount alone in parentheses ("($50)", "$(50)", "(1,234)") is how
-    accounting writes a negative, and elsewhere a note; either reading could be wrong."""
-    if sign or pct or not lead or text[lead - 1] != '(' or text[end:end + 1] != ')':
-        return None
-    return 'an amount alone in parentheses (an accounting negative, or a note?)'
-
-
 def _qualifiers(text, lead, end):
     """The qualifier attached to the number spanning [lead, end): one prefix or one suffix.
     Returns (op, new_end, problem, used spans). Wording left over in the sentence is
@@ -288,11 +282,21 @@ def _qualifiers(text, lead, end):
     return op, end, problem, used
 
 
+_ORDINALS = ('third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth fourteenth '
+             'fifteenth sixteenth seventeenth eighteenth nineteenth twentieth thirtieth fortieth fiftieth '
+             'sixtieth seventieth eightieth ninetieth hundredth thousandth millionth billionth').split()
+# Every English fraction denominator, singular and plural: "one-third", "twenty-one-hundredths".
+_FRACTIONS = frozenset(['half', 'halves', 'quarter', 'quarters'] + _ORDINALS + [o + 's' for o in _ORDINALS])
+_ABSORB = 'absorb'  # a qualified lone "one": not a number, but it owns its qualifier
+
+
 def _word_numbers(text):
     """Spelled-out numbers as (start, end, value, problem). Single words and tens-units
     ("twenty-five") are read; anything with hundred, thousand, dozen and the like is
     refused ("write it in digits") rather than half-read. "one" alone is not a number,
-    or every "no one" would need a claim."""
+    or every "no one" would need a claim; a qualifier attached to it ("at least one", "one
+    or more") belongs to it and is not left over. Spelled fractions ("one-third") are
+    refused."""
     words = [(m.start(), m.end(), m.group(0).lower()) for m in re.finditer(r'[A-Za-z]+', text)]
     vocab = set(_SMALL) | set(_TENS) | _WORD_SCALES
     out, i, n = [], 0, len(words)
@@ -307,13 +311,18 @@ def _word_numbers(text):
         seq = words[i:j]
         names = [w for _, _, w in seq if w != 'and']
         start, end = seq[0][0], seq[-1][1]
+        if j < n and text[end:words[j][0]] == '-' and words[j][2] in _FRACTIONS:
+            out.append((start, words[j][1], None, 'write it in digits'))  # "one-third"
+            i = j + 1
+            continue
         if names == ['a']:
             i = j
             continue
         if any(w in _WORD_SCALES for w in names) or 'a' in names or 'and' in [w for _, _, w in seq]:
             out.append((start, end, None, 'write it in digits'))
         elif names == ['one']:
-            pass
+            if _PREFIX.search(text[max(0, start - 30):start]) or _SUFFIX.match(text, end):
+                out.append((start, end, None, _ABSORB))  # "at least one": no number, no leftover bound
         elif len(names) == 1 and names[0] in _SMALL:
             out.append((start, end, _SMALL[names[0]], None))
         elif len(names) == 1 and names[0] in _TENS:
@@ -369,7 +378,6 @@ def tokenize(text: str):
         raw = m.group(0).replace(',', '')
         value = Decimal(raw)
         end, mult, pct = _suffixes(text, e)
-        sign_problem = sign_problem or _accounting(text, lead, end, sign, pct)
         op, end, problem, spans = _qualifiers(text, lead, end)
         used += spans
         step = Decimal(1).scaleb(value.as_tuple().exponent) * mult
@@ -381,6 +389,8 @@ def tokenize(text: str):
         end, mult, pct = _suffixes(text, e)
         op, end, qproblem, spans = _qualifiers(text, lead, end)
         used += spans
+        if problem == _ABSORB:
+            continue
         v = Decimal(value) * mult if value is not None else Decimal(0)
         tokens.append(Token(s, end, text[s:end], v, mult, pct, sign, op, problem or sign_problem or qproblem))
     tokens.sort(key=lambda t: t.start)
