@@ -1228,6 +1228,7 @@ def _section(lines, j):
             if _TABLE_SEP.match(lines[h][0]):
                 return lines[h - 1][1]
     bullet = bool(_BULLET.match(raw))
+    indent = len(raw.expandtabs(4)) - len(raw.expandtabs(4).lstrip())
     for r, n in reversed(lines[:j]):
         if not n:
             continue
@@ -1235,7 +1236,51 @@ def _section(lines, j):
             return n.lstrip('# ')
         if bullet and not _BULLET.match(r):
             return n
+        if bullet and len(r.expandtabs(4)) - len(r.expandtabs(4).lstrip()) < indent:
+            return n  # the parent item of a nested list
     return ''
+
+
+_EOL = '\ue000'  # private-use mark for the end of a line, stripped before anything is shown
+
+
+def _line_ends(raw, text):
+    """Where each raw line ends in `text` (= normalize of the lines joined), in one pass:
+    mark the end of every non-empty line, normalize once, then strip the marks while
+    noting where each fell. The stripped result must equal `text` exactly; when some
+    construct defeats the marks, fall back to normalizing each prefix (exact, quadratic)
+    for short files, or to summed per-line lengths (approximate) for long ones."""
+    marked = normalize('\n'.join(line + ' ' + _EOL if line.strip() else line for line in raw))
+    out, marks = [], []
+    for ch in marked:
+        if ch == _EOL:
+            while out and out[-1] == ' ':
+                out.pop()
+            marks.append(len(out))
+        elif ch == ' ' and (not out or out[-1] == ' '):
+            continue
+        elif ch == BOUNDARY and BOUNDARY in ''.join(out[-2:]):
+            continue
+        else:
+            out.append(ch)
+    lead = len(out) - len(''.join(out).lstrip(f' {BOUNDARY}'))
+    cleaned = ''.join(out).strip(f' {BOUNDARY}')
+    filled = [j for j, line in enumerate(raw) if line.strip()]
+    if cleaned == text and len(marks) == len(filled):
+        ends, k = [], 0
+        for j, line in enumerate(raw):
+            if line.strip():
+                k = min(max(marks[filled.index(j)] - lead, 0), len(text))
+            ends.append(k)
+        return ends
+    if len(raw) <= 400:
+        return [len(normalize('\n'.join(raw[:j + 1]))) for j in range(len(raw))]
+    ends, k = [], 0
+    for line in raw:
+        n = normalize(line)
+        k = min(k + (len(n) + 1 if n else 0), len(text))
+        ends.append(k)
+    return ends
 
 
 def _labels_doc(path):
@@ -1244,10 +1289,9 @@ def _labels_doc(path):
     label above a match; and where each line ends in that text, to map a match to it."""
     raw = read_text(path).splitlines()
     marked = _labels_text(path).splitlines()
-    lines = [(line, normalize(line)) for line in marked] if len(marked) == len(raw) else \
-        [(line, normalize(line)) for line in raw]
-    ends = [len(normalize('\n'.join(raw[:j + 1]))) for j in range(len(raw))]
-    return lines, normalize('\n'.join(raw)), ends
+    lines = [(line, normalize(line)) for line in (marked if len(marked) == len(raw) else raw)]
+    text = normalize('\n'.join(raw))
+    return lines, text, _line_ends(raw, text)
 
 
 def _where_shown(doc, anchor):

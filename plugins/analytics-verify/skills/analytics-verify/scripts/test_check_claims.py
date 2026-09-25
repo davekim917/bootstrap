@@ -4,14 +4,17 @@ The replay cases rebuild, with fictional names and figures, the errors found in 
 agent-written deliverables (2026-09-24) and pin down which ones this script catches and which it cannot. A test that asserts
 PASS on a wrong deliverable documents a limit that only the independent verifier covers.
 """
+import bisect
 import contextlib
 import csv
 import io
 import json
 import os
+import random
 import re
 import shutil
 import tempfile
+import time
 import unittest
 
 from decimal import Decimal
@@ -1246,6 +1249,30 @@ class Labels(LedgerCase):
         text = 'Segment | Appointments\n--- | ---\nNew | 158K\n'
         code, out = self.labels([self.cell('o21', 158227, '2021', 'New Online customers', 'New | 158K')], text)
         self.assertIn('Segment | Appointments > <<New | 158K>>', out)
+
+    def test_a_nested_item_shows_its_parent(self):
+        text = '## Studio\n\n- Customers\n  - 2019 126K\n- Appointments\n  - 2020 184K\n  - 2021 88K\n'
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, '2020 184K')], text)
+        self.assertIn('Appointments > <<2020 184K>>', out)
+
+    def test_line_mapping_is_exact_and_fast(self):
+        rng = random.Random(7)
+        bits = ['Revenue 12K', '**bold**', '- item 5', '  - nested 7', '1. first', '', '   ', '| a | b |', '|---|---|',
+                'see https://x.test/p', '[link](https://y.test) 3%', '**', '# Head', '> quote 9', '<@U1> hi 4',
+                'end [1]', '`code 8`']
+        for _ in range(300):
+            raw = [rng.choice(bits) for _ in range(rng.randint(1, 30))]
+            text = cc.normalize('\n'.join(raw))
+            got = cc._line_ends(raw, text)
+            ref = [len(cc.normalize('\n'.join(raw[:j + 1]))) for j in range(len(raw))]
+            for i, ch in enumerate(text):
+                if ch not in ' ' + cc.BOUNDARY:
+                    self.assertEqual(bisect.bisect_right(got, i), bisect.bisect_right(ref, i), (raw, i))
+        long = self.write('long.md', '\n'.join(f'Line {k}: region {k % 17} was {k * 13}K, see https://x.test/{k}'
+                                              if k % 7 else '' for k in range(3000)))
+        start = time.time()
+        cc._labels_doc(long)
+        self.assertLess(time.time() - start, 20)  # the per-prefix mapping took about 40s here
 
     def test_an_anchor_missing_from_the_deliverable_is_flagged(self):
         code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, '2021 179K')], 'Nothing here.')
