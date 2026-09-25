@@ -1211,9 +1211,10 @@ def _labels_text(path):
     return read_text(path)
 
 
-def _clip(text, n):
-    t = ' '.join(str(text).split())
-    return t if len(t) <= n else t[:n - 3] + '...'
+def _flat(text):
+    """One line, never shortened: a clipped line or quote can drop the very label the
+    verifier compares."""
+    return ' '.join(str(text).split())
 
 
 _SETEXT = re.compile(r'^ {0,3}(=+|-+)[ \t]*$')
@@ -1342,8 +1343,7 @@ def _where_shown(doc, anchor):
             b1 = min(b1, ends[last] if last < len(ends) else len(text))
             section = _section(lines, j) if lines else ''
         before, after = text[b0:i].lstrip(), text[i + len(anchor):b1].rstrip()
-        around = ((('...' + before[-40:]) if len(before) > 40 else before) + f'<<{anchor}>>'
-                  + (' ' if after[:1].isspace() else '') + _clip(after, 24))
+        around = before + f'<<{anchor}>>' + (' ' if after[:1].isspace() else '') + _flat(after)
         found.append((i, section, around))
         i = text.find(anchor, i + len(anchor))
     return found
@@ -1362,9 +1362,9 @@ def _data_label(raw, sources):
     if 'json' in loc:
         return str(loc['json'])
     if src.get('type') == 'web':
-        return f'quote: "{_clip(raw.get("quote", ""), 90)}" ({_clip(src.get("entity", ""), 40)})'
+        return f'quote: "{_flat(raw.get("quote", ""))}" ({_flat(src.get("entity", ""))})'
     if src.get('type') == 'doc':
-        return f'doc: {_clip(src.get("ref", ""), 90)}'
+        return f'doc: {_flat(src.get("ref", ""))}'
     return f'source {sid}'
 
 
@@ -1393,7 +1393,7 @@ def cmd_labels(args):
     print('Each number as the deliverable labels it, then what its source calls it:')
     for key, section, line, label, cid, sid in sorted(rows, key=lambda r: r[0]):
         missing = '  (not found in the deliverable)' if key[0] == len(docs) else ''
-        head = (section if '|' in section else _clip(section, 60)) + ' > ' if section else ''  # a table header whole
+        head = _flat(section) + ' > ' if section else ''
         print(f'\n{head}{line}{missing}\n    <- {label}  ({cid}, {sid})')
     print('\nRead every entry: the words beside each number must name the same row, series and unit as '
           'its source. The right number under the wrong label is Wrong.')

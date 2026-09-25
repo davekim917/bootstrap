@@ -1325,6 +1325,17 @@ class Labels(LedgerCase):
         code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, '2020: 184K')], text)
         self.assertTrue(self.entries(out)[0].startswith('Appointments totaled > <<2020: 184K>>'), out)
 
+    def test_nothing_that_names_a_number_is_clipped(self):
+        line = 'Appointments across all studios and every one of the service categories totaled 2020 184K.'
+        quote = ('According to the annual report released after the board meeting in the spring of that year, '
+                 'New customers: 184,338')
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, 'totaled 2020 184K'),
+                                 {'id': 'q', 'value': 184338, 'source': 'w', 'quote': quote,
+                                  'anchors': ['184,338 new']}], line + '\n\nThere were 184,338 new ones.\n')
+        self.assertIn('Appointments across all studios', out)
+        self.assertIn('New customers: 184,338"', out)
+        self.assertNotIn('...', out)
+
     def test_an_anchor_missing_from_the_deliverable_is_flagged(self):
         code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, '2021 179K')], 'Nothing here.')
         self.assertEqual(code, 0)
