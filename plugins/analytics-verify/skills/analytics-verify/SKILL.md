@@ -110,10 +110,12 @@ If you're unsure, use the full loop.
    The message carries the verified file and the stamp, nothing new. Caveats, open
    questions and next steps that state a figure, date or fact go in the file before the
    check, in their own section if they aren't meant for the final document ("Before
-   this goes in the deck"). After the receipt, your own words may point at the file,
-   repeat what it says, or ask for a decision it already raises. Anything that adds a
-   figure, comparison or claim, in this message or a later status post, goes back to
-   step 6.
+   this goes in the deck"), and so does any headline or summary you want in the
+   message. After the receipt, your own words may only point at the file or ask for a
+   decision it already raises, and state no figures; the stamp is the one exception.
+   A restated figure can be retyped wrong, and the receipt can't see it. Anything that
+   states a figure, comparison or claim, in this message or a later status post, goes
+   back to step 6.
 
 ## Writing rules
 
