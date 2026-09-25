@@ -30,6 +30,10 @@ Work in this order. A number can only be right for a question you've pinned down
    - Does each source measure that thing? Shipments to a retailer are not the
      retailer's sales, and product sales are not product plus shipping.
    - Is each comparison like for like: same basis, scope and period?
+   - For every date a finding rests on (an age, an order of events, a window), which
+     event does it record: created, updated, answered or shipped? A record updated in
+     place keeps its created date, so "answered a year before" can be a new answer in an
+     old record. Check the docs or how the field behaves, in any source, not its name.
    - List the author's assumptions, stated or not, and test each one that would change
      the answer.
 
