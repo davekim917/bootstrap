@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import bisect
 import csv
 import datetime as dt
 import difflib
@@ -1186,6 +1187,28 @@ def cmd_check(args):
 
 _BULLET = re.compile(r'^[ \t]*(?:\d{1,3}[.)]|[-*\u2022+])[ \t]+')
 _TABLE_SEP = re.compile(r'^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$')
+_HEADING = re.compile(r'^ {0,3}#{1,6}[ \t]+\S')
+_BOLD_LINE = re.compile(r'^\s*(\*\*|__|\*|_)(?=\S).*?(?<=\S)\1\s*:?\s*$')
+
+
+class _HTMLHeadings(_HTMLText):
+    """read_text's HTML reader with each h1-h6 marked "# ", so `labels` can name the
+    heading above a number. `check` keeps using the plain reader."""
+
+    def handle_starttag(self, tag, attrs):
+        super().handle_starttag(tag, attrs)
+        if tag in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6') and not self.skip:
+            self.parts.append('# ')
+
+
+def _labels_text(path):
+    if os.path.splitext(path)[1].lower() in ('.html', '.htm') and os.path.isfile(path):
+        parser = _HTMLHeadings()
+        with open(path, encoding='utf-8') as fh:
+            parser.feed(fh.read())
+        parser.close()
+        return ''.join(parser.parts)
+    return read_text(path)
 
 
 def _clip(text, n):
@@ -1193,31 +1216,46 @@ def _clip(text, n):
     return t if len(t) <= n else t[:n - 3] + '...'
 
 
-def _where_shown(files, anchor):
-    """Every place an anchor appears, as (sort key, the heading or table header above it,
-    the line around it). Every one, because a repeat of an anchor elsewhere is how a
-    number lands under a second label unnoticed. Display only: a miss costs context,
-    never a verdict."""
-    found = []
-    for k, lines in enumerate(files):
-        for j, (raw, norm) in enumerate(lines):
-            i = norm.find(anchor) if anchor else -1
-            while i >= 0:
-                section = ''
-                if raw.lstrip().startswith('|'):
-                    for h in range(j - 1, 0, -1):
-                        if not lines[h][0].lstrip().startswith('|'):
-                            break
-                        if _TABLE_SEP.match(lines[h][0]):
-                            section = lines[h - 1][1]
-                            break
-                elif _BULLET.match(raw):
-                    section = next((n for r, n in reversed(lines[:j]) if n and not _BULLET.match(r)), '')
-                before, after = norm[:i], norm[i + len(anchor):]
-                line = ((('...' + before[-40:]) if len(before) > 40 else before) + f'<<{anchor}>>'
-                        + (' ' if after[:1].isspace() else '') + _clip(after, 24))
-                found.append(((k, j, i), section, line))
-                i = norm.find(anchor, i + len(anchor))
+def _section(lines, j):
+    """The label above line j: a Markdown table's header row; else the nearest heading
+    (a # line, an HTML heading, or a line that is all bold); for a list item, a nearer
+    lead-in line wins."""
+    raw = lines[j][0]
+    if raw.lstrip().startswith('|'):
+        for h in range(j - 1, 0, -1):
+            if not lines[h][0].lstrip().startswith('|'):
+                break
+            if _TABLE_SEP.match(lines[h][0]):
+                return lines[h - 1][1]
+    bullet = bool(_BULLET.match(raw))
+    for r, n in reversed(lines[:j]):
+        if not n:
+            continue
+        if _HEADING.match(r) or _BOLD_LINE.match(r):
+            return n.lstrip('# ')
+        if bullet and not _BULLET.match(r):
+            return n
+    return ''
+
+
+def _where_shown(doc, anchor):
+    """Every place an anchor appears in one file, as (offset, label above, text around).
+    Lines are normalized one by one and joined, so an anchor that wraps across lines
+    matches as it does in `check`, and each match maps back to the line it starts on.
+    Every appearance, because a repeated anchor is how a number lands under a second
+    label unnoticed. Display only: a miss costs context, never a verdict."""
+    lines, text, starts = doc
+    offsets = [p for p, _ in starts]
+    found, i = [], text.find(anchor) if anchor else -1
+    while i >= 0:
+        first = bisect.bisect_right(offsets, i) - 1
+        last = bisect.bisect_right(offsets, i + len(anchor) - 1)
+        j, line_end = starts[first][1], (offsets[last] - 1 if last < len(offsets) else len(text))
+        before, after = text[offsets[first]:i], text[i + len(anchor):line_end]
+        around = ((('...' + before[-40:]) if len(before) > 40 else before) + f'<<{anchor}>>'
+                  + (' ' if after[:1].isspace() else '') + _clip(after, 24))
+        found.append((i, _section(lines, j), around))
+        i = text.find(anchor, i + len(anchor))
     return found
 
 
@@ -1243,7 +1281,15 @@ def _data_label(raw, sources):
 def cmd_labels(args):
     ledger = load_json(args.ledger)
     sources = ledger.get('sources') if isinstance(ledger.get('sources'), dict) else {}
-    files = [[(line, normalize(line)) for line in read_text(p).splitlines()] for p in args.deliverables]
+    docs = []
+    for p in args.deliverables:
+        lines = [(line, normalize(line)) for line in _labels_text(p).splitlines()]
+        starts, pos = [], 0
+        for j, (_, norm) in enumerate(lines):
+            if norm:
+                starts.append((pos, j))
+                pos += len(norm) + 1
+        docs.append((lines, ' '.join(n for _, n in lines if n), starts or [(0, 0)]))
     rows = []
     for raw in ledger.get('claims') or []:
         if not isinstance(raw, dict):
@@ -1252,14 +1298,16 @@ def cmd_labels(args):
         for anchor in [anchors] if isinstance(anchors, str) else anchors if isinstance(anchors, list) else []:
             na = normalize(str(anchor))
             label = (_data_label(raw, sources), raw.get('id'), raw.get('source') or 'derived')
-            for key, section, line in _where_shown(files, na) or [((len(files), 0, 0), '', f'<<{na}>>')]:
-                rows.append((key, section, line) + label)
+            shown = [((k, i), section, around) for k, doc in enumerate(docs)
+                     for i, section, around in _where_shown(doc, na)]
+            for key, section, around in shown or [((len(docs), 0), '', f'<<{na}>>')]:
+                rows.append((key, section, around) + label)
     if not rows:
         print('No claim in this ledger is shown in the deliverable.')
         return 0
     print('Each number as the deliverable labels it, then what its source calls it:')
     for key, section, line, label, cid, sid in sorted(rows, key=lambda r: r[0]):
-        missing = '  (not found in the deliverable)' if key[0] == len(files) else ''
+        missing = '  (not found in the deliverable)' if key[0] == len(docs) else ''
         print(f'\n{_clip(section, 60) + " > " if section else ""}{line}{missing}\n    <- {label}  ({cid}, {sid})')
     print('\nRead every entry: the words beside each number must name the same row, series and unit as '
           'its source. The right number under the wrong label is Wrong.')

@@ -1161,9 +1161,9 @@ class Labels(LedgerCase):
         return {'id': cid, 'value': value, 'source': 'q1', 'locate': {'where': {'Year': year}, 'column': column},
                 'anchors': [anchor]}
 
-    def labels(self, claims, text, sources=None):
+    def labels(self, claims, text, sources=None, name='d.md'):
         led = self.led(claims, sources={'q1': {'type': 'file', 'path': 'r.csv', 'as_of': '2026-09-23'}, **(sources or {})})
-        return run(['labels', led, self.write('d.md', text)])
+        return run(['labels', led, self.write(name, text)])
 
     def entries(self, out):
         return [e for e in out.split('\n\n') if '    <- ' in e]
@@ -1205,6 +1205,32 @@ class Labels(LedgerCase):
         text = '| Year | Online | Studio |\n|---|---|---|\n| 2021 | 158K | 25K |\n'
         code, out = self.labels([self.cell('o21', 158227, '2021', 'New Online customers', '| 2021 | 158K')], text)
         self.assertIn('| Year | Online | Studio | > <<| 2021 | 158K>>', out)
+
+    def test_an_anchor_that_wraps_across_lines_is_found(self):
+        code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, 'reached 2021 179K')],
+                                'New customers\nreached\n2021 179K by year end.\n')
+        self.assertNotIn('not found', out)
+        self.assertIn('<<reached 2021 179K>> by year end.', out)
+
+    def test_prose_shows_the_heading_above_it(self):
+        swapped = self.cell('c20', 184338, '2020', self.CUST, '2020: 184K')
+        for text in ('## New customers\n\n2019: 126K\n\n## Appointments\n\nIn 2020 there were\nmany.\n2020: 184K\n',
+                     '**Appointments**\n2020: 184K\n', '*Appointments:*\n\n2020: 184K\n'):
+            code, out = self.labels([swapped], text)
+            self.assertIn('Appointments', self.entries(out)[0].split(' > ')[0], text)
+            self.assertIn(f'<- {self.CUST} . Year=2020', out)
+
+    def test_html_headings_and_split_table_rows(self):
+        html = ('<h2>Appointments</h2><p>2020: 184K</p>'
+                '<table><tr><th>Year</th><th>Online</th></tr><tr><td>2021</td><td>158K</td></tr></table>')
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, '2020: 184K'),
+                                 self.cell('o21', 158227, '2021', 'New Online customers', '2021 158K')], html,
+                                name='d.html')
+        entries = self.entries(out)
+        self.assertEqual(len(entries), 2, out)
+        self.assertTrue(entries[0].startswith('Appointments > <<2020: 184K>>'), out)
+        self.assertIn('<<2021 158K>>', entries[1])
+        self.assertNotIn('# ', cc.read_text(self.write('e.html', html)))  # heading marks are for labels only
 
     def test_an_anchor_missing_from_the_deliverable_is_flagged(self):
         code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, '2021 179K')], 'Nothing here.')
