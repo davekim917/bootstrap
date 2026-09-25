@@ -42,7 +42,8 @@ If you're unsure, use the full loop.
    measures (sales to a retailer or by it, accounts or people, gross or net), settle it
    from the source material or ask. Don't pick one silently.
 2. **Put the deliverable in a file** (message, Markdown, or the HTML a PDF renders
-   from). What you send is exactly that file.
+   from). What you send is exactly that file, including any caveats or open questions
+   you plan to send with it (step 7).
 3. **Keep a ledger as you work:** `claims.json` next to the deliverable, in the format
    in [references/ledger.md](references/ledger.md).
    - Numbers are read from result files, never typed. `scaffold` turns a result CSV
@@ -106,6 +107,16 @@ If you're unsure, use the full loop.
    Name the verifier's actual model. If you asked for another model family and got
    your own (quota fallback, no CLI), say "same-family check".
 
+   The message carries the verified file and the stamp, nothing new. Caveats, open
+   questions and next steps that state a figure, date or fact go in the file before the
+   check, in their own section if they aren't meant for the final document ("Before
+   this goes in the deck"), and so does any headline or summary you want in the
+   message. After the receipt, your own words may only point at the file or ask for a
+   decision it already raises, and state no figures; the stamp is the one exception.
+   A restated figure can be retyped wrong, and the receipt can't see it. Anything that
+   states a figure, comparison or claim, in this message or a later status post, goes
+   back to step 6.
+
 ## Writing rules
 
 These are the places the errors were.
@@ -131,7 +142,8 @@ These are the places the errors were.
 Say these plainly when they apply. The script catches numbers with no source, values
 retyped or rounded away from their file, displays that overstate their source, sums
 that don't hold, dropped rows, queries that don't reproduce, undated or old evidence
-(as a warning), and files edited after verification. It can't catch wrong evidence (a
+(as a warning), and files edited after verification. The receipt covers the file, not
+lines added around it when you send. It can't catch wrong evidence (a
 miscounted menu), a true number in a false sentence, wrong unit words, or stale facts
 about people and places. Nor can it tell whether you measured the right thing: it
 checks that `ask` is filled in, and the verifier checks that the deliverable answers
