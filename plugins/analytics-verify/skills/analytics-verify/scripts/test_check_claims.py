@@ -1277,6 +1277,43 @@ class Labels(LedgerCase):
         small, large = seconds(3000), seconds(30000)
         self.assertLess(large, 30 * max(small, 0.005))  # linear: about 10x for 10x the lines; quadratic: 100x
 
+    def test_a_setext_heading_is_named(self):
+        text = '# Revenue\n\nTotal 1.2M.\n\nAppointments\n============\n\n2020: 184K\n'
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, '2020: 184K')], text)
+        self.assertTrue(self.entries(out)[0].startswith('Appointments > <<2020: 184K>>'), out)
+
+    def test_never_an_older_heading(self):
+        cell = self.cell('c20', 184338, '2020', self.CUST, '2020: 184K')
+        for text, name in (('# Customers\n\nIntro paragraph.\n\n2020: 184K\n', 'd.md'),
+                           ('<h2>Customers</h2><table><tr><th>Appointments</th></tr>'
+                            '<tr><td>2020: 184K</td></tr></table>', 'd.html')):
+            code, out = self.labels([cell], text, name=name)
+            entry = self.entries(out)[0]
+            self.assertTrue(entry.startswith('<<2020: 184K>>'), (text, out))
+
+    def test_a_long_file_without_an_exact_map_shows_no_headings(self):
+        filler = '\n'.join(f'Filler line {k}.' for k in range(420))
+        text = f'## Start\n\n{filler}\n\nSee [the deck](https://x.test/a\nb) now.\n\n## New\n\n10K sales\n'
+        code, out = self.labels([{'id': 's', 'value': 10000, 'source': 'd', 'anchors': ['10K sales']}], text)
+        entry = self.entries(out)[0]
+        self.assertTrue(entry.startswith('<<10K sales>>'), out)
+        self.assertNotIn('Start', entry)
+
+    def test_a_form_feed_matches_as_in_check(self):
+        code, out = self.labels([{'id': 's', 'value': 10000, 'source': 'd', 'anchors': ['Sales 2024: 10K']}],
+                                'Sales\f\n2024: 10K\n')
+        self.assertNotIn('not found', out)
+
+    def test_a_ledger_that_is_not_an_object_is_unusable_input(self):
+        code, out = run(['labels', self.write('claims.json', []), self.write('d.md', 'x')])
+        self.assertEqual(code, 2)
+
+    def test_a_wide_table_header_is_shown_whole(self):
+        head = '| Year | New Online customers | New Studio customers (first service) | Studio service appointments |'
+        text = head + '\n|---|---|---|---|\n| 2021 | 158K | 25K | 88K |\n'
+        code, out = self.labels([self.cell('a21', 88415, '2021', self.APPT, '25K | 88K')], text)
+        self.assertIn('Studio service appointments | > ', out)
+
     def test_an_anchor_missing_from_the_deliverable_is_flagged(self):
         code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, '2021 179K')], 'Nothing here.')
         self.assertEqual(code, 0)

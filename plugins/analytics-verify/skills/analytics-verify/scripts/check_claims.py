@@ -1216,13 +1216,33 @@ def _clip(text, n):
     return t if len(t) <= n else t[:n - 3] + '...'
 
 
+_SETEXT = re.compile(r'^ {0,3}(=+|-+)[ \t]*$')
+
+
+def _heading(lines, h):
+    """The heading text if line h is a heading: a # line, an all-bold line, or the text
+    line of a Setext pair (h is its underline). None otherwise."""
+    raw, norm = lines[h]
+    if _HEADING.match(raw) or _BOLD_LINE.match(raw):
+        return norm.lstrip('# ')
+    if _SETEXT.match(raw) and h > 0 and lines[h - 1][1] and not _BULLET.match(lines[h - 1][0]):
+        return lines[h - 1][1]
+    return None
+
+
+def _indent(raw):
+    return len(raw.expandtabs(4)) - len(raw.expandtabs(4).lstrip())
+
+
 def _section(lines, j):
-    """The label above line j: a Markdown table's header row; else the nearest heading
-    (a # line, an HTML heading, or a line that is all bold); for a list item, its parent
-    item or a nearer lead-in line wins. These are the structures deliverables here use.
-    Others (Setext headings, HTML table headers, PDF layout) get no label, on purpose:
-    matching a renderer structure by structure never ends, and the verifier reads the
-    deliverable itself for those."""
+    """The label above line j, or '' when it can't be named for sure. Right or nothing,
+    never an older heading: the walk up crosses only what it positively understands.
+    - A pipe table row: the table's header row.
+    - A list item: its parent item, else the first line above the list (a heading, or a
+      lead-in such as "by yr:"). Only list items and blank lines are crossed.
+    - Prose: the heading directly above its paragraph, with only blank lines between.
+    Other structures (HTML table headers, PDF layout) get '', and the verifier reads the
+    deliverable for those."""
     raw = lines[j][0]
     if '|' in raw:
         for h in range(j - 1, 0, -1):
@@ -1230,18 +1250,28 @@ def _section(lines, j):
                 break
             if _TABLE_SEP.match(lines[h][0]):
                 return lines[h - 1][1]
-    bullet = bool(_BULLET.match(raw))
-    indent = len(raw.expandtabs(4)) - len(raw.expandtabs(4).lstrip())
-    for r, n in reversed(lines[:j]):
-        if not n:
-            continue
-        if _HEADING.match(r) or _BOLD_LINE.match(r):
-            return n.lstrip('# ')
-        if bullet and not _BULLET.match(r):
-            return n
-        if bullet and len(r.expandtabs(4)) - len(r.expandtabs(4).lstrip()) < indent:
-            return n  # the parent item of a nested list
-    return ''
+    if _BULLET.match(raw):
+        indent = _indent(raw)
+        for h in range(j - 1, -1, -1):
+            r, n = lines[h]
+            if not n:
+                continue
+            if _BULLET.match(r):
+                if _indent(r) < indent:
+                    return n  # the parent item of a nested list
+                continue
+            head = _heading(lines, h)
+            return head if head is not None else n
+        return ''
+    h = j - 1
+    while h >= 0 and lines[h][1]:
+        head = _heading(lines, h)
+        if head is not None:
+            return head
+        h -= 1  # the number's own paragraph
+    while h >= 0 and not lines[h][1]:
+        h -= 1
+    return (_heading(lines, h) or '') if h >= 0 else ''
 
 
 _EOL = '\ue000'  # private-use mark for the end of a line, stripped before anything is shown
@@ -1252,7 +1282,7 @@ def _line_ends(raw, text):
     mark the end of every non-empty line, normalize once, then strip the marks while
     noting where each fell. The stripped result must equal `text` exactly; when some
     construct defeats the marks, fall back to normalizing each prefix (exact, quadratic)
-    for short files, or to summed per-line lengths (approximate) for long ones."""
+    for short files; for long ones return None, and labels shows no headings."""
     marked = normalize('\n'.join(line + ' ' + _EOL if line.strip() else line for line in raw))
     out, marks = [], []
     for ch in marked:
@@ -1277,22 +1307,17 @@ def _line_ends(raw, text):
         return ends
     if len(raw) <= 400:
         return [len(normalize('\n'.join(raw[:j + 1]))) for j in range(len(raw))]
-    ends, k = [], 0
-    for line in raw:
-        n = normalize(line)
-        k = min(k + (len(n) + 1 if n else 0), len(text))
-        ends.append(k)
-    return ends
+    return None  # no exact map in bounded time: show no headings rather than guessed ones
 
 
 def _labels_doc(path):
     """A deliverable as `labels` reads it: check's own normalized text, so it finds exactly
     the appearances `check` accepts; the lines, with HTML headings marked, to name the
     label above a match; and where each line ends in that text, to map a match to it."""
-    raw = read_text(path).splitlines()
-    marked = _labels_text(path).splitlines()
+    whole = read_text(path)
+    raw, marked = whole.split('\n'), _labels_text(path).split('\n')
     lines = [(line, normalize(line)) for line in (marked if len(marked) == len(raw) else raw)]
-    text = normalize('\n'.join(raw))
+    text = normalize(whole)
     return lines, text, _line_ends(raw, text)
 
 
@@ -1303,15 +1328,20 @@ def _where_shown(doc, anchor):
     lines, text, ends = doc
     found, i = [], text.find(anchor) if anchor else -1
     while i >= 0:
-        j = min(bisect.bisect_right(ends, i), len(lines) - 1)
-        last = bisect.bisect_right(ends, i + len(anchor) - 1)
-        b0 = max(text.rfind(BOUNDARY, 0, i) + 1, ends[j - 1] if j else 0)
+        b0 = text.rfind(BOUNDARY, 0, i) + 1
         b1 = text.find(BOUNDARY, i + len(anchor))
-        b1 = min(b1 if b1 >= 0 else len(text), ends[last] if last < len(ends) else len(text))
+        b1 = b1 if b1 >= 0 else len(text)
+        section = ''
+        if ends is not None:
+            j = min(bisect.bisect_right(ends, i), len(lines) - 1)
+            last = bisect.bisect_right(ends, i + len(anchor) - 1)
+            b0 = max(b0, ends[j - 1] if j else 0)
+            b1 = min(b1, ends[last] if last < len(ends) else len(text))
+            section = _section(lines, j) if lines else ''
         before, after = text[b0:i].lstrip(), text[i + len(anchor):b1].rstrip()
         around = ((('...' + before[-40:]) if len(before) > 40 else before) + f'<<{anchor}>>'
                   + (' ' if after[:1].isspace() else '') + _clip(after, 24))
-        found.append((i, _section(lines, j) if lines else '', around))
+        found.append((i, section, around))
         i = text.find(anchor, i + len(anchor))
     return found
 
@@ -1337,6 +1367,8 @@ def _data_label(raw, sources):
 
 def cmd_labels(args):
     ledger = load_json(args.ledger)
+    if not isinstance(ledger, dict):
+        raise InputError(f'{args.ledger}: a ledger is a JSON object (see references/ledger.md)')
     sources = ledger.get('sources') if isinstance(ledger.get('sources'), dict) else {}
     docs = [_labels_doc(p) for p in args.deliverables]
     rows = []
@@ -1357,7 +1389,8 @@ def cmd_labels(args):
     print('Each number as the deliverable labels it, then what its source calls it:')
     for key, section, line, label, cid, sid in sorted(rows, key=lambda r: r[0]):
         missing = '  (not found in the deliverable)' if key[0] == len(docs) else ''
-        print(f'\n{_clip(section, 60) + " > " if section else ""}{line}{missing}\n    <- {label}  ({cid}, {sid})')
+        head = (section if '|' in section else _clip(section, 60)) + ' > ' if section else ''  # a table header whole
+        print(f'\n{head}{line}{missing}\n    <- {label}  ({cid}, {sid})')
     print('\nRead every entry: the words beside each number must name the same row, series and unit as '
           'its source. The right number under the wrong label is Wrong.')
     return 0

@@ -182,7 +182,8 @@ Exit status: 0 pass, 1 findings, 2 input the script can't check.
 - `labels` prints each number the deliverable shows, with the heading (or table header)
   above it, beside what its source calls it: the column and row, the quote, the doc or
   the formula. Every appearance is listed, in the deliverable's order. It judges
-  nothing; the verifier reads it to catch the right number under the wrong label. The
-  heading comes from `#` headings, all-bold lines, list items (and their parents), pipe
-  tables and HTML `h1`-`h6`. Under other structures (Setext headings, HTML table
-  headers, PDF layout) an entry shows only its line: read the header in the deliverable.
+  nothing; the verifier reads it to catch the right number under the wrong label. It
+  names a heading only when it can be sure: a `#` or Setext heading, an all-bold line or
+  an HTML `h1`-`h6` directly above the number's paragraph; a list item's parent or
+  lead-in; a pipe table's header row. Otherwise the entry shows only its line (never an
+  older heading): read the header in the deliverable.
