@@ -9,6 +9,7 @@ import csv
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -16,6 +17,9 @@ import unittest
 from decimal import Decimal
 
 import check_claims as cc
+
+ASK = {'request': 'How many new customers have we had, by year?', 'from': 'the CFO email, 2026-09-22',
+       'measure': 'new customer accounts, Online and Studio deduplicated, by calendar year', 'assumptions': []}
 
 DELIVERED_CSV = """Year,New Online customers,New Studio customers (first service),"New customers, unique across Online + Studio",Studio service appointments
 2013,412,0,412,0
@@ -76,7 +80,12 @@ couple notes for the all-channel estimate
 """
 
 
-SECTIONS = '''## Wrong
+SECTIONS = '''## Frame
+Question: new customers since launch, by year, for the board deck.
+Measure: new customer accounts (first completed order), Online and Studio deduplicated, by calendar year.
+Answers it: yes.
+
+## Wrong
 | Where | Deliverable says | Actually | Evidence |
 |---|---|---|---|
 
@@ -106,6 +115,8 @@ class Tmp(unittest.TestCase):
         shutil.rmtree(self.dir)
 
     def write(self, name, content):
+        if isinstance(content, dict) and 'claims' in content and 'ask' not in content:
+            content = {'ask': ASK, **content}  # every ledger needs one; tests of "ask" set it explicitly
         path = os.path.join(self.dir, name)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(content if isinstance(content, str) else json.dumps(content, indent=1))
@@ -1035,6 +1046,109 @@ class RealReportFalseAlarms(LedgerCase):
             self.assertEqual([t.problem for t in toks], ['write it in digits'], text)
         self.assertEqual(cc.tokenize(cc.normalize('No one else stocks it.'))[0], [])
         self.assertEqual(cc.tokenize(cc.normalize('One of the best bars.'))[0], [])
+
+
+
+class FrameFirst(LedgerCase):
+    """The question comes before the numbers: the ledger states it, the verifier's report
+    names it, and an edit to it is reported."""
+
+    def test_a_ledger_without_an_ask_fails(self):
+        code, out = self.check(self.led([], ask=None), 'Nothing here.')
+        self.assertEqual(code, 1)
+        self.assertIn('the ledger needs "ask"', out)
+
+    def test_each_ask_field_is_required(self):
+        for field in ('request', 'from', 'measure'):
+            ask = {**ASK, field: ' '}
+            code, out = self.check(self.led([], ask=ask), 'Nothing here.')
+            self.assertEqual(code, 1, field)
+            self.assertIn(f'"ask" needs "{field}"', out)
+        for assumptions in (None, 'none', [''], [3]):
+            code, out = self.check(self.led([], ask={**ASK, 'assumptions': assumptions}), 'Nothing here.')
+            self.assertEqual(code, 1, assumptions)
+            self.assertIn('"ask" needs "assumptions"', out)
+        code, out = self.check(self.led([], ask={**ASK, 'assumptions': ['accounts, not people']}), 'Nothing here.')
+        self.assertEqual(code, 0, out)
+
+    def test_changed_reports_an_edited_ask(self):
+        doc = self.write('d.md', 'Same.')
+        old = self.write('old.json', {'ask': ASK, 'sources': {}, 'claims': []})
+        new = self.write('new.json', {'ask': {**ASK, 'measure': 'shipments to retailers'}, 'sources': {}, 'claims': []})
+        code, out = run(['changed', doc, doc, '--old-ledger', old, '--new-ledger', new])
+        self.assertIn('Ask changed: yes', out)
+        code, out = run(['changed', doc, doc, '--old-ledger', old, '--new-ledger', old])
+        self.assertIn('Ask changed: no', out)
+
+
+class ReceiptFrame(ReceiptCase):
+    """The report opens with its Frame, right after the header, naming the question, the
+    measure and whether the deliverable answers it. Position decides which heading
+    counts, so an example quoted further down can't stand in for it."""
+    FRAME = SECTIONS.split('## Wrong', 1)[0]
+    BODY = '## Wrong' + SECTIONS.split('## Wrong', 1)[1]
+
+    def assert_fails(self, text, missing):
+        code, out = self.receipt(self.header() + text)
+        self.assertEqual(code, 1, repr(text))
+        self.assertIn('must open with its Frame', out, repr(text))
+        self.assertIn(missing, out, repr(text))
+
+    def test_the_frame_heading_must_come_first(self):
+        self.assert_fails(self.BODY, 'a "## Frame" heading')
+        self.assert_fails(self.BODY + '\n' + self.FRAME, 'a "## Frame" heading')
+        for before in ('# Report\n\n', '### Frame\nQuestion: q\n\n', '```\n', '~~~markdown\n', '    ',
+                       '<!--\n', '> '):
+            self.assert_fails(before + self.FRAME + self.BODY, 'a "## Frame" heading')
+
+    def test_each_field_needs_a_value(self):
+        for field in ('Question', 'Measure', 'Answers it'):
+            lines = [l for l in self.FRAME.splitlines() if not l.startswith(field + ':')]
+            self.assert_fails('\n'.join(lines) + '\n\n' + self.BODY, f'"{field}:"')
+        for bad in ('Measure:', 'Measure: <what is counted or summed>', 'Measure: 42', '<!-- Measure: accounts -->',
+                    'The measure is accounts.'):
+            frame = re.sub(r'^Measure:.*$', bad, self.FRAME, flags=re.M)
+            self.assert_fails(frame + self.BODY, '"Measure:"')
+
+    def test_each_field_appears_once(self):
+        text = SECTIONS.replace('Answers it: yes.\n', 'Answers it: yes.\nAnswers it: no, one segment is missing.\n')
+        self.assert_fails(text, 'exactly one "Answers it:" line (found 2)')
+        self.assert_fails(SECTIONS.replace('Measure:', 'Measure: accounts.\nMeasure:'), 'exactly one "Measure:"')
+
+    def test_a_vague_frame_fails(self):
+        self.assert_fails('## Frame\nThe report answers the requested question.\n\n' + self.BODY, '"Question:"')
+
+    def test_fields_below_the_next_heading_do_not_count(self):
+        frame = self.FRAME.replace('Answers it: yes.\n', '')
+        self.assert_fails(frame + self.BODY + '\nAnswers it: yes.\n', '"Answers it:"')
+
+    def test_clear_needs_answers_it_yes(self):
+        for answer in ('no, the BigBox basis is wrong.', 'partly: 2019 only.', 'Not fully.', 'yesterday, mostly'):
+            text = SECTIONS.replace('Answers it: yes.', 'Answers it: ' + answer)
+            code, out = self.receipt(self.header() + text)
+            self.assertEqual(code, 1, answer)
+            self.assertIn('CLEAR, but the Frame says', out)
+        for answer in ('Yes.', 'yes: all years and channels.', '**yes**'):
+            code, out = self.receipt(self.header() + SECTIONS.replace('Answers it: yes.', 'Answers it: ' + answer))
+            self.assertEqual(code, 0, out)
+
+    def test_a_complete_frame_passes(self):
+        variants = (SECTIONS,
+                    '\n\n' + SECTIONS.replace('## Frame', '##  frame '),
+                    SECTIONS.replace('Question:', '- **Question:**').replace('Measure:', '- **Measure:**')
+                            .replace('Answers it:', '- **Answers it:**'),
+                    SECTIONS.replace('Question:', '> question :'),
+                    SECTIONS + '\n~~~\n## Frame\nan example\n~~~\n')
+        for text in variants:
+            code, out = self.receipt(self.header() + text)
+            self.assertEqual(code, 0, out)
+
+    def test_a_code_block_cannot_hide_a_finding(self):
+        hidden = SECTIONS.replace('|---|---|---|---|\n',
+                                  '|---|---|---|---|\n~~~\n## Confirmed\n~~~\n| Total | 5 | 7 | q1 |\n')
+        code, out = self.receipt(self.header() + hidden)
+        self.assertEqual(code, 1, out)
+        self.assertIn('Wrong', out)
 
 
 if __name__ == '__main__':

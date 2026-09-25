@@ -786,6 +786,18 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
         raise InputError('the ledger needs "sources" (object) and "claims" (list)')
     tables = _Tables(base)
 
+    ask = ledger.get('ask')
+    if not isinstance(ask, dict):
+        f.fail('ask', 'the ledger needs "ask": the request, where it came from, the measure and the '
+                      'assumptions, written before any query (see references/ledger.md)')
+    else:
+        for field in ('request', 'from', 'measure'):
+            if not (isinstance(ask.get(field), str) and ask[field].strip()):
+                f.fail('ask', f'"ask" needs "{field}"')
+        assumptions = ask.get('assumptions')
+        if not isinstance(assumptions, list) or not all(isinstance(a, str) and a.strip() for a in assumptions):
+            f.fail('ask', '"ask" needs "assumptions": a list of what would change the answer, [] if none')
+
     for sid, src in sources.items():
         kind = src.get('type') if isinstance(src, dict) else None
         if kind == 'query':
@@ -1345,6 +1357,8 @@ def cmd_changed(args):
         hit_rels = [r for r in rels if expr_names(r) & (moved | deps)]
         ra, rb = listed(la, 'relations'), listed(lb, 'relations')
         ea, eb = listed(la, 'exempt'), listed(lb, 'exempt')
+        ask_moved = json.dumps(la.get('ask'), sort_keys=True, default=str) != json.dumps(lb.get('ask'), sort_keys=True, default=str)
+        print('Ask changed: ' + ('yes, so re-check the question first' if ask_moved else 'no'))
         print('Claims changed, added or removed: ' + (', '.join(sorted(k for k in moved if k)) or 'none'))
         print('Claims derived from them: ' + (', '.join(sorted(deps)) or 'none'))
         print('Relations touching them: ' + ('; '.join(hit_rels) or 'none'))
@@ -1407,6 +1421,40 @@ def _open_findings(lines):
     return counts
 
 
+_FRAME_FIELDS = ('question', 'measure', 'answers it')
+
+
+def _frame(body):
+    """The report's opening Frame: (what it is missing, its field values).
+
+    The first non-blank line after the header must be exactly "## Frame", and the
+    section under it must give one value for each of "Question:", "Measure:" and "Answers
+    it:", once each (list markers, quote markers and bold allowed; a value in <angle brackets> is
+    the template's placeholder). Position decides which heading counts, so an example
+    quoted further down can't stand in for it. This shows the Frame names a question and
+    a measure, not that they are right: that is the reader's call."""
+    rest = [line for line in body if line.strip()]
+    if not rest or not re.fullmatch(r'##[ \t]+frame[ \t]*', rest[0], re.I):
+        return ['a "## Frame" heading as the first line after the header'], {}
+    found = {}
+    for line in rest[1:]:
+        if line.lstrip().startswith('#'):
+            break
+        m = re.match(r'^[\s>+-]*(question|measure|answers it)\s*:\s*(.*)$', re.sub(r'[*_]', '', line), re.I)
+        if m:
+            found.setdefault(m.group(1).lower(), []).append(m.group(2).strip())
+    gaps, values = [], {}
+    for field in _FRAME_FIELDS:
+        got = found.get(field, [])
+        if len(got) > 1:
+            gaps.append(f'exactly one "{field.capitalize()}:" line (found {len(got)})')
+        elif not got or not re.search(r'[^\W\d_]', got[0]) or got[0].startswith('<'):
+            gaps.append(f'a "{field.capitalize()}:" line')
+        else:
+            values[field] = got[0]
+    return gaps, values
+
+
 def cmd_receipt(args):
     with open(args.report, encoding='utf-8') as fh:
         lines = fh.read().splitlines()
@@ -1440,6 +1488,13 @@ def cmd_receipt(args):
         f.fail('receipt', f'verdict is {verdict or "missing"}, not CLEAR')
     if not who:
         f.fail('receipt', 'no verifier named')
+    gaps, frame = _frame(lines[i:])
+    if gaps:
+        f.fail('receipt', 'the report must open with its Frame, the question the verifier checked the deliverable '
+                          'against; missing: ' + ', '.join(gaps))
+    elif verdict == 'CLEAR' and not re.match(r'yes\b', frame['answers it'], re.I):
+        f.fail('receipt', f'CLEAR, but the Frame says "Answers it: {frame["answers it"][:40]}": partly or no means '
+                          'a finding is still open')
     open_counts = _open_findings(lines[i:])
     for section in _OPEN_SECTIONS:
         if section not in open_counts:

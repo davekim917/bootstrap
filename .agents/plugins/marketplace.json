@@ -90,7 +90,7 @@
     },
     {
       "name": "analytics-verify",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "description": "Claim ledger, check script and independent verifier for analytics and research deliverables, with an always-on nudge to run it before numbers leave.",
       "source": {
         "source": "local",
