@@ -91,8 +91,8 @@ If you're unsure, use the full loop.
    ```
    It re-checks those lines and claims, then the whole final file. Stop after three
    rounds and deliver with the open disagreements listed for the requester to decide.
-   The stamp then says the last verdict was CHANGES and names what wasn't re-checked:
-   "checked in 3 rounds" alone reads as a pass.
+   If the last verdict is still CHANGES when you stop, the stamp says so and names what
+   wasn't re-checked: "checked in 3 rounds" alone reads as a pass.
 7. **Deliver with a receipt and a one-line stamp.** Run
    `check_claims.py receipt verify-r<N>.md claims.json <deliverable>` first. PASS means
    the verifier's report covers these exact bytes with a clean verdict; any later edit
