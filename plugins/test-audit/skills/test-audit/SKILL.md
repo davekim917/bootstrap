@@ -151,7 +151,9 @@ An in-process filesystem wrapper does not contain a child process. Setting
 `cwd` on a subprocess doesn't stop it from inheriting the environment. An
 allowlist that lets a call through also hides it, so a lower escape count is
 not evidence of containment. Record which tests you reviewed for containment
-and each exception with its reason.
+and each exception with its reason. An exception is acceptable only when the
+side effect is the point of the test, the test runs in an opt-in lane rather
+than the default suite, and it reaches no production data or credentials.
 
 Contain first, prune second. Pruning an uncontained suite risks deleting the
 test that would have exposed the escape.
@@ -188,7 +190,8 @@ not ready for deletion or consolidation.
 - the stronger proof that remains at the owning boundary (the **keeper**), or
   why no proof is needed;
 - the representative fault the keeper catches: the fault, the command, and
-  the red result (see [Preservation](#preservation));
+  the red result (see [Preservation](#preservation)). If the test guards no
+  contract, there is no keeper; record why instead;
 - relevant history and the reason the test or seam exists;
 - the production or test-support code its removal unlocks;
 - risk, and the focused validation command.

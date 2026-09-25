@@ -8,9 +8,10 @@ adds the order of work. Each step ends on its completion criterion. Don't
 start the next step early.
 
 A campaign closes on **completeness and containment**: every declaration
-classified with evidence, and no uncontained external side effects. There is
-no deletion or line-count target. Set a CI-time target only after profiling a
-pilot.
+classified with evidence, and no uncontained external side effects. An
+accepted containment exception (step 3) is bounded, so it doesn't block
+closure. There is no deletion or line-count target. Set a CI-time target
+only after profiling a pilot.
 
 ## 1. Baseline
 
@@ -49,9 +50,12 @@ Before classifying for value, find every test in scope with an external side
 effect: real network, writes outside a disposable directory, inherited
 credentials or environment, writable production mounts, or child processes
 that inherit the parent's environment. Contain each one (see "Containment
-before pruning" in SKILL.md), or record it as an accepted exception with a
-reason. Land containment fixes as their own bounded PRs, ahead of any
-pruning in that lane.
+before pruning" in SKILL.md), or record it as an accepted exception. An
+exception is acceptable only when the side effect is the point of the test
+(a live-proof check against a real service, say), the test runs only in an
+opt-in lane rather than the default suite, and it reaches no production data
+or credentials. Record the reason and the lane. Land containment fixes as
+their own bounded PRs, ahead of any pruning in that lane.
 
 Done when every test in scope has a reviewed containment status. A lower
 escape count doesn't count: an allowlist can hide an escape without
@@ -100,8 +104,11 @@ unlocks. Seams that make tests safe stay.
 
 Land one lane, or one coherent part of a lane, per PR. For each PR:
 
-- before deleting a `C` or `D` test, run the representative-fault check from
-  SKILL.md "Preservation" against its keeper and record the red result;
+- before deleting a `C` test, or a `D` test whose mark cites remaining proof,
+  run the representative-fault check from SKILL.md "Preservation" against its
+  keeper and record the red result. A `D` test marked as guarding no contract
+  (an assertion-free probe, say) has no keeper to check. Its evidence is the
+  written reason, and the preservation reviewer must agree with it;
 - remove only the test-only production seams this PR's deletions unlock;
 - register moved suites in CI routing and test inventories;
 - keep every coverage floor where it is;

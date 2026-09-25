@@ -93,8 +93,9 @@ Changes that can weaken a test without touching its SQL:
 - a `where` config that filters out the failing rows;
 - `enabled: false`, or a `tags` or selector change that stops a test from
   running in CI;
-- a row removed from `accepted_values`, a unit test's `expect`, or its
-  `given` inputs;
+- a value added to `accepted_values`, which widens what passes;
+- a unit test case dropped, or `given` and `expect` rows removed together so
+  that fewer inputs are checked;
 - turning off contract enforcement or dropping a column's `data_type`.
 
 Coverage tools don't measure dbt tests well. Classify by the column or model
