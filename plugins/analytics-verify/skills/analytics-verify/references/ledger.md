@@ -161,6 +161,7 @@ scaffold  RESULT.csv --source q1 --key Year [--columns A,B] [--prefix new_]
 reproduce DELIVERED.csv RERUN.csv --key Year [--rel-tol 0.001] [--abs-tol 0]
 changed   OLD NEW [--old-ledger A --new-ledger B]   # link destinations count as text
 hash      FILE...
+labels    claims.json DELIVERABLE...         # each shown number beside what its source calls it
 receipt   verify-r2.md claims.json DELIVERABLE...
 ```
 
@@ -178,3 +179,7 @@ Exit status: 0 pass, 1 findings, 2 input the script can't check.
   it:` once each, and a CLEAR report that still lists items under Wrong, Stale or Unsupported or
   whose `Answers it:` isn't "yes". It shows the Frame names a question and a measure, not
   that they're right.
+- `labels` prints each number the deliverable shows, with the heading (or table header)
+  above it, beside what its source calls it: the column and row, the quote, the doc or
+  the formula. Every appearance is listed, in the deliverable's order. It judges
+  nothing; the verifier reads it to catch the right number under the wrong label.

@@ -1151,5 +1151,66 @@ class ReceiptFrame(ReceiptCase):
         self.assertIn('Wrong', out)
 
 
+class Labels(LedgerCase):
+    """`labels` puts each shown number beside what its source calls it, so the right number
+    under the wrong label is visible. It lists, never judges."""
+    CUST = 'New customers, unique across Online + Studio'
+    APPT = 'Studio service appointments'
+
+    def cell(self, cid, value, year, column, anchor):
+        return {'id': cid, 'value': value, 'source': 'q1', 'locate': {'where': {'Year': year}, 'column': column},
+                'anchors': [anchor]}
+
+    def labels(self, claims, text, sources=None):
+        led = self.led(claims, sources={'q1': {'type': 'file', 'path': 'r.csv', 'as_of': '2026-09-23'}, **(sources or {})})
+        return run(['labels', led, self.write('d.md', text)])
+
+    def entries(self, out):
+        return [e for e in out.split('\n\n') if '    <- ' in e]
+
+    def test_a_swapped_series_is_visible(self):
+        text = ('New customers\n\u2022 by yr: 2020 184K, 2021 179K\n\n'
+                'Studio services (completed appointments)\n\u2022 by yr: 2020 184K, 2021 88K\n')
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, '2020 184K'),
+                                 self.cell('c21', 179120, '2021', self.CUST, '2021 179K'),
+                                 self.cell('a21', 88415, '2021', self.APPT, '2021 88K')], text)
+        self.assertEqual(code, 0, out)
+        swapped = [e for e in self.entries(out) if e.startswith('Studio services') and '<<2020 184K>>' in e]
+        self.assertEqual(len(swapped), 1, out)
+        self.assertIn(f'<- {self.CUST} . Year=2020', swapped[0])
+        self.assertEqual(len(self.entries(out)), 4)  # every appearance, not only the first
+
+    def test_order_follows_the_deliverable(self):
+        text = 'Studio: 2021 88K.\n\nOnline: 2021 179K.\n'
+        code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, 'Online: 2021 179K'),
+                                 self.cell('a21', 88415, '2021', self.APPT, 'Studio: 2021 88K'),
+                                 {'id': 'h', 'value': 5, 'source': 'q1', 'omit': 'in the csv only'}], text)
+        entries = self.entries(out)
+        self.assertEqual(len(entries), 2, out)
+        self.assertIn('(a21, q1)', entries[0])
+        self.assertIn('(c21, q1)', entries[1])
+
+    def test_each_source_kind_is_labeled(self):
+        claims = [{'id': 'm', 'value': 50, 'source': 'w', 'quote': '50+ mojitos & drinks', 'anchors': ['50+ mojitos']},
+                  {'id': 'n', 'value': 12, 'source': 'd', 'anchors': ['12 stores']},
+                  {'id': 'j', 'value': 7, 'source': 'q1', 'locate': {'json': '[0].count'}, 'anchors': ['7 regions']},
+                  {'id': 'g', 'value': 8, 'unit': '%', 'expr': '(a - b) / a * 100', 'anchors': ['fell 8%']}]
+        code, out = self.labels(claims, 'It lists 50+ mojitos across 12 stores and 7 regions; sales fell 8%.')
+        self.assertIn('<- quote: "50+ mojitos & drinks" (Bar X, Riverton)  (m, w)', out)
+        self.assertIn('<- doc: ops log  (n, d)', out)
+        self.assertIn('<- [0].count  (j, q1)', out)
+        self.assertIn('<- = (a - b) / a * 100  (g, derived)', out)
+
+    def test_a_table_cell_shows_its_header_row(self):
+        text = '| Year | Online | Studio |\n|---|---|---|\n| 2021 | 158K | 25K |\n'
+        code, out = self.labels([self.cell('o21', 158227, '2021', 'New Online customers', '| 2021 | 158K')], text)
+        self.assertIn('| Year | Online | Studio | > <<| 2021 | 158K>>', out)
+
+    def test_an_anchor_missing_from_the_deliverable_is_flagged(self):
+        code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, '2021 179K')], 'Nothing here.')
+        self.assertEqual(code, 0)
+        self.assertIn('<<2021 179K>>  (not found in the deliverable)', out)
+
+
 if __name__ == '__main__':
     unittest.main()

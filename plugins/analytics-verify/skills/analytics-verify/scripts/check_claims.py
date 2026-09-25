@@ -10,6 +10,7 @@ source, a misread menu, or a false sentence built from correct numbers all pass.
   reproduce DELIVERED.csv RERUN.csv --key COL[,COL] [--rel-tol X] [--abs-tol Y]
   changed   OLD NEW [--old-ledger A --new-ledger B]
   hash      FILE...
+  labels    LEDGER DELIVERABLE...   each shown number beside what its source calls it
   receipt   REPORT LEDGER DELIVERABLE...
 
 Exit status: 0 pass, 1 findings, 2 unusable input. Ledger format: ../references/ledger.md
@@ -1181,6 +1182,90 @@ def cmd_check(args):
     return f.emit(f'{total} number(s) in {len(args.deliverables)} file(s), {len(claims)} claim(s), {rels} relation(s).')
 
 
+# ---------------------------------------------------------------- labels
+
+_BULLET = re.compile(r'^[ \t]*(?:\d{1,3}[.)]|[-*\u2022+])[ \t]+')
+_TABLE_SEP = re.compile(r'^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$')
+
+
+def _clip(text, n):
+    t = ' '.join(str(text).split())
+    return t if len(t) <= n else t[:n - 3] + '...'
+
+
+def _where_shown(files, anchor):
+    """Every place an anchor appears, as (sort key, the heading or table header above it,
+    the line around it). Every one, because a repeat of an anchor elsewhere is how a
+    number lands under a second label unnoticed. Display only: a miss costs context,
+    never a verdict."""
+    found = []
+    for k, lines in enumerate(files):
+        for j, (raw, norm) in enumerate(lines):
+            i = norm.find(anchor) if anchor else -1
+            while i >= 0:
+                section = ''
+                if raw.lstrip().startswith('|'):
+                    for h in range(j - 1, 0, -1):
+                        if not lines[h][0].lstrip().startswith('|'):
+                            break
+                        if _TABLE_SEP.match(lines[h][0]):
+                            section = lines[h - 1][1]
+                            break
+                elif _BULLET.match(raw):
+                    section = next((n for r, n in reversed(lines[:j]) if n and not _BULLET.match(r)), '')
+                before, after = norm[:i], norm[i + len(anchor):]
+                line = ((('...' + before[-40:]) if len(before) > 40 else before) + f'<<{anchor}>>'
+                        + (' ' if after[:1].isspace() else '') + _clip(after, 24))
+                found.append(((k, j, i), section, line))
+                i = norm.find(anchor, i + len(anchor))
+    return found
+
+
+def _data_label(raw, sources):
+    """What the source calls a claim, to read beside what the deliverable calls it."""
+    if 'expr' in raw:
+        return f'= {raw["expr"]}'
+    sid = raw.get('source')
+    src = sources.get(sid) if isinstance(sources.get(sid), dict) else {}
+    loc = raw.get('locate') if isinstance(raw.get('locate'), dict) else {}
+    if 'column' in loc:
+        where = loc.get('where') if isinstance(loc.get('where'), dict) else {}
+        return ' . '.join([str(loc['column'])] + [f'{key}={val}' for key, val in where.items()])
+    if 'json' in loc:
+        return str(loc['json'])
+    if src.get('type') == 'web':
+        return f'quote: "{_clip(raw.get("quote", ""), 90)}" ({_clip(src.get("entity", ""), 40)})'
+    if src.get('type') == 'doc':
+        return f'doc: {_clip(src.get("ref", ""), 90)}'
+    return f'source {sid}'
+
+
+def cmd_labels(args):
+    ledger = load_json(args.ledger)
+    sources = ledger.get('sources') if isinstance(ledger.get('sources'), dict) else {}
+    files = [[(line, normalize(line)) for line in read_text(p).splitlines()] for p in args.deliverables]
+    rows = []
+    for raw in ledger.get('claims') or []:
+        if not isinstance(raw, dict):
+            continue
+        anchors = raw.get('anchors')
+        for anchor in [anchors] if isinstance(anchors, str) else anchors if isinstance(anchors, list) else []:
+            na = normalize(str(anchor))
+            label = (_data_label(raw, sources), raw.get('id'), raw.get('source') or 'derived')
+            for key, section, line in _where_shown(files, na) or [((len(files), 0, 0), '', f'<<{na}>>')]:
+                rows.append((key, section, line) + label)
+    if not rows:
+        print('No claim in this ledger is shown in the deliverable.')
+        return 0
+    print('Each number as the deliverable labels it, then what its source calls it:')
+    for key, section, line, label, cid, sid in sorted(rows, key=lambda r: r[0]):
+        missing = '  (not found in the deliverable)' if key[0] == len(files) else ''
+        print(f'\n{_clip(section, 60) + " > " if section else ""}{line}{missing}\n    <- {label}  ({cid}, {sid})')
+    print('\nRead every entry: the words beside each number must name the same row, series and unit as '
+          'its source. The right number under the wrong label is Wrong.')
+    return 0
+
+
 # ---------------------------------------------------------------- scaffold
 
 def _slug(text):
@@ -1549,6 +1634,11 @@ def main(argv=None):
     p = sub.add_parser('hash', help='sha256 of files, for a verification receipt')
     p.add_argument('files', nargs='+')
     p.set_defaults(fn=cmd_hash)
+
+    p = sub.add_parser('labels', help='list each shown number beside what its source calls it')
+    p.add_argument('ledger')
+    p.add_argument('deliverables', nargs='+')
+    p.set_defaults(fn=cmd_labels)
 
     p = sub.add_parser('receipt', help='confirm a verification report covers these exact files')
     p.add_argument('report')
