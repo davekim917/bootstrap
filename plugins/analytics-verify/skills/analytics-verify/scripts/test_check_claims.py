@@ -1089,7 +1089,13 @@ class ReceiptFrame(ReceiptCase):
                       '```\n## Frame\nquoted\n```\n', '~~~markdown\n## Frame\nquoted\n~~~\n',
                       '    ## Frame\n    example only\n',  # indented code, not a heading
                       '<!--\n## Frame\nhidden\n-->\n', '> ## Frame\n> quoted\n',
-                      '# Report\n\n## Frame\ntext\n', '### Frame\ntext\n'):
+                      '# Report\n\n## Frame\ntext\n', '### Frame\ntext\n',
+                      # a Frame that renders as nothing, or is the template's placeholder
+                      '## Frame\n<!-- TODO -->\n', '## Frame\n<!--\nTODO: fill in the question\n-->\n',
+                      '## Frame\n```\n```\n', '## Frame\n~~~text\nThe question is revenue.\n~~~\n',
+                      '## Frame\n- TBD\n', '## Frame\n...\n',
+                      '## Frame\nThe question in your own words, the measure and its basis, and whether '
+                      'the deliverable answers it.\n'):
             code, out = self.receipt(self.header() + frame + '## Wrong' + body)
             self.assertEqual(code, 1, repr(frame))
             self.assertIn(self.MSG, out, repr(frame))
@@ -1103,7 +1109,10 @@ class ReceiptFrame(ReceiptCase):
 
     def test_a_report_that_opens_with_a_frame_passes(self):
         for text in (SECTIONS, '\n\n' + SECTIONS.replace('## Frame', '##  frame '),
-                     SECTIONS + '\n~~~\n## Frame\nan example\n~~~\n'):
+                     SECTIONS + '\n~~~\n## Frame\nan example\n~~~\n',
+                     SECTIONS.replace('The request asks', '- **Question:** the request asks'),
+                     SECTIONS.replace('The request asks', '<!-- r2 --> The request asks'),
+                     SECTIONS.replace('The request asks', 'La demande porte sur les nouveaux comptes; the request asks')):
             code, out = self.receipt(self.header() + text)
             self.assertEqual(code, 0, out)
 
