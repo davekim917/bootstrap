@@ -1428,8 +1428,8 @@ def _frame(body):
     """The report's opening Frame: (what it is missing, its field values).
 
     The first non-blank line after the header must be exactly "## Frame", and the
-    section under it must give a value for each of "Question:", "Measure:" and "Answers
-    it:" (list markers, quote markers and bold allowed; a value in <angle brackets> is
+    section under it must give one value for each of "Question:", "Measure:" and "Answers
+    it:", once each (list markers, quote markers and bold allowed; a value in <angle brackets> is
     the template's placeholder). Position decides which heading counts, so an example
     quoted further down can't stand in for it. This shows the Frame names a question and
     a measure, not that they are right: that is the reader's call."""
@@ -1441,9 +1441,18 @@ def _frame(body):
         if line.lstrip().startswith('#'):
             break
         m = re.match(r'^[\s>+-]*(question|measure|answers it)\s*:\s*(.*)$', re.sub(r'[*_]', '', line), re.I)
-        if m and re.search(r'[^\W\d_]', m.group(2)) and not m.group(2).lstrip().startswith('<'):
-            found.setdefault(m.group(1).lower(), m.group(2).strip())
-    return [f'a "{f.capitalize()}:" line' for f in _FRAME_FIELDS if f not in found], found
+        if m:
+            found.setdefault(m.group(1).lower(), []).append(m.group(2).strip())
+    gaps, values = [], {}
+    for field in _FRAME_FIELDS:
+        got = found.get(field, [])
+        if len(got) > 1:
+            gaps.append(f'exactly one "{field.capitalize()}:" line (found {len(got)})')
+        elif not got or not re.search(r'[^\W\d_]', got[0]) or got[0].startswith('<'):
+            gaps.append(f'a "{field.capitalize()}:" line')
+        else:
+            values[field] = got[0]
+    return gaps, values
 
 
 def cmd_receipt(args):

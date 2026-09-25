@@ -1110,6 +1110,11 @@ class ReceiptFrame(ReceiptCase):
             frame = re.sub(r'^Measure:.*$', bad, self.FRAME, flags=re.M)
             self.assert_fails(frame + self.BODY, '"Measure:"')
 
+    def test_each_field_appears_once(self):
+        text = SECTIONS.replace('Answers it: yes.\n', 'Answers it: yes.\nAnswers it: no, one segment is missing.\n')
+        self.assert_fails(text, 'exactly one "Answers it:" line (found 2)')
+        self.assert_fails(SECTIONS.replace('Measure:', 'Measure: accounts.\nMeasure:'), 'exactly one "Measure:"')
+
     def test_a_vague_frame_fails(self):
         self.assert_fails('## Frame\nThe report answers the requested question.\n\n' + self.BODY, '"Question:"')
 
