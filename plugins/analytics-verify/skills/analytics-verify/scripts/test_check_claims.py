@@ -1028,7 +1028,9 @@ class RealReportFalseAlarms(LedgerCase):
         # Codex round 5: typographic hyphens, and spelled fractions.
         toks = cc.tokenize(cc.normalize('1 plus\u2011sized store'))[0]
         self.assertEqual([(t.op, t.problem) for t in toks], [('eq', None)])
-        for text in ('at least one-third of users', 'two-thirds of stores', 'one\u2011half of them'):
+        for text in ('at least one-third of users', 'two-thirds of stores', 'one\u2011half of them',
+                     'one-eleventh of it', 'one-twentieth of it', 'one-hundredth of it', 'twenty-one-hundredths',
+                     'one-twenty-fifth of it'):
             toks = cc.tokenize(cc.normalize(text))[0]
             self.assertEqual([t.problem for t in toks], ['write it in digits'], text)
         self.assertEqual(cc.tokenize(cc.normalize('No one else stocks it.'))[0], [])

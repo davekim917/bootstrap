@@ -282,8 +282,11 @@ def _qualifiers(text, lead, end):
     return op, end, problem, used
 
 
-_FRACTIONS = frozenset('half halves third thirds quarter quarters fourth fourths fifth fifths sixth sixths '
-                       'seventh sevenths eighth eighths ninth ninths tenth tenths'.split())
+_ORDINALS = ('third fourth fifth sixth seventh eighth ninth tenth eleventh twelfth thirteenth fourteenth '
+             'fifteenth sixteenth seventeenth eighteenth nineteenth twentieth thirtieth fortieth fiftieth '
+             'sixtieth seventieth eightieth ninetieth hundredth thousandth millionth billionth').split()
+# Every English fraction denominator, singular and plural: "one-third", "twenty-one-hundredths".
+_FRACTIONS = frozenset(['half', 'halves', 'quarter', 'quarters'] + _ORDINALS + [o + 's' for o in _ORDINALS])
 _ABSORB = 'absorb'  # a qualified lone "one": not a number, but it owns its qualifier
 
 
