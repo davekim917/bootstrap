@@ -56,6 +56,9 @@ If you're unsure, use the full loop.
    - Every sentence that combines numbers ("did both", "of which", "brings the total
      to") gets a `relations` entry.
    - Every row, year and segment the ask expects is shown, or `omit`ted with a reason.
+   - Before a finding rests on a date (how old, what came first, inside a window),
+     confirm which event the column records: created, updated, answered or shipped.
+     One row per customer that is updated in place keeps its created date.
    - Every number in the deliverable is accounted for, including years, dates and
      spelled-out counts. A range is two claims. Write large or compound numbers and
      fractions in digits ("200", not "two hundred"; "75%", not "three quarters"), and state bounds plainly ("at least 50", not
@@ -88,6 +91,8 @@ If you're unsure, use the full loop.
    ```
    It re-checks those lines and claims, then the whole final file. Stop after three
    rounds and deliver with the open disagreements listed for the requester to decide.
+   If the last verdict is still CHANGES when you stop, the stamp says so and names what
+   wasn't re-checked: "checked in 3 rounds" alone reads as a pass.
 7. **Deliver with a receipt and a one-line stamp.** Run
    `check_claims.py receipt verify-r<N>.md claims.json <deliverable>` first. PASS means
    the verifier's report covers these exact bytes with a clean verdict; any later edit
