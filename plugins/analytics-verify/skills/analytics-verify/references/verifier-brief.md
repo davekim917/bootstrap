@@ -55,7 +55,10 @@ Work in this order. A number can only be right for a question you've pinned down
    of the evidence itself, and current status: still open, same owner, same chef, same
    menu, same price. Check whether the source is official or just press. Quote what you
    found.
-8. **Check the wording around the numbers:**
+8. **Check the wording around the numbers.** Start with `labels claims.json <deliverable>`
+   and read every entry: the words beside each number, and the heading above them, must
+   name the same row, series and unit as the source it came from. The right number under
+   the wrong label (another year, series or segment) is Wrong. Then check:
    - unit and grain words
    - arithmetic between stated numbers
    - cutoffs and partial periods

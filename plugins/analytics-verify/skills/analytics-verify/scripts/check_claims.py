@@ -10,6 +10,7 @@ source, a misread menu, or a false sentence built from correct numbers all pass.
   reproduce DELIVERED.csv RERUN.csv --key COL[,COL] [--rel-tol X] [--abs-tol Y]
   changed   OLD NEW [--old-ledger A --new-ledger B]
   hash      FILE...
+  labels    LEDGER DELIVERABLE...   each shown number beside what its source calls it
   receipt   REPORT LEDGER DELIVERABLE...
 
 Exit status: 0 pass, 1 findings, 2 unusable input. Ledger format: ../references/ledger.md
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import bisect
 import csv
 import datetime as dt
 import difflib
@@ -1181,6 +1183,223 @@ def cmd_check(args):
     return f.emit(f'{total} number(s) in {len(args.deliverables)} file(s), {len(claims)} claim(s), {rels} relation(s).')
 
 
+# ---------------------------------------------------------------- labels
+
+_BULLET = re.compile(r'^[ \t]*(?:\d{1,3}[.)]|[-*\u2022+])[ \t]+')
+_TABLE_SEP = re.compile(r'^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$')
+_HEADING = re.compile(r'^ {0,3}#{1,6}[ \t]+\S')
+_BOLD_LINE = re.compile(r'^\s*(\*\*|__|\*|_)(?=\S).*?(?<=\S)\1\s*:?\s*$')
+
+
+class _HTMLHeadings(_HTMLText):
+    """read_text's HTML reader with each h1-h6 marked "# ", so `labels` can name the
+    heading above a number. `check` keeps using the plain reader."""
+
+    def handle_starttag(self, tag, attrs):
+        super().handle_starttag(tag, attrs)
+        if tag in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6') and not self.skip:
+            self.parts.append('# ')
+
+
+def _labels_text(path):
+    if os.path.splitext(path)[1].lower() in ('.html', '.htm') and os.path.isfile(path):
+        parser = _HTMLHeadings()
+        with open(path, encoding='utf-8') as fh:
+            parser.feed(fh.read())
+        parser.close()
+        return ''.join(parser.parts)
+    return read_text(path)
+
+
+def _flat(text):
+    """One line, never shortened: a clipped line or quote can drop the very label the
+    verifier compares."""
+    return ' '.join(str(text).split())
+
+
+_SETEXT = re.compile(r'^ {0,3}(=+|-+)[ \t]*$')
+
+
+def _heading(lines, h):
+    """The heading text if line h is a heading: a # line, an all-bold line, or the text
+    line of a Setext pair (h is its underline). None otherwise."""
+    raw, norm = lines[h]
+    if _HEADING.match(raw) or _BOLD_LINE.match(raw):
+        return norm.lstrip('# ')
+    if _SETEXT.match(raw) and h > 0 and lines[h - 1][1] and not _BULLET.match(lines[h - 1][0]):
+        return lines[h - 1][1]
+    return None
+
+
+def _indent(raw):
+    return len(raw.expandtabs(4)) - len(raw.expandtabs(4).lstrip())
+
+
+def _section(lines, j):
+    """The label above line j, or '' when it can't be named for sure. Right or nothing,
+    never an older heading: the walk up crosses only what it positively understands.
+    - A pipe table row: the table's header row.
+    - A list item: its parent item, else the first line above the list (a heading, or a
+      lead-in such as "by yr:"). Only list items and blank lines are crossed.
+    - Prose: the heading directly above its paragraph, with only blank lines between;
+      or, when the paragraph is a wrapped list item, that item's text.
+    Other structures (HTML table headers, PDF layout) get '', and the verifier reads the
+    deliverable for those."""
+    raw = lines[j][0]
+    if '|' in raw:
+        for h in range(j - 1, 0, -1):
+            if '|' not in lines[h][0]:
+                break
+            if _TABLE_SEP.match(lines[h][0]):
+                return lines[h - 1][1]
+    if _BULLET.match(raw):
+        indent = _indent(raw)
+        for h in range(j - 1, -1, -1):
+            r, n = lines[h]
+            if not n:
+                continue
+            if _BULLET.match(r):
+                if _indent(r) < indent:
+                    return n  # the parent item of a nested list
+                continue
+            head = _heading(lines, h)
+            return head if head is not None else n
+        return ''
+    h = j - 1
+    while h >= 0 and lines[h][1]:
+        head = _heading(lines, h)
+        if head is not None:
+            return head
+        if _BULLET.match(lines[h][0]):
+            return lines[h][1]  # the number continues this list item's text
+        h -= 1  # the number's own paragraph
+    while h >= 0 and not lines[h][1]:
+        h -= 1
+    return (_heading(lines, h) or '') if h >= 0 else ''
+
+
+_EOL = '\ue000'  # private-use mark for the end of a line, stripped before anything is shown
+
+
+def _line_ends(raw, text):
+    """Where each raw line ends in `text` (= normalize of the lines joined), in one pass:
+    mark the end of every non-empty line, normalize once, then strip the marks while
+    noting where each fell. The stripped result must equal `text` exactly and every mark
+    must survive; when some construct defeats the marks (a link split across lines),
+    return None and labels shows no headings for that file. Normalizing each prefix
+    instead is neither linear nor exact: a construct completed on a later line can make
+    a longer prefix normalize shorter."""
+    marked = normalize('\n'.join(line + ' ' + _EOL if line.strip() else line for line in raw))
+    out, marks = [], []
+    for ch in marked:
+        if ch == _EOL:
+            while out and out[-1] == ' ':
+                out.pop()
+            marks.append(len(out))
+        elif ch == ' ' and (not out or out[-1] == ' '):
+            continue
+        elif ch == BOUNDARY and BOUNDARY in ''.join(out[-2:]):
+            continue
+        else:
+            out.append(ch)
+    lead = len(out) - len(''.join(out).lstrip(f' {BOUNDARY}'))
+    cleaned = ''.join(out).strip(f' {BOUNDARY}')
+    if cleaned == text and len(marks) == sum(1 for line in raw if line.strip()):
+        ends, k, m = [], 0, 0
+        for line in raw:
+            if line.strip():
+                k, m = min(max(marks[m] - lead, 0), len(text)), m + 1
+            ends.append(k)
+        return ends
+    return None  # no verified map: labels shows no headings rather than guessed ones
+
+
+def _labels_doc(path):
+    """A deliverable as `labels` reads it: check's own normalized text, so it finds exactly
+    the appearances `check` accepts; the lines, with HTML headings marked, to name the
+    label above a match; and where each line ends in that text, to map a match to it."""
+    whole = read_text(path)
+    raw, marked = whole.split('\n'), _labels_text(path).split('\n')
+    lines = [(line, normalize(line)) for line in (marked if len(marked) == len(raw) else raw)]
+    text = normalize(whole)
+    return lines, text, _line_ends(raw, text)
+
+
+def _where_shown(doc, anchor):
+    """Every place an anchor appears in one file, as (offset, label above, text around).
+    Every one, because a repeated anchor is how a number lands under a second label
+    unnoticed. Display only: a miss costs context, never a verdict."""
+    lines, text, ends = doc
+    found, i = [], text.find(anchor) if anchor else -1
+    while i >= 0:
+        b0 = text.rfind(BOUNDARY, 0, i) + 1
+        b1 = text.find(BOUNDARY, i + len(anchor))
+        b1 = b1 if b1 >= 0 else len(text)
+        section = ''
+        if ends is not None:
+            j = min(bisect.bisect_right(ends, i), len(lines) - 1)
+            last = bisect.bisect_right(ends, i + len(anchor) - 1)
+            b0 = max(b0, ends[j - 1] if j else 0)
+            b1 = min(b1, ends[last] if last < len(ends) else len(text))
+            section = _section(lines, j) if lines else ''
+        before, after = text[b0:i].lstrip(), text[i + len(anchor):b1].rstrip()
+        around = before + f'<<{anchor}>>' + (' ' if after[:1].isspace() else '') + _flat(after)
+        found.append((i, section, around))
+        i = text.find(anchor, i + len(anchor))
+    return found
+
+
+def _data_label(raw, sources):
+    """What the source calls a claim, to read beside what the deliverable calls it."""
+    if 'expr' in raw:
+        return f'= {raw["expr"]}'
+    sid = raw.get('source')
+    src = sources.get(sid) if isinstance(sources.get(sid), dict) else {}
+    loc = raw.get('locate') if isinstance(raw.get('locate'), dict) else {}
+    if 'column' in loc:
+        where = loc.get('where') if isinstance(loc.get('where'), dict) else {}
+        return ' . '.join([str(loc['column'])] + [f'{key}={val}' for key, val in where.items()])
+    if 'json' in loc:
+        return str(loc['json'])
+    if src.get('type') == 'web':
+        return f'quote: "{_flat(raw.get("quote", ""))}" ({_flat(src.get("entity", ""))})'
+    if src.get('type') == 'doc':
+        return f'doc: {_flat(src.get("ref", ""))}'
+    return f'source {sid}'
+
+
+def cmd_labels(args):
+    ledger = load_json(args.ledger)
+    if not isinstance(ledger, dict) or not isinstance(ledger.get('sources'), dict) \
+            or not isinstance(ledger.get('claims'), list):
+        raise InputError('the ledger needs "sources" (object) and "claims" (list)')  # as check_ledger
+    sources = ledger['sources']
+    docs = [_labels_doc(p) for p in args.deliverables]
+    rows = []
+    for raw in ledger['claims']:
+        if not isinstance(raw, dict):
+            continue
+        anchors = raw.get('anchors')
+        for anchor in [anchors] if isinstance(anchors, str) else anchors if isinstance(anchors, list) else []:
+            na = normalize(str(anchor))
+            label = (_data_label(raw, sources), raw.get('id'), raw.get('source') or 'derived')
+            shown = [((k, i), section, around) for k, doc in enumerate(docs)
+                     for i, section, around in _where_shown(doc, na)]
+            for key, section, around in shown or [((len(docs), 0), '', f'<<{na}>>')]:
+                rows.append((key, section, around) + label)
+    if not rows:
+        print('No claim in this ledger is shown in the deliverable.')
+        return 0
+    print('Each number as the deliverable labels it, then what its source calls it:')
+    for key, section, line, label, cid, sid in sorted(rows, key=lambda r: r[0]):
+        missing = '  (not found in the deliverable)' if key[0] == len(docs) else ''
+        head = _flat(section) + ' > ' if section else ''
+        print(f'\n{head}{line}{missing}\n    <- {label}  ({cid}, {sid})')
+    print('\nRead every entry: the words beside each number must name the same row, series and unit as '
+          'its source. The right number under the wrong label is Wrong.')
+    return 0
+
+
 # ---------------------------------------------------------------- scaffold
 
 def _slug(text):
@@ -1549,6 +1768,11 @@ def main(argv=None):
     p = sub.add_parser('hash', help='sha256 of files, for a verification receipt')
     p.add_argument('files', nargs='+')
     p.set_defaults(fn=cmd_hash)
+
+    p = sub.add_parser('labels', help='list each shown number beside what its source calls it')
+    p.add_argument('ledger')
+    p.add_argument('deliverables', nargs='+')
+    p.set_defaults(fn=cmd_labels)
 
     p = sub.add_parser('receipt', help='confirm a verification report covers these exact files')
     p.add_argument('report')

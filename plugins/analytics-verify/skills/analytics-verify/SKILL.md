@@ -46,7 +46,9 @@ If you're unsure, use the full loop.
 3. **Keep a ledger as you work:** `claims.json` next to the deliverable, in the format
    in [references/ledger.md](references/ledger.md).
    - Numbers are read from result files, never typed. `scaffold` turns a result CSV
-     into claims that point at their cells. When a report renders from a data file
+     into claims that point at their cells. Name each result column for what it counts
+     (`AS new_customers`, not `value` or `col1`): the verifier reads every number against
+     that name. When a report renders from a data file
      (a list of accounts, say), have the same script write `claims.json` from that
      data, so the ledger and the report can't drift apart.
    - Every web fact carries the source's own words, the exact business and location,

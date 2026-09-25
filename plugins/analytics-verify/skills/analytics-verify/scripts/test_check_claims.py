@@ -4,14 +4,17 @@ The replay cases rebuild, with fictional names and figures, the errors found in 
 agent-written deliverables (2026-09-24) and pin down which ones this script catches and which it cannot. A test that asserts
 PASS on a wrong deliverable documents a limit that only the independent verifier covers.
 """
+import bisect
 import contextlib
 import csv
 import io
 import json
 import os
+import random
 import re
 import shutil
 import tempfile
+import time
 import unittest
 
 from decimal import Decimal
@@ -1149,6 +1152,194 @@ class ReceiptFrame(ReceiptCase):
         code, out = self.receipt(self.header() + hidden)
         self.assertEqual(code, 1, out)
         self.assertIn('Wrong', out)
+
+
+class Labels(LedgerCase):
+    """`labels` puts each shown number beside what its source calls it, so the right number
+    under the wrong label is visible. It lists, never judges."""
+    CUST = 'New customers, unique across Online + Studio'
+    APPT = 'Studio service appointments'
+
+    def cell(self, cid, value, year, column, anchor):
+        return {'id': cid, 'value': value, 'source': 'q1', 'locate': {'where': {'Year': year}, 'column': column},
+                'anchors': [anchor]}
+
+    def labels(self, claims, text, sources=None, name='d.md'):
+        led = self.led(claims, sources={'q1': {'type': 'file', 'path': 'r.csv', 'as_of': '2026-09-23'}, **(sources or {})})
+        return run(['labels', led, self.write(name, text)])
+
+    def entries(self, out):
+        return [e for e in out.split('\n\n') if '    <- ' in e]
+
+    def test_a_swapped_series_is_visible(self):
+        text = ('New customers\n\u2022 by yr: 2020 184K, 2021 179K\n\n'
+                'Studio services (completed appointments)\n\u2022 by yr: 2020 184K, 2021 88K\n')
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, '2020 184K'),
+                                 self.cell('c21', 179120, '2021', self.CUST, '2021 179K'),
+                                 self.cell('a21', 88415, '2021', self.APPT, '2021 88K')], text)
+        self.assertEqual(code, 0, out)
+        swapped = [e for e in self.entries(out) if e.startswith('Studio services') and '<<2020 184K>>' in e]
+        self.assertEqual(len(swapped), 1, out)
+        self.assertIn(f'<- {self.CUST} . Year=2020', swapped[0])
+        self.assertEqual(len(self.entries(out)), 4)  # every appearance, not only the first
+
+    def test_order_follows_the_deliverable(self):
+        text = 'Studio: 2021 88K.\n\nOnline: 2021 179K.\n'
+        code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, 'Online: 2021 179K'),
+                                 self.cell('a21', 88415, '2021', self.APPT, 'Studio: 2021 88K'),
+                                 {'id': 'h', 'value': 5, 'source': 'q1', 'omit': 'in the csv only'}], text)
+        entries = self.entries(out)
+        self.assertEqual(len(entries), 2, out)
+        self.assertIn('(a21, q1)', entries[0])
+        self.assertIn('(c21, q1)', entries[1])
+
+    def test_each_source_kind_is_labeled(self):
+        claims = [{'id': 'm', 'value': 50, 'source': 'w', 'quote': '50+ mojitos & drinks', 'anchors': ['50+ mojitos']},
+                  {'id': 'n', 'value': 12, 'source': 'd', 'anchors': ['12 stores']},
+                  {'id': 'j', 'value': 7, 'source': 'q1', 'locate': {'json': '[0].count'}, 'anchors': ['7 regions']},
+                  {'id': 'g', 'value': 8, 'unit': '%', 'expr': '(a - b) / a * 100', 'anchors': ['fell 8%']}]
+        code, out = self.labels(claims, 'It lists 50+ mojitos across 12 stores and 7 regions; sales fell 8%.')
+        self.assertIn('<- quote: "50+ mojitos & drinks" (Bar X, Riverton)  (m, w)', out)
+        self.assertIn('<- doc: ops log  (n, d)', out)
+        self.assertIn('<- [0].count  (j, q1)', out)
+        self.assertIn('<- = (a - b) / a * 100  (g, derived)', out)
+
+    def test_a_table_cell_shows_its_header_row(self):
+        text = '| Year | Online | Studio |\n|---|---|---|\n| 2021 | 158K | 25K |\n'
+        code, out = self.labels([self.cell('o21', 158227, '2021', 'New Online customers', '| 2021 | 158K')], text)
+        self.assertIn('| Year | Online | Studio | > <<| 2021 | 158K>>', out)
+
+    def test_an_anchor_that_wraps_across_lines_is_found(self):
+        code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, 'reached 2021 179K')],
+                                'New customers\nreached\n2021 179K by year end.\n')
+        self.assertNotIn('not found', out)
+        self.assertIn('<<reached 2021 179K>> by year end.', out)
+
+    def test_prose_shows_the_heading_above_it(self):
+        swapped = self.cell('c20', 184338, '2020', self.CUST, '2020: 184K')
+        for text in ('## New customers\n\n2019: 126K\n\n## Appointments\n\nIn 2020 there were\nmany.\n2020: 184K\n',
+                     '**Appointments**\n2020: 184K\n', '*Appointments:*\n\n2020: 184K\n'):
+            code, out = self.labels([swapped], text)
+            self.assertIn('Appointments', self.entries(out)[0].split(' > ')[0], text)
+            self.assertIn(f'<- {self.CUST} . Year=2020', out)
+
+    def test_html_headings_and_split_table_rows(self):
+        html = ('<h2>Appointments</h2><p>2020: 184K</p>'
+                '<table><tr><th>Year</th><th>Online</th></tr><tr><td>2021</td><td>158K</td></tr></table>')
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, '2020: 184K'),
+                                 self.cell('o21', 158227, '2021', 'New Online customers', '2021 158K')], html,
+                                name='d.html')
+        entries = self.entries(out)
+        self.assertEqual(len(entries), 2, out)
+        self.assertTrue(entries[0].startswith('Appointments > <<2020: 184K>>'), out)
+        self.assertIn('<<2021 158K>>', entries[1])
+        self.assertNotIn('# ', cc.read_text(self.write('e.html', html)))  # heading marks are for labels only
+
+    def test_matches_are_exactly_the_ones_check_sees(self):
+        claim = {'id': 'c', 'value': 50, 'source': 'd', 'anchors': ['Customers 50']}
+        docs = ('Customers 50 here.\n\n## Staff\n\nCustomers\n\n50 employees\n',   # a paragraph break
+                'Customers 50 here.\n- Customers\n- 50 employees\n',                   # a list item
+                'Customers\n50 here, wrapped.\n\nCustomers 50 again.\n')               # a soft wrap does match
+        for text in docs:
+            code, out = self.labels([claim], text)
+            seen = cc.normalize(cc.read_text(self.write('d.md', text))).count('Customers 50')
+            self.assertEqual(len(self.entries(out)), seen, text)
+
+    def test_a_table_without_outer_pipes_shows_its_header_row(self):
+        text = 'Segment | Appointments\n--- | ---\nNew | 158K\n'
+        code, out = self.labels([self.cell('o21', 158227, '2021', 'New Online customers', 'New | 158K')], text)
+        self.assertIn('Segment | Appointments > <<New | 158K>>', out)
+
+    def test_a_nested_item_shows_its_parent(self):
+        text = '## Studio\n\n- Customers\n  - 2019 126K\n- Appointments\n  - 2020 184K\n  - 2021 88K\n'
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, '2020 184K')], text)
+        self.assertIn('Appointments > <<2020 184K>>', out)
+
+    def test_line_mapping_is_exact_and_fast(self):
+        rng = random.Random(7)
+        bits = ['Revenue 12K', '**bold**', '- item 5', '  - nested 7', '1. first', '', '   ', '| a | b |', '|---|---|',
+                'see https://x.test/p', '[link](https://y.test) 3%', '**', '# Head', '> quote 9', '<@U1> hi 4',
+                'end [1]', '`code 8`', 'See [deck](deck/q3', '.pdf) here.', '[the', 'deck](d.pdf)', '<@U1', '2>']
+        for _ in range(1500):
+            raw = [rng.choice(bits) for _ in range(rng.randint(1, 30))]
+            text = cc.normalize('\n'.join(raw))
+            got = cc._line_ends(raw, text)
+            if got is None:
+                continue  # unverifiable map: labels shows no headings for this file
+            self.assertEqual(got, sorted(got))
+            ref = [len(cc.normalize('\n'.join(raw[:j + 1]))) for j in range(len(raw))]
+            for i, ch in enumerate(text):
+                if ch not in ' ' + cc.BOUNDARY:
+                    self.assertEqual(bisect.bisect_right(got, i), bisect.bisect_right(ref, i), (raw, i))
+        def seconds(n):
+            raw = [f'Line {k}: region {k % 17} was {k * 13}K, see https://x.test/{k}' if k % 7 else '' for k in range(n)]
+            text = cc.normalize('\n'.join(raw))
+            start = time.perf_counter()
+            cc._line_ends(raw, text)
+            return time.perf_counter() - start
+        small, large = seconds(3000), seconds(30000)
+        self.assertLess(large, 30 * max(small, 0.005))  # linear: about 10x for 10x the lines; quadratic: 100x
+
+    def test_a_setext_heading_is_named(self):
+        text = '# Revenue\n\nTotal 1.2M.\n\nAppointments\n============\n\n2020: 184K\n'
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, '2020: 184K')], text)
+        self.assertTrue(self.entries(out)[0].startswith('Appointments > <<2020: 184K>>'), out)
+
+    def test_never_an_older_heading(self):
+        cell = self.cell('c20', 184338, '2020', self.CUST, '2020: 184K')
+        for text, name in (('# Customers\n\nIntro paragraph.\n\n2020: 184K\n', 'd.md'),
+                           ('<h2>Customers</h2><table><tr><th>Appointments</th></tr>'
+                            '<tr><td>2020: 184K</td></tr></table>', 'd.html')):
+            code, out = self.labels([cell], text, name=name)
+            entry = self.entries(out)[0]
+            self.assertTrue(entry.startswith('<<2020: 184K>>'), (text, out))
+
+    def test_a_long_file_without_an_exact_map_shows_no_headings(self):
+        filler = '\n'.join(f'Filler line {k}.' for k in range(420))
+        text = f'## Start\n\n{filler}\n\nSee [the deck](https://x.test/a\nb) now.\n\n## New\n\n10K sales\n'
+        code, out = self.labels([{'id': 's', 'value': 10000, 'source': 'd', 'anchors': ['10K sales']}], text)
+        entry = self.entries(out)[0]
+        self.assertTrue(entry.startswith('<<10K sales>>'), out)
+        self.assertNotIn('Start', entry)
+
+    def test_a_form_feed_matches_as_in_check(self):
+        code, out = self.labels([{'id': 's', 'value': 10000, 'source': 'd', 'anchors': ['Sales 2024: 10K']}],
+                                'Sales\f\n2024: 10K\n')
+        self.assertNotIn('not found', out)
+
+    def test_a_malformed_ledger_is_unusable_input(self):
+        for ledger in ([], {'sources': {}, 'claims': 5}, {'sources': {}, 'claims': {'a': 1}}, {'claims': []}):
+            with open(os.path.join(self.dir, 'bad.json'), 'w') as fh:
+                json.dump(ledger, fh)
+            code, out = run(['labels', os.path.join(self.dir, 'bad.json'), self.write('d.md', 'x')])
+            self.assertEqual(code, 2, ledger)
+
+    def test_a_wide_table_header_is_shown_whole(self):
+        head = '| Year | New Online customers | New Studio customers (first service) | Studio service appointments |'
+        text = head + '\n|---|---|---|---|\n| 2021 | 158K | 25K | 88K |\n'
+        code, out = self.labels([self.cell('a21', 88415, '2021', self.APPT, '25K | 88K')], text)
+        self.assertIn('Studio service appointments | > ', out)
+
+    def test_a_wrapped_list_item_shows_its_own_text(self):
+        text = '## Studio\n\n- Customers were\n  2019: 126K\n- Appointments totaled\n  2020: 184K\n'
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, '2020: 184K')], text)
+        self.assertTrue(self.entries(out)[0].startswith('Appointments totaled > <<2020: 184K>>'), out)
+
+    def test_nothing_that_names_a_number_is_clipped(self):
+        line = 'Appointments across all studios and every one of the service categories totaled 2020 184K.'
+        quote = ('According to the annual report released after the board meeting in the spring of that year, '
+                 'New customers: 184,338')
+        code, out = self.labels([self.cell('c20', 184338, '2020', self.CUST, 'totaled 2020 184K'),
+                                 {'id': 'q', 'value': 184338, 'source': 'w', 'quote': quote,
+                                  'anchors': ['184,338 new']}], line + '\n\nThere were 184,338 new ones.\n')
+        self.assertIn('Appointments across all studios', out)
+        self.assertIn('New customers: 184,338"', out)
+        self.assertNotIn('...', out)
+
+    def test_an_anchor_missing_from_the_deliverable_is_flagged(self):
+        code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, '2021 179K')], 'Nothing here.')
+        self.assertEqual(code, 0)
+        self.assertIn('<<2021 179K>>  (not found in the deliverable)', out)
 
 
 if __name__ == '__main__':
