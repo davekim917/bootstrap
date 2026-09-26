@@ -59,13 +59,26 @@ describe('Codex local approval transport', () => {
 
   test('denies git mutations inside read-only repo snapshots', async () => {
     expectDecision(
-      await runGuard(shell('git -C /workspace/workgroup/APOLLO checkout -b feature')),
+      await runGuard(shell('git -C /workspace/workgroup/APP-REPO checkout -b feature')),
       'deny',
       /snapshot/i,
     );
     expect(
       (await runGuard(shell('git -C /workspace/workgroup/.worktrees/shared commit -m x'))).output,
     ).toEqual({ continue: true });
+  });
+
+  test('denies skipping or disabling git hooks', async () => {
+    for (const command of [
+      'git commit --no-verify -m x',
+      'git commit -n -m x',
+      'git push --no-verify origin feature',
+      'git -c core.hooksPath=/dev/null commit -m x',
+      'HUSKY=0 git commit -m x',
+    ]) {
+      expectDecision(await runGuard(shell(command)), 'deny', /git hooks/i);
+    }
+    expect((await runGuard(shell('git push -n origin feature'))).output).toEqual({ continue: true });
   });
 
   test('asks through the native protocol for outbound email', async () => {

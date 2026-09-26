@@ -5,7 +5,7 @@
 2026-09-13T06:17:53Z: approved joint activation applied all 37 task updates, 17 files and two
 central QA defaults. Both services are active. OneCLI preflight, runner snapshot, host defaults,
 all 37 stored task contents/schedules, and all 14 QA hashes were verified. Host personal profiles,
-ordinary defaults, and Dinesh/Gilfoyle campaign migration are active; run.md records the receipt.
+ordinary defaults, and QA coordinator/challenger campaign migration are active; run.md records the receipt.
 The source commit is 9289fa106; no remote push or Docker rebuild occurred. Installed group files
 retain unrelated edits, with the exact owned patch backed up privately rather than broadly staged.
 Fresh natural container/model behavior and the seven-day evaluation remain open. Operational
@@ -55,7 +55,7 @@ proof of execution. Evidence is in run.md and the linked runtime documentation.
 - [x] Actual Astra medium default, explicit low override, same CLI session medium-to-low probe.
 - [x] Install Claude Bootstrap 5.0.1 and Codex Bootstrap 2.0.1 locally; verify policy/helper bytes.
 - [x] Save 14 ordinary group defaults and clear three redundant ordinary channel model/effort pins.
-- [x] Audit Dinesh/Gilfoyle roots, QA worker profiles, shared smoke-test policy and stored campaigns.
+- [x] Audit QA coordinator/challenger roots, QA worker profiles, shared smoke-test policy and stored campaigns.
 - [x] Record baseline commits, private rollback snapshot and one-week measurement fields.
 
 ## Remaining execution — do not silently drop
@@ -66,12 +66,12 @@ proof of execution. Evidence is in run.md and the linked runtime documentation.
 - [ ] Verify fresh host and container profile discovery, effective primary/companion configs,
   service health/OneCLI preflight and actual post-activation behavior. Existing sessions can retain
   old settings. Saved config, installed cache and active runtime are separate evidence layers.
-- [x] Dinesh/Gilfoyle coordinated campaign migration: transfer substantive QA judgment to retained
+- [x] QA coordinator/challenger campaign migration: transfer substantive QA judgment to retained
   Fable/Astra workers before making their roots ordinary coordinators. Update standing instructions,
   QA-specific profiles, shared smoke-test skill, parent-effort ladder, campaign prompt files AND
   executing stored task prompts/model pins together. Preserve independent two-family conclusions,
   dissent, evidence barriers and the sole publisher. Audit is complete; migration is not.
-- [x] Review Shohei/release specialist responsibilities explicitly; avoid applying ordinary-root
+- [x] Review release specialist responsibilities explicitly; avoid applying ordinary-root
   defaults while that role still owns technical release judgments.
 - [x] Audit ordinary scheduled task model/effort pins for unintended overrides and classify task-specific choices.
   Complete: 56 live rows audited; 37 task updates prepared, with apply still pending below.
@@ -106,19 +106,19 @@ not evidence of activation; no push was requested as part of the latest tracking
 - Isolated worktrees: /tmp/bootstrap-frontier-trial and /tmp/nanoclaw-frontier-trial.
 - Runtime design: /home/ubuntu/nanoclaw-v2/docs/frontier-worker-trial.md.
 - Private rollback: /home/ubuntu/.local/state/bootstrap-frontier-trial/20260913T044107Z.
-- Dinesh = illysium-argus, Gilfoyle = illysium-momus, Shohei = illysium-admiral.
+- Role names above map to specific agent groups in the private deployment record.
 - A prior snapshot of active containers is not current authorization to interrupt new work.
 
 ## Joint campaign activation — prepared 2026-09-13
 
-User explicitly requested completing scheduled-pin audit and Dinesh/Gilfoyle migration together.
+User explicitly requested completing scheduled-pin audit and QA coordinator/challenger migration together.
 Read-only audit and implementation/review are complete; live apply is NOT complete.
 
 - 37 scheduled row updates: inheritance plus corrected retained-owner prompts; schedules, pause
-  states, routing and historical rows preserved. Five Dinesh prompts included, no Gilfoyle task created.
+  states, routing and historical rows preserved. Five QA-coordinator prompts included, no QA-challenger task created.
 - 14 QA/release instruction/profile files, the meeting-prep playbook, and two QA container configs
   are staged together (17 files total). Central QA defaults dualwrite to Sonnet/xhigh and Terra/xhigh.
-- Shohei retains Fable/medium as a technical release owner; second-opinion commands aligned.
+- The release specialist retains Fable/medium as a technical release owner; second-opinion commands aligned.
 - Independent Astra/medium review clear; 7/7 final migration tests pass, including rollback after
   commits, absent-file handling, natural successor refresh and semantic-change refusal.
 - Native cross-container handles are never assumed resumable; documented remaining-work handoffs

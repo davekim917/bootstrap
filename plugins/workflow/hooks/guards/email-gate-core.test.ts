@@ -52,7 +52,7 @@ describe('evaluateEmailToolCall — native connector gate', () => {
         ]) {
             expect(evaluateEmailToolCall(toolName, {}, INTERACTIVE)).toEqual({ action: 'allow' });
         }
-        expect(evaluateEmailToolCall('send_email', { to: 'a@b.com' }, SCHEDULED)).toEqual({ action: 'allow' });
+        expect(evaluateEmailToolCall('send_email', { to: 'a@example.com' }, SCHEDULED)).toEqual({ action: 'allow' });
     });
 });
 
@@ -106,8 +106,8 @@ describe('evaluateEmailSend — gate decision', () => {
         // Verbatim contract (claude.ts:613-615): --dry-run/--draft/--help/-h on
         // the gws segment bypass the gate → allow.
         for (const cmd of [
-            'gws gmail +send --to a@b.com --dry-run',
-            'gws gmail +send --to a@b.com --draft',
+            'gws gmail +send --to a@example.com --dry-run',
+            'gws gmail +send --to a@example.com --draft',
             'gws gmail +send --help',
             'gws gmail +send -h',
         ]) {
@@ -136,16 +136,16 @@ describe('evaluateEmailSend — gate decision', () => {
         // segment that contains the gws send. A --dry-run in a later piped
         // cleanup step must NOT suppress the gate for the real send.
         const v = evaluateEmailSend(
-            'gws gmail +send --to victim@evil.com --subject S ; echo done --dry-run',
+            'gws gmail +send --to victim@example.net --subject S ; echo done --dry-run',
             INTERACTIVE,
         );
         expect(v.action).toBe('gate');
-        expect(v.label).toContain('victim@evil.com');
+        expect(v.label).toContain('victim@example.net');
     });
 
     test('--dry-run=false does NOT bypass (anchor regression)', () => {
         const v = evaluateEmailSend(
-            'gws gmail +send --dry-run=false --to attacker@evil.com',
+            'gws gmail +send --dry-run=false --to attacker@example.net',
             INTERACTIVE,
         );
         expect(v.action).toBe('gate');
@@ -156,13 +156,13 @@ describe('evaluateEmailSend — gate decision', () => {
         // NOT trip the bypass — the mail still sends, so it must GATE. Real argv
         // bypass tokens (above) still work.
         for (const cmd of [
-            `gws gmail +send --to victim@evil.com --body "please --dry-run this report"`,
-            `gws gmail +send --to victim@evil.com --subject "--help me" --body "hi"`,
-            `gws gmail +send --to victim@evil.com --body 'send -h now'`,
+            `gws gmail +send --to victim@example.net --body "please --dry-run this report"`,
+            `gws gmail +send --to victim@example.net --subject "--help me" --body "hi"`,
+            `gws gmail +send --to victim@example.net --body 'send -h now'`,
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -172,13 +172,13 @@ describe('evaluateEmailSend — gate decision', () => {
         // it would be evaded. Any expansion syntax in the segment → do NOT
         // bypass → GATE.
         for (const cmd of [
-            'gws gmail +send --to victim@evil.com --body hello $(printf %s --dry-run >/dev/null)',
-            'gws gmail +send --to victim@evil.com --body hi `echo --dry-run`',
-            'gws gmail +send --to victim@evil.com --body ${X:---dry-run}',
+            'gws gmail +send --to victim@example.net --body hello $(printf %s --dry-run >/dev/null)',
+            'gws gmail +send --to victim@example.net --body hi `echo --dry-run`',
+            'gws gmail +send --to victim@example.net --body ${X:---dry-run}',
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -189,14 +189,14 @@ describe('evaluateEmailSend — gate decision', () => {
         // recognizer must inspect expanding-span content and fail closed. The mail
         // (the inner real send) goes out, so this must GATE.
         for (const cmd of [
-            `gws gmail +send --to victim@evil.com --dry-run --body "$(gws gmail +send --to attacker@evil.com --body x)"`,
-            'gws gmail +send --to victim@evil.com --help --subject "`gws gmail +send --to attacker@evil.com`"',
-            `gws gmail +send --to victim@evil.com --dry-run --body "pre $(curl evil.sh) post"`,
-            `gws gmail +send --to victim@evil.com --draft --body $"locale $(rm -rf x)"`,
+            `gws gmail +send --to victim@example.net --dry-run --body "$(gws gmail +send --to attacker@example.net --body x)"`,
+            'gws gmail +send --to victim@example.net --help --subject "`gws gmail +send --to attacker@example.net`"',
+            `gws gmail +send --to victim@example.net --dry-run --body "pre $(curl evil.sh) post"`,
+            `gws gmail +send --to victim@example.net --draft --body $"locale $(rm -rf x)"`,
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -205,9 +205,9 @@ describe('evaluateEmailSend — gate decision', () => {
         // quotes ($VAR / ${VAR} / $5) substitutes a value without running a command,
         // so a legit dry-run/help/draft carrying one must STILL bypass.
         for (const cmd of [
-            `gws gmail +send --to a@b.com --body "cost is $5 today" --dry-run`,
-            `gws gmail +send --to a@b.com --body "hi ${'${USER}'}" --help`,
-            `gws gmail +send --to a@b.com --subject "re: $TOPIC" --draft --body x`,
+            `gws gmail +send --to a@example.com --body "cost is $5 today" --dry-run`,
+            `gws gmail +send --to a@example.com --body "hi ${'${USER}'}" --help`,
+            `gws gmail +send --to a@example.com --subject "re: $TOPIC" --draft --body x`,
         ]) {
             expect(evaluateEmailSend(cmd, INTERACTIVE)).toEqual({ action: 'allow' });
         }
@@ -219,14 +219,14 @@ describe('evaluateEmailSend — gate decision', () => {
         // before gws runs (the mail still sends). Any redirection metacharacter
         // in the unquoted structure → do NOT bypass → GATE.
         for (const cmd of [
-            'gws gmail +send --to victim@evil.com --subject hi --body x <<< --dry-run',
-            'gws gmail +send --to victim@evil.com --body x > --dry-run',
-            'gws gmail +send --to victim@evil.com --body x 2> --dry-run',
-            'gws gmail +send --to victim@evil.com --body x | tee --dry-run',
+            'gws gmail +send --to victim@example.net --subject hi --body x <<< --dry-run',
+            'gws gmail +send --to victim@example.net --body x > --dry-run',
+            'gws gmail +send --to victim@example.net --body x 2> --dry-run',
+            'gws gmail +send --to victim@example.net --body x | tee --dry-run',
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -234,8 +234,8 @@ describe('evaluateEmailSend — gate decision', () => {
         // A real --dry-run whose quoted subject/body merely CONTAINS a metachar
         // must still bypass — the metachar is inside quotes, not the structure.
         for (const cmd of [
-            `gws gmail +send --to a@b.com --subject "a > b" --dry-run`,
-            `gws gmail +send --to a@b.com --body "cost is $5" --help`,
+            `gws gmail +send --to a@example.com --subject "a > b" --dry-run`,
+            `gws gmail +send --to a@example.com --body "cost is $5" --help`,
         ]) {
             expect(evaluateEmailSend(cmd, INTERACTIVE)).toEqual({ action: 'allow' });
         }
@@ -245,7 +245,7 @@ describe('evaluateEmailSend — gate decision', () => {
         // Escaped/nested-quote evasion attempts that leave a stray quote after
         // stripping must fail CLOSED (gate), not bypass.
         const v = evaluateEmailSend(
-            `gws gmail +send --to victim@evil.com --body "x\\" --dry-run \\""`,
+            `gws gmail +send --to victim@example.net --body "x\\" --dry-run \\""`,
             INTERACTIVE,
         );
         expect(v.action).toBe('gate');
@@ -256,13 +256,13 @@ describe('evaluateEmailSend — gate decision', () => {
         // sends WITHOUT --dry-run while the token is still textually present.
         // The `#` metacharacter must fail closed → GATE.
         for (const cmd of [
-            'gws gmail +send --to victim@evil.com --subject hi --body x # --dry-run',
-            'gws gmail +send --to victim@evil.com --body x #--help',
-            'gws gmail +send --to victim@evil.com --body x # -h',
+            'gws gmail +send --to victim@example.net --subject hi --body x # --dry-run',
+            'gws gmail +send --to victim@example.net --body x #--help',
+            'gws gmail +send --to victim@example.net --body x # -h',
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -273,13 +273,13 @@ describe('evaluateEmailSend — gate decision', () => {
         // independently be a real-argv bypass; the real send isn't → GATE, with
         // the card built from the real recipient (not the fake).
         for (const cmd of [
-            ': gws gmail +send --dry-run; gws gmail +send --to victim@evil.com --subject hi --body x',
-            'gws gmail +send --to victim@evil.com --body x && gws gmail +send --dry-run',
-            'echo gws gmail +send --dry-run | gws gmail +send --to victim@evil.com --body x',
+            ': gws gmail +send --dry-run; gws gmail +send --to victim@example.net --subject hi --body x',
+            'gws gmail +send --to victim@example.net --body x && gws gmail +send --dry-run',
+            'echo gws gmail +send --dry-run | gws gmail +send --to victim@example.net --body x',
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -290,17 +290,17 @@ describe('evaluateEmailSend — gate decision', () => {
         // obfuscated second send. Fail-closed by design (the bypass is a
         // convenience for simple exploration, not a chained-pipeline feature).
         for (const cmd of [
-            'gws gmail +send --dry-run --to a@b.com && echo done',
-            'gws gmail +send --dry-run --to a@b.com; echo done',
-            'echo start && gws gmail +send --dry-run --to a@b.com',
+            'gws gmail +send --dry-run --to a@example.com && echo done',
+            'gws gmail +send --dry-run --to a@example.com; echo done',
+            'echo start && gws gmail +send --dry-run --to a@example.com',
         ]) {
             expect(evaluateEmailSend(cmd, INTERACTIVE).action).toBe('gate');
         }
         // …but a plain single dry-run / help / draft send still bypasses.
         for (const cmd of [
-            'gws gmail +send --dry-run --to a@b.com',
-            'gws gmail +send --to a@b.com --help',
-            'gws gmail +send --draft --to a@b.com --body x',
+            'gws gmail +send --dry-run --to a@example.com',
+            'gws gmail +send --to a@example.com --help',
+            'gws gmail +send --draft --to a@example.com --body x',
         ]) {
             expect(evaluateEmailSend(cmd, INTERACTIVE)).toEqual({ action: 'allow' });
         }
@@ -313,18 +313,18 @@ describe('evaluateEmailSend — gate decision', () => {
         // defense does NOT depend on parsing the obfuscated second command. This
         // is the security-critical property.
         for (const cmd of [
-            `: gws gmail +send --dry-run; gws gmail +se''nd --to victim@evil.com --subject hi --body x`,
-            `gws gmail +send --dry-run --to a@b.com | gws gmail +s""end --to victim@evil.com --body x`,
+            `: gws gmail +send --dry-run; gws gmail +se''nd --to victim@example.net --subject hi --body x`,
+            `gws gmail +send --dry-run --to a@example.com | gws gmail +s""end --to victim@example.net --body x`,
         ]) {
             expect(evaluateEmailSend(cmd, INTERACTIVE).action).toBe('gate');
         }
         // When the decoy carries no competing --to, the whole-command --to
         // fallback still surfaces the real recipient in the card (best-effort).
         const v = evaluateEmailSend(
-            `: gws gmail +send --dry-run; gws gmail +se''nd --to victim@evil.com --subject hi --body x`,
+            `: gws gmail +send --dry-run; gws gmail +se''nd --to victim@example.net --subject hi --body x`,
             INTERACTIVE,
         );
-        expect(v.label).toContain('victim@evil.com');
+        expect(v.label).toContain('victim@example.net');
     });
 
     test('test_email_bypass_documented_overblocks_gate (QA codex re-pass #9, accepted fail-closed)', () => {
@@ -335,10 +335,10 @@ describe('evaluateEmailSend — gate decision', () => {
         // after a boolean option, and a non-consuming wrapper. Locked as
         // intentional so a future change that "fixes" them is a conscious choice.
         for (const cmd of [
-            '/home/ubuntu/.npm-global/bin/gws gmail +send --to a@b.com --body x --dry-run', // abs path (codex #9)
-            `gws gmail +send --dry'-'run --to a@b.com --body x`, // quote-spliced flag
-            `gws gmail +send '--dry-run' --to a@b.com --body x`, // fully-quoted flag
-            'command gws gmail +send --to a@b.com --body x --dry-run', // non-consuming wrapper
+            '/home/ubuntu/.npm-global/bin/gws gmail +send --to a@example.com --body x --dry-run', // abs path (codex #9)
+            `gws gmail +send --dry'-'run --to a@example.com --body x`, // quote-spliced flag
+            `gws gmail +send '--dry-run' --to a@example.com --body x`, // fully-quoted flag
+            'command gws gmail +send --to a@example.com --body x --dry-run', // non-consuming wrapper
         ]) {
             expect(evaluateEmailSend(cmd, INTERACTIVE).action).toBe('gate');
         }
@@ -350,14 +350,14 @@ describe('evaluateEmailSend — gate decision', () => {
         // argv0 NAME, not a gws flag. The command must be a DIRECT gws invocation
         // (after VAR=value) — any other first word → GATE.
         for (const cmd of [
-            'exec -a --dry-run gws gmail +send --to victim@evil.com --subject hi --body x',
-            'env --dry-run=1 gws gmail +send --to victim@evil.com --body x',
-            'time gws gmail +send --to victim@evil.com --body x --dry-run',
-            'nice gws gmail +send --to victim@evil.com --body x --help',
+            'exec -a --dry-run gws gmail +send --to victim@example.net --subject hi --body x',
+            'env --dry-run=1 gws gmail +send --to victim@example.net --body x',
+            'time gws gmail +send --to victim@example.net --body x --dry-run',
+            'nice gws gmail +send --to victim@example.net --body x --help',
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -366,12 +366,12 @@ describe('evaluateEmailSend — gate decision', () => {
         // sends. Honor a bypass flag only when the preceding token is NOT a bare
         // value-consuming option → GATE here.
         for (const cmd of [
-            'gws gmail +send --subject --dry-run --to victim@evil.com --body x',
-            'gws gmail +send --body --dry-run --to victim@evil.com --subject hi',
+            'gws gmail +send --subject --dry-run --to victim@example.net --body x',
+            'gws gmail +send --body --dry-run --to victim@example.net --subject hi',
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -379,9 +379,9 @@ describe('evaluateEmailSend — gate decision', () => {
         // The REAL production form leads with the creds-file assignment; it must
         // still bypass. `--opt=val` is self-contained so a flag after it bypasses.
         for (const cmd of [
-            'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/x.json gws gmail +send --to a@b.com --body z --dry-run',
-            'gws gmail +send --subject=hi --dry-run --to a@b.com',
-            'gws gmail +send --to a@b.com --body x --dry-run',
+            'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/x.json gws gmail +send --to a@example.com --body z --dry-run',
+            'gws gmail +send --subject=hi --dry-run --to a@example.com',
+            'gws gmail +send --to a@example.com --body x --dry-run',
         ]) {
             expect(evaluateEmailSend(cmd, INTERACTIVE)).toEqual({ action: 'allow' });
         }
@@ -393,14 +393,14 @@ describe('evaluateEmailSend — gate decision', () => {
         // sends). A space-replacement would split them and manufacture a bogus
         // --dry-run token; the sentinel keeps them one token ≠ flag → GATE.
         for (const cmd of [
-            `gws gmail +send --to victim@evil.com --subject hi --body 'x'--dry-run`,
-            `gws gmail +send --to victim@evil.com --subject hi --body "x"--dry-run`,
-            `gws gmail +send --to victim@evil.com --body $'x'--dry-run`,
-            `gws gmail +send --to victim@evil.com --body z --dry-r'X'un`,
+            `gws gmail +send --to victim@example.net --subject hi --body 'x'--dry-run`,
+            `gws gmail +send --to victim@example.net --subject hi --body "x"--dry-run`,
+            `gws gmail +send --to victim@example.net --body $'x'--dry-run`,
+            `gws gmail +send --to victim@example.net --body z --dry-r'X'un`,
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -411,13 +411,13 @@ describe('evaluateEmailSend — gate decision', () => {
         // --dry-run token from the space after the backslash. Any unquoted
         // backslash → fail closed → GATE.
         for (const cmd of [
-            'gws gmail +send --to victim@evil.com --subject hi --body \\ --dry-run',
-            'gws gmail +send --to victim@evil.com --body x\\ --dry-run',
-            'gws gmail +send --to victim@evil.com --body x\\\t--dry-run',
+            'gws gmail +send --to victim@example.net --subject hi --body \\ --dry-run',
+            'gws gmail +send --to victim@example.net --body x\\ --dry-run',
+            'gws gmail +send --to victim@example.net --body x\\\t--dry-run',
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -426,12 +426,12 @@ describe('evaluateEmailSend — gate decision', () => {
         // `x\f--dry-run` as ONE word (body value, it sends), so splitting tokens
         // on bash IFS only (not \s) keeps them as one token ≠ --dry-run → GATE.
         for (const cmd of [
-            'gws gmail +send --to victim@evil.com --body x\f--dry-run',
-            'gws gmail +send --to victim@evil.com --body x\v--dry-run',
+            'gws gmail +send --to victim@example.net --body x\f--dry-run',
+            'gws gmail +send --to victim@example.net --body x\v--dry-run',
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -442,12 +442,12 @@ describe('evaluateEmailSend — gate decision', () => {
         // bash runs the second line and sends. `\n`/`\r` are in the metachar set
         // so the whole-command bypass fails closed → GATE.
         for (const cmd of [
-            'gws gmail +send --dry-run\ngws gmail +send --to victim@evil.com --body x',
-            'gws gmail +send --to victim@evil.com --body x\r\ntrue --dry-run',
+            'gws gmail +send --dry-run\ngws gmail +send --to victim@example.net --body x',
+            'gws gmail +send --to victim@example.net --body x\r\ntrue --dry-run',
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
-            expect(v.label).toContain('victim@evil.com');
+            expect(v.label).toContain('victim@example.net');
         }
     });
 
@@ -456,9 +456,9 @@ describe('evaluateEmailSend — gate decision', () => {
         // bypass — the quoted span is stripped before the metacharacter test, so
         // the `;`/`|`/`&` inside it never trips fail-closed.
         for (const cmd of [
-            `gws gmail +send --to a@b.com --body "a;b" --dry-run`,
-            `gws gmail +send --to a@b.com --subject "x|y & z" --help`,
-            `gws gmail +send --to a@b.com --body 'one && two' --draft`,
+            `gws gmail +send --to a@example.com --body "a;b" --dry-run`,
+            `gws gmail +send --to a@example.com --subject "x|y & z" --help`,
+            `gws gmail +send --to a@example.com --body 'one && two' --draft`,
         ]) {
             expect(evaluateEmailSend(cmd, INTERACTIVE)).toEqual({ action: 'allow' });
         }
@@ -469,8 +469,8 @@ describe('evaluateEmailSend — gate decision', () => {
         // quoting must still bypass — the leading `$` belongs to a stripped quoted
         // span, not a live expansion.
         for (const cmd of [
-            `gws gmail +send --to a@b.com --body $'cost is $5' --dry-run`,
-            `gws gmail +send --to a@b.com --body $"localized" --help`,
+            `gws gmail +send --to a@example.com --body $'cost is $5' --dry-run`,
+            `gws gmail +send --to a@example.com --body $"localized" --help`,
         ]) {
             expect(evaluateEmailSend(cmd, INTERACTIVE)).toEqual({ action: 'allow' });
         }
@@ -480,11 +480,11 @@ describe('evaluateEmailSend — gate decision', () => {
         // A send hidden inside $(…) lives in a segment whose `$`/`(` fail the
         // metacharacter check, so that segment is a non-bypassed send → GATE.
         const v = evaluateEmailSend(
-            'echo $(gws gmail +send --to victim@evil.com --body x) ; gws gmail +send --dry-run',
+            'echo $(gws gmail +send --to victim@example.net --body x) ; gws gmail +send --dry-run',
             INTERACTIVE,
         );
         expect(v.action).toBe('gate');
-        expect(v.label).toContain('victim@evil.com');
+        expect(v.label).toContain('victim@example.net');
     });
 
     test('raw API send form gates', () => {
@@ -500,7 +500,7 @@ describe('evaluateEmailSend — gate decision', () => {
 describe('evaluateEmailSend — account parsed from command, not env', () => {
     test('test_account_from_command_not_env', () => {
         const v = evaluateEmailSend(
-            'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/work-bo.json gws gmail +send --to a@b.com --subject S',
+            'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/work-bo.json gws gmail +send --to a@example.com --subject S',
             INTERACTIVE,
         );
         expect(v.action).toBe('gate');
@@ -509,7 +509,7 @@ describe('evaluateEmailSend — account parsed from command, not env', () => {
     });
 
     test('defaults to "default" when no creds path in command', () => {
-        const v = evaluateEmailSend('gws gmail +send --to a@b.com', INTERACTIVE);
+        const v = evaluateEmailSend('gws gmail +send --to a@example.com', INTERACTIVE);
         expect(v.action).toBe('gate');
         expect(v.summary).toContain('*From:* default');
     });
@@ -518,7 +518,7 @@ describe('evaluateEmailSend — account parsed from command, not env', () => {
         // The EnvSnapshot interface has no account field; the account is derived
         // purely from the command string. Same command + same env → same verdict.
         const cmd =
-            'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/personal.json gws gmail +send --to a@b.com';
+            'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/personal.json gws gmail +send --to a@example.com';
         const a = evaluateEmailSend(cmd, INTERACTIVE);
         const b = evaluateEmailSend(cmd, INTERACTIVE);
         expect(a).toEqual(b);
@@ -546,7 +546,7 @@ describe('envelopeFromJsonRaw (raw-API envelope decode)', () => {
     });
 
     test('raw-API send surfaces decoded recipient in the card', () => {
-        const rfc822 = 'To: dave@example.com\r\nSubject: Decoded\r\n\r\nhi';
+        const rfc822 = 'To: erin@example.com\r\nSubject: Decoded\r\n\r\nhi';
         const b64url = Buffer.from(rfc822, 'utf-8')
             .toString('base64')
             .replace(/\+/g, '-')
@@ -557,7 +557,7 @@ describe('envelopeFromJsonRaw (raw-API envelope decode)', () => {
             INTERACTIVE,
         );
         expect(v.action).toBe('gate');
-        expect(v.label).toContain('dave@example.com');
+        expect(v.label).toContain('erin@example.com');
         expect(v.label).toContain('Decoded');
     });
 });

@@ -198,7 +198,7 @@ challenge is exactly what step 1 is for.
 ## When not to load this
 
 - **Is it worth building at all, for whom?** That is a product bar — a domain skill
-  where the workgroup has one (Illysium's `wwjd`), else the operator's call.
+  where the workgroup has one (its own product-judgment skill), else the operator's call.
 - **Is this the right way to build it?** That is `wwbd` — the engineering bar.
 - **A trivial fix.** Running a subtraction framework over a one-line change is itself
   the bloat the framework exists to prevent.

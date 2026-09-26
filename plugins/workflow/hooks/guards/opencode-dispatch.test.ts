@@ -139,7 +139,7 @@ const BASH_ROWS: GuardRow[] = [
   },
   {
     name: 'email (gate — gws send)',
-    command: 'gws gmail +send --to a@b.com --subject hi',
+    command: 'gws gmail +send --to a@example.com --subject hi',
     outcome: 'gate',
     stagedAction: 'request_bash_gate',
   },
@@ -198,27 +198,27 @@ describe('test_oc_dispatch_action_per_gate', () => {
 
   test('email send → request_bash_gate (NOT request_destructive_gate)', async () => {
     const { runBash, stagedActions } = await loadEntrypoint('approved');
-    await runBash('gws gmail +send --to a@b.com --subject hi');
+    await runBash('gws gmail +send --to a@example.com --subject hi');
     expect(stagedActions).toEqual(['request_bash_gate']);
   });
 
   test('native email send → request_bash_gate and omits the body', async () => {
     const { runTool, stagedActions, stagedSummaries } = await loadEntrypoint('approved');
     await runTool('send_email', {
-      to: 'a@b.com',
+      to: 'a@example.com',
       subject: 'Status',
       body: 'sensitive body',
     });
     expect(stagedActions).toEqual(['request_bash_gate']);
-    expect(stagedSummaries[0]).toContain('a@b.com');
+    expect(stagedSummaries[0]).toContain('a@example.com');
     expect(stagedSummaries[0]).toContain('Status');
     expect(stagedSummaries[0]).not.toContain('sensitive body');
   });
 
   test('native draft creation and read-only Gmail tools do not stage', async () => {
     const { runTool, stagedActions } = await loadEntrypoint('approved');
-    await runTool('gmail_create_draft_reply', { to: 'a@b.com' });
-    await runTool('gmail_search_emails', { query: 'from:a@b.com' });
+    await runTool('gmail_create_draft_reply', { to: 'a@example.com' });
+    await runTool('gmail_search_emails', { query: 'from:a@example.com' });
     expect(stagedActions).toHaveLength(0);
   });
 
@@ -233,7 +233,7 @@ describe('test_oc_dispatch_action_per_gate', () => {
     // email gate (per gateBashOrThrow step 5's fall-through). Both actions must
     // stage, destructive first, then email.
     const { runBash, stagedActions } = await loadEntrypoint('approved');
-    await runBash('terraform destroy -auto-approve && gws gmail +send --to a@b.com');
+    await runBash('terraform destroy -auto-approve && gws gmail +send --to a@example.com');
     expect(stagedActions).toEqual(['request_destructive_gate', 'request_bash_gate']);
   });
 });
@@ -271,7 +271,7 @@ describe('test_oc_dispatch_chain_order', () => {
 
     // destructive BEFORE email (hard-block eval wins over the email send → the
     // email gate is never reached).
-    await expect(runBash("eval 'x' && gws gmail +send --to a@b.com")).rejects.toThrow(
+    await expect(runBash("eval 'x' && gws gmail +send --to a@example.com")).rejects.toThrow(
       /eval is not allowed/i,
     );
   });
@@ -280,7 +280,7 @@ describe('test_oc_dispatch_chain_order', () => {
     // A gated (not hard-blocked) destructive verb + an email send: the
     // destructive gate stages first; only after approval does email stage.
     const { runBash, stagedActions } = await loadEntrypoint('approved');
-    await runBash('terraform destroy -auto-approve && gws gmail +send --to a@b.com');
+    await runBash('terraform destroy -auto-approve && gws gmail +send --to a@example.com');
     expect(stagedActions[0]).toBe('request_destructive_gate');
     expect(stagedActions[1]).toBe('request_bash_gate');
   });

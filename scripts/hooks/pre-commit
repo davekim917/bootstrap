@@ -1,10 +1,26 @@
 #!/bin/bash
-# Bootstrap parity drift gate (committed; enabled via `git config core.hooksPath scripts/hooks`).
+# Bootstrap commit gate (committed; enabled via `git config core.hooksPath scripts/hooks`).
 #
-# Blocks commits that leave generated/vendored artifacts out of sync with their
-# single source — the enforcement half of the develop-once / deploy-everywhere
-# structure (shared guard cores → vendored; Claude skills → substance-gated
-# workflow-agents skills).
+#   1. Public-boundary scan of the STAGED tree, against the STAGED allowlist
+#      (see boundary-lib.sh). This repository is public.
+#   2. Parity drift gate: generated/vendored artifacts stay in sync with their
+#      single source (shared guard cores → vendored; Claude skills → substance-
+#      gated workflow-agents skills).
 #
-# Bypass (rare, deliberate): git commit --no-verify
-exec node "$(git rev-parse --show-toplevel)/scripts/check-parity.mjs"
+# Agents cannot skip either: the destructive-command guard refuses --no-verify,
+# core.hooksPath overrides and husky skip variables.
+set -e
+top=$(git rev-parse --show-toplevel)
+. "$(dirname "$0")/boundary-lib.sh"
+
+checker=$(boundary_checker_dir)
+if [ -n "$checker" ]; then
+  allowlist=$(mktemp "${TMPDIR:-/tmp}/bootstrap-boundary-allowlist.XXXXXX")
+  trap 'rm -f "$allowlist"' EXIT
+  write_committed_allowlist ":" "$allowlist"
+  run_boundary_checker "$checker" --root "$top" --staged --allowlist "$allowlist"
+else
+  echo "boundary: bootstrap.boundaryChecker is not configured — public-boundary scan skipped" >&2
+fi
+
+node "$top/scripts/check-parity.mjs"

@@ -46,7 +46,7 @@ An eval is `(target, case) → verdict`. Four nouns:
   "adapter": "opencode",            // opencode | codex | claude | ...
   "model": "opencode-go/kimi-k2.6",
   "env": {                          // the FULL capability surface — all provisioned, none assumed
-    "auth": "~/.local/share/opencode-illysium-opencode/auth.json",
+    "auth": "~/.local/share/opencode/auth.json",   // EVAL_TARGET_AUTH overrides
     "mcp": ["exa", "context7", "deepwiki"],
     "skills": ["team-plan"],        // skill files materialized into the runtime's skill path
     "subagents": ["security-reviewer", "..."],  // agent defs materialized into the agent path

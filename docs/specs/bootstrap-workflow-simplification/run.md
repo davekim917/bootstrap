@@ -101,7 +101,7 @@ Contract: breaking-version packaging, contract-based parity tests, marker-safe r
 ### Retired-agent migration
 
 - Dry-run found exactly 12 marker-owned retired TOMLs across `~/.codex/agents` and
-  `~/.codex-madison-reed-codex-fallback/agents`; no unmanaged collisions.
+  `~/.codex-<group>-fallback/agents`; no unmanaged collisions.
 - Applied cleanup after quarantine, SHA-256 verification, and full-set live revalidation.
 - Quarantine:
   `/home/ubuntu/.bootstrap-workflow-agent-quarantine/2026-07-26T14-13-11-472Z`
@@ -121,7 +121,7 @@ Contract: breaking-version packaging, contract-based parity tests, marker-safe r
 - Verified from a live NanoClaw Codex container that the mounted cache contains only `1.0.0`,
   exposes exactly the seven skills, contains no retired advisor TOMLs, and carries both exact
   reviewer model/effort commands.
-- Recycled `illysium-codex` again after correcting the cache. It is stopped and will start with a
+- Recycled the affected Codex sibling group again after correcting the cache. It is stopped and will start with a
   fresh in-memory registry on the next inbound message.
 - Fresh Codex install in the current NanoClaw agent image accepted the `1.0.0` manifest and
   exposed exactly the seven skills.

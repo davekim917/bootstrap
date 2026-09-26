@@ -7,7 +7,7 @@ at 06:17:57Z and NanoClaw reported running at 06:18:05Z. The active runner snaps
 All 37 task contents/pins and unchanged schedule fields were verified after activation, as were
 both QA central defaults and all 14 QA file hashes. Host defaults are Sonnet/xhigh and Terra/xhigh;
 one generic frontier profile per runtime defaults to medium, with no Codex role effort lock.
-The 14 ordinary groups plus Dinesh/Gilfoyle total 16 coordinators. Shohei stays Fable/medium.
+The 14 ordinary groups plus the QA coordinator and QA challenger total 16 coordinators. The release specialist stays Fable/medium.
 
 Shared QA source is committed on main as 9289fa106. No Docker rebuild or remote push occurred.
 Group files contain unrelated pre-existing edits; their owned migration patch and before/after
@@ -88,15 +88,15 @@ Implementation-session constraint: subagents only GPT-6 Astra at low or medium e
   requires its exact real-user nonce approval; no guard was bypassed.
 - User selected ordinary Sonnet/xhigh and Terra/xhigh coordinators; 14 group defaults were saved
   through ncl and verified in the central projection. Three redundant ordinary channel overrides
-  were cleared to inherit (two #internz wirings and main/general).
-- Dinesh/Gilfoyle/Shohei remain specialized judgment roots pending campaign-role migration.
+  were cleared to inherit (two wirings in one team channel and main/general).
+- The QA coordinator, QA challenger and release specialist remain specialized judgment roots pending campaign-role migration.
 
 ## Campaign audit
 
-Dinesh (illysium-argus) is Opus/xhigh and Gilfoyle (illysium-momus) Sol/xhigh. Their QA-specific
+The QA coordinator is Opus/xhigh and the QA challenger Sol/xhigh. Their QA-specific
 workers remain Sonnet/xhigh and Luna/max, with separate frontier adjudicator profiles and a
 parent-effort escalation ladder. The standing instructions and shared smoke-test skill still
-assign substantive verdicts to the roots. Five pending Dinesh task rows include three explicit
+assign substantive verdicts to the roots. Five pending QA-coordinator task rows include three explicit
 Opus/high pins, one Sonnet/xhigh pin and one unpinned task; the stored PR/develop prompts match
 their files. No active QA-pair containers were found at inspection. Saved group defaults alone
 would not migrate these campaigns. Preserve the independent two-family conclusions, dissent,

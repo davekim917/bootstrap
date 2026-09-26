@@ -75,7 +75,7 @@ model defaults, auth, mounts or live workloads are changed merely to simplify wo
 coordinators use explicit lower-cost launch settings so production specialist identities stay intact.
 Retain the old source commits and restore the backed-up installed files to roll back the trial.
 
-The user additionally requested a Dinesh/Gilfoyle campaign audit. Their root judgment assignments,
+The user additionally requested a QA coordinator/challenger campaign audit. Their root judgment assignments,
 stored task pins, and QA-specific profiles require a separate coordinated migration; do not
 downgrade these roots while they still own verdicts. Apply the agreed ordinary defaults to the
 14 ordinary groups and remove their three redundant channel overrides; preserve QA/release
