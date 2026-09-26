@@ -357,6 +357,7 @@ describe('lab scope comes from local config and fails closed', () => {
     for (const url of [
       'https://github.com/lab-org/LAB-APP',
       'ssh://git@github.com/lab-org/LAB-APP.git',
+      'ssh://git@ssh.github.com:443/lab-org/LAB-APP.git',
       'git@github.com:lab-org/LAB-APP.git',
     ]) {
       expect(evaluateBashCommand(`git push --force ${url} main`, { cwd: '/tmp' }).action).toBe('allow');

@@ -608,25 +608,48 @@ export function walkPartsForSubstitutions(node: any, commands: any[]): void {
     }
 }
 
-/** Split an `env -S` string into words the way env does: whitespace separates,
- *  single quotes are literal, double quotes and backslashes escape. */
-function splitEnvString(text: string): string[] {
+/** Split an `env -S` string into words the way GNU env does: whitespace and
+ *  `\_` separate, quotes group, `\c` and a word-initial `#` end the string.
+ *  Null for what cannot be resolved statically (`$` expansion, an unknown
+ *  escape): the caller must then refuse rather than guess. */
+function splitEnvString(text: string): string[] | null {
     const words: string[] = [];
     let word = '';
     let inWord = false;
     let quote: '"' | "'" | null = null;
+    const ESCAPED: Record<string, string> = { t: '\t', n: '\n', v: '\v', f: '\f', r: '\r' };
     for (let i = 0; i < text.length; i++) {
         const ch = text[i];
+        if (ch === '\\') {
+            const next = text[++i];
+            if (next === undefined) return null;
+            if (quote === "'") {
+                if (next === '\\' || next === "'") word += next; else word += ch + next;
+                continue;
+            }
+            if (next === 'c') break;
+            if (next === '_') {
+                if (quote === '"') { word += ' '; continue; }
+                if (inWord) { words.push(word); word = ''; inWord = false; }
+                continue;
+            }
+            if (next in ESCAPED) word += ESCAPED[next];
+            else if ('\\"\'#$ '.includes(next)) word += next;
+            else return null;
+            inWord = true;
+            continue;
+        }
         if (quote === "'") {
             if (ch === "'") quote = null; else word += ch;
             continue;
         }
-        if (ch === '\\' && i + 1 < text.length) { word += text[++i]; inWord = true; continue; }
+        if (ch === '$') return null;
         if (quote === '"') {
             if (ch === '"') quote = null; else word += ch;
             continue;
         }
         if (ch === '"' || ch === "'") { quote = ch; inWord = true; continue; }
+        if (ch === '#' && !inWord) break;
         if (/\s/.test(ch)) {
             if (inWord) { words.push(word); word = ''; inWord = false; }
             continue;
@@ -634,6 +657,7 @@ function splitEnvString(text: string): string[] {
         word += ch;
         inWord = true;
     }
+    if (quote) return null;
     if (inWord) words.push(word);
     return words;
 }
@@ -675,6 +699,12 @@ export function resolveCommand(node: any): ResolvedCommand | null {
                     const inline = a.startsWith('--split-string=') ? a.slice('--split-string='.length)
                         : a.length > 2 && a.startsWith('-S') ? a.slice(2) : null;
                     const words = splitEnvString(inline ?? args[skip + 1] ?? '');
+                    if (words === null) {
+                        // Unresolvable: refuse it the way eval is refused.
+                        name = 'eval';
+                        args = [];
+                        break;
+                    }
                     args = [...args.slice(0, skip), ...words, ...args.slice(skip + (inline === null ? 2 : 1))];
                     continue;
                 }
@@ -966,9 +996,10 @@ const LAB_SCOPE_CONTAINER_PATH = `/workspace/plugins/bootstrap/${LAB_SCOPE_FILE}
 const GITHUB_OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const GITHUB_REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
 // `https://[user[:token]@]github.com[:port]/`, `ssh://git@github.com/`,
-// `git://github.com/`, and scp-style `git@github.com:`.
+// `git://github.com/`, scp-style `git@github.com:`, and GitHub's SSH-over-443
+// host `ssh.github.com`.
 const GITHUB_REMOTE_PREFIX =
-    '(?:(?:https?|ssh|git|git\\+ssh):\\/\\/(?:[^\\s/@]+@)?github\\.com(?::\\d+)?\\/|[A-Za-z0-9_.-]+@github\\.com:)';
+    '(?:(?:https?|ssh|git|git\\+ssh):\\/\\/(?:[^\\s/@]+@)?(?:ssh\\.)?github\\.com(?::\\d+)?\\/|[A-Za-z0-9_.-]+@(?:ssh\\.)?github\\.com:)';
 
 /** Parse a lab-scope file's text. Null when anything about it is unusable. */
 export function parseLabScope(text: string): LabScope | null {
@@ -1308,6 +1339,7 @@ const GIT_CONFIG_VALUE_OPTS = new Set(['-f', '--file', '--blob', '--type', '--de
 const GIT_CONFIG_WRITE_OPTS = new Set(['--unset', '--unset-all', '--replace-all', '--add']);
 const GIT_CONFIG_SECTION_OPTS = new Set(['--rename-section', '--remove-section']);
 const GIT_CONFIG_READ_OPTS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l']);
+const GIT_CONFIG_ACTION_OPTS = new Set([...GIT_CONFIG_WRITE_OPTS, ...GIT_CONFIG_SECTION_OPTS, ...GIT_CONFIG_READ_OPTS]);
 
 function envDisablesHooks(env: string[]): boolean {
     return env.some((entry) =>
@@ -1345,33 +1377,35 @@ function gitCommitSkipsHooks(args: string[]): boolean {
 
 function gitConfigWritesHookConfig(args: string[]): boolean {
     const positionals: string[] = [];
-    let writeOption = false;
-    let sectionOption = false;
-    let readOption = false;
+    // git config takes ONE action option; a later one replaces an earlier one and
+    // `--no-<action>` clears it, leaving the positional form to decide.
+    let mode: 'read' | 'write' | 'section' | null = null;
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (GIT_CONFIG_VALUE_OPTS.has(arg)) { i += 1; continue; }
-        if (GIT_CONFIG_WRITE_OPTS.has(arg)) { writeOption = true; continue; }
-        if (GIT_CONFIG_SECTION_OPTS.has(arg)) { sectionOption = true; continue; }
-        if (GIT_CONFIG_READ_OPTS.has(arg)) { readOption = true; continue; }
-        // `--no-get` and friends negate an earlier action option: never a read.
-        if (arg.startsWith('--no-')) { writeOption = true; continue; }
+        // An editor session can rewrite any key unseen.
+        if (arg === '-e' || arg === '--edit') return true;
+        if (GIT_CONFIG_WRITE_OPTS.has(arg)) { mode = 'write'; continue; }
+        if (GIT_CONFIG_SECTION_OPTS.has(arg)) { mode = 'section'; continue; }
+        if (GIT_CONFIG_READ_OPTS.has(arg)) { mode = 'read'; continue; }
+        if (arg.startsWith('--no-') && GIT_CONFIG_ACTION_OPTS.has(`--${arg.slice('--no-'.length)}`)) { mode = null; continue; }
         if (arg.startsWith('-')) continue;
         positionals.push(arg);
     }
     const [verb, ...rest] = positionals;
+    if (verb === 'edit') return true;
     // Removing or renaming the whole section drops the key with it.
     if (verb === 'remove-section' || verb === 'rename-section') {
         return GIT_HOOK_CONFIG_SECTION_RE.test(rest[0] ?? '');
     }
-    if (sectionOption) return GIT_HOOK_CONFIG_SECTION_RE.test(verb ?? '');
+    if (mode === 'section') return GIT_HOOK_CONFIG_SECTION_RE.test(verb ?? '');
     if (verb === 'set' || verb === 'unset') return rest.some((p) => GIT_HOOK_CONFIG_KEY_RE.test(p));
     if (verb === 'get' || verb === 'list') return false;
     const keyIndex = positionals.findIndex((p) => GIT_HOOK_CONFIG_KEY_RE.test(p));
     if (keyIndex === -1) return false;
-    if (writeOption) return true;
+    if (mode === 'write') return true;
     // `git config --get <key> <value-pattern>` is a read with a filter.
-    if (readOption) return false;
+    if (mode === 'read') return false;
     return positionals.length > keyIndex + 1;
 }
 

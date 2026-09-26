@@ -50,7 +50,7 @@ const BLOCKED = [
   'git config --get --no-get core.hooksPath /dev/null',
   `env -S '"git" push --no-verify origin main'`,
   `env -S 'git push "--no-verify" origin main'`,
-  `env -S 'git push \\--no-verify origin main'`,
+  `env -S 'git\\_push\\_--no-verify\\_origin\\_main'`,
 ];
 
 const ALLOWED = [
@@ -75,6 +75,8 @@ const ALLOWED = [
   'git config --list',
   'git config --remove-section alias',
   'env -u FOO git push origin main',
+  'git config --no-includes --get core.hooksPath',
+  'git config --no-get --get core.hooksPath scripts/hooks',
 ];
 
 describe('hook bypass is refused', () => {
@@ -102,6 +104,14 @@ describe('wrapper option values are not mistaken for the command', () => {
     expect(evaluateBashCommand('env -u FOO rm -rf /srv/project/src', { cwd: '/srv/project' }).action).toBe('block');
     expect(evaluateBashCommand('env -C /srv rm -rf /srv/project/src', { cwd: '/srv/project' }).action).toBe('block');
     expect(evaluateBashCommand("env -S 'rm -rf /srv/project/src'", { cwd: '/srv/project' }).action).toBe('block');
+  });
+
+  test('an env -S string that cannot be resolved statically is refused like eval', () => {
+    for (const command of [`env -S 'git push $FLAGS origin main'`, `env -S 'git push \\q origin main'`, `env -S 'git push \\--no-verify origin main'`]) {
+      const verdict = evaluateBashCommand(command, { cwd: '/srv/project' });
+      expect(verdict.action).toBe('block');
+      expect(verdict.reason).toContain('eval');
+    }
   });
 });
 
