@@ -95,7 +95,7 @@ describe('B1 self-approval + snowflake + chain order', () => {
 
     // destructive BEFORE email: a hard-blocked eval combined with an email send
     // → destructive (eval) fires first, never reaching the email gate.
-    expect(() => gateBashOrThrow("eval 'x' && gws gmail +send --to a@b.com")).toThrow(
+    expect(() => gateBashOrThrow("eval 'x' && gws gmail +send --to a@example.com")).toThrow(
       /eval is not allowed/,
     );
   });
@@ -164,29 +164,29 @@ describe('B2 email gate', () => {
 
   test('test_oc_email_gates_with_bash_gate_action', async () => {
     const { guard, stages, stagedActions } = await loadGuardWithEmailStub('approved');
-    guard.gateBashOrThrow('gws gmail +send --to a@b.com --subject hi');
+    guard.gateBashOrThrow('gws gmail +send --to a@example.com --subject hi');
     // The email send routed through runEmailGate (which stages request_bash_gate),
     // NOT the destructive runNanoclawGate path (request_destructive_gate).
     expect(stages).toHaveLength(1);
     expect(stages[0].command).toContain('gws gmail +send');
     expect(stagedActions).toEqual(['request_bash_gate']);
     // Card content comes from the shared evaluateEmailSend verdict (label).
-    expect(stages[0].reason).toContain('a@b.com');
+    expect(stages[0].reason).toContain('a@example.com');
   });
 
   test('test_oc_email_denied_throws', async () => {
     const { guard } = await loadGuardWithEmailStub('denied');
-    expect(() => guard.gateBashOrThrow('gws gmail +send --to a@b.com')).toThrow(/BLOCKED/);
+    expect(() => guard.gateBashOrThrow('gws gmail +send --to a@example.com')).toThrow(/BLOCKED/);
   });
 
   test('test_oc_email_timeout_throws', async () => {
     const { guard } = await loadGuardWithEmailStub('timeout');
-    expect(() => guard.gateBashOrThrow('gws gmail +send --to a@b.com')).toThrow(/BLOCKED/);
+    expect(() => guard.gateBashOrThrow('gws gmail +send --to a@example.com')).toThrow(/BLOCKED/);
   });
 
   test('test_oc_email_approved_proceeds', async () => {
     const { guard } = await loadGuardWithEmailStub('approved');
-    expect(() => guard.gateBashOrThrow('gws gmail +send --to a@b.com')).not.toThrow();
+    expect(() => guard.gateBashOrThrow('gws gmail +send --to a@example.com')).not.toThrow();
   });
 
   test('test_oc_non_email_no_gate', async () => {
@@ -201,7 +201,7 @@ describe('B2 email gate', () => {
     const { guard, stages } = await loadGuardWithEmailStub('denied');
     // Even with a denying gate, a scheduled task must not gate (evaluateEmailSend
     // returns allow), so it does not throw and never stages.
-    expect(() => guard.gateBashOrThrow('gws gmail +send --to a@b.com')).not.toThrow();
+    expect(() => guard.gateBashOrThrow('gws gmail +send --to a@example.com')).not.toThrow();
     expect(stages).toHaveLength(0);
   });
 });
@@ -313,7 +313,7 @@ describe('B4 full-chain composition', () => {
     // 4. destructive (hard block)
     await expect(runBash("eval 'echo hi'")).rejects.toThrow(/eval is not allowed/);
     // 5. email — gates via the stubbed runEmailGate (approved → no throw, but staged)
-    await runBash('gws gmail +send --to a@b.com');
+    await runBash('gws gmail +send --to a@example.com');
     expect(emailStages).toHaveLength(1);
     expect(emailStages[0]).toContain('gws gmail +send');
     // 6. file-protection — an edit to a protected path is blocked at the entrypoint

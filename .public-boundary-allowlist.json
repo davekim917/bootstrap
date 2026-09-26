@@ -1,0 +1,34 @@
+{
+  "entries": [
+    {
+      "path": ".agents/plugins/marketplace.json",
+      "value": "Dave Kim",
+      "reason": "Published author identity of this public marketplace (matches the GitHub owner); out of scope for the boundary like any public author identity"
+    },
+    {
+      "path": ".agents/plugins/marketplace.json",
+      "value": "Dave",
+      "reason": "Same published author identity, matched by its first-name form"
+    },
+    {
+      "path": ".agents/plugins/marketplace.json",
+      "value": "dave",
+      "reason": "Same published author identity, matched case-insensitively"
+    },
+    {
+      "path": "docs/specs/frontier-owner-trial/tasks.md",
+      "value": "2098811738674147520",
+      "reason": "Status id inside a public X post URL cited as the trial's source article, not a platform-private identifier"
+    },
+    {
+      "path": "plugins/orchestrate/hooks/require-codex-context.test.mjs",
+      "value": "18446744073709551615",
+      "reason": "2^64 - 1, an integer-overflow boundary value in a parser test, not an identifier"
+    },
+    {
+      "path": "plugins/orchestrate/hooks/require-codex-context.test.mjs",
+      "value": "18446744073709551616",
+      "reason": "2^64, an integer-overflow boundary value in a parser test, not an identifier"
+    }
+  ]
+}

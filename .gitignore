@@ -12,3 +12,6 @@ hooks/state/
 .claude/worktrees/
 __pycache__/
 *.pyc
+
+# Deployment-local guard configuration (see block-destructive-core.ts "Lab-scoped exemption")
+lab-scope.local.json

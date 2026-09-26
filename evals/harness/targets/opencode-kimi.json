@@ -3,7 +3,7 @@
   "adapter": "opencode",
   "model": "opencode-go/kimi-k2.6",
   "env": {
-    "auth": "~/.local/share/opencode-illysium-opencode/auth.json",
+    "auth": "~/.local/share/opencode/auth.json",
     "mcp": ["exa", "context7", "deepwiki"],
     "skills": [],
     "skillSource": "workflow-agents",

@@ -57,7 +57,7 @@ const BASH_GATE = [
   // including behind git's global options (-C).
   'git push --force origin main',
   'git push -f',
-  'git -C /workspace/worktrees/XZO push -f origin develop',
+  'git -C /workspace/worktrees/APP push -f origin develop',
   'git push --mirror backup',
   'git push origin --delete feature-x',
   'git push origin :feature-x',
@@ -131,11 +131,11 @@ const SNOWFLAKE_ALLOW = [
 // faithful to evaluateEmailSend's policy. The gate verdict depends on the env
 // snapshot, so each row pins the (command, env) pair.
 const EMAIL_GATE = [
-  'gws gmail +send --to a@b.com --subject hi',
-  'gws gmail +reply --to a@b.com',
+  'gws gmail +send --to a@example.com --subject hi',
+  'gws gmail +reply --to a@example.com',
   'gws gmail users messages send --json \'{"raw":"x"}\'',
 ];
-const EMAIL_ALLOW = ['ls -la', 'git status', 'gws gmail +send --to a@b.com --dry-run'];
+const EMAIL_ALLOW = ['ls -la', 'git status', 'gws gmail +send --to a@example.com --dry-run'];
 
 describe('parity contract — destructive bash', () => {
   for (const cmd of BASH_BLOCK) {

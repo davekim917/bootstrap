@@ -33,6 +33,7 @@ import { createHash, randomBytes } from 'crypto';
 import { homedir } from 'os';
 import { resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
+import { fileURLToPath } from 'url';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -57,6 +58,7 @@ export interface ResolvedCommand {
     name: string;               // resolved command name (e.g., "rm", "aws", "kubectl")
     args: string[];             // argument values after wrapper stripping
     raw: string;                // original text for error messages
+    env?: string[];             // NAME=value assignments applied to this command (prefix or `env` wrapper)
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
 }
@@ -606,12 +608,69 @@ export function walkPartsForSubstitutions(node: any, commands: any[]): void {
     }
 }
 
+/** Split an `env -S` string into words the way GNU env does: whitespace and
+ *  `\_` separate, quotes group, `\c` and a word-initial `#` end the string.
+ *  Null for what cannot be resolved statically (`$` expansion, an unknown
+ *  escape): the caller must then refuse rather than guess. */
+function splitEnvString(text: string): string[] | null {
+    const words: string[] = [];
+    let word = '';
+    let inWord = false;
+    let quote: '"' | "'" | null = null;
+    const ESCAPED: Record<string, string> = { t: '\t', n: '\n', v: '\v', f: '\f', r: '\r' };
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (ch === '\\') {
+            const next = text[++i];
+            if (next === undefined) return null;
+            if (quote === "'") {
+                if (next === '\\' || next === "'") word += next; else word += ch + next;
+                continue;
+            }
+            if (next === 'c') break;
+            if (next === '_') {
+                if (quote === '"') { word += ' '; continue; }
+                if (inWord) { words.push(word); word = ''; inWord = false; }
+                continue;
+            }
+            if (next in ESCAPED) word += ESCAPED[next];
+            else if ('\\"\'#$ '.includes(next)) word += next;
+            else return null;
+            inWord = true;
+            continue;
+        }
+        if (quote === "'") {
+            if (ch === "'") quote = null; else word += ch;
+            continue;
+        }
+        if (ch === '$') return null;
+        if (quote === '"') {
+            if (ch === '"') quote = null; else word += ch;
+            continue;
+        }
+        if (ch === '"' || ch === "'") { quote = ch; inWord = true; continue; }
+        if (ch === '#' && !inWord) break;
+        if (/\s/.test(ch)) {
+            if (inWord) { words.push(word); word = ''; inWord = false; }
+            continue;
+        }
+        word += ch;
+        inWord = true;
+    }
+    if (quote) return null;
+    if (inWord) words.push(word);
+    return words;
+}
+
 /** Resolve a Command AST node: strip wrapper commands, extract name + args */
 export function resolveCommand(node: any): ResolvedCommand | null {
     if (!node.name) return null;
 
     let name = node.name.value || '';
     let args = (node.suffix || []).map((s: any) => s.value ?? s.text ?? '');
+    const env: string[] = (node.prefix || [])
+        .filter((p: any) => p?.type === 'Assignment' && typeof p.name === 'string')
+        .map((p: any) => `${p.name}=${p.value?.value ?? p.value?.text ?? ''}`);
 
     // Strip path prefix (e.g., /usr/bin/rm → rm)
     name = name.replace(/^\/(?:usr\/(?:local\/)?)?(?:s?bin)\//, '');
@@ -630,9 +689,26 @@ export function resolveCommand(node: any): ResolvedCommand | null {
                 }
             }
         } else if (name === 'env') {
-            // Skip flags and VAR=val assignments
+            // Skip flags and VAR=val assignments, keeping the assignments.
+            // `-u NAME` and `-C DIR` take the next argument; `-S STRING` IS the
+            // command line, split on whitespace.
             while (skip < args.length && (args[skip].startsWith('-') || /^\w+=/.test(args[skip]))) {
-                skip += 1;
+                const a = args[skip];
+                if (/^\w+=/.test(a)) env.push(a);
+                if (a === '-S' || a === '--split-string' || /^(?:-S.|--split-string=)/.test(a)) {
+                    const inline = a.startsWith('--split-string=') ? a.slice('--split-string='.length)
+                        : a.length > 2 && a.startsWith('-S') ? a.slice(2) : null;
+                    const words = splitEnvString(inline ?? args[skip + 1] ?? '');
+                    if (words === null) {
+                        // Unresolvable: refuse it the way eval is refused.
+                        name = 'eval';
+                        args = [];
+                        break;
+                    }
+                    args = [...args.slice(0, skip), ...words, ...args.slice(skip + (inline === null ? 2 : 1))];
+                    continue;
+                }
+                skip += a === '-u' || a === '--unset' || a === '-C' || a === '--chdir' ? 2 : 1;
             }
         } else if (name === 'nice') {
             if (args[skip] === '-n' && skip + 1 < args.length) skip = 2;
@@ -671,6 +747,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         name,
         args,
         raw: rawParts.join(' '),
+        env,
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
     };
@@ -694,12 +771,20 @@ export function fallbackExtract(command: string): ResolvedCommand[] {
         .map(s => s.trim())
         .filter(Boolean)
         .map(seg => {
-            const normalized = normalizeCommandFallback(seg);
+            const env: string[] = [];
+            let rest = seg;
+            let assignment: RegExpMatchArray | null;
+            while ((assignment = rest.match(/^(\w+=\S*)\s+/))) {
+                env.push(assignment[1]);
+                rest = rest.slice(assignment[0].length);
+            }
+            const normalized = normalizeCommandFallback(rest);
             const parts = normalized.split(/\s+/);
             return {
                 name: parts[0] || '',
                 args: parts.slice(1),
                 raw: seg,
+                env,
                 hasInputRedirect: /<<<?\s/.test(seg),
             };
         });
@@ -867,11 +952,11 @@ function resolveEphemeralRmArgs(cmd: ResolvedCommand, proven: ReadonlySet<string
 // In a Lab session — a wiring whose channel instructions profile is `lab`, which
 // the host projects into the container as NANOCLAW_INSTRUCTIONS_PROFILE
 // (nanoclaw-v2 src/container-runner.ts) — a destructive action aimed at a LAB
-// TARGET must neither hold for approval nor be denied. The lab exists to be torn
+// TARGET must neither hold for approval nor be denied. A lab exists to be torn
 // down and rebuilt; an approval card on every `DROP SCHEMA` defeats the point.
 //
 // TWO predicates must BOTH hold. The session predicate alone is never enough:
-// being in the lab room does not exempt a command aimed at production. The
+// being in a lab room does not exempt a command aimed at production. The
 // target predicate reads the RESOLVED command (post wrapper-stripping) and fails
 // CLOSED — an unrecognized family, or a target constructed at runtime
 // (`psql "$URL"`, a variable-built repo path), is NOT a lab target and stays
@@ -882,15 +967,129 @@ function resolveEphemeralRmArgs(cmd: ResolvedCommand, proven: ReadonlySet<string
 //     truncate). A `sh -c` wrapper hides the real target from the target
 //     predicate, so exempting tier 1 would dismantle the target matching itself.
 //   • `snow sql` — Snowflake has no lab tenant, so every Snowflake statement
-//     stays gated even in the lab.
+//     stays gated even in a lab session.
 //   • non-LAB repos, non-`lab-` Render services, and prod/dev databases, in the
 //     lab room or anywhere else.
 
 /** The instructions-profile name that marks a Lab session. */
 export const LAB_INSTRUCTIONS_PROFILE = 'lab';
 
-/** GitHub org that owns the lab repos. Compared case-insensitively. */
-export const LAB_ORG = 'illysium-ai';
+// WHICH GitHub org owns lab repos, and which non-`LAB-*` repos are
+// lab-writable, is deployment data, not source. It lives in an untracked
+// `lab-scope.local.json` — `{"org": "<github-org>", "extraRepos": ["<REPO>"]}` —
+// read from BOOTSTRAP_LAB_SCOPE_FILE when that is set (and then ONLY from there),
+// else from the plugin repo root this module sits under (a runtime running the
+// repo in place), else from the NanoClaw container mount of that repo (a runtime
+// running a cached copy of the plugin, which has no repo root above it).
+//
+// No readable, valid file means no lab org: no repo reference is then a lab
+// target, and every such command stays gated. A missing or malformed file can
+// only make the guard stricter, never looser.
+export interface LabScope {
+    org: string;
+    extraRepos: string[];
+}
+
+export const LAB_SCOPE_FILE_ENV = 'BOOTSTRAP_LAB_SCOPE_FILE';
+const LAB_SCOPE_FILE = 'lab-scope.local.json';
+const LAB_SCOPE_CONTAINER_PATH = `/workspace/plugins/bootstrap/${LAB_SCOPE_FILE}`;
+const GITHUB_OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const GITHUB_REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
+// `https://[user[:token]@]github.com[:port]/`, `ssh://git@github.com/`,
+// `git://github.com/`, scp-style `git@github.com:`, and GitHub's SSH-over-443
+// host `ssh.github.com`.
+const GITHUB_REMOTE_PREFIX =
+    '(?:(?:https?|ssh|git|git\\+ssh):\\/\\/(?:[^\\s/@]+@)?(?:ssh\\.)?github\\.com(?::\\d+)?\\/|[A-Za-z0-9_.-]+@(?:ssh\\.)?github\\.com:)';
+
+/** Parse a lab-scope file's text. Null when anything about it is unusable. */
+export function parseLabScope(text: string): LabScope | null {
+    let raw: unknown;
+    try {
+        raw = JSON.parse(text);
+    } catch {
+        return null;
+    }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const { org, extraRepos = [] } = raw as { org?: unknown; extraRepos?: unknown };
+    if (typeof org !== 'string' || !GITHUB_OWNER_RE.test(org)) return null;
+    if (!Array.isArray(extraRepos)) return null;
+    if (!extraRepos.every((r) => typeof r === 'string' && GITHUB_REPO_RE.test(r))) return null;
+    return { org, extraRepos: extraRepos as string[] };
+}
+
+function labScopeRepoRootPath(): string | null {
+    try {
+        return fileURLToPath(new URL(`../../../../${LAB_SCOPE_FILE}`, import.meta.url));
+    } catch {
+        return null;
+    }
+}
+
+function labScopePath(): string | null {
+    const explicit = process.env[LAB_SCOPE_FILE_ENV];
+    if (explicit !== undefined) return explicit || null;
+    for (const candidate of [labScopeRepoRootPath(), LAB_SCOPE_CONTAINER_PATH]) {
+        if (candidate && existsSync(candidate)) return candidate;
+    }
+    return null;
+}
+
+function escapeRegexLiteral(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+interface CompiledLabScope {
+    /** A whole value naming `<org>/<lab repo>` on GitHub; null without a lab org. */
+    repoRef: RegExp | null;
+    /** `worktrees/<lab repo>` path segment. */
+    worktreeSegment: RegExp;
+    /** Exactly `<org>/LAB-*` — the only repos `gh repo delete` may skip approval for. */
+    ghDeletable: RegExp | null;
+}
+
+let labScopeCache: { key: string; compiled: CompiledLabScope } | null = null;
+
+/**
+ * Lab scope in force right now. Re-read on every call and keyed on the file's
+ * CONTENT, never frozen at module scope and never keyed on metadata: a narrowed
+ * file must take effect even when its size and mtime happen to match.
+ */
+function currentLabScope(): CompiledLabScope {
+    const file = labScopePath();
+    let key = 'none';
+    let text: string | null = null;
+    if (file) {
+        try {
+            text = readFileSync(file, 'utf-8');
+            key = `${file}\0${text}`;
+        } catch {
+            key = `${file}\0unreadable`;
+            text = null;
+        }
+    }
+    if (labScopeCache?.key === key) return labScopeCache.compiled;
+
+    const scope = text === null ? null : parseLabScope(text);
+    // The OWNER half is pinned to that lab org inside the pattern itself, not only
+    // in a follow-up comparison, so `other-org/LAB-APP` cannot match at all.
+    //
+    // Every pattern is case-INSENSITIVE. GitHub repo names are case-insensitive
+    // and lab repos get renamed between casings, so agents still hold older URLs
+    // that redirect to the current names. Refusing those spellings would gate the
+    // exact commands the exemption exists to free.
+    const extra = scope ? scope.extraRepos.map((r) => `|${escapeRegexLiteral(r)}`).join('') : '';
+    const repoName = `(?:LAB-[A-Z0-9-]+${extra})`;
+    const org = scope ? escapeRegexLiteral(scope.org) : null;
+    const compiled: CompiledLabScope = {
+        repoRef: org
+            ? new RegExp(`^(?:${GITHUB_REMOTE_PREFIX})?(${org})\\/(${repoName})(?:\\.git)?\\/?$`, 'i')
+            : null,
+        worktreeSegment: new RegExp(`(?:^|\\/)worktrees\\/${repoName}(?:\\/|$)`, 'i'),
+        ghDeletable: org ? new RegExp(`^(${org})\\/(LAB-[A-Z0-9-]+)$`, 'i') : null,
+    };
+    labScopeCache = { key, compiled };
+    return compiled;
+}
 
 /**
  * PREDICATE 1 — lab session.
@@ -902,53 +1101,40 @@ export function isLabSession(): boolean {
     return process.env.NANOCLAW_INSTRUCTIONS_PROFILE === LAB_INSTRUCTIONS_PROFILE;
 }
 
-// The OWNER half is pinned to the lab org inside the pattern itself, not only
-// in a follow-up comparison, so `other-org/LAB-XZO` cannot match at all.
-//
-// The whole pattern is case-INSENSITIVE. GitHub repo names are case-insensitive
-// and both lab repos were renamed up from lowercase, so agents still hold
-// `lab-xzo` / `illysium-wiki` URLs that redirect to the current names. Refusing
-// those spellings would gate the exact commands the exemption exists to free.
-const LAB_REPO_NAME = '(?:LAB-[A-Z0-9-]+|ILLYSIUM-WIKI)';
-const LAB_REPO_REF_RE = new RegExp(
-    `(?:^|[^A-Za-z0-9_.-])(${LAB_ORG})\\/(${LAB_REPO_NAME})(?:\\.git)?(?![A-Za-z0-9_-])`,
-    'gi',
-);
-
-/** Name of the lab repo `value` references (`<org>/<repo>`), or null. Accepts a
- *  bare `org/repo` or any URL containing one. */
+/** Name of a lab repo `value` references (`<org>/<repo>`), or null. Accepts a
+ *  bare `org/repo` or a github.com URL (https, ssh, git, scp-style) whose path
+ *  is exactly that repo — the same path on any other host is not a lab repo.
+ *  Always null without a lab org. */
 export function labRepoRefName(value: string): string | null {
     if (!value) return null;
-    LAB_REPO_REF_RE.lastIndex = 0;
-    const m = LAB_REPO_REF_RE.exec(value);
+    const { repoRef } = currentLabScope();
+    const m = repoRef?.exec(value);
     return m ? `${m[1]}/${m[2]}` : null;
 }
 
-/** True when `value` references a LAB-* or ILLYSIUM-WIKI repo under the lab org. */
+/** True when `value` references a LAB-* or configured extra repo under that lab org. */
 export function isLabRepoRef(value: string): boolean {
     return labRepoRefName(value) !== null;
 }
 
-// A worktree checkout dir is named for its repo (`<worktrees>/XZO`), and the host
+// A worktree checkout dir is named for its repo (`<worktrees>/APP`), and the host
 // bind-mounts the same directory twice — at /workspace/worktrees and at its own
 // host path (nanoclaw-v2 src/container-runner.ts). Matching the `worktrees/<repo>`
 // SEGMENT rather than a /workspace-anchored prefix covers both mounts with one
-// pattern.
-// Case-insensitive for the same reason as LAB_REPO_REF_RE: a checkout dir is
-// named for its repo, and a clone taken before the rename is `lab-xzo` on disk.
-const LAB_WORKTREE_SEGMENT_RE = new RegExp(`(?:^|\\/)worktrees\\/${LAB_REPO_NAME}(?:\\/|$)`, 'i');
+// pattern. Case-insensitive for the same reason as the repo-reference pattern: a
+// clone taken before a rename keeps its old casing on disk.
 
 /**
- * True when `p` sits inside a LAB-* or ILLYSIUM-WIKI worktree checkout, under
- * either the /workspace mount or the host-path alias mount.
+ * True when `p` sits inside a LAB-* or configured extra repo worktree checkout,
+ * under either the /workspace mount or the host-path alias mount.
  *
  * Tested against the NORMALIZED path only. Matching the raw string would let
- * `/workspace/worktrees/LAB-XZO/../XZO` read as a lab path and delete the prod
+ * `/workspace/worktrees/LAB-APP/../APP` read as a lab path and delete the prod
  * checkout next door.
  */
 export function isLabWorktreePath(p: string): boolean {
     if (!p) return false;
-    return LAB_WORKTREE_SEGMENT_RE.test(normalizePath(p));
+    return currentLabScope().worktreeSegment.test(normalizePath(p));
 }
 
 /** process.cwd() throws when the cwd has been unlinked; a guard must not die on it. */
@@ -962,7 +1148,7 @@ function currentWorkingDir(): string {
 
 // ── git target resolution ────────────────────────────────────────────────────
 
-const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
+const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
 // URL and scp-style (`git@github.com:org/repo`) remotes.
 const REPO_URL_RE = /^(?:(?:https?|ssh|git|git\+ssh|file):\/\/|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:)/;
 // A bare `org/repo` positional. Only consulted in the REMOTE position, so a
@@ -1026,7 +1212,7 @@ const LAB_DB_NAME_RE = /^lab[-_]/i;
 // so the reliable lab signals are the DATABASE and USER names, not the host.
 const CONNECTION_URI_RE =
     /\b(?:postgres(?:ql)?|mysql|mysqlx|mariadb):\/\/(?:([^:@/\s]*)(?::[^@/\s]*)?@)?([^/?#:\s]*)(?::\d+)?(?:\/([^?#\s]*))?/i;
-// libpq keyword/value form: `psql "host=... dbname=lab_xzo user=lab_xzo_admin"`.
+// libpq keyword/value form: `psql "host=... dbname=lab_app user=lab_app_admin"`.
 const CONNECTION_KV_RE = /\b(?:host|user|dbname|database)=([^\s'"]+)/gi;
 const SQL_HOST_FLAGS = new Set(['-h', '--host']);
 const SQL_USER_FLAGS = new Set(['-U', '--username']);
@@ -1056,11 +1242,11 @@ function labSqlTarget(cmd: ResolvedCommand): string | null {
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
 
-        // --host=lab-x / --username=lab_x / --dbname=lab_xzo
+        // --host=lab-x / --username=lab_x / --dbname=lab_app
         const eq = a.match(/^(?:--host|--username|--dbname)=(.+)$/);
         if (eq && LAB_DB_NAME_RE.test(eq[1])) return eq[1];
 
-        // -h lab-x / -U lab_xzo_admin / -d lab_xzo
+        // -h lab-x / -U lab_app_admin / -d lab_app
         if (SQL_HOST_FLAGS.has(a) || SQL_USER_FLAGS.has(a) || SQL_DB_FLAGS.has(a)) {
             const v = args[i + 1];
             if (v && !v.startsWith('-') && LAB_DB_NAME_RE.test(v)) return v;
@@ -1087,16 +1273,15 @@ function labRenderTarget(cmd: ResolvedCommand): string | null {
     return null;
 }
 
-// `gh repo delete` is exempt for LAB-* under the lab org ONLY. ILLYSIUM-WIKI is
-// deliberately not deletable without approval: the wiki is lab-writable, not
-// lab-disposable — and `illysium-wiki` does not start with `lab-`, so the
-// case-insensitive match below still refuses it.
-const GH_LAB_REPO_RE = new RegExp(`^(${LAB_ORG})\\/(LAB-[A-Z0-9-]+)$`, 'i');
-
+// `gh repo delete` is exempt for LAB-* under that lab org ONLY. A configured
+// extra repo is deliberately not deletable without approval: it is lab-writable,
+// not lab-disposable — its name does not start with `LAB-`, so the
+// case-insensitive `ghDeletable` pattern still refuses it.
 function labGhTarget(cmd: ResolvedCommand): string | null {
     const target = cmd.args[2];
     if (!target) return null;
-    return GH_LAB_REPO_RE.test(target) ? target : null;
+    const { ghDeletable } = currentLabScope();
+    return ghDeletable?.test(target) ? target : null;
 }
 
 /**
@@ -1119,13 +1304,140 @@ export function labTargetOf(cmd: ResolvedCommand, cwd: string = currentWorkingDi
     }
 }
 
-/** Boolean form of the lab-target predicate. */
+/** Boolean form of labTargetOf. */
 export function isLabTarget(cmd: ResolvedCommand, cwd: string = currentWorkingDir()): boolean {
     return labTargetOf(cmd, cwd) !== null;
 }
 
 function logLabScope(message: string): void {
     console.error(`lab-scope: ${message}`);
+}
+
+// ── Git hook bypass ──────────────────────────────────────────────────────────
+// A repo's commit and push hooks are where its own gates run — the public
+// boundary scan, formatting, parity. An agent that trips one fixes the finding;
+// it never switches the hook off. Every way of switching hooks off is refused:
+// `--no-verify` (and `git commit -n`), a `core.hooksPath` override on the
+// command line or through the environment, a `core.hooksPath` write, and the
+// husky skip variables. Reading `core.hooksPath` stays allowed.
+export const GIT_HOOK_BYPASS_REASON =
+    'Skipping or disabling git hooks is not allowed: a hook is the repo\'s own gate. Fix what it reports, then commit or push normally.';
+const GIT_NO_VERIFY_LONG_RE = /^--no-veri(?:f|fy)?$/;
+const GIT_NO_VERIFY_SUBCOMMANDS = new Set(['commit', 'push', 'merge', 'am', 'rebase', 'cherry-pick', 'revert', 'pull']);
+// core.hooksPath switches every hook off; bootstrap.boundaryChecker points this
+// repo's hooks at the public-boundary checker (empty or unset skips the scan).
+const GIT_HOOK_CONFIG_KEY_RE = /^(?:core\.hookspath|bootstrap\.boundarychecker)$/i;
+const GIT_HOOK_CONFIG_SECTION_RE = /^(?:core|bootstrap)$/i;
+// `git commit` short options that take a value: the rest of a cluster (or the
+// next argument) is that value, never another flag.
+const GIT_COMMIT_VALUE_SHORT = new Set(['m', 'F', 'C', 'c', 't', 'u', 'S']);
+const GIT_COMMIT_VALUE_LONG = new Set([
+    '--message', '--file', '--author', '--date', '--reuse-message', '--reedit-message',
+    '--template', '--fixup', '--squash', '--cleanup', '--trailer', '--pathspec-from-file',
+]);
+const GIT_CONFIG_VALUE_OPTS = new Set(['-f', '--file', '--blob', '--type', '--default', '--comment', '--value']);
+const GIT_CONFIG_WRITE_OPTS = new Set(['--unset', '--unset-all', '--replace-all', '--add']);
+const GIT_CONFIG_SECTION_OPTS = new Set(['--rename-section', '--remove-section']);
+const GIT_CONFIG_READ_OPTS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l']);
+const GIT_CONFIG_ACTION_OPTS = new Set([...GIT_CONFIG_WRITE_OPTS, ...GIT_CONFIG_SECTION_OPTS, ...GIT_CONFIG_READ_OPTS]);
+
+function envDisablesHooks(env: string[]): boolean {
+    return env.some((entry) =>
+        /^HUSKY=0$/.test(entry) ||
+        /^HUSKY_SKIP_HOOKS=/.test(entry) ||
+        /^GIT_CONFIG_PARAMETERS=.*(?:core\.hookspath|bootstrap\.boundarychecker)/i.test(entry) ||
+        /^GIT_CONFIG_KEY_\d+=(?:core\.hookspath|bootstrap\.boundarychecker)$/i.test(entry),
+    );
+}
+
+function gitCommitSkipsHooks(args: string[]): boolean {
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--') return false;
+        if (GIT_NO_VERIFY_LONG_RE.test(arg)) return true;
+        if (arg.startsWith('--')) {
+            if (GIT_COMMIT_VALUE_LONG.has(arg)) i += 1;
+            continue;
+        }
+        if (arg.startsWith('-') && arg.length > 1) {
+            const letters = arg.slice(1);
+            for (let j = 0; j < letters.length; j++) {
+                const letter = letters[j];
+                if (letter === 'n') return true;
+                if (GIT_COMMIT_VALUE_SHORT.has(letter)) {
+                    // A value-taking letter ends the cluster; a bare one takes the next arg.
+                    if (j === letters.length - 1 && letter !== 'u' && letter !== 'S') i += 1;
+                    break;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+function gitConfigWritesHookConfig(args: string[]): boolean {
+    const positionals: string[] = [];
+    // git config takes ONE action option; a later one replaces an earlier one and
+    // `--no-<action>` clears it, leaving the positional form to decide.
+    let mode: 'read' | 'write' | 'section' | null = null;
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (GIT_CONFIG_VALUE_OPTS.has(arg)) { i += 1; continue; }
+        // An editor session can rewrite any key unseen.
+        if (arg === '-e' || arg === '--edit') return true;
+        if (GIT_CONFIG_WRITE_OPTS.has(arg)) { mode = 'write'; continue; }
+        if (GIT_CONFIG_SECTION_OPTS.has(arg)) { mode = 'section'; continue; }
+        if (GIT_CONFIG_READ_OPTS.has(arg)) { mode = 'read'; continue; }
+        if (arg.startsWith('--no-') && GIT_CONFIG_ACTION_OPTS.has(`--${arg.slice('--no-'.length)}`)) { mode = null; continue; }
+        if (arg.startsWith('-')) continue;
+        positionals.push(arg);
+    }
+    const [verb, ...rest] = positionals;
+    if (verb === 'edit') return true;
+    // Removing or renaming the whole section drops the key with it.
+    if (verb === 'remove-section' || verb === 'rename-section') {
+        return GIT_HOOK_CONFIG_SECTION_RE.test(rest[0] ?? '');
+    }
+    if (mode === 'section') return GIT_HOOK_CONFIG_SECTION_RE.test(verb ?? '');
+    if (verb === 'set' || verb === 'unset') return rest.some((p) => GIT_HOOK_CONFIG_KEY_RE.test(p));
+    if (verb === 'get' || verb === 'list') return false;
+    const keyIndex = positionals.findIndex((p) => GIT_HOOK_CONFIG_KEY_RE.test(p));
+    if (keyIndex === -1) return false;
+    if (mode === 'write') return true;
+    // `git config --get <key> <value-pattern>` is a read with a filter.
+    if (mode === 'read') return false;
+    return positionals.length > keyIndex + 1;
+}
+
+/** Reason to refuse `cmd` because it skips or disables git hooks, or null. */
+export function gitHookBypassReason(cmd: ResolvedCommand): string | null {
+    if (cmd.name === 'export' && envDisablesHooks(cmd.args)) return GIT_HOOK_BYPASS_REASON;
+    if (cmd.name !== 'git') return null;
+    if (envDisablesHooks(cmd.env ?? [])) return GIT_HOOK_BYPASS_REASON;
+
+    const sub = gitSubcommandIndex(cmd.args);
+    const overridesHookConfig = (assignment: string) =>
+        GIT_HOOK_CONFIG_KEY_RE.test(assignment.split('=')[0] ?? '');
+    for (let i = 0; i < sub; i++) {
+        const arg = cmd.args[i];
+        if ((arg === '-c' || arg === '--config-env') && overridesHookConfig(cmd.args[i + 1] ?? '')) {
+            return GIT_HOOK_BYPASS_REASON;
+        }
+        if (arg.startsWith('-c') && arg.length > 2 && overridesHookConfig(arg.slice(2))) return GIT_HOOK_BYPASS_REASON;
+        if (arg.startsWith('--config-env=') && overridesHookConfig(arg.slice('--config-env='.length))) {
+            return GIT_HOOK_BYPASS_REASON;
+        }
+    }
+
+    const subcommand = cmd.args[sub];
+    const rest = cmd.args.slice(sub + 1);
+    // `commit` is parsed with its argument roles (`-m --no-verify` is a message).
+    if (subcommand === 'commit') return gitCommitSkipsHooks(rest) ? GIT_HOOK_BYPASS_REASON : null;
+    if (subcommand && GIT_NO_VERIFY_SUBCOMMANDS.has(subcommand) && rest.some((a) => GIT_NO_VERIFY_LONG_RE.test(a))) {
+        return GIT_HOOK_BYPASS_REASON;
+    }
+    if (subcommand === 'config' && gitConfigWritesHookConfig(rest)) return GIT_HOOK_BYPASS_REASON;
+    return null;
 }
 
 // ── Hard block checks ────────────────────────────────────────────────────────
@@ -1158,6 +1470,9 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
             return 'Shell inline execution (shell -c, here-strings) is not allowed. Run commands directly.';
         }
     }
+
+    const hookBypass = gitHookBypassReason(cmd);
+    if (hookBypass) return hookBypass;
 
     // Simple dangerous commands
     if (cmd.name === 'eval') return 'eval is not allowed. Run commands directly.';
@@ -1340,7 +1655,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
  * allowed. The caller is responsible for emitting the message and exiting.
  *
  * `opts.isExtraSafe` widens tier 2 (the ephemeral-path allowlist) for the
- * caller's scope. evaluateBashCommand passes the lab-worktree matcher through it
+ * caller's scope. evaluateBashCommand passes its lab-worktree matcher through it
  * in a Lab session and nothing else does — the default behavior is unchanged.
  */
 export function checkRmDecision(
@@ -1422,14 +1737,14 @@ export function checkRmDecision(
  *
  * `opts.cwd` is the working directory the command will run in — supplied by an
  * adapter that has it on its hook input (Claude's `cwd` field), else
- * process.cwd(). It only ever matters to the lab-scope predicate below, which
+ * process.cwd(). It only ever matters to lab-scope predicates below, which
  * uses it to resolve a bare `git push origin` to the repo it would actually
  * push to.
  *
  * LAB SCOPE (tier 2 and tier 3 only): in a Lab session, a gated verb aimed at a
  * lab target allows instead of holding, and a lab worktree path joins the rm
  * ephemeral allowlist. Tier 1 is never exempted. Both predicates must hold and
- * both fail closed — see the lab-scope block above.
+ * both fail closed — see "Lab-scoped exemption" above.
  */
 export function evaluateBashCommand(
     command: string,

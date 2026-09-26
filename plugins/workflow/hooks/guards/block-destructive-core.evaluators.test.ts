@@ -136,16 +136,16 @@ describe('A2 runGateRequest action parameterization', () => {
     test('test_runEmailGate_threads_summary_to_card (S-QA2)', async () => {
         const { mod, staged } = await loadWithSpies();
         const decision = mod.runEmailGate(
-            'gws gmail +send --to a@b.com',
-            'Email send to a@b.com',
+            'gws gmail +send --to a@example.com',
+            'Email send to a@example.com',
             undefined,
-            '*From:* me\n*To:* a@b.com\n\n*Body:*\n> hi',
+            '*From:* me\n*To:* a@example.com\n\n*Body:*\n> hi',
         );
         expect(decision).toBe('approved');
         expect(staged).toHaveLength(1);
         // label stays the short label; summary is the distinct structured card body
-        expect(staged[0].label).toBe('Email send to a@b.com');
-        expect(staged[0].summary).toBe('*From:* me\n*To:* a@b.com\n\n*Body:*\n> hi');
+        expect(staged[0].label).toBe('Email send to a@example.com');
+        expect(staged[0].summary).toBe('*From:* me\n*To:* a@example.com\n\n*Body:*\n> hi');
         expect(staged[0].action).toBe('request_bash_gate');
     });
 

@@ -155,7 +155,7 @@ The retired names are:
 
 Extend `scripts/check-plugin-boundaries.mjs --strict-home` to fail when marker-owned retired agents remain active. Before deleting, `--apply` writes every target beneath one timestamped quarantine root while preserving its full original home-relative path, plus a manifest of original absolute path and content hash. Files with the same basename from different homes cannot collide, and rollback is a file restore rather than a code reconstruction.
 
-During this rollout, apply the cleanup to the two currently verified homes—`~/.codex/agents` and `~/.codex-madison-reed-codex-fallback/agents`—confirm the unrelated agent TOMLs remain, and restart the affected NanoClaw Codex sessions/containers so cached configuration is unloaded. No retired copies currently exist in the inspected Claude or OpenCode homes; if the migration discovers any at apply time, restart that affected runtime too. If live verification regresses because of the retirement, stop before ship, restore from quarantine, restart the affected runtime, and record the evidence in `run.md`.
+During this rollout, apply the cleanup to the two currently verified homes—`~/.codex/agents` and `~/.codex-<group>-fallback/agents`—confirm the unrelated agent TOMLs remain, and restart the affected NanoClaw Codex sessions/containers so cached configuration is unloaded. No retired copies currently exist in the inspected Claude or OpenCode homes; if the migration discovers any at apply time, restart that affected runtime too. If live verification regresses because of the retirement, stop before ship, restore from quarantine, restart the affected runtime, and record the evidence in `run.md`.
 
 ### 5. Update packaging and documentation
 
