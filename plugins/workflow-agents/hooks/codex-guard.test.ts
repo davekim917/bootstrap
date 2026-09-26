@@ -75,10 +75,16 @@ describe('Codex local approval transport', () => {
       'git push --no-verify origin feature',
       'git -c core.hooksPath=/dev/null commit -m x',
       'HUSKY=0 git commit -m x',
+      'git --config-env core.hooksPath=EMPTY commit -m x',
+      'git config --remove-section core',
+      'env -u FOO git push --no-verify origin main',
+      'git -c bootstrap.boundaryChecker= push origin feature',
     ]) {
       expectDecision(await runGuard(shell(command)), 'deny', /git hooks/i);
     }
-    expect((await runGuard(shell('git push -n origin feature'))).output).toEqual({ continue: true });
+    for (const command of ['git push -n origin feature', 'git commit -m --no-verify', 'git config --get core.hooksPath scripts/hooks']) {
+      expect((await runGuard(shell(command))).output).toEqual({ continue: true });
+    }
   });
 
   test('asks through the native protocol for outbound email', async () => {

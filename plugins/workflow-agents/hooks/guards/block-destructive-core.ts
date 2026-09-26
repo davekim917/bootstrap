@@ -639,10 +639,20 @@ export function resolveCommand(node: any): ResolvedCommand | null {
                 }
             }
         } else if (name === 'env') {
-            // Skip flags and VAR=val assignments, keeping the assignments
+            // Skip flags and VAR=val assignments, keeping the assignments.
+            // `-u NAME` and `-C DIR` take the next argument; `-S STRING` IS the
+            // command line, split on whitespace.
             while (skip < args.length && (args[skip].startsWith('-') || /^\w+=/.test(args[skip]))) {
-                if (/^\w+=/.test(args[skip])) env.push(args[skip]);
-                skip += 1;
+                const a = args[skip];
+                if (/^\w+=/.test(a)) env.push(a);
+                if (a === '-S' || a === '--split-string' || /^(?:-S.|--split-string=)/.test(a)) {
+                    const inline = a.startsWith('--split-string=') ? a.slice('--split-string='.length)
+                        : a.length > 2 && a.startsWith('-S') ? a.slice(2) : null;
+                    const words = (inline ?? args[skip + 1] ?? '').split(/\s+/).filter(Boolean);
+                    args = [...args.slice(0, skip), ...words, ...args.slice(skip + (inline === null ? 2 : 1))];
+                    continue;
+                }
+                skip += a === '-u' || a === '--unset' || a === '-C' || a === '--chdir' ? 2 : 1;
             }
         } else if (name === 'nice') {
             if (args[skip] === '-n' && skip + 1 < args.length) skip = 2;
@@ -979,9 +989,9 @@ interface CompiledLabScope {
 let labScopeCache: { key: string; compiled: CompiledLabScope } | null = null;
 
 /**
- * Lab scope in force right now. Read at call time (keyed on the file's
- * identity and mtime), never frozen at module scope: the core is imported once
- * per adapter process and the tests flip the config between cases.
+ * Lab scope in force right now. Re-read on every call and keyed on the file's
+ * CONTENT, never frozen at module scope and never keyed on metadata: a narrowed
+ * file must take effect even when its size and mtime happen to match.
  */
 function currentLabScope(): CompiledLabScope {
     const file = labScopePath();
@@ -989,9 +999,8 @@ function currentLabScope(): CompiledLabScope {
     let text: string | null = null;
     if (file) {
         try {
-            const st = statSync(file);
-            key = `${file}\0${st.mtimeMs}\0${st.size}`;
             text = readFileSync(file, 'utf-8');
+            key = `${file}\0${text}`;
         } catch {
             key = `${file}\0unreadable`;
             text = null;
@@ -1012,7 +1021,7 @@ function currentLabScope(): CompiledLabScope {
     const org = scope ? escapeRegexLiteral(scope.org) : null;
     const compiled: CompiledLabScope = {
         repoRef: org
-            ? new RegExp(`(?:^|[^A-Za-z0-9_.-])(${org})\\/(${repoName})(?:\\.git)?(?![A-Za-z0-9_-])`, 'i')
+            ? new RegExp(`(?:^|[^A-Za-z0-9_.-])(${org})\\/(${repoName})(?:\\.git)?(?![A-Za-z0-9_.-])`, 'i')
             : null,
         worktreeSegment: new RegExp(`(?:^|\\/)worktrees\\/${repoName}(?:\\/|$)`, 'i'),
         ghDeletable: org ? new RegExp(`^(${org})\\/(LAB-[A-Z0-9-]+)$`, 'i') : null,
@@ -1076,7 +1085,7 @@ function currentWorkingDir(): string {
 
 // ── git target resolution ────────────────────────────────────────────────────
 
-const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
+const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
 // URL and scp-style (`git@github.com:org/repo`) remotes.
 const REPO_URL_RE = /^(?:(?:https?|ssh|git|git\+ssh|file):\/\/|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:)/;
 // A bare `org/repo` positional. Only consulted in the REMOTE position, so a
@@ -1252,7 +1261,10 @@ export const GIT_HOOK_BYPASS_REASON =
     'Skipping or disabling git hooks is not allowed: a hook is the repo\'s own gate. Fix what it reports, then commit or push normally.';
 const GIT_NO_VERIFY_LONG_RE = /^--no-veri(?:f|fy)?$/;
 const GIT_NO_VERIFY_SUBCOMMANDS = new Set(['commit', 'push', 'merge', 'am', 'rebase', 'cherry-pick', 'revert', 'pull']);
-const GIT_HOOKS_PATH_KEY_RE = /^core\.hookspath$/i;
+// core.hooksPath switches every hook off; bootstrap.boundaryChecker points this
+// repo's hooks at the public-boundary checker (empty or unset skips the scan).
+const GIT_HOOK_CONFIG_KEY_RE = /^(?:core\.hookspath|bootstrap\.boundarychecker)$/i;
+const GIT_HOOK_CONFIG_SECTION_RE = /^(?:core|bootstrap)$/i;
 // `git commit` short options that take a value: the rest of a cluster (or the
 // next argument) is that value, never another flag.
 const GIT_COMMIT_VALUE_SHORT = new Set(['m', 'F', 'C', 'c', 't', 'u', 'S']);
@@ -1261,14 +1273,16 @@ const GIT_COMMIT_VALUE_LONG = new Set([
     '--template', '--fixup', '--squash', '--cleanup', '--trailer', '--pathspec-from-file',
 ]);
 const GIT_CONFIG_VALUE_OPTS = new Set(['-f', '--file', '--blob', '--type', '--default', '--comment', '--value']);
-const GIT_CONFIG_WRITE_OPTS = new Set(['--unset', '--unset-all', '--replace-all', '--add', '--rename-section', '--remove-section']);
+const GIT_CONFIG_WRITE_OPTS = new Set(['--unset', '--unset-all', '--replace-all', '--add']);
+const GIT_CONFIG_SECTION_OPTS = new Set(['--rename-section', '--remove-section']);
+const GIT_CONFIG_READ_OPTS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l']);
 
 function envDisablesHooks(env: string[]): boolean {
     return env.some((entry) =>
         /^HUSKY=0$/.test(entry) ||
         /^HUSKY_SKIP_HOOKS=/.test(entry) ||
-        /^GIT_CONFIG_PARAMETERS=.*core\.hookspath/i.test(entry) ||
-        /^GIT_CONFIG_KEY_\d+=core\.hookspath$/i.test(entry),
+        /^GIT_CONFIG_PARAMETERS=.*(?:core\.hookspath|bootstrap\.boundarychecker)/i.test(entry) ||
+        /^GIT_CONFIG_KEY_\d+=(?:core\.hookspath|bootstrap\.boundarychecker)$/i.test(entry),
     );
 }
 
@@ -1297,22 +1311,34 @@ function gitCommitSkipsHooks(args: string[]): boolean {
     return false;
 }
 
-function gitConfigWritesHooksPath(args: string[]): boolean {
+function gitConfigWritesHookConfig(args: string[]): boolean {
     const positionals: string[] = [];
     let writeOption = false;
+    let sectionOption = false;
+    let readOption = false;
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (GIT_CONFIG_VALUE_OPTS.has(arg)) { i += 1; continue; }
         if (GIT_CONFIG_WRITE_OPTS.has(arg)) { writeOption = true; continue; }
+        if (GIT_CONFIG_SECTION_OPTS.has(arg)) { sectionOption = true; continue; }
+        if (GIT_CONFIG_READ_OPTS.has(arg)) { readOption = true; continue; }
         if (arg.startsWith('-')) continue;
         positionals.push(arg);
     }
-    if (positionals[0] === 'set' || positionals[0] === 'unset') {
-        return positionals.slice(1).some((p) => GIT_HOOKS_PATH_KEY_RE.test(p));
+    const [verb, ...rest] = positionals;
+    // Removing or renaming the whole section drops the key with it.
+    if (verb === 'remove-section' || verb === 'rename-section') {
+        return GIT_HOOK_CONFIG_SECTION_RE.test(rest[0] ?? '');
     }
-    const keyIndex = positionals.findIndex((p) => GIT_HOOKS_PATH_KEY_RE.test(p));
+    if (sectionOption) return GIT_HOOK_CONFIG_SECTION_RE.test(verb ?? '');
+    if (verb === 'set' || verb === 'unset') return rest.some((p) => GIT_HOOK_CONFIG_KEY_RE.test(p));
+    if (verb === 'get' || verb === 'list') return false;
+    const keyIndex = positionals.findIndex((p) => GIT_HOOK_CONFIG_KEY_RE.test(p));
     if (keyIndex === -1) return false;
-    return writeOption || positionals.length > keyIndex + 1;
+    if (writeOption) return true;
+    // `git config --get <key> <value-pattern>` is a read with a filter.
+    if (readOption) return false;
+    return positionals.length > keyIndex + 1;
 }
 
 /** Reason to refuse `cmd` because it skips or disables git hooks, or null. */
@@ -1322,20 +1348,27 @@ export function gitHookBypassReason(cmd: ResolvedCommand): string | null {
     if (envDisablesHooks(cmd.env ?? [])) return GIT_HOOK_BYPASS_REASON;
 
     const sub = gitSubcommandIndex(cmd.args);
+    const overridesHookConfig = (assignment: string) =>
+        GIT_HOOK_CONFIG_KEY_RE.test(assignment.split('=')[0] ?? '');
     for (let i = 0; i < sub; i++) {
         const arg = cmd.args[i];
-        if (arg === '-c' && /^core\.hookspath=/i.test(cmd.args[i + 1] ?? '')) return GIT_HOOK_BYPASS_REASON;
-        if (/^-ccore\.hookspath=/i.test(arg)) return GIT_HOOK_BYPASS_REASON;
-        if (/^--config-env=core\.hookspath=/i.test(arg)) return GIT_HOOK_BYPASS_REASON;
+        if ((arg === '-c' || arg === '--config-env') && overridesHookConfig(cmd.args[i + 1] ?? '')) {
+            return GIT_HOOK_BYPASS_REASON;
+        }
+        if (arg.startsWith('-c') && arg.length > 2 && overridesHookConfig(arg.slice(2))) return GIT_HOOK_BYPASS_REASON;
+        if (arg.startsWith('--config-env=') && overridesHookConfig(arg.slice('--config-env='.length))) {
+            return GIT_HOOK_BYPASS_REASON;
+        }
     }
 
     const subcommand = cmd.args[sub];
     const rest = cmd.args.slice(sub + 1);
-    if (subcommand === 'commit' && gitCommitSkipsHooks(rest)) return GIT_HOOK_BYPASS_REASON;
+    // `commit` is parsed with its argument roles (`-m --no-verify` is a message).
+    if (subcommand === 'commit') return gitCommitSkipsHooks(rest) ? GIT_HOOK_BYPASS_REASON : null;
     if (subcommand && GIT_NO_VERIFY_SUBCOMMANDS.has(subcommand) && rest.some((a) => GIT_NO_VERIFY_LONG_RE.test(a))) {
         return GIT_HOOK_BYPASS_REASON;
     }
-    if (subcommand === 'config' && gitConfigWritesHooksPath(rest)) return GIT_HOOK_BYPASS_REASON;
+    if (subcommand === 'config' && gitConfigWritesHookConfig(rest)) return GIT_HOOK_BYPASS_REASON;
     return null;
 }
 

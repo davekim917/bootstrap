@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -329,6 +329,32 @@ describe('lab scope comes from local config and fails closed', () => {
       evaluateBashCommand('git push --force https://github.com/lab-org/TEAM-WIKI.git main', { cwd: '/tmp' }).action,
     ).toBe('allow');
     expect(evaluateBashCommand('gh repo delete lab-org/TEAM-WIKI --yes', { cwd: '/tmp' }).action).toBe('gate');
+  });
+
+  test('a dotted sibling of a lab repo is not that lab repo', () => {
+    inLab();
+    for (const repo of ['TEAM-WIKI.production', 'LAB-APP.prod', 'LAB-APP.git.bak']) {
+      expect(
+        evaluateBashCommand(`git push --force https://github.com/lab-org/${repo}.git main`, { cwd: '/tmp' }).action,
+      ).toBe('gate');
+    }
+    expect(
+      evaluateBashCommand('git push --force https://github.com/lab-org/LAB-APP.git main', { cwd: '/tmp' }).action,
+    ).toBe('allow');
+  });
+
+  test('a narrowed config takes effect even when size and mtime are unchanged', () => {
+    const file = join(scopeDir, 'narrowed.json');
+    writeFileSync(file, JSON.stringify({ org: 'lab-org1' }));
+    withScopeFile(file, () => {
+      inLab();
+      const url = 'git push --force https://github.com/lab-org1/LAB-APP.git main';
+      expect(evaluateBashCommand(url, { cwd: '/tmp' }).action).toBe('allow');
+      const { atime, mtime } = statSync(file);
+      writeFileSync(file, JSON.stringify({ org: 'lab-org2' }));
+      utimesSync(file, atime, mtime);
+      expect(evaluateBashCommand(url, { cwd: '/tmp' }).action).toBe('gate');
+    });
   });
 
   test('a config change is picked up without re-importing the core', () => {

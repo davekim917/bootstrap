@@ -13,7 +13,8 @@ set -e
 top=$(git rev-parse --show-toplevel)
 . "$(dirname "$0")/boundary-lib.sh"
 
-checker=$(boundary_checker_dir)
+checker=$(boundary_checker_dir) && found=0 || found=$?
+if [ "$found" -eq 2 ]; then exit 1; fi
 if [ -n "$checker" ]; then
   allowlist=$(mktemp "${TMPDIR:-/tmp}/bootstrap-boundary-allowlist.XXXXXX")
   trap 'rm -f "$allowlist"' EXIT

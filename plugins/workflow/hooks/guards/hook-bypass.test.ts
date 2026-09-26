@@ -33,6 +33,20 @@ const BLOCKED = [
   'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x',
   'export HUSKY=0',
   'git add . && git commit --no-verify -m x',
+  'git --config-env core.hooksPath=EMPTY commit -m x',
+  'git config --remove-section core',
+  'git config --rename-section core retired',
+  'git config remove-section core',
+  'git config --global --remove-section bootstrap',
+  'env -u FOO git push --no-verify origin main',
+  'env -C /repo git commit -n -m x',
+  "env -S 'git commit --no-verify -m x'",
+  'env --split-string="git push --no-verify origin main"',
+  'git -c bootstrap.boundaryChecker= push origin feature',
+  'git -c bootstrap.boundarychecker=/nowhere commit -m x',
+  'git config --unset bootstrap.boundaryChecker',
+  'git config bootstrap.boundaryChecker ""',
+  'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=bootstrap.boundaryChecker GIT_CONFIG_VALUE_0= git push origin feature',
 ];
 
 const ALLOWED = [
@@ -51,6 +65,12 @@ const ALLOWED = [
   'git config get core.hooksPath',
   'git config user.name "A Person"',
   'HUSKY=1 git commit -m x',
+  'git commit -m --no-verify',
+  'git config --get core.hooksPath scripts/hooks',
+  'git config --get bootstrap.boundaryChecker',
+  'git config --list',
+  'git config --remove-section alias',
+  'env -u FOO git push origin main',
 ];
 
 describe('hook bypass is refused', () => {
@@ -70,6 +90,15 @@ describe('ordinary git use is unaffected', () => {
       expect(verdict.reason === GIT_HOOK_BYPASS_REASON).toBe(false);
     });
   }
+});
+
+describe('wrapper option values are not mistaken for the command', () => {
+  test('env -u NAME still resolves the real command for every check', () => {
+    expect(evaluateBashCommand('rm -rf /srv/project/src', { cwd: '/srv/project' }).action).toBe('block');
+    expect(evaluateBashCommand('env -u FOO rm -rf /srv/project/src', { cwd: '/srv/project' }).action).toBe('block');
+    expect(evaluateBashCommand('env -C /srv rm -rf /srv/project/src', { cwd: '/srv/project' }).action).toBe('block');
+    expect(evaluateBashCommand("env -S 'rm -rf /srv/project/src'", { cwd: '/srv/project' }).action).toBe('block');
+  });
 });
 
 describe('a lab session does not exempt it', () => {

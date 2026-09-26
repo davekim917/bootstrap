@@ -8,11 +8,22 @@
 #
 #   git config bootstrap.boundaryChecker <path>
 #
-# Set but unusable → the hook fails closed. Unset → the hook prints one notice
-# and continues: a public contributor has no install registry to scan against.
+# Set but unusable (including set to empty) → the hook fails closed. Unset →
+# the hook prints one notice and continues: a public contributor has no install
+# registry to scan against.
 
+# boundary_checker_dir — prints the configured path; returns 1 when the key is
+# absent, 2 when it is present but empty or unreadable.
 boundary_checker_dir() {
-  git config --get bootstrap.boundaryChecker 2>/dev/null || true
+  _value=$(git config --get bootstrap.boundaryChecker 2>/dev/null) && _status=0 || _status=$?
+  case $_status in
+    0) if [ -n "$_value" ]; then printf '%s\n' "$_value"; return 0; fi
+       echo "boundary: bootstrap.boundaryChecker is set but empty — refusing (fail closed)" >&2
+       return 2 ;;
+    1) return 1 ;;
+    *) echo "boundary: bootstrap.boundaryChecker could not be read — refusing (fail closed)" >&2
+       return 2 ;;
+  esac
 }
 
 # run_boundary_checker <checker-dir> <checker args...>

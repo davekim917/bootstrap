@@ -1,20 +1,28 @@
 #!/bin/bash
-# Public-boundary scan of everything a push publishes: every commit the remote
-# does not already have — its tree AND its message — and any annotated tag's
-# message, each checked against the allowlist committed in that same commit.
+# Public-boundary scan of everything a push publishes: every commit the
+# destination does not already have — its tree AND its message — and every new
+# annotated tag object's message (nested tags included), each checked against
+# the allowlist committed in the commit it belongs to.
 # A commit hook can be skipped by a human (--no-verify) or predate this gate;
 # this is the last local check before the bytes leave the machine.
 set -e
 top=$(git rev-parse --show-toplevel)
 . "$(dirname "$0")/boundary-lib.sh"
 
-checker=$(boundary_checker_dir)
-if [ -z "$checker" ]; then
+checker=$(boundary_checker_dir) && found=0 || found=$?
+if [ "$found" -eq 2 ]; then exit 1; fi
+if [ "$found" -eq 1 ]; then
   echo "boundary: bootstrap.boundaryChecker is not configured — push scan skipped" >&2
   exit 0
 fi
 
-remote=$1
+# Git exports its own repository variables to hooks. Left in place they would
+# point the checker's git calls inside each temporary tree back at the caller's
+# index, so a clean current index could hide a leak in an earlier commit.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX GIT_OBJECT_DIRECTORY
+cd "$top"
+
+url=$2
 zero=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
 work=$(mktemp -d "${TMPDIR:-/tmp}/bootstrap-pre-push.XXXXXX")
 cleanup() {
@@ -23,31 +31,47 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# What the destination already has, as it reports it now — never the local
+# remote-tracking refs, which go stale when a remote is repointed or rewound.
+if ! git ls-remote "$url" </dev/null > "$work/remote-refs"; then
+  echo "boundary: could not list what $url already has — refusing (fail closed)" >&2
+  exit 1
+fi
+: > "$work/known"
+while read -r sha _ref; do
+  if git cat-file -e "$sha^{commit}" 2>/dev/null; then echo "$sha" >> "$work/known"; fi
+done < "$work/remote-refs"
+
+scan_message() { # scan_message <message-file> <allowlist-file>
+  run_boundary_checker "$checker" --root "$top" --message "$1" --message-raw --allowlist "$2"
+}
+
 cat > "$work/refs"
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$zero" ] && continue # a ref deletion publishes no content
 
-  if [ "$(git cat-file -t "$local_sha")" = tag ]; then
-    git cat-file tag "$local_sha" | sed '1,/^$/d' > "$work/message"
-    run_boundary_checker "$checker" --root "$top" --message "$work/message" --message-raw \
-      --allowlist "$top/.public-boundary-allowlist.json"
-  fi
+  # Every tag object in the chain is published, not only the outermost one.
+  object=$local_sha
+  while [ "$(git cat-file -t "$object")" = tag ]; do
+    git cat-file tag "$object" | sed '1,/^$/d' > "$work/message"
+    if target=$(git rev-parse --verify --quiet "$object^{commit}"); then
+      write_committed_allowlist "$target:" "$work/allowlist.json"
+    else
+      printf '{"entries": []}\n' > "$work/allowlist.json"
+    fi
+    scan_message "$work/message" "$work/allowlist.json"
+    object=$(git cat-file tag "$object" | sed -n 's/^object //p;/^$/q')
+  done
+  git cat-file -e "$local_sha^{commit}" 2>/dev/null || continue
 
-  if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-    set -- "$remote_sha"
-  else
-    set --
-  fi
-  git rev-list "$local_sha" --not "$@" --remotes="$remote" </dev/null > "$work/commits"
-
+  git rev-list "$local_sha" --not $(cat "$work/known") </dev/null > "$work/commits"
   while read -r commit; do
     echo "boundary: scanning $(git rev-parse --short "$commit") for $remote_ref" >&2
-    git -C "$top" -c core.hooksPath=/dev/null worktree add --detach --quiet "$work/tree" "$commit" </dev/null
+    git -c core.hooksPath=/dev/null worktree add --detach --quiet "$work/tree" "$commit" </dev/null
     write_committed_allowlist "$commit:" "$work/allowlist.json"
     git show --no-patch --format=%B "$commit" > "$work/message"
     run_boundary_checker "$checker" --root "$work/tree" --index --allowlist "$work/allowlist.json"
-    run_boundary_checker "$checker" --root "$work/tree" --message "$work/message" --message-raw \
-      --allowlist "$work/allowlist.json"
-    git -C "$top" worktree remove --force "$work/tree" </dev/null
+    scan_message "$work/message" "$work/allowlist.json"
+    git worktree remove --force "$work/tree" </dev/null
   done < "$work/commits"
 done < "$work/refs"

@@ -6,7 +6,8 @@ set -e
 top=$(git rev-parse --show-toplevel)
 . "$(dirname "$0")/boundary-lib.sh"
 
-checker=$(boundary_checker_dir)
+checker=$(boundary_checker_dir) && found=0 || found=$?
+if [ "$found" -eq 2 ]; then exit 1; fi
 [ -n "$checker" ] || exit 0
 
 message=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
