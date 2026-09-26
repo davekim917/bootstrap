@@ -9,7 +9,7 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
-      "version": "5.7.7"
+      "version": "5.7.8"
     },
     {
       "name": "bootstrap-orchestrate",
@@ -39,7 +39,7 @@
       "name": "wwed",
       "source": "./plugins/wwed",
       "description": "What Would Elon Do \u2014 execution and simplification judgment run through Musk's five-step algorithm (question the requirement, delete, simplify, accelerate, automate), fenced off from human gates and irreversible surfaces. Complements wwbd; ships an always-on nudge like it.",
-      "version": "1.0.0"
+      "version": "1.0.1"
     },
     {
       "name": "analytics-verify",

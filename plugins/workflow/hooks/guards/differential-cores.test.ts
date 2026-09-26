@@ -92,14 +92,14 @@ const SNOWFLAKE_CORPUS = [
 ];
 
 const EMAIL_CORPUS = [
-  'gws gmail +send --to a@b.com --subject hi',
-  'gws gmail +reply --to a@b.com',
-  'gws gmail +reply-all --to a@b.com',
-  'gws gmail +forward --to a@b.com',
+  'gws gmail +send --to a@example.com --subject hi',
+  'gws gmail +reply --to a@example.com',
+  'gws gmail +reply-all --to a@example.com',
+  'gws gmail +forward --to a@example.com',
   'gws gmail users messages send --json \'{"raw":"x"}\'',
   'gws gmail users drafts send --json \'{"raw":"x"}\'',
-  'gws gmail +send --to a@b.com --dry-run',
-  'gws gmail +send --to a@b.com --draft',
+  'gws gmail +send --to a@example.com --dry-run',
+  'gws gmail +send --to a@example.com --draft',
   'gws gmail +send --help',
   'ls -la',
   'git status',
@@ -107,12 +107,12 @@ const EMAIL_CORPUS = [
 ];
 
 const NATIVE_EMAIL_CORPUS: Array<[string, Record<string, unknown>]> = [
-  ['send_email', { to: 'a@b.com', subject: 'Status', body: 'omitted' }],
-  ['mcp__gmail__reply_email', { message: { recipient: 'a@b.com' } }],
-  ['gmail_send_draft_email', { to_email: 'a@b.com' }],
-  ['gmail_create_draft_reply', { to: 'a@b.com' }],
-  ['gmail_search_emails', { query: 'from:a@b.com' }],
-  ['send_message', { recipient: 'a@b.com' }],
+  ['send_email', { to: 'a@example.com', subject: 'Status', body: 'omitted' }],
+  ['mcp__gmail__reply_email', { message: { recipient: 'a@example.com' } }],
+  ['gmail_send_draft_email', { to_email: 'a@example.com' }],
+  ['gmail_create_draft_reply', { to: 'a@example.com' }],
+  ['gmail_search_emails', { query: 'from:a@example.com' }],
+  ['send_message', { recipient: 'a@example.com' }],
 ];
 
 describe('test_differential_imports_two_paths', () => {

@@ -33,6 +33,11 @@ export const PROTECTED_SEGMENTS = [
     '.env.local',
     '.env.production',
     '.env.development',
+    // Both files relax a gate: the public-boundary allowlist exempts values from
+    // the leak scan, and a lab scope names the org whose LAB-* repos skip
+    // destructive-command approval in lab sessions. Their owner edits them.
+    '.public-boundary-allowlist.json',
+    'lab-scope.local.json',
 ];
 
 // Protected glob patterns (IaC state/config). Match path segments rather than

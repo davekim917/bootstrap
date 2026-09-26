@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "bootstrap-workflow-agents",
-      "version": "2.7.7",
+      "version": "2.7.8",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
       "source": {
         "source": "local",
@@ -76,7 +76,7 @@
     },
     {
       "name": "wwed",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "What Would Elon Do \u2014 Musk's five-step algorithm as a subtraction and cycle-time advisory skill.",
       "source": {
         "source": "local",

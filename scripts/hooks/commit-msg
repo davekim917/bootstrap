@@ -1,0 +1,17 @@
+#!/bin/bash
+# Public-boundary scan of the commit message: a message is published with its
+# commit, and the tree scan never sees it. Silent when the checker is not
+# configured (pre-commit already said so).
+set -e
+top=$(git rev-parse --show-toplevel)
+. "$(dirname "$0")/boundary-lib.sh"
+
+checker=$(boundary_checker_dir) && found=0 || found=$?
+if [ "$found" -eq 2 ]; then exit 1; fi
+[ -n "$checker" ] || exit 0
+
+message=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+allowlist=$(mktemp "${TMPDIR:-/tmp}/bootstrap-boundary-allowlist.XXXXXX")
+trap 'rm -f "$allowlist"' EXIT
+write_committed_allowlist ":" "$allowlist"
+run_boundary_checker "$checker" --root "$top" --message "$message" --allowlist "$allowlist"

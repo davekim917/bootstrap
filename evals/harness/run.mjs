@@ -135,7 +135,8 @@ async function main() {
 async function runTarget(targetId, suiteDir, caseNames, args, outRoot) {
   const targetCfg = loadJson(path.join(HARNESS_DIR, 'targets', `${targetId}.json`));
   targetCfg.env = targetCfg.env ?? {};
-  if (targetCfg.env.auth) targetCfg.env.auth = expandHome(targetCfg.env.auth);
+  // A host keeps its real credential path out of the committed target: EVAL_TARGET_AUTH wins.
+  if (targetCfg.env.auth) targetCfg.env.auth = expandHome(process.env.EVAL_TARGET_AUTH || targetCfg.env.auth);
   const adapter = (await import(path.join(HARNESS_DIR, 'adapters', `${targetCfg.adapter}.mjs`))).default;
   const provenance = { target: targetCfg.id, adapter: targetCfg.adapter, model: targetCfg.model, when: new Date().toISOString() };
   // The suite declares the skill-under-test (anchors.json `skill`); the target
