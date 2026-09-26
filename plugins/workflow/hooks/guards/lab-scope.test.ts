@@ -343,6 +343,26 @@ describe('lab scope comes from local config and fails closed', () => {
     ).toBe('allow');
   });
 
+  test('a lab org path on another host is not a lab repo', () => {
+    inLab();
+    for (const url of [
+      'https://example.com/lab-org/TEAM-WIKI.git',
+      'https://example.com/lab-org/LAB-APP.git',
+      'https://example.com/github.com/lab-org/LAB-APP.git',
+      'https://github.com.example.net/lab-org/LAB-APP.git',
+      'git@example.com:lab-org/LAB-APP.git',
+    ]) {
+      expect(evaluateBashCommand(`git push --force ${url} main`, { cwd: '/tmp' }).action).toBe('gate');
+    }
+    for (const url of [
+      'https://github.com/lab-org/LAB-APP',
+      'ssh://git@github.com/lab-org/LAB-APP.git',
+      'git@github.com:lab-org/LAB-APP.git',
+    ]) {
+      expect(evaluateBashCommand(`git push --force ${url} main`, { cwd: '/tmp' }).action).toBe('allow');
+    }
+  });
+
   test('a narrowed config takes effect even when size and mtime are unchanged', () => {
     const file = join(scopeDir, 'narrowed.json');
     writeFileSync(file, JSON.stringify({ org: 'lab-org1' }));

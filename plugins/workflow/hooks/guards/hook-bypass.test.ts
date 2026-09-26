@@ -47,6 +47,10 @@ const BLOCKED = [
   'git config --unset bootstrap.boundaryChecker',
   'git config bootstrap.boundaryChecker ""',
   'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=bootstrap.boundaryChecker GIT_CONFIG_VALUE_0= git push origin feature',
+  'git config --get --no-get core.hooksPath /dev/null',
+  `env -S '"git" push --no-verify origin main'`,
+  `env -S 'git push "--no-verify" origin main'`,
+  `env -S 'git push \\--no-verify origin main'`,
 ];
 
 const ALLOWED = [

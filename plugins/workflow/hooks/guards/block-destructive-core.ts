@@ -608,6 +608,36 @@ export function walkPartsForSubstitutions(node: any, commands: any[]): void {
     }
 }
 
+/** Split an `env -S` string into words the way env does: whitespace separates,
+ *  single quotes are literal, double quotes and backslashes escape. */
+function splitEnvString(text: string): string[] {
+    const words: string[] = [];
+    let word = '';
+    let inWord = false;
+    let quote: '"' | "'" | null = null;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (quote === "'") {
+            if (ch === "'") quote = null; else word += ch;
+            continue;
+        }
+        if (ch === '\\' && i + 1 < text.length) { word += text[++i]; inWord = true; continue; }
+        if (quote === '"') {
+            if (ch === '"') quote = null; else word += ch;
+            continue;
+        }
+        if (ch === '"' || ch === "'") { quote = ch; inWord = true; continue; }
+        if (/\s/.test(ch)) {
+            if (inWord) { words.push(word); word = ''; inWord = false; }
+            continue;
+        }
+        word += ch;
+        inWord = true;
+    }
+    if (inWord) words.push(word);
+    return words;
+}
+
 /** Resolve a Command AST node: strip wrapper commands, extract name + args */
 export function resolveCommand(node: any): ResolvedCommand | null {
     if (!node.name) return null;
@@ -644,7 +674,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
                 if (a === '-S' || a === '--split-string' || /^(?:-S.|--split-string=)/.test(a)) {
                     const inline = a.startsWith('--split-string=') ? a.slice('--split-string='.length)
                         : a.length > 2 && a.startsWith('-S') ? a.slice(2) : null;
-                    const words = (inline ?? args[skip + 1] ?? '').split(/\s+/).filter(Boolean);
+                    const words = splitEnvString(inline ?? args[skip + 1] ?? '');
                     args = [...args.slice(0, skip), ...words, ...args.slice(skip + (inline === null ? 2 : 1))];
                     continue;
                 }
@@ -935,6 +965,10 @@ const LAB_SCOPE_FILE = 'lab-scope.local.json';
 const LAB_SCOPE_CONTAINER_PATH = `/workspace/plugins/bootstrap/${LAB_SCOPE_FILE}`;
 const GITHUB_OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const GITHUB_REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
+// `https://[user[:token]@]github.com[:port]/`, `ssh://git@github.com/`,
+// `git://github.com/`, and scp-style `git@github.com:`.
+const GITHUB_REMOTE_PREFIX =
+    '(?:(?:https?|ssh|git|git\\+ssh):\\/\\/(?:[^\\s/@]+@)?github\\.com(?::\\d+)?\\/|[A-Za-z0-9_.-]+@github\\.com:)';
 
 /** Parse a lab-scope file's text. Null when anything about it is unusable. */
 export function parseLabScope(text: string): LabScope | null {
@@ -974,7 +1008,7 @@ function escapeRegexLiteral(value: string): string {
 }
 
 interface CompiledLabScope {
-    /** `<org>/<lab repo>` anywhere in a value; null without a lab org. */
+    /** A whole value naming `<org>/<lab repo>` on GitHub; null without a lab org. */
     repoRef: RegExp | null;
     /** `worktrees/<lab repo>` path segment. */
     worktreeSegment: RegExp;
@@ -1017,7 +1051,7 @@ function currentLabScope(): CompiledLabScope {
     const org = scope ? escapeRegexLiteral(scope.org) : null;
     const compiled: CompiledLabScope = {
         repoRef: org
-            ? new RegExp(`(?:^|[^A-Za-z0-9_.-])(${org})\\/(${repoName})(?:\\.git)?(?![A-Za-z0-9_.-])`, 'i')
+            ? new RegExp(`^(?:${GITHUB_REMOTE_PREFIX})?(${org})\\/(${repoName})(?:\\.git)?\\/?$`, 'i')
             : null,
         worktreeSegment: new RegExp(`(?:^|\\/)worktrees\\/${repoName}(?:\\/|$)`, 'i'),
         ghDeletable: org ? new RegExp(`^(${org})\\/(LAB-[A-Z0-9-]+)$`, 'i') : null,
@@ -1037,7 +1071,9 @@ export function isLabSession(): boolean {
 }
 
 /** Name of a lab repo `value` references (`<org>/<repo>`), or null. Accepts a
- *  bare `org/repo` or any URL containing one. Always null without a lab org. */
+ *  bare `org/repo` or a github.com URL (https, ssh, git, scp-style) whose path
+ *  is exactly that repo — the same path on any other host is not a lab repo.
+ *  Always null without a lab org. */
 export function labRepoRefName(value: string): string | null {
     if (!value) return null;
     const { repoRef } = currentLabScope();
@@ -1318,6 +1354,8 @@ function gitConfigWritesHookConfig(args: string[]): boolean {
         if (GIT_CONFIG_WRITE_OPTS.has(arg)) { writeOption = true; continue; }
         if (GIT_CONFIG_SECTION_OPTS.has(arg)) { sectionOption = true; continue; }
         if (GIT_CONFIG_READ_OPTS.has(arg)) { readOption = true; continue; }
+        // `--no-get` and friends negate an earlier action option: never a read.
+        if (arg.startsWith('--no-')) { writeOption = true; continue; }
         if (arg.startsWith('-')) continue;
         positionals.push(arg);
     }

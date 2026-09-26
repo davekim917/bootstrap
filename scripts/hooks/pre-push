@@ -62,7 +62,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     scan_message "$work/message" "$work/allowlist.json"
     object=$(git cat-file tag "$object" | sed -n 's/^object //p;/^$/q')
   done
-  git cat-file -e "$local_sha^{commit}" 2>/dev/null || continue
+  # A ref may point straight at a tree or blob (a lightweight tag can); that
+  # publishes content with no commit to scan it through.
+  if ! git cat-file -e "$object^{commit}" 2>/dev/null; then
+    echo "boundary: $remote_ref points at a $(git cat-file -t "$object") object, which this hook cannot scan — refusing (fail closed)" >&2
+    exit 1
+  fi
 
   git rev-list "$local_sha" --not $(cat "$work/known") </dev/null > "$work/commits"
   while read -r commit; do
