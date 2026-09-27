@@ -249,6 +249,22 @@ test('the CLI prints JSON and exits 1 on a failing change, 2 when it cannot chec
   assert.equal(missing.status, 2);
 });
 
+test('--own-typescript never loads TypeScript from the checked repository', () => {
+  const repo = makeRepo({ 'a.ts': 'export const a = 1;\n' });
+  commit(repo, {
+    'node_modules/typescript/index.js': 'module.exports = { createSourceFile() {} };\n',
+    'a.ts': '// narration\nexport const a = 1;\n',
+  });
+  const run = (...flags) =>
+    spawnSync(process.execPath, [CLI, 'check', '--repo', repo, '--base', 'main', '--head', 'HEAD', ...flags], { encoding: 'utf8' });
+  const fromRepo = run();
+  assert.equal(fromRepo.status, 2, fromRepo.stdout);
+  assert.match(fromRepo.stdout, /could not check a\.ts/);
+  const own = run('--own-typescript');
+  assert.equal(own.status, 1, own.stdout);
+  assert.match(own.stdout, /net \+1/);
+});
+
 test('an untracked file is new: every comment line in it is growth', () => {
   const repo = makeRepo({ 'keep.ts': 'export {};\n' });
   write(repo, { 'fresh.ts': '// a\n// b\nexport const f = 1;\n' });
