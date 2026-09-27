@@ -1,3 +1,4 @@
+// see PR #12 for background
 const TERMINATOR = /\r\n|[\n\r\u2028\u2029]/g;
 
 export function lineStarts(text) {
