@@ -11,9 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # pull_request_target runs this file from the base branch, so a PR cannot edit its own check.
-      # It also runs with the base's token: read the PR head as git objects only, never execute it.
-      - name: Checkout the base branch
+      # pull_request_target runs this file from the default branch, so a PR cannot edit its own check.
+      # It also runs with the repository's token: read the PR head as git objects only, never execute it.
+      - name: Checkout the default branch
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
