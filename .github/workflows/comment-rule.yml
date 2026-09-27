@@ -6,14 +6,29 @@ on:
 
 permissions:
   contents: read
+  statuses: write
+
+concurrency:
+  group: comment-rule-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   comment-rule:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       # pull_request_target runs this file from the default branch, so a PR cannot edit its own check.
       # It also runs with the repository's token: read the PR head as git objects only, never execute it.
+      # Its check run lands on the default branch's commit, so the verdict is posted to the PR head as a status.
+      - name: Mark the PR head pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" -f state=pending -f context=comment-rule -f target_url="$RUN_URL" -f description="Checking comments" > /dev/null
+
       - name: Checkout the default branch
         uses: actions/checkout@v6
         with:
@@ -22,8 +37,6 @@ jobs:
       - name: Fetch the PR head and base
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           git fetch --no-tags origin "+refs/pull/$PR_NUMBER/head:refs/remotes/origin/pr-head"
           for sha in "$HEAD_SHA" "$BASE_SHA"; do
@@ -50,7 +63,14 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: No net comment growth, no file:line or PR/issue references in comments
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        id: check
         run: node .comment-rule-checker/plugins/comment-rule/bin/comment-rule.mjs check --repo . --base "$BASE_SHA" --head "$HEAD_SHA" --own-typescript
+
+      - name: Report the verdict on the PR head
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.check.outcome }}
+        run: |
+          if [ "$OUTCOME" = success ]; then state=success; description="No comment growth"; else state=failure; description="Comment rule failed; see the run"; fi
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" -f state="$state" -f context=comment-rule -f target_url="$RUN_URL" -f description="$description" > /dev/null
