@@ -17,13 +17,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       # pull_request_target runs this file from the default branch, so a PR cannot edit its own check.
       # It also runs with the repository's token: read the PR head as git objects only, never execute it.
       # Its check run lands on the default branch's commit, so the verdict is posted to the PR head as a status.
+      - name: Read the PR as it is now, so a rerun never judges a stale head or base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '"HEAD_SHA=\(.head.sha)\nBASE_SHA=\(.base.sha)"' >> "$GITHUB_ENV"
+
       - name: Mark the PR head pending
         env:
           GH_TOKEN: ${{ github.token }}
@@ -35,8 +39,6 @@ jobs:
           fetch-depth: 0
 
       - name: Fetch the PR head and base
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           git fetch --no-tags origin "+refs/pull/$PR_NUMBER/head:refs/remotes/origin/pr-head"
           for sha in "$HEAD_SHA" "$BASE_SHA"; do
