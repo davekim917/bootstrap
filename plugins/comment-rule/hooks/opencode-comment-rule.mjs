@@ -3,11 +3,7 @@ import { editedFiles, feedbackMessage } from '../lib/feedback.mjs';
 
 const EDIT_TOOLS = new Set(['edit', 'write', 'multiedit', 'patch', 'apply_patch']);
 
-/**
- * OpenCode has no hook manifest, so a host lists this module in its config `plugin` array. The
- * feedback is appended to the tool's own output, which is what the model reads next; any failure
- * leaves the output untouched.
- */
+// OpenCode has no hook manifest: a host lists this module in its config `plugin` array.
 export const CommentRuleFeedback = async (context) => {
   const reported = new Map();
   const cwd = context?.directory || process.cwd();

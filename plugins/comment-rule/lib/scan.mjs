@@ -15,10 +15,6 @@ const BY_EXTENSION = [
 const SHELL_SHEBANG = /^#!\s*(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?(?:ba|da|k)?sh\b/;
 const PYTHON_SHEBANG = /^#!\s*(?:\S*\/)?(?:env\s+(?:-\S+\s+)*)?python[\d.]*\b/;
 
-/**
- * By extension, and for a file with no extension by its shebang only. Anything else is not
- * counted rather than guessed at.
- */
 export function languageOf(file, text) {
   for (const [pattern, language] of BY_EXTENSION) if (pattern.test(file)) return language;
   if (path.posix.extname(file) !== '' || typeof text !== 'string') return null;
@@ -31,10 +27,6 @@ export function needsContentForLanguage(file) {
   return !BY_EXTENSION.some(([pattern]) => pattern.test(file)) && path.posix.extname(file) === '';
 }
 
-/**
- * `items`: [{ file, text, language, resolveFrom? }]. Returns, per item, `lines` (0-based line →
- * comment text on it) or `error` when the file could not be read by its parser.
- */
 export function scanMany(items) {
   const results = items.map(() => null);
   const pythonItems = [];

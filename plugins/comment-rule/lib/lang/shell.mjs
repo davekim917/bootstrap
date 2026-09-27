@@ -45,11 +45,7 @@ function skipBalanced(text, i, to) {
   return to;
 }
 
-/**
- * `#` opens a comment only at the start of a word, so `a#b`, `$#` and `${x#y}` are code. Heredoc
- * bodies, arithmetic and every quoted form are code; a `#` inside a `$( )` nested in double
- * quotes is not counted. The first line's shebang is not a comment.
- */
+// A `#` inside a `$( )` nested in double quotes is skipped with the quotes, so it is not counted.
 export function shellCommentRanges(text) {
   const ranges = [];
   const to = text.length;

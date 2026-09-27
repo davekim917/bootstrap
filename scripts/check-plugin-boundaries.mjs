@@ -547,8 +547,7 @@ requireTextTokens(
   'the adapted-material license notice',
 );
 
-// comment-rule ships no skill and no standing directive: a checker CLI and a post-edit hook
-// per runtime. Its Codex hook file must not need ${CLAUDE_PLUGIN_ROOT}, which Codex does not set.
+// Codex does not expand ${CLAUDE_PLUGIN_ROOT}, so comment-rule ships a separate Codex hook file.
 const commentRuleClaudeManifest = readJson('plugins/comment-rule/.claude-plugin/plugin.json');
 const commentRuleCodexManifest = readJson('plugins/comment-rule/.codex-plugin/plugin.json');
 for (const [label, manifest, entries] of [

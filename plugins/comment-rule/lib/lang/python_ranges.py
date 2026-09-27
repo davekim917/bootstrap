@@ -1,8 +1,4 @@
-"""Reads [{"id", "text"}] as JSON on stdin; writes [{"id", "ranges", "error"}].
-
-Each range is [start, end) in code points of the given text, which the caller has already
-normalised to LF line endings, as Python's own reader does.
-"""
+# Ranges are code-point offsets into text the caller has already normalised to LF endings.
 import ast
 import io
 import json

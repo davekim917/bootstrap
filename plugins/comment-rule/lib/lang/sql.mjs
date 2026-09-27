@@ -2,11 +2,7 @@ const IDENT = /[A-Za-z0-9_$\u0080-￿]/;
 const DOLLAR_TAG = /\$([A-Za-z_\u0080-￿][\w\u0080-￿]*)?\$/y;
 const JINJA = /\{[{%#]/;
 
-/**
- * Jinja is rendered before the SQL is parsed, so its delimiters win over SQL quoting: a `{# #}`
- * inside a SQL string is still a comment. `{{ }}` and `{% %}` are code and are blanked out
- * (newlines kept, so offsets and lines stay put) before the SQL pass.
- */
+// Jinja renders before SQL parses, so `{# #}` inside a SQL string is still a comment.
 function jinjaPass(text) {
   const ranges = [];
   let masked = '';
@@ -98,10 +94,7 @@ function sqlPass(text, from, to, ranges) {
   }
 }
 
-/**
- * A dollar-quoted body is lexed as SQL in its own bounds, because a function body's comments are
- * comments; the body ends at the first repeat of its tag whatever it contains.
- */
+// A function body's comments are comments, so a dollar-quoted body is lexed as SQL.
 export function sqlCommentRanges(text) {
   const jinja = JINJA.test(text) ? jinjaPass(text) : { ranges: [], masked: text };
   const ranges = [...jinja.ranges];

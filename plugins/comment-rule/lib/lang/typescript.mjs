@@ -21,10 +21,7 @@ function globalDirs() {
   ];
 }
 
-/**
- * TypeScript 7 ships no JavaScript compiler API, so a module without `createSourceFile` is
- * skipped and the search continues.
- */
+// TypeScript 7 has no JavaScript compiler API; `usable` skips it.
 export function loadTypeScript(searchFrom = []) {
   if (cached !== undefined) return cached;
   const require = createRequire(import.meta.url);
@@ -50,11 +47,7 @@ function scriptKind(ts, file) {
   return ts.ScriptKind.TS;
 }
 
-/**
- * Comments are read from the trivia around leaf tokens, so text inside a string, template,
- * regex or JSX text is never taken for one. JSX text is a leaf whose own trivia scan would read
- * `<p>// x</p>` as a comment, so every range starting inside a leaf token's span is dropped.
- */
+// A trivia scan next to JSX text reads `<p>// x</p>` as a comment, so ranges inside a token are dropped.
 export function typescriptCommentRanges(ts, file, text) {
   const sourceFile = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, scriptKind(ts, file));
   const ranges = new Map();

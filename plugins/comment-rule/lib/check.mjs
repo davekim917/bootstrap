@@ -64,10 +64,6 @@ function newCommentLines(baseLines, headLines) {
   return added;
 }
 
-/**
- * Compares two versions of one file. Only comment text the base lacked can carry a finding, so a
- * moved or untouched comment is never reported.
- */
 function compareFile(entry, baseScan, headScan, context) {
   const baseLines = baseScan?.lines ?? new Map();
   const headLines = headScan?.lines ?? new Map();
@@ -139,11 +135,7 @@ function parseNameStatus(output) {
   return entries;
 }
 
-/**
- * The change from the merge base of `base` and the head to the head. With no `head`, the head is
- * the working tree (tracked files only). Exclusions come from the config committed at the merge
- * base, so a change cannot exempt itself.
- */
+// The config is read at the merge base so that a change cannot exempt itself.
 export function checkChange({ repo, base, head }) {
   const baseRef = base ?? defaultBaseRef(repo);
   const mergeBase = git(repo, ['merge-base', baseRef, head ?? 'HEAD']).trim();
@@ -167,7 +159,6 @@ export function checkChange({ repo, base, head }) {
   return summarise(files, errors, { base: baseRef, merge_base: mergeBase, head: head ?? 'WORKTREE' });
 }
 
-/** One working-tree file against HEAD, for write-time feedback. `null` when it is not counted. */
 export function checkFileAgainstHead(absoluteFile) {
   const dir = path.dirname(absoluteFile);
   const prefix = tryGit(dir, ['rev-parse', '--show-prefix']);

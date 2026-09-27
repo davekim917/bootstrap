@@ -17,12 +17,7 @@ function globToRegExp(glob) {
   return new RegExp(`^${pattern}$`);
 }
 
-/**
- * `exclude`: never counted. `frozen`: a file that already exists at the base is never counted on
- * either side, so deleting comments from it (say, an applied migration under a checksum) earns
- * nothing; a new file matching the pattern counts. `ticketPrefixes`: extra ticket keys, e.g.
- * "ABC" flags "ABC-123".
- */
+// A frozen file that exists at the base counts on neither side, so deleting its comments earns nothing.
 export function parseConfig(text) {
   const raw = text ? JSON.parse(text) : {};
   const list = (key) => {

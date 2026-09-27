@@ -17,12 +17,7 @@ function lineOf(starts, offset) {
   return lo;
 }
 
-/**
- * Every line a comment range touches is a comment line, including a blank line inside a block
- * comment and a line that also holds code. Lines are split on every terminator any of the
- * supported languages recognises, so a file cannot hide comment lines behind CR-only or
- * U+2028/U+2029 line breaks.
- */
+// Split on every terminator any supported language honours, or CR-only files hide their comment lines.
 export function commentLinesFromRanges(text, ranges) {
   const starts = lineStarts(text);
   const lines = new Map();

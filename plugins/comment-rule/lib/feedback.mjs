@@ -5,7 +5,6 @@ import { languageOf, needsContentForLanguage } from './scan.mjs';
 const PATCH_PATH = /^\*\*\* (?:Add File|Update File|Move to): (.+?)\s*$/gm;
 const MAX_LINES_SHOWN = 8;
 
-/** Claude (`file_path`), OpenCode (`filePath`) and a Codex/OpenCode apply_patch body. */
 export function editedFiles(toolInput, cwd) {
   const files = new Set();
   if (!toolInput || typeof toolInput !== 'object') return [];
@@ -24,10 +23,7 @@ const GUIDANCE =
   'would otherwise get the code wrong; cut the rest, or delete as many narrating or restating comment lines ' +
   'elsewhere in the change. Never cite file:line or a PR/issue/ticket number in a comment.';
 
-/**
- * `reported` maps a file to the comment texts already raised for it this session, so an agent that
- * keeps a deliberate comment is told once, not on every later edit of the file.
- */
+// Raise each line once per session, or a deliberately kept comment is repeated on every later edit.
 export function feedbackMessage(results, reported) {
   const parts = [];
   for (const result of results) {
