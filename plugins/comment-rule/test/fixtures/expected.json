@@ -22,6 +22,9 @@
     16,
     18
   ],
+  "shell/heredoc-words.sh": [
+    10
+  ],
   "shell/hook-no-ext": [
     2
   ],

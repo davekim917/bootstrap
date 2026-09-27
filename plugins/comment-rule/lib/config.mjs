@@ -1,3 +1,5 @@
+import { SQL_DIALECTS } from './lang/sql.mjs';
+
 export const CONFIG_FILE = '.comment-rule.json';
 
 const DEFAULT_EXCLUDE = ['**/node_modules/**', '**/*.min.js'];
@@ -30,14 +32,15 @@ export function parseConfig(text) {
   const ticketPrefixes = list('ticketPrefixes');
   const badPrefix = ticketPrefixes.find((prefix) => !/^[A-Za-z][A-Za-z0-9]*$/.test(prefix));
   if (badPrefix) throw new Error(`${CONFIG_FILE}: ticket prefix ${JSON.stringify(badPrefix)} must be letters and digits`);
-  const sqlLineComments = list('sqlLineComments');
-  const badMarker = sqlLineComments.find((marker) => marker !== '#' && marker !== '//');
-  if (badMarker) throw new Error(`${CONFIG_FILE}: sqlLineComments may hold only "#" and "//", not ${JSON.stringify(badMarker)}`);
+  const sqlDialect = raw.sqlDialect ?? 'ansi';
+  if (!Object.hasOwn(SQL_DIALECTS, sqlDialect)) {
+    throw new Error(`${CONFIG_FILE}: sqlDialect must be one of ${Object.keys(SQL_DIALECTS).join(', ')}`);
+  }
   const exclude = [...DEFAULT_EXCLUDE, ...list('exclude')].map(globToRegExp);
   const frozen = list('frozen').map(globToRegExp);
   return {
     ticketPrefixes,
-    sqlLineComments,
+    sqlDialect,
     isExcluded: (file) => exclude.some((re) => re.test(file)),
     isFrozen: (file) => frozen.some((re) => re.test(file)),
   };

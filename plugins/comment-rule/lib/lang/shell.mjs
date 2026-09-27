@@ -1,5 +1,31 @@
 const WORD_BREAK = /[\s;&|()<>]/;
-const HEREDOC = /<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|\\?([^\s;&|()<>'"]+))/y;
+
+// The delimiter is a whole shell word with its quotes removed: `<<'E'OF` and `<<$'EOF'` both end at `EOF`.
+function heredocDelimiter(text, i) {
+  let j = i + 2;
+  const strip = text[j] === '-';
+  if (strip) j++;
+  while (text[j] === ' ' || text[j] === '\t') j++;
+  let word = '';
+  while (j < text.length && !WORD_BREAK.test(text[j])) {
+    const c = text[j];
+    const quote = c === '$' && text[j + 1] === "'" ? "'" : c === "'" || c === '"' ? c : null;
+    if (quote) {
+      const open = c === '$' ? j + 2 : j + 1;
+      const close = text.indexOf(quote, open);
+      if (close < 0) return null;
+      word += text.slice(open, close);
+      j = close + 1;
+    } else if (c === '\\') {
+      word += text[j + 1] ?? '';
+      j += 2;
+    } else {
+      word += c;
+      j++;
+    }
+  }
+  return word ? { strip, delimiter: word, end: j } : null;
+}
 
 function skipSingle(text, i, to) {
   const end = text.indexOf("'", i + 1);
@@ -102,11 +128,10 @@ function scan(text, start, to, ranges, insideSubstitution) {
       else i += 2;
     } else if (text.startsWith('<<<', i)) i += 3;
     else if (text.startsWith('<<', i)) {
-      HEREDOC.lastIndex = i;
-      const match = HEREDOC.exec(text);
-      if (match) {
-        pendingHeredocs.push({ strip: match[1] === '-', delimiter: match[2] ?? match[3] ?? match[4] });
-        i = HEREDOC.lastIndex;
+      const heredoc = heredocDelimiter(text, i);
+      if (heredoc) {
+        pendingHeredocs.push(heredoc);
+        i = heredoc.end;
       } else i += 2;
     } else {
       if (insideSubstitution && c === '(') depth++;

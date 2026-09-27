@@ -98,7 +98,7 @@ function evaluate(repo, entries, context) {
         text,
         language: entry.language,
         resolveFrom: [path.dirname(path.join(repo, file)), repo],
-        sqlLineComments: context.sqlLineComments ?? [],
+        sqlDialect: context.sqlDialect ?? 'ansi',
       });
     }
   }
@@ -145,7 +145,7 @@ export function checkChange({ repo, base, head }) {
   const baseRef = base ?? defaultBaseRef(repo);
   const mergeBase = git(repo, ['merge-base', baseRef, head ?? 'HEAD']).trim();
   const config = parseConfig(show(repo, mergeBase, CONFIG_FILE));
-  const context = { ownOwner: ownOwner(repo), ticketPrefixes: config.ticketPrefixes, sqlLineComments: config.sqlLineComments };
+  const context = { ownOwner: ownOwner(repo), ticketPrefixes: config.ticketPrefixes, sqlDialect: config.sqlDialect };
   const diff = git(repo, ['diff', '--name-status', '-z', '-M', '--no-color', '--no-ext-diff', mergeBase, ...(head ? [head] : []), '--']);
   const entries = [];
   for (const { status, oldPath, newPath } of parseNameStatus(diff)) {
@@ -184,7 +184,7 @@ export function checkFileAgainstHead(absoluteFile) {
   let baseText = tryGit(dir, ['show', `HEAD:./${path.basename(absoluteFile)}`]);
   if (baseText !== null && config.isFrozen(file)) return null;
   if (baseText !== null && languageOf(file, baseText) !== language) baseText = null;
-  const context = { ownOwner: ownOwner(repo), ticketPrefixes: config.ticketPrefixes, sqlLineComments: config.sqlLineComments };
+  const context = { ownOwner: ownOwner(repo), ticketPrefixes: config.ticketPrefixes, sqlDialect: config.sqlDialect };
   const entry = { oldPath: baseText === null ? null : file, newPath: file, language, baseText, headText };
   const { files, errors } = evaluate(repo, [entry], context);
   if (errors.length) return { error: errors[0].error, path: file, key: absoluteFile };
@@ -201,7 +201,7 @@ export function countTree(repo) {
     const language = text === null ? null : languageOf(file, text);
     if (language) entries.push({ oldPath: null, newPath: file, language, baseText: null, headText: text });
   }
-  const { files, errors } = evaluate(repo, entries, { ownOwner: null, ticketPrefixes: [], sqlLineComments: config.sqlLineComments });
+  const { files, errors } = evaluate(repo, entries, { ownOwner: null, ticketPrefixes: [], sqlDialect: config.sqlDialect });
   const totals = {};
   for (const file of files) {
     for (const key of [file.language, 'total']) {

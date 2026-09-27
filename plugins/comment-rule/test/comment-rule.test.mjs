@@ -30,11 +30,12 @@ for (const [name, lines] of Object.entries(expected)) {
   });
 }
 
-test('SQL line markers beyond -- count only when the repository opts in', () => {
-  const text = 'select 1 # hash comment\nselect 2 // slash comment\nselect 3;\n';
-  const scan = (sqlLineComments) => [...scanMany([{ file: 'q.sql', text, language: 'sql', sqlLineComments }])[0].lines.keys()];
-  assert.deepEqual(scan([]), []);
-  assert.deepEqual(scan(['#', '//']), [0, 1]);
+test('SQL dialects set the extra line markers and backslash escapes', () => {
+  const text = "select 1 # hash\nselect 2 // slash\nselect 'can\\'t -- text' -- real\nselect 'C:\\' -- ansi ends at the quote\n";
+  const scan = (sqlDialect) => [...scanMany([{ file: 'q.sql', text, language: 'sql', sqlDialect }])[0].lines.keys()];
+  assert.deepEqual(scan('ansi'), [2, 3]);
+  assert.deepEqual(scan('snowflake'), [1, 2]);
+  assert.deepEqual(scan('mysql'), [0, 2]);
 });
 
 test('a Python file the interpreter cannot parse is an error, never a partial count', () => {

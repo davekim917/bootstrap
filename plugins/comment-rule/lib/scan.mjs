@@ -45,7 +45,7 @@ export function scanMany(items) {
           return;
         }
         case 'sql':
-          results[index] = { lines: commentLinesFromRanges(item.text, sqlCommentRanges(item.text, item.sqlLineComments)) };
+          results[index] = { lines: commentLinesFromRanges(item.text, sqlCommentRanges(item.text, item.sqlDialect)) };
           return;
         case 'shell':
           results[index] = { lines: commentLinesFromRanges(item.text, shellCommentRanges(item.text)) };

@@ -359,7 +359,8 @@ with its line.
   cannot exempt itself: `exclude` (globs never counted), `frozen` (globs that are not counted
   once they exist at the base, e.g. applied migrations under a checksum, so deleting their
   comments earns nothing), `ticketPrefixes` (extra keys such as `ABC` for `ABC-123`),
-  `sqlLineComments` (`"#"` and/or `"//"` for dialects that treat them as line comments).
+  `sqlDialect` (`ansi`, the default and Postgres's rules; `snowflake` adds `//` comments and
+  backslash escapes; `bigquery` and `mysql` add `#` comments and backslash escapes).
 - **TypeScript** 5.x or 6.x is taken from the checked repository, then from the plugin
   (`npm ci --ignore-scripts` in `plugins/comment-rule`), then from a global install. Without one,
   TypeScript files make `check` exit 2 rather than pass. Python files need `python3`.

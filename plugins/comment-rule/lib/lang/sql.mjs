@@ -2,6 +2,13 @@ const IDENT = /[A-Za-z0-9_$\u0080-￿]/;
 const DOLLAR_TAG = /\$([A-Za-z_\u0080-￿][\w\u0080-￿]*)?\$/y;
 const JINJA = /\{[{%#]/;
 
+export const SQL_DIALECTS = {
+  ansi: { lineMarkers: [], escapingQuotes: '' },
+  snowflake: { lineMarkers: ['//'], escapingQuotes: "'" },
+  bigquery: { lineMarkers: ['#'], escapingQuotes: `'"` },
+  mysql: { lineMarkers: ['#'], escapingQuotes: `'"` },
+};
+
 // Jinja renders before SQL parses, so `{# #}` inside a SQL string is still a comment.
 function jinjaPass(text) {
   const ranges = [];
@@ -34,13 +41,13 @@ function jinjaPass(text) {
   return { ranges, masked };
 }
 
-function sqlPass(text, from, to, ranges, lineMarkers) {
+function sqlPass(text, from, to, ranges, dialect) {
   let i = from;
   let escapeContinuationEnd = -1;
   while (i < to) {
     const c = text[i];
     const pair = text.slice(i, i + 2);
-    if (pair === '--' || lineMarkers.some((marker) => text.startsWith(marker, i))) {
+    if (pair === '--' || dialect.lineMarkers.some((marker) => text.startsWith(marker, i))) {
       let j = i;
       while (j < to && text[j] !== '\n' && text[j] !== '\r') j++;
       ranges.push([i, j]);
@@ -68,7 +75,8 @@ function sqlPass(text, from, to, ranges, lineMarkers) {
       const prefixed = c === 'E' || c === 'e';
       const gap =
         escapeContinuationEnd >= 0 ? text.slice(escapeContinuationEnd, i).replace(/--[^\n]*|\/\*[\s\S]*?\*\//g, ' ') : null;
-      const escapes = prefixed || (c === "'" && gap !== null && /^\s*\n\s*$/.test(gap));
+      const escapes =
+        prefixed || dialect.escapingQuotes.includes(c) || (c === "'" && gap !== null && /^\s*\n\s*$/.test(gap));
       const quote = prefixed ? "'" : c;
       let j = i + (prefixed ? 2 : 1);
       while (j < to) {
@@ -91,16 +99,16 @@ function sqlPass(text, from, to, ranges, lineMarkers) {
       const bodyStart = i + tag[0].length;
       const close = text.indexOf(tag[0], bodyStart);
       const bodyEnd = close < 0 || close > to ? to : close;
-      sqlPass(text, bodyStart, bodyEnd, ranges, lineMarkers);
+      sqlPass(text, bodyStart, bodyEnd, ranges, dialect);
       i = Math.min(bodyEnd + tag[0].length, to);
     } else i++;
   }
 }
 
 // A function body's comments are comments, so a dollar-quoted body is lexed as SQL.
-export function sqlCommentRanges(text, lineMarkers = []) {
+export function sqlCommentRanges(text, dialect = 'ansi') {
   const jinja = JINJA.test(text) ? jinjaPass(text) : { ranges: [], masked: text };
   const ranges = [...jinja.ranges];
-  sqlPass(jinja.masked, 0, jinja.masked.length, ranges, lineMarkers);
+  sqlPass(jinja.masked, 0, jinja.masked.length, ranges, SQL_DIALECTS[dialect]);
   return ranges.sort((a, b) => a[0] - b[0]);
 }
