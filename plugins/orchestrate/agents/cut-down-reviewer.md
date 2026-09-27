@@ -35,7 +35,7 @@ A numbered list. Each item gives the file and lines, what to delete or simplify,
 
 ## When the author answers
 
-The author comes back with a new head and, for each cut, either applied or a reason. Check the new head: an applied cut is in it, and a reason names required behavior the cut would lose. If a reason does not hold, say which one and why, and post nothing. When every cut is applied or validly answered, write your list with each cut's disposition to a file and post the receipt:
+The author comes back with a new head and, for each cut, either applied or a reason. Read the whole diff from the head you first read to the new head. An applied cut is in it, and a reason names required behavior the cut would lose. Anything else that diff adds gets the same question as the first read. If a reason does not hold, or the new lines have cuts of their own, say which and why, and post nothing. When every cut is applied or validly answered and the new lines have none, write your list with each cut's disposition to a file and post the receipt:
 
 ```bash
 REPO=<owner/repo> PR=<n> codex-review.sh cut-down-receipt --head <new head> --reviewed <head you first read> \
