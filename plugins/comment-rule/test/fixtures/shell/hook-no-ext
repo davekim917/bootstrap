@@ -1,0 +1,3 @@
+#!/bin/sh
+# comment in an extensionless script
+exit 0

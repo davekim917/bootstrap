@@ -1,0 +1,33 @@
+{
+  "name": "comment-rule",
+  "version": "1.0.0",
+  "description": "One comment checker for every repo and every point in the harness: a change must not add comment lines on net, and must not add file:line citations or PR/issue/ticket history in comments. CLI for CI and merge gates, plus write-time feedback after each edit.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "comments",
+    "code-quality",
+    "ci",
+    "typescript",
+    "python",
+    "sql",
+    "dbt",
+    "shell"
+  ],
+  "hooks": "./hooks/comment-rule-codex-hooks.json",
+  "interface": {
+    "displayName": "Comment rule",
+    "shortDescription": "No net comment growth; no file:line or PR-number comments",
+    "longDescription": "Counts comment lines with a real parser per language (TypeScript/JavaScript, Python, SQL and dbt, shell) and compares a change against its base. The same checker runs in CI, in merge gates and after each edit, where it tells the agent which new comment lines it added. Feedback only at write time; CI decides.",
+    "developerName": "David Kim",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/davekim917/bootstrap",
+    "brandColor": "#0f766e"
+  }
+}
