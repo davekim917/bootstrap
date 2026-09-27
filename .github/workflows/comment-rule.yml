@@ -1,0 +1,42 @@
+name: comment-rule
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  comment-rule:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout the checker at a pinned commit
+        uses: actions/checkout@v6
+        with:
+          repository: davekim917/bootstrap
+          ref: 9bd3a8c06d6b0b45e9ca9b193ed618395d8008d2
+          path: .comment-rule-checker
+          sparse-checkout: plugins/comment-rule
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install the checker
+        working-directory: .comment-rule-checker/plugins/comment-rule
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: No net comment growth, no file:line or PR/issue references in comments
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node .comment-rule-checker/plugins/comment-rule/bin/comment-rule.mjs check --repo . --base "$BASE_SHA" --head "$HEAD_SHA"
