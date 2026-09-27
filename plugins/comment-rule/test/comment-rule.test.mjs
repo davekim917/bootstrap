@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { checkChange, checkFileAgainstHead } from '../lib/check.mjs';
+import { checkChange, checkFileAgainstHead, countTree } from '../lib/check.mjs';
 import { editedFiles, feedbackMessage } from '../lib/feedback.mjs';
 import { CommentRuleFeedback } from '../hooks/opencode-comment-rule.mjs';
 import { prohibitedForms } from '../lib/forms.mjs';
@@ -222,6 +222,19 @@ test('an unreadable changed file is an error, never deletion credit', { skip: pr
   } finally {
     fs.chmodSync(path.join(repo, 'run.sh'), 0o644);
   }
+});
+
+test('a submodule update and a directory replaced by a file are not read as source', () => {
+  const repo = makeRepo({ 'd/a.ts': '// a\nexport {};\n' });
+  const sha = git(repo, 'rev-parse', 'HEAD').trim();
+  git(repo, 'update-index', '--add', '--cacheinfo', `160000,${sha},vendor/lib`);
+  git(repo, 'commit', '-q', '-m', 'add gitlink');
+  git(repo, 'update-index', '--cacheinfo', `160000,${git(repo, 'rev-parse', 'HEAD').trim()},vendor/lib`);
+  git(repo, 'commit', '-q', '-m', 'move gitlink');
+  assert.equal(checkChange({ repo, base: 'main', head: 'HEAD' }).status, 'pass');
+  fs.rmSync(path.join(repo, 'd'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'd'), 'now a file\n');
+  assert.deepEqual(countTree(repo).errors, []);
 });
 
 test('the CLI prints JSON and exits 1 on a failing change, 2 when it cannot check', () => {

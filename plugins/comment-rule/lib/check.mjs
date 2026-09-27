@@ -42,7 +42,7 @@ function readWorkingFile(repo, file) {
     if (stat.isSymbolicLink() || stat.isDirectory()) return null;
     return fs.readFileSync(absolute, 'utf8');
   } catch (error) {
-    if (error?.code === 'ENOENT') return null;
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
     throw error;
   }
 }
@@ -137,14 +137,16 @@ function summarise(files, errors, extra) {
   return { status, ...extra, before, after, net, findings, files, errors };
 }
 
-function parseNameStatus(output) {
+const REGULAR_FILE = /^100[0-7]{3}$/;
+
+function parseRawDiff(output) {
   const fields = output.split('\0');
   const entries = [];
   for (let i = 0; i < fields.length - 1; ) {
-    const status = fields[i++];
+    const [oldMode, newMode, , , status] = fields[i++].slice(1).split(' ');
     const oldPath = fields[i++];
     const newPath = /^[RC]/.test(status) ? fields[i++] : oldPath;
-    entries.push({ status: status[0], oldPath, newPath });
+    entries.push({ status: status[0], oldPath, newPath, oldFile: REGULAR_FILE.test(oldMode), newFile: REGULAR_FILE.test(newMode) });
   }
   return entries;
 }
@@ -155,14 +157,19 @@ export function checkChange({ repo, base, head }) {
   const mergeBase = git(repo, ['merge-base', baseRef, head ?? 'HEAD']).trim();
   const config = parseConfig(show(repo, mergeBase, CONFIG_FILE));
   const context = { ownOwner: ownOwner(repo), ticketPrefixes: config.ticketPrefixes, sqlDialect: config.sqlDialect };
-  const diff = git(repo, ['diff', '--name-status', '-z', '-M', '--no-color', '--no-ext-diff', mergeBase, ...(head ? [head] : []), '--']);
+  const diff = git(repo, ['diff', '--raw', '-z', '-M', '--abbrev=40', '--no-color', '--no-ext-diff', mergeBase, ...(head ? [head] : []), '--']);
   const entries = [];
-  for (const { status, oldPath, newPath } of parseNameStatus(diff)) {
+  for (const { status, oldPath, newPath, oldFile, newFile } of parseRawDiff(diff)) {
     const counted = (file) =>
       mayHaveLanguage(file) && !config.isExcluded(file) && !(config.isFrozen(file) && show(repo, mergeBase, file) !== null);
-    let baseText = status === 'A' || status === 'C' || !counted(oldPath) ? null : showRequired(repo, mergeBase, oldPath);
+    let baseText =
+      status === 'A' || status === 'C' || !oldFile || !counted(oldPath) ? null : showRequired(repo, mergeBase, oldPath);
     let headText =
-      status === 'D' || !counted(newPath) ? null : head ? showRequired(repo, head, newPath) : readWorkingFile(repo, newPath);
+      status === 'D' || !newFile || !counted(newPath)
+        ? null
+        : head
+          ? showRequired(repo, head, newPath)
+          : readWorkingFile(repo, newPath);
     const baseLanguage = baseText === null ? null : languageOf(oldPath, baseText);
     const headLanguage = headText === null ? null : languageOf(newPath, headText);
     if (!baseLanguage) baseText = null;
