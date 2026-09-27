@@ -295,6 +295,7 @@ const codexRoster = new Map([
   ['wwed', './plugins/wwed'],
   ['analytics-verify', './plugins/analytics-verify'],
   ['test-audit', './plugins/test-audit'],
+  ['comment-rule', './plugins/comment-rule'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
 ]);
@@ -383,6 +384,7 @@ const claudeRoster = new Map([
   ['wwed', './plugins/wwed'],
   ['analytics-verify', './plugins/analytics-verify'],
   ['test-audit', './plugins/test-audit'],
+  ['comment-rule', './plugins/comment-rule'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
 ]);
@@ -544,6 +546,41 @@ requireTextTokens(
   ['Copyright (c) 2026 OpenClaw Foundation', 'Permission is hereby granted, free of charge'],
   'the adapted-material license notice',
 );
+
+// comment-rule ships no skill and no standing directive: a checker CLI and a post-edit hook
+// per runtime. Its Codex hook file must not need ${CLAUDE_PLUGIN_ROOT}, which Codex does not set.
+const commentRuleClaudeManifest = readJson('plugins/comment-rule/.claude-plugin/plugin.json');
+const commentRuleCodexManifest = readJson('plugins/comment-rule/.codex-plugin/plugin.json');
+for (const [label, manifest, entries] of [
+  ['.claude-plugin', commentRuleClaudeManifest, claudeEntries],
+  ['.agents', commentRuleCodexManifest, codexEntries],
+]) {
+  if (manifest?.name !== 'comment-rule') fail(`plugins/comment-rule ${label} manifest name must be comment-rule`);
+  const entry = entries.find((candidate) => candidate.name === 'comment-rule');
+  if (!entry) fail(`${label} marketplace must register comment-rule`);
+  else if (entry.version !== manifest?.version) {
+    fail(`comment-rule version must match between the ${label} marketplace and its manifest (${entry.version} !== ${manifest?.version})`);
+  }
+}
+if (commentRuleClaudeManifest?.version !== commentRuleCodexManifest?.version) {
+  fail(
+    `comment-rule Claude and Codex manifests must share one version (${commentRuleClaudeManifest?.version} !== ${commentRuleCodexManifest?.version})`,
+  );
+}
+for (const file of [
+  'bin/comment-rule.mjs',
+  'hooks/post-edit.mjs',
+  'hooks/opencode-comment-rule.mjs',
+  'lib/lang/python_ranges.py',
+  'package-lock.json',
+]) {
+  if (!exists(`plugins/comment-rule/${file}`)) fail(`plugins/comment-rule must ship ${file}`);
+}
+requireTextTokens('plugins/comment-rule/hooks/comment-rule-hooks.json', ['${CLAUDE_PLUGIN_ROOT}/hooks/post-edit.mjs', 'PostToolUse'], 'the Claude post-edit hook');
+requireTextTokens('plugins/comment-rule/hooks/comment-rule-codex-hooks.json', ['${PLUGIN_ROOT}/hooks/post-edit.mjs', 'apply_patch'], 'the Codex post-edit hook');
+if (readText('plugins/comment-rule/hooks/comment-rule-codex-hooks.json')?.includes('CLAUDE_PLUGIN_ROOT')) {
+  fail('plugins/comment-rule/hooks/comment-rule-codex-hooks.json must not reference CLAUDE_PLUGIN_ROOT');
+}
 
 // wwbd, wwed, analytics-verify and test-audit are the plugins that ship a standing directive, and each reaches
 // BOTH runtimes from its own hooks — the Claude manifest's <name>-hooks.json and

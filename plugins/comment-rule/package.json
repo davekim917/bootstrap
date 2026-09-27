@@ -1,0 +1,16 @@
+{
+  "name": "comment-rule",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Comment-growth and comment-form checker. TypeScript is only needed when the checked repository does not provide it.",
+  "bin": {
+    "comment-rule": "bin/comment-rule.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/comment-rule.test.mjs"
+  },
+  "dependencies": {
+    "typescript": "6.0.3"
+  }
+}

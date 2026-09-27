@@ -22,6 +22,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.2.2 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex | `test-audit` | 1.0.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
+| Claude Code / Codex / OpenCode | `comment-rule` | 1.0.0 | One comment checker for CI, merge gates and write-time feedback: no net comment-line growth, no `file:line` or PR/issue/ticket history in comments |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
 ### Delegation is invoke-only
@@ -260,6 +261,7 @@ artifact, environment and command, and invalidate it after relevant changes.
 /plugin install wwed@davekim917-bootstrap
 /plugin install analytics-verify@davekim917-bootstrap
 /plugin install test-audit@davekim917-bootstrap
+/plugin install comment-rule@davekim917-bootstrap
 /plugin install concise@davekim917-bootstrap
 ```
 
@@ -273,6 +275,7 @@ codex plugin add wwbd@davekim917-bootstrap
 codex plugin add wwed@davekim917-bootstrap
 codex plugin add analytics-verify@davekim917-bootstrap
 codex plugin add test-audit@davekim917-bootstrap
+codex plugin add comment-rule@davekim917-bootstrap
 codex plugin add concise@davekim917-bootstrap
 ```
 
@@ -286,6 +289,7 @@ codex plugin add wwbd@davekim917-bootstrap
 codex plugin add wwed@davekim917-bootstrap
 codex plugin add analytics-verify@davekim917-bootstrap
 codex plugin add test-audit@davekim917-bootstrap
+codex plugin add comment-rule@davekim917-bootstrap
 ```
 
 Codex loads the plugin from its cache through `.codex-plugin/plugin.json`; do not copy workflow
@@ -325,6 +329,45 @@ declares a second file, `hooks/wwbd-codex-hooks.json`, resolving `${PLUGIN_ROOT}
 expand the Claude token. Nothing outside a plugin delivers a directive, so disabling the plugin
 removes it on every runtime at once. Adding a hook to a plugin that had none means Codex asks once
 to trust that plugin's hooks on the next session start.
+
+### Comment rule
+
+`comment-rule` is the one place the comment rule lives: a change must not add comment lines on
+net across the files it touches, and must not add a comment that cites `file:line` or a
+PR/issue/ticket number. CI jobs, merge gates and the write-time hook all call the same checker:
+
+```bash
+node plugins/comment-rule/bin/comment-rule.mjs check --repo <repo> [--base <ref>] [--head <ref>] [--json]
+node plugins/comment-rule/bin/comment-rule.mjs file <path>... [--json]
+node plugins/comment-rule/bin/comment-rule.mjs count --repo <repo> [--json]
+```
+
+`check` compares the merge base of `--base` (default: origin's default branch) and the head
+(default: the working tree) and exits 0 pass, 1 fail, 2 could not check. `--json` gives, per
+file, comment lines at base and head, the net, each new comment line, and each prohibited form
+with its line.
+
+- **Languages**, each with a real parser: TypeScript/JavaScript (the TypeScript compiler API),
+  Python (`tokenize` comments; docstrings and every other bare string statement count), SQL
+  including dbt (`--`, nested `/* */`, dollar quoting, Jinja `{# #}`), and shell (`#` comments,
+  not the shebang, not heredoc bodies). Extensionless files count only with a shell or Python
+  shebang; every other file type is ignored.
+- **Every comment line counts**: directives, trailing comments and blank lines inside a block
+  included. Lines split on `\r\n`, `\r`, `\n`, U+2028 and U+2029.
+- **Repository config** `.comment-rule.json` at the root, read from the merge base so a change
+  cannot exempt itself: `exclude` (globs never counted), `frozen` (globs that are not counted
+  once they exist at the base, e.g. applied migrations under a checksum, so deleting their
+  comments earns nothing), `ticketPrefixes` (extra keys such as `ABC` for `ABC-123`).
+- **TypeScript** 5.x or 6.x is taken from the checked repository, then from the plugin
+  (`npm ci --ignore-scripts` in `plugins/comment-rule`), then from a global install. Without one,
+  TypeScript files make `check` exit 2 rather than pass. Python files need `python3`.
+
+**Write-time feedback, never a block.** After each edit the post-edit hook checks the edited file
+against `HEAD` and, when the file gained comment lines or a prohibited form, tells the agent
+which lines. Each line is raised once per session. Claude runs it from `Edit|Write|MultiEdit`,
+Codex from `apply_patch`; OpenCode has no hook manifest, so a host adds
+`plugins/comment-rule/hooks/opencode-comment-rule.mjs` to its OpenCode config's `plugin` list,
+which appends the same feedback to the edit tool's output. Any error leaves the edit silent.
 
 ### Concise
 
@@ -403,6 +446,7 @@ bootstrap/
 │   ├── workflow-agents/
 │   ├── orchestrate/
 │   ├── wwbd/
+│   ├── comment-rule/
 │   └── concise/
 ├── evals/
 ├── scripts/
@@ -417,6 +461,7 @@ node --test scripts/plugin-enablement.test.mjs
 node --test evals/harness/*.test.mjs
 node scripts/check-plugin-boundaries.mjs
 node scripts/check-parity.mjs
+node --test plugins/comment-rule/test/comment-rule.test.mjs
 
 cd plugins/workflow/hooks && bun test && bun run check
 cd plugins/workflow-agents/hooks && bun test && bun run check
@@ -430,6 +475,7 @@ marker-owned retired agents still active in Claude, Codex sibling-home, or OpenC
 - Claude Code for `bootstrap-workflow` and `bootstrap-orchestrate`
 - Codex with native plugin support for `bootstrap-workflow-agents` and `bootstrap-orchestrate`
 - Bun for TypeScript hooks
+- Node 22+ and `python3` for `comment-rule`
 
 ## License
 
