@@ -25,13 +25,15 @@ function globalDirs() {
 export function loadTypeScript(searchFrom = []) {
   if (cached !== undefined) return cached;
   const require = createRequire(import.meta.url);
-  for (const dir of [...searchFrom, PLUGIN_ROOT]) {
+  const nearby = searchFrom === null ? [] : [...searchFrom, PLUGIN_ROOT];
+  for (const dir of nearby) {
     try {
       const found = usable(require(require.resolve('typescript', { paths: [dir] })));
       if (found) return (cached = found);
     } catch {}
   }
-  for (const dir of globalDirs()) {
+  const installed = searchFrom === null ? [path.join(PLUGIN_ROOT, 'node_modules'), ...globalDirs()] : globalDirs();
+  for (const dir of installed) {
     try {
       const found = usable(require(path.join(dir, 'typescript')));
       if (found) return (cached = found);

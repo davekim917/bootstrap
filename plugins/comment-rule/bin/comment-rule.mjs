@@ -5,12 +5,13 @@ import { parseArgs } from 'node:util';
 import { checkChange, checkFileAgainstHead, countTree } from '../lib/check.mjs';
 
 const USAGE = `usage:
-  comment-rule.mjs check [--repo <dir>] [--base <ref>] [--head <ref>] [--json]
+  comment-rule.mjs check [--repo <dir>] [--base <ref>] [--head <ref>] [--own-typescript] [--json]
   comment-rule.mjs file <path>... [--json]
   comment-rule.mjs count [--repo <dir>] [--json]
 
 check  the change from merge-base(base, head) to head; head defaults to the working tree and base
-       to origin's default branch. Exit 0 pass, 1 fail, 2 could not check.
+       to origin's default branch. Exit 0 pass, 1 fail, 2 could not check. --own-typescript never loads
+       TypeScript from the checked repository; CI passes it, since a pull request controls those files.
 file   each file against HEAD (write-time feedback). Always exits 0 unless it cannot run.
 count  comment lines in every tracked file, by language.`;
 
@@ -40,6 +41,7 @@ function main() {
       repo: { type: 'string' },
       base: { type: 'string' },
       head: { type: 'string' },
+      'own-typescript': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -51,7 +53,7 @@ function main() {
   }
   const repo = path.resolve(values.repo ?? '.');
   if (command === 'check') {
-    const result = checkChange({ repo, base: values.base, head: values.head });
+    const result = checkChange({ repo, base: values.base, head: values.head, ownTypeScript: values['own-typescript'] });
     if (values.json) console.log(JSON.stringify(result, null, 2));
     else printCheck(result);
     return { pass: 0, fail: 1, error: 2 }[result.status];

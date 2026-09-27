@@ -22,7 +22,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.2.2 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex | `test-audit` | 1.0.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
-| Claude Code / Codex / OpenCode | `comment-rule` | 1.0.0 | One comment checker for CI, merge gates and write-time feedback: no net comment-line growth, no `file:line` or PR/issue/ticket history in comments |
+| Claude Code / Codex / OpenCode | `comment-rule` | 1.0.1 | One comment checker for CI, merge gates and write-time feedback: no net comment-line growth, no `file:line` or PR/issue/ticket history in comments |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
 ### Delegation is invoke-only
@@ -337,7 +337,7 @@ net across the files it touches, and must not add a comment that cites `file:lin
 PR/issue/ticket number. CI jobs, merge gates and the write-time hook all call the same checker:
 
 ```bash
-node plugins/comment-rule/bin/comment-rule.mjs check --repo <repo> [--base <ref>] [--head <ref>] [--json]
+node plugins/comment-rule/bin/comment-rule.mjs check --repo <repo> [--base <ref>] [--head <ref>] [--own-typescript] [--json]
 node plugins/comment-rule/bin/comment-rule.mjs file <path>... [--json]
 node plugins/comment-rule/bin/comment-rule.mjs count --repo <repo> [--json]
 ```
@@ -363,7 +363,9 @@ with its line.
   backslash escapes; `bigquery` and `mysql` add `#` comments and backslash escapes).
 - **TypeScript** 5.x or 6.x is taken from the checked repository, then from the plugin
   (`npm ci --ignore-scripts` in `plugins/comment-rule`), then from a global install. Without one,
-  TypeScript files make `check` exit 2 rather than pass. Python files need `python3`.
+  TypeScript files make `check` exit 2 rather than pass. CI passes `--own-typescript`, which skips
+  the checked repository: a pull request controls those files, so it could ship its own
+  `node_modules/typescript`. Python files need `python3`.
 
 **Write-time feedback, never a block.** After each edit the post-edit hook checks the edited file
 against `HEAD` and, when the file gained comment lines or a prohibited form, tells the agent

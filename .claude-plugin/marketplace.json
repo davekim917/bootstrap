@@ -57,7 +57,7 @@
       "name": "comment-rule",
       "source": "./plugins/comment-rule",
       "description": "One comment checker for every repo: no net comment-line growth, no file:line or PR/issue/ticket history in comments. CLI for CI and merge gates, plus write-time feedback after each edit.",
-      "version": "1.0.0"
+      "version": "1.0.1"
     }
   ]
 }
