@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { checkChange, checkFileAgainstHead } from '../lib/check.mjs';
 import { editedFiles, feedbackMessage } from '../lib/feedback.mjs';
+import { CommentRuleFeedback } from '../hooks/opencode-comment-rule.mjs';
 import { prohibitedForms } from '../lib/forms.mjs';
 import { languageOf, scanMany } from '../lib/scan.mjs';
 
@@ -36,6 +37,10 @@ test('SQL dialects set the extra line markers and backslash escapes', () => {
   assert.deepEqual(scan('ansi'), [2, 3]);
   assert.deepEqual(scan('snowflake'), [1, 2]);
   assert.deepEqual(scan('mysql'), [0, 2]);
+  const bigquery = "select '''it's fine''' as v\n-- real\nselect \"\"\"a \\\"\"\" -- b\"\"\" as w\n";
+  assert.deepEqual([...scanMany([{ file: 'b.sql', text: bigquery, language: 'sql', sqlDialect: 'bigquery' }])[0].lines.keys()], [1]);
+  const mysql = 'select value--1 as adjusted\nselect 1 --\tspaced\nselect 2 --\n';
+  assert.deepEqual([...scanMany([{ file: 'm.sql', text: mysql, language: 'sql', sqlDialect: 'mysql' }])[0].lines.keys()], [1, 2]);
 });
 
 test('a Python file the interpreter cannot parse is an error, never a partial count', () => {
@@ -199,6 +204,26 @@ test('a rename compares the file with its old self', () => {
   assert.deepEqual(result.files.map((file) => [file.path, file.old_path, file.net]), [['new/name.py', 'old/name.py', 0]]);
 });
 
+test('a rename across languages scans each side with its own parser', () => {
+  const repo = makeRepo({ 'a.sh': '# original\nx=1\n' });
+  git(repo, 'mv', 'a.sh', 'a.py');
+  git(repo, 'commit', '-q', '-m', 'rename');
+  const result = checkChange({ repo, base: 'main', head: 'HEAD' });
+  assert.equal(result.status, 'pass');
+  assert.equal(result.net, 0);
+});
+
+test('an unreadable changed file is an error, never deletion credit', { skip: process.getuid?.() === 0 }, () => {
+  const repo = makeRepo({ 'run.sh': '#!/bin/sh\n# one\necho hi\n' });
+  write(repo, { 'run.sh': '#!/bin/sh\n# one\n# two\necho hi\n' });
+  fs.chmodSync(path.join(repo, 'run.sh'), 0o000);
+  try {
+    assert.throws(() => checkChange({ repo, base: 'main' }), /EACCES/);
+  } finally {
+    fs.chmodSync(path.join(repo, 'run.sh'), 0o644);
+  }
+});
+
 test('the CLI prints JSON and exits 1 on a failing change, 2 when it cannot check', () => {
   const repo = makeRepo({ 'a.js': 'const a = 1;\n' });
   commit(repo, { 'a.js': '// narration\nconst a = 1;\n' });
@@ -272,4 +297,20 @@ test('the post-edit hook returns additionalContext for a grown file and stays si
   const garbage = spawnSync(process.execPath, [HOOK], { input: 'not json', encoding: 'utf8' });
   assert.equal(garbage.status, 0);
   assert.equal(garbage.stdout, '');
+});
+
+test('the OpenCode module appends feedback once per session and never throws', async () => {
+  const repo = makeRepo({ 'keep.ts': 'export {};\n' });
+  write(repo, { 'q.ts': '// narration\nexport const q = 1;\n' });
+  const hooks = await CommentRuleFeedback({ directory: repo });
+  const edit = async (sessionID, args, tool = 'edit') => {
+    const output = { title: '', output: 'done', metadata: {} };
+    await hooks['tool.execute.after']({ tool, sessionID, callID: 'c', args }, output);
+    return output.output;
+  };
+  assert.match(await edit('s1', { filePath: 'q.ts' }), /q\.ts: 1 comment lines, 1 more than HEAD/);
+  assert.equal(await edit('s1', { filePath: 'q.ts' }), 'done');
+  assert.match(await edit('s2', { patchText: '*** Begin Patch\n*** Update File: q.ts\n*** End Patch' }, 'apply_patch'), /q\.ts/);
+  assert.equal(await edit('s3', null), 'done');
+  assert.equal(await edit('s3', { filePath: 'q.ts' }, 'read'), 'done');
 });

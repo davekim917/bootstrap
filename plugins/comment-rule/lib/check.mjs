@@ -4,9 +4,11 @@ import path from 'node:path';
 
 import { CONFIG_FILE, parseConfig } from './config.mjs';
 import { prohibitedForms } from './forms.mjs';
-import { languageOf, scanMany } from './scan.mjs';
+import { languageOf, needsContentForLanguage, scanMany } from './scan.mjs';
 
 const MAX_LISTED_LINES = 50;
+
+const mayHaveLanguage = (file) => languageOf(file) !== null || needsContentForLanguage(file);
 
 function git(repo, args) {
   return execFileSync('git', ['-C', repo, ...args], {
@@ -28,13 +30,20 @@ function show(repo, ref, file) {
   return tryGit(repo, ['show', `${ref}:${file}`]);
 }
 
+// A side the diff says exists must be read or the run fails: a null would count as deleted comments.
+function showRequired(repo, ref, file) {
+  return git(repo, ['show', `${ref}:${file}`]);
+}
+
 function readWorkingFile(repo, file) {
   const absolute = path.join(repo, file);
   try {
-    if (fs.lstatSync(absolute).isSymbolicLink()) return null;
+    const stat = fs.lstatSync(absolute);
+    if (stat.isSymbolicLink() || stat.isDirectory()) return null;
     return fs.readFileSync(absolute, 'utf8');
-  } catch {
-    return null;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
   }
 }
 
@@ -75,7 +84,7 @@ function compareFile(entry, baseScan, headScan, context) {
   return {
     path: entry.newPath ?? entry.oldPath,
     ...(entry.oldPath && entry.newPath && entry.oldPath !== entry.newPath ? { old_path: entry.oldPath } : {}),
-    language: entry.language,
+    language: entry.headLanguage ?? entry.baseLanguage,
     base: baseLines.size,
     head: headLines.size,
     net: headLines.size - baseLines.size,
@@ -96,7 +105,7 @@ function evaluate(repo, entries, context) {
       items.push({
         file,
         text,
-        language: entry.language,
+        language: entry[`${side}Language`],
         resolveFrom: [path.dirname(path.join(repo, file)), repo],
         sqlDialect: context.sqlDialect ?? 'ansi',
       });
@@ -149,15 +158,24 @@ export function checkChange({ repo, base, head }) {
   const diff = git(repo, ['diff', '--name-status', '-z', '-M', '--no-color', '--no-ext-diff', mergeBase, ...(head ? [head] : []), '--']);
   const entries = [];
   for (const { status, oldPath, newPath } of parseNameStatus(diff)) {
-    const counted = (file) => !config.isExcluded(file) && !(config.isFrozen(file) && show(repo, mergeBase, file) !== null);
-    let baseText = status === 'A' || status === 'C' || !counted(oldPath) ? null : show(repo, mergeBase, oldPath);
+    const counted = (file) =>
+      mayHaveLanguage(file) && !config.isExcluded(file) && !(config.isFrozen(file) && show(repo, mergeBase, file) !== null);
+    let baseText = status === 'A' || status === 'C' || !counted(oldPath) ? null : showRequired(repo, mergeBase, oldPath);
     let headText =
-      status === 'D' || !counted(newPath) ? null : head ? show(repo, head, newPath) : readWorkingFile(repo, newPath);
-    const language = languageOf(newPath, headText ?? baseText) ?? languageOf(oldPath, baseText ?? headText);
-    if (!language) continue;
-    if (baseText !== null && languageOf(oldPath, baseText) !== language) baseText = null;
-    if (headText !== null && languageOf(newPath, headText) !== language) headText = null;
-    entries.push({ oldPath: status === 'A' ? null : oldPath, newPath: status === 'D' ? null : newPath, language, baseText, headText });
+      status === 'D' || !counted(newPath) ? null : head ? showRequired(repo, head, newPath) : readWorkingFile(repo, newPath);
+    const baseLanguage = baseText === null ? null : languageOf(oldPath, baseText);
+    const headLanguage = headText === null ? null : languageOf(newPath, headText);
+    if (!baseLanguage) baseText = null;
+    if (!headLanguage) headText = null;
+    if (baseText === null && headText === null) continue;
+    entries.push({
+      oldPath: status === 'A' ? null : oldPath,
+      newPath: status === 'D' ? null : newPath,
+      baseLanguage,
+      headLanguage,
+      baseText,
+      headText,
+    });
   }
   const { files, errors } = evaluate(repo, entries, context);
   files.sort((a, b) => b.net - a.net || a.path.localeCompare(b.path));
@@ -183,9 +201,10 @@ export function checkFileAgainstHead(absoluteFile) {
   if (!language) return null;
   let baseText = tryGit(dir, ['show', `HEAD:./${path.basename(absoluteFile)}`]);
   if (baseText !== null && config.isFrozen(file)) return null;
-  if (baseText !== null && languageOf(file, baseText) !== language) baseText = null;
+  const baseLanguage = baseText === null ? null : languageOf(file, baseText);
+  if (!baseLanguage) baseText = null;
   const context = { ownOwner: ownOwner(repo), ticketPrefixes: config.ticketPrefixes, sqlDialect: config.sqlDialect };
-  const entry = { oldPath: baseText === null ? null : file, newPath: file, language, baseText, headText };
+  const entry = { oldPath: baseText === null ? null : file, newPath: file, baseLanguage, headLanguage: language, baseText, headText };
   const { files, errors } = evaluate(repo, [entry], context);
   if (errors.length) return { error: errors[0].error, path: file, key: absoluteFile };
   return { ...(files[0] ?? { path: file, language, base: 0, head: 0, net: 0, new_comment_lines: [], findings: [] }), key: absoluteFile };
@@ -196,10 +215,10 @@ export function countTree(repo) {
   const listed = git(repo, ['ls-files', '-z']).split('\0').filter(Boolean);
   const entries = [];
   for (const file of listed) {
-    if (config.isExcluded(file)) continue;
+    if (config.isExcluded(file) || !mayHaveLanguage(file)) continue;
     const text = readWorkingFile(repo, file);
     const language = text === null ? null : languageOf(file, text);
-    if (language) entries.push({ oldPath: null, newPath: file, language, baseText: null, headText: text });
+    if (language) entries.push({ oldPath: null, newPath: file, headLanguage: language, baseText: null, headText: text });
   }
   const { files, errors } = evaluate(repo, entries, { ownOwner: null, ticketPrefixes: [], sqlDialect: config.sqlDialect });
   const totals = {};

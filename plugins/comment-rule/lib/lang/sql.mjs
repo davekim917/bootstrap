@@ -3,10 +3,10 @@ const DOLLAR_TAG = /\$([A-Za-z_\u0080-￿][\w\u0080-￿]*)?\$/y;
 const JINJA = /\{[{%#]/;
 
 export const SQL_DIALECTS = {
-  ansi: { lineMarkers: [], escapingQuotes: '' },
-  snowflake: { lineMarkers: ['//'], escapingQuotes: "'" },
-  bigquery: { lineMarkers: ['#'], escapingQuotes: `'"` },
-  mysql: { lineMarkers: ['#'], escapingQuotes: `'"` },
+  ansi: { lineMarkers: [], escapingQuotes: '', tripleQuotes: false, dashNeedsSpace: false },
+  snowflake: { lineMarkers: ['//'], escapingQuotes: "'", tripleQuotes: false, dashNeedsSpace: false },
+  bigquery: { lineMarkers: ['#'], escapingQuotes: `'"`, tripleQuotes: true, dashNeedsSpace: false },
+  mysql: { lineMarkers: ['#'], escapingQuotes: `'"`, tripleQuotes: false, dashNeedsSpace: true },
 };
 
 // Jinja renders before SQL parses, so `{# #}` inside a SQL string is still a comment.
@@ -47,7 +47,8 @@ function sqlPass(text, from, to, ranges, dialect) {
   while (i < to) {
     const c = text[i];
     const pair = text.slice(i, i + 2);
-    if (pair === '--' || dialect.lineMarkers.some((marker) => text.startsWith(marker, i))) {
+    const dashComment = pair === '--' && (!dialect.dashNeedsSpace || i + 2 >= to || /[\s\x00-\x1f]/.test(text[i + 2]));
+    if (dashComment || dialect.lineMarkers.some((marker) => text.startsWith(marker, i))) {
       let j = i;
       while (j < to && text[j] !== '\n' && text[j] !== '\r') j++;
       ranges.push([i, j]);
@@ -68,6 +69,11 @@ function sqlPass(text, from, to, ranges, dialect) {
       }
       ranges.push([i, Math.min(j, to)]);
       i = Math.min(j, to);
+    } else if (dialect.tripleQuotes && (text.startsWith("'''", i) || text.startsWith('"""', i))) {
+      const triple = text.slice(i, i + 3);
+      let j = i + 3;
+      while (j < to && !text.startsWith(triple, j)) j += text[j] === '\\' ? 2 : 1;
+      i = Math.min(j + 3, to);
     } else if (c === '`') {
       const end = text.indexOf('`', i + 1);
       i = end < 0 || end >= to ? to : end + 1;
