@@ -45,7 +45,7 @@ export function scanMany(items) {
           return;
         }
         case 'sql':
-          results[index] = { lines: commentLinesFromRanges(item.text, sqlCommentRanges(item.text)) };
+          results[index] = { lines: commentLinesFromRanges(item.text, sqlCommentRanges(item.text, item.sqlLineComments)) };
           return;
         case 'shell':
           results[index] = { lines: commentLinesFromRanges(item.text, shellCommentRanges(item.text)) };
@@ -64,7 +64,7 @@ export function scanMany(items) {
   pythonItems.forEach((index, k) => {
     const { ranges, error } = python[k];
     results[index] = ranges
-      ? { lines: commentLinesFromRanges(items[index].text, ranges), note: error ?? undefined }
+      ? { lines: commentLinesFromRanges(items[index].text, ranges) }
       : { error };
   });
   return results;

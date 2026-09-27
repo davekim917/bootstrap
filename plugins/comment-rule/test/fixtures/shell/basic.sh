@@ -13,3 +13,7 @@ echo done # trailing comment
 x="$(echo hi # inside a quoted command substitution
 echo bye)"
 echo after # the substitution closed
+y=`echo hi # inside backquotes
+echo bye`
+z=${fallback:-$(echo hi # inside a parameter expansion
+echo bye)}

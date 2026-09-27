@@ -34,13 +34,13 @@ function jinjaPass(text) {
   return { ranges, masked };
 }
 
-function sqlPass(text, from, to, ranges) {
+function sqlPass(text, from, to, ranges, lineMarkers) {
   let i = from;
   let escapeContinuationEnd = -1;
   while (i < to) {
     const c = text[i];
     const pair = text.slice(i, i + 2);
-    if (pair === '--') {
+    if (pair === '--' || lineMarkers.some((marker) => text.startsWith(marker, i))) {
       let j = i;
       while (j < to && text[j] !== '\n' && text[j] !== '\r') j++;
       ranges.push([i, j]);
@@ -61,6 +61,9 @@ function sqlPass(text, from, to, ranges) {
       }
       ranges.push([i, Math.min(j, to)]);
       i = Math.min(j, to);
+    } else if (c === '`') {
+      const end = text.indexOf('`', i + 1);
+      i = end < 0 || end >= to ? to : end + 1;
     } else if (c === "'" || c === '"' || ((c === 'E' || c === 'e') && text[i + 1] === "'" && !IDENT.test(text[i - 1] ?? ''))) {
       const prefixed = c === 'E' || c === 'e';
       const gap =
@@ -88,16 +91,16 @@ function sqlPass(text, from, to, ranges) {
       const bodyStart = i + tag[0].length;
       const close = text.indexOf(tag[0], bodyStart);
       const bodyEnd = close < 0 || close > to ? to : close;
-      sqlPass(text, bodyStart, bodyEnd, ranges);
+      sqlPass(text, bodyStart, bodyEnd, ranges, lineMarkers);
       i = Math.min(bodyEnd + tag[0].length, to);
     } else i++;
   }
 }
 
 // A function body's comments are comments, so a dollar-quoted body is lexed as SQL.
-export function sqlCommentRanges(text) {
+export function sqlCommentRanges(text, lineMarkers = []) {
   const jinja = JINJA.test(text) ? jinjaPass(text) : { ranges: [], masked: text };
   const ranges = [...jinja.ranges];
-  sqlPass(jinja.masked, 0, jinja.masked.length, ranges);
+  sqlPass(jinja.masked, 0, jinja.masked.length, ranges, lineMarkers);
   return ranges.sort((a, b) => a[0] - b[0]);
 }

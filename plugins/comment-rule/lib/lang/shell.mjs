@@ -6,21 +6,25 @@ function skipSingle(text, i, to) {
   return end < 0 || end >= to ? to : end + 1;
 }
 
-function skipBackquote(text, i, to) {
+function backquoted(text, i, to, ranges) {
   let j = i + 1;
   while (j < to && text[j] !== '`') j += text[j] === '\\' ? 2 : 1;
-  return Math.min(j + 1, to);
+  const end = Math.min(j, to);
+  scan(text, i + 1, end, ranges, false);
+  return Math.min(end + 1, to);
 }
 
-function skipBraced(text, i, to) {
+function braced(text, i, to, ranges) {
   let depth = 0;
   let j = i;
   while (j < to) {
     const c = text[j];
     if (c === '\\') j += 2;
     else if (c === "'") j = skipSingle(text, j, to);
-    else if (c === '"') j = skipDouble(text, j, to, []);
-    else if (c === '`') j = skipBackquote(text, j, to);
+    else if (c === '"') j = doubleQuoted(text, j, to, ranges);
+    else if (c === '`') j = backquoted(text, j, to, ranges);
+    else if (c === '$' && text[j + 1] === '(' && text[j + 2] === '(') j = skipArithmetic(text, j + 1, to);
+    else if (c === '$' && text[j + 1] === '(') j = scan(text, j + 2, to, ranges, true);
     else {
       if (c === '{') depth++;
       else if (c === '}' && --depth === 0) return j + 1;
@@ -39,14 +43,14 @@ function skipArithmetic(text, i, to) {
   return to;
 }
 
-function skipDouble(text, i, to, ranges) {
+function doubleQuoted(text, i, to, ranges) {
   let j = i + 1;
   while (j < to) {
     const c = text[j];
     if (c === '"') return j + 1;
     if (c === '\\') j += 2;
-    else if (c === '`') j = skipBackquote(text, j, to);
-    else if (c === '$' && text[j + 1] === '{') j = skipBraced(text, j + 1, to);
+    else if (c === '`') j = backquoted(text, j, to, ranges);
+    else if (c === '$' && text[j + 1] === '{') j = braced(text, j + 1, to, ranges);
     else if (c === '$' && text[j + 1] === '(' && text[j + 2] === '(') j = skipArithmetic(text, j + 1, to);
     else if (c === '$' && text[j + 1] === '(') j = scan(text, j + 2, to, ranges, true);
     else j++;
@@ -54,14 +58,14 @@ function skipDouble(text, i, to, ranges) {
   return to;
 }
 
-// A command substitution is shell code even inside double quotes, so its comments are scanned too.
+// A command substitution is shell code wherever it is nested, so its comments are scanned too.
 function scan(text, start, to, ranges, insideSubstitution) {
   const pendingHeredocs = [];
   let depth = 0;
   let i = start;
   while (i < to) {
     const c = text[i];
-    const atWordStart = i === 0 || WORD_BREAK.test(text[i - 1]);
+    const atWordStart = i === start || WORD_BREAK.test(text[i - 1]);
     if (c === '\n') {
       i++;
       while (pendingHeredocs.length) {
@@ -83,8 +87,8 @@ function scan(text, start, to, ranges, insideSubstitution) {
       i = j;
     } else if (c === '\\') i += 2;
     else if (c === "'") i = skipSingle(text, i, to);
-    else if (c === '"') i = skipDouble(text, i, to, ranges);
-    else if (c === '`') i = skipBackquote(text, i, to);
+    else if (c === '"') i = doubleQuoted(text, i, to, ranges);
+    else if (c === '`') i = backquoted(text, i, to, ranges);
     else if (c === '(' && text[i + 1] === '(' && atWordStart) i = skipArithmetic(text, i, to);
     else if (c === '$') {
       const next = text[i + 1];
@@ -92,7 +96,7 @@ function scan(text, start, to, ranges, insideSubstitution) {
         let j = i + 2;
         while (j < to && text[j] !== "'") j += text[j] === '\\' ? 2 : 1;
         i = Math.min(j + 1, to);
-      } else if (next === '{') i = skipBraced(text, i + 1, to);
+      } else if (next === '{') i = braced(text, i + 1, to, ranges);
       else if (next === '(' && text[i + 2] === '(') i = skipArithmetic(text, i + 1, to);
       else if (next === '(') i = scan(text, i + 2, to, ranges, true);
       else i += 2;

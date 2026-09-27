@@ -30,6 +30,18 @@ for (const [name, lines] of Object.entries(expected)) {
   });
 }
 
+test('SQL line markers beyond -- count only when the repository opts in', () => {
+  const text = 'select 1 # hash comment\nselect 2 // slash comment\nselect 3;\n';
+  const scan = (sqlLineComments) => [...scanMany([{ file: 'q.sql', text, language: 'sql', sqlLineComments }])[0].lines.keys()];
+  assert.deepEqual(scan([]), []);
+  assert.deepEqual(scan(['#', '//']), [0, 1]);
+});
+
+test('a Python file the interpreter cannot parse is an error, never a partial count', () => {
+  const [result] = scanMany([{ file: 'bad.py', text: '# note\ndef f(:\n    """doc"""\n', language: 'python' }]);
+  assert.match(result.error, /unparsable/);
+});
+
 test('an unknown file type is not counted', () => {
   assert.equal(languageOf('notes.md', '# heading'), null);
   assert.equal(languageOf('config.yaml', '# comment'), null);

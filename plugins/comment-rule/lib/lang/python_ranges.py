@@ -25,10 +25,7 @@ def scan(text):
     for token in tokenize.generate_tokens(io.StringIO(text).readline):
         if token.type == tokenize.COMMENT and not (token.start == (1, 0) and token.string.startswith("#!")):
             ranges.append([starts[token.start[0] - 1] + token.start[1], starts[token.end[0] - 1] + token.end[1]])
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return ranges, "partial: syntax error, string statements not counted"
+    tree = ast.parse(text)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Expr):
             continue
@@ -37,15 +34,14 @@ def scan(text):
             start = starts[node.lineno - 1] + char_col(lines[node.lineno - 1], node.col_offset)
             end = starts[node.end_lineno - 1] + char_col(lines[node.end_lineno - 1], node.end_col_offset)
             ranges.append([start, end])
-    return ranges, None
+    return ranges
 
 
 def main():
     results = []
     for item in json.load(sys.stdin):
         try:
-            ranges, note = scan(item["text"])
-            results.append({"id": item["id"], "ranges": ranges, "error": note})
+            results.append({"id": item["id"], "ranges": scan(item["text"]), "error": None})
         except (tokenize.TokenError, IndentationError, SyntaxError, ValueError) as error:
             results.append({"id": item["id"], "ranges": None, "error": f"unparsable: {error}"})
     json.dump(results, sys.stdout)

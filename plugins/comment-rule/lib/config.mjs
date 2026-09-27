@@ -30,10 +30,14 @@ export function parseConfig(text) {
   const ticketPrefixes = list('ticketPrefixes');
   const badPrefix = ticketPrefixes.find((prefix) => !/^[A-Za-z][A-Za-z0-9]*$/.test(prefix));
   if (badPrefix) throw new Error(`${CONFIG_FILE}: ticket prefix ${JSON.stringify(badPrefix)} must be letters and digits`);
+  const sqlLineComments = list('sqlLineComments');
+  const badMarker = sqlLineComments.find((marker) => marker !== '#' && marker !== '//');
+  if (badMarker) throw new Error(`${CONFIG_FILE}: sqlLineComments may hold only "#" and "//", not ${JSON.stringify(badMarker)}`);
   const exclude = [...DEFAULT_EXCLUDE, ...list('exclude')].map(globToRegExp);
   const frozen = list('frozen').map(globToRegExp);
   return {
     ticketPrefixes,
+    sqlLineComments,
     isExcluded: (file) => exclude.some((re) => re.test(file)),
     isFrozen: (file) => frozen.some((re) => re.test(file)),
   };

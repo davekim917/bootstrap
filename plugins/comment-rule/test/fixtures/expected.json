@@ -18,12 +18,17 @@
     2,
     12,
     13,
-    15
+    15,
+    16,
+    18
   ],
   "shell/hook-no-ext": [
     2
   ],
   "shell/not-shell-no-ext": [],
+  "sql/backtick.sql": [
+    1
+  ],
   "sql/basic.sql": [
     1,
     2,

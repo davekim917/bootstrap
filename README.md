@@ -351,13 +351,15 @@ with its line.
   Python (`tokenize` comments; docstrings and every other bare string statement count), SQL
   including dbt (`--`, nested `/* */`, dollar quoting, Jinja `{# #}`), and shell (`#` comments,
   not the shebang, not heredoc bodies). Extensionless files count only with a shell or Python
-  shebang; every other file type is ignored.
+  shebang; every other file type is ignored. A file its parser cannot read (a Python syntax
+  error, say) makes `check` exit 2 rather than count it partly.
 - **Every comment line counts**: directives, trailing comments and blank lines inside a block
   included. Lines split on `\r\n`, `\r`, `\n`, U+2028 and U+2029.
 - **Repository config** `.comment-rule.json` at the root, read from the merge base so a change
   cannot exempt itself: `exclude` (globs never counted), `frozen` (globs that are not counted
   once they exist at the base, e.g. applied migrations under a checksum, so deleting their
-  comments earns nothing), `ticketPrefixes` (extra keys such as `ABC` for `ABC-123`).
+  comments earns nothing), `ticketPrefixes` (extra keys such as `ABC` for `ABC-123`),
+  `sqlLineComments` (`"#"` and/or `"//"` for dialects that treat them as line comments).
 - **TypeScript** 5.x or 6.x is taken from the checked repository, then from the plugin
   (`npm ci --ignore-scripts` in `plugins/comment-rule`), then from a global install. Without one,
   TypeScript files make `check` exit 2 rather than pass. Python files need `python3`.
