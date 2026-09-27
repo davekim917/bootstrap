@@ -263,6 +263,16 @@ test('--own-typescript never loads TypeScript from the checked repository', () =
   const own = run('--own-typescript');
   assert.equal(own.status, 1, own.stdout);
   assert.match(own.stdout, /net \+1/);
+
+  const nested = path.join(repo, 'checker');
+  for (const dir of ['bin', 'lib']) fs.cpSync(path.join(HERE, '..', dir), path.join(nested, dir), { recursive: true });
+  const installed = path.join(HERE, '..', 'node_modules');
+  const fromNested = spawnSync(
+    process.execPath,
+    [path.join(nested, 'bin', 'comment-rule.mjs'), 'check', '--repo', repo, '--base', 'main', '--head', 'HEAD', '--own-typescript'],
+    { encoding: 'utf8', env: { ...process.env, NODE_PATH: installed } },
+  );
+  assert.equal(fromNested.status, 1, fromNested.stdout);
 });
 
 test('an untracked file is new: every comment line in it is growth', () => {

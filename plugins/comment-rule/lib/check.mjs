@@ -106,7 +106,7 @@ function evaluate(repo, entries, context) {
         file,
         text,
         language: entry[`${side}Language`],
-        resolveFrom: context.ownTypeScript ? [] : [path.dirname(path.join(repo, file)), repo],
+        resolveFrom: context.ownTypeScript ? null : [path.dirname(path.join(repo, file)), repo],
         sqlDialect: context.sqlDialect ?? 'ansi',
       });
     }

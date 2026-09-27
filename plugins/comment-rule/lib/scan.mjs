@@ -34,7 +34,7 @@ export function scanMany(items) {
     try {
       switch (item.language) {
         case 'typescript': {
-          const ts = loadTypeScript(item.resolveFrom ?? []);
+          const ts = loadTypeScript(item.resolveFrom);
           if (!ts) {
             results[index] = {
               error: 'typescript (5.x or 6.x) not found: install it in the repository, or run `npm ci` in the comment-rule plugin',
