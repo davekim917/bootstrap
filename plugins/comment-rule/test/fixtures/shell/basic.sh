@@ -10,3 +10,6 @@ cat <<-'END'
 	END
 x=$(( 1 # 2 ))
 echo done # trailing comment
+x="$(echo hi # inside a quoted command substitution
+echo bye)"
+echo after # the substitution closed

@@ -343,7 +343,7 @@ node plugins/comment-rule/bin/comment-rule.mjs count --repo <repo> [--json]
 ```
 
 `check` compares the merge base of `--base` (default: origin's default branch) and the head
-(default: the working tree) and exits 0 pass, 1 fail, 2 could not check. `--json` gives, per
+(default: the working tree's tracked files) and exits 0 pass, 1 fail, 2 could not check. `--json` gives, per
 file, comment lines at base and head, the net, each new comment line, and each prohibited form
 with its line.
 
