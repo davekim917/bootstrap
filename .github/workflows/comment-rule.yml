@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: davekim917/bootstrap
-          ref: 9bd3a8c06d6b0b45e9ca9b193ed618395d8008d2
+          ref: 7cb6dae82f5a07131d9ad79a28762b294c5e9e22
           path: .comment-rule-checker
           sparse-checkout: plugins/comment-rule
           persist-credentials: false
@@ -30,6 +30,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Install the checker
         working-directory: .comment-rule-checker/plugins/comment-rule
@@ -39,4 +40,4 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: node .comment-rule-checker/plugins/comment-rule/bin/comment-rule.mjs check --repo . --base "$BASE_SHA" --head "$HEAD_SHA"
+        run: node .comment-rule-checker/plugins/comment-rule/bin/comment-rule.mjs check --repo . --base "$BASE_SHA" --head "$HEAD_SHA" --own-typescript
