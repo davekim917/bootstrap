@@ -28,6 +28,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -151,23 +152,32 @@ export function hooksForTool(pluginRoots, toolName, event = 'PreToolUse') {
   );
 }
 
-/** Run one resolved hook command with `payload` on stdin, as the host does. */
+/** Run one resolved hook command with `payload` on stdin, as the host does. Stdin is a file because `input` ends it with shutdown(2), which Codex's sandbox denies. */
 export function runHookCommand(command, payload, env = {}) {
   const input = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-stdin-'));
   try {
-    const stdout = execFileSync('bash', ['-c', command], {
-      input,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, ...env },
-    });
-    return { exitCode: 0, stdout, stderr: '' };
-  } catch (error) {
-    return {
-      exitCode: typeof error.status === 'number' ? error.status : 1,
-      stdout: error.stdout ?? '',
-      stderr: error.stderr ?? '',
-    };
+    const file = path.join(dir, 'stdin');
+    fs.writeFileSync(file, input);
+    const stdin = fs.openSync(file, 'r');
+    try {
+      const stdout = execFileSync('bash', ['-c', command], {
+        encoding: 'utf8',
+        stdio: [stdin, 'pipe', 'pipe'],
+        env: { ...process.env, ...env },
+      });
+      return { exitCode: 0, stdout, stderr: '' };
+    } catch (error) {
+      return {
+        exitCode: typeof error.status === 'number' ? error.status : 1,
+        stdout: error.stdout ?? '',
+        stderr: error.stderr ?? '',
+      };
+    } finally {
+      fs.closeSync(stdin);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
