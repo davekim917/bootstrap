@@ -156,29 +156,28 @@ export function hooksForTool(pluginRoots, toolName, event = 'PreToolUse') {
 export function runHookCommand(command, payload, env = {}) {
   const input = typeof payload === 'string' ? payload : JSON.stringify(payload);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-stdin-'));
-  const file = path.join(dir, 'stdin');
-  let stdin;
   try {
+    const file = path.join(dir, 'stdin');
     fs.writeFileSync(file, input);
-    stdin = fs.openSync(file, 'r');
+    const stdin = fs.openSync(file, 'r');
+    try {
+      const stdout = execFileSync('bash', ['-c', command], {
+        encoding: 'utf8',
+        stdio: [stdin, 'pipe', 'pipe'],
+        env: { ...process.env, ...env },
+      });
+      return { exitCode: 0, stdout, stderr: '' };
+    } catch (error) {
+      return {
+        exitCode: typeof error.status === 'number' ? error.status : 1,
+        stdout: error.stdout ?? '',
+        stderr: error.stderr ?? '',
+      };
+    } finally {
+      fs.closeSync(stdin);
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
-  }
-  try {
-    const stdout = execFileSync('bash', ['-c', command], {
-      encoding: 'utf8',
-      stdio: [stdin, 'pipe', 'pipe'],
-      env: { ...process.env, ...env },
-    });
-    return { exitCode: 0, stdout, stderr: '' };
-  } catch (error) {
-    return {
-      exitCode: typeof error.status === 'number' ? error.status : 1,
-      stdout: error.stdout ?? '',
-      stderr: error.stderr ?? '',
-    };
-  } finally {
-    fs.closeSync(stdin);
   }
 }
 
