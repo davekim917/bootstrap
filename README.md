@@ -389,7 +389,7 @@ which appends the same feedback to the edit tool's output. Any error leaves the 
 
 **Lost-constraint review.** `plugins/comment-rule/review/lost-constraint.md` is the prompt for a
 fresh-context review of a change that deletes or shortens comments (`{{BASE}}` set to the merge
-base); NanoClaw's pr-review-loop skill runs it. No gate runs it, since only a model can judge it. It never answers "keep": each lost constraint comes back with the test, type,
+base). No gate runs it, since only a model can judge it. It never answers "keep": each lost constraint comes back with the test, type,
 assert or lint rule that replaces it and where that goes, or `none` with the reason code can't
 check it. The comment stays until that enforcement exists in the change or on the base branch.
 
