@@ -5,7 +5,7 @@ The rule the change applies: a constraint belongs in a test, type, assert or lin
 Your job is the one thing a machine cannot check: did the change lose or distort a constraint? Read the whole diff, and for each deleted or shortened comment read the surrounding code at the base (`git show {{BASE}}:<file>`) to judge it. Report:
 
 1. **LOST**: a deleted comment, or the part cut from a shortened one, was the only statement of a rule, invariant, security, trust or tenancy boundary, fail-closed or fail-open decision, ordering, idempotency or concurrency requirement, unit, external-system quirk, deliberate exception, or operator instruction ("run only after", rollback) that a reader or operator would otherwise get wrong. It is not lost when enforcement at `HEAD` already fails on a violation (a type, a guard clause or assert, a test, a lint rule), or when a kept comment nearby still says it. A name or an error message alone is not enforcement.
-   In test files the case itself is the enforcement, so a deleted comment there is lost only when it said why a case, fixture value, mock or assertion exists and nothing in the test still says why, or when a test or tool reads its exact text.
+   In test files, a deleted comment that said why a case, fixture value, mock or assertion exists is not lost only when that case's assertion fails on the violation it described: check the assertion, not the test name. A deleted comment whose exact text a test or tool reads is always lost.
 2. **WRONG**: a rewritten comment now says something the old comment and the code do not support, or it dropped a qualifier and became false or misleading.
 3. **CITATION**: an edited or added comment still carries a ticket, PR or issue number, a PR or issue link, or a `file:line` reference.
 
