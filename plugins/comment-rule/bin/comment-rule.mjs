@@ -16,8 +16,9 @@ file   each file against HEAD (write-time feedback). Always exits 0 unless it ca
 count  comment lines in every tracked file, by language.`;
 
 const GUIDANCE =
-  'Keep a comment only where a reader would otherwise get the code wrong (a hazard, constraint or external quirk); ' +
-  'cut the rest, or delete as many narrating, restating or history comment lines elsewhere in the change. ' +
+  'A constraint belongs in a test, type, assert or lint rule; a comment is only for what code cannot check ' +
+  '(an external system\'s quirk, why the obvious approach was wrong). Cut the rest, or delete as many narrating, ' +
+  'restating or history comment lines elsewhere in the change. ' +
   'Never cite file:line or a PR/issue/ticket number in a comment: history belongs in git.';
 
 function printCheck(result) {
