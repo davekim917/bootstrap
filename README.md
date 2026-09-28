@@ -22,7 +22,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.2.2 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex | `test-audit` | 1.0.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
-| Claude Code / Codex / OpenCode | `comment-rule` | 1.1.0 | One comment checker for CI, merge gates and write-time feedback: no net comment-line growth, no `file:line` or PR/issue/ticket history in comments |
+| Claude Code / Codex / OpenCode | `comment-rule` | 1.2.0 | One comment checker for CI, merge gates and write-time feedback: no net comment-line growth, no `file:line` or PR/issue/ticket history in comments |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
 ### Delegation is invoke-only
@@ -132,7 +132,8 @@ The one role beside them is `agents/cut-down-reviewer.md`, the post-PR cut-down 
 It reads a PR's diff and repository, never the author's conversation, and answers one
 question: what in this diff can be deleted or simplified without losing required behavior.
 It never proposes deleting a comment that is the only statement of a rule, constraint,
-exception or hazard. The author launches it with their own provider's native sub-agent
+exception or hazard until the test, type, assert or lint rule that replaces it exists in the
+diff or on main; it proposes that conversion instead. The author launches it with their own provider's native sub-agent
 tool, so it runs on the author's model (`model: inherit`) at `effort: high`, and it posts
 the cut-down receipt a merge gate can require. The drift gates allow exactly this one
 named role, with that frontmatter.
@@ -341,9 +342,11 @@ to trust that plugin's hooks on the next session start.
 
 ### Comment rule
 
-`comment-rule` is the one place the comment rule lives: a change must not add comment lines on
-net across the files it touches, and must not add a comment that cites `file:line` or a
-PR/issue/ticket number. CI jobs, merge gates and the write-time hook all call the same checker:
+`comment-rule` is the one place the comment rule lives. A constraint belongs in a test, type,
+assert or lint rule; a comment is only for what code can't check (an external system's quirk,
+why the obvious approach was wrong). A change must not add comment lines on net across the
+files it touches, and must not add a comment that cites `file:line` or a PR/issue/ticket number.
+CI jobs, merge gates and the write-time hook all call the same checker:
 
 ```bash
 node plugins/comment-rule/bin/comment-rule.mjs check --repo <repo> [--base <ref>] [--head <ref>] [--own-typescript] [--json]
@@ -383,6 +386,12 @@ which lines. Each line is raised once per session. Claude runs it from `Edit|Wri
 Codex from `apply_patch`; OpenCode has no hook manifest, so a host adds
 `plugins/comment-rule/hooks/opencode-comment-rule.mjs` to its OpenCode config's `plugin` list,
 which appends the same feedback to the edit tool's output. Any error leaves the edit silent.
+
+**Lost-constraint review.** `plugins/comment-rule/review/lost-constraint.md` is the prompt for a
+fresh-context review of a change that deletes or shortens comments (`{{BASE}}` set to the merge
+base). No gate runs it, since only a model can judge it. It never answers "keep": each lost constraint comes back with the test, type,
+assert or lint rule that replaces it and where that goes, or `none` with the reason code can't
+check it. The comment stays until that enforcement exists in the change or on the base branch.
 
 ### Concise
 
