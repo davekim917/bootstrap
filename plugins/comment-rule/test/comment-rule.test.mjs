@@ -361,13 +361,13 @@ test('check counts the lines a change adds and those that hold nothing but comme
     'gone.sh': '# bye\necho bye\n',
   });
   commit(repo, {
-    'a.ts': '// one\n/*\n * two\n */\nexport const a = 1;\nexport const b = 2; // trailing\n\n/* x */ export const c = 3;\n',
+    'a.ts': '// one\n/*\n\n * two\n */\nexport const a = 1;\nexport const b = 2; // trailing\n\n/* x */ export const c = 3;\n',
     'old.py': null,
     'new.py': 'a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\nh = 8\n"""Doc."""\n# note\ni = 9\n',
     'gone.sh': null,
   });
   const result = checkChange({ repo, base: 'main', head: 'HEAD' });
   const counts = Object.fromEntries(result.files.map((file) => [file.path, [file.added_lines, file.added_comment_lines]]));
-  assert.deepEqual(counts, { 'a.ts': [7, 4], 'new.py': [3, 2], 'gone.sh': [0, 0] });
+  assert.deepEqual(counts, { 'a.ts': [8, 5], 'new.py': [3, 2], 'gone.sh': [0, 0] });
   assert.equal(result.files.find((file) => file.path === 'new.py').old_path, 'old.py');
 });
