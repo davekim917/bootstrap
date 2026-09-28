@@ -151,15 +151,14 @@ export function hooksForTool(pluginRoots, toolName, event = 'PreToolUse') {
   );
 }
 
-/** Run one resolved hook command with `payload` on stdin, as the host does. */
+/** Run one resolved hook command with `payload` on stdin through a shell pipe: the `input` option ends stdin with shutdown(2), which Codex's sandbox denies. */
 export function runHookCommand(command, payload, env = {}) {
   const input = typeof payload === 'string' ? payload : JSON.stringify(payload);
   try {
-    const stdout = execFileSync('bash', ['-c', command], {
-      input,
+    const stdout = execFileSync('bash', ['-c', `printf '%s' "$HOOK_STDIN" | { unset HOOK_STDIN; ${command}\n}`], {
       encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...env, HOOK_STDIN: input },
     });
     return { exitCode: 0, stdout, stderr: '' };
   } catch (error) {

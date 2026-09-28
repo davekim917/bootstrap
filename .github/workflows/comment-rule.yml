@@ -23,7 +23,7 @@ jobs:
     steps:
       # pull_request_target runs this file from the default branch, so a PR cannot edit its own check.
       # It also runs with the repository's token: read the PR head as git objects only, never execute it.
-      # Its check run lands on the default branch's commit, so the verdict is posted to the PR head as a status.
+      # Its check run lands on the head the event named; the status marks the head read below, so a rerun after a push judges the current head.
       - name: Read the PR as it is now, so a rerun never judges a stale head or base
         env:
           GH_TOKEN: ${{ github.token }}
