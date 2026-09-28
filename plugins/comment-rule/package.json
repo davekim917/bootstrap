@@ -1,6 +1,6 @@
 {
   "name": "comment-rule",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Comment-growth and comment-form checker. TypeScript is only needed when the checked repository does not provide it.",
