@@ -27,6 +27,8 @@ export function needsContentForLanguage(file) {
   return !BY_EXTENSION.some(([pattern]) => pattern.test(file)) && path.posix.extname(file) === '';
 }
 
+const scanned = (text, ranges) => ({ ranges, lines: commentLinesFromRanges(text, ranges) });
+
 export function scanMany(items) {
   const results = items.map(() => null);
   const pythonItems = [];
@@ -41,20 +43,20 @@ export function scanMany(items) {
             };
             return;
           }
-          results[index] = { lines: commentLinesFromRanges(item.text, typescriptCommentRanges(ts, item.file, item.text)) };
+          results[index] = scanned(item.text, typescriptCommentRanges(ts, item.file, item.text));
           return;
         }
         case 'sql':
-          results[index] = { lines: commentLinesFromRanges(item.text, sqlCommentRanges(item.text, item.sqlDialect)) };
+          results[index] = scanned(item.text, sqlCommentRanges(item.text, item.sqlDialect));
           return;
         case 'shell':
-          results[index] = { lines: commentLinesFromRanges(item.text, shellCommentRanges(item.text)) };
+          results[index] = scanned(item.text, shellCommentRanges(item.text));
           return;
         case 'python':
           pythonItems.push(index);
           return;
         default:
-          results[index] = { lines: new Map() };
+          results[index] = { ranges: [], lines: new Map() };
       }
     } catch (error) {
       results[index] = { error: `parse failed: ${error.message}` };
@@ -63,9 +65,7 @@ export function scanMany(items) {
   const python = pythonCommentRanges(pythonItems.map((index) => items[index].text));
   pythonItems.forEach((index, k) => {
     const { ranges, error } = python[k];
-    results[index] = ranges
-      ? { lines: commentLinesFromRanges(items[index].text, ranges) }
-      : { error };
+    results[index] = ranges ? scanned(items[index].text, ranges) : { error };
   });
   return results;
 }

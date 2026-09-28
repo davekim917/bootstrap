@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { CONFIG_FILE, parseConfig } from './config.mjs';
 import { prohibitedForms } from './forms.mjs';
+import { commentOnlyLfLines } from './lines.mjs';
 import { languageOf, needsContentForLanguage, scanMany } from './scan.mjs';
 
 const MAX_LISTED_LINES = 50;
@@ -61,6 +62,31 @@ function ownOwner(repo) {
   return url.match(/github\.com[:/]([^/\s]+)\//i)?.[1] ?? null;
 }
 
+function addedLineIndexes(repo, mergeBase, head, paths) {
+  const patch = git(repo, [
+    '--literal-pathspecs',
+    'diff',
+    '-U0',
+    '-M',
+    '--diff-algorithm=myers',
+    '--no-color',
+    '--no-ext-diff',
+    '--no-textconv',
+    mergeBase,
+    ...(head ? [head] : []),
+    '--',
+    ...new Set(paths),
+  ]);
+  const added = [];
+  for (const line of patch.split('\n')) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!hunk) continue;
+    const first = Number(hunk[1]);
+    for (let n = first; n < first + Number(hunk[2] ?? 1); n++) added.push(n - 1);
+  }
+  return added;
+}
+
 function newCommentLines(baseLines, headLines) {
   const remaining = new Map();
   for (const text of baseLines.values()) remaining.set(text, (remaining.get(text) ?? 0) + 1);
@@ -77,6 +103,7 @@ function compareFile(entry, baseScan, headScan, context) {
   const baseLines = baseScan?.lines ?? new Map();
   const headLines = headScan?.lines ?? new Map();
   const added = newCommentLines(baseLines, headLines);
+  const commentOnly = entry.addedLines && headScan ? commentOnlyLfLines(entry.headText, headScan.ranges) : new Set();
   const findings = [];
   for (const { line, text } of added) {
     for (const rule of prohibitedForms(text, context)) findings.push({ line, rule, text: text.slice(0, 200) });
@@ -90,6 +117,12 @@ function compareFile(entry, baseScan, headScan, context) {
     net: headLines.size - baseLines.size,
     new_comment_lines: added.slice(0, MAX_LISTED_LINES).map(({ line, text }) => ({ line, text: text.slice(0, 200) })),
     ...(added.length > MAX_LISTED_LINES ? { new_comment_lines_total: added.length } : {}),
+    ...(entry.addedLines
+      ? {
+          added_lines: entry.addedLines.length,
+          added_comment_lines: entry.addedLines.filter((line) => commentOnly.has(line)).length,
+        }
+      : {}),
     findings,
   };
 }
@@ -182,6 +215,7 @@ export function checkChange({ repo, base, head, ownTypeScript = false }) {
       headLanguage,
       baseText,
       headText,
+      addedLines: headText === null ? [] : addedLineIndexes(repo, mergeBase, head, [oldPath, newPath]),
     });
   }
   const { files, errors } = evaluate(repo, entries, context);

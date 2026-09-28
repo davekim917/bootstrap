@@ -1,6 +1,6 @@
 {
   "name": "comment-rule",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "One comment checker for every repo and every point in the harness: a change must not add comment lines on net, and must not add file:line citations or PR/issue/ticket history in comments. CLI for CI and merge gates, plus write-time feedback after each edit.",
   "author": {
     "name": "David Kim"

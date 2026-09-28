@@ -22,7 +22,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.2.2 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex | `test-audit` | 1.0.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
-| Claude Code / Codex / OpenCode | `comment-rule` | 1.0.1 | One comment checker for CI, merge gates and write-time feedback: no net comment-line growth, no `file:line` or PR/issue/ticket history in comments |
+| Claude Code / Codex / OpenCode | `comment-rule` | 1.1.0 | One comment checker for CI, merge gates and write-time feedback: no net comment-line growth, no `file:line` or PR/issue/ticket history in comments |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
 ### Delegation is invoke-only
@@ -354,7 +354,8 @@ node plugins/comment-rule/bin/comment-rule.mjs count --repo <repo> [--json]
 `check` compares the merge base of `--base` (default: origin's default branch) and the head
 (default: the working tree's tracked files) and exits 0 pass, 1 fail, 2 could not check. `--json` gives, per
 file, comment lines at base and head, the net, each new comment line, and each prohibited form
-with its line.
+with its line; `check` adds the lines the change adds to the file on git's diff (`added_lines`)
+and how many of them hold nothing but comment (`added_comment_lines`).
 
 - **Languages**, each with a real parser: TypeScript/JavaScript (the TypeScript compiler API),
   Python (`tokenize` comments; docstrings and every other bare string statement count), SQL
