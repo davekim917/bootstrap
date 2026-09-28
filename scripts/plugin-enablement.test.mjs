@@ -46,10 +46,11 @@ const TEAM_SKILLS = [
   'team-auto', 'team-build', 'team-debug', 'team-plan', 'team-retro', 'team-review', 'team-ship',
 ];
 
-/** The five effort shims the orchestrate plugin ships, in sorted order. */
+/** The five effort shims the orchestrate plugin ships, in sorted order, and every agent it ships. */
 const WORKER_SHIMS = [
   'worker-high', 'worker-low', 'worker-max', 'worker-medium', 'worker-xhigh',
 ];
+const ORCHESTRATE_AGENTS = ['cut-down-reviewer', ...WORKER_SHIMS];
 
 /**
  * Env the deleted guard read for its thresholds. Kept empty so a stray operator
@@ -151,13 +152,13 @@ test('/orchestrate resolves as a skill on both the Claude and the Codex side', (
   assert.equal(claudeManifest.version, codexManifest.version, 'one version across both manifests');
 });
 
-test('enabled: the five effort shims are the only sub-agents the plugin adds', () => {
+test('enabled: the five effort shims and the cut-down reviewer are the only sub-agents the plugin adds', () => {
   // The dispatch line in SKILL.md names `bootstrap-orchestrate:worker-<level>`.
   // A level with no definition behind it fails at dispatch time, in the middle of
-  // someone's task, so the composed session is asserted to offer all five — and
-  // nothing else, because a sixth definition here would be a role.
-  assert.deepEqual(resolveAgents([ORCHESTRATE]), WORKER_SHIMS);
-  assert.deepEqual(resolveAgents(ENABLED), WORKER_SHIMS);
+  // someone's task, so the composed session is asserted to offer all five, and
+  // no role beyond the one reviewer.
+  assert.deepEqual(resolveAgents([ORCHESTRATE]), ORCHESTRATE_AGENTS);
+  assert.deepEqual(resolveAgents(ENABLED), ORCHESTRATE_AGENTS);
 
   // They arrive by AUTO-DISCOVERY, with no `agents` field in the manifest. That
   // is not a stylistic preference: Claude rejects a directory entry outright,
@@ -178,7 +179,7 @@ test('MUTATION: declaring the agents directory empties the composed agent list',
   const mutant = orchestrateMutant(t, 'agents-mutant');
   const manifestPath = path.join(mutant, '.claude-plugin', 'plugin.json');
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  assert.deepEqual(resolveAgents([mutant]), WORKER_SHIMS, 'fixture must start healthy');
+  assert.deepEqual(resolveAgents([mutant]), ORCHESTRATE_AGENTS, 'fixture must start healthy');
 
   manifest.agents = ['./agents'];
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
