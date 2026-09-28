@@ -28,6 +28,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -151,14 +152,23 @@ export function hooksForTool(pluginRoots, toolName, event = 'PreToolUse') {
   );
 }
 
-/** Run one resolved hook command with `payload` on stdin through a shell pipe: the `input` option ends stdin with shutdown(2), which Codex's sandbox denies. */
+/** Run one resolved hook command with `payload` on stdin, as the host does. Stdin is a file because `input` ends it with shutdown(2), which Codex's sandbox denies. */
 export function runHookCommand(command, payload, env = {}) {
   const input = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-stdin-'));
+  const file = path.join(dir, 'stdin');
+  let stdin;
   try {
-    const stdout = execFileSync('bash', ['-c', `printf '%s' "$HOOK_STDIN" | { unset HOOK_STDIN; ${command}\n}`], {
+    fs.writeFileSync(file, input);
+    stdin = fs.openSync(file, 'r');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  try {
+    const stdout = execFileSync('bash', ['-c', command], {
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, ...env, HOOK_STDIN: input },
+      stdio: [stdin, 'pipe', 'pipe'],
+      env: { ...process.env, ...env },
     });
     return { exitCode: 0, stdout, stderr: '' };
   } catch (error) {
@@ -167,6 +177,8 @@ export function runHookCommand(command, payload, env = {}) {
       stdout: error.stdout ?? '',
       stderr: error.stderr ?? '',
     };
+  } finally {
+    fs.closeSync(stdin);
   }
 }
 
