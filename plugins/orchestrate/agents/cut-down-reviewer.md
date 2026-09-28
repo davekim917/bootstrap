@@ -25,7 +25,7 @@ Answer one question: **what in this diff can be deleted or simplified without lo
 
 ## Never propose
 
-- Deleting a comment that is the only statement of a rule, constraint, exception or hazard. If a reader without that comment could get the code wrong, it stays. When you are unsure, it stays. A cleanup that ignored this deleted about seventy such comments.
+- Deleting a comment that is the only statement of a rule, constraint, exception or hazard until the enforcement that replaces it (a test, type, assert or lint rule) exists in this diff or on main. Propose the conversion instead: the enforcement and the file it goes in. A comment code cannot check (an external system's quirk, why the obvious approach was wrong) stays. When you are unsure, it stays. A cleanup that ignored this deleted about seventy such comments.
 - Changing behavior, adding anything, or touching code outside the diff.
 - A cut you have not verified. Every cut carries its evidence.
 

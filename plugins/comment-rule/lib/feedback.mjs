@@ -19,9 +19,10 @@ export function editedFiles(toolInput, cwd) {
 }
 
 const GUIDANCE =
-  'A change must not add comment lines on net across the files it touches. Keep a comment only where a reader ' +
-  'would otherwise get the code wrong; cut the rest, or delete as many narrating or restating comment lines ' +
-  'elsewhere in the change. Never cite file:line or a PR/issue/ticket number in a comment.';
+  'A change must not add comment lines on net across the files it touches. A constraint belongs in a test, type, ' +
+  'assert or lint rule; a comment is only for what code cannot check (an external system\'s quirk, why the ' +
+  'obvious approach was wrong). Cut the rest, or delete as many narrating or restating comment lines elsewhere ' +
+  'in the change. Never cite file:line or a PR/issue/ticket number in a comment.';
 
 // Raise each line once per session, or a deliberately kept comment is repeated on every later edit.
 export function feedbackMessage(results, reported) {
