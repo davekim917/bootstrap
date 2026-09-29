@@ -22,7 +22,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.2.2 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex | `test-audit` | 1.0.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
-| Claude Code / Codex / OpenCode | `comment-rule` | 1.2.0 | One comment checker for CI, merge gates and write-time feedback: no net comment-line growth, no `file:line` or PR/issue/ticket history in comments |
+| Claude Code / Codex / OpenCode | `comment-rule` | 1.3.0 | One comment checker for CI, merge gates and write-time feedback: no net comment-line growth, no `file:line` or PR/issue/ticket history in comments |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
 ### Delegation is invoke-only
@@ -368,8 +368,9 @@ and how many of them hold nothing but comment (`added_comment_lines`).
   error, say) makes `check` exit 2 rather than count it partly.
 - **Every comment line counts**: directives, trailing comments and blank lines inside a block
   included. Lines split on `\r\n`, `\r`, `\n`, U+2028 and U+2029.
-- **Repository config** `.comment-rule.json` at the root, read from the merge base so a change
-  cannot exempt itself: `exclude` (globs never counted), `frozen` (globs that are not counted
+- **Repository config** `.comment-rule.json` at the root, read from the tip of `--base`, never the
+  head, so a change cannot exempt itself and a branch cut before the config landed still gets it
+  (an unresolvable `--base` exits 2): `exclude` (globs never counted), `frozen` (globs that are not counted
   once they exist at the base, e.g. applied migrations under a checksum, so deleting their
   comments earns nothing), `ticketPrefixes` (extra keys such as `ABC` for `ABC-123`),
   `sqlDialect` (`ansi`, the default and Postgres's rules; `snowflake` adds `//` comments and
@@ -378,7 +379,8 @@ and how many of them hold nothing but comment (`added_comment_lines`).
   (`npm ci --ignore-scripts` in `plugins/comment-rule`), then from a global install. Without one,
   TypeScript files make `check` exit 2 rather than pass. CI passes `--own-typescript`, which skips
   the checked repository: a pull request controls those files, so it could ship its own
-  `node_modules/typescript`. Python files need `python3`.
+  `node_modules/typescript`. Python files need `python3`; a helper with no result within 60 s
+  (`COMMENT_RULE_PYTHON_TIMEOUT_MS`) makes `check` exit 2 rather than hang.
 
 **Write-time feedback, never a block.** After each edit the post-edit hook checks the edited file
 against `HEAD` and, when the file gained comment lines or a prohibited form, tells the agent
