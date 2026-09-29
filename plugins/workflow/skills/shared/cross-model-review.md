@@ -223,8 +223,9 @@ Record in `run.md`:
 - raw verdict, each accepted/rejected finding with lead evidence, and resulting coverage.
 
 When process metadata reports model or effort, record and cross-check it against the explicit
-settings; a mismatch is `invalid-output`. Do not depend on ambient configuration or ask the
-reviewer to self-report its identity.
+settings; a mismatch is `invalid-output`. A family alias such as `opus` matches any reported model
+ID of that family; record the alias and the reported ID. Do not depend on ambient configuration or
+ask the reviewer to self-report its identity.
 
 Do not retry automatically. An explicitly configured safe target from a different model family may
 substitute once, with its actual transport and model recorded. A same-family review may add
