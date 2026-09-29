@@ -928,7 +928,7 @@ const crossModelTokens = [
   '3600000',
   '60-minute',
   'claude -p',
-  '--model claude-opus-5-5',
+  '--model opus',
   '--effort high',
   '--safe-mode',
   '--no-session-persistence',

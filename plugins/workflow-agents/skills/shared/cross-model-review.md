@@ -33,7 +33,7 @@ treating Codex as unavailable. A usage limit on one login says nothing about the
 When the artifact author is Codex, invoke Claude with:
 
 ```sh
-claude -p --model claude-opus-5-5 --effort high --safe-mode --no-session-persistence --tools "" --strict-mcp-config --output-format json
+claude -p --model opus --effort high --safe-mode --no-session-persistence --tools "" --strict-mcp-config --output-format json
 ```
 
 Pass the review prompt and source bundle on stdin. Run each external reviewer in the foreground and
@@ -135,7 +135,7 @@ Ask for exactly one JSON object, and enforce it at the CLI boundary — `--outpu
 only shapes the response envelope, it does not constrain content to a schema:
 
 ```sh
-claude -p --model claude-opus-5-5 --effort high --safe-mode --no-session-persistence --tools "" --strict-mcp-config --output-format json \
+claude -p --model opus --effort high --safe-mode --no-session-persistence --tools "" --strict-mcp-config --output-format json \
   --json-schema '{"type":"object","required":["verdict","findings"],"properties":{"verdict":{"enum":["clear","must_fix","degraded"]},"findings":{"type":"array","items":{"type":"object","required":["severity","requirement","evidence","failure_mode","smallest_fix","confidence"],"properties":{"severity":{"enum":["MUST-FIX","SHOULD-FIX"]},"requirement":{"type":"string"},"evidence":{"type":"string"},"failure_mode":{"type":"string"},"smallest_fix":{"type":"string"},"confidence":{"type":"number","minimum":0,"maximum":1}}}}}}'
 ```
 
@@ -216,15 +216,17 @@ Applied when the changed surface warrants:
 Record in `run.md`:
 
 - review stage, artifact author runtime/model family and coordinator family separately;
-- target runtime plus requested and effective model/effort enforced by the explicit CLI arguments;
+- target runtime plus requested model/effort passed as explicit CLI arguments, and the effective
+  model ID when process metadata reports it (otherwise record it as unverified);
 - exact command and timeout;
 - one of: `completed`, `missing-cli`, `unauthenticated`, `unsupported-flags`, `timeout`,
   `nonzero-exit`, `empty-output`, or `invalid-output`;
 - raw verdict, each accepted/rejected finding with lead evidence, and resulting coverage.
 
 When process metadata reports model or effort, record and cross-check it against the explicit
-settings; a mismatch is `invalid-output`. Do not depend on ambient configuration or ask the
-reviewer to self-report its identity.
+settings; a mismatch is `invalid-output`. A family alias such as `opus` matches any reported model
+ID of that family; record the alias and the reported ID. Do not depend on ambient configuration or
+ask the reviewer to self-report its identity.
 
 Do not retry automatically. An explicitly configured safe target from a different model family may
 substitute once, with its actual transport and model recorded. A same-family review may add
