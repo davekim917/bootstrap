@@ -148,7 +148,7 @@ test('no route (ask / unavailable / null) leaves a spawn untouched', () => {
 });
 
 test('a usable Jev route is preserved with classifier provenance', () => {
-  const picked = { runtime: 'codex', decision: 'route', pick: { model: 'gpt-6-astra', effort: 'high' }, confidence: 0.99 };
+  const picked = { runtime: 'codex', decision: 'route', pick: { model: 'gpt-6.1-sol', effort: 'high' }, confidence: 0.99 };
   assert.deepEqual(resolveDispatch(picked, 'codex'), { ...picked, provenance: 'jev' });
 });
 
@@ -383,5 +383,5 @@ test('the same successful picker response resolves runtime-specific Claude and C
   const claude = await pick('implement a synthetic transport repair', 'claude', { rubric, requestImpl });
   const codex = await pick('implement a synthetic transport repair', 'codex', { rubric, requestImpl });
   assert.deepEqual([claude.decision, claude.pick.model, claude.pick.effort], ['route', 'opus', 'medium']);
-  assert.deepEqual([codex.decision, codex.pick.model, codex.pick.effort], ['route', 'gpt-6-sol', 'medium']);
+  assert.deepEqual([codex.decision, codex.pick.model, codex.pick.effort], ['route', 'gpt-6.1-sol', 'medium']);
 });
