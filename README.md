@@ -198,7 +198,6 @@ Claude-authored artifact reviews use (high default, explicit validated overrides
 ```bash
 codex exec \
   --ignore-user-config \
-  --model gpt-6.1-sol \
   -c 'model_reasoning_effort="high"' \
   --ephemeral \
   --yolo
