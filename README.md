@@ -208,7 +208,7 @@ Codex-authored artifact reviews use:
 
 ```bash
 claude -p \
-  --model claude-opus-5-5 \
+  --model opus \
   --effort high \
   --safe-mode \
   --no-session-persistence \
