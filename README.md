@@ -193,13 +193,13 @@ The review receives source artifacts, not the lead model's conclusions, and is n
 Findings are hypotheses until verified by the lead. The plugin explicitly selects reviewer model
 and effort; it never inherits them from host or container configuration.
 
-Claude-authored artifact reviews use (medium default, explicit validated overrides allowed):
+Claude-authored artifact reviews use (high default, explicit validated overrides allowed):
 
 ```bash
 codex exec \
   --ignore-user-config \
-  --model gpt-6-astra \
-  -c 'model_reasoning_effort="medium"' \
+  --model gpt-6-sol \
+  -c 'model_reasoning_effort="high"' \
   --ephemeral \
   --yolo
 ```
@@ -208,8 +208,8 @@ Codex-authored artifact reviews use:
 
 ```bash
 claude -p \
-  --model claude-fable-5-1 \
-  --effort medium \
+  --model claude-opus-5-5 \
+  --effort high \
   --safe-mode \
   --no-session-persistence \
   --permission-mode plan \

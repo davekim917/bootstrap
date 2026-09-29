@@ -109,7 +109,7 @@ const sharedRootsOf = (roots) => [roots.claudeRoot, roots.agentRoot];
 
 for (const [name, file, from, to, expected] of [
   ['author-based diversity', 'shared/cross-model-review.md', 'artifact author, not the coordinator', 'coordinator only', 'artifact author'],
-  ['runtime reviewer effort', 'shared/cross-model-review.md', '--effort medium', '--effort high', '--effort medium'],
+  ['runtime reviewer effort', 'shared/cross-model-review.md', '--effort high', '--effort medium', '--effort high'],
   ['evidence invalidation', 'shared/workflow-contract.md', 'Invalidate affected evidence', 'Retain every result', 'Invalidate affected evidence'],
   ['productive repair budget', 'shared/workflow-contract.md', 'maximum of 3 corrective rounds', 'maximum of 1 corrective round', '3 corrective rounds'],
   ['scope continuity', 'shared/workflow-contract.md', 'Factual corrections and test-detail refinements do not reset authorization', 'Every edit requires new approval', 'do not reset authorization'],
