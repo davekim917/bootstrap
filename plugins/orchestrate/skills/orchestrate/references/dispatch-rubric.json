@@ -61,7 +61,7 @@
     "fast-low": {
       "tier": "fast",
       "effort": "low",
-      "criteria": "The brief asks for running a named sequence of commands; OR triage, classification, a summary, or short copy; OR a code lookup: find where something happens in the code, with no change requested and no request to diagnose a failure or explain unexpected behaviour; the brief never asks for a review, critique or opinion."
+      "criteria": "The brief asks for running a named sequence of commands; OR triage, classification, a summary, or short copy; OR a code lookup: find where something happens in the code, or explain how existing code works as designed; in every case the brief asks for no code change and never asks to review, critique, diagnose a failure or unexpected behaviour, or give an opinion."
     },
     "workhorse-low": {
       "tier": "workhorse",
