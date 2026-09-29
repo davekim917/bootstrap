@@ -207,7 +207,7 @@ export function evaluateContracts({
   }
 
   const exactCommands = [
-    `codex exec --ignore-user-config --model gpt-6-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo`,
+    `codex exec --ignore-user-config --model gpt-6.1-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo`,
     'claude -p --model opus --effort high --safe-mode --no-session-persistence --tools "" --strict-mcp-config --output-format json',
   ];
   // Contract substance lives with whichever tree carries the file. After the

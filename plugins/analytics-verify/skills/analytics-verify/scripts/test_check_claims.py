@@ -444,7 +444,7 @@ class Mechanics(Tmp):
 
     def report(self, doc, led, verdict='CLEAR', body=SECTIONS):
         return '\n'.join([f'artifact-sha256: {cc.sha256(doc)}', f'ledger-sha256: {cc.sha256(led)}',
-                          f'verdict: {verdict}', 'verifier: gpt-6-sol (fresh codex exec session)', '', body])
+                          f'verdict: {verdict}', 'verifier: gpt-6.1-sol (fresh codex exec session)', '', body])
 
     def test_receipt_binds_to_exact_bytes(self):
         led = self.base([])
@@ -588,7 +588,7 @@ class ReceiptCase(Tmp):
 
     def header(self, verdict='CLEAR', doc_hash=None):
         return (f'artifact-sha256: {doc_hash or cc.sha256(self.doc)}\nledger-sha256: {cc.sha256(self.led)}\n'
-                f'verdict: {verdict}\nverifier: gpt-6-sol (fresh codex exec session)\n\n')
+                f'verdict: {verdict}\nverifier: gpt-6.1-sol (fresh codex exec session)\n\n')
 
     def receipt(self, text):
         return run(['receipt', self.write('verify.md', text), self.led, self.doc])
@@ -740,7 +740,7 @@ class ReceiptRound2(ReceiptCase):
 
     def test_hash_command_output_can_fill_the_header(self):
         head = (f'artifact-sha256: {cc.sha256(self.doc)}  {self.doc}\nledger-sha256: {cc.sha256(self.led)}  claims.json\n'
-                'verdict: CLEAR\nverifier: gpt-6-sol (fresh codex exec session)\n\n')
+                'verdict: CLEAR\nverifier: gpt-6.1-sol (fresh codex exec session)\n\n')
         code, out = self.receipt(head + SECTIONS)
         self.assertEqual(code, 0, out)
 

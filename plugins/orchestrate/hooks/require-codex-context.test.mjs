@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const script = fileURLToPath(new URL('./require-codex-context.mjs', import.meta.url));
-const base = { message: 'bounded task', model: 'gpt-6-astra', reasoning_effort: 'high', agent_type: 'worker-high' };
+const base = { message: 'bounded task', model: 'gpt-6.1-sol', reasoning_effort: 'high', agent_type: 'worker-high' };
 const HOOK_TIMEOUT_MS = 10_000;
 function run(input) {
   return new Promise((resolve, reject) => {

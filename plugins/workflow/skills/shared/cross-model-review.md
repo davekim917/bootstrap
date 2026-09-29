@@ -23,7 +23,7 @@ When the artifact author is Claude, invoke Codex with settings that do not inher
 `config.toml`:
 
 ```sh
-codex exec --ignore-user-config --model gpt-6-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo
+codex exec --ignore-user-config --model gpt-6.1-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo
 ```
 
 If Codex answers with its usage limit and `CODEX_FALLBACK_HOMES` is set (a colon-separated list of
@@ -73,7 +73,7 @@ Send the vendored prompt at `references/codex-adversarial-prompt.md` verbatim, f
 four substitution markers (below), and enforce its schema at the CLI boundary rather than in prose:
 
 ```sh
-codex exec --ignore-user-config --model gpt-6-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo \
+codex exec --ignore-user-config --model gpt-6.1-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo \
   --output-schema references/codex-review-output.schema.json \
   --output-last-message <path-to-write-the-final-JSON-response>
 ```

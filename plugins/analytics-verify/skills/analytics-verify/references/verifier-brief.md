@@ -85,7 +85,7 @@ nowhere else in it. `## Frame` comes right after them, before any other heading.
 ```
 artifact-sha256: <check_claims.py hash <deliverable>; one line per file>
 ledger-sha256: <check_claims.py hash claims.json>
-verifier: <your actual model and how you ran, e.g. "gpt-6-sol, fresh codex exec session">
+verifier: <your actual model and how you ran, e.g. "gpt-6.1-sol, fresh codex exec session">
 verdict: CLEAR | CHANGES
 
 ## Frame

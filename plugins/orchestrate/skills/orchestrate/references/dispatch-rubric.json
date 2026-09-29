@@ -5,12 +5,12 @@
   "tiers": {
     "judgment": {
       "claude": "fable",
-      "codex": "gpt-6-astra",
+      "codex": "gpt-6.1-sol",
       "maxEffort": "high"
     },
     "workhorse": {
       "claude": "opus",
-      "codex": "gpt-6-sol",
+      "codex": "gpt-6.1-sol",
       "maxEffort": "xhigh"
     }
   },

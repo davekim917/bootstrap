@@ -101,7 +101,7 @@ If you're unsure, use the full loop.
    the verified file (that would change its bytes). The stamp says what ran, who
    checked, and what wasn't checked:
    > Verified: ledger PASS (41 numbers, 3 relations), CSV reproduces exactly; checked
-   > by gpt-6-sol in a fresh Codex session, CLEAR after 2 rounds. Not checked: store
+   > by gpt-6.1-sol in a fresh Codex session, CLEAR after 2 rounds. Not checked: store
    > shelf stock.
 
    Name the verifier's actual model. If you asked for another model family and got
