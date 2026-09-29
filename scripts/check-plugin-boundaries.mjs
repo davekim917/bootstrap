@@ -921,7 +921,6 @@ for (const fileName of [
 const crossModelTokens = [
   'codex exec',
   '--ignore-user-config',
-  '--model gpt-6.1-sol',
   'model_reasoning_effort="high"',
   '--ephemeral',
   '--yolo',

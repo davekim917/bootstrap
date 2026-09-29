@@ -23,8 +23,10 @@ When the artifact author is Claude, invoke Codex with settings that do not inher
 `config.toml`:
 
 ```sh
-codex exec --ignore-user-config --model gpt-6.1-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo
+codex exec --ignore-user-config -c 'model_reasoning_effort="high"' --ephemeral --yolo
 ```
+
+The command names no model on purpose. Codex has no model aliases (`-m sol` is rejected), so any id written here goes stale at the next release; with the user config ignored, Codex uses its own current default. Record the id the run reports (the `model:` line of the run header) as the reviewer, never an alias, and stop if that id is a small tier.
 
 If Codex answers with its usage limit and `CODEX_FALLBACK_HOMES` is set (a colon-separated list of
 spare Codex logins), rerun the same command with `CODEX_HOME` set to each listed home in turn before
@@ -73,7 +75,7 @@ Send the vendored prompt at `references/codex-adversarial-prompt.md` verbatim, f
 four substitution markers (below), and enforce its schema at the CLI boundary rather than in prose:
 
 ```sh
-codex exec --ignore-user-config --model gpt-6.1-sol -c 'model_reasoning_effort="high"' --ephemeral --yolo \
+codex exec --ignore-user-config -c 'model_reasoning_effort="high"' --ephemeral --yolo \
   --output-schema references/codex-review-output.schema.json \
   --output-last-message <path-to-write-the-final-JSON-response>
 ```
