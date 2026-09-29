@@ -194,6 +194,37 @@ test('frozen files never earn credit, excluded files never count, and the base c
   assert.equal(result.status, 'fail');
 });
 
+test('the config comes from the base tip, even when it landed after the branch point, never from the head', () => {
+  const repo = makeRepo({ 'src/x.ts': 'export const x = 1;\n' });
+  git(repo, 'checkout', '-q', 'main');
+  commit(repo, { '.comment-rule.json': JSON.stringify({ exclude: ['generated/**'] }) });
+  git(repo, 'checkout', '-q', 'change');
+  commit(repo, {
+    'generated/api.ts': '// generated\nexport {};\n',
+    'src/y.ts': '// narration\nexport {};\n',
+    '.comment-rule.json': JSON.stringify({ exclude: ['generated/**', 'src/**'] }),
+  });
+  const result = checkChange({ repo, base: 'main', head: 'HEAD' });
+  assert.deepEqual(result.files.map((file) => [file.path, file.net]), [['src/y.ts', 1]]);
+});
+
+test('a Python helper that never answers makes check exit 2 instead of hanging', () => {
+  const repo = makeRepo({ 'a.py': 'a = 1\n' });
+  commit(repo, { 'a.py': '# note\na = 1\n' });
+  const hang = path.join(repo, 'hang.sh');
+  fs.writeFileSync(hang, "#!/bin/sh\ntrap '' TERM\nexec sleep 600\n", { mode: 0o755 });
+  const started = Date.now();
+  const run = spawnSync(process.execPath, [CLI, 'check', '--repo', repo, '--base', 'main', '--head', 'HEAD'], {
+    encoding: 'utf8',
+    env: { ...process.env, COMMENT_RULE_PYTHON: hang, COMMENT_RULE_PYTHON_TIMEOUT_MS: '1000' },
+    timeout: 20_000,
+    killSignal: 'SIGKILL',
+  });
+  assert.equal(run.status, 2, run.stdout + run.stderr);
+  assert.match(run.stdout, /could not check a\.py: python3 unavailable: no result within 1000 ms/);
+  assert.ok(Date.now() - started < 10_000);
+});
+
 test('a rename compares the file with its old self', () => {
   const repo = makeRepo({ 'old/name.py': '"""Doc."""\n# note\nx = 1\ny = 2\nz = 3\n' });
   fs.mkdirSync(path.join(repo, 'new'));

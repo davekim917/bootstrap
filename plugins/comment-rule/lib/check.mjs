@@ -184,11 +184,11 @@ function parseRawDiff(output) {
   return entries;
 }
 
-// The config is read at the merge base so that a change cannot exempt itself.
 export function checkChange({ repo, base, head, ownTypeScript = false }) {
   const baseRef = base ?? defaultBaseRef(repo);
-  const mergeBase = git(repo, ['merge-base', baseRef, head ?? 'HEAD']).trim();
-  const config = parseConfig(show(repo, mergeBase, CONFIG_FILE));
+  const baseTip = git(repo, ['rev-parse', '--verify', '--end-of-options', `${baseRef}^{commit}`]).trim();
+  const mergeBase = git(repo, ['merge-base', baseTip, head ?? 'HEAD']).trim();
+  const config = parseConfig(show(repo, baseTip, CONFIG_FILE));
   const context = { ownOwner: ownOwner(repo), ticketPrefixes: config.ticketPrefixes, sqlDialect: config.sqlDialect, ownTypeScript };
   const diff = git(repo, ['diff', '--raw', '-z', '-M', '--abbrev=40', '--no-color', '--no-ext-diff', mergeBase, ...(head ? [head] : []), '--']);
   const entries = [];
