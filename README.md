@@ -190,15 +190,15 @@ Independent other-family review is mandatory at both consequential gates:
 Routine work does not automatically need both gates; explicit requested reviews are honored.
 Choose the other family relative to the artifact author, not the coordinator.
 The review receives source artifacts, not the lead model's conclusions, and is non-mutating.
-Findings are hypotheses until verified by the lead. The plugin explicitly selects reviewer model
-and effort; it never inherits them from host or container configuration.
+Findings are hypotheses until verified by the lead. The plugin explicitly selects reviewer effort and
+ignores host and container Codex configuration; the Codex reviewer model is Codex's own current default,
+recorded from the run header.
 
 Claude-authored artifact reviews use (high default, explicit validated overrides allowed):
 
 ```bash
 codex exec \
   --ignore-user-config \
-  --model gpt-6.1-sol \
   -c 'model_reasoning_effort="high"' \
   --ephemeral \
   --yolo
