@@ -51,7 +51,7 @@
     "fast-medium": {
       "tier": "fast",
       "effort": "medium",
-      "criteria": "The brief names both the bug and its fix; OR asks for a document, spec or brief written up from facts and decisions it already states."
+      "criteria": "The brief names both the bug and its fix; OR asks for a document, spec or brief written up from facts and decisions it already states; in either case the brief does not ask to review, critique, diagnose or give an opinion."
     },
     "workhorse-medium": {
       "tier": "workhorse",
@@ -61,7 +61,7 @@
     "fast-low": {
       "tier": "fast",
       "effort": "low",
-      "criteria": "The brief asks for running a named sequence of commands; OR triage, classification, a summary, or short copy; OR a code lookup: find where something happens in the code, or explain why existing code behaves as it does, with no change requested."
+      "criteria": "The brief asks for running a named sequence of commands; OR triage, classification, a summary, or short copy; OR a code lookup: find where something happens in the code, with no change requested and no request to diagnose a failure or explain unexpected behaviour; the brief never asks for a review, critique or opinion."
     },
     "workhorse-low": {
       "tier": "workhorse",

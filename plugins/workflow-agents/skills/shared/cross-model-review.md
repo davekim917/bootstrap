@@ -218,8 +218,9 @@ Applied when the changed surface warrants:
 Record in `run.md`:
 
 - review stage, artifact author runtime/model family and coordinator family separately;
-- target runtime plus requested model/effort passed as explicit CLI arguments, and the effective
-  model ID when process metadata reports it (otherwise record it as unverified);
+- target runtime plus requested effort passed as an explicit CLI argument (requested model: runtime
+  default when the command names none), and the effective model ID when process metadata reports it
+  (otherwise record it as unverified);
 - exact command and timeout;
 - one of: `completed`, `missing-cli`, `unauthenticated`, `unsupported-flags`, `timeout`,
   `nonzero-exit`, `empty-output`, or `invalid-output`;
