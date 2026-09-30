@@ -2,10 +2,11 @@
 /**
  * Codex PreToolUse adapter for the shared command and file-safety policy.
  *
- * Codex loads this adapter from the plugin's native hooks manifest. Local
- * sessions return `permissionDecision: "ask"`, which invokes Codex's native
- * approval UI for the exact tool call. NanoClaw sessions retain their
- * session-database approval backend.
+ * Codex loads this adapter from the plugin's native hooks manifest. NanoClaw
+ * sessions route approval-tier commands to the session-database approval
+ * backend. Local sessions have no approval channel: Codex rejects a
+ * PreToolUse `permissionDecision: "ask"` as unsupported and then runs the
+ * command, so an approval-tier command is denied with a hand-off to the user.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { dirname, join, resolve } from 'path';
@@ -22,6 +23,8 @@ import {
 import { evaluateEmailSend, evaluateEmailToolCall } from './guards/email-gate-core';
 import { checkEditProtection, EDIT_TOOLS } from './guards/file-protection-core';
 
+export const LOCAL_APPROVAL_HANDOFF =
+    'This needs human approval, and this Codex session cannot ask for it. Do not retry or work around it: give the user the exact command to run themselves.';
 const SHELL_TOOLS = new Set(['exec_command', 'local_shell_call', 'shell', 'Bash']);
 const TEAM_AUTO_SENTINEL = '.team-auto-active';
 const TEAM_AUTO_SENTINEL_MAX_AGE_MS = 2 * 60 * 60 * 1000;
@@ -88,7 +91,7 @@ function emitContinue(): never {
     process.exit(0);
 }
 
-function emitDecision(permissionDecision: 'deny' | 'ask', reason: string): never {
+function emitDecision(permissionDecision: 'deny', reason: string): never {
     process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
             hookEventName: 'PreToolUse',
@@ -103,8 +106,8 @@ function emitDeny(reason: string | undefined, fallback: string): never {
     emitDecision('deny', prefixed(reason, fallback));
 }
 
-function emitAsk(reason: string): never {
-    emitDecision('ask', reason);
+function emitNeedsHumanApproval(reason: string): never {
+    emitDecision('deny', `${reason}\n\n${LOCAL_APPROVAL_HANDOFF}`);
 }
 
 function deniedDetail(decision: 'denied' | 'timeout'): string {
@@ -168,7 +171,7 @@ function main(): void {
         if (nativeEmail.action === 'gate') {
             const reason = nativeEmail.label ?? nativeEmail.reason ?? 'Outbound email send requires approval.';
             if (!IS_NANOCLAW) {
-                emitAsk(`${reason}${nativeEmail.summary ? `\n\n${nativeEmail.summary}` : ''}`);
+                emitNeedsHumanApproval(`${reason}${nativeEmail.summary ? `\n\n${nativeEmail.summary}` : ''}`);
             }
 
             let staged = true;
@@ -238,7 +241,7 @@ function main(): void {
                 const combined = email.action === 'gate'
                     ? `${reason}\n\nAlso requires outbound-email approval: ${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`
                     : reason;
-                emitAsk(combined);
+                emitNeedsHumanApproval(combined);
             }
 
             let staged = true;
@@ -256,7 +259,7 @@ function main(): void {
         const email = emailReason(command);
         if (email.action === 'gate') {
             if (!IS_NANOCLAW) {
-                emitAsk(`${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`);
+                emitNeedsHumanApproval(`${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`);
             }
 
             let staged = true;
