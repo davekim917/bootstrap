@@ -44,7 +44,7 @@ you can (an artifact, not prose). The FYI asks nothing.
 
 - the scheduled (weekly) production release
 - destructive or irreversible data changes
-- force-push to a shared branch, or deleting a branch that is not this run's own
+- force-push, or deleting a branch that is not this run's own
 - credentials, secrets or privilege changes
 - external publishing or email
 - spend
