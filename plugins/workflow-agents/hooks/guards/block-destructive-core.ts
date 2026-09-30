@@ -1490,6 +1490,8 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
 // ── Gated checks ─────────────────────────────────────────────────────────────
 
 /** Returns gate reason if the command requires approval, null otherwise */
+const CF_DESTRUCTIVE_VERB = /^(?:[a-z]+-)*(?:delete|purge|destroy|remove|reset|revoke|roll|rollback|terminate|clear|rotate|invalidate|replace)(?:[-A-Z][-A-Za-z]*)?$/;
+
 export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     const { name, args } = cmd;
 
@@ -1597,6 +1599,14 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     }
     if (name === 'wrangler' && args.includes('delete')) {
         return 'Destructive Cloudflare Wrangler command.';
+    }
+    // `cf <product> [group…] <operation>` is generated from the whole Cloudflare API, so the
+    // destructive operations are matched by verb rather than listed. `cli` (search) and `schema`
+    // only describe commands; their arguments name an operation without running it.
+    if ((name === 'cf' || name === 'cloudflare') && !['cli', 'schema'].includes(args[0])
+        && !args.includes('--dry-run') && !args.includes('--help') && !args.includes('-h')) {
+        const operation = args.find(a => !a.startsWith('-') && CF_DESTRUCTIVE_VERB.test(a));
+        if (operation) return `Destructive Cloudflare cf command (${operation}).`;
     }
     if (name === 'firebase' && args.some(a => ['projects:delete', 'firestore:delete', 'hosting:disable'].includes(a))) {
         return 'Destructive Firebase CLI command.';
