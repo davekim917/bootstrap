@@ -375,8 +375,8 @@ with the last run; steady growth means reviewers are keeping comments they shoul
   (`COMMENT_RULE_PYTHON_TIMEOUT_MS`) makes `check` exit 2 rather than hang.
 
 **Write-time feedback, never a block.** After each edit the post-edit hook checks the edited file
-against `HEAD` and, when the file gained comment lines or a prohibited form, tells the agent
-which lines. Each line is raised once per session. Claude runs it from `Edit|Write|MultiEdit`,
+against `HEAD` and, when the file gained a prohibited form, tells the agent which line. Each
+finding is raised once per session; new comment lines alone are left to review. Claude runs it from `Edit|Write|MultiEdit`,
 Codex from `apply_patch`; OpenCode has no hook manifest, so a host adds
 `plugins/comment-rule/hooks/opencode-comment-rule.mjs` to its OpenCode config's `plugin` list,
 which appends the same feedback to the edit tool's output. Any error leaves the edit silent.
