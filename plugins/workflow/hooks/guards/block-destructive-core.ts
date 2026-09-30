@@ -1486,7 +1486,7 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
 // ── Gated checks ─────────────────────────────────────────────────────────────
 
 /** Returns gate reason if the command requires approval, null otherwise */
-const CF_DESTRUCTIVE_VERB = /^(?:[a-z]+-)*(?:delete|purge|destroy|remove|reset|revoke|rollback|terminate|clear|rotate)(?:[-A-Z][-A-Za-z]*)?$/;
+const CF_DESTRUCTIVE_VERB = /^(?:[a-z]+-)*(?:delete|purge|destroy|remove|reset|revoke|roll|rollback|terminate|clear|rotate|invalidate|replace)(?:[-A-Z][-A-Za-z]*)?$/;
 
 export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     const { name, args } = cmd;
