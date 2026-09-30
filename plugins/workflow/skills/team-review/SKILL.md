@@ -16,7 +16,7 @@ If the mode is omitted, infer it only when exactly one is unambiguous; otherwise
 
 ## Review lenses
 
-Always check correctness, simplicity, plan fidelity, failure handling, and verification quality.
+Always check correctness, simplicity, comments, plan fidelity, failure handling, and verification quality.
 Add specialist lenses only when the changed surface warrants them:
 
 - authorization, credentials, untrusted input, destructive actions, or data loss → security;
