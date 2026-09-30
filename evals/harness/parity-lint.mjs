@@ -92,7 +92,6 @@ const ORCHESTRATE_ROOT = path.join(PLUGINS, 'orchestrate', 'skills');
 /** The five effort shims live beside the skill, not under it. */
 const ORCHESTRATE_AGENTS_ROOT = path.join(PLUGINS, 'orchestrate', 'agents');
 const EFFORT_LEVELS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-const REVIEWER_AGENTS = Object.freeze({ 'cut-down-reviewer': 'high' });
 
 export function normalizeWhitespace(value) {
   return value.replace(/\\\s*\n/g, ' ').replace(/\s+/g, ' ').trim();
@@ -380,10 +379,7 @@ function checkEffortShims(failures, checks, agentsRoot) {
     return;
   }
   const found = fs.readdirSync(agentsRoot).filter((name) => name.endsWith('.md')).sort();
-  const expected = [
-    ...EFFORT_LEVELS.map((level) => `worker-${level}.md`),
-    ...Object.keys(REVIEWER_AGENTS).map((name) => `${name}.md`),
-  ].sort();
+  const expected = EFFORT_LEVELS.map((level) => `worker-${level}.md`).sort();
   if (JSON.stringify(found) !== JSON.stringify(expected)) {
     failures.push(`orchestrate/agents: expected exactly ${expected.join(', ')}; found ${found.join(', ') || '(nothing)'}`);
     return;
@@ -417,16 +413,7 @@ function checkEffortShims(failures, checks, agentsRoot) {
       allClean = false;
     }
   }
-  for (const [name, effort] of Object.entries(REVIEWER_AGENTS)) {
-    const fields = frontmatterFields(fs.readFileSync(path.join(agentsRoot, `${name}.md`), 'utf8'));
-    if (fields?.get('name') !== name || fields?.get('model') !== 'inherit' || fields?.get('effort') !== effort) {
-      failures.push(`orchestrate/agents/${name}.md: must declare name: ${name}, model: inherit and effort: ${effort}`);
-      allClean = false;
-    }
-  }
-  if (allClean) {
-    checks.push(`orchestrate/agents: ${EFFORT_LEVELS.length} effort shims with no instructions, and the reviewers, all model: inherit`);
-  }
+  if (allClean) checks.push(`orchestrate/agents: ${EFFORT_LEVELS.length} effort shims, model: inherit, no instructions`);
 }
 
 function main() {

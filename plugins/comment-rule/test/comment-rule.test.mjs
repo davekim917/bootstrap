@@ -137,17 +137,13 @@ function commit(repo, files) {
   git(repo, 'commit', '-q', '-m', 'change');
 }
 
-test('net growth across the changed files fails; a balanced change passes', () => {
+test('net growth is reported with each new comment line, never failed', () => {
   const repo = makeRepo({ 'a.ts': '// one\nexport const a = 1;\n', 'b.py': '# two\nb = 2\n' });
   commit(repo, { 'a.ts': '// one\n// added\nexport const a = 1;\n' });
-  let result = checkChange({ repo, base: 'main', head: 'HEAD' });
-  assert.equal(result.status, 'fail');
+  const result = checkChange({ repo, base: 'main', head: 'HEAD' });
+  assert.equal(result.status, 'pass');
   assert.equal(result.net, 1);
   assert.deepEqual(result.files[0].new_comment_lines, [{ line: 2, text: '// added' }]);
-  commit(repo, { 'b.py': 'b = 2\n' });
-  result = checkChange({ repo, base: 'main', head: 'HEAD' });
-  assert.equal(result.status, 'pass');
-  assert.equal(result.net, 0);
 });
 
 test('an added prohibited form fails even when the count shrinks; untouched history is not flagged', () => {
@@ -191,7 +187,6 @@ test('frozen files never earn credit, excluded files never count, and the base c
       ['vendor/lib.ts', 1],
     ],
   );
-  assert.equal(result.status, 'fail');
 });
 
 test('the config comes from the base tip, even when it landed after the branch point, never from the head', () => {
@@ -268,9 +263,9 @@ test('a submodule update and a directory replaced by a file are not read as sour
   assert.deepEqual(countTree(repo).errors, []);
 });
 
-test('the CLI prints JSON and exits 1 on a failing change, 2 when it cannot check', () => {
+test('the CLI prints JSON and exits 1 on a prohibited form, 2 when it cannot check', () => {
   const repo = makeRepo({ 'a.js': 'const a = 1;\n' });
-  commit(repo, { 'a.js': '// narration\nconst a = 1;\n' });
+  commit(repo, { 'a.js': '// see PR #5150 for why\nconst a = 1;\n' });
   const fail = spawnSync(process.execPath, [CLI, 'check', '--repo', repo, '--base', 'main', '--head', 'HEAD', '--json'], {
     encoding: 'utf8',
   });
@@ -292,8 +287,8 @@ test('--own-typescript never loads TypeScript from the checked repository', () =
   assert.equal(fromRepo.status, 2, fromRepo.stdout);
   assert.match(fromRepo.stdout, /could not check a\.ts/);
   const own = run('--own-typescript');
-  assert.equal(own.status, 1, own.stdout);
-  assert.match(own.stdout, /net \+1/);
+  assert.equal(own.status, 0, own.stdout);
+  assert.match(own.stdout, /1 new comment line\(s\) to judge, net \+1/);
 
   const nested = path.join(repo, 'checker');
   for (const dir of ['bin', 'lib']) fs.cpSync(path.join(HERE, '..', dir), path.join(nested, dir), { recursive: true });
@@ -303,7 +298,7 @@ test('--own-typescript never loads TypeScript from the checked repository', () =
     [path.join(nested, 'bin', 'comment-rule.mjs'), 'check', '--repo', repo, '--base', 'main', '--head', 'HEAD', '--own-typescript'],
     { encoding: 'utf8', env: { ...process.env, NODE_PATH: installed } },
   );
-  assert.equal(fromNested.status, 1, fromNested.stdout);
+  assert.equal(fromNested.status, 0, fromNested.stdout);
 });
 
 test('an untracked file is new: every comment line in it is growth', () => {
@@ -322,29 +317,26 @@ test('edited files come from Claude, OpenCode and apply_patch inputs', () => {
   assert.deepEqual(editedFiles({ command: patch }, cwd), ['/work/repo/src/c.sql', '/work/repo/d.sh', '/work/repo/e.sh']);
 });
 
-test('feedback names each new comment line once per session and never a shrinking file', () => {
-  const grown = {
+test('feedback names each prohibited form once per session and nothing else', () => {
+  const result = {
     key: '/r/a.ts',
     path: 'a.ts',
-    base: 1,
-    head: 3,
     net: 2,
     new_comment_lines: [
       { line: 2, text: '// b' },
-      { line: 3, text: '// c' },
+      { line: 3, text: '// see PR #12' },
     ],
-    findings: [],
+    findings: [{ line: 3, rule: 'history-reference', text: '// see PR #12' }],
   };
   const reported = new Map();
-  const first = feedbackMessage([grown], reported);
-  assert.match(first, /a\.ts: 3 comment lines, 2 more than HEAD/);
-  assert.match(first, / {2}2: \/\/ b\n {2}3: \/\/ c/);
-  assert.equal(feedbackMessage([grown], reported), null);
-  const shrunk = { ...grown, key: '/r/b.ts', path: 'b.ts', net: -1 };
-  assert.equal(feedbackMessage([shrunk], new Map()), null);
+  const first = feedbackMessage([result], reported);
+  assert.match(first, /a\.ts:3 history reference: \/\/ see PR #12/);
+  assert.doesNotMatch(first, /\/\/ b/);
+  assert.equal(feedbackMessage([result], reported), null);
+  assert.equal(feedbackMessage([{ ...result, findings: [] }], new Map()), null);
 });
 
-test('the post-edit hook returns additionalContext for a grown file and stays silent otherwise', () => {
+test('the post-edit hook returns additionalContext for a prohibited form and stays silent otherwise', () => {
   const repo = makeRepo({ 'a.ts': 'export const a = 1;\n', 'doc.md': 'x\n' });
   write(repo, { 'a.ts': '// see PR #5150 for why\nexport const a = 1;\n' });
   const run = (input) =>
@@ -353,7 +345,6 @@ test('the post-edit hook returns additionalContext for a grown file and stays si
   assert.equal(grown.status, 0);
   const output = JSON.parse(grown.stdout).hookSpecificOutput;
   assert.equal(output.hookEventName, 'PostToolUse');
-  assert.match(output.additionalContext, /a\.ts: 1 comment lines, 1 more than HEAD/);
   assert.match(output.additionalContext, /a\.ts:1 history reference/);
   const codex = run({
     session_id: 's2',
@@ -371,34 +362,16 @@ test('the post-edit hook returns additionalContext for a grown file and stays si
 
 test('the OpenCode module appends feedback once per session and never throws', async () => {
   const repo = makeRepo({ 'keep.ts': 'export {};\n' });
-  write(repo, { 'q.ts': '// narration\nexport const q = 1;\n' });
+  write(repo, { 'q.ts': '// see PR #5150 for why\nexport const q = 1;\n' });
   const hooks = await CommentRuleFeedback({ directory: repo });
   const edit = async (sessionID, args, tool = 'edit') => {
     const output = { title: '', output: 'done', metadata: {} };
     await hooks['tool.execute.after']({ tool, sessionID, callID: 'c', args }, output);
     return output.output;
   };
-  assert.match(await edit('s1', { filePath: 'q.ts' }), /q\.ts: 1 comment lines, 1 more than HEAD/);
+  assert.match(await edit('s1', { filePath: 'q.ts' }), /q\.ts:1 history reference/);
   assert.equal(await edit('s1', { filePath: 'q.ts' }), 'done');
   assert.match(await edit('s2', { patchText: '*** Begin Patch\n*** Update File: q.ts\n*** End Patch' }, 'apply_patch'), /q\.ts/);
   assert.equal(await edit('s3', null), 'done');
   assert.equal(await edit('s3', { filePath: 'q.ts' }, 'read'), 'done');
-});
-
-test('check counts the lines a change adds and those that hold nothing but comment', () => {
-  const repo = makeRepo({
-    'a.ts': 'export const a = 1;\n',
-    'old.py': 'a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\nh = 8\n',
-    'gone.sh': '# bye\necho bye\n',
-  });
-  commit(repo, {
-    'a.ts': '// one\n/*\n\n * two\n */\nexport const a = 1;\nexport const b = 2; // trailing\n\n/* x */ export const c = 3;\n',
-    'old.py': null,
-    'new.py': 'a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\nh = 8\n"""Doc."""\n# note\ni = 9\n',
-    'gone.sh': null,
-  });
-  const result = checkChange({ repo, base: 'main', head: 'HEAD' });
-  const counts = Object.fromEntries(result.files.map((file) => [file.path, [file.added_lines, file.added_comment_lines]]));
-  assert.deepEqual(counts, { 'a.ts': [8, 5], 'new.py': [3, 2], 'gone.sh': [0, 0] });
-  assert.equal(result.files.find((file) => file.path === 'new.py').old_path, 'old.py');
 });
