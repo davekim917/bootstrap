@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { findFreshTeamAutoSentinel } from './codex-guard';
+import { findFreshTeamAutoSentinel, LOCAL_APPROVAL_HANDOFF } from './codex-guard';
 
 const GUARD = join(import.meta.dir, 'codex-guard.ts');
 const temporaryRoots: string[] = [];
@@ -40,7 +40,7 @@ function shell(command: string | string[]): Record<string, unknown> {
   };
 }
 
-function expectDecision(result: GuardResult, decision: 'ask' | 'deny', reason: RegExp): void {
+function expectDecision(result: GuardResult, decision: 'deny', reason: RegExp): void {
   expect(result.status).toBe(0);
   expect(result.stderr).toBe('');
   expect(result.output.hookSpecificOutput?.hookEventName).toBe('PreToolUse');
@@ -53,8 +53,10 @@ describe('Codex local approval transport', () => {
     expect((await runGuard(shell('git status'))).output).toEqual({ continue: true });
   });
 
-  test('asks through the native protocol for destructive commands', async () => {
-    expectDecision(await runGuard(shell('terraform destroy')), 'ask', /terraform/i);
+  test('denies destructive commands with a hand-off, since Codex rejects ask', async () => {
+    const result = await runGuard(shell('terraform destroy'));
+    expectDecision(result, 'deny', /terraform/i);
+    expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain(LOCAL_APPROVAL_HANDOFF);
   });
 
   test('denies git mutations inside read-only repo snapshots', async () => {
@@ -87,10 +89,10 @@ describe('Codex local approval transport', () => {
     }
   });
 
-  test('asks through the native protocol for outbound email', async () => {
+  test('denies outbound email with a hand-off, since Codex rejects ask', async () => {
     expectDecision(
       await runGuard(shell('gws gmail +send --to ops@example.com --subject report')),
-      'ask',
+      'deny',
       /email send to ops@example.com/i,
     );
   });
@@ -105,7 +107,7 @@ describe('Codex local approval transport', () => {
       tool_name: toolName,
       tool_input: toolInput,
     });
-    expectDecision(result, 'ask', /email (?:send|reply) to ops@example.com/i);
+    expectDecision(result, 'deny', /email (?:send|reply) to ops@example.com/i);
     expect(result.output.hookSpecificOutput.permissionDecisionReason).not.toContain('secret body');
   });
 
@@ -134,12 +136,12 @@ describe('Codex local approval transport', () => {
     const result = await runGuard(
       shell('terraform destroy && gws gmail +send --to ops@example.com --subject done'),
     );
-    expectDecision(result, 'ask', /also requires outbound-email approval/i);
+    expectDecision(result, 'deny', /also requires outbound-email approval/i);
     expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain('ops@example.com');
   });
 
   test('accepts array-form command inputs', async () => {
-    expectDecision(await runGuard(shell(['terraform', 'destroy'])), 'ask', /terraform/i);
+    expectDecision(await runGuard(shell(['terraform', 'destroy'])), 'deny', /terraform/i);
   });
 });
 
