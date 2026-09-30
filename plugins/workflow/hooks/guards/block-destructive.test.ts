@@ -141,6 +141,13 @@ describe('gated lead patterns (local native approval)', () => {
         // Services
         ['gh repo delete my-repo', 'GitHub CLI'],
         ['wrangler delete my-worker', 'Wrangler'],
+        ['cf dns records delete --zone-id z --dns-record-id r', 'cf delete'],
+        ['cf workers scripts delete my-worker --force', 'cf delete --force'],
+        ['cf kv namespaces keys bulk-delete --namespace-id n --body "[]"', 'cf bulk-delete'],
+        ['cf cache purge-cache --zone-id z --body "{}"', 'cf purge'],
+        ['cf api-tokens roll --token-id t && cf user tokens revoke-tokens', 'cf revoke in a chain'],
+        ['cf r2 buckets deleteAll', 'cf camelCase delete'],
+        ['cloudflare zones delete --zone-id z', 'cloudflare alias'],
         ['firebase projects:delete my-proj', 'Firebase'],
         // System
         ['dd if=/dev/zero of=/dev/sda', 'dd'],
@@ -285,6 +292,13 @@ describe('AST precision: destructive keywords in non-command contexts are allowe
         // Grep/cat/log searches — destructive keywords are search terms
         ['grep "DROP TABLE" migrations/', 'SQL in grep pattern'],
         ['grep -r "TRUNCATE" *.sql', 'TRUNCATE in grep pattern'],
+        ['cf dns records list --zone-id z', 'cf read'],
+        ['cf deploy', 'cf deploy'],
+        ['cf cli search "delete a dns record"', 'cf search names a delete'],
+        ['cf schema dns records delete', 'cf schema describes a delete'],
+        ['cf dns records delete --zone-id z --dns-record-id r --dry-run', 'cf dry run'],
+        ['cf workers scripts delete --help', 'cf help'],
+        ['cf dns records create --zone-id z --body "{}"', 'cf create'],
     ])('%s → allowed (%s)', async (cmd) => {
         const { exitCode } = await runHook(cmd);
         expect(exitCode).toBe(0);
