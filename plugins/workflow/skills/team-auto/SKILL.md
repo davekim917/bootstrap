@@ -35,17 +35,17 @@ The sentinel is only a concurrency guard. It is not approval or workflow state.
 4. **Correct within budget:** return verified MUST-FIX to the retained owner. Use the shared maximum
    of 3 corrective rounds across build/test/review, including one reconsideration on a repeated
    failure signature. Re-run only affected checks; reuse valid exact evidence.
-5. **Ship what is safe:** if clear, remove the sentinel and invoke `/team-ship`. It lands the
-   reversible tier itself — commit, push the working branch, open the PR — and asks a human only
-   for an action that deploys or cannot be cleanly undone. Do not stop here and report "ready to
-   ship": an approved plan that passed review and preflight has the authority to become a pull
-   request.
+5. **Ship what is safe:** if clear, remove the sentinel and invoke `/team-ship`. It lands everything
+   that passes readiness itself — commit, push, PR, and the merge once CI, review and the
+   repository's required checks are green — then posts an FYI. It holds for a human only on the
+   second tier (scheduled production release, irreversible data, credentials, external publishing,
+   spend, direction). Do not stop here and report "ready to ship".
 
 If the budget is exhausted, progress stops, workflow-created obstruction repeats, or a required
 reviewer is unavailable without explicit accepted coverage, record the concrete blocker in `run.md`,
 remove the sentinel, and stop. A second productive failure alone does not stop the run.
 
-`/team-auto` stops at anything that deploys and cannot silently add deploy authority.
+`/team-auto` stops at the second tier of `/team-ship` and cannot silently widen it.
 
 ## Authority
 

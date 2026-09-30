@@ -11,7 +11,7 @@
  *       Both workflow plugins expose the seven team skills and mirror the shared
  *       contracts; the orchestrate plugin exposes its one skill and the five
  *       effort shims it dispatches to; both explicit cross-model review lanes
- *       survive and auto still stops at ship.
+ *       survive and auto stops at team-ship's second tier.
  *   - BOUNDARIES → scripts/check-plugin-boundaries.mjs
  *       Plugin boundary invariants (user-facing skill-name parity, real SKILL.md).
  *   - ORCHESTRATE SPLIT → scripts/plugin-enablement.test.mjs

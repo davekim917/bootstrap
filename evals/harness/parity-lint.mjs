@@ -350,7 +350,7 @@ export function evaluateContracts({
 
     requireTokens(failures, `${label}/team-auto`, fs.readFileSync(path.join(root, 'team-auto', 'SKILL.md'), 'utf8'), [
       '3 corrective rounds',
-      'stops at anything that deploys',
+      'stops at the second tier of `/team-ship`',
       '.team-auto-active',
       'run.md',
     ]);
