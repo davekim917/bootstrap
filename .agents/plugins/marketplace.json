@@ -20,7 +20,7 @@
     },
     {
       "name": "bootstrap-orchestrate",
-      "version": "2.6.0",
+      "version": "3.0.0",
       "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Invoke-only.",
       "source": {
         "source": "local",
@@ -118,8 +118,8 @@
     },
     {
       "name": "comment-rule",
-      "version": "1.3.0",
-      "description": "One comment checker for every repo: no net comment-line growth, no file:line or PR/issue/ticket history in comments. CLI for CI and merge gates, plus write-time feedback after each edit.",
+      "version": "2.0.0",
+      "description": "One comment checker for every repo: blocks file:line citations and PR/issue/ticket history in comments, and lists every new comment line for a reviewer to judge. CLI for CI and merge gates, plus write-time feedback after each edit.",
       "source": {
         "source": "local",
         "path": "./plugins/comment-rule"

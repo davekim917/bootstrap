@@ -157,6 +157,24 @@ weekly denominator and report acceptance rate and total usage per accepted task;
 work or claim savings from model pricing alone. Keep measurements in run.md or the existing task
 ledger, without introducing a second tracking system.
 
+## Self-simplify before the first push
+
+When a change is ready to push as a pull request, before its first push, the owner runs one pass over
+its own complete diff and applies what it finds:
+
+- reuse: an existing helper, primitive or library call already does what new code does;
+- simplification and altitude: fewer branches, layers and options for the same behavior, each at the
+  level it belongs;
+- efficiency: no repeated work, unbounded scans or per-item process spawns;
+- unused code and copy-paste clones the diff adds;
+- replaced code left behind: what the change supersedes is deleted in the same change;
+- comments: no `file:line` or PR/issue/ticket citation, and every added comment kept only when a
+  reader would get something wrong without it.
+
+On Claude, the native `/simplify` skill covers the first three; without it, and on Codex and
+OpenCode, work them by hand. Then run the repository's cheap local checks and push once. The pass
+writes no receipt and replaces no review.
+
 ## Shipping
 
 Preserve `/team-ship` authority and exact-target checks. `/team-auto` carries work through merge on

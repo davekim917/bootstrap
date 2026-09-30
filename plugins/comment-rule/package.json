@@ -1,9 +1,9 @@
 {
   "name": "comment-rule",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Comment-growth and comment-form checker. TypeScript is only needed when the checked repository does not provide it.",
+  "description": "Comment-form checker that also lists new comment lines. TypeScript is only needed when the checked repository does not provide it.",
   "bin": {
     "comment-rule": "bin/comment-rule.mjs"
   },
