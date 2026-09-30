@@ -157,7 +157,7 @@ in its own plugin:
 | `/team-review` | Reviews a plan or implementation, verifies findings, and records evidence |
 | `/team-auto` | Runs approved plan → build → review, then hands off to `/team-ship` |
 | `/team-debug` | Diagnoses root cause from evidence before changing production code |
-| `/team-ship` | Lands reversible work itself; asks a human before anything that deploys or cannot be undone |
+| `/team-ship` | Merges on readiness and posts an FYI; holds for a human only on the scheduled release and genuine decisions |
 | `/team-retro` | Optionally captures short, reusable lessons after delivery |
 
 `/team-plan` absorbs requirements, constraints, architecture, acceptance criteria, and execution
@@ -167,7 +167,7 @@ traces it to a violated invariant or concrete failure mode.
 
 `/team-auto` shares a maximum of 3 corrective rounds across build/test/review, with one
 reconsideration on repeated failure signatures. No progress or repeated workflow-created obstruction
-stops the run; a second productive failure alone does not. It never deploys: it hands off to `/team-ship`, which stops at anything that deploys.
+stops the run; a second productive failure alone does not. It hands off to `/team-ship`, which merges on readiness with an FYI and holds only on its second tier (scheduled production release, irreversible data, credentials, external publishing, spend, direction).
 
 ## Workflow artifacts
 

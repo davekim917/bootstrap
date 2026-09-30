@@ -159,6 +159,7 @@ ledger, without introducing a second tracking system.
 
 ## Shipping
 
-Preserve `/team-ship` authority and exact-target checks. `/team-auto` carries work only to authorized
-reversible publication and stops at anything that deploys; it cannot silently add deploy authority.
+Preserve `/team-ship` authority and exact-target checks. `/team-auto` carries work through merge on
+readiness with an FYI, and stops at `/team-ship`'s second tier (scheduled production release,
+irreversible data, credentials, external publishing, spend, direction); it cannot silently widen it.
 Destructive, protected-file, outbound-email and self-approval controls remain in force.
