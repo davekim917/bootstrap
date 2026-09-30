@@ -93,7 +93,7 @@ placeholders rather than rewriting or replacing it:
   diff for `/team-review --implementation`).
 - `{{USER_FOCUS}}` — the user-specified focus area, followed by the rubric lenses that have no
   analog in the vendored prompt's `<attack_surface>`: **plan fidelity**, **verification quality**,
-  and **simplicity** (see Review rubric below for their definitions). The vendored prompt has never
+  **simplicity** and **comments** (see Review rubric below for their definitions). The vendored prompt has never
   seen `plan.md` and cannot on its own check scope adherence or whether a test would fail if the
   logic broke, so the workflow supplies those checks here instead of trying to fold them into a
   rewritten prompt. If the repo under review defines a review policy file (`docs/review-policy.md`
@@ -167,7 +167,7 @@ accepting it.
 
 Send a Claude reviewer the rubric items for the selected lenses directly, as part of its prompt. A
 Codex reviewer instead gets its own vendored `<attack_surface>`/`<review_method>` sections plus the
-**Plan fidelity**, **Verification quality**, and **Simplicity** lenses via `{{USER_FOCUS}}` (see
+**Plan fidelity**, **Verification quality**, **Simplicity** and **Comments** lenses via `{{USER_FOCUS}}` (see
 above); this rubric then serves as the grounding bar the lead checks every finding against,
 Codex's included. Every finding must ground in one of them or in a named external invariant — for a
 Claude reviewer, the `requirement` field is where it goes. This exists so two reviewers judge the
@@ -192,6 +192,10 @@ Always applied:
 - **Simplicity** — no abstraction with one implementation, no configuration for a value that never
   varies, no scaffolding for unrequested futures; an existing project primitive or the standard
   library would not have done the job.
+- **Comments** — judge every comment the change adds: keep it only when a reader, human or agent,
+  would get something wrong without it (an external system's quirk, why the obvious approach is
+  wrong). Narration, restatement and history are findings to cut; a `file:line` or PR/issue/ticket
+  citation in a comment always is.
 - **Plan fidelity** — every acceptance criterion is implemented; nothing outside approved scope
   rides along; deviations are recorded in `run.md` rather than silent.
 - **Failure handling** — failures surface rather than swallow; partial writes cannot strand
