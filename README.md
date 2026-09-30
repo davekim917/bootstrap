@@ -157,7 +157,7 @@ in its own plugin:
 | `/team-review` | Reviews a plan or implementation, verifies findings, and records evidence |
 | `/team-auto` | Runs approved plan → build → review, then hands off to `/team-ship` |
 | `/team-debug` | Diagnoses root cause from evidence before changing production code |
-| `/team-ship` | Lands reversible work itself; asks a human before anything that deploys or cannot be undone |
+| `/team-ship` | Merges on readiness and posts an FYI; holds for a human only on the scheduled release and genuine decisions |
 | `/team-retro` | Optionally captures short, reusable lessons after delivery |
 
 `/team-plan` absorbs requirements, constraints, architecture, acceptance criteria, and execution
