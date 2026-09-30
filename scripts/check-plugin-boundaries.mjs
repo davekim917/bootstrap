@@ -973,7 +973,7 @@ for (const root of ['plugins/workflow/skills', 'plugins/workflow-agents/skills']
   );
   requireTextTokens(
     `${root}/team-auto/SKILL.md`,
-    ['stops at anything that deploys', '.team-auto-active', 'run.md'],
+    ['stops at the second tier of `/team-ship`', '.team-auto-active', 'run.md'],
     'the bounded auto-runner contract',
   );
 }

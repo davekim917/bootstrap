@@ -167,7 +167,7 @@ traces it to a violated invariant or concrete failure mode.
 
 `/team-auto` shares a maximum of 3 corrective rounds across build/test/review, with one
 reconsideration on repeated failure signatures. No progress or repeated workflow-created obstruction
-stops the run; a second productive failure alone does not. It never deploys: it hands off to `/team-ship`, which stops at anything that deploys.
+stops the run; a second productive failure alone does not. It hands off to `/team-ship`, which merges on readiness with an FYI and holds only on its second tier (scheduled production release, irreversible data, credentials, external publishing, spend, direction).
 
 ## Workflow artifacts
 
