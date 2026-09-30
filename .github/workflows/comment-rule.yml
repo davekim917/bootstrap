@@ -65,7 +65,7 @@ jobs:
         working-directory: .comment-rule-checker/plugins/comment-rule
         run: npm ci --ignore-scripts --no-audit --no-fund
 
-      - name: No net comment growth, no file:line or PR/issue references in comments
+      - name: No file:line or PR/issue references in comments; new comment lines listed for review
         id: check
         run: node .comment-rule-checker/plugins/comment-rule/bin/comment-rule.mjs check --repo . --base "$BASE_SHA" --head "$HEAD_SHA" --own-typescript
 
@@ -75,5 +75,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           OUTCOME: ${{ steps.check.outcome }}
         run: |
-          if [ "$OUTCOME" = success ]; then state=success; description="No comment growth"; else state=failure; description="Comment rule failed; see the run"; fi
+          if [ "$OUTCOME" = success ]; then state=success; description="No prohibited comment form"; else state=failure; description="Comment rule failed; see the run"; fi
           gh api "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" -f state="$state" -f context=comment-rule -f target_url="$RUN_URL" -f description="$description" > /dev/null

@@ -13,7 +13,8 @@ this workflow, must invoke it.
 1. Read `plan.md` and `run.md` when present; require the risk-appropriate review evidence, including
    explicit requested reviews, with no unresolved `MUST-FIX`, or explicit user waivers.
 2. Validate required evidence for the exact current artifact, relevant environment and command.
-   Reuse unchanged evidence; rerun affected checks after relevant changes. Inspect the final diff.
+   Reuse unchanged evidence; rerun affected checks after relevant changes. Inspect the final diff;
+   before a pull request's first push, run the self-simplify pass if `/team-build` did not.
 3. Resolve the current branch, canonical default branch, tracking remote, uncommitted changes,
    unpushed commits, and divergence. Do not guess the default branch.
 4. Report the exact intended effect: commit scope, merge target, push target, PR behavior, branch

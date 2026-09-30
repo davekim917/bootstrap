@@ -17,12 +17,12 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 |---|---|---:|---|
 | Claude Code | `bootstrap-workflow` | 5.7.5 | The seven `team-*` skills and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.7.5 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 2.6.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to and the `cut-down-reviewer` agent |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.0.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.3.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.2.2 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex | `test-audit` | 1.0.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
-| Claude Code / Codex / OpenCode | `comment-rule` | 1.3.0 | One comment checker for CI, merge gates and write-time feedback: no net comment-line growth, no `file:line` or PR/issue/ticket history in comments |
+| Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 
 ### Delegation is invoke-only
@@ -127,16 +127,6 @@ definition's frontmatter. So each shim pins one level, sets `model: inherit` so 
 dispatch still chooses the model, and carries a single line of body. They are not
 roles, and the drift gates assert exactly that: five files, `model: inherit`, and a
 body too short to hold a contract.
-
-The one role beside them is `agents/cut-down-reviewer.md`, the post-PR cut-down reviewer.
-It reads a PR's diff and repository, never the author's conversation, and answers one
-question: what in this diff can be deleted or simplified without losing required behavior.
-It never proposes deleting a comment that is the only statement of a rule, constraint,
-exception or hazard until the test, type, assert or lint rule that replaces it exists in the
-diff or on main; it proposes that conversion instead. The author launches it with their own provider's native sub-agent
-tool, so it runs on the author's model (`model: inherit`) at `effort: high`, and it posts
-the cut-down receipt a merge gate can require. The drift gates allow exactly this one
-named role, with that frontmatter.
 
 `scripts/plugin-enablement.mjs` prints the composed session for any plugin set, and
 `scripts/plugin-enablement.test.mjs` resolves and RUNS the hooks each state registers,
@@ -342,10 +332,11 @@ to trust that plugin's hooks on the next session start.
 
 ### Comment rule
 
-`comment-rule` is the one place the comment rule lives. A constraint belongs in a test, type,
-assert or lint rule; a comment is only for what code can't check (an external system's quirk,
-why the obvious approach was wrong). A change must not add comment lines on net across the
-files it touches, and must not add a comment that cites `file:line` or a PR/issue/ticket number.
+`comment-rule` is the one place the comment rule lives. A comment belongs in code when, without
+it, a reader (human or agent) would get something wrong: an external system's quirk, why the
+obvious approach is wrong. Only a reviewer can judge that, so the checker blocks only the
+mechanical forms, a comment that cites `file:line` or a PR/issue/ticket number, and lists every
+new comment line for the reviewer to keep or cut. Comment growth is reported, never failed.
 CI jobs, merge gates and the write-time hook all call the same checker:
 
 ```bash
@@ -355,10 +346,11 @@ node plugins/comment-rule/bin/comment-rule.mjs count --repo <repo> [--json]
 ```
 
 `check` compares the merge base of `--base` (default: origin's default branch) and the head
-(default: the working tree's tracked files) and exits 0 pass, 1 fail, 2 could not check. `--json` gives, per
-file, comment lines at base and head, the net, each new comment line, and each prohibited form
-with its line; `check` adds the lines the change adds to the file on git's diff (`added_lines`)
-and how many of them hold nothing but comment (`added_comment_lines`).
+(default: the working tree's tracked files) and exits 0 pass, 1 on a prohibited form, 2 could not
+check. `--json` gives, per file, comment lines at base and head, the net, each new comment line,
+and each prohibited form with its line. The write-time hook reports only prohibited forms.
+`count` is the drift check: run it on a repo's default branch now and then and compare its `total`
+with the last run; steady growth means reviewers are keeping comments they should cut.
 
 - **Languages**, each with a real parser: TypeScript/JavaScript (the TypeScript compiler API),
   Python (`tokenize` comments; docstrings and every other bare string statement count), SQL

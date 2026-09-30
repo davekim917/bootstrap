@@ -5,9 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RETIRED_AGENT_NAMES, discoverRetiredAgents } from './retire-bootstrap-agents.mjs';
 
-/** The five effort shims the orchestrate plugin dispatches to, and its reviewer roles by the effort each pins. */
+/** The five effort shims the orchestrate plugin dispatches to, one per level. */
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
-const REVIEWER_AGENTS = { 'cut-down-reviewer': 'high' };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
@@ -718,11 +717,11 @@ if (codexManifest?.version !== '2.7.8') {
   fail(`bootstrap-workflow-agents release must be version 2.7.8 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
-if (orchestrateClaudeManifest?.version !== '2.6.0') {
-  fail(`bootstrap-orchestrate release must be version 2.6.0 (found ${orchestrateClaudeManifest?.version})`);
+if (orchestrateClaudeManifest?.version !== '3.0.0') {
+  fail(`bootstrap-orchestrate release must be version 3.0.0 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '2.6.0') {
-  fail(`bootstrap-orchestrate .codex-plugin release must be version 2.6.0 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '3.0.0') {
+  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.0.0 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -751,16 +750,13 @@ for (const unexpectedDir of ['commands']) {
 // What ships instead is five EFFORT SHIMS. They carry no instructions and name
 // no model: `model: inherit` means the dispatch picks the model and the shim
 // only pins the effort, which is the one thing a Claude Agent call cannot pass
-// per-call. Beside them sit the named REVIEWER_AGENTS, also `model: inherit`, so
-// a reviewer runs on its author's model. Any other file, or a pinned model, is a
-// role nobody approved.
+// per-call. So the assertion is the absence of a role: exactly five files, one
+// per level, each with `model: inherit`. A shim that pinned a model, or a sixth
+// file with a behavioural body, would be a role wearing a shim's name.
 {
   const dir = 'plugins/orchestrate/agents';
   const root = path.join(repoRoot, dir);
-  const expected = [
-    ...EFFORT_LEVELS.map((level) => `worker-${level}.md`),
-    ...Object.keys(REVIEWER_AGENTS).map((name) => `${name}.md`),
-  ].sort();
+  const expected = EFFORT_LEVELS.map((level) => `worker-${level}.md`).sort();
   if (!exists(dir)) {
     fail(`${dir} must ship the five effort shims so /orchestrate can dispatch on a bare install`);
   } else {
@@ -782,7 +778,7 @@ for (const unexpectedDir of ['commands']) {
             + 'level back into a role and takes the model choice away from the dispatch',
         );
       }
-      const level = REVIEWER_AGENTS[path.parse(name).name] ?? path.parse(name).name.replace(/^worker-/, '');
+      const level = path.parse(name).name.replace(/^worker-/, '');
       if (!new RegExp(`^effort:\\s*${level}\\s*$`, 'm').test(text)) {
         fail(`${dir}/${name} must declare \`effort: ${level}\`; the filename is the level it pins`);
       }
