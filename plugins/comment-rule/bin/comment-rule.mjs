@@ -10,29 +10,33 @@ const USAGE = `usage:
   comment-rule.mjs count [--repo <dir>] [--json]
 
 check  the change from merge-base(base, head) to head; head defaults to the working tree and base
-       to origin's default branch. Exit 0 pass, 1 fail, 2 could not check. --own-typescript never loads
-       TypeScript from the checked repository; CI passes it, since a pull request controls those files.
+       to origin's default branch. Exit 1 only for a prohibited comment form (file:line, PR/issue/ticket);
+       new comment lines are listed for a reviewer to judge, never failed. Exit 2 could not check.
+       --own-typescript never loads TypeScript from the checked repository; CI passes it, since a pull
+       request controls those files.
 file   each file against HEAD (write-time feedback). Always exits 0 unless it cannot run.
 count  comment lines in every tracked file, by language.`;
 
 const GUIDANCE =
-  'A constraint belongs in a test, type, assert or lint rule; a comment is only for what code cannot check ' +
-  '(an external system\'s quirk, why the obvious approach was wrong). Cut the rest, or delete as many narrating, ' +
-  'restating or history comment lines elsewhere in the change. ' +
-  'Never cite file:line or a PR/issue/ticket number in a comment: history belongs in git.';
+  'Keep a comment only when a reader, human or agent, would get something wrong without it: an external ' +
+  "system's quirk, why the obvious approach is wrong. Cut narration, restatement and history. Never cite " +
+  'file:line or a PR/issue/ticket number in a comment: history belongs in git.';
+
+const newCount = (file) => file.new_comment_lines_total ?? file.new_comment_lines.length;
 
 function printCheck(result) {
   const sign = result.net > 0 ? '+' : '';
+  const added = result.files.reduce((sum, file) => sum + newCount(file), 0);
   console.log(
-    `comment-rule: ${result.status.toUpperCase()} — net ${sign}${result.net} comment lines ` +
-      `(${result.before} → ${result.after} in the changed files), ${result.findings} prohibited form(s); base ${result.base} @ ${result.merge_base.slice(0, 12)}`,
+    `comment-rule: ${result.status.toUpperCase()} — ${result.findings} prohibited form(s); ${added} new comment line(s) to judge, ` +
+      `net ${sign}${result.net} (${result.before} → ${result.after} in the changed files); base ${result.base} @ ${result.merge_base.slice(0, 12)}`,
   );
-  for (const file of result.files.filter((f) => f.net !== 0 || f.findings.length)) {
-    console.log(`  ${file.net > 0 ? '+' : ''}${file.net}\t${file.path} (${file.base} → ${file.head})`);
+  for (const file of result.files.filter((f) => newCount(f) || f.findings.length)) {
+    console.log(`  +${newCount(file)} new\t${file.path} (${file.base} → ${file.head})`);
     for (const finding of file.findings) console.log(`    ${file.path}:${finding.line} ${finding.rule}: ${finding.text}`);
   }
   for (const error of result.errors) console.log(`  could not check ${error.path}: ${error.error}`);
-  if (result.status === 'fail') console.log(`\n${GUIDANCE}`);
+  if (added || result.findings) console.log(`\n${GUIDANCE}`);
 }
 
 function main() {

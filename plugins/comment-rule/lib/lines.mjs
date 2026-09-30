@@ -35,25 +35,3 @@ export function commentLinesFromRanges(text, ranges) {
   }
   return lines;
 }
-
-export function commentOnlyLfLines(text, ranges) {
-  const starts = [0];
-  for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) starts.push(i + 1);
-  const touched = new Set();
-  let masked = '';
-  let at = 0;
-  for (const [start, end] of [...ranges].sort((a, b) => a[0] - b[0])) {
-    if (end <= start) continue;
-    for (let line = lineOf(starts, start); line <= lineOf(starts, end - 1); line++) touched.add(line);
-    if (end <= at) continue;
-    const from = Math.max(start, at);
-    masked += text.slice(at, from) + text.slice(from, end).replace(/[^\n]/g, ' ');
-    at = end;
-  }
-  masked += text.slice(at);
-  const only = new Set();
-  masked.split('\n').forEach((line, index) => {
-    if (touched.has(index) && line.trim() === '') only.add(index);
-  });
-  return only;
-}
