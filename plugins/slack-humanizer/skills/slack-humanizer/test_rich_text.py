@@ -47,6 +47,15 @@ class InlineTests(unittest.TestCase):
         self.assertEqual(got[1], {"type": "link", "url": "https://example.com/a"})
         self.assertEqual(got[2], {"type": "text", "text": "."})
 
+    def test_bare_url_keeps_balanced_parentheses(self):
+        url = "https://en.wikipedia.org/wiki/Function_(mathematics)"
+        self.assertEqual(inline(url), [{"type": "link", "url": url}])
+
+    def test_bare_url_inside_parentheses_drops_the_closing_one(self):
+        got = inline("(see https://example.com/a.) Thanks")
+        self.assertEqual(got[1], {"type": "link", "url": "https://example.com/a"})
+        self.assertEqual(got[2], {"type": "text", "text": ".) Thanks"})
+
 
 if __name__ == "__main__":
     unittest.main()

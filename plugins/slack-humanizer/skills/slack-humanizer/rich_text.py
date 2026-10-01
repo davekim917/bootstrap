@@ -23,9 +23,21 @@ INLINE_RE = re.compile(
     r"|<!subteam\^(?P<usergroup>S[A-Z0-9]+)(?:\|[^>]*)?>"
     r"|<!(?P<broadcast>here|channel|everyone)>"
     r"|<(?P<link_url>https?://[^|>]+)(?:\|(?P<link_text>[^>]+))?>"
-    r"|(?P<bare_url>https?://[^\s<>]+[^\s<>.,;:!?)\]'\"])"
+    r"|(?P<bare_url>https?://[^\s<>]+)"
     r"|(?<![A-Za-z0-9]):(?P<emoji>[a-z0-9_+\-]+):(?::skin-tone-(?P<tone>[2-6]):)?"
 )
+
+
+def split_bare_url(raw):
+    """Separate a bare URL from the sentence punctuation that follows it."""
+    url = raw
+    while len(url) > 1:
+        last = url[-1]
+        if last in ".,;:!?]'\"" or (last == ")" and url.count(")") > url.count("(")):
+            url = url[:-1]
+        else:
+            break
+    return url, raw[len(url):]
 
 
 def inline(text):
@@ -50,7 +62,10 @@ def inline(text):
                 el["text"] = g["link_text"]
             out.append(el)
         elif g["bare_url"]:
-            out.append({"type": "link", "url": g["bare_url"]})
+            url, trailing = split_bare_url(g["bare_url"])
+            out.append({"type": "link", "url": url})
+            pos = m.end() - len(trailing)
+            continue
         else:
             el = {"type": "emoji", "name": g["emoji"]}
             if g["tone"]:
