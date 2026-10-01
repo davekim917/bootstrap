@@ -124,7 +124,9 @@ def build(draft):
                 para.pop()
             flush_para(trailing_newline=True)
             ordered_seen = {}
-        if current is None or current["indent"] != level or current["style"] != style:
+        # An explicit number that breaks the sequence ("1." then "3.") needs its own list to carry the offset.
+        skips = style == "ordered" and number > 1 and number != ordered_seen.get(level, 0) + 1
+        if current is None or current["indent"] != level or current["style"] != style or skips:
             current = {"type": "rich_text_list", "style": style, "indent": level, "elements": []}
             if style == "ordered":
                 # A draft that writes its own number ("3.") starts there; one that repeats "1." keeps counting.

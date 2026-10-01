@@ -27,6 +27,22 @@ class ListTests(unittest.TestCase):
         self.assertEqual(got[1]["offset"], 2)
         self.assertEqual(len(got[1]["elements"]), 2)
 
+    def test_every_explicit_number_renders_as_written(self):
+        for draft, want in [
+            ("1. One\n2. Two\n3. Three", [1, 2, 3]),
+            ("1. First\n3. Third", [1, 3]),
+            ("2. Second\n5. Fifth\n6. Sixth", [2, 5, 6]),
+            ("3. Third\n  - Detail\n4. Fourth", [3, 4]),
+        ]:
+            rendered = []
+            for el in elements(draft):
+                if el["type"] == "rich_text_list" and el["style"] == "ordered":
+                    rendered += [el.get("offset", 0) + i + 1 for i in range(len(el["elements"]))]
+            self.assertEqual(rendered, want, draft)
+
+    def test_consecutive_numbers_stay_in_one_list(self):
+        self.assertEqual(len(elements("1. One\n2. Two\n3. Three")), 1)
+
     def test_repeated_one_markers_keep_counting_after_a_nested_bullet(self):
         got = elements("1. One\n  - Detail\n1. Two")
         self.assertEqual(got[2]["offset"], 1)
