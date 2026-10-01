@@ -298,6 +298,7 @@ const codexRoster = new Map([
   ['comment-rule', './plugins/comment-rule'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
+  ['slack-humanizer', './plugins/slack-humanizer'],
 ]);
 for (const entry of codexEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
@@ -387,6 +388,7 @@ const claudeRoster = new Map([
   ['comment-rule', './plugins/comment-rule'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
+  ['slack-humanizer', './plugins/slack-humanizer'],
 ]);
 for (const entry of claudeEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
@@ -1262,6 +1264,7 @@ checkSkillMarkdownLinks(orchestrateSkillsRoot);
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/wwbd/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/concise/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/test-audit/skills'));
+checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/slack-humanizer/skills'));
 checkSkillMarkdownLinks(claudeSkillsRoot);
 
 for (const skillName of codexSkills) {

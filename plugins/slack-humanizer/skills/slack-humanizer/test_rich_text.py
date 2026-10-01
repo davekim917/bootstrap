@@ -1,0 +1,52 @@
+import unittest
+
+from rich_text import build, inline
+
+
+def elements(draft):
+    return build(draft)[0]["elements"]
+
+
+class ListTests(unittest.TestCase):
+    def test_lead_in_then_bullets_becomes_a_real_list(self):
+        got = elements("A few things:\n- First\n- Second\n\nDoes that work?")
+        self.assertEqual([e["type"] for e in got], ["rich_text_section", "rich_text_list", "rich_text_section"])
+        self.assertEqual(got[1]["style"], "bullet")
+        self.assertEqual(got[1]["indent"], 0)
+        self.assertEqual(len(got[1]["elements"]), 2)
+        self.assertEqual(got[2]["elements"][0]["text"], "\nDoes that work?")
+
+    def test_numbered_list_keeps_counting_across_a_nested_bullet(self):
+        got = elements("1. One\n  - Detail\n2. Two")
+        self.assertEqual([(e["style"], e["indent"]) for e in got], [("ordered", 0), ("bullet", 1), ("ordered", 0)])
+        self.assertNotIn("offset", got[0])
+        self.assertEqual(got[2]["offset"], 1)
+
+    def test_one_line_message_is_a_single_section(self):
+        self.assertEqual(elements("No issues on our end"), [
+            {"type": "rich_text_section", "elements": [{"type": "text", "text": "No issues on our end"}]},
+        ])
+
+
+class InlineTests(unittest.TestCase):
+    def test_mentions_channels_links_and_code(self):
+        got = inline("<@U123ABC> see <#C456DEF> and <https://example.com|the doc> for `event_name`")
+        self.assertEqual([e["type"] for e in got], ["user", "text", "channel", "text", "link", "text", "text"])
+        self.assertEqual(got[4], {"type": "link", "url": "https://example.com", "text": "the doc"})
+        self.assertEqual(got[6], {"type": "text", "text": "event_name", "style": {"code": True}})
+
+    def test_emoji_with_skin_tone(self):
+        self.assertEqual(inline(":pray::skin-tone-3:"), [{"type": "emoji", "name": "pray", "skin_tone": 3}])
+
+    def test_times_and_ratios_are_not_emoji(self):
+        text = "Moved to 3:30pm: please confirm. Ratio 1:2:3"
+        self.assertEqual(inline(text), [{"type": "text", "text": text}])
+
+    def test_bare_url_drops_trailing_punctuation(self):
+        got = inline("See https://example.com/a.")
+        self.assertEqual(got[1], {"type": "link", "url": "https://example.com/a"})
+        self.assertEqual(got[2], {"type": "text", "text": "."})
+
+
+if __name__ == "__main__":
+    unittest.main()

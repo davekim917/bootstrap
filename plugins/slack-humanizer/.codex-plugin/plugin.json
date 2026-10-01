@@ -1,0 +1,24 @@
+{
+  "name": "slack-humanizer",
+  "version": "1.0.0",
+  "description": "Draft Slack messages that read as if the user typed them, and post them as rich text so lists render as real Slack lists.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Slack Humanizer",
+    "shortDescription": "Slack messages in the user's voice, with real lists",
+    "longDescription": "Drafts Slack messages sent under the user's name in a short, direct, properly capitalized voice, strips the patterns that give away AI drafting, and builds a rich_text payload so bullets and numbered lists render as real Slack lists. A private voice profile can override the default voice.",
+    "developerName": "David Kim",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive"
+    ],
+    "defaultPrompt": [
+      "Draft a Slack reply for me with the slack-humanizer skill."
+    ]
+  }
+}

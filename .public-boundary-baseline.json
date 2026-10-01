@@ -1,0 +1,8 @@
+{
+  "files": {
+    "evals/harness/lib.mjs": 1,
+    "plugins/workflow-agents/hooks/guards/email-gate-core.ts": 4,
+    "plugins/workflow/hooks/guards/email-gate-core.test.ts": 4,
+    "plugins/workflow/hooks/guards/email-gate-core.ts": 4
+  }
+}
