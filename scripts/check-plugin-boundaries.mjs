@@ -298,6 +298,7 @@ const codexRoster = new Map([
   ['comment-rule', './plugins/comment-rule'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
+  ['slack-humanizer', './plugins/slack-humanizer'],
 ]);
 for (const entry of codexEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
@@ -387,6 +388,7 @@ const claudeRoster = new Map([
   ['comment-rule', './plugins/comment-rule'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
+  ['slack-humanizer', './plugins/slack-humanizer'],
 ]);
 for (const entry of claudeEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
@@ -710,11 +712,11 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.8.0') {
-  fail(`bootstrap-workflow release must be version 5.8.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.8.1') {
+  fail(`bootstrap-workflow release must be version 5.8.1 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.8.1') {
-  fail(`bootstrap-workflow-agents release must be version 2.8.1 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.8.2') {
+  fail(`bootstrap-workflow-agents release must be version 2.8.2 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
 if (orchestrateClaudeManifest?.version !== '3.0.0') {
@@ -1262,6 +1264,7 @@ checkSkillMarkdownLinks(orchestrateSkillsRoot);
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/wwbd/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/concise/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/test-audit/skills'));
+checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/slack-humanizer/skills'));
 checkSkillMarkdownLinks(claudeSkillsRoot);
 
 for (const skillName of codexSkills) {
