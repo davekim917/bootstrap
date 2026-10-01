@@ -33,7 +33,8 @@ def split_bare_url(raw):
     url = raw
     while len(url) > 1:
         last = url[-1]
-        if last in ".,;:!?]'\"" or (last == ")" and url.count(")") > url.count("(")):
+        opener = {")": "(", "]": "["}.get(last)
+        if last in ".,;:!?'\"" or (opener and url.count(last) > url.count(opener)):
             url = url[:-1]
         else:
             break
@@ -83,8 +84,9 @@ def parse_item(line):
         return None
     width = len(m["indent"].expandtabs(2))
     level = width // 2 if width else (1 if m["marker"] == "◦" else 0)
-    style = "ordered" if m["marker"][0].isdigit() else "bullet"
-    return min(level, 8), style, m["body"]
+    ordered = m["marker"][0].isdigit()
+    number = int(m["marker"][:-1]) if ordered else None
+    return min(level, 8), "ordered" if ordered else "bullet", number, m["body"]
 
 
 def build(draft):
@@ -116,7 +118,7 @@ def build(draft):
                 continue
             para.append(line)
             continue
-        level, style, body = item
+        level, style, number, body = item
         if para:
             while para and para[-1].strip() == "":
                 para.pop()
@@ -124,8 +126,11 @@ def build(draft):
             ordered_seen = {}
         if current is None or current["indent"] != level or current["style"] != style:
             current = {"type": "rich_text_list", "style": style, "indent": level, "elements": []}
-            if style == "ordered" and ordered_seen.get(level):
-                current["offset"] = ordered_seen[level]
+            if style == "ordered":
+                # A draft that writes its own number ("3.") starts there; one that repeats "1." keeps counting.
+                ordered_seen[level] = number - 1 if number > 1 else ordered_seen.get(level, 0)
+                if ordered_seen[level]:
+                    current["offset"] = ordered_seen[level]
             for deeper in [k for k in ordered_seen if k > level]:
                 del ordered_seen[deeper]
             elements.append(current)

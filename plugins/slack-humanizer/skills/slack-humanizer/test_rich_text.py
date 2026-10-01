@@ -22,6 +22,15 @@ class ListTests(unittest.TestCase):
         self.assertNotIn("offset", got[0])
         self.assertEqual(got[2]["offset"], 1)
 
+    def test_numbered_list_starts_at_the_number_the_draft_wrote(self):
+        got = elements("Answering the last two:\n3. Third\n4. Fourth")
+        self.assertEqual(got[1]["offset"], 2)
+        self.assertEqual(len(got[1]["elements"]), 2)
+
+    def test_repeated_one_markers_keep_counting_after_a_nested_bullet(self):
+        got = elements("1. One\n  - Detail\n1. Two")
+        self.assertEqual(got[2]["offset"], 1)
+
     def test_one_line_message_is_a_single_section(self):
         self.assertEqual(elements("No issues on our end"), [
             {"type": "rich_text_section", "elements": [{"type": "text", "text": "No issues on our end"}]},
@@ -50,6 +59,11 @@ class InlineTests(unittest.TestCase):
     def test_bare_url_keeps_balanced_parentheses(self):
         url = "https://en.wikipedia.org/wiki/Function_(mathematics)"
         self.assertEqual(inline(url), [{"type": "link", "url": url}])
+
+    def test_bare_url_keeps_balanced_square_brackets(self):
+        self.assertEqual(inline("http://[::1]"), [{"type": "link", "url": "http://[::1]"}])
+        got = inline("[see https://example.com/a]")
+        self.assertEqual(got[1], {"type": "link", "url": "https://example.com/a"})
 
     def test_bare_url_inside_parentheses_drops_the_closing_one(self):
         got = inline("(see https://example.com/a.) Thanks")
