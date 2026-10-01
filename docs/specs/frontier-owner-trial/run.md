@@ -1,5 +1,7 @@
 # Frontier owner trial — implementation record
 
+**Superseded 2026-10-01.** This records a closed trial. Astra is no longer the Codex frontier and Fable is not a default: routine Codex work and review run on GPT-6.1 Sol (`codex exec -m gpt-6.1-sol`, high effort) and Claude on Opus. `gpt-6-astra` and Fable run only when a human explicitly asks for that model in the request — never by default, by inheritance, or because the dispatching session runs on one — and a review receipt naming either cites that request (who, when, link or message id). Model statements below describe the trial as it ran.
+
 ## Latest state: activated 2026-09-13T06:17:53Z
 
 The exact user-approved activation completed. Both services are active; OneCLI preflight passed
