@@ -33,6 +33,8 @@ class ListTests(unittest.TestCase):
             ("1. First\n3. Third", [1, 3]),
             ("2. Second\n5. Fifth\n6. Sixth", [2, 5, 6]),
             ("3. Third\n  - Detail\n4. Fourth", [3, 4]),
+            ("1. Old\n\n1. New", [1, 1]),
+            ("1. One\n\nA paragraph\n\n2. Two", [1, 2]),
         ]:
             rendered = []
             for el in elements(draft):
@@ -42,10 +44,6 @@ class ListTests(unittest.TestCase):
 
     def test_consecutive_numbers_stay_in_one_list(self):
         self.assertEqual(len(elements("1. One\n2. Two\n3. Three")), 1)
-
-    def test_repeated_one_markers_keep_counting_after_a_nested_bullet(self):
-        got = elements("1. One\n  - Detail\n1. Two")
-        self.assertEqual(got[2]["offset"], 1)
 
     def test_one_line_message_is_a_single_section(self):
         self.assertEqual(elements("No issues on our end"), [
@@ -59,6 +57,12 @@ class InlineTests(unittest.TestCase):
         self.assertEqual([e["type"] for e in got], ["user", "text", "channel", "text", "link", "text", "text"])
         self.assertEqual(got[4], {"type": "link", "url": "https://example.com", "text": "the doc"})
         self.assertEqual(got[6], {"type": "text", "text": "event_name", "style": {"code": True}})
+
+    def test_mailto_and_tel_links(self):
+        self.assertEqual(inline("<mailto:a@example.com|Email me>"), [
+            {"type": "link", "url": "mailto:a@example.com", "text": "Email me"},
+        ])
+        self.assertEqual(inline("<tel:+15555550100>"), [{"type": "link", "url": "tel:+15555550100"}])
 
     def test_emoji_with_skin_tone(self):
         self.assertEqual(inline(":pray::skin-tone-3:"), [{"type": "emoji", "name": "pray", "skin_tone": 3}])

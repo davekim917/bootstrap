@@ -22,7 +22,7 @@ INLINE_RE = re.compile(
     r"|<#(?P<channel>[CGD][A-Z0-9]+)(?:\|[^>]*)?>"
     r"|<!subteam\^(?P<usergroup>S[A-Z0-9]+)(?:\|[^>]*)?>"
     r"|<!(?P<broadcast>here|channel|everyone)>"
-    r"|<(?P<link_url>https?://[^|>]+)(?:\|(?P<link_text>[^>]+))?>"
+    r"|<(?P<link_url>(?:https?://|mailto:|tel:)[^|>]+)(?:\|(?P<link_text>[^>]+))?>"
     r"|(?P<bare_url>https?://[^\s<>]+)"
     r"|(?<![A-Za-z0-9]):(?P<emoji>[a-z0-9_+\-]+):(?::skin-tone-(?P<tone>[2-6]):)?"
 )
@@ -89,11 +89,17 @@ def parse_item(line):
     return min(level, 8), "ordered" if ordered else "bullet", number, m["body"]
 
 
+def opens_new_list(current, level, style, number):
+    """An ordered item renders the number the draft wrote, so any number but the next one starts a list."""
+    if current is None or current["indent"] != level or current["style"] != style:
+        return True
+    return style == "ordered" and number != current.get("offset", 0) + len(current["elements"]) + 1
+
+
 def build(draft):
     elements = []
     para = []          # pending paragraph lines
     current = None     # open rich_text_list element
-    ordered_seen = {}  # indent -> numbered items emitted, so a list split by nesting keeps counting
 
     def flush_para(trailing_newline):
         nonlocal para
@@ -123,21 +129,11 @@ def build(draft):
             while para and para[-1].strip() == "":
                 para.pop()
             flush_para(trailing_newline=True)
-            ordered_seen = {}
-        # An explicit number that breaks the sequence ("1." then "3.") needs its own list to carry the offset.
-        skips = style == "ordered" and number > 1 and number != ordered_seen.get(level, 0) + 1
-        if current is None or current["indent"] != level or current["style"] != style or skips:
+        if opens_new_list(current, level, style, number):
             current = {"type": "rich_text_list", "style": style, "indent": level, "elements": []}
-            if style == "ordered":
-                # A draft that writes its own number ("3.") starts there; one that repeats "1." keeps counting.
-                ordered_seen[level] = number - 1 if number > 1 else ordered_seen.get(level, 0)
-                if ordered_seen[level]:
-                    current["offset"] = ordered_seen[level]
-            for deeper in [k for k in ordered_seen if k > level]:
-                del ordered_seen[deeper]
+            if style == "ordered" and number > 1:
+                current["offset"] = number - 1
             elements.append(current)
-        if style == "ordered":
-            ordered_seen[level] = ordered_seen.get(level, 0) + 1
         current["elements"].append({"type": "rich_text_section", "elements": inline(body)})
 
     while para and para[-1].strip() == "":

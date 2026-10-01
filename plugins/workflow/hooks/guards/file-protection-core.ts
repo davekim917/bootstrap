@@ -33,10 +33,12 @@ export const PROTECTED_SEGMENTS = [
     '.env.local',
     '.env.production',
     '.env.development',
-    // Both files relax a gate: the public-boundary allowlist exempts values from
-    // the leak scan, and a lab scope names the org whose LAB-* repos skip
-    // destructive-command approval in lab sessions. Their owner edits them.
+    // These files relax a gate: the public-boundary allowlist exempts values from
+    // the leak scan, its baseline sets how many flagged lines each file may hold,
+    // and a lab scope names the org whose LAB-* repos skip destructive-command
+    // approval in lab sessions. Their owner edits them.
     '.public-boundary-allowlist.json',
+    '.public-boundary-baseline.json',
     'lab-scope.local.json',
 ];
 
