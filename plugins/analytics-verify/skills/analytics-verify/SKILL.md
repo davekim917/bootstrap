@@ -85,6 +85,11 @@ If you're unsure, use the full loop.
    a CLI or subagent prompt; a peer that has this plugin loads this skill as the
    verifier. Notes of your own go after the brief, never in place of it. Don't give it
    your research files or conclusions: those are the blind spots it is there to avoid.
+
+   When the verifier is a headless session (option 1), run it in the foreground with
+   the invoking Bash or process timeout set to `3600000` milliseconds (60 minutes). A complex deliverable takes several
+   rounds, and a verifier still working after 30 minutes is healthy. Call it timed out
+   only when the 60 minutes are actually used up, and say so in the stamp.
 6. **Fix in one pass.** Change only what the findings name. A new sentence or number
    goes into the ledger first. Re-run step 4, then send the verifier what changed:
    ```
