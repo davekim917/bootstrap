@@ -56,6 +56,9 @@ jobs:
       - name: Run the analytics-verify check script tests
         run: python3 -m unittest discover -s plugins/analytics-verify/skills/analytics-verify/scripts -p 'test_*.py'
 
+      - name: Run the slack-humanizer payload builder tests
+        run: python3 -m unittest discover -s plugins/slack-humanizer/skills/slack-humanizer -p 'test_*.py'
+
       - name: Install the comment-rule parser
         working-directory: plugins/comment-rule
         run: npm ci --ignore-scripts --no-audit --no-fund

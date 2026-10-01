@@ -15,6 +15,8 @@ describe('isProtectedEditPath', () => {
             'yarn.lock',
             '.git/config',
             'repo/.git/HEAD',
+            '.public-boundary-allowlist.json',
+            'repo/.public-boundary-baseline.json',
         ]) {
             expect(isProtectedEditPath(p)).toBe(true);
         }

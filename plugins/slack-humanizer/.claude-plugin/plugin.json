@@ -1,0 +1,11 @@
+{
+  "name": "slack-humanizer",
+  "version": "1.0.0",
+  "description": "Draft Slack messages that read as if the user typed them, and post them as rich text so lists render as real Slack lists.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "skills": "./skills/"
+}
