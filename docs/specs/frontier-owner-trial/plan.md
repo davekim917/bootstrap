@@ -2,12 +2,15 @@
 
 Status: approved in conversation 2026-09-13; implementation authorized.
 
+**Superseded 2026-10-01.** This records a closed trial. Astra is no longer the Codex frontier and Fable is not a default: routine Codex work and review run on GPT-6.1 Sol (`codex exec -m gpt-6.1-sol`, high effort) and Claude on Opus. `gpt-6-astra` and Fable run only when a human explicitly asks for that model in the request — never by default, by inheritance, or because the dispatching session runs on one — and a review receipt naming either cites that request (who, when, link or message id). Model statements below describe the trial as it ran.
+
 ## Outcome
 
 For a one-week trial, use inexpensive coordination and one persistent frontier technical
 worker instead of a ladder of progressively stronger workers. Cover both Bootstrap variants,
 host Claude/Codex worker definitions, and NanoClaw's generated container definitions.
-Claude frontier is Fable 5.1; Codex frontier is GPT-6 Astra. Default effort is medium;
+During the trial the Claude frontier was Fable 5.1 and the Codex frontier GPT-6 Astra (superseded:
+see Status). Default effort is medium;
 an explicit supported runtime setting can change effort for a task or resumed turn.
 Ordinary coordinators use Sonnet/xhigh on Claude and Terra/xhigh on Codex, as explicitly
 selected by the user. Substantive real work naturally delegates to the frontier owner;
@@ -54,7 +57,7 @@ same-family coverage, and does not launch Claude/Fable inference.
 
 1. Both distributions express the same ownership, evidence reuse, review and repair contract.
    Generation/parity checks and behavioral scenario review verify the resulting routing.
-2. Native Claude frontier resolves to Fable 5.1/medium. Codex frontier resolves to Astra/medium
+2. (Trial-era, superseded.) Native Claude frontier resolves to Fable 5.1/medium. Codex frontier resolves to Astra/medium
    by default and permits an explicit low/medium effort without a role-file effort lock.
 3. Claude's native Agent tool has no per-call effort field in the installed SDK. A scoped CLI
    invocation supplies CLAUDE_CODE_EFFORT_LEVEL plus --effort, uses a recorded session ID on
