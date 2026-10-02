@@ -132,7 +132,7 @@
     },
     {
       "name": "slack-humanizer",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Slack messages drafted in the user's voice and posted as rich text, so bullets and numbered lists render as real Slack lists.",
       "source": {
         "source": "local",

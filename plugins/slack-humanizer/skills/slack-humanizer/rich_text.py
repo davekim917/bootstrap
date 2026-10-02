@@ -8,7 +8,10 @@ Draft syntax (the approved draft, as plain lines):
   "1. item"                      numbered
   "  - item" or "◦ item"         nested one level (2 spaces per level)
   `code`  <@U123>  <#C123>  <https://x|label>  https://x  :emoji:  :pray::skin-tone-3:
-Everything else is paragraph text. Blank lines are kept as blank lines.
+Everything else is paragraph text. Blank lines between paragraphs are kept. A blank
+line next to a list is dropped, because Slack already sets a list on its own line.
+A bare URL sheds trailing sentence punctuation (. , ; : ! ?); write <https://x!> to
+keep it.
 """
 import argparse
 import json

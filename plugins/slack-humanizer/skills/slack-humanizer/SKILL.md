@@ -89,7 +89,7 @@ A longer reply to an engineer:
 
 Every Slack message sent through `chat.postMessage` goes out as a `rich_text` block, one-liners included. Plain `text` with typed `•` lines shows up in Slack as plain text, not as a list.
 
-Write the approved draft as plain lines (`- item`, `1. item`, two spaces per nesting level, `<@U…>` mentions, `<#C…>` channels, `<url|label>` links, backticks for code). `rich_text.py` sits next to this file. Build the payload with it and post:
+Write the approved draft as plain lines (`- item`, `1. item`, two spaces per nesting level, `<@U…>` mentions, `<#C…>` channels, `<url|label>` links, backticks for code). A bare URL drops trailing sentence punctuation, so wrap one that really ends in `!` or `.` as `<url>`. `rich_text.py` sits next to this file. Build the payload with it and post:
 
 ```bash
 python3 <this skill's directory>/rich_text.py --channel C0123 [--thread-ts 1790000000.000100] < draft.txt > payload.json
