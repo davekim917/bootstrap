@@ -45,6 +45,12 @@ class ListTests(unittest.TestCase):
     def test_consecutive_numbers_stay_in_one_list(self):
         self.assertEqual(len(elements("1. One\n2. Two\n3. Three")), 1)
 
+    def test_blank_line_before_a_list_does_not_add_spacing(self):
+        self.assertEqual(elements("Intro\n\n- Item"), elements("Intro\n- Item"))
+
+    def test_blank_line_between_paragraphs_is_kept(self):
+        self.assertEqual(elements("One\n\nTwo")[0]["elements"][0]["text"], "One\n\nTwo")
+
     def test_one_line_message_is_a_single_section(self):
         self.assertEqual(elements("No issues on our end"), [
             {"type": "rich_text_section", "elements": [{"type": "text", "text": "No issues on our end"}]},
@@ -75,6 +81,10 @@ class InlineTests(unittest.TestCase):
         got = inline("See https://example.com/a.")
         self.assertEqual(got[1], {"type": "link", "url": "https://example.com/a"})
         self.assertEqual(got[2], {"type": "text", "text": "."})
+
+    def test_angle_brackets_keep_a_trailing_exclamation_mark(self):
+        self.assertEqual(inline("https://example.com/Yahoo!")[0]["url"], "https://example.com/Yahoo")
+        self.assertEqual(inline("<https://example.com/Yahoo!>"), [{"type": "link", "url": "https://example.com/Yahoo!"}])
 
     def test_bare_url_keeps_balanced_parentheses(self):
         url = "https://en.wikipedia.org/wiki/Function_(mathematics)"
