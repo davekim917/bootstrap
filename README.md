@@ -24,7 +24,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex | `test-audit` | 1.0.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
-| Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.0 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
+| Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.1 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
 
 ### Delegation is invoke-only
 
