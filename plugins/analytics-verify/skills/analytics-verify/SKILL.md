@@ -74,7 +74,8 @@ If you're unsure, use the full loop.
    data moved, rerun with `--rel-tol` and report the drift it lists.
 5. **Get an independent verifier.** Use the first of these you have:
    1. a fresh headless session of another model family that can reach the same data
-      (`codex exec`, `claude -p`);
+      (`codex exec`, `claude -p`). Close its stdin (`codex exec "<brief>" </dev/null`):
+      it reads stdin whenever stdin is not a terminal and otherwise waits forever;
    2. a peer agent on another model family in this conversation (mention it);
    3. a fresh-context subagent of your own model. Call it a same-family check in the
       stamp.
