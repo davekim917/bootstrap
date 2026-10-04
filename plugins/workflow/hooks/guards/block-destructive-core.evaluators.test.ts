@@ -1,6 +1,7 @@
 import { describe, test, expect, mock, afterEach } from 'bun:test';
 import {
     evaluateSelfApproval,
+    evaluateSnapshotGitMutation,
     evaluateSnowflakeConnector,
 } from './block-destructive-core';
 
@@ -183,5 +184,100 @@ describe('A2 runGateRequest action parameterization', () => {
         });
         expect(decision).toBe('denied');
         expect(fired).toBe(true);
+    });
+});
+
+describe('evaluateSnapshotGitMutation', () => {
+    const WT = '/workspace/worktrees/app-repo@feature';
+    const SNAP = '/workspace/workgroup/app-repo';
+
+    test('blocks a mutation whose target is a repo snapshot', () => {
+        for (const cmd of [
+            `git -C ${SNAP} checkout -b feature`,
+            `git -C ${SNAP} commit -m x`,
+            `cd ${SNAP} && git checkout main`,
+            `cd ${SNAP}; git stash`,
+            `cd /workspace/workgroup && cd app-repo && git reset --hard`,
+            `git --git-dir=${SNAP}/.git --work-tree=${SNAP} reset --hard`,
+            `git --work-tree ${SNAP} restore .`,
+            `GIT_DIR=${SNAP}/.git git commit -m x`,
+            `R=${SNAP}; git -C "$R" checkout x`,
+            `git -C ${WT} worktree add ${SNAP}/../app-repo/sub`,
+            `git -C /workspace/workgroup/.repos/app-repo.git update-ref refs/heads/x HEAD`,
+            `git -C /workspace/workgroup/.rescues/app-repo branch -D x`,
+            `git -c user.name=x -C ${SNAP} cherry-pick abc123`,
+            'git --git-dir=app-repo/.git -C /workspace/workgroup commit -m x',
+            'git -C /workspace/workgroup --work-tree app-repo restore .',
+            `env -C ${SNAP} git commit -m x`,
+            `env --chdir=${SNAP} git commit -m x`,
+            `cd ${SNAP}; (cd ${WT}); git commit -m x`,
+            `cd ${SNAP}; cd ${WT} | true; git commit -m x`,
+            `R=${SNAP}; R=${WT} env; git -C "$R" commit -m x`,
+            `R=${SNAP}; (R=${WT}); git -C "$R" commit -m x`,
+            `if true; then cd ${SNAP} && git checkout main; fi`,
+            `echo "$(cd ${SNAP} && git commit -m x)"`,
+            `cd ${SNAP} || cd ${WT}; git commit -m x`,
+            `cd ${SNAP}; pushd ${WT}; popd; git commit -m x`,
+            `cd ${SNAP}; cd ${WT}; cd -; git commit -m x`,
+            `if true; then cd ${SNAP}; else cd ${WT}; fi; git commit -m x`,
+            `case x in a) cd ${SNAP};; *) cd ${WT};; esac; git commit -m x`,
+            `while false; do git -C ${SNAP} commit -m x; done`,
+            `env -C /workspace/workgroup env -C app-repo git commit -m x`,
+            `exec git -C ${SNAP} commit -m x`,
+            `exec -a g /usr/bin/git -C ${SNAP} commit -m x`,
+            `export R=${SNAP}; git -C "$R" commit -m x`,
+        ]) {
+            expect(evaluateSnapshotGitMutation(cmd).action).toBe('block');
+        }
+    });
+
+    test('a snapshot path passed as a file argument names no target', () => {
+        expect(evaluateSnapshotGitMutation(
+            `git --no-optional-locks -C ${WT} apply --check /workspace/workgroup/artifacts/demo/change.patch`,
+        )).toEqual({ action: 'allow' });
+        expect(evaluateSnapshotGitMutation(
+            `git -C ${WT} apply ${SNAP}/patches/change.patch`,
+        )).toEqual({ action: 'allow' });
+    });
+
+    test('git text inside a heredoc or string body names no target', () => {
+        for (const cmd of [
+            `python3 - <<'PY'\nimport subprocess\nsubprocess.run(['git', '-C', '${SNAP}', 'checkout', 'x'])\nprint("git -C ${SNAP} apply x")\nPY`,
+            `echo "git -C ${SNAP} commit -m x"`,
+            `cat > /workspace/workgroup/artifacts/demo/receipt.txt <<'EOF'\ncd ${SNAP} && git checkout main\nEOF`,
+        ]) {
+            expect(evaluateSnapshotGitMutation(cmd)).toEqual({ action: 'allow' });
+        }
+    });
+
+    test('shared non-repo dirs, worktrees and read-only verbs are not snapshots', () => {
+        for (const cmd of [
+            'git -C /workspace/workgroup/.worktrees/shared commit -m x',
+            'git -C /workspace/workgroup/memory commit -m x',
+            'git -C /workspace/workgroup/artifacts/demo apply x.patch',
+            'git -C /workspace/workgroup/claims/demo commit -m x',
+            `git -C ${WT} commit -m x`,
+            `git -C ${SNAP} log --oneline`,
+            `git -C ${SNAP} diff HEAD~1`,
+            `cd ${SNAP} && git status && cd ${WT} && git commit -m x`,
+            `(cd ${SNAP} && git log); git commit -m x`,
+            `env -C ${WT} git commit -m x`,
+            `R=${WT}; git -C "$R" commit -m x`,
+            `cd ${SNAP} && git log; cd ${WT}; git commit -m x`,
+            `pushd ${SNAP}; popd; cd ${WT} && git commit -m x`,
+            `if true; then cd ${WT}; else cd ${WT}/sub; fi; git commit -m x`,
+            `GIT_DIR=${SNAP}/.git; git commit -m x`,
+            `export GIT_DIR=${WT}/.git; git commit -m x`,
+            `export GIT_DIR=${SNAP}/.git; GIT_DIR=${WT}/.git git commit -m x`,
+            `exec git -C ${WT} commit -m x`,
+            `export GIT_DIR=${SNAP}/.git; unset GIT_DIR; git -C ${WT} commit -m x`,
+            `export GIT_DIR=${SNAP}/.git; env -u GIT_DIR git -C ${WT} commit -m x`,
+            `export GIT_DIR=${SNAP}/.git; export -n GIT_DIR; git -C ${WT} commit -m x`,
+            `export R=${WT}; git -C "$R" commit -m x`,
+            'git checkout main',
+            '',
+        ]) {
+            expect(evaluateSnapshotGitMutation(cmd)).toEqual({ action: 'allow' });
+        }
     });
 });

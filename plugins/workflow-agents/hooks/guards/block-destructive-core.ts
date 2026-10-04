@@ -63,6 +63,7 @@ export interface ResolvedCommand {
     args: string[];             // argument values after wrapper stripping
     raw: string;                // original text for error messages
     env?: string[];             // NAME=value assignments applied to this command (prefix or `env` wrapper)
+    chdir?: string;             // working directory set by an `env -C/--chdir` wrapper
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
 }
@@ -109,26 +110,286 @@ export const GIT_CLONE_BLOCK_REASON =
 // Mutating git commands aimed there ("cd into the canonical and checkout a
 // branch") are the stale-tree failure mode the topology exists to kill. The
 // RO bind mount is the real enforcement (EROFS); this evaluator exists to
-// give a *useful* message instead of a bare filesystem error. Same
-// accepted-residual-bypass posture as the git-clone guard: command-text
-// matching only, no cwd resolution.
+// give a *useful* message instead of a bare filesystem error.
 //
-// Deliberately NOT matched: read-only git verbs (log/status/diff/show/...),
-// the .worktrees checkout namespace, and the memory tree. The .repos mirrors
-// and .rescues archives ARE covered — Bash-level git mutations there are
-// never sanctioned.
-export const SNAPSHOT_GIT_MUTATION_VERB_RE =
-    /\bgit\b(?:\s+(?:-C|--work-tree|--git-dir)\s+\S+|\s+-c\s+\S+|\s+--\S+)*\s+(checkout|switch|commit|reset|restore|clean|merge|rebase|cherry-pick|stash|am|apply|update-ref|branch|worktree)\b/;
-export const SNAPSHOT_PATH_RE = /\/workspace\/workgroup\/(?!\.worktrees\b|memory\b)/;
+// It decides on the git invocation's TARGET, not on the command text: a
+// mutating verb blocks only when `-C`, `--git-dir`, `--work-tree`, `GIT_DIR`,
+// `GIT_WORK_TREE`, a `worktree` path argument, or a preceding `cd` in the same
+// command resolves into a snapshot. A snapshot path passed as a file argument
+// (a patch read by `apply`) or quoted inside a heredoc or string body names no
+// target. Accepted residual bypasses, as with the git-clone guard: a relative
+// `cd` with no earlier absolute one, a standalone `cd` that fails, a target
+// held in a variable that is not a literal assignment in the same command, a
+// GIT_DIR/GIT_WORK_TREE exported by an earlier command, a shell function whose
+// body runs git in the caller's directory, a wrapper nested under `exec`, and
+// git run from another language's subprocess.
+//
+// Deliberately NOT matched: read-only git verbs (log/status/diff/show/...)
+// and the shared non-repo dirs below. The .repos mirrors and .rescues archives
+// ARE covered — Bash-level git mutations there are never sanctioned.
+export const SNAPSHOT_GIT_MUTATION_VERBS = new Set([
+    'checkout', 'switch', 'commit', 'reset', 'restore', 'clean', 'merge', 'rebase',
+    'cherry-pick', 'stash', 'am', 'apply', 'update-ref', 'branch', 'worktree',
+]);
+export const SNAPSHOT_ROOT = '/workspace/workgroup';
+export const SNAPSHOT_NON_REPO_DIRS = new Set(['.worktrees', 'memory', 'artifacts', 'claims']);
 export const SNAPSHOT_GIT_MUTATION_BLOCK_REASON =
     'Git working-tree mutations under /workspace/workgroup/<repo> are blocked: that path is a read-only snapshot of origin/HEAD maintained by the host. Use `create_worktree` and work in /workspace/worktrees/<repo>; shared long-lived checkouts belong under /workspace/workgroup/.worktrees/.';
 
+/** True when `p` resolves inside /workspace/workgroup/<repo> for a repo snapshot. */
+export function isSnapshotRepoPath(p: string): boolean {
+    if (!p.startsWith('/')) return false;
+    // Lexical only: a realpath would follow a mount's symlinks off the root.
+    const normalized = pathResolve(p);
+    if (!normalized.startsWith(`${SNAPSHOT_ROOT}/`)) return false;
+    const first = normalized.slice(SNAPSHOT_ROOT.length + 1).split('/')[0];
+    return first !== '' && !SNAPSHOT_NON_REPO_DIRS.has(first);
+}
+
+/** What the snapshot guard knows about the shell at a point in the command:
+ *  every directory it may be in, every literal value a variable may hold, and
+ *  the pushd stack. An empty set means unknown. Branches that may or may not
+ *  run are merged as unions, so a mutation is blocked when ANY path reaching
+ *  it targets a snapshot. */
+interface SnapshotShellState {
+    dirs: Set<string>;
+    prev: Set<string>;
+    vars: Map<string, Set<string>>;
+    stack: Set<string>[];
+}
+
+function freshShellState(): SnapshotShellState {
+    return { dirs: new Set(), prev: new Set(), vars: new Map(), stack: [] };
+}
+
+function forkShellState(state: SnapshotShellState): SnapshotShellState {
+    return {
+        dirs: new Set(state.dirs),
+        prev: new Set(state.prev),
+        vars: new Map([...state.vars].map(([k, v]) => [k, new Set(v)])),
+        stack: state.stack.map(d => new Set(d)),
+    };
+}
+
+function mergeShellState(into: SnapshotShellState, other: SnapshotShellState): void {
+    for (const d of other.dirs) into.dirs.add(d);
+    for (const d of other.prev) into.prev.add(d);
+    for (const [k, v] of other.vars) {
+        const merged = into.vars.get(k) ?? new Set<string>();
+        for (const value of v) merged.add(value);
+        into.vars.set(k, merged);
+    }
+    other.stack.forEach((level, i) => {
+        if (!into.stack[i]) into.stack[i] = new Set();
+        for (const d of level) into.stack[i].add(d);
+    });
+}
+
+function isLiteralShellValue(value: unknown): value is string {
+    return typeof value === 'string' && value !== '' && !value.includes('$') && !value.includes('`');
+}
+
+/** Every absolute path `word` may resolve to, relative entries against `bases`. */
+function resolveWord(word: string, bases: Set<string>, state: SnapshotShellState): Set<string> {
+    const ref = word.match(EXACT_VARIABLE_REFERENCE);
+    const variable = ref?.[1] || ref?.[2];
+    const values = variable ? [...(state.vars.get(variable) ?? [])] : [word];
+    const out = new Set<string>();
+    for (const value of values) {
+        if (!isLiteralShellValue(value)) continue;
+        if (value.startsWith('/')) out.add(pathResolve(value));
+        else for (const base of bases) out.add(pathResolve(base, value));
+    }
+    return out;
+}
+
+/** Every directory a git invocation may read its repository or work tree from. */
+function gitTargets(cmd: ResolvedCommand, state: SnapshotShellState): Set<string> {
+    const targets = new Set<string>();
+    const sub = gitSubcommandIndex(cmd.args);
+    let dirs = cmd.chdir !== undefined ? resolveWord(cmd.chdir, state.dirs, state) : state.dirs;
+    // git resolves --git-dir/--work-tree against the final -C directory, even
+    // when they precede it, so every -C is applied first.
+    const pathOptions: string[] = [];
+    for (let i = 0; i < sub; i++) {
+        const arg = cmd.args[i];
+        const eq = arg.match(/^--(?:git-dir|work-tree)=(.*)$/);
+        if (eq) { pathOptions.push(eq[1]); continue; }
+        if (arg === '-C') dirs = resolveWord(cmd.args[i + 1] ?? '', dirs, state);
+        else if (arg === '--git-dir' || arg === '--work-tree') pathOptions.push(cmd.args[i + 1] ?? '');
+        else continue;
+        i += 1;
+    }
+    const add = (set: Set<string>) => { for (const t of set) targets.add(t); };
+    for (const option of pathOptions) add(resolveWord(option, dirs, state));
+    for (const assignment of cmd.env ?? []) {
+        const [name, ...rest] = assignment.split('=');
+        if (name === 'GIT_DIR' || name === 'GIT_WORK_TREE') add(resolveWord(rest.join('='), dirs, state));
+    }
+    add(dirs);
+    if (cmd.args[sub] === 'worktree') {
+        for (const arg of cmd.args.slice(sub + 1)) {
+            if (!arg.startsWith('-')) add(resolveWord(arg, dirs, state));
+        }
+    }
+    return targets;
+}
+
+const SHELL_DECLARATION_BUILTINS = new Set(['export', 'declare', 'typeset', 'readonly', 'local']);
+
+function setShellVariable(state: SnapshotShellState, name: string, value: unknown): void {
+    state.vars.set(name, isLiteralShellValue(value) ? new Set([value]) : new Set());
+}
+
+/** `exec [-cl] [-a name] cmd args` runs cmd in place of the shell. */
+function unwrapExec(cmd: ResolvedCommand): ResolvedCommand | null {
+    let i = 0;
+    while (i < cmd.args.length && cmd.args[i].startsWith('-')) i += cmd.args[i] === '-a' ? 2 : 1;
+    if (i >= cmd.args.length) return null;
+    return { ...cmd, name: cmd.args[i].replace(/^.*\//, ''), args: cmd.args.slice(i + 1) };
+}
+
+function snapshotMutationIn(cmd: ResolvedCommand, state: SnapshotShellState): boolean {
+    if (cmd.name === 'exec') {
+        const inner = unwrapExec(cmd);
+        return inner ? snapshotMutationIn(inner, state) : false;
+    }
+    if (cmd.name === 'unset') {
+        for (const name of cmd.args) if (!name.startsWith('-')) state.vars.delete(name);
+        return false;
+    }
+    if (SHELL_DECLARATION_BUILTINS.has(cmd.name)) {
+        for (const arg of cmd.args) {
+            const m = arg.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s);
+            if (m) setShellVariable(state, m[1], m[2]);
+        }
+        return false;
+    }
+    const operand = cmd.args.find(a => !a.startsWith('-'));
+    if (cmd.name === 'cd') {
+        const next = cmd.args.includes('-') ? state.prev
+            : operand ? resolveWord(operand, state.dirs, state) : new Set<string>();
+        state.prev = state.dirs;
+        state.dirs = next;
+        return false;
+    }
+    if (cmd.name === 'pushd') {
+        state.stack.push(state.dirs);
+        state.dirs = operand ? resolveWord(operand, state.dirs, state) : new Set<string>();
+        return false;
+    }
+    if (cmd.name === 'popd') {
+        state.dirs = state.stack.pop() ?? new Set<string>();
+        return false;
+    }
+    if (cmd.name !== 'git') return false;
+    const verb = cmd.args[gitSubcommandIndex(cmd.args)];
+    if (!verb || !SNAPSHOT_GIT_MUTATION_VERBS.has(verb)) return false;
+    return [...gitTargets(cmd, state)].some(isSnapshotRepoPath);
+}
+
+/** Scripts of the command substitutions anywhere inside an AST node. */
+function commandSubstitutionScripts(node: unknown, out: any[] = []): any[] {
+    if (!node || typeof node !== 'object') return out;
+    if (Array.isArray(node)) {
+        for (const child of node) commandSubstitutionScripts(child, out);
+        return out;
+    }
+    const record = node as Record<string, unknown>;
+    if (record.script && typeof record.script === 'object') {
+        out.push(record.script);
+        return out;
+    }
+    // unbash exposes a word's `parts` as a prototype getter, not an own key.
+    commandSubstitutionScripts(record.parts, out);
+    for (const value of Object.values(record)) commandSubstitutionScripts(value, out);
+    return out;
+}
+
+/** Walk the AST in execution order. Subshells, command substitutions and
+ *  multi-command pipeline stages run on a copy of the state; each later
+ *  element of an `&&`/`||` list may or may not run, so its outcome is merged
+ *  in rather than replacing the state. */
+function walkSnapshotNode(node: any, state: SnapshotShellState): boolean {
+    if (!node) return false;
+    if (node.type === 'Command') {
+        const words = [node.name, node.prefix, node.suffix, node.redirects];
+        if (commandSubstitutionScripts(words).some(script => walkSnapshotNode(script, forkShellState(state)))) return true;
+        if (!node.name) {
+            for (const a of node.prefix || []) {
+                if (a?.type === 'Assignment' && typeof a.name === 'string') setShellVariable(state, a.name, a.value?.value);
+            }
+            return false;
+        }
+        const resolved = resolveCommand(node);
+        return resolved ? snapshotMutationIn(resolved, state) : false;
+    }
+    if (node.type === 'Subshell') return walkSnapshotNode(node.body, forkShellState(state));
+    if (node.type === 'Pipeline' && (node.commands || []).length > 1) {
+        return node.commands.some((c: any) => walkSnapshotNode(c, forkShellState(state)));
+    }
+    if (node.type === 'AndOr') {
+        // An element runs after `&&` only when the one before succeeded, and
+        // after `||` only when it failed (a failed command may have changed
+        // nothing). The list can stop after any element.
+        const elements: any[] = node.commands || [];
+        const stops: SnapshotShellState[] = [];
+        let input = forkShellState(state);
+        for (let i = 0; i < elements.length; i++) {
+            const before = forkShellState(input);
+            if (walkSnapshotNode(elements[i], input)) return true;
+            const failed = forkShellState(before);
+            mergeShellState(failed, input);
+            const op = node.operators?.[i];
+            if (op === '&&') { stops.push(failed); continue; }
+            if (op === '||') { stops.push(input); input = failed; continue; }
+            stops.push(input, failed);
+        }
+        const out = freshShellState();
+        for (const stop of stops) mergeShellState(out, stop);
+        Object.assign(state, out);
+        return false;
+    }
+    // Branches and loop bodies may or may not run: each runs on a copy of the
+    // incoming state and every possible outcome is merged back.
+    const alternatives = (branches: any[], includeSkip: boolean): boolean => {
+        const out = includeSkip ? forkShellState(state) : freshShellState();
+        for (const branch of branches) {
+            const ran = forkShellState(state);
+            if (walkSnapshotNode(branch, ran)) return true;
+            mergeShellState(out, ran);
+        }
+        Object.assign(state, out);
+        return false;
+    };
+    if (node.type === 'If') {
+        if (walkSnapshotNode(node.clause, state)) return true;
+        return alternatives([node.then, node.else], !node.else);
+    }
+    if (node.type === 'While') {
+        if (walkSnapshotNode(node.clause, state)) return true;
+        return alternatives([node.body], true);
+    }
+    if (node.type === 'For') return alternatives([node.body], true);
+    if (node.type === 'Case') return alternatives((node.items || []).map((item: any) => item.body), true);
+    if (node.type === 'Function') return walkSnapshotNode(node.body, forkShellState(state));
+    for (const child of node.commands || []) if (walkSnapshotNode(child, state)) return true;
+    for (const key of ['command', 'body']) {
+        if (walkSnapshotNode(node[key], state)) return true;
+    }
+    return false;
+}
+
 export function evaluateSnapshotGitMutation(command: string): { action: 'allow' | 'block'; reason?: string } {
     if (!command) return { action: 'allow' };
-    if (SNAPSHOT_GIT_MUTATION_VERB_RE.test(command) && SNAPSHOT_PATH_RE.test(command)) {
-        return { action: 'block', reason: SNAPSHOT_GIT_MUTATION_BLOCK_REASON };
+    let blocked: boolean;
+    try {
+        blocked = walkSnapshotNode(parse(command), freshShellState());
+    } catch {
+        const state = freshShellState();
+        blocked = fallbackExtract(command).some(cmd => snapshotMutationIn(cmd, state));
     }
-    return { action: 'allow' };
+    return blocked ? { action: 'block', reason: SNAPSHOT_GIT_MUTATION_BLOCK_REASON } : { action: 'allow' };
 }
 
 /** Verdict for the git-clone guard. Intentionally NARROWER than GateEvaluation
@@ -672,6 +933,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
 
     let name = node.name.value || '';
     let args = (node.suffix || []).map((s: any) => s.value ?? s.text ?? '');
+    let chdir: string | undefined;
     const env: string[] = (node.prefix || [])
         .filter((p: any) => p?.type === 'Assignment' && typeof p.name === 'string')
         .map((p: any) => `${p.name}=${p.value?.value ?? p.value?.text ?? ''}`);
@@ -712,6 +974,10 @@ export function resolveCommand(node: any): ResolvedCommand | null {
                     args = [...args.slice(0, skip), ...words, ...args.slice(skip + (inline === null ? 2 : 1))];
                     continue;
                 }
+                const dir = a === '-C' || a === '--chdir' ? args[skip + 1]
+                    : a.startsWith('--chdir=') ? a.slice('--chdir='.length)
+                    : /^-C./.test(a) ? a.slice(2) : undefined;
+                if (dir !== undefined) chdir = chdir === undefined || dir.startsWith('/') ? dir : `${chdir}/${dir}`;
                 skip += a === '-u' || a === '--unset' || a === '-C' || a === '--chdir' ? 2 : 1;
             }
         } else if (name === 'nice') {
@@ -752,6 +1018,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         args,
         raw: rawParts.join(' '),
         env,
+        ...(chdir !== undefined ? { chdir } : {}),
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
     };
