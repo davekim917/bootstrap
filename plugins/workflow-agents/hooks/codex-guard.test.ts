@@ -68,6 +68,11 @@ describe('Codex local approval transport', () => {
     expect(
       (await runGuard(shell('git -C /workspace/workgroup/.worktrees/shared commit -m x'))).output,
     ).toEqual({ continue: true });
+    expect(
+      (await runGuard(shell(
+        'git --no-optional-locks -C /workspace/worktrees/APP-REPO apply --check /workspace/workgroup/artifacts/demo/change.patch',
+      ))).output,
+    ).toEqual({ continue: true });
   });
 
   test('denies skipping or disabling git hooks', async () => {
