@@ -271,6 +271,7 @@ describe('evaluateSnapshotGitMutation', () => {
             `export GIT_DIR=${WT}/.git; git commit -m x`,
             `export GIT_DIR=${SNAP}/.git; GIT_DIR=${WT}/.git git commit -m x`,
             `exec git -C ${WT} commit -m x`,
+            `export GIT_DIR=${SNAP}/.git; unset GIT_DIR; git -C ${WT} commit -m x`,
             'git checkout main',
             '',
         ]) {
