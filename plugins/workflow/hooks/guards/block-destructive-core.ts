@@ -105,24 +105,120 @@ export const GIT_CLONE_BLOCK_REASON =
 // Mutating git commands aimed there ("cd into the canonical and checkout a
 // branch") are the stale-tree failure mode the topology exists to kill. The
 // RO bind mount is the real enforcement (EROFS); this evaluator exists to
-// give a *useful* message instead of a bare filesystem error. Same
-// accepted-residual-bypass posture as the git-clone guard: command-text
-// matching only, no cwd resolution.
+// give a *useful* message instead of a bare filesystem error.
 //
-// Deliberately NOT matched: read-only git verbs (log/status/diff/show/...),
-// the .worktrees checkout namespace, and the memory tree. The .repos mirrors
-// and .rescues archives ARE covered — Bash-level git mutations there are
-// never sanctioned.
-export const SNAPSHOT_GIT_MUTATION_VERB_RE =
-    /\bgit\b(?:\s+(?:-C|--work-tree|--git-dir)\s+\S+|\s+-c\s+\S+|\s+--\S+)*\s+(checkout|switch|commit|reset|restore|clean|merge|rebase|cherry-pick|stash|am|apply|update-ref|branch|worktree)\b/;
-export const SNAPSHOT_PATH_RE = /\/workspace\/workgroup\/(?!\.worktrees\b|memory\b)/;
+// It decides on the git invocation's TARGET, not on the command text: a
+// mutating verb blocks only when `-C`, `--git-dir`, `--work-tree`, `GIT_DIR`,
+// `GIT_WORK_TREE`, a `worktree` path argument, or a preceding `cd` in the same
+// command resolves into a snapshot. A snapshot path passed as a file argument
+// (a patch read by `apply`) or quoted inside a heredoc or string body names no
+// target. Accepted residual bypasses, as with the git-clone guard: a relative
+// `cd` with no earlier absolute one, a target held in a variable that is not a
+// literal assignment in the same command, and git run from another language's
+// subprocess.
+//
+// Deliberately NOT matched: read-only git verbs (log/status/diff/show/...)
+// and the shared non-repo dirs below. The .repos mirrors and .rescues archives
+// ARE covered — Bash-level git mutations there are never sanctioned.
+export const SNAPSHOT_GIT_MUTATION_VERBS = new Set([
+    'checkout', 'switch', 'commit', 'reset', 'restore', 'clean', 'merge', 'rebase',
+    'cherry-pick', 'stash', 'am', 'apply', 'update-ref', 'branch', 'worktree',
+]);
+export const SNAPSHOT_ROOT = '/workspace/workgroup';
+export const SNAPSHOT_NON_REPO_DIRS = new Set(['.worktrees', 'memory', 'artifacts', 'claims']);
 export const SNAPSHOT_GIT_MUTATION_BLOCK_REASON =
     'Git working-tree mutations under /workspace/workgroup/<repo> are blocked: that path is a read-only snapshot of origin/HEAD maintained by the host. Use `create_worktree` and work in /workspace/worktrees/<repo>; shared long-lived checkouts belong under /workspace/workgroup/.worktrees/.';
 
+/** True when `p` resolves inside /workspace/workgroup/<repo> for a repo snapshot. */
+export function isSnapshotRepoPath(p: string): boolean {
+    if (!p.startsWith('/')) return false;
+    // Lexical only: a realpath would follow a mount's symlinks off the root.
+    const normalized = pathResolve(p);
+    if (!normalized.startsWith(`${SNAPSHOT_ROOT}/`)) return false;
+    const first = normalized.slice(SNAPSHOT_ROOT.length + 1).split('/')[0];
+    return first !== '' && !SNAPSHOT_NON_REPO_DIRS.has(first);
+}
+
+/** Latest literal `NAME=/path` assignment before `pos`; null when unknown. */
+function literalAssignmentBefore(assignments: any[], name: string, pos: number): string | null {
+    const latest = assignments
+        .filter(a => a.name === name && typeof a.pos === 'number' && a.pos < pos)
+        .at(-1);
+    const value = latest?.value?.value;
+    if (typeof value !== 'string' || value.includes('$') || value.includes('`')) return null;
+    return value;
+}
+
+function resolveWord(word: string, base: string | null, assignments: any[], pos: number): string | null {
+    const ref = word.match(EXACT_VARIABLE_REFERENCE);
+    const variable = ref?.[1] || ref?.[2];
+    const value = variable ? literalAssignmentBefore(assignments, variable, pos) : word;
+    if (value === null || value === '' || value.includes('$')) return null;
+    if (value.startsWith('/')) return pathResolve(value);
+    return base ? pathResolve(base, value) : null;
+}
+
+/** Every directory a git invocation reads its repository or work tree from. */
+function gitTargets(cmd: ResolvedCommand, cwd: string | null, assignments: any[]): string[] {
+    const pos = cmd.pos ?? Number.MAX_SAFE_INTEGER;
+    const targets: string[] = [];
+    let dir = cwd;
+    const sub = gitSubcommandIndex(cmd.args);
+    for (let i = 0; i < sub; i++) {
+        const arg = cmd.args[i];
+        const eq = arg.match(/^--(git-dir|work-tree)=(.*)$/);
+        if (eq) {
+            const t = resolveWord(eq[2], dir, assignments, pos);
+            if (t) targets.push(t);
+            continue;
+        }
+        if (arg === '-C' || arg === '--git-dir' || arg === '--work-tree') {
+            const t = resolveWord(cmd.args[i + 1] ?? '', dir, assignments, pos);
+            if (arg === '-C') dir = t;
+            if (t) targets.push(t);
+            i += 1;
+        }
+    }
+    for (const assignment of cmd.env ?? []) {
+        const [name, ...rest] = assignment.split('=');
+        if (name === 'GIT_DIR' || name === 'GIT_WORK_TREE') {
+            const t = resolveWord(rest.join('='), dir, assignments, pos);
+            if (t) targets.push(t);
+        }
+    }
+    if (dir) targets.push(dir);
+    if (cmd.args[sub] === 'worktree') {
+        for (const arg of cmd.args.slice(sub + 1)) {
+            if (arg.startsWith('-')) continue;
+            const t = resolveWord(arg, dir, assignments, pos);
+            if (t) targets.push(t);
+        }
+    }
+    return targets;
+}
+
 export function evaluateSnapshotGitMutation(command: string): { action: 'allow' | 'block'; reason?: string } {
     if (!command) return { action: 'allow' };
-    if (SNAPSHOT_GIT_MUTATION_VERB_RE.test(command) && SNAPSHOT_PATH_RE.test(command)) {
-        return { action: 'block', reason: SNAPSHOT_GIT_MUTATION_BLOCK_REASON };
+    const commands = extractCommands(command);
+    if (!commands.some(c => c.name === 'git')) return { action: 'allow' };
+
+    const assignments: any[] = [];
+    try { collectAssignmentNodes(parse(command), assignments); } catch { /* fallback extraction carries no assignments */ }
+    assignments.sort((a, b) => (a.pos ?? -1) - (b.pos ?? -1));
+
+    let cwd: string | null = null;
+    for (const cmd of commands) {
+        if (cmd.name === 'cd' || cmd.name === 'pushd') {
+            const arg = cmd.args.find(a => !a.startsWith('-'));
+            cwd = arg ? resolveWord(arg, cwd, assignments, cmd.pos ?? Number.MAX_SAFE_INTEGER) : null;
+            continue;
+        }
+        if (cmd.name !== 'git') continue;
+        const verb = cmd.args[gitSubcommandIndex(cmd.args)];
+        if (!verb || !SNAPSHOT_GIT_MUTATION_VERBS.has(verb)) continue;
+        if (gitTargets(cmd, cwd, assignments).some(isSnapshotRepoPath)) {
+            return { action: 'block', reason: SNAPSHOT_GIT_MUTATION_BLOCK_REASON };
+        }
     }
     return { action: 'allow' };
 }
