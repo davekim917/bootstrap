@@ -166,22 +166,23 @@ function resolveWord(word: string, base: string | null, assignments: any[], pos:
 function gitTargets(cmd: ResolvedCommand, cwd: string | null, assignments: any[]): string[] {
     const pos = cmd.pos ?? Number.MAX_SAFE_INTEGER;
     const targets: string[] = [];
-    let dir = cwd;
     const sub = gitSubcommandIndex(cmd.args);
+    // git resolves --git-dir/--work-tree against the final -C directory, even
+    // when they precede it, so every -C is applied first.
+    let dir = cwd;
+    const pathOptions: string[] = [];
     for (let i = 0; i < sub; i++) {
         const arg = cmd.args[i];
-        const eq = arg.match(/^--(git-dir|work-tree)=(.*)$/);
-        if (eq) {
-            const t = resolveWord(eq[2], dir, assignments, pos);
-            if (t) targets.push(t);
-            continue;
-        }
-        if (arg === '-C' || arg === '--git-dir' || arg === '--work-tree') {
-            const t = resolveWord(cmd.args[i + 1] ?? '', dir, assignments, pos);
-            if (arg === '-C') dir = t;
-            if (t) targets.push(t);
-            i += 1;
-        }
+        const eq = arg.match(/^--(?:git-dir|work-tree)=(.*)$/);
+        if (eq) { pathOptions.push(eq[1]); continue; }
+        if (arg === '-C') dir = resolveWord(cmd.args[i + 1] ?? '', dir, assignments, pos);
+        else if (arg === '--git-dir' || arg === '--work-tree') pathOptions.push(cmd.args[i + 1] ?? '');
+        else continue;
+        i += 1;
+    }
+    for (const option of pathOptions) {
+        const t = resolveWord(option, dir, assignments, pos);
+        if (t) targets.push(t);
     }
     for (const assignment of cmd.env ?? []) {
         const [name, ...rest] = assignment.split('=');
