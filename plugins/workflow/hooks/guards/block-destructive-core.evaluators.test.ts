@@ -208,6 +208,13 @@ describe('evaluateSnapshotGitMutation', () => {
             `git -c user.name=x -C ${SNAP} cherry-pick abc123`,
             'git --git-dir=app-repo/.git -C /workspace/workgroup commit -m x',
             'git -C /workspace/workgroup --work-tree app-repo restore .',
+            `env -C ${SNAP} git commit -m x`,
+            `env --chdir=${SNAP} git commit -m x`,
+            `cd ${SNAP}; (cd ${WT}); git commit -m x`,
+            `cd ${SNAP}; cd ${WT} | true; git commit -m x`,
+            `R=${SNAP}; R=${WT} env; git -C "$R" commit -m x`,
+            `R=${SNAP}; (R=${WT}); git -C "$R" commit -m x`,
+            `if true; then cd ${SNAP} && git checkout main; fi`,
         ]) {
             expect(evaluateSnapshotGitMutation(cmd).action).toBe('block');
         }
@@ -242,6 +249,9 @@ describe('evaluateSnapshotGitMutation', () => {
             `git -C ${SNAP} log --oneline`,
             `git -C ${SNAP} diff HEAD~1`,
             `cd ${SNAP} && git status && cd ${WT} && git commit -m x`,
+            `(cd ${SNAP} && git log); git commit -m x`,
+            `env -C ${WT} git commit -m x`,
+            `R=${WT}; git -C "$R" commit -m x`,
             'git checkout main',
             '',
         ]) {
