@@ -59,6 +59,7 @@ export interface ResolvedCommand {
     args: string[];             // argument values after wrapper stripping
     raw: string;                // original text for error messages
     env?: string[];             // NAME=value assignments applied to this command (prefix or `env` wrapper)
+    chdir?: string;             // working directory set by an `env -C/--chdir` wrapper
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
 }
@@ -139,51 +140,50 @@ export function isSnapshotRepoPath(p: string): boolean {
     return first !== '' && !SNAPSHOT_NON_REPO_DIRS.has(first);
 }
 
-/** Latest literal `NAME=/path` assignment before `pos`; null when unknown. */
-function literalAssignmentBefore(assignments: any[], name: string, pos: number): string | null {
-    const latest = assignments
-        .filter(a => a.name === name && typeof a.pos === 'number' && a.pos < pos)
-        .at(-1);
-    const value = latest?.value?.value;
-    if (typeof value !== 'string' || value.includes('$') || value.includes('`')) return null;
-    return value;
+/** Shell state the snapshot guard tracks: the working directory and literal variables (null = unknown). */
+interface SnapshotShellState {
+    dir: string | null;
+    vars: Map<string, string | null>;
 }
 
-function resolveWord(word: string, base: string | null, assignments: any[], pos: number): string | null {
+function forkShellState(state: SnapshotShellState): SnapshotShellState {
+    return { dir: state.dir, vars: new Map(state.vars) };
+}
+
+function resolveWord(word: string, base: string | null, state: SnapshotShellState): string | null {
     const ref = word.match(EXACT_VARIABLE_REFERENCE);
     const variable = ref?.[1] || ref?.[2];
-    const value = variable ? literalAssignmentBefore(assignments, variable, pos) : word;
-    if (value === null || value === '' || value.includes('$')) return null;
+    const value = variable ? state.vars.get(variable) ?? null : word;
+    if (value === null || value === '' || value.includes('$') || value.includes('`')) return null;
     if (value.startsWith('/')) return pathResolve(value);
     return base ? pathResolve(base, value) : null;
 }
 
 /** Every directory a git invocation reads its repository or work tree from. */
-function gitTargets(cmd: ResolvedCommand, cwd: string | null, assignments: any[]): string[] {
-    const pos = cmd.pos ?? Number.MAX_SAFE_INTEGER;
+function gitTargets(cmd: ResolvedCommand, state: SnapshotShellState): string[] {
     const targets: string[] = [];
     const sub = gitSubcommandIndex(cmd.args);
+    let dir = cmd.chdir !== undefined ? resolveWord(cmd.chdir, state.dir, state) : state.dir;
     // git resolves --git-dir/--work-tree against the final -C directory, even
     // when they precede it, so every -C is applied first.
-    let dir = cwd;
     const pathOptions: string[] = [];
     for (let i = 0; i < sub; i++) {
         const arg = cmd.args[i];
         const eq = arg.match(/^--(?:git-dir|work-tree)=(.*)$/);
         if (eq) { pathOptions.push(eq[1]); continue; }
-        if (arg === '-C') dir = resolveWord(cmd.args[i + 1] ?? '', dir, assignments, pos);
+        if (arg === '-C') dir = resolveWord(cmd.args[i + 1] ?? '', dir, state);
         else if (arg === '--git-dir' || arg === '--work-tree') pathOptions.push(cmd.args[i + 1] ?? '');
         else continue;
         i += 1;
     }
     for (const option of pathOptions) {
-        const t = resolveWord(option, dir, assignments, pos);
+        const t = resolveWord(option, dir, state);
         if (t) targets.push(t);
     }
     for (const assignment of cmd.env ?? []) {
         const [name, ...rest] = assignment.split('=');
         if (name === 'GIT_DIR' || name === 'GIT_WORK_TREE') {
-            const t = resolveWord(rest.join('='), dir, assignments, pos);
+            const t = resolveWord(rest.join('='), dir, state);
             if (t) targets.push(t);
         }
     }
@@ -191,37 +191,65 @@ function gitTargets(cmd: ResolvedCommand, cwd: string | null, assignments: any[]
     if (cmd.args[sub] === 'worktree') {
         for (const arg of cmd.args.slice(sub + 1)) {
             if (arg.startsWith('-')) continue;
-            const t = resolveWord(arg, dir, assignments, pos);
+            const t = resolveWord(arg, dir, state);
             if (t) targets.push(t);
         }
     }
     return targets;
 }
 
+function snapshotMutationIn(cmd: ResolvedCommand, state: SnapshotShellState): boolean {
+    if (cmd.name === 'cd' || cmd.name === 'pushd') {
+        const arg = cmd.args.find(a => !a.startsWith('-'));
+        state.dir = arg ? resolveWord(arg, state.dir, state) : null;
+        return false;
+    }
+    if (cmd.name !== 'git') return false;
+    const verb = cmd.args[gitSubcommandIndex(cmd.args)];
+    if (!verb || !SNAPSHOT_GIT_MUTATION_VERBS.has(verb)) return false;
+    return gitTargets(cmd, state).some(isSnapshotRepoPath);
+}
+
+/** Walk the AST in execution order. Subshells and multi-command pipeline
+ *  stages run in a copy of the state, so their `cd` and assignments do not
+ *  reach the parent shell; a command's prefix assignments are its own. */
+function walkSnapshotNode(node: any, state: SnapshotShellState): boolean {
+    if (!node) return false;
+    if (node.type === 'Command') {
+        if (!node.name) {
+            for (const a of node.prefix || []) {
+                if (a?.type !== 'Assignment' || typeof a.name !== 'string') continue;
+                const value = a.value?.value;
+                state.vars.set(a.name, typeof value === 'string' && !value.includes('$') && !value.includes('`') ? value : null);
+            }
+            return false;
+        }
+        const resolved = resolveCommand(node);
+        return resolved ? snapshotMutationIn(resolved, state) : false;
+    }
+    if (node.type === 'Subshell') return walkSnapshotNode(node.body, forkShellState(state));
+    if (node.type === 'Pipeline' && (node.commands || []).length > 1) {
+        return node.commands.some((c: any) => walkSnapshotNode(c, forkShellState(state)));
+    }
+    for (const child of node.commands || []) if (walkSnapshotNode(child, state)) return true;
+    for (const key of ['condition', 'command', 'body', 'then', 'else']) {
+        if (walkSnapshotNode(node[key], state)) return true;
+    }
+    for (const clause of node.clauses || []) if (walkSnapshotNode(clause, state)) return true;
+    return false;
+}
+
 export function evaluateSnapshotGitMutation(command: string): { action: 'allow' | 'block'; reason?: string } {
     if (!command) return { action: 'allow' };
-    const commands = extractCommands(command);
-    if (!commands.some(c => c.name === 'git')) return { action: 'allow' };
-
-    const assignments: any[] = [];
-    try { collectAssignmentNodes(parse(command), assignments); } catch { /* fallback extraction carries no assignments */ }
-    assignments.sort((a, b) => (a.pos ?? -1) - (b.pos ?? -1));
-
-    let cwd: string | null = null;
-    for (const cmd of commands) {
-        if (cmd.name === 'cd' || cmd.name === 'pushd') {
-            const arg = cmd.args.find(a => !a.startsWith('-'));
-            cwd = arg ? resolveWord(arg, cwd, assignments, cmd.pos ?? Number.MAX_SAFE_INTEGER) : null;
-            continue;
-        }
-        if (cmd.name !== 'git') continue;
-        const verb = cmd.args[gitSubcommandIndex(cmd.args)];
-        if (!verb || !SNAPSHOT_GIT_MUTATION_VERBS.has(verb)) continue;
-        if (gitTargets(cmd, cwd, assignments).some(isSnapshotRepoPath)) {
-            return { action: 'block', reason: SNAPSHOT_GIT_MUTATION_BLOCK_REASON };
-        }
+    const fresh = (): SnapshotShellState => ({ dir: null, vars: new Map() });
+    let blocked: boolean;
+    try {
+        blocked = walkSnapshotNode(parse(command), fresh());
+    } catch {
+        const state = fresh();
+        blocked = fallbackExtract(command).some(cmd => snapshotMutationIn(cmd, state));
     }
-    return { action: 'allow' };
+    return blocked ? { action: 'block', reason: SNAPSHOT_GIT_MUTATION_BLOCK_REASON } : { action: 'allow' };
 }
 
 /** Verdict for the git-clone guard. Intentionally NARROWER than GateEvaluation
@@ -765,6 +793,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
 
     let name = node.name.value || '';
     let args = (node.suffix || []).map((s: any) => s.value ?? s.text ?? '');
+    let chdir: string | undefined;
     const env: string[] = (node.prefix || [])
         .filter((p: any) => p?.type === 'Assignment' && typeof p.name === 'string')
         .map((p: any) => `${p.name}=${p.value?.value ?? p.value?.text ?? ''}`);
@@ -805,6 +834,9 @@ export function resolveCommand(node: any): ResolvedCommand | null {
                     args = [...args.slice(0, skip), ...words, ...args.slice(skip + (inline === null ? 2 : 1))];
                     continue;
                 }
+                if (a === '-C' || a === '--chdir') chdir = args[skip + 1];
+                else if (a.startsWith('--chdir=')) chdir = a.slice('--chdir='.length);
+                else if (/^-C./.test(a)) chdir = a.slice(2);
                 skip += a === '-u' || a === '--unset' || a === '-C' || a === '--chdir' ? 2 : 1;
             }
         } else if (name === 'nice') {
@@ -845,6 +877,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         args,
         raw: rawParts.join(' '),
         env,
+        ...(chdir !== undefined ? { chdir } : {}),
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
     };
