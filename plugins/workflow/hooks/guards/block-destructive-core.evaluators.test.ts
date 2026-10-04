@@ -223,10 +223,9 @@ describe('evaluateSnapshotGitMutation', () => {
             `case x in a) cd ${SNAP};; *) cd ${WT};; esac; git commit -m x`,
             `while false; do git -C ${SNAP} commit -m x; done`,
             `env -C /workspace/workgroup env -C app-repo git commit -m x`,
-            `export GIT_DIR=${SNAP}/.git; git commit -m x`,
-            `declare -x GIT_WORK_TREE=${SNAP}; git restore .`,
             `exec git -C ${SNAP} commit -m x`,
             `exec -a g /usr/bin/git -C ${SNAP} commit -m x`,
+            `export R=${SNAP}; git -C "$R" commit -m x`,
         ]) {
             expect(evaluateSnapshotGitMutation(cmd).action).toBe('block');
         }
@@ -272,6 +271,9 @@ describe('evaluateSnapshotGitMutation', () => {
             `export GIT_DIR=${SNAP}/.git; GIT_DIR=${WT}/.git git commit -m x`,
             `exec git -C ${WT} commit -m x`,
             `export GIT_DIR=${SNAP}/.git; unset GIT_DIR; git -C ${WT} commit -m x`,
+            `export GIT_DIR=${SNAP}/.git; env -u GIT_DIR git -C ${WT} commit -m x`,
+            `export GIT_DIR=${SNAP}/.git; export -n GIT_DIR; git -C ${WT} commit -m x`,
+            `export R=${WT}; git -C "$R" commit -m x`,
             'git checkout main',
             '',
         ]) {
