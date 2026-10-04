@@ -225,6 +225,8 @@ describe('evaluateSnapshotGitMutation', () => {
             `env -C /workspace/workgroup env -C app-repo git commit -m x`,
             `export GIT_DIR=${SNAP}/.git; git commit -m x`,
             `declare -x GIT_WORK_TREE=${SNAP}; git restore .`,
+            `exec git -C ${SNAP} commit -m x`,
+            `exec -a g /usr/bin/git -C ${SNAP} commit -m x`,
         ]) {
             expect(evaluateSnapshotGitMutation(cmd).action).toBe('block');
         }
@@ -267,6 +269,8 @@ describe('evaluateSnapshotGitMutation', () => {
             `if true; then cd ${WT}; else cd ${WT}/sub; fi; git commit -m x`,
             `GIT_DIR=${SNAP}/.git; git commit -m x`,
             `export GIT_DIR=${WT}/.git; git commit -m x`,
+            `export GIT_DIR=${SNAP}/.git; GIT_DIR=${WT}/.git git commit -m x`,
+            `exec git -C ${WT} commit -m x`,
             'git checkout main',
             '',
         ]) {

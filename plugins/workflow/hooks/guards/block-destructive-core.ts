@@ -219,8 +219,9 @@ function gitTargets(cmd: ResolvedCommand, state: SnapshotShellState): Set<string
     }
     const add = (set: Set<string>) => { for (const t of set) targets.add(t); };
     for (const option of pathOptions) add(resolveWord(option, dirs, state));
+    const local = new Set((cmd.env ?? []).map(a => a.split('=')[0]));
     for (const name of ['GIT_DIR', 'GIT_WORK_TREE']) {
-        if (state.exported.has(name)) add(resolveWord(`$${name}`, dirs, state));
+        if (state.exported.has(name) && !local.has(name)) add(resolveWord(`$${name}`, dirs, state));
     }
     for (const assignment of cmd.env ?? []) {
         const [name, ...rest] = assignment.split('=');
@@ -241,7 +242,19 @@ function setShellVariable(state: SnapshotShellState, name: string, value: unknow
     state.vars.set(name, isLiteralShellValue(value) ? new Set([value]) : new Set());
 }
 
+/** `exec [-cl] [-a name] cmd args` runs cmd in place of the shell. */
+function unwrapExec(cmd: ResolvedCommand): ResolvedCommand | null {
+    let i = 0;
+    while (i < cmd.args.length && cmd.args[i].startsWith('-')) i += cmd.args[i] === '-a' ? 2 : 1;
+    if (i >= cmd.args.length) return null;
+    return { ...cmd, name: cmd.args[i].replace(/^.*\//, ''), args: cmd.args.slice(i + 1) };
+}
+
 function snapshotMutationIn(cmd: ResolvedCommand, state: SnapshotShellState): boolean {
+    if (cmd.name === 'exec') {
+        const inner = unwrapExec(cmd);
+        return inner ? snapshotMutationIn(inner, state) : false;
+    }
     if (SHELL_DECLARATION_BUILTINS.has(cmd.name)) {
         const exports = cmd.name === 'export' || cmd.args.some(a => /^-[a-zA-Z]*x/.test(a));
         for (const arg of cmd.args) {
