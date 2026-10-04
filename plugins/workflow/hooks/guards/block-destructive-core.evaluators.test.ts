@@ -215,6 +215,10 @@ describe('evaluateSnapshotGitMutation', () => {
             `R=${SNAP}; R=${WT} env; git -C "$R" commit -m x`,
             `R=${SNAP}; (R=${WT}); git -C "$R" commit -m x`,
             `if true; then cd ${SNAP} && git checkout main; fi`,
+            `echo "$(cd ${SNAP} && git commit -m x)"`,
+            `cd ${SNAP} || cd ${WT}; git commit -m x`,
+            `cd ${SNAP}; pushd ${WT}; popd; git commit -m x`,
+            `cd ${SNAP}; cd ${WT}; cd -; git commit -m x`,
         ]) {
             expect(evaluateSnapshotGitMutation(cmd).action).toBe('block');
         }
@@ -252,6 +256,8 @@ describe('evaluateSnapshotGitMutation', () => {
             `(cd ${SNAP} && git log); git commit -m x`,
             `env -C ${WT} git commit -m x`,
             `R=${WT}; git -C "$R" commit -m x`,
+            `cd ${SNAP} && git log; cd ${WT}; git commit -m x`,
+            `pushd ${SNAP}; popd; cd ${WT} && git commit -m x`,
             'git checkout main',
             '',
         ]) {
