@@ -206,6 +206,8 @@ describe('evaluateSnapshotGitMutation', () => {
             `git -C /workspace/workgroup/.repos/app-repo.git update-ref refs/heads/x HEAD`,
             `git -C /workspace/workgroup/.rescues/app-repo branch -D x`,
             `git -c user.name=x -C ${SNAP} cherry-pick abc123`,
+            'git --git-dir=app-repo/.git -C /workspace/workgroup commit -m x',
+            'git -C /workspace/workgroup --work-tree app-repo restore .',
         ]) {
             expect(evaluateSnapshotGitMutation(cmd).action).toBe('block');
         }
