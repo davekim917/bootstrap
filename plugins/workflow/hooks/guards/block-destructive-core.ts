@@ -116,8 +116,9 @@ export const GIT_CLONE_BLOCK_REASON =
 // target. Accepted residual bypasses, as with the git-clone guard: a relative
 // `cd` with no earlier absolute one, a standalone `cd` that fails, a target
 // held in a variable that is not a literal assignment in the same command, a
-// shell function whose body runs git in the caller's directory, a wrapper
-// nested under `exec`, and git run from another language's subprocess.
+// GIT_DIR/GIT_WORK_TREE exported by an earlier command, a shell function whose
+// body runs git in the caller's directory, a wrapper nested under `exec`, and
+// git run from another language's subprocess.
 //
 // Deliberately NOT matched: read-only git verbs (log/status/diff/show/...)
 // and the shared non-repo dirs below. The .repos mirrors and .rescues archives
@@ -150,12 +151,11 @@ interface SnapshotShellState {
     dirs: Set<string>;
     prev: Set<string>;
     vars: Map<string, Set<string>>;
-    exported: Set<string>;
     stack: Set<string>[];
 }
 
 function freshShellState(): SnapshotShellState {
-    return { dirs: new Set(), prev: new Set(), vars: new Map(), exported: new Set(), stack: [] };
+    return { dirs: new Set(), prev: new Set(), vars: new Map(), stack: [] };
 }
 
 function forkShellState(state: SnapshotShellState): SnapshotShellState {
@@ -163,7 +163,6 @@ function forkShellState(state: SnapshotShellState): SnapshotShellState {
         dirs: new Set(state.dirs),
         prev: new Set(state.prev),
         vars: new Map([...state.vars].map(([k, v]) => [k, new Set(v)])),
-        exported: new Set(state.exported),
         stack: state.stack.map(d => new Set(d)),
     };
 }
@@ -171,7 +170,6 @@ function forkShellState(state: SnapshotShellState): SnapshotShellState {
 function mergeShellState(into: SnapshotShellState, other: SnapshotShellState): void {
     for (const d of other.dirs) into.dirs.add(d);
     for (const d of other.prev) into.prev.add(d);
-    for (const name of other.exported) into.exported.add(name);
     for (const [k, v] of other.vars) {
         const merged = into.vars.get(k) ?? new Set<string>();
         for (const value of v) merged.add(value);
@@ -220,10 +218,6 @@ function gitTargets(cmd: ResolvedCommand, state: SnapshotShellState): Set<string
     }
     const add = (set: Set<string>) => { for (const t of set) targets.add(t); };
     for (const option of pathOptions) add(resolveWord(option, dirs, state));
-    const local = new Set((cmd.env ?? []).map(a => a.split('=')[0]));
-    for (const name of ['GIT_DIR', 'GIT_WORK_TREE']) {
-        if (state.exported.has(name) && !local.has(name)) add(resolveWord(`$${name}`, dirs, state));
-    }
     for (const assignment of cmd.env ?? []) {
         const [name, ...rest] = assignment.split('=');
         if (name === 'GIT_DIR' || name === 'GIT_WORK_TREE') add(resolveWord(rest.join('='), dirs, state));
@@ -257,20 +251,13 @@ function snapshotMutationIn(cmd: ResolvedCommand, state: SnapshotShellState): bo
         return inner ? snapshotMutationIn(inner, state) : false;
     }
     if (cmd.name === 'unset') {
-        for (const name of cmd.args) {
-            if (name.startsWith('-')) continue;
-            state.vars.delete(name);
-            state.exported.delete(name);
-        }
+        for (const name of cmd.args) if (!name.startsWith('-')) state.vars.delete(name);
         return false;
     }
     if (SHELL_DECLARATION_BUILTINS.has(cmd.name)) {
-        const exports = cmd.name === 'export' || cmd.args.some(a => /^-[a-zA-Z]*x/.test(a));
         for (const arg of cmd.args) {
-            const m = arg.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:=(.*))?$/s);
-            if (!m) continue;
-            if (m[2] !== undefined) setShellVariable(state, m[1], m[2]);
-            if (exports) state.exported.add(m[1]);
+            const m = arg.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s);
+            if (m) setShellVariable(state, m[1], m[2]);
         }
         return false;
     }
