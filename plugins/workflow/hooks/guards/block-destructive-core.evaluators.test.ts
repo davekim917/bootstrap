@@ -1,6 +1,7 @@
 import { describe, test, expect, mock, afterEach } from 'bun:test';
 import {
     evaluateSelfApproval,
+    evaluateSnapshotGitMutation,
     evaluateSnowflakeConnector,
 } from './block-destructive-core';
 
@@ -183,5 +184,66 @@ describe('A2 runGateRequest action parameterization', () => {
         });
         expect(decision).toBe('denied');
         expect(fired).toBe(true);
+    });
+});
+
+describe('evaluateSnapshotGitMutation', () => {
+    const WT = '/workspace/worktrees/app-repo@feature';
+    const SNAP = '/workspace/workgroup/app-repo';
+
+    test('blocks a mutation whose target is a repo snapshot', () => {
+        for (const cmd of [
+            `git -C ${SNAP} checkout -b feature`,
+            `git -C ${SNAP} commit -m x`,
+            `cd ${SNAP} && git checkout main`,
+            `cd ${SNAP}; git stash`,
+            `cd /workspace/workgroup && cd app-repo && git reset --hard`,
+            `git --git-dir=${SNAP}/.git --work-tree=${SNAP} reset --hard`,
+            `git --work-tree ${SNAP} restore .`,
+            `GIT_DIR=${SNAP}/.git git commit -m x`,
+            `R=${SNAP}; git -C "$R" checkout x`,
+            `git -C ${WT} worktree add ${SNAP}/../app-repo/sub`,
+            `git -C /workspace/workgroup/.repos/app-repo.git update-ref refs/heads/x HEAD`,
+            `git -C /workspace/workgroup/.rescues/app-repo branch -D x`,
+            `git -c user.name=x -C ${SNAP} cherry-pick abc123`,
+        ]) {
+            expect(evaluateSnapshotGitMutation(cmd).action).toBe('block');
+        }
+    });
+
+    test('a snapshot path passed as a file argument names no target', () => {
+        expect(evaluateSnapshotGitMutation(
+            `git --no-optional-locks -C ${WT} apply --check /workspace/workgroup/artifacts/demo/change.patch`,
+        )).toEqual({ action: 'allow' });
+        expect(evaluateSnapshotGitMutation(
+            `git -C ${WT} apply ${SNAP}/patches/change.patch`,
+        )).toEqual({ action: 'allow' });
+    });
+
+    test('git text inside a heredoc or string body names no target', () => {
+        for (const cmd of [
+            `python3 - <<'PY'\nimport subprocess\nsubprocess.run(['git', '-C', '${SNAP}', 'checkout', 'x'])\nprint("git -C ${SNAP} apply x")\nPY`,
+            `echo "git -C ${SNAP} commit -m x"`,
+            `cat > /workspace/workgroup/artifacts/demo/receipt.txt <<'EOF'\ncd ${SNAP} && git checkout main\nEOF`,
+        ]) {
+            expect(evaluateSnapshotGitMutation(cmd)).toEqual({ action: 'allow' });
+        }
+    });
+
+    test('shared non-repo dirs, worktrees and read-only verbs are not snapshots', () => {
+        for (const cmd of [
+            'git -C /workspace/workgroup/.worktrees/shared commit -m x',
+            'git -C /workspace/workgroup/memory commit -m x',
+            'git -C /workspace/workgroup/artifacts/demo apply x.patch',
+            'git -C /workspace/workgroup/claims/demo commit -m x',
+            `git -C ${WT} commit -m x`,
+            `git -C ${SNAP} log --oneline`,
+            `git -C ${SNAP} diff HEAD~1`,
+            `cd ${SNAP} && git status && cd ${WT} && git commit -m x`,
+            'git checkout main',
+            '',
+        ]) {
+            expect(evaluateSnapshotGitMutation(cmd)).toEqual({ action: 'allow' });
+        }
     });
 });
