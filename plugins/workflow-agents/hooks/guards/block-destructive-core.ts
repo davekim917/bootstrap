@@ -119,8 +119,9 @@ export const GIT_CLONE_BLOCK_REASON =
 // (a patch read by `apply`) or quoted inside a heredoc or string body names no
 // target. Accepted residual bypasses, as with the git-clone guard: a relative
 // `cd` with no earlier absolute one, a standalone `cd` that fails, a target
-// held in a variable that is not a literal assignment in the same command, and
-// git run from another language's subprocess.
+// held in a variable that is not a literal assignment in the same command, a
+// shell function whose body runs git in the caller's directory, a wrapper
+// nested under `exec`, and git run from another language's subprocess.
 //
 // Deliberately NOT matched: read-only git verbs (log/status/diff/show/...)
 // and the shared non-repo dirs below. The .repos mirrors and .rescues archives
@@ -258,6 +259,14 @@ function snapshotMutationIn(cmd: ResolvedCommand, state: SnapshotShellState): bo
     if (cmd.name === 'exec') {
         const inner = unwrapExec(cmd);
         return inner ? snapshotMutationIn(inner, state) : false;
+    }
+    if (cmd.name === 'unset') {
+        for (const name of cmd.args) {
+            if (name.startsWith('-')) continue;
+            state.vars.delete(name);
+            state.exported.delete(name);
+        }
+        return false;
     }
     if (SHELL_DECLARATION_BUILTINS.has(cmd.name)) {
         const exports = cmd.name === 'export' || cmd.args.some(a => /^-[a-zA-Z]*x/.test(a));
