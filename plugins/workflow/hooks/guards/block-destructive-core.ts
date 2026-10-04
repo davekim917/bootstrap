@@ -149,11 +149,12 @@ interface SnapshotShellState {
     dirs: Set<string>;
     prev: Set<string>;
     vars: Map<string, Set<string>>;
+    exported: Set<string>;
     stack: Set<string>[];
 }
 
 function freshShellState(): SnapshotShellState {
-    return { dirs: new Set(), prev: new Set(), vars: new Map(), stack: [] };
+    return { dirs: new Set(), prev: new Set(), vars: new Map(), exported: new Set(), stack: [] };
 }
 
 function forkShellState(state: SnapshotShellState): SnapshotShellState {
@@ -161,6 +162,7 @@ function forkShellState(state: SnapshotShellState): SnapshotShellState {
         dirs: new Set(state.dirs),
         prev: new Set(state.prev),
         vars: new Map([...state.vars].map(([k, v]) => [k, new Set(v)])),
+        exported: new Set(state.exported),
         stack: state.stack.map(d => new Set(d)),
     };
 }
@@ -168,6 +170,7 @@ function forkShellState(state: SnapshotShellState): SnapshotShellState {
 function mergeShellState(into: SnapshotShellState, other: SnapshotShellState): void {
     for (const d of other.dirs) into.dirs.add(d);
     for (const d of other.prev) into.prev.add(d);
+    for (const name of other.exported) into.exported.add(name);
     for (const [k, v] of other.vars) {
         const merged = into.vars.get(k) ?? new Set<string>();
         for (const value of v) merged.add(value);
@@ -216,6 +219,9 @@ function gitTargets(cmd: ResolvedCommand, state: SnapshotShellState): Set<string
     }
     const add = (set: Set<string>) => { for (const t of set) targets.add(t); };
     for (const option of pathOptions) add(resolveWord(option, dirs, state));
+    for (const name of ['GIT_DIR', 'GIT_WORK_TREE']) {
+        if (state.exported.has(name)) add(resolveWord(`$${name}`, dirs, state));
+    }
     for (const assignment of cmd.env ?? []) {
         const [name, ...rest] = assignment.split('=');
         if (name === 'GIT_DIR' || name === 'GIT_WORK_TREE') add(resolveWord(rest.join('='), dirs, state));
@@ -229,7 +235,23 @@ function gitTargets(cmd: ResolvedCommand, state: SnapshotShellState): Set<string
     return targets;
 }
 
+const SHELL_DECLARATION_BUILTINS = new Set(['export', 'declare', 'typeset', 'readonly', 'local']);
+
+function setShellVariable(state: SnapshotShellState, name: string, value: unknown): void {
+    state.vars.set(name, isLiteralShellValue(value) ? new Set([value]) : new Set());
+}
+
 function snapshotMutationIn(cmd: ResolvedCommand, state: SnapshotShellState): boolean {
+    if (SHELL_DECLARATION_BUILTINS.has(cmd.name)) {
+        const exports = cmd.name === 'export' || cmd.args.some(a => /^-[a-zA-Z]*x/.test(a));
+        for (const arg of cmd.args) {
+            const m = arg.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:=(.*))?$/s);
+            if (!m) continue;
+            if (m[2] !== undefined) setShellVariable(state, m[1], m[2]);
+            if (exports) state.exported.add(m[1]);
+        }
+        return false;
+    }
     const operand = cmd.args.find(a => !a.startsWith('-'));
     if (cmd.name === 'cd') {
         const next = cmd.args.includes('-') ? state.prev
@@ -282,9 +304,7 @@ function walkSnapshotNode(node: any, state: SnapshotShellState): boolean {
         if (commandSubstitutionScripts(words).some(script => walkSnapshotNode(script, forkShellState(state)))) return true;
         if (!node.name) {
             for (const a of node.prefix || []) {
-                if (a?.type !== 'Assignment' || typeof a.name !== 'string') continue;
-                const value = a.value?.value;
-                state.vars.set(a.name, isLiteralShellValue(value) ? new Set([value]) : new Set());
+                if (a?.type === 'Assignment' && typeof a.name === 'string') setShellVariable(state, a.name, a.value?.value);
             }
             return false;
         }
@@ -317,11 +337,33 @@ function walkSnapshotNode(node: any, state: SnapshotShellState): boolean {
         Object.assign(state, out);
         return false;
     }
+    // Branches and loop bodies may or may not run: each runs on a copy of the
+    // incoming state and every possible outcome is merged back.
+    const alternatives = (branches: any[], includeSkip: boolean): boolean => {
+        const out = includeSkip ? forkShellState(state) : freshShellState();
+        for (const branch of branches) {
+            const ran = forkShellState(state);
+            if (walkSnapshotNode(branch, ran)) return true;
+            mergeShellState(out, ran);
+        }
+        Object.assign(state, out);
+        return false;
+    };
+    if (node.type === 'If') {
+        if (walkSnapshotNode(node.clause, state)) return true;
+        return alternatives([node.then, node.else], !node.else);
+    }
+    if (node.type === 'While') {
+        if (walkSnapshotNode(node.clause, state)) return true;
+        return alternatives([node.body], true);
+    }
+    if (node.type === 'For') return alternatives([node.body], true);
+    if (node.type === 'Case') return alternatives((node.items || []).map((item: any) => item.body), true);
+    if (node.type === 'Function') return walkSnapshotNode(node.body, forkShellState(state));
     for (const child of node.commands || []) if (walkSnapshotNode(child, state)) return true;
-    for (const key of ['condition', 'command', 'body', 'then', 'else']) {
+    for (const key of ['command', 'body']) {
         if (walkSnapshotNode(node[key], state)) return true;
     }
-    for (const clause of node.clauses || []) if (walkSnapshotNode(clause, state)) return true;
     return false;
 }
 
@@ -919,9 +961,10 @@ export function resolveCommand(node: any): ResolvedCommand | null {
                     args = [...args.slice(0, skip), ...words, ...args.slice(skip + (inline === null ? 2 : 1))];
                     continue;
                 }
-                if (a === '-C' || a === '--chdir') chdir = args[skip + 1];
-                else if (a.startsWith('--chdir=')) chdir = a.slice('--chdir='.length);
-                else if (/^-C./.test(a)) chdir = a.slice(2);
+                const dir = a === '-C' || a === '--chdir' ? args[skip + 1]
+                    : a.startsWith('--chdir=') ? a.slice('--chdir='.length)
+                    : /^-C./.test(a) ? a.slice(2) : undefined;
+                if (dir !== undefined) chdir = chdir === undefined || dir.startsWith('/') ? dir : `${chdir}/${dir}`;
                 skip += a === '-u' || a === '--unset' || a === '-C' || a === '--chdir' ? 2 : 1;
             }
         } else if (name === 'nice') {
