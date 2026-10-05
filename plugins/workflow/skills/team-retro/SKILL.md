@@ -1,6 +1,6 @@
 ---
 name: team-retro
-description: Find the mistakes agents repeat and the friction they work around, and turn each repeat into a check. Run when the user asks, after a delivery or ad hoc for a session, time window or PR range.
+description: Run a retrospective on agent work. Find the mistakes agents repeat and the friction they work around, and rank how to turn each into a check. Run when the user asks, after a delivery or ad hoc for a session, time window or PR range.
 ---
 
 # /team-retro — Turn repeat mistakes into checks
@@ -22,13 +22,14 @@ For that scope, read:
 - the corrections the user gave agents;
 - earlier retros and the repository's agent instructions and rules.
 
-Agent-authored claims are leads until verified.
+Agent-authored claims are leads until verified. Quote evidence minimally in the retro, and never
+copy secrets, credentials or private data out of logs.
 
 ## Classify
 
 Group mistakes into classes. A class counts once it has happened twice, in this scope or in earlier
-retros. When a rule for the class already exists and nothing enforces it, the class is a repeat:
-fix it one level higher than last time.
+retros. When a rule for the class already exists and nothing enforces it, the rule has failed:
+fix the class one level closer to architecture than that rule.
 
 Report as its own finding any check that exists but is unwired, cannot run where the work happens,
 or passes without checking anything.
@@ -52,10 +53,9 @@ enforces, so they can be deleted.
 level and why not higher; unwired checks; rules to delete; and up to five learnings in the form
 "Next time, do X because Y occurred".
 
-Do not edit skills, policy or agent instructions during the retro. Those are recommendations for a
-separate decision.
+The retro changes nothing. Edits to skills, policy or agent instructions, including deleting
+enforced rules, are recommendations for a separate decision.
 
-For the one to three most frequent classes fixable at level 1 or 2, write
-`docs/specs/<class-slug>/plan.md`. Its acceptance criterion: the new check fails on the cited past
-mistake and passes on the fix. End with the plans and the `/team-auto` command for each. Run
-`/team-auto` only when the user's request invokes it by name: it commits, pushes and merges.
+End with the one to three most frequent classes fixable at level 1 or 2, each as a `/team-plan`
+request whose acceptance criterion is that the new check fails on the cited past mistake and passes
+on the fix. Do not start `/team-plan`, `/team-build` or `/team-auto` yourself.
