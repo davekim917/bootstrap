@@ -31,7 +31,7 @@
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { homedir } from 'os';
-import { resolve as pathResolve } from 'path';
+import { dirname, join, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
 
@@ -1750,6 +1750,116 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     return null;
 }
 
+// ── Self-matching kills ──────────────────────────────────────────────────────
+
+/** `-f`/`--full` makes pgrep/pkill match the whole command line, including the shell that runs this command. */
+function matchesFullCommandLine(args: string[]): boolean {
+    return args.some(a => a === '--full' || (/^-[a-zA-Z]+$/.test(a) && a.slice(1).includes('f')));
+}
+
+/** A bracket class (`[s]erver.js`) still matches the target but not its own text, so not the calling shell. */
+function excludesOwnCommandLine(args: string[]): boolean {
+    const positionals = args.filter(a => !a.startsWith('-'));
+    const pattern = positionals[positionals.length - 1] ?? '';
+    return /\[[^\]]+\]/.test(pattern);
+}
+
+function isSelfMatchingFullPattern(cmd: ResolvedCommand): boolean {
+    return matchesFullCommandLine(cmd.args) && !excludesOwnCommandLine(cmd.args);
+}
+
+const SELF_KILL_REASON =
+    'matches the full command line of every process, including the shell running this command, so it can kill ' +
+    "its own caller. Use a bracket class so the pattern cannot match itself: pkill -f '[s]erver.js'.";
+
+/** The commands inside a `$(...)` or backtick argument, which the argument walker leaves as text. */
+function substitutionCommands(arg: string): ResolvedCommand[] {
+    const m = arg.match(/^\$\(([\s\S]*)\)$/) ?? arg.match(/^`([\s\S]*)`$/);
+    return m ? extractCommands(m[1]) : [];
+}
+
+/** pkill -f, or kill fed by pgrep -f, whose pattern also matches the calling shell. */
+export function selfMatchingKillReason(commands: ResolvedCommand[]): string | null {
+    for (const cmd of commands) {
+        if (cmd.name === 'pkill' && isSelfMatchingFullPattern(cmd)) return `pkill -f ${SELF_KILL_REASON}`;
+    }
+    const kills = commands.some(c => c.name === 'kill' || (c.name === 'xargs' && c.args.includes('kill')));
+    const substituted = commands
+        .filter(c => c.name === 'kill')
+        .flatMap(c => c.args.flatMap(substitutionCommands));
+    if (kills && [...commands, ...substituted].some(c => c.name === 'pgrep' && isSelfMatchingFullPattern(c))) {
+        return `kill fed by pgrep -f ${SELF_KILL_REASON}`;
+    }
+    return null;
+}
+
+// ── Staging everything during a conflicted operation ─────────────────────────
+
+const IN_PROGRESS_MARKERS: ReadonlyArray<[string, string]> = [
+    ['MERGE_HEAD', 'merge'],
+    ['CHERRY_PICK_HEAD', 'cherry-pick'],
+    ['REVERT_HEAD', 'revert'],
+    ['rebase-merge', 'rebase'],
+    ['rebase-apply', 'rebase'],
+];
+
+/** The git dir for `start`: a `.git` directory, or the `gitdir:` a worktree's `.git` file points at. */
+function gitDirFor(start: string): string | null {
+    let dir = start;
+    for (;;) {
+        const dotGit = join(dir, '.git');
+        try {
+            const st = statSync(dotGit);
+            if (st.isDirectory()) return dotGit;
+            if (st.isFile()) {
+                const m = readFileSync(dotGit, 'utf-8').match(/^gitdir:\s*(.+?)\s*$/m);
+                if (m) return pathResolve(dir, m[1]);
+            }
+        } catch { /* no .git here */ }
+        const parent = dirname(dir);
+        if (parent === dir) return null;
+        dir = parent;
+    }
+}
+
+export function inProgressGitOperation(dir: string): string | null {
+    const gitDir = gitDirFor(dir);
+    if (!gitDir) return null;
+    for (const [marker, operation] of IN_PROGRESS_MARKERS) {
+        if (existsSync(join(gitDir, marker))) return operation;
+    }
+    return null;
+}
+
+function stagesEverything(args: string[]): string | null {
+    const i = gitSubcommandIndex(args);
+    const sub = args[i];
+    const rest = args.slice(i + 1);
+    if (sub === 'add') {
+        const all = rest.find(a => a === '-A' || a === '--all' || a === '-u' || a === '--update' || a === '.' || a === ':/');
+        return all ? `git add ${all}` : null;
+    }
+    if (sub === 'commit') {
+        const all = rest.find(a => a === '--all' || /^-[a-zA-Z]*a[a-zA-Z]*$/.test(a));
+        return all ? `git commit ${all}` : null;
+    }
+    return null;
+}
+
+/** git add -A / commit -a while a merge, rebase, cherry-pick or revert is in progress stages conflict markers. */
+export function stageAllDuringConflictReason(cmd: ResolvedCommand, cwd: string): string | null {
+    if (cmd.name !== 'git') return null;
+    const form = stagesEverything(cmd.args);
+    if (!form) return null;
+    const relocated = cmd.chdir ?? gitRelocatedDir(cmd.args);
+    const dir = relocated ? pathResolve(cwd || '/', relocated) : cwd;
+    if (!dir) return null;
+    const operation = inProgressGitOperation(dir);
+    if (!operation) return null;
+    return `${form} during an in-progress ${operation} stages conflicted files with their markers. ` +
+        'Stage the resolved paths by name (git add <path>...), or abort the operation.';
+}
+
 // ── Gated checks ─────────────────────────────────────────────────────────────
 
 /** Returns gate reason if the command requires approval, null otherwise */
@@ -2034,11 +2144,13 @@ export function evaluateBashCommand(
 
     // --- Hard block checks (no bypass, ever — lab included) ---
     for (const cmd of commands) {
-        const reason = checkHardBlock(cmd);
+        const reason = checkHardBlock(cmd) ?? stageAllDuringConflictReason(cmd, cwd);
         if (reason) {
             return { action: 'block', reason };
         }
     }
+    const selfKill = selfMatchingKillReason(commands);
+    if (selfKill) return { action: 'block', reason: selfKill };
 
     // --- Gated checks ---
     if (!opts.skipGate) {
