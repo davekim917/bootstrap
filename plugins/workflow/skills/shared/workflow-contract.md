@@ -148,15 +148,6 @@ Stop at the bound, on no progress, or repeated workflow-created obstruction. Nam
 invariant, or identify the removable workflow mechanism; do not manufacture more process to
 satisfy a flawed rule. A new round budget needs an explicit grounded decision.
 
-## One-week measurement
-
-For each accepted task record task id, acceptance evidence, started/completed times, elapsed time,
-owner/model/effort, measured usage and cost when available (otherwise unknown), repair rounds,
-escaped defects, and human interruptions with reasons. Include stopped/unaccepted attempts in the
-weekly denominator and report acceptance rate and total usage per accepted task; do not hide failed
-work or claim savings from model pricing alone. Keep measurements in run.md or the existing task
-ledger, without introducing a second tracking system.
-
 ## Self-simplify before the first push
 
 When a change is ready to push as a pull request, before its first push, the owner runs one pass over
