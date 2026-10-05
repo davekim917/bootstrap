@@ -15,8 +15,8 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.8.2 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.8.3 | The same, runtime-neutral |
+| Claude Code | `bootstrap-workflow` | 5.9.0 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.9.0 | The same, runtime-neutral |
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.0.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.3.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
@@ -149,7 +149,7 @@ in its own plugin:
 | `/team-auto` | Runs approved plan → build → review, then hands off to `/team-ship` |
 | `/team-debug` | Diagnoses root cause from evidence before changing production code |
 | `/team-ship` | Merges on readiness and posts an FYI; holds for a human only on the scheduled release and genuine decisions |
-| `/team-retro` | Optionally captures short, reusable lessons after delivery |
+| `/team-retro` | Finds repeat mistakes in a delivery, session or time window and ranks how to make each impossible |
 
 `/team-plan` absorbs requirements, constraints, architecture, acceptance criteria, and execution
 decomposition. `/team-review` selects QA, drift, security, performance, best-practice, and domain

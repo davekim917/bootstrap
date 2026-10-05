@@ -251,7 +251,7 @@ export function evaluateContracts({
       'Invalidate affected evidence', 'maximum of 3 corrective rounds',
       'reconsider the root cause or test premise once',
       'Factual corrections and test-detail refinements do not reset authorization',
-      'no mandatory exact test skeleton', 'human interruptions', 'escaped defects',
+      'no mandatory exact test skeleton',
       'The retained owner implements, runs the checks and repairs failures',
       'Owner testing is not independent review',
       'Honor an explicit user override naming the check or its verification owner',
