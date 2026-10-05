@@ -57,5 +57,5 @@ separate decision.
 
 For the one to three most frequent classes fixable at level 1 or 2, write
 `docs/specs/<class-slug>/plan.md`. Its acceptance criterion: the new check fails on the cited past
-mistake and passes on the fix. When the user's request already authorizes fixing, run `/team-auto`
-on each plan. Otherwise end with the plans and the command that runs them.
+mistake and passes on the fix. End with the plans and the `/team-auto` command for each. Run
+`/team-auto` only when the user's request invokes it by name: it commits, pushes and merges.
