@@ -1753,10 +1753,10 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
 // ── Self-matching kills ──────────────────────────────────────────────────────
 
 /** pgrep/pkill options that take a value, either as the next argument or attached to the short flag. */
-const PGREP_VALUE_SHORT = new Set(['d', 'g', 'G', 'P', 's', 't', 'u', 'U', 'F']);
+const PGREP_VALUE_SHORT = new Set(['d', 'g', 'G', 'P', 's', 't', 'u', 'U', 'F', 'r', 'O', 'q']);
 const PGREP_VALUE_LONG = new Set([
     '--delimiter', '--pgroup', '--group', '--parent', '--session', '--terminal', '--euid', '--uid',
-    '--pidfile', '--signal', '--ns', '--nslist', '--cgroup', '--env', '--runstates',
+    '--pidfile', '--signal', '--ns', '--nslist', '--cgroup', '--env', '--runstates', '--older', '--queue',
 ]);
 /** pkill's `-9`, `-KILL`, `-SIGTERM`: a signal, not a cluster of short options. */
 const PKILL_SIGNAL_ARG = /^-(?:\d+|SIG[A-Z0-9+-]+|[A-Z][A-Z0-9+-]+)$/;
@@ -1765,11 +1765,13 @@ interface PgrepArgs {
     /** `-f`/`--full`: match the whole command line, including the shell that runs this command. */
     full: boolean;
     ignoreCase: boolean;
+    /** `-A`/`--ignore-ancestors` (procps-ng 4): the calling shell is excluded, so the pattern may match it. */
+    ignoreAncestors: boolean;
     pattern: string | undefined;
 }
 
 function parsePgrepArgs(args: string[]): PgrepArgs {
-    const parsed: PgrepArgs = { full: false, ignoreCase: false, pattern: undefined };
+    const parsed: PgrepArgs = { full: false, ignoreCase: false, ignoreAncestors: false, pattern: undefined };
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         if (a === '--') {
@@ -1780,6 +1782,7 @@ function parsePgrepArgs(args: string[]): PgrepArgs {
             const name = a.split('=')[0];
             if (name === '--full') parsed.full = true;
             if (name === '--ignore-case') parsed.ignoreCase = true;
+            if (name === '--ignore-ancestors') parsed.ignoreAncestors = true;
             if (PGREP_VALUE_LONG.has(name) && !a.includes('=')) i += 1;
             continue;
         }
@@ -1789,6 +1792,7 @@ function parsePgrepArgs(args: string[]): PgrepArgs {
                 const flag = a[j];
                 if (flag === 'f') parsed.full = true;
                 if (flag === 'i') parsed.ignoreCase = true;
+                if (flag === 'A') parsed.ignoreAncestors = true;
                 if (PGREP_VALUE_SHORT.has(flag)) {
                     if (j === a.length - 1) i += 1;
                     break;
@@ -1806,8 +1810,8 @@ function parsePgrepArgs(args: string[]): PgrepArgs {
  * contains this command verbatim. An expression JavaScript cannot compile counts as matching, so the check fails closed.
  */
 function isSelfMatchingFullPattern(cmd: ResolvedCommand, ownText: string): boolean {
-    const { full, ignoreCase, pattern } = parsePgrepArgs(cmd.args);
-    if (!full || pattern === undefined) return false;
+    const { full, ignoreCase, ignoreAncestors, pattern } = parsePgrepArgs(cmd.args);
+    if (!full || ignoreAncestors || pattern === undefined) return false;
     try {
         return new RegExp(pattern, ignoreCase ? 'i' : '').test(ownText);
     } catch {
@@ -1817,7 +1821,8 @@ function isSelfMatchingFullPattern(cmd: ResolvedCommand, ownText: string): boole
 
 const SELF_KILL_REASON =
     'matches the full command line of every process, including the shell running this command, so it can kill ' +
-    "its own caller. Write the pattern so its own text cannot match it, e.g. a bracket class: pkill -f '[s]erver.js'.";
+    "its own caller. Write the pattern so its own text cannot match it, e.g. a bracket class: pkill -f '[s]erver.js', " +
+    'or add -A (--ignore-ancestors) where procps-ng supports it.';
 
 /** The commands inside a `$(...)` or backtick argument, which the argument walker leaves as text. */
 function substitutionCommands(arg: string): ResolvedCommand[] {
@@ -1833,7 +1838,9 @@ export function selfMatchingKillReason(commands: ResolvedCommand[], ownText: str
     const fedToKill = commands
         .filter(c => c.name === 'kill')
         .flatMap(c => c.args.flatMap(substitutionCommands));
-    if (commands.some(c => c.name === 'xargs' && c.args.includes('kill'))) fedToKill.push(...commands);
+    const pipedToKill = commands.some(c => c.name === 'xargs' && c.args.includes('kill'))
+        || (commands.some(c => c.name === 'kill') && /\|\s*while\s+(?:IFS=\S*\s+)?read\b/.test(ownText));
+    if (pipedToKill) fedToKill.push(...commands);
     if (fedToKill.some(c => c.name === 'pgrep' && isSelfMatchingFullPattern(c, ownText))) {
         return `kill fed by pgrep -f ${SELF_KILL_REASON}`;
     }

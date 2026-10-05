@@ -301,6 +301,7 @@ describe('self-matching kills', () => {
             "pkill -u ubuntu -f server.js",
             "pkill -SIGTERM -f server.js",
             "pkill -f -- server.js",
+            'pgrep -f server.js | while read p; do kill $p; done',
         ]) {
             const v = evaluateBashCommand(cmd, { skipGate: true, cwd: '/tmp' });
             expect(v.action).toBe('block');
@@ -321,6 +322,11 @@ describe('self-matching kills', () => {
             'pkill -ufred server',
             'pgrep -f server >/dev/null && echo up; kill -TERM $(cat pid)',
             'pgrep -f server.js && kill %1',
+            "pkill -f -O 60 '[s]erver'",
+            "pkill -f --older 60 '[s]erver'",
+            "pkill -f -r S '[s]erver'",
+            'pkill -f -A server.js',
+            'pkill -f --ignore-ancestors server.js',
         ]) {
             expect(evaluateBashCommand(cmd, { skipGate: true, cwd: '/tmp' }).action).toBe('allow');
         }
