@@ -1752,29 +1752,67 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
 
 // ── Self-matching kills ──────────────────────────────────────────────────────
 
-/** `-f`/`--full` makes pgrep/pkill match the whole command line, including the shell that runs this command. */
-function matchesFullCommandLine(args: string[]): boolean {
-    return args.some(a => a === '--full' || (/^-[a-zA-Z]+$/.test(a) && a.slice(1).includes('f')));
+/** pgrep/pkill options that take a value, either as the next argument or attached to the short flag. */
+const PGREP_VALUE_SHORT = new Set(['d', 'g', 'G', 'P', 's', 't', 'u', 'U', 'F']);
+const PGREP_VALUE_LONG = new Set([
+    '--delimiter', '--pgroup', '--group', '--parent', '--session', '--terminal', '--euid', '--uid',
+    '--pidfile', '--signal', '--ns', '--nslist', '--cgroup', '--env', '--runstates',
+]);
+/** pkill's `-9`, `-KILL`, `-SIGTERM`: a signal, not a cluster of short options. */
+const PKILL_SIGNAL_ARG = /^-(?:\d+|SIG[A-Z0-9+-]+|[A-Z][A-Z0-9+-]+)$/;
+
+interface PgrepArgs {
+    /** `-f`/`--full`: match the whole command line, including the shell that runs this command. */
+    full: boolean;
+    ignoreCase: boolean;
+    pattern: string | undefined;
+}
+
+function parsePgrepArgs(args: string[]): PgrepArgs {
+    const parsed: PgrepArgs = { full: false, ignoreCase: false, pattern: undefined };
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') {
+            parsed.pattern ??= args[i + 1];
+            break;
+        }
+        if (a.startsWith('--')) {
+            const name = a.split('=')[0];
+            if (name === '--full') parsed.full = true;
+            if (name === '--ignore-case') parsed.ignoreCase = true;
+            if (PGREP_VALUE_LONG.has(name) && !a.includes('=')) i += 1;
+            continue;
+        }
+        if (a.startsWith('-') && a.length > 1) {
+            if (PKILL_SIGNAL_ARG.test(a)) continue;
+            for (let j = 1; j < a.length; j++) {
+                const flag = a[j];
+                if (flag === 'f') parsed.full = true;
+                if (flag === 'i') parsed.ignoreCase = true;
+                if (PGREP_VALUE_SHORT.has(flag)) {
+                    if (j === a.length - 1) i += 1;
+                    break;
+                }
+            }
+            continue;
+        }
+        parsed.pattern ??= a;
+    }
+    return parsed;
 }
 
 /**
- * Whether the pattern, as pgrep/pkill would compile it, matches `ownText`: the calling shell's command line, which
+ * Whether a `-f` pattern, as pgrep/pkill would compile it, matches `ownText`: the calling shell's command line, which
  * contains this command verbatim. An expression JavaScript cannot compile counts as matching, so the check fails closed.
  */
-function patternMatchesOwnText(args: string[], ownText: string): boolean {
-    const positionals = args.filter(a => !a.startsWith('-'));
-    const pattern = positionals[positionals.length - 1];
-    if (pattern === undefined) return false;
-    const ignoreCase = args.some(a => a === '--ignore-case' || (/^-[a-zA-Z]+$/.test(a) && a.slice(1).includes('i')));
+function isSelfMatchingFullPattern(cmd: ResolvedCommand, ownText: string): boolean {
+    const { full, ignoreCase, pattern } = parsePgrepArgs(cmd.args);
+    if (!full || pattern === undefined) return false;
     try {
         return new RegExp(pattern, ignoreCase ? 'i' : '').test(ownText);
     } catch {
         return true;
     }
-}
-
-function isSelfMatchingFullPattern(cmd: ResolvedCommand, ownText: string): boolean {
-    return matchesFullCommandLine(cmd.args) && patternMatchesOwnText(cmd.args, ownText);
 }
 
 const SELF_KILL_REASON =
@@ -1792,11 +1830,11 @@ export function selfMatchingKillReason(commands: ResolvedCommand[], ownText: str
     for (const cmd of commands) {
         if (cmd.name === 'pkill' && isSelfMatchingFullPattern(cmd, ownText)) return `pkill -f ${SELF_KILL_REASON}`;
     }
-    const kills = commands.some(c => c.name === 'kill' || (c.name === 'xargs' && c.args.includes('kill')));
-    const substituted = commands
+    const fedToKill = commands
         .filter(c => c.name === 'kill')
         .flatMap(c => c.args.flatMap(substitutionCommands));
-    if (kills && [...commands, ...substituted].some(c => c.name === 'pgrep' && isSelfMatchingFullPattern(c, ownText))) {
+    if (commands.some(c => c.name === 'xargs' && c.args.includes('kill'))) fedToKill.push(...commands);
+    if (fedToKill.some(c => c.name === 'pgrep' && isSelfMatchingFullPattern(c, ownText))) {
         return `kill fed by pgrep -f ${SELF_KILL_REASON}`;
     }
     return null;
@@ -1871,16 +1909,29 @@ function gitRepoTarget(cmd: ResolvedCommand, cwd: string): { gitDir: string | nu
     return { gitDir: gitDir === null ? null : at(gitDir), workDir: workTree === null ? base : at(workTree) };
 }
 
+/** Whether a short-option cluster sets `flag` before reaching an option whose value is attached (`-m"msg"`). */
+function clusterSets(arg: string, flag: string, valueFlags: string): boolean {
+    if (!/^-[^-]/.test(arg)) return false;
+    for (const c of arg.slice(1)) {
+        if (c === flag) return true;
+        if (valueFlags.includes(c)) return false;
+    }
+    return false;
+}
+
+const STAGE_EVERYTHING_PATHSPECS = new Set(['.', './', ':/', ':/.', '*']);
+
 function stagesEverything(args: string[]): string | null {
     const i = gitSubcommandIndex(args);
     const sub = args[i];
     const rest = args.slice(i + 1);
-    if (sub === 'add') {
-        const all = rest.find(a => a === '-A' || a === '--all' || a === '-u' || a === '--update' || a === '.' || a === ':/');
-        return all ? `git add ${all}` : null;
+    if (sub === 'add' || sub === 'stage') {
+        const all = rest.find(a => a === '--all' || a === '--update' || STAGE_EVERYTHING_PATHSPECS.has(a)
+            || clusterSets(a, 'A', '') || clusterSets(a, 'u', ''));
+        return all ? `git ${sub} ${all}` : null;
     }
     if (sub === 'commit') {
-        const all = rest.find(a => a === '--all' || /^-[a-zA-Z]*a[a-zA-Z]*$/.test(a));
+        const all = rest.find(a => a === '--all' || clusterSets(a, 'a', 'mFCctSu'));
         return all ? `git commit ${all}` : null;
     }
     return null;
@@ -2163,9 +2214,9 @@ export function checkRmDecision(
  *
  * `opts.cwd` is the working directory the command will run in — supplied by an
  * adapter that has it on its hook input (Claude's `cwd` field), else
- * process.cwd(). It only ever matters to lab-scope predicates below, which
- * uses it to resolve a bare `git push origin` to the repo it would actually
- * push to.
+ * process.cwd(). The scope predicates below resolve a bare `git push origin`
+ * through it, and the conflict hard block finds the repository whose
+ * in-progress operation it checks from it.
  *
  * LAB SCOPE (tier 2 and tier 3 only): in a Lab session, a gated verb aimed at a
  * lab target allows instead of holding, and a lab worktree path joins the rm
