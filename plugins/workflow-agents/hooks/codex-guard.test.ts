@@ -161,6 +161,17 @@ describe('Codex hard blocks', () => {
     expectDecision(await runGuard(shell(command)), 'deny', reason);
   });
 
+  test('checks staging against the shell workdir, not the hook process directory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-conflict-'));
+    temporaryRoots.push(root);
+    mkdirSync(join(root, '.git', 'MERGE_HEAD'), { recursive: true });
+    const input = (toolInput: Record<string, unknown>, cwd: string) => ({
+      hook_event_name: 'PreToolUse', tool_name: 'exec_command', cwd, tool_input: toolInput,
+    });
+    expectDecision(await runGuard(input({ cmd: 'git add -A' }, root)), 'deny', /by name/);
+    expectDecision(await runGuard(input({ cmd: 'git add -A', workdir: root }, tmpdir())), 'deny', /by name/);
+  });
+
   test('fails closed on malformed hook input', async () => {
     expectDecision(await runGuard('{not-json'), 'deny', /blocked/i);
   });

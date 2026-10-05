@@ -1761,20 +1761,29 @@ function matchesFullCommandLine(args: string[]): boolean {
     return args.some(a => a === '--full' || (/^-[a-zA-Z]+$/.test(a) && a.slice(1).includes('f')));
 }
 
-/** A bracket class (`[s]erver.js`) still matches the target but not its own text, so not the calling shell. */
-function excludesOwnCommandLine(args: string[]): boolean {
+/**
+ * Whether the pattern, as pgrep/pkill would compile it, matches `ownText`: the calling shell's command line, which
+ * contains this command verbatim. An expression JavaScript cannot compile counts as matching, so the check fails closed.
+ */
+function patternMatchesOwnText(args: string[], ownText: string): boolean {
     const positionals = args.filter(a => !a.startsWith('-'));
-    const pattern = positionals[positionals.length - 1] ?? '';
-    return /\[[^\]]+\]/.test(pattern);
+    const pattern = positionals[positionals.length - 1];
+    if (pattern === undefined) return false;
+    const ignoreCase = args.some(a => a === '--ignore-case' || (/^-[a-zA-Z]+$/.test(a) && a.slice(1).includes('i')));
+    try {
+        return new RegExp(pattern, ignoreCase ? 'i' : '').test(ownText);
+    } catch {
+        return true;
+    }
 }
 
-function isSelfMatchingFullPattern(cmd: ResolvedCommand): boolean {
-    return matchesFullCommandLine(cmd.args) && !excludesOwnCommandLine(cmd.args);
+function isSelfMatchingFullPattern(cmd: ResolvedCommand, ownText: string): boolean {
+    return matchesFullCommandLine(cmd.args) && patternMatchesOwnText(cmd.args, ownText);
 }
 
 const SELF_KILL_REASON =
     'matches the full command line of every process, including the shell running this command, so it can kill ' +
-    "its own caller. Use a bracket class so the pattern cannot match itself: pkill -f '[s]erver.js'.";
+    "its own caller. Write the pattern so its own text cannot match it, e.g. a bracket class: pkill -f '[s]erver.js'.";
 
 /** The commands inside a `$(...)` or backtick argument, which the argument walker leaves as text. */
 function substitutionCommands(arg: string): ResolvedCommand[] {
@@ -1783,15 +1792,15 @@ function substitutionCommands(arg: string): ResolvedCommand[] {
 }
 
 /** pkill -f, or kill fed by pgrep -f, whose pattern also matches the calling shell. */
-export function selfMatchingKillReason(commands: ResolvedCommand[]): string | null {
+export function selfMatchingKillReason(commands: ResolvedCommand[], ownText: string): string | null {
     for (const cmd of commands) {
-        if (cmd.name === 'pkill' && isSelfMatchingFullPattern(cmd)) return `pkill -f ${SELF_KILL_REASON}`;
+        if (cmd.name === 'pkill' && isSelfMatchingFullPattern(cmd, ownText)) return `pkill -f ${SELF_KILL_REASON}`;
     }
     const kills = commands.some(c => c.name === 'kill' || (c.name === 'xargs' && c.args.includes('kill')));
     const substituted = commands
         .filter(c => c.name === 'kill')
         .flatMap(c => c.args.flatMap(substitutionCommands));
-    if (kills && [...commands, ...substituted].some(c => c.name === 'pgrep' && isSelfMatchingFullPattern(c))) {
+    if (kills && [...commands, ...substituted].some(c => c.name === 'pgrep' && isSelfMatchingFullPattern(c, ownText))) {
         return `kill fed by pgrep -f ${SELF_KILL_REASON}`;
     }
     return null;
@@ -1826,13 +1835,44 @@ function gitDirFor(start: string): string | null {
     }
 }
 
-export function inProgressGitOperation(dir: string): string | null {
-    const gitDir = gitDirFor(dir);
-    if (!gitDir) return null;
+function operationInGitDir(gitDir: string): string | null {
     for (const [marker, operation] of IN_PROGRESS_MARKERS) {
         if (existsSync(join(gitDir, marker))) return operation;
     }
     return null;
+}
+
+export function inProgressGitOperation(dir: string): string | null {
+    const gitDir = gitDirFor(dir);
+    return gitDir ? operationInGitDir(gitDir) : null;
+}
+
+/**
+ * The repository a git command acts on: `env -C`, cumulative global `-C`, `--git-dir` and `--work-tree` in either
+ * spelling, and `GIT_DIR` / `GIT_WORK_TREE` assignments. Relative values resolve against the final `-C` directory.
+ */
+function gitRepoTarget(cmd: ResolvedCommand, cwd: string): { gitDir: string | null; workDir: string } {
+    let base = cmd.chdir ? pathResolve(cwd || '/', cmd.chdir) : cwd;
+    let gitDir: string | null = null;
+    let workTree: string | null = null;
+    for (const assignment of cmd.env ?? []) {
+        const m = assignment.match(/^(GIT_DIR|GIT_WORK_TREE)=(.*)$/);
+        if (m?.[1] === 'GIT_DIR') gitDir = m[2];
+        if (m?.[1] === 'GIT_WORK_TREE') workTree = m[2];
+    }
+    const args = cmd.args;
+    for (let i = 0; i < args.length && args[i].startsWith('-'); i++) {
+        const eq = args[i].match(/^(--git-dir|--work-tree)=(.*)$/);
+        const option = eq ? eq[1] : args[i];
+        const value = eq ? eq[2] : args[i + 1];
+        if (!eq && GIT_GLOBAL_VALUE_OPTS.has(option)) i += 1;
+        if (value === undefined) continue;
+        if (option === '-C') base = pathResolve(base || '/', value);
+        else if (option === '--git-dir') gitDir = value;
+        else if (option === '--work-tree') workTree = value;
+    }
+    const at = (p: string) => pathResolve(base || '/', p);
+    return { gitDir: gitDir === null ? null : at(gitDir), workDir: workTree === null ? base : at(workTree) };
 }
 
 function stagesEverything(args: string[]): string | null {
@@ -1855,10 +1895,9 @@ export function stageAllDuringConflictReason(cmd: ResolvedCommand, cwd: string):
     if (cmd.name !== 'git') return null;
     const form = stagesEverything(cmd.args);
     if (!form) return null;
-    const relocated = cmd.chdir ?? gitRelocatedDir(cmd.args);
-    const dir = relocated ? pathResolve(cwd || '/', relocated) : cwd;
-    if (!dir) return null;
-    const operation = inProgressGitOperation(dir);
+    const { gitDir, workDir } = gitRepoTarget(cmd, cwd);
+    if (!gitDir && !workDir) return null;
+    const operation = gitDir ? operationInGitDir(gitDir) : inProgressGitOperation(workDir);
     if (!operation) return null;
     return `${form} during an in-progress ${operation} stages conflicted files with their markers. ` +
         'Stage the resolved paths by name (git add <path>...), or abort the operation.';
@@ -2153,7 +2192,7 @@ export function evaluateBashCommand(
             return { action: 'block', reason };
         }
     }
-    const selfKill = selfMatchingKillReason(commands);
+    const selfKill = selfMatchingKillReason(commands, command);
     if (selfKill) return { action: 'block', reason: selfKill };
 
     // --- Gated checks ---

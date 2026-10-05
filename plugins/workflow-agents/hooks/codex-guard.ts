@@ -79,6 +79,13 @@ function commandFromInput(toolInput: Record<string, unknown> = {}): string {
     return '';
 }
 
+/** Where the shell command runs: the tool's `workdir`, relative to the hook cwd, else the hook cwd. */
+function shellCwd(input: { cwd?: unknown; tool_input?: Record<string, unknown> }): string {
+    const hookCwd = typeof input.cwd === 'string' ? input.cwd : process.cwd();
+    const workdir = input.tool_input?.workdir;
+    return typeof workdir === 'string' && workdir ? resolve(hookCwd, workdir) : hookCwd;
+}
+
 function prefixed(reason: string | undefined, fallback: string): string {
     const value = reason ?? fallback;
     return value.startsWith('BLOCKED:') || value.startsWith('GATED:')
@@ -224,14 +231,15 @@ function main(): void {
             emitDeny(snapshot.reason, 'Git mutations inside read-only repo snapshots are not allowed.');
         }
 
-        const destructive = evaluateBashCommand(command);
+        const cwd = shellCwd(input);
+        const destructive = evaluateBashCommand(command, { cwd });
         if (destructive.action === 'block') {
             emitDeny(destructive.reason, 'Destructive command blocked.');
         }
 
         if (destructive.action === 'gate') {
             const reason = destructive.reason ?? 'Destructive command requires approval.';
-            const post = evaluateBashCommand(command, { skipGate: true });
+            const post = evaluateBashCommand(command, { skipGate: true, cwd });
             if (post.action === 'block') {
                 emitDeny(post.reason, 'Command remains blocked after destructive-gate evaluation.');
             }
