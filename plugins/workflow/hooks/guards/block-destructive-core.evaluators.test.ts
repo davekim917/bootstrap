@@ -298,6 +298,9 @@ describe('self-matching kills', () => {
             "pkill -f '[s]erver' && echo server",
             "pkill -fi '[S]ERVER' && echo server",
             "pkill -f '(server'",
+            "pkill -u ubuntu -f server.js",
+            "pkill -SIGTERM -f server.js",
+            "pkill -f -- server.js",
         ]) {
             const v = evaluateBashCommand(cmd, { skipGate: true, cwd: '/tmp' });
             expect(v.action).toBe('block');
@@ -312,6 +315,12 @@ describe('self-matching kills', () => {
             'pkill node',
             'pgrep -f server.js',
             'kill 1234',
+            "pkill -f '[s]erver.js' -u ubuntu",
+            "pkill -f '[s]erver.js' --signal KILL",
+            "pkill -f '[s]erver.js' -t pts/1",
+            'pkill -ufred server',
+            'pgrep -f server >/dev/null && echo up; kill -TERM $(cat pid)',
+            'pgrep -f server.js && kill %1',
         ]) {
             expect(evaluateBashCommand(cmd, { skipGate: true, cwd: '/tmp' }).action).toBe('allow');
         }
@@ -338,7 +347,10 @@ describe('staging everything during a conflicted operation', () => {
     test('blocks add -A/./-u and commit -a while a merge, rebase, cherry-pick or revert is in progress', () => {
         for (const marker of ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']) {
             const root = repoWith(marker);
-            for (const cmd of ['git add -A', 'git add --all', 'git add .', 'git add -u', 'git commit -am "x"', 'git commit --all']) {
+            for (const cmd of [
+                'git add -A', 'git add --all', 'git add .', 'git add -u', 'git add -Av', 'git add ./', "git add '*'",
+                'git stage -A', 'git commit -am "x"', 'git commit --all', 'git commit -va',
+            ]) {
                 const v = evaluateBashCommand(cmd, { skipGate: true, cwd: join(root, 'src') });
                 expect(v.action).toBe('block');
                 expect(v.reason ?? '').toContain('by name');
@@ -369,7 +381,10 @@ describe('staging everything during a conflicted operation', () => {
 
     test('allows staging by path during a conflict, and add -A with nothing in progress', () => {
         const conflicted = repoWith('MERGE_HEAD');
-        for (const cmd of ['git add src/a.ts', 'git commit -m "merge"', 'git commit --amend --no-edit', 'git status']) {
+        for (const cmd of [
+            'git add src/a.ts', 'git commit -m "merge"', 'git commit --amend --no-edit', 'git status',
+            'git commit -m"update"', 'git commit -Sabc -m x', 'git commit -Cabc', 'git commit -ma',
+        ]) {
             expect(evaluateBashCommand(cmd, { skipGate: true, cwd: conflicted }).action).toBe('allow');
         }
         const clean = repoWith(null);
