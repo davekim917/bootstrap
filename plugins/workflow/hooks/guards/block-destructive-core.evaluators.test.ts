@@ -294,6 +294,10 @@ describe('self-matching kills', () => {
             'pkill -9 -f vitest',
             'kill $(pgrep -f server.js)',
             'pgrep -f "vitest run" | xargs kill',
+            "pkill -f 'server.js|[v]itest'",
+            "pkill -f '[s]erver' && echo server",
+            "pkill -fi '[S]ERVER' && echo server",
+            "pkill -f '(server'",
         ]) {
             const v = evaluateBashCommand(cmd, { skipGate: true, cwd: '/tmp' });
             expect(v.action).toBe('block');
@@ -346,6 +350,21 @@ describe('staging everything during a conflicted operation', () => {
         const root = repoWith('MERGE_HEAD', true);
         expect(evaluateBashCommand('git add -A', { skipGate: true, cwd: root }).action).toBe('block');
         expect(evaluateBashCommand(`git -C ${root} add -A`, { skipGate: true, cwd: '/' }).action).toBe('block');
+    });
+
+    test('follows --git-dir and --work-tree in either spelling, GIT_DIR, and cumulative -C', () => {
+        const root = repoWith('MERGE_HEAD');
+        for (const cmd of [
+            `git --git-dir=${root}/.git --work-tree=${root} add -A`,
+            `git --git-dir ${root}/.git add -A`,
+            `git --work-tree=${root} add -A`,
+            `GIT_DIR=${root}/.git git add -A`,
+            `git -C ${join(root, '..')} -C ${root.split('/').pop()} add -A`,
+        ]) {
+            expect(evaluateBashCommand(cmd, { skipGate: true, cwd: '/' }).action).toBe('block');
+        }
+        const clean = repoWith(null);
+        expect(evaluateBashCommand(`git --git-dir=${clean}/.git add -A`, { skipGate: true, cwd: root }).action).toBe('allow');
     });
 
     test('allows staging by path during a conflict, and add -A with nothing in progress', () => {
