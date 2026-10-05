@@ -21,6 +21,7 @@
 // GitNexus MCP tools and skills are already available to opencode; only this
 // advisory is missing.
 
+import { resolve as pathResolve } from 'path';
 import * as core from './block-destructive-core';
 import {
   evaluateBashCommand,
@@ -106,7 +107,7 @@ function bashCommandOf(args: Record<string, unknown> | undefined): string {
  *
  * No inline regex copies — every verdict comes from the shared core (B1).
  */
-export function gateBashOrThrow(command: string): void {
+export function gateBashOrThrow(command: string, cwd?: string): void {
   if (!command) return;
 
   // 1. Self-approval block (shared core — parity with Claude/Codex). The agent
@@ -132,7 +133,7 @@ export function gateBashOrThrow(command: string): void {
   }
 
   // 4. Destructive-command gate (shared core — the full rm / SQL / cloud matrix).
-  const verdict = evaluateBashCommand(command);
+  const verdict = evaluateBashCommand(command, { cwd });
 
   if (verdict.action === 'block') {
     throw new Error(verdict.reason ?? 'Blocked by nanoclaw destructive-action gate.');
@@ -148,7 +149,7 @@ export function gateBashOrThrow(command: string): void {
       const decision = runNanoclawGate(command, reason);
       if (decision === 'approved') {
         // Re-check the rm tier that the gate short-circuited (matches the hook).
-        const after = evaluateBashCommand(command, { skipGate: true });
+        const after = evaluateBashCommand(command, { skipGate: true, cwd });
         if (after.action === 'block') throw new Error(after.reason ?? reason);
         // Fall through to the email gate below.
       } else {
@@ -209,7 +210,14 @@ export function gateNativeEmailToolOrThrow(
   throw new Error(`BLOCKED: ${reason} — ${detail}`);
 }
 
-export const NanoclawGuard = async () => {
+/** Where the bash tool runs: its `workdir` argument, relative to the session directory, else that directory. */
+export function bashCwdOf(args: Record<string, unknown> | undefined, directory: string | undefined): string | undefined {
+  const workdir = args?.workdir;
+  if (typeof workdir === 'string' && workdir) return pathResolve(directory ?? process.cwd(), workdir);
+  return directory;
+}
+
+export const NanoclawGuard = async (ctx?: { directory?: string }) => {
   // Fail-closed: refuse to operate against a malformed core (B3). Throws here so
   // the guard never silently fails-open on a missing evaluator or gate primitive.
   assertCoreExports();
@@ -231,7 +239,7 @@ export const NanoclawGuard = async () => {
       if (gateNativeEmailToolOrThrow(input.tool, output.args ?? {})) return;
       // Destructive-command gate (bash).
       if (input.tool !== 'bash') return;
-      gateBashOrThrow(bashCommandOf(output.args));
+      gateBashOrThrow(bashCommandOf(output.args), bashCwdOf(output.args, ctx?.directory));
     },
   };
 };
