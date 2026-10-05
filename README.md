@@ -149,7 +149,7 @@ in its own plugin:
 | `/team-auto` | Runs approved plan → build → review, then hands off to `/team-ship` |
 | `/team-debug` | Diagnoses root cause from evidence before changing production code |
 | `/team-ship` | Merges on readiness and posts an FYI; holds for a human only on the scheduled release and genuine decisions |
-| `/team-retro` | Finds repeat mistakes in a delivery, session or time window and turns each into a check |
+| `/team-retro` | Finds repeat mistakes in a delivery, session or time window and ranks how to make each impossible |
 
 `/team-plan` absorbs requirements, constraints, architecture, acceptance criteria, and execution
 decomposition. `/team-review` selects QA, drift, security, performance, best-practice, and domain

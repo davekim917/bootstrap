@@ -53,9 +53,10 @@ enforces, so they can be deleted.
 level and why not higher; unwired checks; rules to delete; and up to five learnings in the form
 "Next time, do X because Y occurred".
 
-The retro changes nothing. Edits to skills, policy or agent instructions, including deleting
-enforced rules, are recommendations for a separate decision.
+Beyond `retro.md` the retro changes nothing. Edits to skills, policy or agent instructions,
+including deleting enforced rules, are recommendations for a separate decision.
 
 End with the one to three most frequent classes fixable at level 1 or 2, each as a `/team-plan`
-request whose acceptance criterion is that the new check fails on the cited past mistake and passes
-on the fix. Do not start `/team-plan`, `/team-build` or `/team-auto` yourself.
+request whose acceptance criterion reproduces the cited past mistake and shows the fix rejects it:
+the new check fails on it, or the change leaves no way to write it. Do not start `/team-plan`,
+`/team-build` or `/team-auto` yourself.
