@@ -35,7 +35,7 @@
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { homedir } from 'os';
-import { resolve as pathResolve } from 'path';
+import { dirname, join, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
 
@@ -1754,6 +1754,213 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     return null;
 }
 
+// ── Self-matching kills ──────────────────────────────────────────────────────
+
+/** pgrep/pkill options that take a value, either as the next argument or attached to the short flag. */
+const PGREP_VALUE_SHORT = new Set(['d', 'g', 'G', 'P', 's', 't', 'u', 'U', 'F', 'r', 'O', 'q']);
+const PGREP_VALUE_LONG = new Set([
+    '--delimiter', '--pgroup', '--group', '--parent', '--session', '--terminal', '--euid', '--uid',
+    '--pidfile', '--signal', '--ns', '--nslist', '--cgroup', '--env', '--runstates', '--older', '--queue',
+]);
+/** pkill's `-9`, `-KILL`, `-SIGTERM`: a signal, not a cluster of short options. */
+const PKILL_SIGNAL_ARG = /^-(?:\d+|SIG[A-Z0-9+-]+|[A-Z][A-Z0-9+-]+)$/;
+
+interface PgrepArgs {
+    /** `-f`/`--full`: match the whole command line, including the shell that runs this command. */
+    full: boolean;
+    ignoreCase: boolean;
+    /** `-A`/`--ignore-ancestors` (procps-ng 4): the calling shell is excluded, so the pattern may match it. */
+    ignoreAncestors: boolean;
+    pattern: string | undefined;
+}
+
+function parsePgrepArgs(args: string[]): PgrepArgs {
+    const parsed: PgrepArgs = { full: false, ignoreCase: false, ignoreAncestors: false, pattern: undefined };
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') {
+            parsed.pattern ??= args[i + 1];
+            break;
+        }
+        if (a.startsWith('--')) {
+            const name = a.split('=')[0];
+            if (name === '--full') parsed.full = true;
+            if (name === '--ignore-case') parsed.ignoreCase = true;
+            if (name === '--ignore-ancestors') parsed.ignoreAncestors = true;
+            if (PGREP_VALUE_LONG.has(name) && !a.includes('=')) i += 1;
+            continue;
+        }
+        if (a.startsWith('-') && a.length > 1) {
+            if (PKILL_SIGNAL_ARG.test(a)) continue;
+            for (let j = 1; j < a.length; j++) {
+                const flag = a[j];
+                if (flag === 'f') parsed.full = true;
+                if (flag === 'i') parsed.ignoreCase = true;
+                if (flag === 'A') parsed.ignoreAncestors = true;
+                if (PGREP_VALUE_SHORT.has(flag)) {
+                    if (j === a.length - 1) i += 1;
+                    break;
+                }
+            }
+            continue;
+        }
+        parsed.pattern ??= a;
+    }
+    return parsed;
+}
+
+/**
+ * Whether a `-f` pattern, as pgrep/pkill would compile it, matches `ownText`: the calling shell's command line, which
+ * contains this command verbatim. An expression JavaScript cannot compile counts as matching, so the check fails closed.
+ */
+function isSelfMatchingFullPattern(cmd: ResolvedCommand, ownText: string): boolean {
+    const { full, ignoreCase, ignoreAncestors, pattern } = parsePgrepArgs(cmd.args);
+    if (!full || ignoreAncestors || pattern === undefined) return false;
+    try {
+        return new RegExp(pattern, ignoreCase ? 'i' : '').test(ownText);
+    } catch {
+        return true;
+    }
+}
+
+const SELF_KILL_REASON =
+    'matches the full command line of every process, including the shell running this command, so it can kill ' +
+    "its own caller. Write the pattern so its own text cannot match it, e.g. a bracket class: pkill -f '[s]erver.js', " +
+    'or add -A (--ignore-ancestors) where procps-ng supports it.';
+
+/** The commands inside a `$(...)` or backtick argument, which the argument walker leaves as text. */
+function substitutionCommands(arg: string): ResolvedCommand[] {
+    const m = arg.match(/^\$\(([\s\S]*)\)$/) ?? arg.match(/^`([\s\S]*)`$/);
+    return m ? extractCommands(m[1]) : [];
+}
+
+/** pkill -f, or kill fed by pgrep -f, whose pattern also matches the calling shell. */
+export function selfMatchingKillReason(commands: ResolvedCommand[], ownText: string): string | null {
+    for (const cmd of commands) {
+        if (cmd.name === 'pkill' && isSelfMatchingFullPattern(cmd, ownText)) return `pkill -f ${SELF_KILL_REASON}`;
+    }
+    const fedToKill = commands
+        .filter(c => c.name === 'kill')
+        .flatMap(c => c.args.flatMap(substitutionCommands));
+    const pipedToKill = commands.some(c => c.name === 'xargs' && c.args.includes('kill'))
+        || (commands.some(c => c.name === 'kill') && /\|\s*while\s+(?:IFS=\S*\s+)?read\b/.test(ownText));
+    if (pipedToKill) fedToKill.push(...commands);
+    if (fedToKill.some(c => c.name === 'pgrep' && isSelfMatchingFullPattern(c, ownText))) {
+        return `kill fed by pgrep -f ${SELF_KILL_REASON}`;
+    }
+    return null;
+}
+
+// ── Staging everything during a conflicted operation ─────────────────────────
+
+const IN_PROGRESS_MARKERS: ReadonlyArray<[string, string]> = [
+    ['MERGE_HEAD', 'merge'],
+    ['CHERRY_PICK_HEAD', 'cherry-pick'],
+    ['REVERT_HEAD', 'revert'],
+    ['rebase-merge', 'rebase'],
+    ['rebase-apply', 'rebase'],
+];
+
+/** The git dir for `start`: a `.git` directory, or the `gitdir:` a worktree's `.git` file points at. */
+function gitDirFor(start: string): string | null {
+    let dir = start;
+    for (;;) {
+        const dotGit = join(dir, '.git');
+        try {
+            const st = statSync(dotGit);
+            if (st.isDirectory()) return dotGit;
+            if (st.isFile()) {
+                const m = readFileSync(dotGit, 'utf-8').match(/^gitdir:\s*(.+?)\s*$/m);
+                if (m) return pathResolve(dir, m[1]);
+            }
+        } catch { /* no .git here */ }
+        const parent = dirname(dir);
+        if (parent === dir) return null;
+        dir = parent;
+    }
+}
+
+function operationInGitDir(gitDir: string): string | null {
+    for (const [marker, operation] of IN_PROGRESS_MARKERS) {
+        if (existsSync(join(gitDir, marker))) return operation;
+    }
+    return null;
+}
+
+export function inProgressGitOperation(dir: string): string | null {
+    const gitDir = gitDirFor(dir);
+    return gitDir ? operationInGitDir(gitDir) : null;
+}
+
+/**
+ * The repository a git command acts on: `env -C`, cumulative global `-C`, `--git-dir` and `--work-tree` in either
+ * spelling, and `GIT_DIR` / `GIT_WORK_TREE` assignments. Relative values resolve against the final `-C` directory.
+ */
+function gitRepoTarget(cmd: ResolvedCommand, cwd: string): { gitDir: string | null; workDir: string } {
+    let base = cmd.chdir ? pathResolve(cwd || '/', cmd.chdir) : cwd;
+    let gitDir: string | null = null;
+    let workTree: string | null = null;
+    for (const assignment of cmd.env ?? []) {
+        const m = assignment.match(/^(GIT_DIR|GIT_WORK_TREE)=(.*)$/);
+        if (m?.[1] === 'GIT_DIR') gitDir = m[2];
+        if (m?.[1] === 'GIT_WORK_TREE') workTree = m[2];
+    }
+    const args = cmd.args;
+    for (let i = 0; i < args.length && args[i].startsWith('-'); i++) {
+        const eq = args[i].match(/^(--git-dir|--work-tree)=(.*)$/);
+        const option = eq ? eq[1] : args[i];
+        const value = eq ? eq[2] : args[i + 1];
+        if (!eq && GIT_GLOBAL_VALUE_OPTS.has(option)) i += 1;
+        if (value === undefined) continue;
+        if (option === '-C') base = pathResolve(base || '/', value);
+        else if (option === '--git-dir') gitDir = value;
+        else if (option === '--work-tree') workTree = value;
+    }
+    const at = (p: string) => pathResolve(base || '/', p);
+    return { gitDir: gitDir === null ? null : at(gitDir), workDir: workTree === null ? base : at(workTree) };
+}
+
+/** Whether a short-option cluster sets `flag` before reaching an option whose value is attached (`-m"msg"`). */
+function clusterSets(arg: string, flag: string, valueFlags: string): boolean {
+    if (!/^-[^-]/.test(arg)) return false;
+    for (const c of arg.slice(1)) {
+        if (c === flag) return true;
+        if (valueFlags.includes(c)) return false;
+    }
+    return false;
+}
+
+const STAGE_EVERYTHING_PATHSPECS = new Set(['.', './', ':/', ':/.', '*']);
+
+function stagesEverything(args: string[]): string | null {
+    const i = gitSubcommandIndex(args);
+    const sub = args[i];
+    const rest = args.slice(i + 1);
+    if (sub === 'add' || sub === 'stage') {
+        const all = rest.find(a => a === '--all' || a === '--update' || STAGE_EVERYTHING_PATHSPECS.has(a)
+            || clusterSets(a, 'A', '') || clusterSets(a, 'u', ''));
+        return all ? `git ${sub} ${all}` : null;
+    }
+    if (sub === 'commit') {
+        const all = rest.find(a => a === '--all' || clusterSets(a, 'a', 'mFCctSu'));
+        return all ? `git commit ${all}` : null;
+    }
+    return null;
+}
+
+/** git add -A / commit -a while a merge, rebase, cherry-pick or revert is in progress stages conflict markers. */
+export function stageAllDuringConflictReason(cmd: ResolvedCommand, cwd: string): string | null {
+    if (cmd.name !== 'git') return null;
+    const form = stagesEverything(cmd.args);
+    if (!form) return null;
+    const { gitDir, workDir } = gitRepoTarget(cmd, cwd);
+    if (!gitDir && !workDir) return null;
+    const operation = gitDir ? operationInGitDir(gitDir) : inProgressGitOperation(workDir);
+    if (!operation) return null;
+    return `${form} during an in-progress ${operation} stages conflicted files with their markers. ` +
+        'Stage the resolved paths by name (git add <path>...), or abort the operation.';
+}
+
 // ── Gated checks ─────────────────────────────────────────────────────────────
 
 /** Returns gate reason if the command requires approval, null otherwise */
@@ -2018,9 +2225,9 @@ export function checkRmDecision(
  *
  * `opts.cwd` is the working directory the command will run in — supplied by an
  * adapter that has it on its hook input (Claude's `cwd` field), else
- * process.cwd(). It only ever matters to lab-scope predicates below, which
- * uses it to resolve a bare `git push origin` to the repo it would actually
- * push to.
+ * process.cwd(). The scope predicates below resolve a bare `git push origin`
+ * through it, and the conflict hard block finds the repository whose
+ * in-progress operation it checks from it.
  *
  * LAB SCOPE (tier 2 and tier 3 only): in a Lab session, a gated verb aimed at a
  * lab target allows instead of holding, and a lab worktree path joins the rm
@@ -2038,11 +2245,13 @@ export function evaluateBashCommand(
 
     // --- Hard block checks (no bypass, ever — lab included) ---
     for (const cmd of commands) {
-        const reason = checkHardBlock(cmd);
+        const reason = checkHardBlock(cmd) ?? stageAllDuringConflictReason(cmd, cwd);
         if (reason) {
             return { action: 'block', reason };
         }
     }
+    const selfKill = selfMatchingKillReason(commands, command);
+    if (selfKill) return { action: 'block', reason: selfKill };
 
     // --- Gated checks ---
     if (!opts.skipGate) {

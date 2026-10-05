@@ -1,5 +1,9 @@
 import { describe, test, expect, mock, afterEach } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
+    evaluateBashCommand,
     evaluateSelfApproval,
     evaluateSnapshotGitMutation,
     evaluateSnowflakeConnector,
@@ -279,5 +283,118 @@ describe('evaluateSnapshotGitMutation', () => {
         ]) {
             expect(evaluateSnapshotGitMutation(cmd)).toEqual({ action: 'allow' });
         }
+    });
+});
+
+describe('self-matching kills', () => {
+    test('blocks pkill -f and kill fed by pgrep -f whose pattern matches the calling shell', () => {
+        for (const cmd of [
+            'pkill -f server.js',
+            'pkill --full "node dist/index.js"',
+            'pkill -9 -f vitest',
+            'kill $(pgrep -f server.js)',
+            'pgrep -f "vitest run" | xargs kill',
+            "pkill -f 'server.js|[v]itest'",
+            "pkill -f '[s]erver' && echo server",
+            "pkill -fi '[S]ERVER' && echo server",
+            "pkill -f '(server'",
+            "pkill -u ubuntu -f server.js",
+            "pkill -SIGTERM -f server.js",
+            "pkill -f -- server.js",
+            'pgrep -f server.js | while read p; do kill $p; done',
+        ]) {
+            const v = evaluateBashCommand(cmd, { skipGate: true, cwd: '/tmp' });
+            expect(v.action).toBe('block');
+            expect(v.reason ?? '').toContain('[s]erver.js');
+        }
+    });
+
+    test('allows a bracket-class pattern, a non-full match, and pgrep -f on its own', () => {
+        for (const cmd of [
+            "pkill -f '[s]erver.js'",
+            'kill $(pgrep -f "[v]itest run")',
+            'pkill node',
+            'pgrep -f server.js',
+            'kill 1234',
+            "pkill -f '[s]erver.js' -u ubuntu",
+            "pkill -f '[s]erver.js' --signal KILL",
+            "pkill -f '[s]erver.js' -t pts/1",
+            'pkill -ufred server',
+            'pgrep -f server >/dev/null && echo up; kill -TERM $(cat pid)',
+            'pgrep -f server.js && kill %1',
+            "pkill -f -O 60 '[s]erver'",
+            "pkill -f --older 60 '[s]erver'",
+            "pkill -f -r S '[s]erver'",
+            'pkill -f -A server.js',
+            'pkill -f --ignore-ancestors server.js',
+        ]) {
+            expect(evaluateBashCommand(cmd, { skipGate: true, cwd: '/tmp' }).action).toBe('allow');
+        }
+    });
+});
+
+describe('staging everything during a conflicted operation', () => {
+    const roots: string[] = [];
+    afterEach(() => {
+        for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    });
+
+    function repoWith(marker: string | null, worktree = false): string {
+        const root = mkdtempSync(join(tmpdir(), 'conflict-add-'));
+        roots.push(root);
+        const gitDir = worktree ? join(root, 'main.git', 'worktrees', 'wt') : join(root, '.git');
+        mkdirSync(gitDir, { recursive: true });
+        if (worktree) writeFileSync(join(root, '.git'), `gitdir: ${gitDir}\n`);
+        if (marker) mkdirSync(join(gitDir, marker), { recursive: true });
+        mkdirSync(join(root, 'src'), { recursive: true });
+        return root;
+    }
+
+    test('blocks add -A/./-u and commit -a while a merge, rebase, cherry-pick or revert is in progress', () => {
+        for (const marker of ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD']) {
+            const root = repoWith(marker);
+            for (const cmd of [
+                'git add -A', 'git add --all', 'git add .', 'git add -u', 'git add -Av', 'git add ./', "git add '*'",
+                'git stage -A', 'git commit -am "x"', 'git commit --all', 'git commit -va',
+            ]) {
+                const v = evaluateBashCommand(cmd, { skipGate: true, cwd: join(root, 'src') });
+                expect(v.action).toBe('block');
+                expect(v.reason ?? '').toContain('by name');
+            }
+        }
+    });
+
+    test('follows a worktree .git file and git -C', () => {
+        const root = repoWith('MERGE_HEAD', true);
+        expect(evaluateBashCommand('git add -A', { skipGate: true, cwd: root }).action).toBe('block');
+        expect(evaluateBashCommand(`git -C ${root} add -A`, { skipGate: true, cwd: '/' }).action).toBe('block');
+    });
+
+    test('follows --git-dir and --work-tree in either spelling, GIT_DIR, and cumulative -C', () => {
+        const root = repoWith('MERGE_HEAD');
+        for (const cmd of [
+            `git --git-dir=${root}/.git --work-tree=${root} add -A`,
+            `git --git-dir ${root}/.git add -A`,
+            `git --work-tree=${root} add -A`,
+            `GIT_DIR=${root}/.git git add -A`,
+            `git -C ${join(root, '..')} -C ${root.split('/').pop()} add -A`,
+        ]) {
+            expect(evaluateBashCommand(cmd, { skipGate: true, cwd: '/' }).action).toBe('block');
+        }
+        const clean = repoWith(null);
+        expect(evaluateBashCommand(`git --git-dir=${clean}/.git add -A`, { skipGate: true, cwd: root }).action).toBe('allow');
+    });
+
+    test('allows staging by path during a conflict, and add -A with nothing in progress', () => {
+        const conflicted = repoWith('MERGE_HEAD');
+        for (const cmd of [
+            'git add src/a.ts', 'git commit -m "merge"', 'git commit --amend --no-edit', 'git status',
+            'git commit -m"update"', 'git commit -Sabc -m x', 'git commit -Cabc', 'git commit -ma',
+        ]) {
+            expect(evaluateBashCommand(cmd, { skipGate: true, cwd: conflicted }).action).toBe('allow');
+        }
+        const clean = repoWith(null);
+        expect(evaluateBashCommand('git add -A', { skipGate: true, cwd: clean }).action).toBe('allow');
+        expect(evaluateBashCommand('git commit -am "x"', { skipGate: true, cwd: clean }).action).toBe('allow');
     });
 });

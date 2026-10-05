@@ -1,5 +1,8 @@
 import { describe, test, expect, mock, afterEach, beforeEach } from 'bun:test';
-import { gateBashOrThrow, assertCoreExports } from './opencode-guard';
+import { mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { gateBashOrThrow, assertCoreExports, bashCwdOf } from './opencode-guard';
 
 // Regression guard for the OpenCode plugin's bash gate wrapper. The full
 // decision matrix is covered by block-destructive.test.ts (shared core); these
@@ -322,5 +325,21 @@ describe('B4 full-chain composition', () => {
     // A safe bash command and a safe edit both pass cleanly.
     await runBash('ls -la');
     await runEdit('src/index.ts');
+  });
+});
+
+describe('opencode-guard checks bash against its execution directory', () => {
+  test('resolves workdir against the session directory and blocks staging everything mid-merge there', () => {
+    const root = mkdtempSync(join(tmpdir(), 'opencode-conflict-'));
+    try {
+      mkdirSync(join(root, '.git', 'MERGE_HEAD'), { recursive: true });
+      expect(bashCwdOf({ command: 'x' }, root)).toBe(root);
+      expect(bashCwdOf({ command: 'x', workdir: '.' }, root)).toBe(root);
+      expect(bashCwdOf({ command: 'x', workdir: root }, '/')).toBe(root);
+      expect(() => gateBashOrThrow('git add -A', bashCwdOf({ workdir: root }, '/'))).toThrow(/by name/);
+      expect(() => gateBashOrThrow('git add src/a.ts', root)).not.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
