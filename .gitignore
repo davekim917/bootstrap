@@ -15,3 +15,6 @@ __pycache__/
 
 # Deployment-local guard configuration (see block-destructive-core.ts "Lab-scoped exemption")
 lab-scope.local.json
+
+# This repository is public: workflow plans and run records (docs/specs/<feature>/) stay local.
+docs/specs/

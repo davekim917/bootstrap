@@ -16,11 +16,6 @@
       "reason": "Same published author identity, matched case-insensitively"
     },
     {
-      "path": "docs/specs/frontier-owner-trial/tasks.md",
-      "value": "2098811738674147520",
-      "reason": "Status id inside a public X post URL cited as the trial's source article, not a platform-private identifier"
-    },
-    {
       "path": "plugins/orchestrate/hooks/require-codex-context.test.mjs",
       "value": "18446744073709551615",
       "reason": "2^64 - 1, an integer-overflow boundary value in a parser test, not an identifier"
@@ -29,6 +24,26 @@
       "path": "plugins/orchestrate/hooks/require-codex-context.test.mjs",
       "value": "18446744073709551616",
       "reason": "2^64, an integer-overflow boundary value in a parser test, not an identifier"
+    },
+    {
+      "path": "deprecated/bootstrap-commands/commands/bootstrap-domain.md",
+      "value": "compliance",
+      "reason": "Ordinary English word (\"process compliance\", \"regulatory compliance\") that coincidentally matches an install identifier"
+    },
+    {
+      "path": "deprecated/bootstrap-commands/commands/bootstrap-skills.md",
+      "value": "compliance",
+      "reason": "Ordinary English word (\"process compliance\", \"regulatory compliance\") that coincidentally matches an install identifier"
+    },
+    {
+      "path": "deprecated/bootstrap-commands/skills/skill-developer/references/SKILLS-DEVELOPMENT-GUIDE.md",
+      "value": "compliance",
+      "reason": "Ordinary English word (\"process compliance\", \"regulatory compliance\") that coincidentally matches an install identifier"
+    },
+    {
+      "path": "deprecated/bootstrap-commands/skills/skill-developer/SKILL.md",
+      "value": "compliance",
+      "reason": "Ordinary English word (\"process compliance\", \"regulatory compliance\") that coincidentally matches an install identifier"
     }
   ]
 }
