@@ -13,6 +13,11 @@ set -e
 top=$(git rev-parse --show-toplevel)
 . "$(dirname "$0")/boundary-lib.sh"
 
+if git diff --cached --name-only --diff-filter=ACMR | grep -q '^docs/specs/'; then
+  echo "public-records: docs/specs/ holds workflow plans and run records, which stay local in this public repository; unstage them" >&2
+  exit 1
+fi
+
 checker=$(boundary_checker_dir) && found=0 || found=$?
 if [ "$found" -eq 2 ]; then exit 1; fi
 if [ -n "$checker" ]; then

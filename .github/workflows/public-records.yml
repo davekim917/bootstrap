@@ -1,0 +1,23 @@
+# This repository is public. Workflow plans and run records (docs/specs/<feature>/)
+# describe the operator's own deployment and stay local; .gitignore keeps them out
+# and this check fails a branch that force-adds one.
+name: public-records
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  public-records:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: No docs/specs files are tracked
+        run: |
+          tracked=$(git ls-files -- docs/specs)
+          if [ -n "$tracked" ]; then
+            echo "::error::docs/specs/ must not be committed to this public repository:"
+            echo "$tracked"
+            exit 1
+          fi
