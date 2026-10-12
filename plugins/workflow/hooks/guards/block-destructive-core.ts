@@ -34,6 +34,7 @@ import { homedir } from 'os';
 import { dirname, join, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, expandKnown, fitLines, oneLine, readDisplayFile, viewShell } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -2131,6 +2132,335 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     return null;
 }
 
+// ── Approval card ────────────────────────────────────────────────────────────
+// The gate verdict above decides; this section only explains it to the human
+// who has to approve. It never changes what is gated.
+
+export interface GateCard {
+    label: string;
+    summary: string;
+}
+
+interface StepCard {
+    label: string;
+    lines: string[];
+}
+
+function destructiveStatements(sql: string, depth = 0): DestructiveMatch[] {
+    if (depth > SQL_RECURSION_LIMIT || !SQL_PREFILTER.test(sql)) return [];
+    const skeleton = stripSqlLiteralsAndComments(sql);
+    const found: DestructiveMatch[] = [];
+    let offset = 0;
+    for (const segment of skeleton.split(';')) {
+        const original = sql.slice(offset, offset + segment.length).trim();
+        offset += segment.length + 1;
+        for (const { body, isCTE } of decomposeSqlSegment(segment)) {
+            const match = checkSqlBody(body, isCTE);
+            if (match) {
+                found.push({ pattern: match.pattern, statement: original });
+                break;
+            }
+        }
+    }
+    for (const literal of findExecuteImmediateLiterals(sql, skeleton)) {
+        found.push(...destructiveStatements(literal, depth + 1));
+    }
+    return found;
+}
+
+const SQL_OBJECT = String.raw`([^\s;(]+)`;
+
+function sqlEffect(pattern: string, statement: string, dialect: string): { title: string; effect: string } {
+    const s = oneLine(statement);
+    let m: RegExpMatchArray | null;
+    if (pattern === 'DROP' && (m = s.match(new RegExp(String.raw`^DROP\s+(MATERIALIZED\s+VIEW|\w+)\s+(?:IF\s+EXISTS\s+)?` + SQL_OBJECT, 'i')))) {
+        const kind = m[1].toLowerCase().replace(/\s+/g, ' ');
+        const contents = kind === 'schema' || kind === 'database' ? ' and every table and view in it' : '';
+        return { title: `Drop ${dialect} ${kind} ${m[2]}`, effect: `Deletes the ${kind} ${code(m[2])}${contents}, with all data.` };
+    }
+    if (pattern === 'TRUNCATE' && (m = s.match(new RegExp(String.raw`^TRUNCATE\s+(?:TABLE\s+)?(?:IF\s+EXISTS\s+)?` + SQL_OBJECT, 'i')))) {
+        return { title: `Empty ${dialect} table ${m[1]}`, effect: `Deletes every row in ${code(m[1])}.` };
+    }
+    if (pattern === 'DELETE FROM' && (m = s.match(new RegExp(String.raw`^DELETE\s+FROM\s+` + SQL_OBJECT + String.raw`([\s\S]*)$`, 'i')))) {
+        const where = m[2].match(/\bWHERE\b([\s\S]*)$/i)?.[1].replace(/\bRETURNING\b[\s\S]*$/i, '').trim();
+        return {
+            title: `Delete rows from ${dialect} table ${m[1]}`,
+            effect: where
+                ? `Deletes the rows in ${code(m[1])} where ${code(clip(where, 200))}.`
+                : `Deletes *every row* in ${code(m[1])} (no WHERE clause).`,
+        };
+    }
+    if (pattern === 'CREATE OR REPLACE' && (m = s.match(new RegExp(String.raw`^CREATE\s+OR\s+REPLACE\s+((?:(?:TEMP|TEMPORARY|EXTERNAL|MATERIALIZED|TRANSIENT|SECURE)\s+)*\w+)\s+(?:IF\s+NOT\s+EXISTS\s+)?` + SQL_OBJECT, 'i')))) {
+        const kind = m[1].toLowerCase().replace(/\s+/g, ' ');
+        return {
+            title: `Replace ${dialect} ${kind} ${m[2]}`,
+            effect: /table/.test(kind)
+                ? `If ${code(m[2])} already exists, it is dropped with all its rows and recreated from this statement.`
+                : `Overwrites the existing definition of ${kind} ${code(m[2])}.`,
+        };
+    }
+    if (pattern === 'INSERT OVERWRITE' && (m = s.match(new RegExp(String.raw`^INSERT\s+OVERWRITE\s+(?:INTO\s+)?(?:TABLE\s+)?` + SQL_OBJECT, 'i')))) {
+        return { title: `Overwrite ${dialect} table ${m[1]}`, effect: `Deletes every row in ${code(m[1])} and replaces them with the query result.` };
+    }
+    if (pattern === 'MERGE' && (m = s.match(new RegExp(String.raw`^MERGE\s+INTO\s+` + SQL_OBJECT, 'i')))) {
+        return { title: `Merge into ${dialect} table ${m[1]}`, effect: `Inserts, updates or deletes rows in ${code(m[1])} as the MERGE rules say.` };
+    }
+    if (pattern === 'ALTER ... DROP' && (m = s.match(new RegExp(String.raw`^ALTER\s+(\w+)\s+(?:IF\s+EXISTS\s+)?` + SQL_OBJECT + String.raw`[\s\S]*?\bDROP\s+((?:COLUMN|CONSTRAINT|PARTITION)\s+)?(?:IF\s+EXISTS\s+)?([^\s,;]+)`, 'i')))) {
+        const what = `${(m[3] ?? '').toLowerCase()}${m[4]}`;
+        return { title: `Drop ${what} from ${dialect} ${m[1].toLowerCase()} ${m[2]}`, effect: `Removes ${code(what)} from ${code(m[2])}; any data it held is deleted.` };
+    }
+    if (pattern === 'UPDATE without WHERE' && (m = s.match(new RegExp(String.raw`^UPDATE\s+` + SQL_OBJECT, 'i')))) {
+        return { title: `Update every row in ${dialect} table ${m[1]}`, effect: `Rewrites *every row* in ${code(m[1])} (no WHERE clause).` };
+    }
+    return { title: `Run destructive ${dialect} SQL (${pattern})`, effect: `Runs a ${pattern} statement.` };
+}
+
+function flagValue(args: string[], names: string[]): string | undefined {
+    for (let i = 0; i < args.length; i++) {
+        for (const name of names) {
+            if (args[i] === name && i + 1 < args.length) return args[i + 1];
+            if (name.startsWith('--') && args[i].startsWith(`${name}=`)) return args[i].slice(name.length + 1);
+        }
+    }
+    return undefined;
+}
+
+function databaseLine(cmd: ResolvedCommand, expand: (s: string) => string): string | null {
+    const parts: string[] = [];
+    if (cmd.name === 'snow') {
+        const conn = flagValue(cmd.args, ['-c', '--connection']);
+        const role = flagValue(cmd.args, ['--role']);
+        const db = flagValue(cmd.args, ['--database', '--dbname']);
+        parts.push(conn ? `connection ${code(expand(conn))}` : 'default connection');
+        if (role) parts.push(`role ${code(expand(role))}`);
+        if (db) parts.push(`database ${code(expand(db))}`);
+    } else if (cmd.name === 'psql') {
+        const conninfo = cmd.args.map(a => expand(a)).find(a => /^postgres(?:ql)?:\/\/|\bhost=/.test(a)) ?? '';
+        const host = flagValue(cmd.args, ['-h', '--host'])
+            ?? conninfo.match(/\bhost=(\S+)/)?.[1]
+            ?? conninfo.match(/^postgres(?:ql)?:\/\/(?:[^@/]*@)?([^/:?]+)/)?.[1];
+        const db = flagValue(cmd.args, ['-d', '--dbname'])
+            ?? conninfo.match(/\bdbname=(\S+)/)?.[1]
+            ?? conninfo.match(/^postgres(?:ql)?:\/\/[^/]*\/([^?]+)/)?.[1];
+        if (host) parts.push(`host ${code(expand(host))}`);
+        if (db) parts.push(`database ${code(expand(db))}`);
+    }
+    return parts.length ? `*Database:* ${parts.join(' · ')}` : null;
+}
+
+function sqlStep(dialect: string, cmd: ResolvedCommand, expand: (s: string) => string): StepCard {
+    const statements = cmd.args.flatMap(a => destructiveStatements(a)).slice(0, 3);
+    const lines: string[] = [];
+    let label = `Run destructive ${dialect} SQL`;
+    statements.forEach((st, i) => {
+        const { title, effect } = sqlEffect(st.pattern, expand(st.statement), dialect);
+        if (i === 0) label = title;
+        lines.push(`${i === 0 ? '*If you approve:*' : '*And:*'} ${effect}`);
+    });
+    if (statements.length > 1) label += ` (+${statements.length - 1} more)`;
+    lines.push(dialect === 'Snowflake'
+        ? '*Undo:* only through Snowflake Time Travel or UNDROP, and only within the retention window.'
+        : '*Undo:* only from a backup.');
+    const db = databaseLine(cmd, expand);
+    if (db) lines.push(db);
+    return { label, lines };
+}
+
+function defaultDbtTarget(dir: string | undefined, cmd: ResolvedCommand, expand: (s: string) => string): string | null {
+    if (!dir) return null;
+    const project = readDisplayFile(join(dir, 'dbt_project.yml'));
+    const profile = flagValue(cmd.args, ['--profile']) ?? project?.match(/^profile:\s*['"]?([\w.-]+)/m)?.[1];
+    if (!profile) return null;
+    const envDir = cmd.env?.find(e => e.startsWith('DBT_PROFILES_DIR='))?.slice('DBT_PROFILES_DIR='.length) ?? process.env.DBT_PROFILES_DIR;
+    const flagDir = flagValue(cmd.args, ['--profiles-dir']);
+    const candidates = [flagDir && expand(flagDir), envDir, dir, join(HOME, '.dbt')].filter((d): d is string => !!d);
+    for (const d of candidates) {
+        const profiles = readDisplayFile(join(d.startsWith('/') ? d : join(dir, d), 'profiles.yml'));
+        if (!profiles) continue;
+        const block = profiles.split(new RegExp(`^${profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*$`, 'm'))[1];
+        const target = block?.split(/^\S/m)[0].match(/^\s+target:\s*['"]?([\w.-]+)/m)?.[1];
+        if (target) return target;
+    }
+    return null;
+}
+
+function dbtStep(cmd: ResolvedCommand, expand: (s: string) => string, dir: string | undefined): StepCard {
+    const selection: string[] = [];
+    for (let i = 0; i < cmd.args.length; i++) {
+        if (!['--select', '-s', '--models', '-m'].includes(cmd.args[i])) continue;
+        for (let j = i + 1; j < cmd.args.length && !cmd.args[j].startsWith('-'); j++) selection.push(expand(cmd.args[j]));
+    }
+    const runtime = selection.some(x => x.includes('$('));
+    const models = runtime ? [] : selection.flatMap(x => x.split(/\s+/)).filter(Boolean);
+    const what = runtime ? 'dbt models chosen at run time'
+        : models.length === 1 ? `dbt model ${models[0]}`
+        : models.length > 1 ? `${models.length} dbt models`
+        : 'every dbt model in the project';
+    const lines = [
+        `*If you approve:* each selected incremental model (and seed) is dropped and rebuilt from source instead of updated in place. Rows that exist only from earlier incremental runs are lost.`,
+    ];
+    if (models.length > 1) lines.push(`*Models:* ${clip(models.join(', '), 400)}`);
+    if (runtime) lines.push(`⚠️ The model list comes from ${code(clip(selection.join(' '), 120))} when the command runs.`);
+    const target = flagValue(cmd.args, ['--target', '-t']);
+    const fallback = target ? null : defaultDbtTarget(dir, cmd, expand);
+    lines.push(`*dbt target:* ${target ? code(expand(target))
+        : fallback ? `${code(fallback)} (the profile's default; no \`--target\` given)`
+        : "the profile's default (no `--target` given)"}`);
+    if (cmd.args.includes('--empty')) {
+        lines.push('⚠️ `--empty` is set: every model this run builds will have *zero rows* afterwards.');
+    }
+    return { label: `Rebuild ${what} from scratch (--full-refresh)`, lines };
+}
+
+function gitPushStep(cmd: ResolvedCommand, expand: (s: string) => string): StepCard & { dir?: string } {
+    const valueOpts = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
+    let i = 0;
+    let dir: string | undefined;
+    while (i < cmd.args.length && cmd.args[i] !== 'push') {
+        if (cmd.args[i] === '-C') dir = expand(cmd.args[i + 1] ?? '');
+        i += valueOpts.has(cmd.args[i]) ? 2 : 1;
+    }
+    const rest = cmd.args.slice(i + 1);
+    const pushValueOpts = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec']);
+    const positional: string[] = [];
+    for (let j = 0; j < rest.length; j++) {
+        if (pushValueOpts.has(rest[j])) { j++; continue; }
+        if (!rest[j].startsWith('-')) positional.push(expand(rest[j]));
+    }
+    const remote = positional[0] ?? 'the upstream remote';
+    const refs = positional.slice(1);
+    const refList = (xs: string[]) => xs.map(r => r.replace(/^[+:]/, '')).join(', ');
+
+    if (rest.includes('--mirror')) {
+        return { dir, label: `Mirror-push every branch and tag to ${remote}`, lines: [
+            `*If you approve:* every branch and tag on ${code(remote)} is made to match this clone. Remote branches and tags that don't exist here are *deleted*.`,
+        ] };
+    }
+    const deleted = rest.includes('--delete') || rest.includes('-d') ? refs : refs.filter(r => r.startsWith(':'));
+    if (deleted.length) {
+        return { dir, label: `Delete remote branch ${refList(deleted)} on ${remote}`, lines: [
+            `*If you approve:* ${code(refList(deleted))} is deleted on ${code(remote)}. Pull requests from it close, and commits pushed only there are lost unless someone has a copy.`,
+        ] };
+    }
+    const forced = rest.includes('--force') || rest.includes('-f') ? refs : refs.filter(r => r.startsWith('+'));
+    const which = forced.length ? refList(forced) : 'the current branch';
+    return { dir, label: `Force-push ${which} to ${remote}`, lines: [
+        `*If you approve:* ${forced.length ? code(which) : which} on ${code(remote)} is overwritten with this local history. Commits on the remote that aren't in this copy are discarded for everyone.`,
+    ] };
+}
+
+function awsStep(cmd: ResolvedCommand, expand: (s: string) => string): StepCard {
+    const [service = '', op = ''] = cmd.args;
+    const operands = cmd.args.slice(2).filter(a => !a.startsWith('-')).map(a => expand(a));
+    const lines: string[] = [];
+    let label = `AWS ${service} ${op}`;
+    if (service === 's3' && op === 'rm') {
+        const recursive = cmd.args.includes('--recursive');
+        label = `Delete S3 ${recursive ? 'objects under' : 'object'} ${operands[0] ?? ''}`.trim();
+        lines.push(`*If you approve:* deletes ${recursive ? '*everything under*' : ''} ${code(operands[0] ?? '?')}. S3 has no undo unless the bucket has versioning.`);
+    } else if (service === 's3' && op === 'rb') {
+        label = `Delete S3 bucket ${operands[0] ?? ''}`.trim();
+        lines.push(`*If you approve:* deletes the bucket ${code(operands[0] ?? '?')}${cmd.args.includes('--force') ? ' *and every object in it*' : ''}.`);
+    } else {
+        const ids = cmd.args
+            .map((a, k) => (/^--[\w-]*(?:id|ids|name|arn)$/.test(a) && cmd.args[k + 1] ? `${a} ${expand(cmd.args[k + 1])}` : null))
+            .filter((x): x is string => x !== null);
+        lines.push(`*If you approve:* runs ${code(op)} against AWS ${service}${ids.length ? ` for ${code(ids.join(' '))}` : ''}. AWS has no undo for delete and terminate calls.`);
+    }
+    const profile = flagValue(cmd.args, ['--profile']);
+    if (profile) lines.push(`*AWS profile:* ${code(expand(profile))}`);
+    return { label, lines };
+}
+
+const GENERIC_EFFECTS: Record<string, string> = {
+    'terraform destroy': 'Destroys every resource this Terraform state manages.',
+    'terraform apply': 'Applies changes without showing the plan first; it can create, change or destroy infrastructure.',
+    'pulumi destroy': 'Destroys every resource in the stack.',
+    'cdk destroy': 'Destroys every resource in the stack.',
+    'kubectl delete': 'Deletes the named Kubernetes resources.',
+    'kubectl drain': 'Evicts every pod from the node and stops new ones landing there.',
+    'kubectl cordon': 'Stops new pods being scheduled on the node.',
+    'docker rm': 'Deletes the containers, with any data not stored in a volume.',
+    'docker rmi': 'Deletes the images.',
+    'docker system': 'Deletes stopped containers, unused networks and dangling images.',
+    'docker volume': 'Deletes the volumes and the data in them.',
+    'helm uninstall': 'Removes the release and every Kubernetes resource it created.',
+    'helm delete': 'Removes the release and every Kubernetes resource it created.',
+    'gh repo': 'Permanently deletes the GitHub repository.',
+    dd: 'Writes raw bytes to the output target; pointed at a disk, it overwrites it.',
+};
+
+function genericStep(cmd: ResolvedCommand, reason: string, expand: (s: string) => string): StepCard {
+    const verbs = cmd.args.filter(a => /^[a-z][\w:-]*$/i.test(a)).slice(0, 2).map(a => expand(a));
+    const effect = GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
+        ?? (PLATFORM_DESTRUCTIVE[cmd.name] ? `Deletes or shuts down the ${cmd.name} resource named in the step below.` : reason);
+    return { label: `Run ${[cmd.name, ...verbs].join(' ')}`, lines: [`*If you approve:* ${effect}`] };
+}
+
+function directoryBefore(commands: ResolvedCommand[], target: ResolvedCommand, expand: (s: string, pos: number) => string): string | undefined {
+    let dir: string | undefined;
+    for (const c of commands) {
+        if (c === target) break;
+        if (c.name !== 'cd' || !c.args[0]) continue;
+        const next = expand(c.args[0], c.pos ?? Infinity);
+        if (next.startsWith('/')) dir = next;
+        else if (dir && !next.includes('$')) dir = join(dir, next);
+    }
+    return target.chdir ?? dir;
+}
+
+/**
+ * Build the approval card for a gated command: a title naming what will be
+ * changed, what approving does, and the exact step that tripped the gate with
+ * the variables the command itself sets filled in.
+ */
+export function describeGate(command: string, reason: string): GateCard {
+    const fallback = { label: reason, summary: reason };
+    try {
+        const commands = extractCommands(command);
+        const gated = commands.filter(c => checkGatedCommand(c) !== null);
+        if (gated.length === 0) return fallback;
+        const view = viewShell(command);
+
+        const steps = gated.slice(0, 3).map(cmd => {
+            const pos = cmd.pos ?? Infinity;
+            const unresolved = new Set<string>();
+            const expand = (s: string, at = pos) => {
+                const r = expandKnown(s, view, at);
+                r.unresolved.forEach(u => unresolved.add(u));
+                return r.text;
+            };
+            const sqlDialect = SQL_CLIS[cmd.name] ?? (cmd.name === 'snow' && cmd.args[0] === 'sql' ? 'Snowflake' : null);
+            const step: StepCard & { dir?: string } =
+                sqlDialect ? sqlStep(sqlDialect, cmd, expand)
+                : cmd.name === 'dbt' ? dbtStep(cmd, expand, directoryBefore(commands, cmd, expand))
+                : cmd.name === 'git' ? gitPushStep(cmd, expand)
+                : cmd.name === 'aws' ? awsStep(cmd, expand)
+                : genericStep(cmd, checkGatedCommand(cmd) ?? reason, expand);
+            const dir = step.dir ?? directoryBefore(commands, cmd, expand);
+            const shown = expand(cmd.raw);
+            const lines = [...step.lines];
+            if (dir) lines.push(`*Directory:* ${code(dir)}`);
+            lines.push(`*Step needing approval:* ${code(clip(oneLine(shown), 320))}`);
+            if (unresolved.size) {
+                lines.push(`⚠️ ${[...unresolved].map(code).join(', ')} ${unresolved.size === 1 ? 'is' : 'are'} only set when the command runs, so the card can't show ${unresolved.size === 1 ? 'its value' : 'their values'}.`);
+            }
+            return { label: step.label, lines };
+        });
+
+        let label = steps[0].label;
+        if (gated.length > 1) label += ` + ${gated.length - 1} more destructive step${gated.length > 2 ? 's' : ''}`;
+        const lines = steps.flatMap((s, i) => (i === 0 ? s.lines : ['', `*Also:* ${s.label}`, ...s.lines]));
+        if (gated.length > steps.length) lines.push('', `_…and ${gated.length - steps.length} more destructive steps; see the full command below._`);
+        if (commands.length > gated.length) {
+            lines.push('', `_Approving runs the whole command below (${commands.length} steps), not only the step${gated.length > 1 ? 's' : ''} described here._`);
+        }
+        return { label: clip(label, CARD_LABEL_MAX_CHARS), summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
+    } catch {
+        return fallback;
+    }
+}
+
 // ── rm checks ────────────────────────────────────────────────────────────────
 
 /**
@@ -2692,10 +3022,8 @@ export function runGateRequest(
     opts: {
         action: 'request_destructive_gate' | 'request_bash_gate';
         onStageError?: (err: unknown) => void;
-        // Optional structured card body. When omitted the card shows `reason`
-        // for both label and summary (destructive-gate behavior). The email gate
-        // passes a distinct summary (the from/to/cc/bcc/body card) so the approver
-        // sees structured fields, at parity with Claude's in-tree card (S-QA2).
+        // Card title and body. Either one omitted falls back to `reason`.
+        label?: string;
         summary?: string;
         // The tool call this gate belongs to (`tool_use_id` from the PreToolUse
         // hook input). When given, concurrently-dispatched guards for the SAME
@@ -2719,7 +3047,7 @@ export function runGateRequest(
 
     let requestId: string;
     try {
-        requestId = writeGateRequest(reason, opts.summary ?? reason, command, opts.action);
+        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action);
     } catch (err) {
         // If we can't even stage the request, the session DBs are in a broken
         // state. Deny rather than silently allowing — the gate is fail-closed.
@@ -2752,7 +3080,7 @@ export function runNanoclawGate(
     onStageError?: (err: unknown) => void,
     toolUseId?: string,
 ): GateDecision {
-    return runGateRequest(command, reason, { action: 'request_destructive_gate', onStageError, toolUseId });
+    return runGateRequest(command, reason, { action: 'request_destructive_gate', onStageError, toolUseId, ...describeGate(command, reason) });
 }
 
 /**

@@ -202,17 +202,17 @@ describe('test_oc_dispatch_action_per_gate', () => {
     expect(stagedActions).toEqual(['request_bash_gate']);
   });
 
-  test('native email send → request_bash_gate and omits the body', async () => {
+  test('native email send → request_bash_gate and shows the body', async () => {
     const { runTool, stagedActions, stagedSummaries } = await loadEntrypoint('approved');
     await runTool('send_email', {
       to: 'a@example.com',
       subject: 'Status',
-      body: 'sensitive body',
+      body: 'quarterly numbers attached',
     });
     expect(stagedActions).toEqual(['request_bash_gate']);
     expect(stagedSummaries[0]).toContain('a@example.com');
     expect(stagedSummaries[0]).toContain('Status');
-    expect(stagedSummaries[0]).not.toContain('sensitive body');
+    expect(stagedSummaries[0]).toContain('> quarterly numbers attached');
   });
 
   test('native draft creation and read-only Gmail tools do not stage', async () => {

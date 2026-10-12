@@ -198,10 +198,10 @@ describe('native local approval flow', () => {
         const send = await runHookInput(makeToolInput('send_email', {
             to: 'ops@example.com',
             subject: 'Report',
-            body: 'sensitive body',
+            body: 'quarterly numbers attached',
         }));
         expectNativeAsk(send, /email send to ops@example.com/i);
-        expect(send.permissionDecisionReason).not.toContain('sensitive body');
+        expect(send.permissionDecisionReason).toContain('> quarterly numbers attached');
 
         for (const toolName of ['gmail_create_draft_reply', 'gmail_search_emails', 'send_message']) {
             const result = await runHookInput(makeToolInput(toolName, {}));

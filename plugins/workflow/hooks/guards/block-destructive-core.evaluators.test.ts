@@ -130,6 +130,17 @@ describe('A2 runGateRequest action parameterization', () => {
         expect(staged[0].action).toBe('request_destructive_gate');
     });
 
+    test('runNanoclawGate stages a card that names the target instead of repeating the reason', async () => {
+        const { mod, staged } = await loadWithSpies();
+        const command = 'T=analytics.scratch.old_orders; snow sql -c dev -q "drop table $T"';
+        const reason = mod.evaluateBashCommand(command).reason!;
+        mod.runNanoclawGate(command, reason, () => {});
+        expect(staged[0].label).toBe('Drop Snowflake table analytics.scratch.old_orders');
+        expect(staged[0].summary).not.toBe(reason);
+        expect(staged[0].summary).toContain('*If you approve:*');
+        expect(staged[0].command).toBe(command);
+    });
+
     test('test_runEmailGate_emits_bash_gate', async () => {
         const { mod, staged } = await loadWithSpies();
         const decision = mod.runEmailGate('gws gmail +send', 'email send');

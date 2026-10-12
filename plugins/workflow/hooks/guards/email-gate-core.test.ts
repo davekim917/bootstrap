@@ -33,13 +33,13 @@ describe('evaluateEmailToolCall — native connector gate', () => {
                 message: {
                     recipients: ['alice@example.com', 'bob@example.com'],
                     subject: 'Quarterly report',
-                    body: 'sensitive body is intentionally omitted from the gate summary',
+                    body: 'the approver reads this body before it is sent',
                 },
             }, INTERACTIVE);
             expect(verdict.action).toBe('gate');
             expect(verdict.label).toContain('alice@example.com, bob@example.com');
             expect(verdict.label).toContain('Quarterly report');
-            expect(verdict.summary).not.toContain('sensitive body');
+            expect(verdict.summary).toContain('> the approver reads this body before it is sent');
         }
     });
 
