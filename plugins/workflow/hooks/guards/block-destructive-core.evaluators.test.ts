@@ -137,7 +137,7 @@ describe('A2 runGateRequest action parameterization', () => {
         mod.runNanoclawGate(command, reason, () => {});
         expect(staged[0].label).toBe('Drop Snowflake table analytics.scratch.old_orders');
         expect(staged[0].summary).not.toBe(reason);
-        expect(staged[0].summary).toContain('*If you approve:*');
+        expect(staged[0].summary).toContain('If you approve:');
         expect(staged[0].command).toBe(command);
     });
 

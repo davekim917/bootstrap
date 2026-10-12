@@ -3,16 +3,17 @@
 // Regenerate: node scripts/vendor-guards.mjs   (CI/pre-commit gate: --check)
 
 /**
- * Shared PURE decision logic for the outbound-email approval gate.
+ * Shared decision logic for the outbound-email approval gate.
  *
- * This module is PURE LOGIC ONLY. It performs NO I/O: no bun:sqlite, no fs, no
- * writeMessageOut / awaitDeliveryAck, no process.exit. It takes a bash command
- * string or native email-tool call plus an env snapshot and returns a verdict
- * (allow | gate) with the pre-built approval-card `label` + `summary`. The
- * provider adapter (Claude SDK hook, OpenCode plugin, Codex runner) owns the
- * staging + delivery-ack round-trip — it stages the verdict via the session-DB
- * `request_bash_gate` primitive
- * (see runEmailGate in block-destructive-core.ts) and emits the deny message.
+ * The verdict is pure: no bun:sqlite, no writeMessageOut / awaitDeliveryAck, no
+ * process.exit, and nothing it reads can change allow vs gate. The one I/O is a
+ * read-only display read: when a send's body is `$(cat /absolute/path)`, the
+ * description shows that file. It takes a bash command string or native
+ * email-tool call plus an env snapshot and returns a verdict (allow | gate)
+ * with a plain-text `label` + `summary` for the approver. The harness adapter
+ * (Claude hook, OpenCode plugin, Codex runner) shows them in its own approval
+ * surface: a native ask locally, or the session-DB `request_bash_gate`
+ * primitive under NanoClaw (see runEmailGate in block-destructive-core.ts).
  *
  * Ported verbatim from nanoclaw-v2 container/agent-runner/src/providers/claude.ts
  * lines 514-664 (GWS_EMAIL_SEND_RE, EMAIL_BYPASS_RE, envelopeFromJsonRaw,
@@ -183,8 +184,8 @@ export interface EnvSnapshot {
     isScheduledTask: boolean;
 }
 
-/** Verdict for the email gate. PURE — no I/O. On `gate`, `label` + `summary`
- *  carry the pre-built approval-card content. */
+/** Verdict for the email gate. On `gate`, `label` + `summary`
+ *  describe the send for the approver. */
 export interface EmailGateVerdict {
     action: 'allow' | 'gate';
     label?: string;
@@ -273,13 +274,13 @@ export function evaluateEmailToolCall(
     const label = subject
         ? `Email ${action} to ${to}: "${subject}"`
         : `Email ${action} to ${to}`;
-    const lines = [`*Tool:* ${toolName}`, `*To:* ${to}`];
-    if (subject) lines.push(`*Subject:* ${subject}`);
+    const lines = [`Tool: ${toolName}`, `To: ${to}`];
+    if (subject) lines.push(`Subject: ${subject}`);
     const html = firstToolInputValue(input, new Set(['html', 'html_body', 'body_html']));
     const body = html ?? firstToolInputValue(input, new Set(['body', 'text', 'plain_text', 'text_body', 'body_text', 'content', 'message_body']));
     if (body) {
         const isHtml = html !== undefined || /<(?:p|div|br|html|body|table|span|a)\b[^>]*>/i.test(body);
-        const header = `*Message${isHtml ? ' (HTML, shown as text)' : ''}:*`;
+        const header = `Message${isHtml ? ' (HTML, shown as text)' : ''}:`;
         const used = Array.from(lines.join('\n')).length + header.length + 8;
         lines.push('', header, quoteBlock(clip((isHtml ? htmlToText(body) : body.trim()) || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used))));
     }
@@ -343,8 +344,8 @@ export function envelopeFromJsonRaw(segment: string): {
 
 /**
  * Decide whether a bash command is an outbound-email send that needs admin
- * approval, and if so, build the approval-card content. PURE — the only inputs
- * are the command string and the env snapshot; no I/O, no process.exit.
+ * approval, and if so, describe it for the approver. The verdict depends only
+ * on the command string and the env snapshot.
  *
  * Decision ordering:
  *   1. Not an email send (GWS_EMAIL_SEND_RE miss) → allow.
@@ -392,7 +393,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // automated email reports aren't prompted every run.
     if (env.isScheduledTask) return { action: 'allow' };
 
-    // The card is built from the parsed send when the shell parser finds one
+    // The approval text is built from the parsed send when the shell parser finds one
     // and from regexes over the WHOLE command otherwise: in a decoy chain the
     // real send may sit in a segment the parser reads differently (an
     // obfuscated `+se''nd` verb), and the gate has already fired either way.
@@ -442,30 +443,30 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const attachments = send
         ? send.args.flatMap((a, i) => (a === '-a' || a === '--attach') && send.args[i + 1] ? [send.args[i + 1]] : a.startsWith('--attach=') ? [a.slice(9)] : [])
         : [];
-    const lines: string[] = [`*From:* ${fromAccount}${alias ? ` (as ${alias})` : ''}`, `*To:* ${to}`];
+    const lines: string[] = [`From: ${fromAccount}${alias ? ` (as ${alias})` : ''}`, `To: ${to}`];
     if (probeFlag) {
-        lines.unshift(`⚠️ The send parsed here carries ${code(probeFlag)}, which on its own sends nothing. The gate still asks because the command also pipes or chains other steps it can't rule out; check the full command below.`, '');
+        lines.unshift(`⚠️ The send parsed here carries ${code(probeFlag)}, which on its own sends nothing. The gate still asks because the command also pipes or chains other steps it can't rule out; check the full command.`, '');
     }
-    if (cc) lines.push(`*Cc:* ${cc}`);
-    if (bcc) lines.push(`*Bcc:* ${bcc}`);
-    if (removed) lines.push(`*Removed from the reply:* ${removed}`);
-    if (subject) lines.push(`*Subject:* ${subject}`);
-    else if (threadRecipients) lines.push('*Subject:* Re: the original subject');
-    if (messageId && threadRecipients) lines.push(`*In reply to:* Gmail message ${code(messageId)}, quoted below the reply`);
-    if (attachments.length) lines.push(`*Attachments:* ${attachments.map(code).join(', ')}`);
+    if (cc) lines.push(`Cc: ${cc}`);
+    if (bcc) lines.push(`Bcc: ${bcc}`);
+    if (removed) lines.push(`Removed from the reply: ${removed}`);
+    if (subject) lines.push(`Subject: ${subject}`);
+    else if (threadRecipients) lines.push('Subject: Re: the original subject');
+    if (messageId && threadRecipients) lines.push(`In reply to: Gmail message ${code(messageId)}, quoted under the reply`);
+    if (attachments.length) lines.push(`Attachments: ${attachments.map(code).join(', ')}`);
 
     const body = resolveBody(matchFlag('--body'), view, send?.pos ?? Infinity);
     lines.push('');
     if (body.text !== null) {
         const text = isHtml ? htmlToText(body.text) : body.text.trim();
-        const header = `*Message${isHtml ? ' (HTML, shown as text)' : ''}:*`;
+        const header = `Message${isHtml ? ' (HTML, shown as text)' : ''}:`;
         const used = Array.from(lines.join('\n')).length + header.length + 8;
         lines.push(header, quoteBlock(clip(text || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used))));
         if (body.note) lines.push(`_${body.note}_`);
     } else if (isRawApi) {
-        lines.push('*Message:* not shown. This send passes a raw MIME message, so the text is only visible inside the encoded payload. Reject and ask the agent to show the draft if you need to read it first.');
+        lines.push('Message: not shown. This send passes a raw MIME message, so the text is only visible inside the encoded payload. Decline and ask the agent to show the draft if you need to read it first.');
     } else {
-        lines.push(`*Message:* not shown. ${body.note ?? 'The command builds the text when it runs.'} Reject and ask the agent to show the draft if you need to read it first.`);
+        lines.push(`Message: not shown. ${body.note ?? 'The command builds the text when it runs.'} Decline and ask the agent to show the draft if you need to read it first.`);
     }
     const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
 
@@ -518,7 +519,7 @@ function resolveBody(raw: string | undefined, view: ShellView, pos: number): { t
             const file = readDisplayFile(value.path);
             return file === null
                 ? { text: null, note: `The text is read from ${code(value.path)} when the command runs, and that file can't be read yet.` }
-                : { text: file, note: `Read from ${code(value.path)} when this card was posted.` };
+                : { text: file, note: `Read from ${code(value.path)} when approval was requested.` };
         }
         return { text: null, note: `The text comes from ${code(raw)}, which is only set when the command runs.` };
     }

@@ -166,6 +166,7 @@ describe('native local approval flow', () => {
     test('destructive commands ask through the native hook protocol', async () => {
         const result = await runHook('kubectl delete namespace production');
         expectNativeAsk(result, /kubectl/i);
+        expect(result.permissionDecisionReason).toContain('If you approve: Deletes the named Kubernetes resources.');
         expect(result.stdout).not.toContain('.claude-destructive-gate');
     });
 

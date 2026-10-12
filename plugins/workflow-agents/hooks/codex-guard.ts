@@ -12,6 +12,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import {
     IS_NANOCLAW,
+    approvalText,
+    describeGate,
     evaluateBashCommand,
     evaluateGitCloneDestination,
     evaluateSelfApproval,
@@ -246,9 +248,10 @@ function main(): void {
 
             if (!IS_NANOCLAW) {
                 const email = emailReason(command);
+                const described = approvalText(describeGate(command, reason));
                 const combined = email.action === 'gate'
-                    ? `${reason}\n\nAlso requires outbound-email approval: ${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`
-                    : reason;
+                    ? `${described}\n\nAlso requires outbound-email approval: ${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`
+                    : described;
                 emitNeedsHumanApproval(combined);
             }
 

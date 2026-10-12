@@ -2138,7 +2138,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
 
 // ── Approval card ────────────────────────────────────────────────────────────
 // The gate verdict above decides; this section only explains it to the human
-// who has to approve. It never changes what is gated.
+// who has to approve. It never changes what is gated. The text is plain so it
+// reads the same in whatever approval surface the harness uses.
 
 export interface GateCard {
     label: string;
@@ -2191,7 +2192,7 @@ function sqlEffect(pattern: string, statement: string, dialect: string): { title
             title: `Delete rows from ${dialect} table ${m[1]}`,
             effect: where
                 ? `Deletes the rows in ${code(m[1])} where ${code(clip(where, 200))}.`
-                : `Deletes *every row* in ${code(m[1])} (no WHERE clause).`,
+                : `Deletes every row in ${code(m[1])} (no WHERE clause).`,
         };
     }
     if (pattern === 'CREATE OR REPLACE' && (m = s.match(new RegExp(String.raw`^CREATE\s+OR\s+REPLACE\s+((?:(?:TEMP|TEMPORARY|EXTERNAL|MATERIALIZED|TRANSIENT|SECURE)\s+)*\w+)\s+(?:IF\s+NOT\s+EXISTS\s+)?` + SQL_OBJECT, 'i')))) {
@@ -2214,7 +2215,7 @@ function sqlEffect(pattern: string, statement: string, dialect: string): { title
         return { title: `Drop ${what} from ${dialect} ${m[1].toLowerCase()} ${m[2]}`, effect: `Removes ${code(what)} from ${code(m[2])}; any data it held is deleted.` };
     }
     if (pattern === 'UPDATE without WHERE' && (m = s.match(new RegExp(String.raw`^UPDATE\s+` + SQL_OBJECT, 'i')))) {
-        return { title: `Update every row in ${dialect} table ${m[1]}`, effect: `Rewrites *every row* in ${code(m[1])} (no WHERE clause).` };
+        return { title: `Update every row in ${dialect} table ${m[1]}`, effect: `Rewrites every row in ${code(m[1])} (no WHERE clause).` };
     }
     return { title: `Run destructive ${dialect} SQL (${pattern})`, effect: `Runs a ${pattern} statement.` };
 }
@@ -2249,7 +2250,7 @@ function databaseLine(cmd: ResolvedCommand, expand: (s: string) => string): stri
         if (host) parts.push(`host ${code(expand(host))}`);
         if (db) parts.push(`database ${code(expand(db))}`);
     }
-    return parts.length ? `*Database:* ${parts.join(' · ')}` : null;
+    return parts.length ? `Database: ${parts.join(' · ')}` : null;
 }
 
 function sqlStep(dialect: string, cmd: ResolvedCommand, expand: (s: string) => string): StepCard {
@@ -2259,12 +2260,12 @@ function sqlStep(dialect: string, cmd: ResolvedCommand, expand: (s: string) => s
     statements.forEach((st, i) => {
         const { title, effect } = sqlEffect(st.pattern, expand(st.statement), dialect);
         if (i === 0) label = title;
-        lines.push(`${i === 0 ? '*If you approve:*' : '*And:*'} ${effect}`);
+        lines.push(`${i === 0 ? 'If you approve:' : 'And:'} ${effect}`);
     });
     if (statements.length > 1) label += ` (+${statements.length - 1} more)`;
     lines.push(dialect === 'Snowflake'
-        ? '*Undo:* only through Snowflake Time Travel or UNDROP, and only within the retention window.'
-        : '*Undo:* only from a backup.');
+        ? 'Undo: only through Snowflake Time Travel or UNDROP, and only within the retention window.'
+        : 'Undo: only from a backup.');
     const db = databaseLine(cmd, expand);
     if (db) lines.push(db);
     return { label, lines };
@@ -2301,17 +2302,17 @@ function dbtStep(cmd: ResolvedCommand, expand: (s: string) => string, dir: strin
         : models.length > 1 ? `${models.length} dbt models`
         : 'every dbt model in the project';
     const lines = [
-        `*If you approve:* each selected incremental model (and seed) is dropped and rebuilt from source instead of updated in place. Rows that exist only from earlier incremental runs are lost.`,
+        `If you approve: each selected incremental model (and seed) is dropped and rebuilt from source instead of updated in place. Rows that exist only from earlier incremental runs are lost.`,
     ];
-    if (models.length > 1) lines.push(`*Models:* ${clip(models.join(', '), 400)}`);
+    if (models.length > 1) lines.push(`Models: ${clip(models.join(', '), 400)}`);
     if (runtime) lines.push(`⚠️ The model list comes from ${code(clip(selection.join(' '), 120))} when the command runs.`);
     const target = flagValue(cmd.args, ['--target', '-t']);
     const fallback = target ? null : defaultDbtTarget(dir, cmd, expand);
-    lines.push(`*dbt target:* ${target ? code(expand(target))
+    lines.push(`dbt target: ${target ? code(expand(target))
         : fallback ? `${code(fallback)} (the profile's default; no \`--target\` given)`
         : "the profile's default (no `--target` given)"}`);
     if (cmd.args.includes('--empty')) {
-        lines.push('⚠️ `--empty` is set: every model this run builds will have *zero rows* afterwards.');
+        lines.push('⚠️ `--empty` is set: every model this run builds will have zero rows afterwards.');
     }
     return { label: `Rebuild ${what} from scratch (--full-refresh)`, lines };
 }
@@ -2337,19 +2338,19 @@ function gitPushStep(cmd: ResolvedCommand, expand: (s: string) => string): StepC
 
     if (rest.includes('--mirror')) {
         return { dir, label: `Mirror-push every branch and tag to ${remote}`, lines: [
-            `*If you approve:* every branch and tag on ${code(remote)} is made to match this clone. Remote branches and tags that don't exist here are *deleted*.`,
+            `If you approve: every branch and tag on ${code(remote)} is made to match this clone. Remote branches and tags that don't exist here are deleted.`,
         ] };
     }
     const deleted = rest.includes('--delete') || rest.includes('-d') ? refs : refs.filter(r => r.startsWith(':'));
     if (deleted.length) {
         return { dir, label: `Delete remote branch ${refList(deleted)} on ${remote}`, lines: [
-            `*If you approve:* ${code(refList(deleted))} is deleted on ${code(remote)}. Pull requests from it close, and commits pushed only there are lost unless someone has a copy.`,
+            `If you approve: ${code(refList(deleted))} is deleted on ${code(remote)}. Pull requests from it close, and commits pushed only there are lost unless someone has a copy.`,
         ] };
     }
     const forced = rest.includes('--force') || rest.includes('-f') ? refs : refs.filter(r => r.startsWith('+'));
     const which = forced.length ? refList(forced) : 'the current branch';
     return { dir, label: `Force-push ${which} to ${remote}`, lines: [
-        `*If you approve:* ${forced.length ? code(which) : which} on ${code(remote)} is overwritten with this local history. Commits on the remote that aren't in this copy are discarded for everyone.`,
+        `If you approve: ${forced.length ? code(which) : which} on ${code(remote)} is overwritten with this local history. Commits on the remote that aren't in this copy are discarded for everyone.`,
     ] };
 }
 
@@ -2361,18 +2362,18 @@ function awsStep(cmd: ResolvedCommand, expand: (s: string) => string): StepCard 
     if (service === 's3' && op === 'rm') {
         const recursive = cmd.args.includes('--recursive');
         label = `Delete S3 ${recursive ? 'objects under' : 'object'} ${operands[0] ?? ''}`.trim();
-        lines.push(`*If you approve:* deletes ${recursive ? '*everything under*' : ''} ${code(operands[0] ?? '?')}. S3 has no undo unless the bucket has versioning.`);
+        lines.push(`If you approve: deletes ${recursive ? 'everything under' : ''} ${code(operands[0] ?? '?')}. S3 has no undo unless the bucket has versioning.`);
     } else if (service === 's3' && op === 'rb') {
         label = `Delete S3 bucket ${operands[0] ?? ''}`.trim();
-        lines.push(`*If you approve:* deletes the bucket ${code(operands[0] ?? '?')}${cmd.args.includes('--force') ? ' *and every object in it*' : ''}.`);
+        lines.push(`If you approve: deletes the bucket ${code(operands[0] ?? '?')}${cmd.args.includes('--force') ? ' and every object in it' : ''}.`);
     } else {
         const ids = cmd.args
             .map((a, k) => (/^--[\w-]*(?:id|ids|name|arn)$/.test(a) && cmd.args[k + 1] ? `${a} ${expand(cmd.args[k + 1])}` : null))
             .filter((x): x is string => x !== null);
-        lines.push(`*If you approve:* runs ${code(op)} against AWS ${service}${ids.length ? ` for ${code(ids.join(' '))}` : ''}. AWS has no undo for delete and terminate calls.`);
+        lines.push(`If you approve: runs ${code(op)} against AWS ${service}${ids.length ? ` for ${code(ids.join(' '))}` : ''}. AWS has no undo for delete and terminate calls.`);
     }
     const profile = flagValue(cmd.args, ['--profile']);
-    if (profile) lines.push(`*AWS profile:* ${code(expand(profile))}`);
+    if (profile) lines.push(`AWS profile: ${code(expand(profile))}`);
     return { label, lines };
 }
 
@@ -2398,7 +2399,7 @@ function genericStep(cmd: ResolvedCommand, reason: string, expand: (s: string) =
     const verbs = cmd.args.filter(a => /^[a-z][\w:-]*$/i.test(a)).slice(0, 2).map(a => expand(a));
     const effect = GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
         ?? (PLATFORM_DESTRUCTIVE[cmd.name] ? `Deletes or shuts down the ${cmd.name} resource named in the step below.` : reason);
-    return { label: `Run ${[cmd.name, ...verbs].join(' ')}`, lines: [`*If you approve:* ${effect}`] };
+    return { label: `Run ${[cmd.name, ...verbs].join(' ')}`, lines: [`If you approve: ${effect}`] };
 }
 
 function directoryBefore(commands: ResolvedCommand[], target: ResolvedCommand, expand: (s: string, pos: number) => string): string | undefined {
@@ -2414,7 +2415,7 @@ function directoryBefore(commands: ResolvedCommand[], target: ResolvedCommand, e
 }
 
 /**
- * Build the approval card for a gated command: a title naming what will be
+ * Describe a gated command for its approver: a title naming what will be
  * changed, what approving does, and the exact step that tripped the gate with
  * the variables the command itself sets filled in.
  */
@@ -2444,25 +2445,31 @@ export function describeGate(command: string, reason: string): GateCard {
             const dir = step.dir ?? directoryBefore(commands, cmd, expand);
             const shown = expand(cmd.raw);
             const lines = [...step.lines];
-            if (dir) lines.push(`*Directory:* ${code(dir)}`);
-            lines.push(`*Step needing approval:* ${code(clip(oneLine(shown), 320))}`);
+            if (dir) lines.push(`Directory: ${code(dir)}`);
+            lines.push(`Step needing approval: ${code(clip(oneLine(shown), 320))}`);
             if (unresolved.size) {
-                lines.push(`⚠️ ${[...unresolved].map(code).join(', ')} ${unresolved.size === 1 ? 'is' : 'are'} only set when the command runs, so the card can't show ${unresolved.size === 1 ? 'its value' : 'their values'}.`);
+                lines.push(`⚠️ ${[...unresolved].map(code).join(', ')} ${unresolved.size === 1 ? 'is' : 'are'} only set when the command runs, so ${unresolved.size === 1 ? 'its value is' : 'their values are'} not known yet.`);
             }
             return { label: step.label, lines };
         });
 
         let label = steps[0].label;
         if (gated.length > 1) label += ` + ${gated.length - 1} more destructive step${gated.length > 2 ? 's' : ''}`;
-        const lines = steps.flatMap((s, i) => (i === 0 ? s.lines : ['', `*Also:* ${s.label}`, ...s.lines]));
-        if (gated.length > steps.length) lines.push('', `_…and ${gated.length - steps.length} more destructive steps; see the full command below._`);
+        const lines = steps.flatMap((s, i) => (i === 0 ? s.lines : ['', `Also: ${s.label}`, ...s.lines]));
+        if (gated.length > steps.length) lines.push('', `…and ${gated.length - steps.length} more destructive steps; see the full command.`);
         if (commands.length > gated.length) {
-            lines.push('', `_Approving runs the whole command below (${commands.length} steps), not only the step${gated.length > 1 ? 's' : ''} described here._`);
+            lines.push('', `Approving runs the whole command (${commands.length} steps), not only the step${gated.length > 1 ? 's' : ''} described here.`);
         }
+        lines.push(`Guard rule: ${clip(oneLine(reason), 200)}`);
         return { label: clip(label, CARD_LABEL_MAX_CHARS), summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
     } catch {
         return fallback;
     }
+}
+
+/** The one text a harness's own approval prompt shows: title, blank line, details. */
+export function approvalText(card: GateCard): string {
+    return card.summary && card.summary !== card.label ? `${card.label}\n\n${card.summary}` : card.label;
 }
 
 // ── rm checks ────────────────────────────────────────────────────────────────

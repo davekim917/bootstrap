@@ -22,7 +22,7 @@ describe('destructive approval card', () => {
             name: 'dbt full refresh resolves the model variable and flags --empty',
             command: 'cd /work/dbt && M=orders_daily; timeout 900 dbt run --select $M --empty --full-refresh',
             label: 'Rebuild dbt model orders_daily from scratch (--full-refresh)',
-            has: ['--select orders_daily', '*zero rows*', "the profile's default", '*Directory:* `/work/dbt`'],
+            has: ['--select orders_daily', 'zero rows', "the profile's default", 'Directory: `/work/dbt`'],
         },
         {
             name: 'SQL statement keeps its literal values and the connection',
@@ -34,7 +34,7 @@ describe('destructive approval card', () => {
             name: 'SQL without WHERE says every row',
             command: 'snow sql -c dev --role BUILDER -q "delete from analytics.scratch.events"',
             label: 'Delete rows from Snowflake table analytics.scratch.events',
-            has: ['*every row*', 'connection `dev` · role `BUILDER`', 'Time Travel'],
+            has: ['every row in', 'connection `dev` · role `BUILDER`', 'Time Travel'],
         },
         {
             name: 'branch deletion names the branch and remote',
@@ -61,7 +61,7 @@ describe('destructive approval card', () => {
 
     test('says approval runs the whole command, not just the gated step', () => {
         const c = card('echo start && dbt run --full-refresh --select orders && echo done');
-        expect(c.summary).toContain('Approving runs the whole command below (3 steps)');
+        expect(c.summary).toContain('Approving runs the whole command (3 steps)');
     });
 
     test('reads the default dbt target from the project profile', () => {
@@ -77,7 +77,7 @@ describe('destructive approval card', () => {
         expect(describeGate('ls -la', 'some reason')).toEqual({ label: 'some reason', summary: 'some reason' });
     });
 
-    test('stays inside the Slack card budget', () => {
+    test('stays inside the description budget', () => {
         const tables = Array.from({ length: 20 }, (_, i) => `drop table analytics.scratch.t${i}_${'x'.repeat(60)}`).join('; ');
         const c = card(`snow sql -q "${tables}"`);
         expect(Array.from(c.summary).length).toBeLessThanOrEqual(CARD_SUMMARY_MAX_CHARS);
@@ -113,7 +113,7 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
 
     test('says the body is hidden when it is only built at run time', () => {
         const v = evaluateEmailSend('BODY=$(python3 build.py)\ngws gmail +send --to a@example.com --body "$BODY"', INTERACTIVE);
-        expect(v.summary).toContain('*Message:* not shown. The text comes from `$BODY`');
+        expect(v.summary).toContain('Message: not shown. The text comes from `$BODY`');
     });
 
     test.each([
@@ -122,7 +122,7 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
         { verb: '+reply-all', extra: '--to new@example.com', to: 'the original sender and everyone on To/Cc, plus new@example.com' },
     ])('$verb $extra says who receives the reply', ({ verb, extra, to }) => {
         const v = evaluateEmailSend(`gws gmail ${verb} --message-id 18f1 --body "Thanks" ${extra}`, INTERACTIVE);
-        expect(v.summary).toContain(`*To:* ${to}`);
+        expect(v.summary).toContain(`To: ${to}`);
         expect(v.label).not.toContain('unknown recipient');
     });
 
@@ -147,7 +147,7 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
         expect(v.summary).toContain('> FYI ‹!channel> and ‹@U123>');
     });
 
-    test('a long body is cut to fit the Slack card budget', () => {
+    test('a long body is cut to fit the description budget', () => {
         const v = evaluateEmailSend(`gws gmail +send --to a@example.com --body "${'word '.repeat(800)}"`, INTERACTIVE);
         expect(Array.from(v.summary!).length).toBeLessThanOrEqual(CARD_SUMMARY_MAX_CHARS);
         expect(v.summary).toContain('…');

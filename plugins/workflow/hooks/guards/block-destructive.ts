@@ -17,6 +17,8 @@ import { readFileSync } from 'fs';
 import type { ToolUseInput } from '../lib/types';
 import {
     IS_NANOCLAW,
+    approvalText,
+    describeGate,
     evaluateBashCommand,
     evaluateGitCloneDestination,
     evaluateSelfApproval,
@@ -146,9 +148,10 @@ function main(): void {
                 // Include a second email reason when one command crosses both
                 // policy gates so the user sees the complete effect once.
                 const email = emailReason(command);
+                const described = approvalText(describeGate(command, reason));
                 const combined = email.action === 'gate'
-                    ? `${reason}\n\nAlso requires outbound-email approval: ${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`
-                    : reason;
+                    ? `${described}\n\nAlso requires outbound-email approval: ${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`
+                    : described;
                 ask(combined);
             }
 

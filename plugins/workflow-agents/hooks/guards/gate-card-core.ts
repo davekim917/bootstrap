@@ -3,15 +3,17 @@
 // Regenerate: node scripts/vendor-guards.mjs   (CI/pre-commit gate: --check)
 
 /**
- * Display helpers for approval cards. Nothing here decides allow, gate or block:
- * a wrong answer from this module can only make a card less informative, never
- * change what runs. Everything is best effort and falls back to the raw text.
+ * Helpers that describe a gated action to its approver. Nothing here decides
+ * allow, gate or block: a wrong answer can only make the description less
+ * informative, never change what runs. Output is plain text because each
+ * harness shows it in its own approval surface (a native permission prompt, a
+ * chat card, a hand-off message).
  */
 import { readFileSync, statSync } from 'fs';
 import { parse } from 'unbash';
 
-// Slack renders the card body as one context block capped at 3000 characters,
-// shared with the host's 1400-character command preview and its footer.
+// Short enough for the tightest known surface: NanoClaw posts it into a
+// 3000-character Slack block next to its own 1400-character command preview.
 export const CARD_SUMMARY_MAX_CHARS = 1300;
 export const CARD_LABEL_MAX_CHARS = 130;
 
@@ -27,12 +29,12 @@ export function oneLine(text: string): string {
     return text.replace(/\s+/g, ' ').trim();
 }
 
-/** Slack inline code cannot contain a backtick; swap it so the span stays closed. */
+/** Inline code cannot contain a backtick in chat markdown; swap it so the span stays closed. */
 export function code(text: string): string {
     return '`' + text.replace(/`/g, 'ʼ') + '`';
 }
 
-/** Quote untrusted text; `<!channel>`, `<@U…>` and `<#C…>` would otherwise ping or link in Slack. */
+/** Quote untrusted text; `<!channel>`, `<@U…>` and `<#C…>` would ping or link when a harness posts it to Slack. */
 export function quoteBlock(text: string): string {
     return text.replace(/<(?=[!@#])/g, '‹').split('\n').map(line => `> ${line}`).join('\n');
 }

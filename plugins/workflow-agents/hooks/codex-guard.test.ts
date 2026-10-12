@@ -57,6 +57,9 @@ describe('Codex local approval transport', () => {
     const result = await runGuard(shell('terraform destroy'));
     expectDecision(result, 'deny', /terraform/i);
     expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain(LOCAL_APPROVAL_HANDOFF);
+    expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain(
+      'If you approve: Destroys every resource this Terraform state manages.',
+    );
   });
 
   test('denies git mutations inside read-only repo snapshots', async () => {
