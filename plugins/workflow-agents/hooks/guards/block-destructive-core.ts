@@ -75,12 +75,13 @@ export interface ResolvedCommand {
 
 /** Facts about the whole command line that a single step's checks need. */
 export interface ScriptContext {
-    writes: Map<string, string[]>; // text written to each file by echo/printf/cat-heredoc/tee, by path as written
+    writes: Map<string, PipedInput>; // what echo/printf/cat/tee write to each file, by path as written and as resolved
     pipedInto: Map<number, PipedInput>; // what the previous stage of a pipeline feeds each command, by command offset
     cds: CdStep[];              // every cd/pushd/popd, in source order
     links: Map<number, ChainLink>; // where each top-level command sits in its &&/|| chain, by command offset
     command: string;            // the whole command line, for resolving variables
     cwd?: string;               // the directory the command line starts in
+    view?: ReturnType<typeof viewShell>; // the parsed variable view of `command`, built on first use
 }
 
 interface PipedInput {
@@ -916,7 +917,8 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const rendered = texts.map(t => t.replace(SNOW_TEMPLATE, (m, a, b, c) => vars.get(a ?? b ?? c) ?? m));
         texts.push(...rendered, ...vars.values());
     }
-    if (readsStdin && !files.length && !(cmd.stdinTexts?.length)) {
+    if (files.includes('-')) readsStdin = true;
+    if (readsStdin && !files.some(f => f !== '-') && !(cmd.stdinTexts?.length)) {
         const piped = cmd.script?.pipedInto.get(cmd.pos ?? -1);
         texts.push(...(piped?.texts ?? []));
         files.push(...(piped?.catFiles ?? []));
@@ -932,9 +934,14 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const f = pending.shift()!;
         if (seen.has(f)) continue;
         seen.add(f);
-        for (const t of cmd.script?.writes.get(samePath(f)) ?? []) {
-            texts.push(t);
-            pending.push(...sqlIncludes(t, null));
+        const resolved = provableSqlPath(f, cmd);
+        for (const key of new Set([samePath(f), ...(resolved === null ? [] : [samePath(resolved)])])) {
+            const written = cmd.script?.writes.get(key);
+            for (const t of written?.texts ?? []) {
+                texts.push(t);
+                pending.push(...sqlIncludes(t, null));
+            }
+            pending.push(...(written?.catFiles ?? []));
         }
         for (const { path, content } of readSqlFiles(f, cmd)) {
             if (content === 'too-large') {
@@ -979,16 +986,22 @@ function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string;
  * directory only when the step follows it in an unbroken && chain, where its
  * success is implied; otherwise the step may run in either directory.
  */
+function provableWord(text: string, cmd: ResolvedCommand, pos: number): string | null {
+    if (!/[$`]/.test(text)) return /[*?[{]/.test(text) || text.startsWith('~') ? null : text;
+    if (!cmd.script || pos < 0) return null;
+    cmd.script.view ??= viewShell(cmd.script.command);
+    const r = evalWord(text, cmd.script.view, pos);
+    return r.unresolved.length || /[$`*?[{]/.test(r.value) ? null : r.value;
+}
+
+/** `file` with its variables filled in, when the command line proves their values; null otherwise. */
+function provableSqlPath(file: string, cmd: ResolvedCommand): string | null {
+    return file && file !== '-' ? provableWord(file, cmd, cmd.pos ?? -1) : null;
+}
+
 function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
     const script = cmd.script;
-    let view: ReturnType<typeof viewShell> | undefined;
-    const provable = (text: string, pos: number): string | null => {
-        if (!/[$`]/.test(text)) return /[*?[{]/.test(text) || text.startsWith('~') ? null : text;
-        if (!script || pos < 0) return null;
-        view ??= viewShell(script.command);
-        const r = evalWord(text, view, pos);
-        return r.unresolved.length || /[$`*?[{]/.test(r.value) ? null : r.value;
-    };
+    const provable = (text: string, pos: number) => provableWord(text, cmd, pos);
     const target = provable(file, cmd.pos ?? -1);
     if (target === null) return null;
     if (target.startsWith('/')) return [target];
@@ -996,7 +1009,8 @@ function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null 
     let dirs = [script?.cwd ?? currentWorkingDir()];
     const here = cmd.pos === undefined ? undefined : script?.links.get(cmd.pos);
     for (const step of script?.cds ?? []) {
-        if (step.pos < 0 || cmd.pos === undefined) return null;
+        if (step.pos < 0) continue;
+        if (cmd.pos === undefined) return null;
         if (step.pos >= cmd.pos) continue;
         const next = step.topLevel && step.target !== undefined ? provable(step.target, step.pos) : null;
         if (next === null) return null;
@@ -1482,13 +1496,26 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
     };
     visit(ast);
 
-    const writes = new Map<string, string[]>();
+    const writes = new Map<string, PipedInput>();
+    let view: ReturnType<typeof viewShell> | undefined;
     for (const cmd of commands) {
         if (!TEXT_EMITTERS.has(cmd.name)) continue;
         const operands = cmd.args.filter(a => !a.startsWith('-'));
-        const text = [...emittedText(cmd), ...(cmd.name === 'tee' || cmd.name === 'cat' ? pipedInto.get(cmd.pos ?? -1)?.texts ?? [] : [])];
-        const targets = [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? operands : [])];
-        for (const t of targets) writes.set(samePath(t), [...(writes.get(samePath(t)) ?? []), ...text]);
+        const fed = cmd.name === 'tee' || cmd.name === 'cat' ? pipedInto.get(cmd.pos ?? -1) : undefined;
+        const texts = [...emittedText(cmd), ...(fed?.texts ?? [])];
+        const catFiles = [...(cmd.name === 'cat' ? operands : []), ...(fed?.catFiles ?? [])];
+        for (const target of [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? operands : [])]) {
+            const keys = new Set([samePath(target)]);
+            if (/[$`]/.test(target) && cmd.pos !== undefined) {
+                view ??= viewShell(command);
+                const r = evalWord(target, view, cmd.pos);
+                if (!r.unresolved.length) keys.add(samePath(r.value));
+            }
+            for (const key of keys) {
+                const prior = writes.get(key) ?? { texts: [], catFiles: [] };
+                writes.set(key, { texts: [...prior.texts, ...texts], catFiles: [...prior.catFiles, ...catFiles] });
+            }
+        }
     }
     const cds = commands
         .filter(c => c.name === 'cd' || c.name === 'pushd' || c.name === 'popd')

@@ -83,6 +83,22 @@ test('text piped through tee into a file is what that file holds', () => {
     expect(verdict(`echo 'DROP TABLE users' | tee fresh.sql; psql -f fresh.sql`)).toBe('gate');
 });
 
+test('-f - reads the pipe', () => {
+    expect(verdict(`printf 'DROP TABLE users;' | psql -f -`)).toBe('gate');
+});
+
+test('a file written under one name and run through a variable holding it is the same file', () => {
+    expect(verdict(`echo 'DROP TABLE users' > fresh2.sql; f=fresh2.sql; psql -f "$f"`)).toBe('gate');
+});
+
+test('a cd inside a command substitution does not move the shell the client runs in', () => {
+    expect(verdict(`echo "$(cd /tmp)"; psql -f bad.sql`)).toBe('gate');
+});
+
+test('a file cat feeds through tee is what tee writes', () => {
+    expect(verdict(`cat bad.sql | tee fresh3.sql; psql -f fresh3.sql`)).toBe('gate');
+});
+
 test('text echoed to the terminal is not fed to a client that is not in its pipeline', () => {
     expect(verdict(`echo 'DROP TABLE users'; psql`)).toBe('allow');
     expect(verdict(`echo 'DROP TABLE users' | psql`)).toBe('gate');
