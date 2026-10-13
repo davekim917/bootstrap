@@ -193,8 +193,20 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
         ['an fd redirect', `exec {B}>/dev/null`],
         ['a disguised command name', `e\\val "B=real"`],
         ['a function', `f() { B=real; }; f`],
+        ['a brace-expanded eval', `{eval,B=real}`],
+        ['a globbed eval', `ev?l B=real`],
+        ['a bracket-globbed eval', `[e]val B=real`],
+        ['an old-style arithmetic expansion', `: $[B=5]`],
+        ['an arithmetic subscript', `: \${X[B=1]}`],
+        ['a substring offset', `: \${X:B=2}`],
+        ['a default assignment', `: \${B:=real}`],
     ])('withholds a body after %s', (_name, change) => {
         const v = evaluateEmailSend(`B='decoy'; ${change}; gws gmail +send --to a@example.com --body "$B"`, INTERACTIVE);
+        expect(v.summary).not.toContain('decoy');
+    });
+
+    test.each(['RANDOM', 'SECONDS', 'PWD', 'UID'])('never resolves the shell-managed %s', (name) => {
+        const v = evaluateEmailSend(`${name}='decoy'; cd /tmp; gws gmail +send --to a@example.com --body "$${name}"`, INTERACTIVE);
         expect(v.summary).not.toContain('decoy');
     });
 

@@ -219,6 +219,8 @@ const NON_ASSIGNING_BUILTINS = new Set([
 // Nodes that may assign any variable: a function body runs wherever it is
 // called, and arithmetic or a coproc can set names the text does not spell out.
 const ASSIGNING_NODES = new Set(['Function', 'ArithmeticCommand', 'ArithmeticFor', 'ArithmeticExpansion', 'Coproc', 'TestCommand']);
+// Variables the shell sets itself, so an assignment does not decide their value.
+const SHELL_MANAGED = /^(?:RANDOM|SRANDOM|SECONDS|LINENO|EPOCHSECONDS|EPOCHREALTIME|BASHPID|UID|EUID|PPID|PWD|OLDPWD|HISTCMD|_|IFS|BASH_\w*|BASH)$/;
 // Past this, resolving variables is not worth its cost on a hostile command.
 const RESOLVE_MAX_CHARS = 64 * 1024;
 
@@ -262,7 +264,7 @@ export function viewShell(command: string): ShellView {
     function collect(ast: any): ShellView {
         const tooLong = command.length > RESOLVE_MAX_CHARS;
         const valueAt = (name: string, pos: number): ShellValue | undefined => {
-            if (tooLong || pos < 0) return { kind: 'runtime' };
+            if (tooLong || pos < 0 || SHELL_MANAGED.test(name)) return { kind: 'runtime' };
             let latest: VarEvent | undefined;
             for (const e of events) {
                 if (e.pos < 0 && (e.name === name || e.name === '*')) return { kind: 'runtime' };
@@ -338,7 +340,8 @@ export function viewShell(command: string): ShellView {
             const name = String(n.name.value ?? n.name.text ?? '');
             // A command substitution runs in a subshell and cannot change this shell's variables.
             if (!nested && name !== 'export') {
-                const disguised = /[$`'"\\]/.test(nameText);
+                // Brace expansion and globbing run before lookup: `{eval,…}` and `ev?l` become eval.
+                const disguised = !/^[A-Za-z0-9_.\/+:-]+$/.test(nameText);
                 const assigns = BASH_BUILTINS.has(name) && !NON_ASSIGNING_BUILTINS.has(name)
                     && !(name === 'printf' && !argTexts.some(t => /^['"]?-[a-zA-Z]*v/.test(t)));
                 if (disguised || assigns) taint('*', pos);
@@ -358,7 +361,8 @@ export function viewShell(command: string): ShellView {
             commands.push({ name, argTexts, pos });
         }
         const scan = command.slice(0, RESOLVE_MAX_CHARS);
-        for (const m of scan.matchAll(/\$\{([A-Za-z_]\w*):?[=?]/g)) taint(m[1], m.index ?? 0);
+        // Any expansion beyond a bare `${NAME}` can assign: `${X:=…}`, an arithmetic subscript or offset.
+        for (const m of scan.matchAll(/\$\{(?![A-Za-z_]\w*\})|\$\[/g)) taint('*', m.index ?? 0);
         for (const m of scan.matchAll(/\{([A-Za-z_]\w*)\}[<>]/g)) taint(m[1], m.index ?? 0);
         for (const m of scan.matchAll(/\$\(\(|\(\(/g)) taint('*', m.index ?? 0);
         if (hasFunction) taint('*', -1);
