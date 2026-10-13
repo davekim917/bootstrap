@@ -1615,28 +1615,29 @@ function logLabScope(message: string): void {
 }
 
 // ── Dev-scope exemption ──────────────────────────────────────────────────────
-// Destructive SQL on a Snowflake connection the operator lists as dev runs
-// without approval, in every session: an approval prompt for every scratch-table
-// DROP teaches the approver to click yes on the ones that matter. Which
-// connections count is deployment data in an untracked `dev-scope.local.json`,
-// found like lab-scope.local.json:
-//   {"snowflake": [{"connection": "<dev>"}, {"connection": "<prod>", "databases": ["<dev db>"]}]}
-// An entry without `databases` exempts the whole connection. An entry with them
-// exempts only statements whose every target is fully qualified inside one of
-// those databases. No readable, valid file exempts nothing.
+// Destructive SQL aimed only at databases the operator lists as dev runs without
+// approval, in every session: an approval prompt for every scratch-table DROP
+// teaches the approver to click yes on the ones that matter. Which databases, on
+// which Snowflake connection, is deployment data in an untracked
+// `dev-scope.local.json`, found like lab-scope.local.json:
+//   {"snowflake": [{"connection": "<name>", "databases": ["<dev db>", …]}]}
+// No readable, valid file exempts nothing.
 //
-// It fails closed: the connection must be a literal `-c`/`--connection`, nothing
-// in the command may point it elsewhere (account, host or config overrides, a
-// temporary connection, a SNOWFLAKE_* variable), and a database-limited entry
-// refuses any statement it cannot name exactly (variables, IDENTIFIER(),
-// EXECUTE IMMEDIATE, CTE-wrapped DML, a two-part table name, DROP DATABASE).
+// The exemption is by database, never by whole connection: a "dev" connection
+// commonly shares its account and role with prod, so only the target's database
+// says what a statement can reach. It fails closed: the command must be a bare
+// `snow sql` with a literal `-c`/`--connection` and only flags known not to change
+// account, identity, role or config; nothing in the command may assign, export
+// or source anything; and every destructive statement must name its target fully
+// qualified inside a listed database, with no variables, templating, scripting
+// blocks, IDENTIFIER() or EXECUTE IMMEDIATE.
 
 export const DEV_SCOPE_FILE_ENV = 'BOOTSTRAP_DEV_SCOPE_FILE';
 const DEV_SCOPE_FILE = 'dev-scope.local.json';
 const SNOWFLAKE_NAME_RE = /^[A-Za-z0-9_.-]{1,128}$/;
 
 export interface DevScope {
-    snowflake: Array<{ connection: string; databases?: string[] }>;
+    snowflake: Array<{ connection: string; databases: string[] }>;
 }
 
 /** Parse a dev-scope file's text. Null when anything about it is unusable. */
@@ -1651,8 +1652,8 @@ export function parseDevScope(text: string): DevScope | null {
     if (!Array.isArray(entries)) return null;
     for (const e of entries) {
         if (!e || typeof e !== 'object' || typeof e.connection !== 'string' || !SNOWFLAKE_NAME_RE.test(e.connection)) return null;
-        if (e.databases !== undefined
-            && !(Array.isArray(e.databases) && e.databases.length > 0 && e.databases.every((d: unknown) => typeof d === 'string' && SNOWFLAKE_NAME_RE.test(d)))) {
+        if (!Array.isArray(e.databases) || e.databases.length === 0
+            || !e.databases.every((d: unknown) => typeof d === 'string' && /^[A-Za-z_][A-Za-z0-9_$]{0,254}$/.test(d))) {
             return null;
         }
     }
@@ -1669,58 +1670,91 @@ function currentDevScope(): DevScope | null {
     }
 }
 
-const SNOW_REDIRECT_FLAGS = [
-    '--account', '--accountname', '--account-name', '--host', '--port', '--region', '-x',
-    '--temporary-connection', '--config-file', '--private-key-file', '--authenticator',
-];
+// The only `snow sql` options an exempt command may carry: none of them changes
+// the account, user, role, credentials, config or the SQL that runs.
+const SNOW_SQL_VALUE_FLAGS = new Set(['-c', '--connection', '-q', '--query', '--format', '--warehouse', '--enable-templating']);
+const SNOW_SQL_BARE_FLAGS = new Set(['--silent', '--verbose', '--debug', '--enhanced-exit-codes']);
+// `snow` run directly or under wrappers that leave its user and environment alone
+// (`sudo` and `env` do not, so they never qualify).
+const SNOW_UNDER_SAFE_WRAPPERS_RE = /^(?:(?:g?timeout\s+\d+(?:\.\d+)?[smhd]?|nohup|time)\s+)*snow\s/;
+// Commands that change what a later command sees: its environment, or code it sources.
+const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare', 'typeset', 'env', 'eval', 'readonly', 'local', 'alias', 'unset']);
 
-/** The fully qualified object a destructive statement acts on, split into parts. */
-function statementTargetParts(pattern: string, statement: string): { kind: string; parts: string[] } | null {
+/** Snowflake folds an unquoted identifier to upper case and keeps a quoted one as written. */
+function snowflakeIdentifier(part: string): string | null {
+    const quoted = part.match(/^"((?:[^"]|"")+)"$/);
+    if (quoted) return quoted[1].replace(/""/g, '"');
+    return /^[A-Za-z_][A-Za-z0-9_$]*$/.test(part) ? part.toUpperCase() : null;
+}
+
+/** The fully qualified object a destructive statement acts on, as Snowflake identifiers. */
+function statementTarget(pattern: string, statement: string): { kind: string; parts: string[] } | null {
     const s = oneLine(statement.slice(0, STATEMENT_MAX_CHARS));
-    const name = String.raw`([^\s;(]+)`;
+    const name = String.raw`((?:"(?:[^"]|"")+"|[A-Za-z0-9_$]+)(?:\.(?:"(?:[^"]|"")+"|[A-Za-z0-9_$]+))*)`;
     const m =
-        pattern === 'DROP' ? s.match(new RegExp(String.raw`^DROP\s+(MATERIALIZED\s+VIEW|\w+)\s+(?:IF\s+EXISTS\s+)?` + name, 'i'))
-        : pattern === 'TRUNCATE' ? s.match(new RegExp(String.raw`^TRUNCATE\s+(?:(TABLE)\s+)?(?:IF\s+EXISTS\s+)?` + name, 'i'))
-        : pattern === 'DELETE FROM' ? s.match(new RegExp(String.raw`^DELETE\s+FROM()\s+` + name, 'i'))
-        : pattern === 'CREATE OR REPLACE' ? s.match(new RegExp(String.raw`^CREATE\s+OR\s+REPLACE\s+((?:(?:TEMP|TEMPORARY|EXTERNAL|MATERIALIZED|TRANSIENT|SECURE)\s+)*\w+)\s+(?:IF\s+NOT\s+EXISTS\s+)?` + name, 'i'))
-        : pattern === 'INSERT OVERWRITE' ? s.match(new RegExp(String.raw`^INSERT\s+OVERWRITE\s+(?:INTO\s+)?(?:(TABLE)\s+)?` + name, 'i'))
-        : pattern === 'MERGE' ? s.match(new RegExp(String.raw`^MERGE\s+INTO()\s+` + name, 'i'))
-        : pattern === 'ALTER ... DROP' ? s.match(new RegExp(String.raw`^ALTER\s+(\w+)\s+(?:IF\s+EXISTS\s+)?` + name, 'i'))
-        : pattern === 'UPDATE without WHERE' ? s.match(new RegExp(String.raw`^UPDATE()\s+` + name, 'i'))
+        pattern === 'DROP' ? s.match(new RegExp(String.raw`^DROP\s+(MATERIALIZED\s+VIEW|\w+)\s+(?:IF\s+EXISTS\s+)?` + name + String.raw`\s*(?:CASCADE|RESTRICT)?\s*$`, 'i'))
+        : pattern === 'TRUNCATE' ? s.match(new RegExp(String.raw`^TRUNCATE\s+(?:(TABLE)\s+)?(?:IF\s+EXISTS\s+)?` + name + String.raw`\s*$`, 'i'))
+        : pattern === 'DELETE FROM' ? s.match(new RegExp(String.raw`^DELETE\s+FROM()\s+` + name + String.raw`(?:\s|$)`, 'i'))
+        : pattern === 'CREATE OR REPLACE' ? s.match(new RegExp(String.raw`^CREATE\s+OR\s+REPLACE\s+((?:(?:TEMP|TEMPORARY|EXTERNAL|MATERIALIZED|TRANSIENT|SECURE)\s+)*\w+)\s+(?:IF\s+NOT\s+EXISTS\s+)?` + name + String.raw`(?:\s|\(|$)`, 'i'))
+        : pattern === 'INSERT OVERWRITE' ? s.match(new RegExp(String.raw`^INSERT\s+OVERWRITE\s+(?:INTO\s+)?(?:(TABLE)\s+)?` + name + String.raw`(?:\s|\(|$)`, 'i'))
+        : pattern === 'MERGE' ? s.match(new RegExp(String.raw`^MERGE\s+INTO()\s+` + name + String.raw`(?:\s|$)`, 'i'))
+        : pattern === 'ALTER ... DROP' ? s.match(new RegExp(String.raw`^ALTER\s+(\w+)\s+(?:IF\s+EXISTS\s+)?` + name + String.raw`\s`, 'i'))
+        : pattern === 'UPDATE without WHERE' ? s.match(new RegExp(String.raw`^UPDATE()\s+` + name + String.raw`\s`, 'i'))
         : null;
     if (!m) return null;
-    const kind = (m[1] || 'table').toLowerCase().replace(/\s+/g, ' ');
-    return { kind, parts: m[2].split('.').map(p => p.replace(/^"|"$/g, '').toLowerCase()) };
+    const parts = m[2].match(/"(?:[^"]|"")+"|[^.]+/g)?.map(snowflakeIdentifier) ?? [];
+    if (parts.some(p => p === null)) return null;
+    return { kind: (m[1] || 'table').toLowerCase().replace(/\s+/g, ' '), parts: parts as string[] };
 }
 
 /**
- * The dev connection a `snow sql` command is exempt under, or null. `command`
- * is the whole command line, so an exported SNOWFLAKE_* variable counts too.
+ * The dev database a `snow sql` command is exempt under, or null. `commands` and
+ * `command` are the whole command line, so anything set up around the call counts.
  */
-export function devScopeTargetOf(cmd: ResolvedCommand, command: string): string | null {
+export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string): string | null {
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
     const scope = currentDevScope();
     if (!scope) return null;
-    const connections = flagValues(cmd.args, ['-c', '--connection']);
-    if (connections.length !== 1 || !SNOWFLAKE_NAME_RE.test(connections[0])) return null;
-    if (cmd.args.some(a => SNOW_REDIRECT_FLAGS.some(f => a === f || a.startsWith(`${f}=`)))) return null;
-    if ((cmd.env ?? []).some(e => e.startsWith('SNOWFLAKE_')) || /\bSNOWFLAKE_\w*=/.test(command)) return null;
-    const entry = scope.snowflake.find(e => e.connection === connections[0]);
-    if (!entry) return null;
-    if (!entry.databases) return `snowflake connection ${entry.connection}`;
+    if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
+    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name))) return null;
+    try {
+        const assignments: any[] = [];
+        collectAssignmentNodes(parse(command), assignments);
+        if (assignments.length) return null;
+    } catch {
+        return null;
+    }
 
-    const allowed = new Set(entry.databases.map(d => d.toLowerCase()));
+    let connection: string | undefined;
+    for (let i = 1; i < cmd.args.length; i++) {
+        const a = cmd.args[i];
+        const [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, undefined];
+        if (SNOW_SQL_BARE_FLAGS.has(flag) && inline === undefined) continue;
+        if (!SNOW_SQL_VALUE_FLAGS.has(flag)) return null;
+        const value = inline ?? cmd.args[++i];
+        if (value === undefined) return null;
+        if (flag === '-c' || flag === '--connection') {
+            if (connection !== undefined || !SNOWFLAKE_NAME_RE.test(value)) return null;
+            connection = value;
+        }
+    }
+    const entry = scope.snowflake.find(e => e.connection === connection);
+    if (!entry) return null;
+
+    const allowed = new Set(entry.databases.map(d => d.toUpperCase()));
+    let matched = false;
     for (const arg of cmd.args) {
         if (!findDestructiveSqlStatement(arg)) continue;
-        if (/[$]|\bIDENTIFIER\s*\(|\bEXECUTE\s+IMMEDIATE\b/i.test(arg)) return null;
+        if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b/i.test(arg)) return null;
         for (const st of destructiveStatements(arg)) {
-            const target = statementTargetParts(st.pattern, st.statement);
+            const target = statementTarget(st.pattern, st.statement);
             if (!target) return null;
             const needed = target.kind === 'schema' ? 2 : target.kind === 'database' ? 0 : 3;
             if (needed === 0 || target.parts.length !== needed || !allowed.has(target.parts[0])) return null;
+            matched = true;
         }
     }
-    return `snowflake connection ${entry.connection}, database ${entry.databases.join('/')}`;
+    return matched ? `snowflake connection ${entry.connection}, database ${entry.databases.join('/')}` : null;
 }
 
 // ── Git hook bypass ──────────────────────────────────────────────────────────
@@ -2609,7 +2643,7 @@ function* gatedSteps(
     for (const cmd of commands) {
         const reason = checkGatedCommand(cmd);
         if (!reason) continue;
-        const dev = devScopeTargetOf(cmd, command);
+        const dev = devScopeTargetOf(cmd, commands, command);
         if (dev !== null) {
             if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
             continue;
