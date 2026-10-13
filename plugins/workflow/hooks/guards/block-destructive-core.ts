@@ -823,7 +823,20 @@ const SQL_TEXT_OPTIONS: Record<string, string[]> = {
 };
 // Client commands inside SQL text that run another file: snow `!source`/`!load`,
 // psql `\i`/`\ir`/`\include`, sqlite `.read`, mysql `source`.
-const SQL_INCLUDE = /^\s*(?:!(?:source|load)|\\(?:i|ir|include|include_relative)|\.read|source)\s+['"]?([^\s'";]+)/gim;
+const SQL_INCLUDE = /^\s*(!(?:source|load)|\\(?:ir|include_relative|i|include)|\.read|source)\s+('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|[^\s;]+)/gim;
+// psql's \ir and \include_relative resolve a relative name against the including file's directory.
+const SQL_INCLUDE_RELATIVE = new Set(['\\ir', '\\include_relative']);
+
+/** Each file the SQL text includes; a relative \ir name is resolved against `includingFile`'s directory. */
+function sqlIncludes(text: string, includingFile: string | null): string[] {
+    const files: string[] = [];
+    for (const m of text.matchAll(SQL_INCLUDE)) {
+        const raw = m[2];
+        const name = /^['"]/.test(raw) ? raw.slice(1, -1).replace(/\\(.)/g, '$1') : raw;
+        files.push(includingFile && SQL_INCLUDE_RELATIVE.has(m[1]) && !name.startsWith('/') ? join(dirname(includingFile), name) : name);
+    }
+    return files;
+}
 const SNOW_TEMPLATE = /&\{\s*([\w.]+)\s*\}|<%\s*([\w.]+)\s*%>|&([A-Za-z_]\w*)/g;
 
 export interface SqlInput {
@@ -897,19 +910,20 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     // includes found in what is read, up to a fixed number of files.
     let unreadable: string | null = null;
     const pending = [...files];
-    for (const t of texts) for (const m of t.matchAll(SQL_INCLUDE)) pending.push(m[1]);
+    for (const t of texts) pending.push(...sqlIncludes(t, null));
     const seen = new Set<string>();
     while (pending.length && seen.size < SQL_FILES_MAX) {
         const f = pending.shift()!;
         if (seen.has(f)) continue;
         seen.add(f);
+        const path = f ? resolveSqlPath(f, cmd) : null;
         const found: string[] = [...(cmd.script?.writes.get(samePath(f)) ?? [])];
         const content = readSqlFile(f, cmd);
         if (content === 'too-large') unreadable ??= f;
         else if (content !== null) found.push(content);
         for (const t of found) {
             texts.push(t);
-            for (const m of t.matchAll(SQL_INCLUDE)) pending.push(m[1]);
+            pending.push(...sqlIncludes(t, path));
         }
     }
     if (pending.length) unreadable ??= pending[0];

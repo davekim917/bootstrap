@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -19,6 +19,11 @@ beforeAll(() => {
     writeFileSync(join(dir, 'huge.sql'), 'select 1;\n'.repeat(120_000));
     writeFileSync(join(dir, 'outer.sql'), `\\i ${join(dir, 'inner.sql')}\n`);
     writeFileSync(join(dir, 'inner.sql'), `\\i ${join(dir, 'bad.sql')}\n`);
+    mkdirSync(join(dir, 'job'));
+    writeFileSync(join(dir, 'job', 'outer.sql'), '\\ir drop.sql\n');
+    writeFileSync(join(dir, 'job', 'drop.sql'), 'drop table users;\n');
+    writeFileSync(join(dir, 'drop schema.sql'), 'drop schema s;\n');
+    writeFileSync(join(dir, 'quoted.sql'), `\\i '${join(dir, 'drop schema.sql')}'\n`);
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -35,6 +40,8 @@ describe('a destructive SQL file is gated however it reaches the client', () => 
         (d: string) => `psql -c "\\i ${d}/bad.sql"`,
         () => 'psql -f bad.sql',
         (d: string) => `psql -f ${d}/outer.sql`,
+        (d: string) => `psql -f ${d}/job/outer.sql`,
+        (d: string) => `psql -f ${d}/quoted.sql`,
     ])('%#', (make) => {
         expect(verdict(make(dir))).toBe('gate');
     });
