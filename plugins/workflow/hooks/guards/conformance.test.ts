@@ -106,6 +106,8 @@ const BASH_GATE = [
   'echo "drop table users" | psql',
   'psql -c "DO LANGUAGE plpgsql $$ BEGIN DROP TABLE users; END $$"',
   'psql -cDROP\\ TABLE\\ users',
+  "psql -c \"DO $$ BEGIN RAISE EXCEPTION 'x'; EXCEPTION WHEN OTHERS THEN DROP TABLE users; END $$\"",
+  "sql='DROP TABLE users'; psql <<< \"$sql\"",
   'psql -c "-- note; with a semicolon\ndrop table users"',
   'git push --mirror backup',
   'git push origin --delete feature-x',

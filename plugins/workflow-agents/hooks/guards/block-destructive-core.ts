@@ -565,7 +565,7 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
 // Control-flow words that can open a statement inside a scripting block
 // (Snowflake Scripting, PL/pgSQL, T-SQL). Stripped before matching, so the
 // statement they lead into is checked like a top-level one.
-const BLOCK_LEAD = /^(?:(?:BEGIN|ELSE|LOOP|DO|REPEAT)\b\s*|(?:IF|ELSEIF|ELSIF|WHEN)\b[\s\S]*?\bTHEN\b\s*|(?:FOR|WHILE)\b[\s\S]*?\b(?:DO|LOOP)\b\s*)/i;
+const BLOCK_LEAD = /^(?:(?:BEGIN|ELSE|LOOP|DO|REPEAT)\b\s*|(?:EXCEPTION\s+)?(?:IF|ELSEIF|ELSIF|WHEN)\b[\s\S]*?\bTHEN\b\s*|(?:FOR|WHILE)\b[\s\S]*?\b(?:DO|LOOP)\b\s*)/i;
 const BLOCK_LEAD_MAX_STRIPS = 16;
 
 const UPDATE_LEADING = /^UPDATE\b/i;
@@ -882,6 +882,12 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const fileOptions = SQL_FILE_OPTIONS[client] ?? [];
     const textOptions = SQL_TEXT_OPTIONS[client] ?? [];
     const texts: string[] = [...(cmd.stdinTexts ?? [])];
+    for (const t of cmd.stdinTexts ?? []) {
+        if (!/[$`]/.test(t) || cmd.pos === undefined || !cmd.script) continue;
+        cmd.script.view ??= viewShell(cmd.script.command);
+        const r = evalWord(`"${t.replace(/(["\\])/g, '\\$1')}"`, cmd.script.view, cmd.pos);
+        if (r.value !== t) texts.push(r.value);
+    }
     const files: string[] = [...(cmd.stdinFiles ?? [])];
     const vars = new Map<string, string>();
     let sqlInArgs = false;
