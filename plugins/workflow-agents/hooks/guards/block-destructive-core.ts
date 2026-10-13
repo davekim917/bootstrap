@@ -1017,6 +1017,7 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] {
     const out: PipedInput[] = [];
     const writes = reader.script?.writes ?? [];
     for (const w of writes) {
+        if (w.writer.pos !== undefined && reader.pos !== undefined && w.writer.pos > reader.pos) continue;
         if (samePath(w.target) === samePath(file)) {
             out.push(w.input);
             continue;
@@ -1051,7 +1052,11 @@ function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null 
         dirs = implied ? moved : [...new Set([...dirs, ...moved])];
         if (dirs.length > SQL_PATH_CANDIDATES_MAX) return null;
     }
-    if (cmd.chdir !== undefined) dirs = dirs.map(d => (cmd.chdir!.startsWith('/') ? cmd.chdir! : join(d, cmd.chdir!)));
+    if (cmd.chdir !== undefined) {
+        const chdir = provable(cmd.chdir, cmd.pos ?? -1);
+        if (chdir === null) return null;
+        dirs = dirs.map(d => (chdir.startsWith('/') ? chdir : join(d, chdir)));
+    }
     return dirs.map(d => join(d, target));
 }
 

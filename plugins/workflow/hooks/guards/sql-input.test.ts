@@ -107,6 +107,14 @@ test('a pipeline inside an if feeds its client like a top-level one', () => {
     expect(verdict(`if echo 'DROP TABLE users' | psql; then :; fi`)).toBe('gate');
 });
 
+test('env -C with a variable directory reads the file from that directory', () => {
+    expect(evaluateBashCommand(`D=${dir}; env -C "$D" psql -f bad.sql`, { cwd: '/' }).action).toBe('gate');
+});
+
+test('a write after the SQL client does not count as the file it read', () => {
+    expect(verdict(`psql -f safe.sql; echo 'DROP TABLE users' > safe.sql`)).toBe('allow');
+});
+
 test('echo -e newlines are rendered before scanning', () => {
     expect(verdict(`echo -e "SELECT 1;\\nDROP TABLE users;" | psql`)).toBe('gate');
     expect(verdict(`echo -e 'BEGIN;\\nDROP TABLE users;\\nCOMMIT;' | psql`)).toBe('gate');
