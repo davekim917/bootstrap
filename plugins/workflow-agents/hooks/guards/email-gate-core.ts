@@ -37,6 +37,8 @@
  * Python/Node SDK calls, SMTP CLIs, and eval/alias/base64-decoded subshells. The
  * only sound place to catch all of those is the egress proxy.
  */
+import { parse } from 'unbash';
+import { resolveCommand, walkCommandNodes } from './block-destructive-core';
 import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
@@ -160,19 +162,108 @@ export function bypassFlagIsRealArgvToken(gwsSegment: string): boolean {
     return false;
 }
 
-// A deliberately narrow exception for the normal CLI-help probe an agent uses
-// to learn a send command without sending mail. It accepts only optional export
-// assignments, one direct gws invocation, stderr-to-stdout, and head -N.
-// The captured gws segment still goes through the regular argv verifier, which
-// proves help is an option rather than (for example) a subject value.
-const SAFE_HELP_PROBE_RE =
-    /^(?:export\s+(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|<>\x60$(){}#'"]+)(?:\s+[A-Za-z_][A-Za-z0-9_]*=[^\s;&|<>\x60$(){}#'"]+)*\s+&&\s+)?((?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|<>\x60$(){}#'"]+\s+)*gws\s+gmail\s+(?:\+(?:send|reply|reply-all|forward)|users\s+(?:messages|drafts)\s+send)(?:\s+[^\s;&|<>\x60$(){}#'"]+)*)\s+2>&1\s*\|\s*head\s+-\d+\s*$/;
+// gws gmail options that take no value, so a bypass flag after one is still an option.
+const GWS_BOOLEAN_OPTIONS = new Set(['--html', '--dry-run', '--draft', '--help', '-h', '--no-original-attachments']);
+// Commands a probe may pipe through or run beside gws: none sends mail, runs
+// another command, or changes shell state a later gws call could read.
+const PROBE_COMPANIONS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq', 'wc', 'sort', 'uniq', 'cut', 'tr', 'cat', 'echo', 'printf', 'true', ':', 'test', '[', 'sleep']);
+// Variables a probe may set. Anything that changes how a later command is found
+// or started (PATH, BASH_ENV, LD_PRELOAD, IFS, …) or how gws behaves (its own
+// GOOGLE_*/GWS_* settings other than the credentials file) is refused.
+const PROBE_VARIABLE_DENY = /^(?:PATH|CDPATH|IFS|ENV|BASH_ENV|BASH\w*|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|LD_\w+|DYLD_\w+|GCONV_PATH|HOSTALIASES|NODE_\w+|HOME|XDG_\w+|TMPDIR|LANG|LC_\w+|GWS_\w+|GOOGLE_\w+)$/;
+const PROBE_VARIABLE_ALLOW = new Set(['GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE']);
 
-export function safeHelpProbeIsReadOnly(command: string): boolean {
-    const match = command.match(SAFE_HELP_PROBE_RE);
-    if (!match) return false;
-    const gwsSegment = match[1];
-    return /(?:^|[ \t])(?:--help|-h)(?:$|[ \t])/.test(gwsSegment) && bypassFlagIsRealArgvToken(gwsSegment);
+function probeMaySet(name: string): boolean {
+    return /^[A-Za-z_]\w*$/.test(name) && (PROBE_VARIABLE_ALLOW.has(name) || !PROBE_VARIABLE_DENY.test(name));
+}
+
+// A probe opens a substitution or subshell a handful of times; past this it is
+// not a probe, and parsing it a second time would double the cost of a deep nest.
+const PROBE_PARENS_MAX = 64;
+
+// A sed script that only prints or deletes lines: `1,40p`, `/^x/p`, `$d`.
+const SED_PRINT_ONLY = /^(?:(?:\d+|\$|\/[^/\n]*\/)(?:,(?:\d+|\$|\/[^/\n]*\/))?)?[pd]$/;
+// Word parts whose value the shell splits or globs, so one word can become
+// several arguments (an injected `--`, or a flag where the parser saw a value).
+const SPLITTING_PARTS = new Set(['SimpleExpansion', 'ParameterExpansion', 'CommandExpansion', 'ArithmeticExpansion', 'ProcessSubstitution', 'BraceExpansion', 'ExtendedGlob']);
+
+function wordIsFixed(word: any): boolean {
+    const parts = word?.parts;
+    if (!Array.isArray(parts)) return typeof word?.value === 'string' && !/[$`*?[{]/.test(word.value);
+    return parts.every((p: any) => !SPLITTING_PARTS.has(p?.type) && !(p?.type === 'Literal' && /[*?[{]/.test(p.value ?? '')));
+}
+
+// `gws gmail users <resource> list|get`: reads mail, never sends it.
+const GWS_GMAIL_READ_RE = /^gmail users (?:messages|threads|labels|drafts|history|settings(?: \w+)?) (?:list|get)$/;
+// `set` options a probe may use; none changes what a later command runs.
+const PROBE_SET_OPTIONS = /^(?:[-+][euxvo]+|pipefail|errexit|nounset|xtrace|verbose)$/;
+
+/** A gws gmail call that only reads: its leading positional words name a list or get method. */
+function gwsCallOnlyReads(node: any, args: string[]): boolean {
+    if (!(node.suffix || []).every(wordIsFixed)) return false;
+    const end = args.findIndex(a => a.startsWith('-'));
+    return GWS_GMAIL_READ_RE.test(args.slice(0, end === -1 ? args.length : end).join(' '));
+}
+
+/** A gws call whose argv holds a real --help/-h/--dry-run/--draft option before any `--`. */
+function gwsCallIsProbe(node: any, args: string[]): boolean {
+    if (!(node.suffix || []).every(wordIsFixed)) return false;
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--') return false;
+        if (!EMAIL_BYPASS_FLAGS.has(args[i])) continue;
+        const prev = args[i - 1] ?? '';
+        const prevTakesValue = prev.startsWith('-') && !prev.includes('=') && !GWS_BOOLEAN_OPTIONS.has(prev);
+        if (!prevTakesValue) return true;
+    }
+    return false;
+}
+
+/**
+ * True when a command only probes gws: every command bash would run in it
+ * (conditions, pipelines, substitutions and function bodies included) is a gws
+ * call holding a real --help, -h, --dry-run or --draft option, or a read-only
+ * filter such as head, grep, jq or a print-only sed. Plain variable
+ * assignments are allowed; their substitutions are commands checked the same
+ * way. Anything else (an unknown command, a name built at run time, a word the
+ * shell could split into extra options, a parse error) is not a probe.
+ */
+export function probeOnlyCommand(command: string): boolean {
+    if ((command.match(/\(/g) ?? []).length > PROBE_PARENS_MAX) return false;
+    let script: any;
+    try {
+        script = parse(command);
+    } catch {
+        return false;
+    }
+    if (script?.errors?.length) return false;
+    let gwsCalls = 0;
+    for (const node of walkCommandNodes(script)) {
+        if (node.__resolved) return false;
+        if (!(node.prefix || []).every((p: any) => typeof p?.name === 'string' && probeMaySet(p.name))) return false;
+        if (!node.name) continue;
+        if (!wordIsFixed(node.name)) return false;
+        const cmd = resolveCommand(node);
+        if (!cmd) return false;
+        if (cmd.name === 'gws') {
+            if (!gwsCallIsProbe(node, cmd.args) && !gwsCallOnlyReads(node, cmd.args)) return false;
+            gwsCalls++;
+        } else if (cmd.name === 'set') {
+            if (!cmd.args.every(a => PROBE_SET_OPTIONS.test(a))) return false;
+        } else if (cmd.name === 'export') {
+            if (!cmd.args.every(a => probeMaySet(a.split('=')[0]))) return false;
+        } else if (cmd.name === 'printf' && cmd.args.some(a => a.startsWith('-v'))) {
+            return false;
+        } else if (cmd.name === 'sed') {
+            const scripts = cmd.args.filter(a => !a.startsWith('-'));
+            if (cmd.args.some(a => /^-i|^--in-place/.test(a)) || !scripts.every(a => SED_PRINT_ONLY.test(a))) return false;
+        } else if (!PROBE_COMPANIONS.has(cmd.name)) {
+            return false;
+        }
+    }
+    // Each gws call must be spelled as the bare word `gws`: the parser resolves
+    // `/any/dir/gws` by basename, and a binary at another path need not honour --dry-run.
+    const gwsInText = (command.match(/(?:^|[\s;&|(`{!])gws(?=\s)/g) ?? []).length;
+    return gwsCalls > 0 && gwsInText === gwsCalls && GWS_EMAIL_SEND_RE.test(command);
 }
 
 /** Snapshot of the only env input the email gate decision depends on. */
@@ -389,7 +480,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // It also fixes the over-block where a quoted separator in a dry-run body
     // (`--body "a;b" --dry-run`) used to split mid-quote: the quoted span is
     // stripped before the metacharacter test, so the real --dry-run still bypasses.
-    if (safeHelpProbeIsReadOnly(command) || bypassFlagIsRealArgvToken(command)) return { action: 'allow' };
+    if (probeOnlyCommand(command) || bypassFlagIsRealArgvToken(command)) return { action: 'allow' };
 
     // Scheduled tasks intentionally bypass — v1 also did this so
     // automated email reports aren't prompted every run.
