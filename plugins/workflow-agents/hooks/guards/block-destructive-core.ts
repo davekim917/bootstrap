@@ -78,8 +78,16 @@ export interface ScriptContext {
     writes: Map<string, string[]>; // text written to each file by echo/printf/cat-heredoc/tee, by path as written
     piped: string[];            // text echo/printf/cat emit to stdout, which a pipe may feed to a SQL client
     catFiles: string[];         // files `cat` reads to stdout, likewise
-    changesDir: boolean;        // a cd/pushd/popd somewhere, so relative paths are ambiguous
+    cds: CdStep[];              // every cd/pushd/popd, in source order
+    command: string;            // the whole command line, for resolving variables
     cwd?: string;               // the directory the command line starts in
+}
+
+/** A directory change, and whether it surely runs before every later top-level step. */
+interface CdStep {
+    pos: number;
+    target: string | undefined;
+    plain: boolean;             // a top-level statement or link of a top-level &&/||/; chain, with one literal-or-provable argument
 }
 
 export interface DestructiveMatch {
@@ -913,15 +921,14 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
 }
 
 /**
- * A SQL file's text, null when it cannot be read now (missing, not a regular
- * file, a path the shell would expand, or relative after a `cd` in the same
- * command), or 'too-large'. A missing file is usually written earlier in the
- * same command, which sqlInputOf covers by scanning that command's text.
+ * A SQL file's text; null when it is missing, not a regular file, or at a path
+ * the command line does not prove (a missing one is usually written earlier in
+ * the same command, whose text sqlInputOf scans); or 'too-large'.
  */
 function readSqlFile(file: string, cmd: ResolvedCommand): string | null | 'too-large' {
-    if (!file || /[$`*?[{~]/.test(file) || file === '-') return null;
-    if (!file.startsWith('/') && cmd.script?.changesDir) return null;
-    const path = file.startsWith('/') ? file : join(cmd.chdir ?? cmd.script?.cwd ?? currentWorkingDir(), file);
+    if (!file || file === '-') return null;
+    const path = resolveSqlPath(file, cmd);
+    if (path === null) return null;
     try {
         const st = statSync(path);
         if (!st.isFile()) return null;
@@ -930,6 +937,37 @@ function readSqlFile(file: string, cmd: ResolvedCommand): string | null | 'too-l
     } catch {
         return null;
     }
+}
+
+/**
+ * The absolute path a SQL client step opens, or null when the command line
+ * does not prove it: a variable without a provable value, a glob, or a
+ * relative path after a cd that is not a plain top-level step.
+ */
+function resolveSqlPath(file: string, cmd: ResolvedCommand): string | null {
+    const script = cmd.script;
+    let view: ReturnType<typeof viewShell> | undefined;
+    const provable = (text: string, pos: number): string | null => {
+        if (!/[$`]/.test(text)) return /[*?[{]/.test(text) || text.startsWith('~') ? null : text;
+        if (!script || pos < 0) return null;
+        view ??= viewShell(script.command);
+        const r = evalWord(text, view, pos);
+        return r.unresolved.length || /[$`*?[{]/.test(r.value) ? null : r.value;
+    };
+    const target = provable(file, cmd.pos ?? -1);
+    if (target === null) return null;
+    if (target.startsWith('/')) return target;
+    if (cmd.chdir !== undefined) return cmd.chdir.startsWith('/') ? join(cmd.chdir, target) : null;
+    let dir = script?.cwd ?? currentWorkingDir();
+    for (const step of script?.cds ?? []) {
+        if (step.pos < 0 || cmd.pos === undefined) return null;
+        if (step.pos >= cmd.pos) continue;
+        if (!step.plain || step.target === undefined) return null;
+        const next = provable(step.target, step.pos);
+        if (next === null) return null;
+        dir = next.startsWith('/') ? next : join(dir, next);
+    }
+    return join(dir, target);
 }
 
 // Platform CLIs → destructive subcommand verbs
@@ -1338,6 +1376,8 @@ export function extractCommands(command: string): ResolvedCommand[] {
             return cmd;
         }).filter((c): c is ResolvedCommand => c !== null);
         const script = scriptContextOf(commands);
+        script.cds = cdStepsOf(ast, commands);
+        script.command = command;
         for (const cmd of commands) cmd.script = script;
         return commands;
     } catch {
@@ -1355,7 +1395,6 @@ function scriptContextOf(commands: ResolvedCommand[]): ScriptContext {
     const writes = new Map<string, string[]>();
     const piped: string[] = [];
     const catFiles: string[] = [];
-    let changesDir = false;
     for (const cmd of commands) {
         if (TEXT_EMITTERS.has(cmd.name)) {
             const operands = cmd.args.filter(a => !a.startsWith('-'));
@@ -1367,9 +1406,27 @@ function scriptContextOf(commands: ResolvedCommand[]): ScriptContext {
                 if (cmd.name === 'cat') catFiles.push(...operands);
             }
         }
-        if (cmd.name === 'cd' || cmd.name === 'pushd' || cmd.name === 'popd' || cmd.chdir !== undefined) changesDir = true;
     }
-    return { writes, piped, catFiles, changesDir };
+    return { writes, piped, catFiles, cds: [], command: '' };
+}
+
+/** The cd steps in `script`, marking those at top level (not in a subshell, branch, loop, function or substitution). */
+function cdStepsOf(script: any, commands: ResolvedCommand[]): CdStep[] {
+    const topLevel = new Set<number>();
+    const visit = (node: any) => {
+        if (!node) return;
+        if (node.type === 'Statement') return visit(node.command);
+        if (node.type === 'AndOr' || node.type === 'Script' || node.type === 'CompoundList') return (node.commands || []).forEach(visit);
+        if (node.type === 'Command' && typeof node.pos === 'number') topLevel.add(node.pos);
+    };
+    visit(script);
+    return commands
+        .filter(c => c.name === 'cd' || c.name === 'pushd' || c.name === 'popd' || c.chdir !== undefined)
+        .map(c => ({
+            pos: c.pos ?? -1,
+            target: c.name === 'cd' && c.args.length === 1 && c.args[0] !== '-' ? c.args[0] : undefined,
+            plain: c.name === 'cd' && c.pos !== undefined && topLevel.has(c.pos) && c.chdir === undefined,
+        }));
 }
 
 /** Regex-based fallback for when the AST parser fails */
@@ -2505,7 +2562,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     const sqlDialect = SQL_CLIS[name] ?? (name === 'snow' && args[0] === 'sql' ? 'Snowflake' : null);
     if (sqlDialect) {
         const input = sqlInputOf(cmd);
-        if (input.unreadable) return `${sqlDialect} SQL file ${input.unreadable} can't be checked (too large, or too many included files).`;
+        if (input.unreadable) return `${sqlDialect} SQL file ${input.unreadable} can't be checked: too large, or too many included files.`;
         for (const text of input.texts) {
             const matched = findDestructiveSqlStatement(text);
             if (matched) {
@@ -2647,7 +2704,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
                 return 'git push --mirror force-updates every remote ref.';
             }
             if (options.includes('--prune')) {
-                return 'git push --prune deletes every remote branch that has no local counterpart.';
+                return 'git push --prune deletes every remote ref, in the refspecs pushed, that has no local counterpart.';
             }
             // `+refspec` is per-ref force; `:refspec` deletes the remote ref.
             if (options.includes('--delete') || hasShortFlag(options, 'd', GIT_PUSH_SHORT_VALUE_FLAGS) ||
@@ -2902,8 +2959,9 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
         ] };
     }
     if (flags.has('--prune')) {
-        return { dir, label: `Delete remote branches on ${remote} that don't exist locally (--prune)`, lines: [
-            `If you approve: every branch on ${code(remote)} with no matching local branch is deleted. Pull requests from those branches close.`,
+        const scope = refs.length ? `matching ${code(refs.join(' '))}` : 'covered by the push (branches, by default)';
+        return { dir, label: `Delete remote refs on ${remote} that don't exist locally (--prune)`, lines: [
+            `If you approve: every ref on ${code(remote)} ${scope} with no local counterpart is deleted. That can include tags when the refspec names them; pull requests from deleted branches close.`,
         ] };
     }
     const deleted = flags.has('--delete') || flags.has('-d') ? refs : refs.filter(r => r.startsWith(':'));

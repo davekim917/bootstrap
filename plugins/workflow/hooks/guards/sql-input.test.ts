@@ -54,6 +54,15 @@ test('a SQL file too large to check gates', () => {
     expect(verdict(`snow sql -f ${dir}/huge.sql`)).toBe('gate');
 });
 
-test('after a cd, a relative file is not read from the starting directory, where it names a different file', () => {
+test('a file path the command proves is read: a variable with a known value, or a plain top-level cd', () => {
+    expect(verdict(`f=${dir}/bad.sql; psql -f "$f"`)).toBe('gate');
+    expect(verdict(`cd ${dir} && snow sql -f bad.sql`)).toBe('gate');
+    expect(verdict(`D=${dir}; cd $D; psql -f bad.sql`)).toBe('gate');
+    expect(verdict(`f=${dir}/ok.sql; psql -f "$f"`)).toBe('allow');
+    expect(verdict(`cd ${dir}; snow sql -f ok.sql`)).toBe('allow');
+});
+
+test('after a cd the command does not prove, a relative file is not read from the starting directory, where it names a different file', () => {
     expect(verdict(`cd /elsewhere && psql -f bad.sql`)).toBe('allow');
+    expect(verdict(`if true; then cd /elsewhere; fi; psql -f bad.sql`)).toBe('allow');
 });

@@ -85,6 +85,12 @@ describe('destructive approval description', () => {
             has: [],
         },
         {
+            name: '--prune names the refspec it prunes, which can be tags',
+            command: "git push --prune origin 'refs/tags/*:refs/tags/*'",
+            label: "Delete remote refs on origin that don't exist locally (--prune)",
+            has: ['`refs/tags/*:refs/tags/*`', 'include tags'],
+        },
+        {
             name: 'terraform -target narrows the effect',
             command: 'terraform destroy -target=aws_s3_bucket.logs',
             label: 'Run terraform destroy',
