@@ -172,6 +172,12 @@ export function evalWord(
             while (j < text.length && text[j] !== "'") {
                 if (text[j] === '\\' && j + 1 < text.length) {
                     const esc = text[j + 1];
+                    const hex = esc === 'x' ? text.slice(j + 2).match(/^[0-9a-fA-F]{1,2}/)?.[0] : undefined;
+                    if (hex) {
+                        literal += String.fromCharCode(parseInt(hex, 16));
+                        j += 2 + hex.length;
+                        continue;
+                    }
                     literal += ANSI_C_ESCAPES[esc] ?? `\\${esc}`;
                     j += 2;
                 } else literal += text[j++];
@@ -199,10 +205,24 @@ export function evalWord(
     return { value: out, unresolved };
 }
 
-// Builtins that change variables without an Assignment node. The first set can
-// change any variable; the second changes the variables named in its arguments.
-const CHANGES_ANY = new Set(['eval', 'let', 'source', '.', 'trap']);
-const CHANGES_NAMED = new Set(['unset', 'read', 'readarray', 'mapfile', 'declare', 'typeset', 'local', 'readonly', 'printf', 'getopts']);
+// Only a shell builtin can change the calling shell's variables; an external
+// program runs in its own process. So a command keeps variables trusted only if
+// it is not a builtin, or is one of these, which never assign.
+const BASH_BUILTINS = new Set([
+    'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'compopt',
+    'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc',
+    'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd',
+    'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source',
+    'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait',
+    '.', ':', '[',
+]);
+const NON_ASSIGNING_BUILTINS = new Set([
+    'cd', 'echo', 'exit', 'false', 'help', 'jobs', 'kill', 'pwd', 'return', 'shift', 'times', 'true', 'type',
+    'ulimit', 'umask', ':',
+]);
+// Nodes that may assign any variable: a function body runs wherever it is
+// called, and arithmetic or a coproc can set names the text does not spell out.
+const ASSIGNING_NODES = new Set(['Function', 'ArithmeticCommand', 'ArithmeticFor', 'ArithmeticExpansion', 'Coproc', 'TestCommand']);
 // Past this, resolving variables is not worth its cost on a hostile command.
 const RESOLVE_MAX_CHARS = 64 * 1024;
 
@@ -219,9 +239,11 @@ interface VarEvent {
 /**
  * Parse `command` into its simple commands and the variables it provably sets.
  * Only a top-level assignment counts, alone or in an `&&` chain (then only for
- * the rest of that chain). One in a subshell, group, branch, loop, function,
- * pipeline, background job or after `||`, an append, a loop variable, or a later
- * builtin that may change it makes the variable `runtime` from there on.
+ * the rest of that chain). One in a subshell, group, branch, loop, pipeline,
+ * background job or after `||`, an append, or a loop variable makes the
+ * variable `runtime` from there on, and so does any later builtin that is not
+ * known to leave variables alone. A function definition anywhere turns
+ * resolution off.
  */
 export function viewShell(command: string): ShellView {
     const events: VarEvent[] = [];
@@ -288,13 +310,21 @@ export function viewShell(command: string): ShellView {
         // so they get no position: nothing is resolved inside one, and nothing set
         // inside one is trusted outside it.
         const nodes: Array<{ n: any; nested: boolean }> = [];
+        let hasFunction = false;
         walk(ast, (n, nested) => {
-            if (n.type === 'Assignment' || n.type === 'Command' || n.type === 'For' || n.type === 'Select') nodes.push({ n, nested });
+            if (n.type === 'Function') hasFunction = true;
+            if (n.type === 'Assignment' || n.type === 'Command' || n.type === 'For' || n.type === 'Select' || ASSIGNING_NODES.has(n.type)) {
+                nodes.push({ n, nested });
+            }
         });
         nodes.sort((a, b) => (a.n.pos ?? 0) - (b.n.pos ?? 0));
         const taint = (name: string, pos: number) => events.push({ name, pos, value: { kind: 'runtime' } });
         for (const { n, nested } of nodes) {
             const pos = nested ? -1 : typeof n.pos === 'number' ? n.pos : 0;
+            if (ASSIGNING_NODES.has(n.type)) {
+                if (!nested) taint('*', pos);
+                continue;
+            }
             if (n.type === 'For' || n.type === 'Select') {
                 const loopVar = n.name?.text;
                 if (typeof loopVar === 'string') taint(loopVar, pos);
@@ -307,19 +337,23 @@ export function viewShell(command: string): ShellView {
                 continue;
             }
             if (!n.name) continue;
-            const argTexts = (n.suffix || []).map((x: any) => String(x.text ?? x.value ?? ''));
+            const argTexts: string[] = (n.suffix || []).map((x: any) => String(x.text ?? x.value ?? ''));
+            const nameText = String(n.name.text ?? n.name.value ?? '');
             const name = String(n.name.value ?? n.name.text ?? '');
-            if (CHANGES_ANY.has(name)) taint('*', pos);
-            if (CHANGES_NAMED.has(name)) {
-                for (const t of argTexts) {
-                    const m = t.match(/^([A-Za-z_]\w*)(?:\+?=|$)/);
-                    if (m) taint(m[1], pos);
-                }
+            // A command substitution runs in a subshell and cannot change this shell's variables.
+            if (!nested && name !== 'export') {
+                const disguised = /[$`'"\\]/.test(nameText);
+                const assigns = BASH_BUILTINS.has(name) && !NON_ASSIGNING_BUILTINS.has(name)
+                    && !(name === 'printf' && !argTexts.some(t => /^['"]?-[a-zA-Z]*v/.test(t)));
+                if (disguised || assigns) taint('*', pos);
             }
             if (name === 'export') {
                 for (const text of argTexts) {
                     const m = text.match(/^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/);
-                    if (!m) continue;
+                    if (!m) {
+                        if (!nested && !/^[A-Za-z_]\w*$/.test(text)) taint('*', pos);
+                        continue;
+                    }
                     if (nested || !sound.has(n) || m[2]) { taint(m[1], pos); continue; }
                     const r = evalWord(m[3], view, pos);
                     events.push({ name: m[1], pos, value: r.unresolved.length ? { kind: 'runtime' } : { kind: 'text', value: r.value }, scope: sound.get(n) });
@@ -327,7 +361,12 @@ export function viewShell(command: string): ShellView {
             }
             commands.push({ name, argTexts, pos });
         }
-        for (const m of command.slice(0, RESOLVE_MAX_CHARS).matchAll(/\$\{([A-Za-z_]\w*):?[=?]/g)) taint(m[1], m.index ?? 0);
+        const scan = command.slice(0, RESOLVE_MAX_CHARS);
+        for (const m of scan.matchAll(/\$\{([A-Za-z_]\w*):?[=?]/g)) taint(m[1], m.index ?? 0);
+        for (const m of scan.matchAll(/\{([A-Za-z_]\w*)\}[<>]/g)) taint(m[1], m.index ?? 0);
+        for (const m of scan.matchAll(/\$\(\(|\(\(/g)) taint('*', m.index ?? 0);
+        if (hasFunction) taint('*', -1);
+        events.sort((a, b) => a.pos - b.pos);
         return view;
     }
 }

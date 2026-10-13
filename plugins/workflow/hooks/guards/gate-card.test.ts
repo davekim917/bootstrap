@@ -100,6 +100,7 @@ describe('destructive approval description', () => {
         ['a let', 'B=keep; let B=5; git push origin --delete $B', '$B'],
         ['a background assignment', 'B=keep; B=gone & git push origin --delete $B', '$B'],
         ['an && assignment the step is not chained to', 'B=keep; false && B=gone; git push origin --delete $B', '$B'],
+        ['a quoted declare', 'B=keep; declare "B=gone"; git push origin --delete $B', '$B'],
     ])('does not resolve %s', (_name, command, variable) => {
         const c = card(command);
         expect(c.summary).not.toContain('keep');
@@ -175,6 +176,39 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
         expect(v.summary).toContain('Message: not shown.');
     });
 
+    test.each([
+        ['a quoted read', `read "B" < /dev/null`],
+        ['a quoted unset', `unset 'B'`],
+        ['a quoted declare', `declare "B=real"`],
+        ['a quoted export', `export "B=real"`],
+        ['printf -v', `printf -v "B" real`],
+        ['printf -vB', `printf -vB real`],
+        ['builtin eval', `builtin eval "B=real"`],
+        ['command eval', `command eval "B=real"`],
+        ['builtin read', `builtin read B < /dev/null`],
+        ['a nameref', `declare -n R=B; R=real`],
+        ['an arithmetic command', `(( B = 5 ))`],
+        ['an arithmetic expansion', `: $((B=5))`],
+        ['wait -p', `wait -n -p B`],
+        ['an fd redirect', `exec {B}>/dev/null`],
+        ['a disguised command name', `e\\val "B=real"`],
+        ['a function', `f() { B=real; }; f`],
+    ])('withholds a body after %s', (_name, change) => {
+        const v = evaluateEmailSend(`B='decoy'; ${change}; gws gmail +send --to a@example.com --body "$B"`, INTERACTIVE);
+        expect(v.summary).not.toContain('decoy');
+    });
+
+    test('still resolves past commands that cannot change variables', () => {
+        const v = evaluateEmailSend(`B='kept'; cd /tmp; echo hi | grep h; printf '%s' x; gws gmail +send --to a@example.com --body "$B"`, INTERACTIVE);
+        expect(v.summary).toContain('> kept');
+    });
+
+    test('a generated command word gets no reassurance', () => {
+        const v = evaluateEmailSend("gws gmail +send --to a@example.com --body hi --dry-run; $(echo Z3dz | base64 -d) gmail +send --to b@example.net", INTERACTIVE);
+        expect(v.summary).not.toContain('sends nothing');
+        expect(v.summary).toContain('built when the command runs');
+    });
+
     test('an unquoted variable the shell would split is not shown as one value', () => {
         const v = evaluateEmailSend(`B='hello world'; gws gmail +send --to a@example.com --body $B`, INTERACTIVE);
         expect(v.summary).not.toContain('> hello world');
@@ -183,6 +217,7 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
     test('an ANSI-C quoted body renders its escapes', () => {
         const v = evaluateEmailSend(`gws gmail +send --to a@example.com --body $'line one\\nit\\'s two'`, INTERACTIVE);
         expect(v.summary).toContain("> line one\n> it's two");
+        expect(evaluateEmailSend(`gws gmail +send --to a@example.com --body $'\\x41BC'`, INTERACTIVE).summary).toContain('> ABC');
     });
 
     test('shows the body bash would send, not a value set somewhere it does not reach', () => {

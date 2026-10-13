@@ -452,6 +452,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         : flagTo ?? envelope.to ?? 'unknown recipient');
     // A send-shaped call, or one whose verb is hidden behind quoting or expansion.
     const sendLike = calls.filter(c => c.verb || /[$`'"\\]/.test(c.verbText)).length;
+    const generatedWord = view.commands.some(c => /[$`\\]/.test(c.name));
     const gwsWords = Math.max(sendLike, (scanned.match(/\bgws\s+gmail\s+(?:\+\S|users\s+(?:messages|drafts)\s+send\b)/g) ?? []).length);
     const probeFlag = send?.values.find(v => EMAIL_BYPASS_FLAGS.has(v));
     const named = gwsWords > 1
@@ -460,7 +461,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const label = gwsWords > 1
         ? `Email: ${gwsWords} gws calls; addresses named: ${named.join(', ') || 'none found'}`
         : (subject ? `Email ${action} to ${to}: "${inline(subject)}"` : `Email ${action} to ${to}`)
-            + (probeFlag ? ` (${probeFlag} — check the command)` : '');
+            + (generatedWord ? ' (check the command)' : probeFlag ? ` (${probeFlag} — check the command)` : '');
 
     const lines: string[] = [];
     if (gwsWords > 1) {
@@ -469,6 +470,8 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
             `Addresses named anywhere in the command: ${named.join(', ') || 'none found'}`,
             '',
         );
+    } else if (generatedWord) {
+        lines.push('⚠️ A command name here is built when the command runs, so it may send mail this description cannot see. Check the full command.', '');
     } else if (probeFlag) {
         lines.push(`⚠️ This send carries ${code(probeFlag)}, which on its own sends nothing. The gate still asks because the command also pipes or chains other steps it can't rule out; check the full command.`, '');
     }
