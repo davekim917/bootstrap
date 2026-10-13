@@ -1720,6 +1720,8 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     const scope = currentDevScope();
     if (!scope) return null;
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
+    // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
+    if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
     if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name))) return null;
     try {
         const assignments: any[] = [];
@@ -2140,9 +2142,24 @@ export function stageAllDuringConflictReason(cmd: ResolvedCommand, cwd: string):
 
 // ── Gated checks ─────────────────────────────────────────────────────────────
 
-/** True when `-<ch>` is given alone or inside a short-option cluster such as `-uf`. */
-function hasShortFlag(args: string[], ch: string): boolean {
-    return args.some(a => /^-[A-Za-z0-9]+$/.test(a) && a.slice(1).includes(ch));
+/** True when `-<ch>` is given alone or inside a short-option cluster such as `-uf`, before any value-taking letter in `valueFlags`. */
+function hasShortFlag(args: string[], ch: string, valueFlags = ''): boolean {
+    return args.some(a => /^-[A-Za-z0-9]/.test(a) && clusterSets(a, ch, valueFlags));
+}
+
+// `git push` options that take a value, and the short letters among them.
+const GIT_PUSH_VALUE_OPTS = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec']);
+const GIT_PUSH_SHORT_VALUE_FLAGS = 'o';
+
+/** `git push` arguments with every option value removed, so a value is never read as a flag or refspec. Everything from `--` on is kept: those are operands. */
+function pushArgsWithoutValues(args: string[]): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--') return [...out, ...args.slice(i)];
+        if (GIT_PUSH_VALUE_OPTS.has(args[i])) { i++; continue; }
+        out.push(args[i]);
+    }
+    return out;
 }
 
 // AWS CLI global options that take a value; they may come before the service.
@@ -2151,15 +2168,18 @@ const AWS_GLOBAL_VALUE_OPTS = new Set([
     '--cli-read-timeout', '--cli-connect-timeout', '--color', '--cli-binary-format',
 ]);
 
-/** `aws [global options] <service> <operation> …` → [service, operation]. */
-export function awsServiceAndOperation(args: string[]): [string, string] {
+/** `aws [global options] <service> <operation> …` → [service, operation, index of operation in args (-1 when absent)]. */
+export function awsServiceAndOperation(args: string[]): [string, string, number] {
     const positional: string[] = [];
+    let opIndex = -1;
     for (let i = 0; i < args.length && positional.length < 2; i++) {
         const a = args[i];
-        if (!a.startsWith('-')) positional.push(a);
-        else if (AWS_GLOBAL_VALUE_OPTS.has(a)) i++;
+        if (!a.startsWith('-')) {
+            positional.push(a);
+            if (positional.length === 2) opIndex = i;
+        } else if (AWS_GLOBAL_VALUE_OPTS.has(a)) i++;
     }
-    return [positional[0] ?? '', positional[1] ?? ''];
+    return [positional[0] ?? '', positional[1] ?? '', opIndex];
 }
 
 /** Returns gate reason if the command requires approval, null otherwise */
@@ -2305,15 +2325,17 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
             break;
         }
         if (args[i] === 'push') {
-            const pushArgs = args.slice(i + 1);
-            if (pushArgs.includes('--force') || hasShortFlag(pushArgs, 'f')) {
+            const pushArgs = pushArgsWithoutValues(args.slice(i + 1));
+            const end = pushArgs.indexOf('--');
+            const options = end === -1 ? pushArgs : pushArgs.slice(0, end);
+            if (options.includes('--force') || hasShortFlag(options, 'f', GIT_PUSH_SHORT_VALUE_FLAGS)) {
                 return 'git push --force rewrites remote history. Use --force-with-lease (refuses to clobber unseen work) or get approval.';
             }
-            if (pushArgs.includes('--mirror')) {
+            if (options.includes('--mirror')) {
                 return 'git push --mirror force-updates every remote ref.';
             }
             // `+refspec` is per-ref force; `:refspec` deletes the remote ref.
-            if (pushArgs.includes('--delete') || hasShortFlag(pushArgs, 'd') ||
+            if (options.includes('--delete') || hasShortFlag(options, 'd', GIT_PUSH_SHORT_VALUE_FLAGS) ||
                 pushArgs.some(a => (a.startsWith(':') || a.startsWith('+')) && a.length > 1)) {
                 return 'git push deleting or force-updating a remote ref (+/: refspec, --delete).';
             }
@@ -2542,14 +2564,17 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
         i += valueOpts.has(cmd.args[i]) ? 2 : 1;
     }
     const rest = cmd.args.slice(i + 1);
-    const pushValueOpts = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec']);
     const positional: string[] = [];
     const flags = new Set<string>();
-    for (let j = 0; j < rest.length; j++) {
-        if (pushValueOpts.has(rest[j])) { j++; continue; }
-        if (!rest[j].startsWith('-')) positional.push(rest[j]);
-        else if (rest[j].startsWith('--')) flags.add(rest[j].split('=')[0]);
-        else for (const ch of rest[j].slice(1)) flags.add(`-${ch}`);
+    let operandsOnly = false;
+    for (const a of pushArgsWithoutValues(rest)) {
+        if (a === '--' && !operandsOnly) { operandsOnly = true; continue; }
+        if (operandsOnly || !a.startsWith('-')) positional.push(a);
+        else if (a.startsWith('--')) flags.add(a.split('=')[0]);
+        else for (const ch of a.slice(1)) {
+            flags.add(`-${ch}`);
+            if (GIT_PUSH_SHORT_VALUE_FLAGS.includes(ch)) break;
+        }
     }
     const remote = positional[0] ?? 'the upstream remote';
     const refs = positional.slice(1);
@@ -2578,8 +2603,8 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
 }
 
 function awsStep(cmd: ResolvedCommand): StepCard {
-    const [service, op] = awsServiceAndOperation(cmd.args);
-    const operands = cmd.args.slice(cmd.args.indexOf(op) + 1).filter(a => !a.startsWith('-'));
+    const [service, op, opIndex] = awsServiceAndOperation(cmd.args);
+    const operands = cmd.args.slice(opIndex + 1).filter(a => !a.startsWith('-'));
     const lines: string[] = [];
     let label = `AWS ${service} ${op}`;
     if (service === 's3' && op === 'rm') {

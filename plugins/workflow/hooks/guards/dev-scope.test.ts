@@ -95,6 +95,15 @@ describe('everything else stays gated', () => {
         expect(verdict(command)).toBe('gate');
     });
 
+    test('an inherited SNOWFLAKE_ variable keeps the prompt, since snow reads it', () => {
+        process.env.SNOWFLAKE_CONNECTIONS_ACME_DEV_ACCOUNT = 'prod-account';
+        try {
+            expect(verdict('snow sql -c acme_dev -q "drop table dev_db.a.b"')).toBe('gate');
+        } finally {
+            delete process.env.SNOWFLAKE_CONNECTIONS_ACME_DEV_ACCOUNT;
+        }
+    });
+
     test('with no scope file nothing is exempt', () => {
         process.env[DEV_SCOPE_FILE_ENV] = join(dir, 'missing.json');
         expect(verdict('snow sql -c acme_dev -q "drop table dev_db.a.b"')).toBe('gate');
