@@ -103,6 +103,9 @@ const BASH_GATE = [
   'snow sql -q "alter table prod.orders rename to prod.orders_old"',
   'snow sql -q "grant ownership on table prod.orders to role r"',
   'git push --prune origin',
+  'echo "drop table users" | psql',
+  'psql -c "DO LANGUAGE plpgsql $$ BEGIN DROP TABLE users; END $$"',
+  'psql -cDROP\\ TABLE\\ users',
   'psql -c "-- note; with a semicolon\ndrop table users"',
   'git push --mirror backup',
   'git push origin --delete feature-x',
@@ -138,6 +141,11 @@ const BASH_ALLOW = [
   'echo "drop table t"; psql -c "select 1"',
   'git fetch --prune',
   'git remote prune origin',
+  // Text the command writes elsewhere is not the SQL a client reads from a file.
+  'psql -f migration.sql && echo "dropped the old users table"',
+  'echo "DROP TABLE users"; psql < safe.sql',
+  "printf 'DROP TABLE %s\\n' users; mysql < safe.sql",
+  'cat drop.sql; psql < safe.sql',
 ];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);

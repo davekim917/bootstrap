@@ -65,13 +65,15 @@ export interface ResolvedCommand {
     pos?: number;               // source offset when produced by the AST parser
     stdinTexts?: string[];      // heredoc and here-string text fed to this command
     stdinFiles?: string[];      // files redirected into this command with `<`
+    stdoutFiles?: string[];     // files this command's output is redirected into
     script?: ScriptContext;     // what the whole command line shows, shared by its commands
 }
 
 /** Facts about the whole command line that a single step's checks need. */
 export interface ScriptContext {
-    texts: string[];            // every heredoc/here-string body, and the text echo/printf/tee emit
-    catFiles: string[];         // files `cat` reads, which may be piped into a SQL client
+    writes: Map<string, string[]>; // text written to each file by echo/printf/cat-heredoc/tee, by path as written
+    piped: string[];            // text echo/printf/cat emit to stdout, which a pipe may feed to a SQL client
+    catFiles: string[];         // files `cat` reads to stdout, likewise
     changesDir: boolean;        // a cd/pushd/popd somewhere, so relative paths are ambiguous
     cwd?: string;               // the directory the command line starts in
 }
@@ -556,7 +558,7 @@ const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTE
 const WITH_LEADING = /^WITH\b/i;
 const WITH_PREFIX = /^WITH\s+(?:RECURSIVE\s+)?/i;
 const CTE_NAME_AS = /^(?:"\s*"|"[^"]*"|`[^`]*`|[A-Za-z_][\w$]*)\s*(?:\([^)]*\))?\s+AS\s+/i;
-const EXECUTE_IMMEDIATE = /(?:EXECUTE\s+IMMEDIATE|\bDO)\s+/gi;
+const EXECUTE_IMMEDIATE = /(?:EXECUTE\s+IMMEDIATE|\bDO(?:\s+LANGUAGE\s+\w+)?)\s+/gi;
 const DOLLAR_TAG = /^\$([A-Za-z0-9_]*)\$/;
 
 const STATEMENT_PREVIEW_CHARS = 200;
@@ -802,6 +804,7 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0): Des
 }
 
 const SQL_FILE_MAX_BYTES = 1_000_000;
+const SQL_FILES_MAX = 16;
 // Options whose value is a file of SQL the client runs.
 const SQL_FILE_OPTIONS: Record<string, string[]> = {
     snow: ['-f', '--filename'], psql: ['-f', '--file'], duckdb: ['-f', '-init'], sqlite3: ['-init'], sqlite: ['-init'],
@@ -817,7 +820,7 @@ const SNOW_TEMPLATE = /&\{\s*([\w.]+)\s*\}|<%\s*([\w.]+)\s*%>|&([A-Za-z_]\w*)/g;
 
 export interface SqlInput {
     texts: string[];            // every SQL text the client could run, as far as the command line shows
-    unreadable: string | null;  // a SQL file too large to check
+    unreadable: string | null;  // a SQL file too large to check, or past the include limit
 }
 
 /** The value `option` gives in `args[i]`: `-q X`, `--query=X`, or glued `-qX`. */
@@ -877,20 +880,31 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const rendered = texts.map(t => t.replace(SNOW_TEMPLATE, (m, a, b, c) => vars.get(a ?? b ?? c) ?? m));
         texts.push(...rendered, ...vars.values());
     }
-    for (const t of [...texts]) {
-        for (const m of t.matchAll(SQL_INCLUDE)) files.push(m[1]);
-    }
-    if (files.length || readsStdin) {
-        texts.push(...(cmd.script?.texts ?? []));
-        if (readsStdin) files.push(...(cmd.script?.catFiles ?? []));
+    if (readsStdin && !files.length && !(cmd.stdinTexts?.length)) {
+        texts.push(...(cmd.script?.piped ?? []));
+        files.push(...(cmd.script?.catFiles ?? []));
     }
 
+    // Read each file, plus any text the command writes to it first; follow
+    // includes found in what is read, up to a fixed number of files.
     let unreadable: string | null = null;
-    for (const f of files) {
+    const pending = [...files];
+    for (const t of texts) for (const m of t.matchAll(SQL_INCLUDE)) pending.push(m[1]);
+    const seen = new Set<string>();
+    while (pending.length && seen.size < SQL_FILES_MAX) {
+        const f = pending.shift()!;
+        if (seen.has(f)) continue;
+        seen.add(f);
+        const found: string[] = [...(cmd.script?.writes.get(samePath(f)) ?? [])];
         const content = readSqlFile(f, cmd);
         if (content === 'too-large') unreadable ??= f;
-        else if (content !== null) texts.push(content);
+        else if (content !== null) found.push(content);
+        for (const t of found) {
+            texts.push(t);
+            for (const m of t.matchAll(SQL_INCLUDE)) pending.push(m[1]);
+        }
     }
+    if (pending.length) unreadable ??= pending[0];
     return { texts, unreadable };
 }
 
@@ -1271,7 +1285,11 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     );
     const stdinTexts: string[] = [];
     const stdinFiles: string[] = [];
+    const stdoutFiles: string[] = [];
     for (const r of (node.redirects || [])) {
+        if (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && (r.fileDescriptor === undefined || r.fileDescriptor === 1)) {
+            stdoutFiles.push(wordValue(r.target));
+        }
         if (r?.operator === '<<' || r?.operator === '<<-') stdinTexts.push(String(r.content ?? ''));
         else if (r?.operator === '<<<') stdinTexts.push(wordValue(r.target));
         else if (r?.operator === '<' || r?.operator === '<>') stdinFiles.push(wordValue(r.target));
@@ -1290,6 +1308,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         pos: typeof node.pos === 'number' ? node.pos : undefined,
         ...(stdinTexts.length ? { stdinTexts } : {}),
         ...(stdinFiles.length ? { stdinFiles } : {}),
+        ...(stdoutFiles.length ? { stdoutFiles } : {}),
     };
 }
 
@@ -1300,7 +1319,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
  */
 function wordValue(word: any): string {
     const value = String(word?.value ?? word?.text ?? '');
-    return typeof word?.text === 'string' && word.text === value && /['"]/.test(value) ? shellUnquote(value) : value;
+    return typeof word?.text === 'string' && word.text === value && /['"\\]/.test(value) ? shellUnquote(value) : value;
 }
 
 /** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */
@@ -1322,19 +1341,31 @@ export function extractCommands(command: string): ResolvedCommand[] {
     }
 }
 
-const TEXT_EMITTERS = new Set(['echo', 'printf', 'tee']);
+const TEXT_EMITTERS = new Set(['echo', 'printf', 'cat', 'tee']);
+
+function samePath(path: string): string {
+    return path.replace(/^(?:\.\/)+/, '');
+}
 
 function scriptContextOf(commands: ResolvedCommand[]): ScriptContext {
-    const texts: string[] = [];
+    const writes = new Map<string, string[]>();
+    const piped: string[] = [];
     const catFiles: string[] = [];
     let changesDir = false;
     for (const cmd of commands) {
-        texts.push(...(cmd.stdinTexts ?? []));
-        if (TEXT_EMITTERS.has(cmd.name)) texts.push(cmd.args.filter(a => !a.startsWith('-')).join(' '));
-        if (cmd.name === 'cat') catFiles.push(...cmd.args.filter(a => !a.startsWith('-')));
+        if (TEXT_EMITTERS.has(cmd.name)) {
+            const operands = cmd.args.filter(a => !a.startsWith('-'));
+            const text = [...(cmd.stdinTexts ?? []), ...(cmd.name === 'cat' || cmd.name === 'tee' ? [] : [operands.join(' ')])];
+            const targets = [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? operands : [])];
+            for (const t of targets) writes.set(samePath(t), [...(writes.get(samePath(t)) ?? []), ...text]);
+            if (!cmd.stdoutFiles?.length) {
+                piped.push(...text);
+                if (cmd.name === 'cat') catFiles.push(...operands);
+            }
+        }
         if (cmd.name === 'cd' || cmd.name === 'pushd' || cmd.name === 'popd' || cmd.chdir !== undefined) changesDir = true;
     }
-    return { texts, catFiles, changesDir };
+    return { writes, piped, catFiles, changesDir };
 }
 
 /** Regex-based fallback for when the AST parser fails */
@@ -2470,7 +2501,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     const sqlDialect = SQL_CLIS[name] ?? (name === 'snow' && args[0] === 'sql' ? 'Snowflake' : null);
     if (sqlDialect) {
         const input = sqlInputOf(cmd);
-        if (input.unreadable) return `${sqlDialect} SQL file ${input.unreadable} is too large to check.`;
+        if (input.unreadable) return `${sqlDialect} SQL file ${input.unreadable} can't be checked (too large, or too many included files).`;
         for (const text of input.texts) {
             const matched = findDestructiveSqlStatement(text);
             if (matched) {

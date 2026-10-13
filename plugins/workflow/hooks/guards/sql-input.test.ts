@@ -17,6 +17,8 @@ beforeAll(() => {
     writeFileSync(join(dir, 'bad.sql'), 'select 1;\ndrop table users;\n');
     writeFileSync(join(dir, 'ok.sql'), 'select 1;\n');
     writeFileSync(join(dir, 'huge.sql'), 'select 1;\n'.repeat(120_000));
+    writeFileSync(join(dir, 'outer.sql'), `\\i ${join(dir, 'inner.sql')}\n`);
+    writeFileSync(join(dir, 'inner.sql'), `\\i ${join(dir, 'bad.sql')}\n`);
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -32,6 +34,7 @@ describe('a destructive SQL file is gated however it reaches the client', () => 
         (d: string) => `snow sql -q "!source ${d}/bad.sql"`,
         (d: string) => `psql -c "\\i ${d}/bad.sql"`,
         () => 'psql -f bad.sql',
+        (d: string) => `psql -f ${d}/outer.sql`,
     ])('%#', (make) => {
         expect(verdict(make(dir))).toBe('gate');
     });
