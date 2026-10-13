@@ -101,7 +101,6 @@ interface ChainLink {
 interface CdStep {
     pos: number;
     target: string | undefined;
-    topLevel: boolean;          // a top-level statement or link of a top-level chain, so it changes the shell's own directory
 }
 
 export interface DestructiveMatch {
@@ -963,6 +962,9 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
 }
 
 const SQL_PATH_CANDIDATES_MAX = 8;
+// Past this many directory changes or file writes before a reader, a path is treated as unprovable: matching every
+// write against every cd is quadratic, and no real command comes near it.
+const SQL_PATH_STEPS_MAX = 64;
 
 /**
  * The text of every file a SQL client step could open for `file`: one per
@@ -1009,11 +1011,13 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] {
     if (!file || file === '-') return [];
     let readerPaths: Set<string> | undefined;
     const out: PipedInput[] = [];
-    for (const w of reader.script?.writes ?? []) {
+    const writes = reader.script?.writes ?? [];
+    for (const w of writes) {
         if (samePath(w.target) === samePath(file)) {
             out.push(w.input);
             continue;
         }
+        if (writes.length > SQL_PATH_STEPS_MAX) continue;
         readerPaths ??= new Set(sqlPathCandidates(file, reader) ?? []);
         if ((sqlPathCandidates(w.target, w.writer) ?? []).some(p => readerPaths!.has(p))) out.push(w.input);
     }
@@ -1027,6 +1031,7 @@ function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null 
     if (target === null) return null;
     if (target.startsWith('/')) return [target];
 
+    if ((script?.cds.length ?? 0) > SQL_PATH_STEPS_MAX) return null;
     let dirs = [script?.cwd ?? currentWorkingDir()];
     const here = cmd.pos === undefined ? undefined : script?.links.get(cmd.pos);
     for (const step of script?.cds ?? []) {
@@ -1469,6 +1474,10 @@ function samePath(path: string): string {
 function emittedText(cmd: ResolvedCommand): string[] {
     const operands = cmd.args.filter(a => !a.startsWith('-'));
     if (cmd.name === 'cat' || cmd.name === 'tee') return [...(cmd.stdinTexts ?? [])];
+    if (cmd.name === 'echo') {
+        const text = operands.join(' ');
+        return [...(cmd.stdinTexts ?? []), text, ...(text.includes('\\') ? [renderEscapes(text)] : [])];
+    }
     if (cmd.name !== 'printf') return [...(cmd.stdinTexts ?? []), operands.join(' ')];
     return [...(cmd.stdinTexts ?? []), operands.join(' '), ...operands, renderPrintf(operands)];
 }
@@ -1483,7 +1492,12 @@ function renderPrintf(operands: string[]): string {
     do {
         out += format.replace(PRINTF_DIRECTIVE, d => (d === '%%' ? '%' : values[next++] ?? ''));
     } while (next > 0 && next < values.length && out.length < 100_000);
-    return out.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+    return renderEscapes(out);
+}
+
+/** The newline and tab escapes `echo -e` and printf render; scanned beside the raw text, so it can only add a match. */
+function renderEscapes(text: string): string {
+    return text.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
 }
 
 /**
@@ -1496,18 +1510,16 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
     for (const c of commands) if (c.pos !== undefined) byPos.set(c.pos, c);
     const pipedInto = new Map<number, PipedInput>();
     const links = new Map<number, ChainLink>();
-    const topLevel = new Set<number>();
     let chains = 0;
 
     const pipeline = (node: any): any[] => (node?.type === 'Pipeline' ? node.commands || [] : [node]);
     const stageCommands = (node: any): ResolvedCommand[] =>
         walkCommandNodes(node).map(n => (typeof n.pos === 'number' ? byPos.get(n.pos) : undefined)).filter((c): c is ResolvedCommand => !!c);
-    const visitLink = (node: any, chain: number, index: number, operators: string[], nested: boolean) => {
+    const visitLink = (node: any, chain: number, index: number, operators: string[]) => {
         const stages = pipeline(node?.type === 'Statement' ? node.command : node);
         stages.forEach((stage: any, i: number) => {
             if (stage?.type === 'Command' && typeof stage.pos === 'number') {
                 links.set(stage.pos, { chain, index, operators });
-                if (stages.length === 1 && !nested) topLevel.add(stage.pos);
             } else {
                 visitCompound(stage);
             }
@@ -1520,28 +1532,33 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
                 if (up.name === 'cat') input.catFiles.push(...up.args.filter(a => !a.startsWith('-')));
                 if (up.name === 'cat' || up.name === 'tee') input.catFiles.push(...(fed?.catFiles ?? []));
             }
-            for (const down of stageCommands(stage)) if (down.pos !== undefined) pipedInto.set(down.pos, input);
+            for (const down of stageCommands(stage)) {
+                if (down.pos === undefined) continue;
+                const inner = pipedInto.get(down.pos);
+                pipedInto.set(down.pos, inner
+                    ? { texts: [...inner.texts, ...input.texts], catFiles: [...inner.catFiles, ...input.catFiles] }
+                    : input);
+            }
         });
     };
-    const visit = (node: any, nested: boolean) => {
+    const visit = (node: any) => {
         if (!node) return;
-        if (node.type === 'Statement') return visit(node.command, nested);
-        if (node.type === 'Script' || node.type === 'CompoundList') return (node.commands || []).forEach((c: any) => visit(c, nested));
+        if (node.type === 'Statement') return visit(node.command);
+        if (node.type === 'Script' || node.type === 'CompoundList') return (node.commands || []).forEach((c: any) => visit(c));
         const chain = chains++;
         if (node.type === 'AndOr') {
-            (node.commands || []).forEach((link: any, i: number) => visitLink(link, chain, i, node.operators || [], nested));
+            (node.commands || []).forEach((link: any, i: number) => visitLink(link, chain, i, node.operators || []));
         } else {
-            visitLink(node, chain, 0, [], nested);
+            visitLink(node, chain, 0, []);
         }
     };
-    // Lists inside if/while/for/case bodies, groups, subshells and functions: their
-    // pipelines feed text like top-level ones, but their cds are not top-level.
+    // Lists inside if/while/for/case bodies, groups, subshells and functions: their pipelines feed text like top-level ones.
     const visitCompound = (node: any) => {
         if (!node || node.type === 'Command') return;
-        for (const child of [node.clause, node.then, node.else, node.body, node.command]) visit(child, true);
-        for (const item of node.items || []) visit(item?.body, true);
+        for (const child of [node.clause, node.then, node.else, node.body, node.command]) visit(child);
+        for (const item of node.items || []) visit(item?.body);
     };
-    visit(ast, false);
+    visit(ast);
 
     const writes: FileWrite[] = [];
     for (const cmd of commands) {
@@ -1561,7 +1578,6 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
         .map(c => ({
             pos: c.pos ?? -1,
             target: c.name === 'cd' && c.args.length === 1 && c.args[0] !== '-' ? c.args[0] : undefined,
-            topLevel: c.name === 'cd' && c.pos !== undefined && topLevel.has(c.pos),
         }));
     return { writes, pipedInto, cds, links, command };
 }

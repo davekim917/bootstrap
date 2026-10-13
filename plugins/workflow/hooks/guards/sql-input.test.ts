@@ -107,6 +107,22 @@ test('a pipeline inside an if feeds its client like a top-level one', () => {
     expect(verdict(`if echo 'DROP TABLE users' | psql; then :; fi`)).toBe('gate');
 });
 
+test('echo -e newlines are rendered before scanning', () => {
+    expect(verdict(`echo -e "SELECT 1;\\nDROP TABLE users;" | psql`)).toBe('gate');
+    expect(verdict(`echo -e 'BEGIN;\\nDROP TABLE users;\\nCOMMIT;' | psql`)).toBe('gate');
+});
+
+test('a pipeline inside a loop keeps its own input when the loop is itself a pipe stage', () => {
+    expect(verdict(`psql -Atc "select tablename from pg_tables" | grep tmp_ | while read t; do echo "DROP TABLE $t;" | psql; done`)).toBe('gate');
+});
+
+test('many cds and writes before a SQL file resolve in bounded time', () => {
+    const command = 'D=/;N=f;' + 'cd $D;echo>$N;'.repeat(4400) + 'psql ' + Array.from({ length: 16 }, (_, i) => `-f g${i}`).join(' ');
+    const started = Date.now();
+    verdict(command);
+    expect(Date.now() - started).toBeLessThan(3000);
+});
+
 test('a cd inside a branch leaves the starting directory a candidate', () => {
     expect(verdict(`if false; then cd /tmp; fi; psql -f bad.sql`)).toBe('gate');
     expect(verdict(`if true; then cd /elsewhere; fi; psql -f bad.sql`)).toBe('gate');
