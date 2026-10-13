@@ -79,6 +79,12 @@ describe('destructive approval description', () => {
             has: ['for `--instance-ids i-123 i-456`'],
         },
         {
+            name: 'aws operands come after the operation, not after a global-option value that spells it',
+            command: 'aws --profile rm s3 rm s3://prod/key',
+            label: 'Delete S3 object s3://prod/key',
+            has: [],
+        },
+        {
             name: 'terraform -target narrows the effect',
             command: 'terraform destroy -target=aws_s3_bucket.logs',
             label: 'Run terraform destroy',

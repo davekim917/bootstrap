@@ -62,6 +62,7 @@ const BASH_GATE = [
   // options before the service, a command inside $(…) or an assignment's value,
   // and SQL in a multi-line quoted argument.
   'git push -uf origin main',
+  'git push -fo note origin main',
   'aws --profile prod s3 rm s3://bucket/key',
   'echo $(psql -c "DROP TABLE users")',
   'X=$(snow sql -q "DROP TABLE prod.orders")',
@@ -89,6 +90,10 @@ const BASH_ALLOW = [
   'git stash push -f',
   'git push origin refs/heads/a:refs/heads/b',
   'git commit -m "force push docs"',
+  // `-o` takes a value, so the letters after it in a cluster are its operand.
+  'git push -of origin main',
+  'git push -odelete origin main',
+  'git push -o :note origin main',
 ];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);
