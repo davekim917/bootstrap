@@ -945,7 +945,7 @@ function splitEnvString(text: string): string[] | null {
 export function resolveCommand(node: any): ResolvedCommand | null {
     if (!node.name) return null;
 
-    let name = node.name.value || '';
+    let name = unescapeCommandWord(node.name.value || '');
     let args = (node.suffix || []).map(wordValue);
     let chdir: string | undefined;
     const env: string[] = (node.prefix || [])
@@ -1015,7 +1015,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
 
         if (skip >= args.length) break;
 
-        name = args[skip].replace(/^\/(?:usr\/(?:local\/)?)?(?:s?bin)\//, '');
+        name = unescapeCommandWord(args[skip]).replace(/^\/(?:usr\/(?:local\/)?)?(?:s?bin)\//, '');
         args = args.slice(skip + 1);
     }
 
@@ -1046,6 +1046,14 @@ export function resolveCommand(node: any): ResolvedCommand | null {
 function wordValue(word: any): string {
     const value = String(word?.value ?? word?.text ?? '');
     return typeof word?.text === 'string' && word.text === value && /['"]/.test(value) ? shellUnquote(value) : value;
+}
+
+/**
+ * A command name as bash runs it. Bash drops an unquoted backslash before looking the name up, so `\rm` (the usual way
+ * to skip an `rm -i` alias) and `r\m` both run `rm`; the parser leaves the backslash in.
+ */
+function unescapeCommandWord(word: string): string {
+    return word.replace(/\\(.)/gs, '$1');
 }
 
 /** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */
@@ -1080,7 +1088,7 @@ export function fallbackExtract(command: string): ResolvedCommand[] {
             const normalized = normalizeCommandFallback(rest);
             const parts = normalized.split(/\s+/);
             return {
-                name: parts[0] || '',
+                name: unescapeCommandWord(parts[0] || ''),
                 args: parts.slice(1),
                 raw: seg,
                 env,

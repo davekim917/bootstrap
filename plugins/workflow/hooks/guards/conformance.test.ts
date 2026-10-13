@@ -31,6 +31,10 @@ import { checkEditProtection } from './file-protection-core';
 // Hard-block (never allowed): file-deletion primitives, shell-wrapper bypass,
 // protected-path rm.
 const BASH_BLOCK = [
+  // A backslash in the command name is removed by bash before lookup (`\\rm` skips an alias).
+  '\\rm -rf ~',
+  'r\\m -rf ~',
+  'sudo \\rm -rf ~',
   'eval echo x',
   'unlink secret',
   'shred -u f',
@@ -43,6 +47,8 @@ const BASH_BLOCK = [
 
 // Gated (require approval): destructive infra/DB/cloud/IaC/containers/dbt.
 const BASH_GATE = [
+  '\\git push --force origin main',
+  '\\psql -c "DROP TABLE x"',
   'terraform destroy -auto-approve',
   'psql -c "DROP TABLE users"',
   'snow sql -q "DROP TABLE prod.orders"',
