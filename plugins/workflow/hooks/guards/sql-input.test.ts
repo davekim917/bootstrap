@@ -99,6 +99,18 @@ test('a file cat feeds through tee is what tee writes', () => {
     expect(verdict(`cat bad.sql | tee fresh3.sql; psql -f fresh3.sql`)).toBe('gate');
 });
 
+test('printf output is scanned operand by operand, as it formats them', () => {
+    expect(verdict(`printf '%s' 'DROP TABLE users;' | psql`)).toBe('gate');
+});
+
+test('a pipeline inside an if feeds its client like a top-level one', () => {
+    expect(verdict(`if echo 'DROP TABLE users' | psql; then :; fi`)).toBe('gate');
+});
+
+test('a relative write after a cd matches the absolute path the client reads', () => {
+    expect(verdict(`cd ${dir} && echo 'DROP TABLE users' > fresh4.sql && psql -f ${dir}/fresh4.sql`)).toBe('gate');
+});
+
 test('text echoed to the terminal is not fed to a client that is not in its pipeline', () => {
     expect(verdict(`echo 'DROP TABLE users'; psql`)).toBe('allow');
     expect(verdict(`echo 'DROP TABLE users' | psql`)).toBe('gate');

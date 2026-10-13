@@ -71,13 +71,19 @@ export interface ResolvedCommand {
 
 /** Facts about the whole command line that a single step's checks need. */
 export interface ScriptContext {
-    writes: Map<string, PipedInput>; // what echo/printf/cat/tee write to each file, by path as written and as resolved
+    writes: FileWrite[];        // what echo/printf/cat/tee write to files
     pipedInto: Map<number, PipedInput>; // what the previous stage of a pipeline feeds each command, by command offset
     cds: CdStep[];              // every cd/pushd/popd, in source order
     links: Map<number, ChainLink>; // where each top-level command sits in its &&/|| chain, by command offset
     command: string;            // the whole command line, for resolving variables
     cwd?: string;               // the directory the command line starts in
     view?: ReturnType<typeof viewShell>; // the parsed variable view of `command`, built on first use
+}
+
+interface FileWrite {
+    writer: ResolvedCommand;
+    target: string;             // the path as the writer spells it
+    input: PipedInput;
 }
 
 interface PipedInput {
@@ -936,14 +942,12 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const f = pending.shift()!;
         if (seen.has(f)) continue;
         seen.add(f);
-        const resolved = provableSqlPath(f, cmd);
-        for (const key of new Set([samePath(f), ...(resolved === null ? [] : [samePath(resolved)])])) {
-            const written = cmd.script?.writes.get(key);
-            for (const t of written?.texts ?? []) {
+        for (const written of writesTo(f, cmd)) {
+            for (const t of written.texts) {
                 texts.push(t);
                 pending.push(...sqlIncludes(t, null));
             }
-            pending.push(...(written?.catFiles ?? []));
+            pending.push(...written.catFiles);
         }
         for (const { path, content } of readSqlFiles(f, cmd)) {
             if (content === 'too-large') {
@@ -996,9 +1000,24 @@ function provableWord(text: string, cmd: ResolvedCommand, pos: number): string |
     return r.unresolved.length || /[$`*?[{]/.test(r.value) ? null : r.value;
 }
 
-/** `file` with its variables filled in, when the command line proves their values; null otherwise. */
-function provableSqlPath(file: string, cmd: ResolvedCommand): string | null {
-    return file && file !== '-' ? provableWord(file, cmd, cmd.pos ?? -1) : null;
+/**
+ * What the command line writes to the file `reader` names as `file`: a write
+ * spelled the same way, or one whose possible absolute paths meet the
+ * reader's (each resolved from its own command's directory and variables).
+ */
+function writesTo(file: string, reader: ResolvedCommand): PipedInput[] {
+    if (!file || file === '-') return [];
+    let readerPaths: Set<string> | undefined;
+    const out: PipedInput[] = [];
+    for (const w of reader.script?.writes ?? []) {
+        if (samePath(w.target) === samePath(file)) {
+            out.push(w.input);
+            continue;
+        }
+        readerPaths ??= new Set(sqlPathCandidates(file, reader) ?? []);
+        if ((sqlPathCandidates(w.target, w.writer) ?? []).some(p => readerPaths!.has(p))) out.push(w.input);
+    }
+    return out;
 }
 
 function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
@@ -1449,7 +1468,9 @@ function samePath(path: string): string {
 /** The text an emitter writes to stdout or its files (not counting what a pipe feeds it). */
 function emittedText(cmd: ResolvedCommand): string[] {
     const operands = cmd.args.filter(a => !a.startsWith('-'));
-    return [...(cmd.stdinTexts ?? []), ...(cmd.name === 'cat' || cmd.name === 'tee' ? [] : [operands.join(' ')])];
+    if (cmd.name === 'cat' || cmd.name === 'tee') return [...(cmd.stdinTexts ?? [])];
+    // printf formats its operands into the format string; each operand is scanned on its own as well.
+    return [...(cmd.stdinTexts ?? []), operands.join(' '), ...(cmd.name === 'printf' ? operands : [])];
 }
 
 /**
@@ -1468,12 +1489,14 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
     const pipeline = (node: any): any[] => (node?.type === 'Pipeline' ? node.commands || [] : [node]);
     const stageCommands = (node: any): ResolvedCommand[] =>
         walkCommandNodes(node).map(n => (typeof n.pos === 'number' ? byPos.get(n.pos) : undefined)).filter((c): c is ResolvedCommand => !!c);
-    const visitLink = (node: any, chain: number, index: number, operators: string[]) => {
+    const visitLink = (node: any, chain: number, index: number, operators: string[], nested: boolean) => {
         const stages = pipeline(node?.type === 'Statement' ? node.command : node);
         stages.forEach((stage: any, i: number) => {
             if (stage?.type === 'Command' && typeof stage.pos === 'number') {
                 links.set(stage.pos, { chain, index, operators });
-                if (stages.length === 1) topLevel.add(stage.pos);
+                if (stages.length === 1 && !nested) topLevel.add(stage.pos);
+            } else {
+                visitCompound(stage);
             }
             if (i === 0) return;
             const input: PipedInput = { texts: [], catFiles: [] };
@@ -1485,38 +1508,37 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             for (const down of stageCommands(stage)) if (down.pos !== undefined) pipedInto.set(down.pos, input);
         });
     };
-    const visit = (node: any) => {
+    const visit = (node: any, nested: boolean) => {
         if (!node) return;
-        if (node.type === 'Statement') return visit(node.command);
-        if (node.type === 'Script' || node.type === 'CompoundList') return (node.commands || []).forEach(visit);
+        if (node.type === 'Statement') return visit(node.command, nested);
+        if (node.type === 'Script' || node.type === 'CompoundList') return (node.commands || []).forEach((c: any) => visit(c, nested));
         const chain = chains++;
         if (node.type === 'AndOr') {
-            (node.commands || []).forEach((link: any, i: number) => visitLink(link, chain, i, node.operators || []));
+            (node.commands || []).forEach((link: any, i: number) => visitLink(link, chain, i, node.operators || [], nested));
         } else {
-            visitLink(node, chain, 0, []);
+            visitLink(node, chain, 0, [], nested);
         }
     };
-    visit(ast);
+    // Lists inside if/while/for/case bodies, groups, subshells and functions: their
+    // pipelines feed text like top-level ones, but their cds are not top-level.
+    const visitCompound = (node: any) => {
+        if (!node || node.type === 'Command') return;
+        for (const child of [node.clause, node.then, node.else, node.body, node.command]) visit(child, true);
+        for (const item of node.items || []) visit(item?.body, true);
+    };
+    visit(ast, false);
 
-    const writes = new Map<string, PipedInput>();
-    let view: ReturnType<typeof viewShell> | undefined;
+    const writes: FileWrite[] = [];
     for (const cmd of commands) {
         if (!TEXT_EMITTERS.has(cmd.name)) continue;
         const operands = cmd.args.filter(a => !a.startsWith('-'));
         const fed = cmd.name === 'tee' || cmd.name === 'cat' ? pipedInto.get(cmd.pos ?? -1) : undefined;
-        const texts = [...emittedText(cmd), ...(fed?.texts ?? [])];
-        const catFiles = [...(cmd.name === 'cat' ? operands : []), ...(fed?.catFiles ?? [])];
+        const input = {
+            texts: [...emittedText(cmd), ...(fed?.texts ?? [])],
+            catFiles: [...(cmd.name === 'cat' ? operands : []), ...(fed?.catFiles ?? [])],
+        };
         for (const target of [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? operands : [])]) {
-            const keys = new Set([samePath(target)]);
-            if (/[$`]/.test(target) && cmd.pos !== undefined) {
-                view ??= viewShell(command);
-                const r = evalWord(target, view, cmd.pos);
-                if (!r.unresolved.length) keys.add(samePath(r.value));
-            }
-            for (const key of keys) {
-                const prior = writes.get(key) ?? { texts: [], catFiles: [] };
-                writes.set(key, { texts: [...prior.texts, ...texts], catFiles: [...prior.catFiles, ...catFiles] });
-            }
+            writes.push({ writer: cmd, target, input });
         }
     }
     const cds = commands
