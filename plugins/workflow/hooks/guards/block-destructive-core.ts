@@ -2147,10 +2147,11 @@ function hasShortFlag(args: string[], ch: string, valueFlags = ''): boolean {
 const GIT_PUSH_VALUE_OPTS = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec']);
 const GIT_PUSH_SHORT_VALUE_FLAGS = 'o';
 
-/** `git push` arguments with every option value removed, so a value is never read as a flag or refspec. */
+/** `git push` arguments with every option value removed, so a value is never read as a flag or refspec. Everything from `--` on is kept: those are operands. */
 function pushArgsWithoutValues(args: string[]): string[] {
     const out: string[] = [];
     for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--') return [...out, ...args.slice(i)];
         if (GIT_PUSH_VALUE_OPTS.has(args[i])) { i++; continue; }
         out.push(args[i]);
     }

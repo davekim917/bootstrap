@@ -63,6 +63,7 @@ const BASH_GATE = [
   // and SQL in a multi-line quoted argument.
   'git push -uf origin main',
   'git push -fo note origin main',
+  'git push -- -o +main',
   'aws --profile prod s3 rm s3://bucket/key',
   'echo $(psql -c "DROP TABLE users")',
   'X=$(snow sql -q "DROP TABLE prod.orders")',
