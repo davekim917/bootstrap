@@ -69,6 +69,25 @@ test('a file path the command proves is read: a variable with a known value, or 
     expect(verdict(`cd ${dir}; snow sql -f ok.sql`)).toBe('allow');
 });
 
+test('a cd the step does not depend on leaves both directories possible, and each is read', () => {
+    expect(verdict(`cd /does/not/exist || psql -f bad.sql`)).toBe('gate');
+    expect(verdict(`cd /does/not/exist; psql -f bad.sql`)).toBe('gate');
+    expect(verdict(`cd /does/not/exist && psql -f bad.sql`)).toBe('allow');
+});
+
+test('env -C with a relative directory resolves from where the command starts', () => {
+    expect(verdict(`env -C job psql -f drop.sql`)).toBe('gate');
+});
+
+test('text piped through tee into a file is what that file holds', () => {
+    expect(verdict(`echo 'DROP TABLE users' | tee fresh.sql; psql -f fresh.sql`)).toBe('gate');
+});
+
+test('text echoed to the terminal is not fed to a client that is not in its pipeline', () => {
+    expect(verdict(`echo 'DROP TABLE users'; psql`)).toBe('allow');
+    expect(verdict(`echo 'DROP TABLE users' | psql`)).toBe('gate');
+});
+
 test('after a cd the command does not prove, a relative file is not read from the starting directory, where it names a different file', () => {
     expect(verdict(`cd /elsewhere && psql -f bad.sql`)).toBe('allow');
     expect(verdict(`if true; then cd /elsewhere; fi; psql -f bad.sql`)).toBe('allow');

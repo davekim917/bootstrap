@@ -76,18 +76,29 @@ export interface ResolvedCommand {
 /** Facts about the whole command line that a single step's checks need. */
 export interface ScriptContext {
     writes: Map<string, string[]>; // text written to each file by echo/printf/cat-heredoc/tee, by path as written
-    piped: string[];            // text echo/printf/cat emit to stdout, which a pipe may feed to a SQL client
-    catFiles: string[];         // files `cat` reads to stdout, likewise
+    pipedInto: Map<number, PipedInput>; // what the previous stage of a pipeline feeds each command, by command offset
     cds: CdStep[];              // every cd/pushd/popd, in source order
+    links: Map<number, ChainLink>; // where each top-level command sits in its &&/|| chain, by command offset
     command: string;            // the whole command line, for resolving variables
     cwd?: string;               // the directory the command line starts in
 }
 
-/** A directory change, and whether it surely runs before every later top-level step. */
+interface PipedInput {
+    texts: string[];            // text echo/printf/cat emit into the pipe
+    catFiles: string[];         // files cat reads into it
+}
+
+/** A command's place in a top-level list: which chain, which link, and the operators joining the links. */
+interface ChainLink {
+    chain: number;
+    index: number;
+    operators: string[];
+}
+
 interface CdStep {
     pos: number;
     target: string | undefined;
-    plain: boolean;             // a top-level statement or link of a top-level &&/||/; chain, with one literal-or-provable argument
+    topLevel: boolean;          // a top-level statement or link of a top-level chain, so it changes the shell's own directory
 }
 
 export interface DestructiveMatch {
@@ -906,8 +917,9 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         texts.push(...rendered, ...vars.values());
     }
     if (readsStdin && !files.length && !(cmd.stdinTexts?.length)) {
-        texts.push(...(cmd.script?.piped ?? []));
-        files.push(...(cmd.script?.catFiles ?? []));
+        const piped = cmd.script?.pipedInto.get(cmd.pos ?? -1);
+        texts.push(...(piped?.texts ?? []));
+        files.push(...(piped?.catFiles ?? []));
     }
 
     // Read each file, plus any text the command writes to it first; follow
@@ -920,45 +932,54 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const f = pending.shift()!;
         if (seen.has(f)) continue;
         seen.add(f);
-        const path = f ? resolveSqlPath(f, cmd) : null;
-        const found: string[] = [...(cmd.script?.writes.get(samePath(f)) ?? [])];
-        const content = readSqlFile(f, cmd);
-        if (content === 'too-large') unreadable ??= f;
-        else if (content !== null) found.push(content);
-        for (const t of found) {
+        for (const t of cmd.script?.writes.get(samePath(f)) ?? []) {
             texts.push(t);
-            pending.push(...sqlIncludes(t, path));
+            pending.push(...sqlIncludes(t, null));
+        }
+        for (const { path, content } of readSqlFiles(f, cmd)) {
+            if (content === 'too-large') {
+                unreadable ??= f;
+                continue;
+            }
+            texts.push(content);
+            pending.push(...sqlIncludes(content, path));
         }
     }
     if (pending.length) unreadable ??= pending[0];
     return { texts, unreadable };
 }
 
+const SQL_PATH_CANDIDATES_MAX = 8;
+
 /**
- * A SQL file's text; null when it is missing, not a regular file, or at a path
- * the command line does not prove (a missing one is usually written earlier in
- * the same command, whose text sqlInputOf scans); or 'too-large'.
+ * The text of every file a SQL client step could open for `file`: one per
+ * directory it could run in. Missing files and non-regular files are skipped
+ * (a missing one is usually written earlier in the same command, whose text
+ * sqlInputOf scans), and so is a path the command line does not prove.
  */
-function readSqlFile(file: string, cmd: ResolvedCommand): string | null | 'too-large' {
-    if (!file || file === '-') return null;
-    const path = resolveSqlPath(file, cmd);
-    if (path === null) return null;
-    try {
-        const st = statSync(path);
-        if (!st.isFile()) return null;
-        if (st.size > SQL_FILE_MAX_BYTES) return 'too-large';
-        return readFileSync(path, 'utf-8');
-    } catch {
-        return null;
+function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string; content: string | 'too-large' }> {
+    if (!file || file === '-') return [];
+    const out: Array<{ path: string; content: string | 'too-large' }> = [];
+    for (const path of sqlPathCandidates(file, cmd) ?? []) {
+        try {
+            const st = statSync(path);
+            if (!st.isFile()) continue;
+            out.push({ path, content: st.size > SQL_FILE_MAX_BYTES ? 'too-large' : readFileSync(path, 'utf-8') });
+        } catch {
+            continue;
+        }
     }
+    return out;
 }
 
 /**
- * The absolute path a SQL client step opens, or null when the command line
- * does not prove it: a variable without a provable value, a glob, or a
- * relative path after a cd that is not a plain top-level step.
+ * Every absolute path `file` can name when the step runs, or null when the
+ * command line does not prove it (a variable without a provable value, a glob,
+ * or a cd whose target or effect cannot be known). A top-level cd narrows the
+ * directory only when the step follows it in an unbroken && chain, where its
+ * success is implied; otherwise the step may run in either directory.
  */
-function resolveSqlPath(file: string, cmd: ResolvedCommand): string | null {
+function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
     const script = cmd.script;
     let view: ReturnType<typeof viewShell> | undefined;
     const provable = (text: string, pos: number): string | null => {
@@ -970,18 +991,24 @@ function resolveSqlPath(file: string, cmd: ResolvedCommand): string | null {
     };
     const target = provable(file, cmd.pos ?? -1);
     if (target === null) return null;
-    if (target.startsWith('/')) return target;
-    if (cmd.chdir !== undefined) return cmd.chdir.startsWith('/') ? join(cmd.chdir, target) : null;
-    let dir = script?.cwd ?? currentWorkingDir();
+    if (target.startsWith('/')) return [target];
+
+    let dirs = [script?.cwd ?? currentWorkingDir()];
+    const here = cmd.pos === undefined ? undefined : script?.links.get(cmd.pos);
     for (const step of script?.cds ?? []) {
         if (step.pos < 0 || cmd.pos === undefined) return null;
         if (step.pos >= cmd.pos) continue;
-        if (!step.plain || step.target === undefined) return null;
-        const next = provable(step.target, step.pos);
+        const next = step.topLevel && step.target !== undefined ? provable(step.target, step.pos) : null;
         if (next === null) return null;
-        dir = next.startsWith('/') ? next : join(dir, next);
+        const moved = dirs.map(d => (next.startsWith('/') ? next : join(d, next)));
+        const link = script?.links.get(step.pos);
+        const implied = !!link && !!here && link.chain === here.chain && link.index < here.index
+            && here.operators.slice(link.index, here.index).every(op => op === '&&');
+        dirs = implied ? moved : [...new Set([...dirs, ...moved])];
+        if (dirs.length > SQL_PATH_CANDIDATES_MAX) return null;
     }
-    return join(dir, target);
+    if (cmd.chdir !== undefined) dirs = dirs.map(d => (cmd.chdir!.startsWith('/') ? cmd.chdir! : join(d, cmd.chdir!)));
+    return dirs.map(d => join(d, target));
 }
 
 // Platform CLIs → destructive subcommand verbs
@@ -1389,9 +1416,7 @@ export function extractCommands(command: string): ResolvedCommand[] {
             if (cmd && NESTED_COMMAND_NODES.has(node)) delete cmd.pos;
             return cmd;
         }).filter((c): c is ResolvedCommand => c !== null);
-        const script = scriptContextOf(commands);
-        script.cds = cdStepsOf(ast, commands);
-        script.command = command;
+        const script = scriptContextOf(ast, commands, command);
         for (const cmd of commands) cmd.script = script;
         return commands;
     } catch {
@@ -1405,42 +1430,74 @@ function samePath(path: string): string {
     return path.replace(/^(?:\.\/)+/, '');
 }
 
-function scriptContextOf(commands: ResolvedCommand[]): ScriptContext {
-    const writes = new Map<string, string[]>();
-    const piped: string[] = [];
-    const catFiles: string[] = [];
-    for (const cmd of commands) {
-        if (TEXT_EMITTERS.has(cmd.name)) {
-            const operands = cmd.args.filter(a => !a.startsWith('-'));
-            const text = [...(cmd.stdinTexts ?? []), ...(cmd.name === 'cat' || cmd.name === 'tee' ? [] : [operands.join(' ')])];
-            const targets = [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? operands : [])];
-            for (const t of targets) writes.set(samePath(t), [...(writes.get(samePath(t)) ?? []), ...text]);
-            if (!cmd.stdoutFiles?.length) {
-                piped.push(...text);
-                if (cmd.name === 'cat') catFiles.push(...operands);
-            }
-        }
-    }
-    return { writes, piped, catFiles, cds: [], command: '' };
+/** The text an emitter writes to stdout or its files (not counting what a pipe feeds it). */
+function emittedText(cmd: ResolvedCommand): string[] {
+    const operands = cmd.args.filter(a => !a.startsWith('-'));
+    return [...(cmd.stdinTexts ?? []), ...(cmd.name === 'cat' || cmd.name === 'tee' ? [] : [operands.join(' ')])];
 }
 
-/** The cd steps in `script`, marking those at top level (not in a subshell, branch, loop, function or substitution). */
-function cdStepsOf(script: any, commands: ResolvedCommand[]): CdStep[] {
+/**
+ * What the whole command line shows about where text and directories go: the
+ * text each file is written with, what each pipeline stage feeds the next,
+ * each command's place in its &&/|| chain, and the cds.
+ */
+function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string): ScriptContext {
+    const byPos = new Map<number, ResolvedCommand>();
+    for (const c of commands) if (c.pos !== undefined) byPos.set(c.pos, c);
+    const pipedInto = new Map<number, PipedInput>();
+    const links = new Map<number, ChainLink>();
     const topLevel = new Set<number>();
+    let chains = 0;
+
+    const pipeline = (node: any): any[] => (node?.type === 'Pipeline' ? node.commands || [] : [node]);
+    const stageCommands = (node: any): ResolvedCommand[] =>
+        walkCommandNodes(node).map(n => (typeof n.pos === 'number' ? byPos.get(n.pos) : undefined)).filter((c): c is ResolvedCommand => !!c);
+    const visitLink = (node: any, chain: number, index: number, operators: string[]) => {
+        const stages = pipeline(node?.type === 'Statement' ? node.command : node);
+        stages.forEach((stage: any, i: number) => {
+            if (stage?.type === 'Command' && typeof stage.pos === 'number') {
+                links.set(stage.pos, { chain, index, operators });
+                if (stages.length === 1) topLevel.add(stage.pos);
+            }
+            if (i === 0) return;
+            const input: PipedInput = { texts: [], catFiles: [] };
+            for (const up of stageCommands(stages[i - 1])) {
+                if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
+                input.texts.push(...emittedText(up), ...(pipedInto.get(up.pos ?? -1)?.texts ?? []));
+                if (up.name === 'cat') input.catFiles.push(...up.args.filter(a => !a.startsWith('-')));
+            }
+            for (const down of stageCommands(stage)) if (down.pos !== undefined) pipedInto.set(down.pos, input);
+        });
+    };
     const visit = (node: any) => {
         if (!node) return;
         if (node.type === 'Statement') return visit(node.command);
-        if (node.type === 'AndOr' || node.type === 'Script' || node.type === 'CompoundList') return (node.commands || []).forEach(visit);
-        if (node.type === 'Command' && typeof node.pos === 'number') topLevel.add(node.pos);
+        if (node.type === 'Script' || node.type === 'CompoundList') return (node.commands || []).forEach(visit);
+        const chain = chains++;
+        if (node.type === 'AndOr') {
+            (node.commands || []).forEach((link: any, i: number) => visitLink(link, chain, i, node.operators || []));
+        } else {
+            visitLink(node, chain, 0, []);
+        }
     };
-    visit(script);
-    return commands
-        .filter(c => c.name === 'cd' || c.name === 'pushd' || c.name === 'popd' || c.chdir !== undefined)
+    visit(ast);
+
+    const writes = new Map<string, string[]>();
+    for (const cmd of commands) {
+        if (!TEXT_EMITTERS.has(cmd.name)) continue;
+        const operands = cmd.args.filter(a => !a.startsWith('-'));
+        const text = [...emittedText(cmd), ...(cmd.name === 'tee' || cmd.name === 'cat' ? pipedInto.get(cmd.pos ?? -1)?.texts ?? [] : [])];
+        const targets = [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? operands : [])];
+        for (const t of targets) writes.set(samePath(t), [...(writes.get(samePath(t)) ?? []), ...text]);
+    }
+    const cds = commands
+        .filter(c => c.name === 'cd' || c.name === 'pushd' || c.name === 'popd')
         .map(c => ({
             pos: c.pos ?? -1,
             target: c.name === 'cd' && c.args.length === 1 && c.args[0] !== '-' ? c.args[0] : undefined,
-            plain: c.name === 'cd' && c.pos !== undefined && topLevel.has(c.pos) && c.chdir === undefined,
+            topLevel: c.name === 'cd' && c.pos !== undefined && topLevel.has(c.pos),
         }));
+    return { writes, pipedInto, cds, links, command };
 }
 
 /** Regex-based fallback for when the AST parser fails */
