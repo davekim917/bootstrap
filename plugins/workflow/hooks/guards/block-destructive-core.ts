@@ -34,7 +34,7 @@ import { homedir } from 'os';
 import { dirname, join, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, expandKnown, fitLines, oneLine, readDisplayFile, viewShell } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, hasPotentialVariableMutation, oneLine, readConfigFile, viewShell } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -1118,23 +1118,6 @@ function isZeroArgumentMktempAssignment(assignment: any): boolean {
 }
 
 /**
- * Shell builtins can mutate a variable without producing an Assignment AST
- * node. Fail closed for the common mutation forms and for sourced scripts,
- * whose effects cannot be known statically.
- */
-function hasPotentialVariableMutation(fragment: string, variable: string): boolean {
-    const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return [
-        new RegExp(`\\b(?:export|declare|typeset|local|readonly)\\b[^\\n;]*\\b${escaped}\\s*=`),
-        new RegExp(`\\b(?:unset|read|readarray|mapfile)\\b[^\\n;]*\\b${escaped}\\b`),
-        new RegExp(`\\bprintf\\b[^\\n;]*\\s-v\\s+${escaped}\\b`),
-        new RegExp(`\\bfor\\s+${escaped}\\b`),
-        new RegExp(`\\$\\{${escaped}(?::?=)`),
-        /(?:^|[;&|]\s*|\n\s*)(?:source|\.)\s+/m,
-    ].some(rx => rx.test(fragment));
-}
-
-/**
  * Map each top-level rm command's source offset to variables that are proven
  * to still contain a path created by zero-argument mktemp.
  *
@@ -2132,7 +2115,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     return null;
 }
 
-// ── Approval card ────────────────────────────────────────────────────────────
+// ── Approval description ─────────────────────────────────────────────────────
 // The gate verdict above decides; this section only explains it to the human
 // who has to approve. It never changes what is gated. The text is plain so it
 // reads the same in whatever approval surface the harness uses.
@@ -2145,7 +2128,10 @@ export interface GateCard {
 interface StepCard {
     label: string;
     lines: string[];
+    dir?: string;
 }
+
+const STATEMENT_MAX_CHARS = 4000;
 
 function destructiveStatements(sql: string, depth = 0): DestructiveMatch[] {
     if (depth > SQL_RECURSION_LIMIT || !SQL_PREFILTER.test(sql)) return [];
@@ -2172,7 +2158,7 @@ function destructiveStatements(sql: string, depth = 0): DestructiveMatch[] {
 const SQL_OBJECT = String.raw`([^\s;(]+)`;
 
 function sqlEffect(pattern: string, statement: string, dialect: string): { title: string; effect: string } {
-    const s = oneLine(statement);
+    const s = oneLine(statement.slice(0, STATEMENT_MAX_CHARS));
     let m: RegExpMatchArray | null;
     if (pattern === 'DROP' && (m = s.match(new RegExp(String.raw`^DROP\s+(MATERIALIZED\s+VIEW|\w+)\s+(?:IF\s+EXISTS\s+)?` + SQL_OBJECT, 'i')))) {
         const kind = m[1].toLowerCase().replace(/\s+/g, ' ');
@@ -2216,45 +2202,64 @@ function sqlEffect(pattern: string, statement: string, dialect: string): { title
     return { title: `Run destructive ${dialect} SQL (${pattern})`, effect: `Runs a ${pattern} statement.` };
 }
 
-function flagValue(args: string[], names: string[]): string | undefined {
+/** Every value of a flag, in `--flag value` and `--flag=value` forms. */
+function flagValues(args: string[], names: string[]): string[] {
+    const out: string[] = [];
     for (let i = 0; i < args.length; i++) {
         for (const name of names) {
-            if (args[i] === name && i + 1 < args.length) return args[i + 1];
-            if (name.startsWith('--') && args[i].startsWith(`${name}=`)) return args[i].slice(name.length + 1);
+            if (args[i] === name && i + 1 < args.length) out.push(args[i + 1]);
+            else if (name.length > 2 && args[i].startsWith(`${name}=`)) out.push(args[i].slice(name.length + 1));
         }
     }
-    return undefined;
+    return out;
 }
 
-function databaseLine(cmd: ResolvedCommand, expand: (s: string) => string): string | null {
+function flagValue(args: string[], names: string[]): string | undefined {
+    return flagValues(args, names)[0];
+}
+
+/** Values following a flag up to the next option: `--select a b c`. */
+function flagList(args: string[], names: string[]): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        for (const name of names) {
+            if (args[i].startsWith(`${name}=`)) out.push(args[i].slice(name.length + 1));
+            if (args[i] !== name) continue;
+            for (let j = i + 1; j < args.length && !args[j].startsWith('-'); j++) out.push(args[j]);
+        }
+    }
+    return out.flatMap(v => v.split(/[\s,]+/)).filter(Boolean);
+}
+
+function databaseLine(cmd: ResolvedCommand): string | null {
     const parts: string[] = [];
     if (cmd.name === 'snow') {
         const conn = flagValue(cmd.args, ['-c', '--connection']);
         const role = flagValue(cmd.args, ['--role']);
         const db = flagValue(cmd.args, ['--database', '--dbname']);
-        parts.push(conn ? `connection ${code(expand(conn))}` : 'default connection');
-        if (role) parts.push(`role ${code(expand(role))}`);
-        if (db) parts.push(`database ${code(expand(db))}`);
+        parts.push(conn ? `connection ${code(conn)}` : 'default connection');
+        if (role) parts.push(`role ${code(role)}`);
+        if (db) parts.push(`database ${code(db)}`);
     } else if (cmd.name === 'psql') {
-        const conninfo = cmd.args.map(a => expand(a)).find(a => /^postgres(?:ql)?:\/\/|\bhost=/.test(a)) ?? '';
+        const conninfo = cmd.args.find(a => /^postgres(?:ql)?:\/\/|\bhost=/.test(a)) ?? '';
         const host = flagValue(cmd.args, ['-h', '--host'])
             ?? conninfo.match(/\bhost=(\S+)/)?.[1]
             ?? conninfo.match(/^postgres(?:ql)?:\/\/(?:[^@/]*@)?([^/:?]+)/)?.[1];
         const db = flagValue(cmd.args, ['-d', '--dbname'])
             ?? conninfo.match(/\bdbname=(\S+)/)?.[1]
             ?? conninfo.match(/^postgres(?:ql)?:\/\/[^/]*\/([^?]+)/)?.[1];
-        if (host) parts.push(`host ${code(expand(host))}`);
-        if (db) parts.push(`database ${code(expand(db))}`);
+        if (host) parts.push(`host ${code(host)}`);
+        if (db) parts.push(`database ${code(db)}`);
     }
     return parts.length ? `Database: ${parts.join(' · ')}` : null;
 }
 
-function sqlStep(dialect: string, cmd: ResolvedCommand, expand: (s: string) => string): StepCard {
+function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     const statements = cmd.args.flatMap(a => destructiveStatements(a)).slice(0, 3);
     const lines: string[] = [];
     let label = `Run destructive ${dialect} SQL`;
     statements.forEach((st, i) => {
-        const { title, effect } = sqlEffect(st.pattern, expand(st.statement), dialect);
+        const { title, effect } = sqlEffect(st.pattern, st.statement, dialect);
         if (i === 0) label = title;
         lines.push(`${i === 0 ? 'If you approve:' : 'And:'} ${effect}`);
     });
@@ -2262,21 +2267,20 @@ function sqlStep(dialect: string, cmd: ResolvedCommand, expand: (s: string) => s
     lines.push(dialect === 'Snowflake'
         ? 'Undo: only through Snowflake Time Travel or UNDROP, and only within the retention window.'
         : 'Undo: only from a backup.');
-    const db = databaseLine(cmd, expand);
+    const db = databaseLine(cmd);
     if (db) lines.push(db);
     return { label, lines };
 }
 
-function defaultDbtTarget(dir: string | undefined, cmd: ResolvedCommand, expand: (s: string) => string): string | null {
+function defaultDbtTarget(dir: string | undefined, cmd: ResolvedCommand): string | null {
     if (!dir) return null;
-    const project = readDisplayFile(join(dir, 'dbt_project.yml'));
+    const project = readConfigFile(join(dir, 'dbt_project.yml'));
     const profile = flagValue(cmd.args, ['--profile']) ?? project?.match(/^profile:\s*['"]?([\w.-]+)/m)?.[1];
     if (!profile) return null;
     const envDir = cmd.env?.find(e => e.startsWith('DBT_PROFILES_DIR='))?.slice('DBT_PROFILES_DIR='.length) ?? process.env.DBT_PROFILES_DIR;
-    const flagDir = flagValue(cmd.args, ['--profiles-dir']);
-    const candidates = [flagDir && expand(flagDir), envDir, dir, join(HOME, '.dbt')].filter((d): d is string => !!d);
+    const candidates = [flagValue(cmd.args, ['--profiles-dir']), envDir, dir, join(HOME, '.dbt')].filter((d): d is string => !!d);
     for (const d of candidates) {
-        const profiles = readDisplayFile(join(d.startsWith('/') ? d : join(dir, d), 'profiles.yml'));
+        const profiles = readConfigFile(join(d.startsWith('/') ? d : join(dir, d), 'profiles.yml'));
         if (!profiles) continue;
         const block = profiles.split(new RegExp(`^${profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*$`, 'm'))[1];
         const target = block?.split(/^\S/m)[0].match(/^\s+target:\s*['"]?([\w.-]+)/m)?.[1];
@@ -2285,26 +2289,22 @@ function defaultDbtTarget(dir: string | undefined, cmd: ResolvedCommand, expand:
     return null;
 }
 
-function dbtStep(cmd: ResolvedCommand, expand: (s: string) => string, dir: string | undefined): StepCard {
-    const selection: string[] = [];
-    for (let i = 0; i < cmd.args.length; i++) {
-        if (!['--select', '-s', '--models', '-m'].includes(cmd.args[i])) continue;
-        for (let j = i + 1; j < cmd.args.length && !cmd.args[j].startsWith('-'); j++) selection.push(expand(cmd.args[j]));
-    }
-    const runtime = selection.some(x => x.includes('$('));
-    const models = runtime ? [] : selection.flatMap(x => x.split(/\s+/)).filter(Boolean);
-    const what = runtime ? 'dbt models chosen at run time'
+function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
+    const models = flagList(cmd.args, ['--select', '-s', '--models', '-m']);
+    const selector = flagValue(cmd.args, ['--selector']);
+    const runtime = models.some(m => m.includes('$'));
+    const what = selector ? `dbt models chosen by selector ${selector}`
+        : runtime ? 'dbt models chosen at run time'
         : models.length === 1 ? `dbt model ${models[0]}`
         : models.length > 1 ? `${models.length} dbt models`
         : 'every dbt model in the project';
     const lines = [
-        `If you approve: each selected incremental model (and seed) is dropped and rebuilt from source instead of updated in place. Rows that exist only from earlier incremental runs are lost.`,
+        'If you approve: each selected incremental model (and seed) is dropped and rebuilt from source instead of updated in place. Rows that exist only from earlier incremental runs are lost.',
     ];
-    if (models.length > 1) lines.push(`Models: ${clip(models.join(', '), 400)}`);
-    if (runtime) lines.push(`⚠️ The model list comes from ${code(clip(selection.join(' '), 120))} when the command runs.`);
+    if (models.length > 1 && !runtime) lines.push(`Models: ${code(clip(models.join(', '), 400))}`);
     const target = flagValue(cmd.args, ['--target', '-t']);
-    const fallback = target ? null : defaultDbtTarget(dir, cmd, expand);
-    lines.push(`dbt target: ${target ? code(expand(target))
+    const fallback = target ? null : defaultDbtTarget(dir, cmd);
+    lines.push(`dbt target: ${target ? code(target)
         : fallback ? `${code(fallback)} (the profile's default; no \`--target\` given)`
         : "the profile's default (no `--target` given)"}`);
     if (cmd.args.includes('--empty')) {
@@ -2313,63 +2313,74 @@ function dbtStep(cmd: ResolvedCommand, expand: (s: string) => string, dir: strin
     return { label: `Rebuild ${what} from scratch (--full-refresh)`, lines };
 }
 
-function gitPushStep(cmd: ResolvedCommand, expand: (s: string) => string): StepCard & { dir?: string } {
+function gitPushStep(cmd: ResolvedCommand): StepCard {
     const valueOpts = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
     let i = 0;
     let dir: string | undefined;
     while (i < cmd.args.length && cmd.args[i] !== 'push') {
-        if (cmd.args[i] === '-C') dir = expand(cmd.args[i + 1] ?? '');
+        if (cmd.args[i] === '-C') dir = cmd.args[i + 1];
         i += valueOpts.has(cmd.args[i]) ? 2 : 1;
     }
     const rest = cmd.args.slice(i + 1);
     const pushValueOpts = new Set(['-o', '--push-option', '--repo', '--receive-pack', '--exec']);
     const positional: string[] = [];
+    const flags = new Set<string>();
     for (let j = 0; j < rest.length; j++) {
         if (pushValueOpts.has(rest[j])) { j++; continue; }
-        if (!rest[j].startsWith('-')) positional.push(expand(rest[j]));
+        if (!rest[j].startsWith('-')) positional.push(rest[j]);
+        else if (rest[j].startsWith('--')) flags.add(rest[j].split('=')[0]);
+        else for (const ch of rest[j].slice(1)) flags.add(`-${ch}`);
     }
     const remote = positional[0] ?? 'the upstream remote';
     const refs = positional.slice(1);
-    const refList = (xs: string[]) => xs.map(r => r.replace(/^[+:]/, '')).join(', ');
+    const remoteRef = (spec: string) => { const s = spec.replace(/^\+/, ''); return s.includes(':') ? s.slice(s.indexOf(':') + 1) : s; };
+    const refList = (xs: string[]) => xs.map(remoteRef).join(', ');
 
-    if (rest.includes('--mirror')) {
+    if (flags.has('--mirror')) {
         return { dir, label: `Mirror-push every branch and tag to ${remote}`, lines: [
             `If you approve: every branch and tag on ${code(remote)} is made to match this clone. Remote branches and tags that don't exist here are deleted.`,
         ] };
     }
-    const deleted = rest.includes('--delete') || rest.includes('-d') ? refs : refs.filter(r => r.startsWith(':'));
+    const deleted = flags.has('--delete') || flags.has('-d') ? refs : refs.filter(r => r.startsWith(':'));
     if (deleted.length) {
         return { dir, label: `Delete remote branch ${refList(deleted)} on ${remote}`, lines: [
             `If you approve: ${code(refList(deleted))} is deleted on ${code(remote)}. Pull requests from it close, and commits pushed only there are lost unless someone has a copy.`,
         ] };
     }
-    const forced = rest.includes('--force') || rest.includes('-f') ? refs : refs.filter(r => r.startsWith('+'));
-    const which = forced.length ? refList(forced) : 'the current branch';
-    return { dir, label: `Force-push ${which} to ${remote}`, lines: [
-        `If you approve: ${forced.length ? code(which) : which} on ${code(remote)} is overwritten with this local history. Commits on the remote that aren't in this copy are discarded for everyone.`,
+    const forceAll = flags.has('--force') || flags.has('-f');
+    const forced = forceAll ? refs : refs.filter(r => r.startsWith('+'));
+    const which = flags.has('--all') || flags.has('--branches') ? 'every local branch'
+        : flags.has('--tags') ? 'every tag'
+        : forced.length ? code(refList(forced)) : 'the current branch';
+    return { dir, label: `Force-push ${which.replace(/`/g, '')} to ${remote}`, lines: [
+        `If you approve: ${which} on ${code(remote)} is overwritten with this local history. Commits on the remote that aren't in this copy are discarded for everyone.`,
     ] };
 }
 
-function awsStep(cmd: ResolvedCommand, expand: (s: string) => string): StepCard {
+function awsStep(cmd: ResolvedCommand): StepCard {
     const [service = '', op = ''] = cmd.args;
-    const operands = cmd.args.slice(2).filter(a => !a.startsWith('-')).map(a => expand(a));
+    const operands = cmd.args.slice(2).filter(a => !a.startsWith('-'));
     const lines: string[] = [];
     let label = `AWS ${service} ${op}`;
     if (service === 's3' && op === 'rm') {
         const recursive = cmd.args.includes('--recursive');
         label = `Delete S3 ${recursive ? 'objects under' : 'object'} ${operands[0] ?? ''}`.trim();
-        lines.push(`If you approve: deletes ${recursive ? 'everything under' : ''} ${code(operands[0] ?? '?')}. S3 has no undo unless the bucket has versioning.`);
+        lines.push(`If you approve: deletes ${recursive ? 'everything under ' : ''}${code(operands[0] ?? '?')}. S3 has no undo unless the bucket has versioning.`);
     } else if (service === 's3' && op === 'rb') {
         label = `Delete S3 bucket ${operands[0] ?? ''}`.trim();
         lines.push(`If you approve: deletes the bucket ${code(operands[0] ?? '?')}${cmd.args.includes('--force') ? ' and every object in it' : ''}.`);
     } else {
-        const ids = cmd.args
-            .map((a, k) => (/^--[\w-]*(?:id|ids|name|arn)$/.test(a) && cmd.args[k + 1] ? `${a} ${expand(cmd.args[k + 1])}` : null))
-            .filter((x): x is string => x !== null);
-        lines.push(`If you approve: runs ${code(op)} against AWS ${service}${ids.length ? ` for ${code(ids.join(' '))}` : ''}. AWS has no undo for delete and terminate calls.`);
+        const ids: string[] = [];
+        cmd.args.forEach((a, k) => {
+            if (!/^--[\w-]*(?:id|ids|name|names|arn|arns)$/.test(a)) return;
+            const values = [];
+            for (let j = k + 1; j < cmd.args.length && !cmd.args[j].startsWith('-'); j++) values.push(cmd.args[j]);
+            if (values.length) ids.push(`${a} ${values.join(' ')}`);
+        });
+        lines.push(`If you approve: runs ${code(op)} against AWS ${service}${ids.length ? ` for ${code(clip(ids.join(' '), 300))}` : ''}. AWS has no undo for delete and terminate calls.`);
     }
     const profile = flagValue(cmd.args, ['--profile']);
-    if (profile) lines.push(`AWS profile: ${code(expand(profile))}`);
+    if (profile) lines.push(`AWS profile: ${code(profile)}`);
     return { label, lines };
 }
 
@@ -2391,60 +2402,99 @@ const GENERIC_EFFECTS: Record<string, string> = {
     dd: 'Writes raw bytes to the output target; pointed at a disk, it overwrites it.',
 };
 
-function genericStep(cmd: ResolvedCommand, reason: string, expand: (s: string) => string): StepCard {
-    const verbs = cmd.args.filter(a => /^[a-z][\w:-]*$/i.test(a)).slice(0, 2).map(a => expand(a));
-    const effect = GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
-        ?? (PLATFORM_DESTRUCTIVE[cmd.name] ? `Deletes or shuts down the ${cmd.name} resource named in the step below.` : reason);
+function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
+    const verbs = cmd.args.filter(a => /^[a-z][\w:-]*$/i.test(a)).slice(0, 2);
+    const targets = flagValues(cmd.args, ['-target']);
+    const effect = cmd.name === 'terraform' && targets.length
+        ? `Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`
+        : GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
+            ?? (PLATFORM_DESTRUCTIVE[cmd.name] ? `Deletes or shuts down the ${cmd.name} resource named in the step below.` : reason);
     return { label: `Run ${[cmd.name, ...verbs].join(' ')}`, lines: [`If you approve: ${effect}`] };
 }
 
-function directoryBefore(commands: ResolvedCommand[], target: ResolvedCommand, expand: (s: string, pos: number) => string): string | undefined {
-    let dir: string | undefined;
-    for (const c of commands) {
-        if (c === target) break;
-        if (c.name !== 'cd' || !c.args[0]) continue;
-        const next = expand(c.args[0], c.pos ?? Infinity);
-        if (next.startsWith('/')) dir = next;
-        else if (dir && !next.includes('$')) dir = join(dir, next);
+/**
+ * Yield each command the gate decides on, with its reason, in order: gated by
+ * checkGatedCommand and not exempted as a lab target. evaluateBashCommand
+ * gates on the first; the description describes the same ones.
+ */
+function* gatedSteps(
+    commands: ResolvedCommand[],
+    cwd: string,
+    lab: boolean,
+    log: boolean,
+): Generator<{ cmd: ResolvedCommand; reason: string }> {
+    for (const cmd of commands) {
+        const reason = checkGatedCommand(cmd);
+        if (!reason) continue;
+        if (lab) {
+            const target = labTargetOf(cmd, cwd);
+            if (target !== null) {
+                if (log) logLabScope(`allowed ${cmd.name} against lab target ${target}`);
+                continue;
+            }
+        }
+        yield { cmd, reason };
     }
-    return target.chdir ?? dir;
 }
 
 /**
  * Describe a gated command for its approver: a title naming what will be
  * changed, what approving does, and the exact step that tripped the gate with
- * the variables the command itself sets filled in.
+ * the variables the command provably sets filled in.
  */
-export function describeGate(command: string, reason: string): GateCard {
+export function describeGate(command: string, reason: string, cwd: string = currentWorkingDir()): GateCard {
     const fallback = { label: reason, summary: reason };
     try {
         const commands = extractCommands(command);
-        const gated = commands.filter(c => checkGatedCommand(c) !== null);
+        const gated = [...gatedSteps(commands, cwd, isLabSession(), false)];
         if (gated.length === 0) return fallback;
         const view = viewShell(command);
 
-        const steps = gated.slice(0, 3).map(cmd => {
-            const pos = cmd.pos ?? Infinity;
-            const unresolved = new Set<string>();
-            const expand = (s: string, at = pos) => {
-                const r = expandKnown(s, view, at);
+        const evaluated = (cmd: ResolvedCommand, unresolved: Set<string>): ResolvedCommand => {
+            const texts = cmd.pos === undefined ? undefined : view.commandAt(cmd.pos)?.argTexts;
+            if (!texts || texts.length < cmd.args.length) {
+                cmd.args.filter(a => a.includes('$')).forEach(a => unresolved.add(clip(a, 40)));
+                return cmd;
+            }
+            const args = texts.slice(texts.length - cmd.args.length).map(t => {
+                const r = evalWord(t, view, cmd.pos!);
                 r.unresolved.forEach(u => unresolved.add(u));
-                return r.text;
-            };
+                return r.value;
+            });
+            return { ...cmd, args };
+        };
+        const directoryBefore = (target: ResolvedCommand): string | undefined => {
+            let dir: string | undefined;
+            for (const c of commands) {
+                if (c === target) break;
+                if (c.name !== 'cd' || !c.args[0]) continue;
+                const next = evaluated(c, new Set()).args[0];
+                if (next.includes('$')) dir = undefined;
+                else if (next.startsWith('/')) dir = next;
+                else if (dir) dir = join(dir, next);
+            }
+            return target.chdir ?? dir;
+        };
+
+        const steps = gated.slice(0, 3).map(({ cmd: raw, reason: why }) => {
+            const unresolved = new Set<string>();
+            const cmd = evaluated(raw, unresolved);
             const sqlDialect = SQL_CLIS[cmd.name] ?? (cmd.name === 'snow' && cmd.args[0] === 'sql' ? 'Snowflake' : null);
-            const step: StepCard & { dir?: string } =
-                sqlDialect ? sqlStep(sqlDialect, cmd, expand)
-                : cmd.name === 'dbt' ? dbtStep(cmd, expand, directoryBefore(commands, cmd, expand))
-                : cmd.name === 'git' ? gitPushStep(cmd, expand)
-                : cmd.name === 'aws' ? awsStep(cmd, expand)
-                : genericStep(cmd, checkGatedCommand(cmd) ?? reason, expand);
-            const dir = step.dir ?? directoryBefore(commands, cmd, expand);
-            const shown = expand(cmd.raw);
+            const dirBefore = directoryBefore(raw);
+            const step: StepCard =
+                sqlDialect ? sqlStep(sqlDialect, cmd)
+                : cmd.name === 'dbt' ? dbtStep(cmd, dirBefore)
+                : cmd.name === 'git' ? gitPushStep(cmd)
+                : cmd.name === 'aws' ? awsStep(cmd)
+                : genericStep(cmd, why);
+            const dir = step.dir ?? dirBefore;
+            const shown = raw.pos === undefined ? raw.raw : evalWord(raw.raw, view, raw.pos, true).value;
             const lines = [...step.lines];
             if (dir) lines.push(`Directory: ${code(dir)}`);
             lines.push(`Step needing approval: ${code(clip(oneLine(shown), 320))}`);
             if (unresolved.size) {
-                lines.push(`⚠️ ${[...unresolved].map(code).join(', ')} ${unresolved.size === 1 ? 'is' : 'are'} only set when the command runs, so ${unresolved.size === 1 ? 'its value is' : 'their values are'} not known yet.`);
+                const list = [...unresolved];
+                lines.push(`⚠️ ${list.map(code).join(', ')} ${list.length === 1 ? 'is' : 'are'} only known when the command runs, so the value${list.length === 1 ? '' : 's'} above may differ.`);
             }
             return { label: step.label, lines };
         });
@@ -2588,19 +2638,8 @@ export function evaluateBashCommand(
 
     // --- Gated checks ---
     if (!opts.skipGate) {
-        for (const cmd of commands) {
-            const reason = checkGatedCommand(cmd);
-            if (reason) {
-                if (lab) {
-                    const target = labTargetOf(cmd, cwd);
-                    if (target !== null) {
-                        logLabScope(`allowed ${cmd.name} against lab target ${target}`);
-                        continue;
-                    }
-                }
-                return { action: 'gate', reason };
-            }
-        }
+        const first = gatedSteps(commands, cwd, lab, true).next();
+        if (!first.done) return { action: 'gate', reason: first.value.reason };
     }
 
     // --- rm-specific checks (three-tier protection) ---
@@ -3071,7 +3110,7 @@ export function runGateRequest(
  * NanoClaw destructive-command session-DB approval gate. Thin wrapper over
  * runGateRequest with action='request_destructive_gate'.
  *
- * SIGNATURE IS LOAD-BEARING — `(command, reason, onStageError?, toolUseId?)`.
+ * SIGNATURE IS LOAD-BEARING — `(command, reason, onStageError?, toolUseId?, cwd?)`.
  * Existing callers (block-destructive.ts, opencode-guard.ts) pass the
  * onStageError callback as the 3rd positional arg. Do NOT add a positional
  * `action` here; route action selection through runGateRequest instead.
@@ -3079,15 +3118,17 @@ export function runGateRequest(
  * `toolUseId` is APPENDED rather than folded into an options object for the same
  * reason: a caller on an older container image passes three arguments and keeps
  * working, and a caller that passes four gets one approval card per tool call
- * even when two guards gate the same command concurrently.
+ * even when two guards gate the same command concurrently. `cwd` is appended
+ * for the same reason; it lets the description match a lab-scope verdict.
  */
 export function runNanoclawGate(
     command: string,
     reason: string,
     onStageError?: (err: unknown) => void,
     toolUseId?: string,
+    cwd?: string,
 ): GateDecision {
-    return runGateRequest(command, reason, { action: 'request_destructive_gate', onStageError, toolUseId, ...describeGate(command, reason) });
+    return runGateRequest(command, reason, { action: 'request_destructive_gate', onStageError, toolUseId, ...describeGate(command, reason, cwd) });
 }
 
 /**

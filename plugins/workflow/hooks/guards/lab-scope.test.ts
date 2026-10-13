@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  describeGate,
   evaluateBashCommand,
   isLabSession,
   labTargetOf,
@@ -415,5 +416,17 @@ describe('parseLabScope', () => {
     ]) {
       expect(parseLabScope(text)).toBeNull();
     }
+  });
+});
+
+describe('the approval description skips exempt steps', () => {
+  test('an exempt lab push is not described; the step that was gated is', () => {
+    inLab();
+    const command = 'git push -f https://github.com/lab-org/LAB-APP.git main && git push --delete https://github.com/example-corp/widget.git stale-branch';
+    const verdict = evaluateBashCommand(command, { cwd: '/tmp' });
+    expect(verdict.action).toBe('gate');
+    const card = describeGate(command, verdict.reason!, '/tmp');
+    expect(card.label).toBe('Delete remote branch stale-branch on https://github.com/example-corp/widget.git');
+    expect(card.summary).not.toContain('LAB-APP.git main`');
   });
 });

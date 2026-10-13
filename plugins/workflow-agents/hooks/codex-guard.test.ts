@@ -116,8 +116,15 @@ describe('Codex local approval transport', () => {
       tool_input: toolInput,
     });
     expectDecision(result, 'deny', /email (?:send|reply) to ops@example.com/i);
-    const body = (toolInput as { body?: string }).body;
-    if (body) expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain(`> ${body}`);
+  });
+
+  test('the native send_email hand-off shows the message body', async () => {
+    const result = await runGuard({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'send_email',
+      tool_input: { to: 'ops@example.com', subject: 'Report', body: 'quarterly numbers attached' },
+    });
+    expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain('> quarterly numbers attached');
   });
 
   test.each(['gmail_create_draft_reply', 'gmail_search_emails', 'read_email_thread', 'send_message'])(

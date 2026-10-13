@@ -64,13 +64,14 @@ function deniedDetail(decision: 'denied' | 'timeout'): string {
         : 'Timed out waiting for user approval. Do not retry.';
 }
 
-function emailReason(command: string): { action: 'allow' } | {
+function emailReason(command: string, cwd?: string): { action: 'allow' } | {
     action: 'gate';
     reason: string;
     summary?: string;
 } {
     const verdict = evaluateEmailSend(command, {
         isScheduledTask: process.env.NANOCLAW_IS_SCHEDULED_TASK === '1',
+        cwd,
     });
     if (verdict.action === 'allow') return { action: 'allow' };
     return {
@@ -147,8 +148,8 @@ function main(): void {
                 // A local native approval authorizes this exact full command.
                 // Include a second email reason when one command crosses both
                 // policy gates so the user sees the complete effect once.
-                const email = emailReason(command);
-                const described = approvalText(describeGate(command, reason));
+                const email = emailReason(command, cwd);
+                const described = approvalText(describeGate(command, reason, cwd));
                 const combined = email.action === 'gate'
                     ? `${described}\n\nAlso requires outbound-email approval: ${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`
                     : described;
@@ -158,13 +159,13 @@ function main(): void {
             const decision = runNanoclawGate(command, reason, (error) => {
                 const message = error instanceof Error ? error.message : String(error);
                 block(message, `${reason} — could not stage the NanoClaw approval request.`);
-            });
+            }, undefined, cwd);
             if (decision !== 'approved') {
                 block(`${reason} — ${deniedDetail(decision)}`, reason);
             }
         }
 
-        const email = emailReason(command);
+        const email = emailReason(command, cwd);
         if (email.action === 'gate') {
             if (!IS_NANOCLAW) {
                 ask(`${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`);
