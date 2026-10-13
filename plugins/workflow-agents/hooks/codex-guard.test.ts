@@ -57,6 +57,9 @@ describe('Codex local approval transport', () => {
     const result = await runGuard(shell('terraform destroy'));
     expectDecision(result, 'deny', /terraform/i);
     expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain(LOCAL_APPROVAL_HANDOFF);
+    expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain(
+      'If you approve: Destroys every resource this Terraform state manages.',
+    );
   });
 
   test('denies git mutations inside read-only repo snapshots', async () => {
@@ -103,7 +106,7 @@ describe('Codex local approval transport', () => {
   });
 
   test.each([
-    ['send_email', { to: 'ops@example.com', subject: 'Report', body: 'secret body' }],
+    ['send_email', { to: 'ops@example.com', subject: 'Report', body: 'quarterly numbers attached' }],
     ['mcp__gmail__reply_email', { recipient: 'ops@example.com', subject: 'Re: Report' }],
     ['gmail_send_draft_email', { to_email: 'ops@example.com' }],
   ])('asks through the native protocol for %s', async (toolName, toolInput) => {
@@ -113,7 +116,15 @@ describe('Codex local approval transport', () => {
       tool_input: toolInput,
     });
     expectDecision(result, 'deny', /email (?:send|reply) to ops@example.com/i);
-    expect(result.output.hookSpecificOutput.permissionDecisionReason).not.toContain('secret body');
+  });
+
+  test('the native send_email hand-off shows the message body', async () => {
+    const result = await runGuard({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'send_email',
+      tool_input: { to: 'ops@example.com', subject: 'Report', body: 'quarterly numbers attached' },
+    });
+    expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain('> quarterly numbers attached');
   });
 
   test.each(['gmail_create_draft_reply', 'gmail_search_emails', 'read_email_thread', 'send_message'])(

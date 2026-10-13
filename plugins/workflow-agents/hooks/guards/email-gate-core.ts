@@ -3,16 +3,17 @@
 // Regenerate: node scripts/vendor-guards.mjs   (CI/pre-commit gate: --check)
 
 /**
- * Shared PURE decision logic for the outbound-email approval gate.
+ * Shared decision logic for the outbound-email approval gate.
  *
- * This module is PURE LOGIC ONLY. It performs NO I/O: no bun:sqlite, no fs, no
- * writeMessageOut / awaitDeliveryAck, no process.exit. It takes a bash command
- * string or native email-tool call plus an env snapshot and returns a verdict
- * (allow | gate) with the pre-built approval-card `label` + `summary`. The
- * provider adapter (Claude SDK hook, OpenCode plugin, Codex runner) owns the
- * staging + delivery-ack round-trip — it stages the verdict via the session-DB
- * `request_bash_gate` primitive
- * (see runEmailGate in block-destructive-core.ts) and emits the deny message.
+ * The verdict is pure: no bun:sqlite, no writeMessageOut / awaitDeliveryAck, no
+ * process.exit, and nothing it reads can change allow vs gate. The one I/O is a
+ * read-only display read: when a send's body is `$(cat /absolute/path)`, the
+ * description shows that file. It takes a bash command string or native
+ * email-tool call plus an env snapshot and returns a verdict (allow | gate)
+ * with a plain-text `label` + `summary` for the approver. The harness adapter
+ * (Claude hook, OpenCode plugin, Codex runner) shows them in its own approval
+ * surface: a native ask locally, or the session-DB `request_bash_gate`
+ * primitive under NanoClaw (see runEmailGate in block-destructive-core.ts).
  *
  * Ported verbatim from nanoclaw-v2 container/agent-runner/src/providers/claude.ts
  * lines 514-664 (GWS_EMAIL_SEND_RE, EMAIL_BYPASS_RE, envelopeFromJsonRaw,
@@ -36,6 +37,7 @@
  * Python/Node SDK calls, SMTP CLIs, and eval/alias/base64-decoded subshells. The
  * only sound place to catch all of those is the egress proxy.
  */
+import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
 // `gws gmail users (messages|drafts) send` (raw API form).
@@ -180,10 +182,12 @@ export interface EnvSnapshot {
      * bypass the gate (v1 parity) so automated email reports aren't prompted
      * every run. */
     isScheduledTask: boolean;
+    /** Working directory of the tool call; a body file under it may be shown. */
+    cwd?: string;
 }
 
-/** Verdict for the email gate. PURE — no I/O. On `gate`, `label` + `summary`
- *  carry the pre-built approval-card content. */
+/** Verdict for the email gate. On `gate`, `label` + `summary`
+ *  describe the send for the approver. */
 export interface EmailGateVerdict {
     action: 'allow' | 'gate';
     label?: string;
@@ -252,8 +256,8 @@ function firstToolInputValue(
 /**
  * Gate native connector/MCP email actions that do not pass through Bash. Tool
  * names must contain an email/gmail token plus send/reply/forward. Draft-only
- * tools remain allowed, but tools that send a saved draft gate. The approval
- * summary intentionally excludes the message body.
+ * tools remain allowed, but tools that send a saved draft gate. The card shows
+ * the message text so the approver reads what will actually be sent.
  */
 export function evaluateEmailToolCall(
     toolName: string,
@@ -270,16 +274,24 @@ export function evaluateEmailToolCall(
     ) ?? 'unknown recipient';
     const subject = firstToolInputValue(input, new Set(['subject', 'email_subject'])) ?? '';
     const label = subject
-        ? `Email ${action} to ${to}: "${subject}"`
-        : `Email ${action} to ${to}`;
-    const lines = [`*Tool:* ${toolName}`, `*To:* ${to}`];
-    if (subject) lines.push(`*Subject:* ${subject}`);
+        ? `Email ${action} to ${inline(to)}: "${inline(subject)}"`
+        : `Email ${action} to ${inline(to)}`;
+    const lines = [`Tool: ${inline(toolName)}`, `To: ${inline(to)}`];
+    if (subject) lines.push(`Subject: ${inline(subject)}`);
+    const html = firstToolInputValue(input, new Set(['html', 'html_body', 'body_html']));
+    const body = html ?? firstToolInputValue(input, new Set(['body', 'text', 'plain_text', 'text_body', 'body_text', 'content', 'message_body']));
+    if (body) {
+        const isHtml = html !== undefined || /<(?:p|div|br|html|body|table|span|a)\b[^>]{0,500}>/i.test(body.slice(0, 20_000));
+        const header = `Message${isHtml ? ' (HTML, shown as text)' : ''}:`;
+        const used = lines.join('\n').length + header.length + 8;
+        lines.push('', header, quoteBlock(clip((isHtml ? htmlToText(body) : body.slice(0, 20_000).trim()) || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used))));
+    }
 
     return {
         action: 'gate',
         label,
         reason: label,
-        summary: lines.join('\n'),
+        summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS),
     };
 }
 
@@ -334,8 +346,8 @@ export function envelopeFromJsonRaw(segment: string): {
 
 /**
  * Decide whether a bash command is an outbound-email send that needs admin
- * approval, and if so, build the approval-card content. PURE — the only inputs
- * are the command string and the env snapshot; no I/O, no process.exit.
+ * approval, and if so, describe it for the approver. The verdict depends only
+ * on the command string and the env snapshot.
  *
  * Decision ordering:
  *   1. Not an email send (GWS_EMAIL_SEND_RE miss) → allow.
@@ -383,32 +395,39 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // automated email reports aren't prompted every run.
     if (env.isScheduledTask) return { action: 'allow' };
 
-    // Build the approval-card fields from the WHOLE command. In a decoy chain the
-    // real send (and its recipient) may live in a segment that doesn't cleanly
-    // match GWS_EMAIL_SEND_RE (e.g. an obfuscated `+se''nd` verb), so a
-    // per-segment pick can miss it; scanning the whole command surfaces the first
-    // --to/--subject/--body. The gate has already fired — the card is best-effort
-    // and the raw command is in the adapter's tool-call log for the approver.
-    const gwsSegment = command;
-
-    // Parse the email envelope so the card shows structured fields
-    // instead of raw shell. Each matcher handles both --flag 'quoted'
-    // and --flag unquoted. Helper-verb sends carry envelope as flags;
-    // raw-API sends carry it as base64url RFC 822 inside `--json '{"raw":…}'`.
+    // The description comes from the parsed send when the shell parser finds
+    // one and from regexes over the command otherwise: in a decoy chain the real
+    // send may sit in a segment the parser reads differently, and the gate has
+    // already fired either way.
+    const view = viewShell(command);
+    const calls = gwsGmailCalls(view);
+    const send = calls.find(c => c.verb && !c.values.some(v => EMAIL_BYPASS_FLAGS.has(v))) ?? calls.find(c => c.verb);
+    const unresolved = new Set<string>();
+    const evaluated = (text: string): string => {
+        const r = evalWord(text, view, send?.pos ?? Infinity);
+        r.unresolved.forEach(u => unresolved.add(u));
+        return r.value;
+    };
+    const scanned = command.slice(0, FALLBACK_SCAN_CHARS);
     const matchFlag = (flag: string): string | undefined => {
-        const quoted = gwsSegment.match(new RegExp(`${flag}\\s+['"]([^'"]+)['"]`));
-        if (quoted) return quoted[1];
-        const bare = gwsSegment.match(new RegExp(`${flag}\\s+(\\S+)`));
-        return bare?.[1];
+        if (send) {
+            const texts = argTexts(send, flag);
+            return texts.length ? texts.map(evaluated).join(', ') : undefined;
+        }
+        const quoted = scanned.match(new RegExp(`${flag}\\s+(['"])((?:(?!\\1)[\\s\\S])+)\\1`));
+        if (quoted) return quoted[2];
+        return scanned.match(new RegExp(`${flag}\\s+(\\S+)`))?.[1];
     };
     const flagTo = matchFlag('--to');
-    const envelope = !flagTo ? envelopeFromJsonRaw(gwsSegment) : {};
-    const to = flagTo ?? envelope.to ?? 'unknown recipient';
+    const envelope = !flagTo ? envelopeFromJsonRaw(command) : {};
     const subject = matchFlag('--subject') ?? envelope.subject ?? '';
-    const body = matchFlag('--body') ?? '';
     const cc = matchFlag('--cc') ?? envelope.cc;
     const bcc = matchFlag('--bcc') ?? envelope.bcc;
-    const isHtml = /\s--html(?:\s|$)/.test(gwsSegment);
+    const removed = matchFlag('--remove');
+    const messageId = matchFlag('--message-id');
+    const alias = matchFlag('--from');
+    const attachments = send ? [...argTexts(send, '-a'), ...argTexts(send, '--attach')].map(evaluated) : [];
+    const isHtml = send ? send.values.includes('--html') : /\s--html(?:\s|$)/.test(scanned);
     // Parse the sending identity from GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE.
     // Path convention: /home/node/.config/gws/accounts/<slug>.json.
     // The slug is the human-facing account name the user configured.
@@ -420,22 +439,144 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // Anchor to the four allowed helper verbs only — the prior `\+(\w[\w-]*)`
     // could capture spurious `+ABC` substrings from a base64 payload in the
     // raw-API form. Falls back to "send" for the raw form (which has no +verb).
-    const action = gwsSegment.match(/\+(send|reply|reply-all|forward)\b/)?.[1] ?? 'send';
-    const label = subject ? `Email ${action} to ${to}: "${subject}"` : `Email ${action} to ${to}`;
+    const action = send?.verb ?? command.match(/\+(send|reply|reply-all|forward)\b/)?.[1] ?? 'send';
+    const isRawApi = send ? send.verb === 'send' && !send.helper : !/\+(send|reply|reply-all|forward)\b/.test(command);
 
-    // No `command` field on the payload → host's buildCardBody skips
-    // its code-block branch entirely. The adapter still has the raw
-    // command in the SDK tool-call log for audit; we don't surface shell
-    // noise to the approver in the card body.
-    const lines: string[] = [`*From:* ${fromAccount}`, `*To:* ${to}`];
-    if (cc) lines.push(`*Cc:* ${cc}`);
-    if (bcc) lines.push(`*Bcc:* ${bcc}`);
-    if (subject) lines.push(`*Subject:* ${subject}`);
-    if (body) {
-        const bodyPreview = body.length > 400 ? body.slice(0, 400) + '…' : body;
-        lines.push('', isHtml ? '*Body* (HTML):' : '*Body:*', `> ${bodyPreview.replace(/\n/g, '\n> ')}`);
+    // gws resolves reply recipients from the original message, honouring its
+    // Reply-To header; `--to` adds recipients (`gws gmail +reply-all --help`).
+    const threadRecipients = action === 'reply' ? 'the original sender (or its Reply-To address)'
+        : action === 'reply-all' ? 'the original sender (or its Reply-To address) and everyone on To/Cc'
+        : null;
+    const to = inline(threadRecipients
+        ? (flagTo ? `${threadRecipients}, plus ${flagTo}` : threadRecipients)
+        : flagTo ?? envelope.to ?? 'unknown recipient');
+    // A send-shaped call, or one whose verb is hidden behind quoting or expansion.
+    const sendLike = calls.filter(c => c.verb || /[$`'"\\]/.test(c.verbText)).length;
+    const generatedWord = view.commands.some(c => /[$`\\]/.test(c.name));
+    const gwsWords = Math.max(sendLike, (scanned.match(/\bgws\s+gmail\s+(?:\+\S|users\s+(?:messages|drafts)\s+send\b)/g) ?? []).length);
+    const probeFlag = send?.values.find(v => EMAIL_BYPASS_FLAGS.has(v));
+    const named = gwsWords > 1
+        ? [...new Set([...scanned.matchAll(/--(?:to|cc|bcc)[=\s]+['"]?([^\s'";&|)]+)/g)].map(m => inline(m[1])))]
+        : [];
+    const label = gwsWords > 1
+        ? `Email: ${gwsWords} gws calls; addresses named: ${named.join(', ') || 'none found'}`
+        : (subject ? `Email ${action} to ${to}: "${inline(subject)}"` : `Email ${action} to ${to}`)
+            + (generatedWord ? ' (check the command)' : probeFlag ? ` (${probeFlag} — check the command)` : '');
+
+    const lines: string[] = [];
+    if (gwsWords > 1) {
+        lines.push(
+            `⚠️ This command makes ${gwsWords} gws calls; any of them may send mail, and only the first send is described below. Check the full command.`,
+            `Addresses named anywhere in the command: ${named.join(', ') || 'none found'}`,
+            '',
+        );
+    } else if (generatedWord) {
+        lines.push('⚠️ A command name here is built when the command runs, so it may send mail this description cannot see. Check the full command.', '');
+    } else if (probeFlag) {
+        lines.push(`⚠️ This send carries ${code(probeFlag)}, which on its own sends nothing. The gate still asks because the command also pipes or chains other steps it can't rule out; check the full command.`, '');
     }
-    const summary = lines.join('\n');
+    lines.push(`From: ${inline(fromAccount)}${alias ? ` (as ${inline(alias)})` : ''}`, `To: ${to}`);
+    if (cc) lines.push(`Cc: ${inline(cc)}`);
+    if (bcc) lines.push(`Bcc: ${inline(bcc)}`);
+    if (removed) lines.push(`Removed from the reply: ${inline(removed)}`);
+    if (subject) lines.push(`Subject: ${inline(subject)}`);
+    else if (threadRecipients) lines.push('Subject: Re: the original subject');
+    if (messageId && threadRecipients) lines.push(`In reply to: Gmail message ${code(inline(messageId))}, quoted under the reply`);
+    if (attachments.length) lines.push(`Attachments: ${attachments.map(a => code(inline(a))).join(', ')}`);
 
-    return { action: 'gate', label, summary };
+    const bodyText = send ? argTexts(send, '--body')[0] : matchFlag('--body');
+    const body = send || bodyText === undefined
+        ? resolveBody(bodyText, view, send?.pos ?? Infinity, env.cwd, evaluated)
+        : { text: bodyText };
+    lines.push('');
+    if (body.text !== null) {
+        const text = isHtml ? htmlToText(body.text) : body.text.trim();
+        const header = `Message${isHtml ? ' (HTML, shown as text)' : ''}:`;
+        const used = lines.join('\n').length + header.length + 120;
+        lines.push(header, quoteBlock(clip(text || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used))));
+        if (body.note) lines.push(body.note);
+    } else if (isRawApi) {
+        lines.push('Message: not shown. This send passes a raw MIME message, so the text is only visible inside the encoded payload. Decline and ask the agent to show the draft if you need to read it first.');
+    } else {
+        lines.push(`Message: not shown. ${body.note ?? 'The command builds the text when it runs.'} Decline and ask the agent to show the draft if you need to read it first.`);
+    }
+    if (unresolved.size) {
+        const list = [...unresolved];
+        lines.push(`⚠️ ${list.map(code).join(', ')} ${list.length === 1 ? 'is' : 'are'} only known when the command runs, so the value${list.length === 1 ? '' : 's'} above may differ.`);
+    }
+    return { action: 'gate', label, summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
+}
+
+// The regex fallback runs only when the parser finds no send; it is quadratic
+// on hostile input, and recipients sit near the front of a real command.
+const FALLBACK_SCAN_CHARS = 64 * 1024;
+
+const SEND_VERB = /^\+(send|reply|reply-all|forward)$/;
+
+interface GwsGmailCall {
+    /** null when the call is not a recognisable send (another verb, or an obfuscated one). */
+    verb: 'send' | 'reply' | 'reply-all' | 'forward' | null;
+    /** Source text of the word after `gmail`. */
+    verbText: string;
+    helper: boolean;
+    /** Source text of each argument after the verb. */
+    texts: string[];
+    /** Quote-removed value of each argument, unexpanded. */
+    values: string[];
+    pos: number;
+}
+
+/** Every `gws gmail …` call in the command, sends or not. */
+function gwsGmailCalls(view: ShellView): GwsGmailCall[] {
+    const calls: GwsGmailCall[] = [];
+    for (const c of view.commands) {
+        const texts = [c.name, ...c.argTexts];
+        const values = texts.map(t => evalWord(t, view, c.pos).value);
+        const at = values.indexOf('gws');
+        if (at < 0 || values[at + 1] !== 'gmail') continue;
+        const rest = values.slice(at + 2);
+        const helper = rest[0]?.match(SEND_VERB)?.[1] as GwsGmailCall['verb'] | undefined;
+        const raw = rest[0] === 'users' && (rest[1] === 'messages' || rest[1] === 'drafts') && rest[2] === 'send';
+        const skip = at + 2 + (helper ? 1 : raw ? 3 : 0);
+        calls.push({ verb: helper ?? (raw ? 'send' : null), verbText: texts[at + 2] ?? '', helper: !!helper, texts: texts.slice(skip), values: values.slice(skip), pos: c.pos });
+    }
+    return calls;
+}
+
+/** Source text of every value given for `flag`, in `--flag value` and `--flag=value` forms. */
+function argTexts(call: GwsGmailCall, flag: string): string[] {
+    const out: string[] = [];
+    call.values.forEach((v, i) => {
+        if (v === flag && i + 1 < call.texts.length) out.push(call.texts[i + 1]);
+        else if (v.startsWith(`${flag}=`)) out.push(call.texts[i].replace(/^[^=]*=/, ''));
+    });
+    return out;
+}
+
+/** Turn the `--body` argument into the text that will be sent, when the command shows it. */
+function resolveBody(
+    text: string | undefined,
+    view: ShellView,
+    pos: number,
+    cwd: string | undefined,
+    evaluated: (text: string) => string,
+): { text: string | null; note?: string } {
+    if (text === undefined) return { text: null, note: 'No `--body` was given.' };
+    const name = soleVariable(text);
+    if (name) {
+        const value = view.valueAt(name, pos);
+        // Unquoted, the shell splits the value into several arguments.
+        if (value?.kind === 'text' && !text.startsWith('"') && /\s/.test(value.value)) {
+            return { text: null, note: `${code(text)} is unquoted, so the shell splits it into several arguments; the text sent is not what it holds.` };
+        }
+        if (value?.kind === 'text') return { text: value.value };
+        if (value?.kind === 'file') {
+            const file = readBodyFile(value.path, cwd);
+            return file === null
+                ? { text: null, note: `The text is read from ${code(value.path)} when the command runs; that file is not shown here (missing, not an email-type file, or outside the working directories).` }
+                : { text: file, note: `Read from ${code(value.path)} when approval was requested.` };
+        }
+        return { text: null, note: `The text comes from ${code(text)}, which is only set when the command runs.` };
+    }
+    return { text: evaluated(text) };
 }

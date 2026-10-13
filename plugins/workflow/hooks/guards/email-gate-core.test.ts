@@ -33,13 +33,13 @@ describe('evaluateEmailToolCall — native connector gate', () => {
                 message: {
                     recipients: ['alice@example.com', 'bob@example.com'],
                     subject: 'Quarterly report',
-                    body: 'sensitive body is intentionally omitted from the gate summary',
+                    body: 'the approver reads this body before it is sent',
                 },
             }, INTERACTIVE);
             expect(verdict.action).toBe('gate');
             expect(verdict.label).toContain('alice@example.com, bob@example.com');
             expect(verdict.label).toContain('Quarterly report');
-            expect(verdict.summary).not.toContain('sensitive body');
+            expect(verdict.summary).toContain('> the approver reads this body before it is sent');
         }
     });
 
@@ -505,13 +505,13 @@ describe('evaluateEmailSend — account parsed from command, not env', () => {
         );
         expect(v.action).toBe('gate');
         // Account slug comes from the creds path in the COMMAND.
-        expect(v.summary).toContain('*From:* work-bo');
+        expect(v.summary).toContain('From: work-bo');
     });
 
     test('defaults to "default" when no creds path in command', () => {
         const v = evaluateEmailSend('gws gmail +send --to a@example.com', INTERACTIVE);
         expect(v.action).toBe('gate');
-        expect(v.summary).toContain('*From:* default');
+        expect(v.summary).toContain('From: default');
     });
 
     test('env snapshot does not carry the account', () => {
@@ -522,7 +522,7 @@ describe('evaluateEmailSend — account parsed from command, not env', () => {
         const a = evaluateEmailSend(cmd, INTERACTIVE);
         const b = evaluateEmailSend(cmd, INTERACTIVE);
         expect(a).toEqual(b);
-        expect(a.summary).toContain('*From:* personal');
+        expect(a.summary).toContain('From: personal');
     });
 });
 

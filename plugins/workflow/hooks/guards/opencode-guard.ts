@@ -24,6 +24,8 @@
 import { resolve as pathResolve } from 'path';
 import * as core from './block-destructive-core';
 import {
+  approvalText,
+  describeGate,
   evaluateBashCommand,
   evaluateGitCloneDestination,
   evaluateSelfApproval,
@@ -146,7 +148,7 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
     // wrote it legitimately (nanoclaw #858). The session-DB gate is the only path.
     if (IS_NANOCLAW) {
       // session-DB approval gate: blocks until the host's approver decides (or 60-min timeout).
-      const decision = runNanoclawGate(command, reason);
+      const decision = runNanoclawGate(command, reason, undefined, undefined, cwd);
       if (decision === 'approved') {
         // Re-check the rm tier that the gate short-circuited (matches the hook).
         const after = evaluateBashCommand(command, { skipGate: true, cwd });
@@ -162,7 +164,7 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
     } else {
       // Non-NanoClaw fallback (no session-DB surface): fail closed.
       throw new Error(
-        `BLOCKED: ${reason} — requires explicit user approval, which is unavailable in this environment.`,
+        `BLOCKED: ${approvalText(describeGate(command, reason, cwd))}\n\nThis requires explicit user approval, which is unavailable in this environment.`,
       );
     }
   }
@@ -174,6 +176,7 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
   //    OpenCode-local email policy). Fail-closed on denied / timeout.
   const emailVerdict = evaluateEmailSend(command, {
     isScheduledTask: process.env.NANOCLAW_IS_SCHEDULED_TASK === '1',
+    cwd,
   });
   if (emailVerdict.action === 'gate') {
     const reason = emailVerdict.label ?? emailVerdict.reason ?? 'Email send requires approval';
