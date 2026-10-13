@@ -38,7 +38,7 @@ import { homedir } from 'os';
 import { dirname, join, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, hasPotentialVariableMutation, oneLine, readConfigFile, viewShell } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, readConfigFile, viewShell } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -1119,6 +1119,23 @@ function isZeroArgumentMktempAssignment(assignment: any): boolean {
     if (nodes.length !== 1 || (nodes[0].prefix || []).length !== 0) return false;
     const resolved = resolveCommand(nodes[0]);
     return resolved?.name === 'mktemp' && resolved.args.length === 0;
+}
+
+/**
+ * Shell builtins can mutate a variable without producing an Assignment AST
+ * node. Fail closed for the common mutation forms and for sourced scripts,
+ * whose effects cannot be known statically.
+ */
+function hasPotentialVariableMutation(fragment: string, variable: string): boolean {
+    const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return [
+        new RegExp(`\\b(?:export|declare|typeset|local|readonly)\\b[^\\n;]*\\b${escaped}\\s*=`),
+        new RegExp(`\\b(?:unset|read|readarray|mapfile)\\b[^\\n;]*\\b${escaped}\\b`),
+        new RegExp(`\\bprintf\\b[^\\n;]*\\s-v\\s+${escaped}\\b`),
+        new RegExp(`\\bfor\\s+${escaped}\\b`),
+        new RegExp(`\\$\\{${escaped}(?::?=)`),
+        /(?:^|[;&|]\s*|\n\s*)(?:source|\.)\s+/m,
+    ].some(rx => rx.test(fragment));
 }
 
 /**

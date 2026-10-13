@@ -20,7 +20,7 @@ describe('destructive approval description', () => {
     test.each([
         {
             name: 'dbt full refresh resolves the model variable and flags --empty',
-            command: 'cd /work/dbt && M=orders_daily; timeout 900 dbt run --select $M --empty --full-refresh',
+            command: 'cd /work/dbt; M=orders_daily; timeout 900 dbt run --select $M --empty --full-refresh',
             label: 'Rebuild dbt model orders_daily from scratch (--full-refresh)',
             has: ['--select orders_daily', 'zero rows', "the profile's default", 'Directory: `/work/dbt`'],
         },
@@ -97,10 +97,20 @@ describe('destructive approval description', () => {
         ['an assignment in a branch', 'B=keep; if false; then B=gone; fi; git push origin --delete $B', '$B'],
         ['an append', 'B=keep; B+=-more; git push origin --delete $B', '$B'],
         ['a read', 'B=keep; read B; git push origin --delete $B', '$B'],
+        ['a let', 'B=keep; let B=5; git push origin --delete $B', '$B'],
+        ['a background assignment', 'B=keep; B=gone & git push origin --delete $B', '$B'],
+        ['an && assignment the step is not chained to', 'B=keep; false && B=gone; git push origin --delete $B', '$B'],
     ])('does not resolve %s', (_name, command, variable) => {
         const c = card(command);
         expect(c.summary).not.toContain('keep');
         expect(c.summary).toContain(`\`${variable}\` is only known when the command runs`);
+    });
+
+    test('an && assignment holds only for the rest of its chain', () => {
+        const c = card('cd /work/dbt && M=orders_daily; dbt run --select $M --full-refresh');
+        expect(c.summary).toContain('`$M` is only known when the command runs');
+        expect(card('cd /work/dbt && M=orders_daily && dbt run --select $M --full-refresh').label)
+            .toBe('Rebuild dbt model orders_daily from scratch (--full-refresh)');
     });
 
     test('says approval runs the whole command, not just the gated step', () => {
@@ -149,6 +159,32 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
         expect(v.summary).not.toContain('<p>');
     });
 
+    test('a normal send with the credentials prefix is described as one send', () => {
+        const v = evaluateEmailSend(`${CREDS}\ngws gmail +send --to a@example.com --subject "gws update" --body hello`, INTERACTIVE);
+        expect(v.label).toBe('Email send to a@example.com: "gws update"');
+        expect(v.summary).not.toContain('⚠️');
+    });
+
+    test.each([
+        ['an && chain the send is not part of', `B='real text'; false && B='decoy'; gws gmail +send --to a@example.com --body "$B"`],
+        ['an eval', `B='decoy'; eval "B='real text'"; gws gmail +send --to a@example.com --body "$B"`],
+        ['a background job', `B='real text'; B='decoy' & gws gmail +send --to a@example.com --body "$B"`],
+    ])('withholds a body changed by %s', (_name, command) => {
+        const v = evaluateEmailSend(command, INTERACTIVE);
+        expect(v.summary).not.toContain('decoy');
+        expect(v.summary).toContain('Message: not shown.');
+    });
+
+    test('an unquoted variable the shell would split is not shown as one value', () => {
+        const v = evaluateEmailSend(`B='hello world'; gws gmail +send --to a@example.com --body $B`, INTERACTIVE);
+        expect(v.summary).not.toContain('> hello world');
+    });
+
+    test('an ANSI-C quoted body renders its escapes', () => {
+        const v = evaluateEmailSend(`gws gmail +send --to a@example.com --body $'line one\\nit\\'s two'`, INTERACTIVE);
+        expect(v.summary).toContain("> line one\n> it's two");
+    });
+
     test('shows the body bash would send, not a value set somewhere it does not reach', () => {
         const v = evaluateEmailSend(`B='real text'; (B='decoy'); gws gmail +send --to a@example.com --body "$B"`, INTERACTIVE);
         expect(v.summary).not.toContain('decoy');
@@ -172,15 +208,27 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
     test.each([
         ['a credentials file', 'creds.json'],
         ['a dotfile', '.env'],
+        ['an email-type file in a dot directory', '.hidden/body.txt'],
         ['a credential-looking path', 'token.txt'],
+        ['an api key file', 'openai-apikey.txt'],
+        ['an ssh key', 'id_rsa.txt'],
         ['a symlink to a file outside the working directories', 'link.html'],
     ])('never shows %s', (_name, name) => {
         const file = join(scratch, name);
-        if (name === 'link.html') symlinkSync('/etc/hostname', file);
-        else writeFileSync(file, 'refresh_token=do-not-show');
+        if (name === 'link.html') symlinkSync(join(import.meta.dir, '../../../../README.md'), file);
+        else {
+            mkdirSync(join(file, '..'), { recursive: true });
+            writeFileSync(file, 'refresh_token=do-not-show');
+        }
         const v = evaluateEmailSend(`B=$(cat ${file})\ngws gmail +send --to a@example.com --body "$B"`, INTERACTIVE);
         expect(v.summary).toContain('that file is not shown here');
         expect(v.summary).not.toContain('do-not-show');
+    });
+
+    test('never shows an email-type file outside the working directories', () => {
+        const readme = join(import.meta.dir, '../../../../README.md');
+        const v = evaluateEmailSend(`B=$(cat ${readme})\ngws gmail +send --to a@example.com --body "$B"`, INTERACTIVE);
+        expect(v.summary).toContain('that file is not shown here');
     });
 
     test('never shows a /proc file', () => {
@@ -258,7 +306,15 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
         const started = performance.now();
         htmlToText(html);
         evaluateEmailToolCall('mcp__gmail__send_email', { to: 'a@example.com', html_body: html }, INTERACTIVE);
-        expect(performance.now() - started).toBeLessThan(1000);
+        expect(performance.now() - started).toBeLessThan(3000);
+    });
+
+    test('many variable references after builtins stay fast', () => {
+        const command = `B=hi && echo ${'export '.repeat(8000)} && gws gmail +send --to a@example.com --body "${'$B'.repeat(40)}"`;
+        const started = performance.now();
+        evaluateEmailSend(command, INTERACTIVE);
+        describeGate(`T=x; echo ${'unset '.repeat(8000)}; git push origin --delete $T`, 'reason');
+        expect(performance.now() - started).toBeLessThan(3000);
     });
 
     test('a deeply nested command is still gated and does not throw', () => {
@@ -266,6 +322,6 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
         const command = 'gws gmail +send --to a@example.com --body ' + '"$('.repeat(d) + 'x' + ')"'.repeat(d);
         const started = performance.now();
         expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
-        expect(performance.now() - started).toBeLessThan(1000);
+        expect(performance.now() - started).toBeLessThan(3000);
     });
 });

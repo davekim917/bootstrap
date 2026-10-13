@@ -60,23 +60,6 @@ export function quoteBlock(text: string): string {
     return defuse(text).split('\n').map(line => `> ${line}`).join('\n');
 }
 
-/**
- * Shell builtins can mutate a variable without producing an Assignment AST
- * node. Fail closed for the common mutation forms and for sourced scripts,
- * whose effects cannot be known statically.
- */
-export function hasPotentialVariableMutation(fragment: string, variable: string): boolean {
-    const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return [
-        new RegExp(`\\b(?:export|declare|typeset|local|readonly)\\b[^\\n;]*\\b${escaped}\\s*=`),
-        new RegExp(`\\b(?:unset|read|readarray|mapfile)\\b[^\\n;]*\\b${escaped}\\b`),
-        new RegExp(`\\bprintf\\b[^\\n;]*\\s-v\\s+${escaped}\\b`),
-        new RegExp(`\\bfor\\s+${escaped}\\b`),
-        new RegExp(`\\$\\{${escaped}(?::?=)`),
-        /(?:^|[;&|]\s*|\n\s*)(?:source|\.)\s+/m,
-    ].some(rx => rx.test(fragment));
-}
-
 /** What a shell variable holds at a point in a command, as far as the text proves. */
 export type ShellValue =
     | { kind: 'text'; value: string }
@@ -126,6 +109,8 @@ function catFileOf(script: any): string | null {
     return /^\/[^\s'"$`\\]*$/.test(args[0]) ? args[0] : null;
 }
 
+const ANSI_C_ESCAPES: Record<string, string> = { n: '\n', t: '\t', r: '\r', "'": "'", '"': '"', '\\': '\\', a: '\x07', e: '\x1b' };
+
 /** Index just past the `)` that closes the `$(` or `(` starting at `open`. */
 function closeParen(text: string, open: number): number {
     let depth = 0;
@@ -158,7 +143,8 @@ export function evalWord(
         const simple = rest.match(/^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/);
         if (simple) {
             const value = view.valueAt(simple[1] ?? simple[2], pos);
-            if (value?.kind === 'text') out += value.value;
+            // Unquoted, the shell splits a value on whitespace into several words.
+            if (value?.kind === 'text' && (quote === '"' || !/\s/.test(value.value))) out += value.value;
             else { out += simple[0]; note(simple[0]); }
             i += simple[0].length;
             return;
@@ -180,11 +166,22 @@ export function evalWord(
             else if (c === '$') dollar();
             else if (c === '`') { const e = text.indexOf('`', i + 1); const end = e < 0 ? text.length : e + 1; out += text.slice(i, end); note(text.slice(i, end)); i = end; }
             else { out += c; i++; }
-        } else if (c === "'" || (c === '$' && text[i + 1] === "'")) {
-            const start = c === '$' ? i + 1 : i;
-            const e = text.indexOf("'", start + 1);
+        } else if (c === '$' && text[i + 1] === "'") {
+            let j = i + 2;
+            let literal = '';
+            while (j < text.length && text[j] !== "'") {
+                if (text[j] === '\\' && j + 1 < text.length) {
+                    const esc = text[j + 1];
+                    literal += ANSI_C_ESCAPES[esc] ?? `\\${esc}`;
+                    j += 2;
+                } else literal += text[j++];
+            }
+            out += keepQuotes ? text.slice(i, Math.min(text.length, j + 1)) : literal;
+            i = j + 1;
+        } else if (c === "'") {
+            const e = text.indexOf("'", i + 1);
             const end = e < 0 ? text.length : e;
-            out += keepQuotes ? text.slice(i, Math.min(text.length, end + 1)) : text.slice(start + 1, end);
+            out += keepQuotes ? text.slice(i, Math.min(text.length, end + 1)) : text.slice(i + 1, end);
             i = end + 1;
         } else if (c === '"' || (c === '$' && text[i + 1] === '"')) {
             if (c === '$') i++;
@@ -202,14 +199,32 @@ export function evalWord(
     return { value: out, unresolved };
 }
 
+// Builtins that change variables without an Assignment node. The first set can
+// change any variable; the second changes the variables named in its arguments.
+const CHANGES_ANY = new Set(['eval', 'let', 'source', '.', 'trap']);
+const CHANGES_NAMED = new Set(['unset', 'read', 'readarray', 'mapfile', 'declare', 'typeset', 'local', 'readonly', 'printf', 'getopts']);
+// Past this, resolving variables is not worth its cost on a hostile command.
+const RESOLVE_MAX_CHARS = 64 * 1024;
+
+interface VarEvent {
+    /** `*` for a builtin that may change any variable. */
+    name: string;
+    /** -1 inside a command substitution: it taints the name everywhere. */
+    pos: number;
+    value: ShellValue;
+    /** An assignment inside an `&&` chain only holds for the rest of that chain. */
+    scope?: [number, number];
+}
+
 /**
  * Parse `command` into its simple commands and the variables it provably sets.
- * Only top-level assignments count, alone or in a chain joined by `&&`; one in
- * a subshell, group, branch, loop, function or after `||`, an append, or a
- * later builtin that may change it makes the variable `runtime` from there on.
+ * Only a top-level assignment counts, alone or in an `&&` chain (then only for
+ * the rest of that chain). One in a subshell, group, branch, loop, function,
+ * pipeline, background job or after `||`, an append, a loop variable, or a later
+ * builtin that may change it makes the variable `runtime` from there on.
  */
 export function viewShell(command: string): ShellView {
-    const events: Array<{ name: string; pos: number; end: number; value: ShellValue }> = [];
+    const events: VarEvent[] = [];
     const commands: ShellCommand[] = [];
     const empty: ShellView = { commands, valueAt: () => undefined, commandAt: () => undefined };
     let ast: any;
@@ -227,15 +242,16 @@ export function viewShell(command: string): ShellView {
     }
 
     function collect(ast: any): ShellView {
-
+        const tooLong = command.length > RESOLVE_MAX_CHARS;
         const valueAt = (name: string, pos: number): ShellValue | undefined => {
-            if (pos < 0 || events.some(e => e.name === name && e.pos < 0)) return { kind: 'runtime' };
-            let latest: (typeof events)[number] | undefined;
-            for (const e of events) if (e.name === name && e.pos < pos && (!latest || e.pos >= latest.pos)) latest = e;
-            if (!latest) return undefined;
-            if (latest.value.kind !== 'runtime' && hasPotentialVariableMutation(command.slice(latest.end, pos), name)) {
-                return { kind: 'runtime' };
+            if (tooLong || pos < 0) return { kind: 'runtime' };
+            let latest: VarEvent | undefined;
+            for (const e of events) {
+                if (e.pos < 0 && (e.name === name || e.name === '*')) return { kind: 'runtime' };
+                if ((e.name === name || e.name === '*') && e.pos < pos && (!latest || e.pos >= latest.pos)) latest = e;
             }
+            if (!latest) return undefined;
+            if (latest.name === '*' || (latest.scope && (pos < latest.scope[0] || pos > latest.scope[1]))) return { kind: 'runtime' };
             return latest.value;
         };
         const view: ShellView = {
@@ -254,55 +270,64 @@ export function viewShell(command: string): ShellView {
             return r.unresolved.length ? { kind: 'runtime' } : { kind: 'text', value: r.value };
         };
 
-        const sound = new Set<any>();
+        const sound = new Map<any, [number, number] | undefined>();
         for (const entry of ast.commands ?? []) {
+            if (entry?.background) continue;
             const node = entry?.type === 'Statement' ? entry.command : entry;
-            const chain = node?.type === 'AndOr' && (node.operators ?? []).every((op: string) => op === '&&')
-                ? node.commands
-                : node?.type === 'Command' ? [node] : [];
-            for (const c of chain) {
-                if (c?.type !== 'Command') continue;
-                if (!c.name) for (const p of c.prefix ?? []) sound.add(p);
-                else if (c.name.text === 'export') sound.add(c);
-            }
+            const chained = node?.type === 'AndOr' && (node.operators ?? []).every((op: string) => op === '&&');
+            const chain = chained ? node.commands : node?.type === 'Command' ? [node] : [];
+            chain.forEach((c: any, i: number) => {
+                if (c?.type !== 'Command') return;
+                const scope: [number, number] | undefined = chained && i > 0 ? [node.pos, node.end] : undefined;
+                if (!c.name) for (const p of c.prefix ?? []) sound.set(p, scope);
+                else if (c.name.text === 'export') sound.set(c, scope);
+            });
         }
 
         // A command substitution's nodes carry offsets relative to the substitution,
         // so they get no position: nothing is resolved inside one, and nothing set
         // inside one is trusted outside it.
         const nodes: Array<{ n: any; nested: boolean }> = [];
-        walk(ast, (n, nested) => { if (n.type === 'Assignment' || n.type === 'Command') nodes.push({ n, nested }); });
+        walk(ast, (n, nested) => {
+            if (n.type === 'Assignment' || n.type === 'Command' || n.type === 'For' || n.type === 'Select') nodes.push({ n, nested });
+        });
         nodes.sort((a, b) => (a.n.pos ?? 0) - (b.n.pos ?? 0));
+        const taint = (name: string, pos: number) => events.push({ name, pos, value: { kind: 'runtime' } });
         for (const { n, nested } of nodes) {
-            if (nested) {
-                if (n.type === 'Assignment' && typeof n.name === 'string') events.push({ name: n.name, pos: -1, end: -1, value: { kind: 'runtime' } });
-                if (n.type === 'Command' && n.name) {
-                    commands.push({ name: String(n.name.value ?? n.name.text ?? ''), argTexts: (n.suffix || []).map((x: any) => String(x.text ?? x.value ?? '')), pos: -1 });
-                }
+            const pos = nested ? -1 : typeof n.pos === 'number' ? n.pos : 0;
+            if (n.type === 'For' || n.type === 'Select') {
+                const loopVar = n.name?.text;
+                if (typeof loopVar === 'string') taint(loopVar, pos);
                 continue;
             }
-            const pos = typeof n.pos === 'number' ? n.pos : 0;
-            const end = typeof n.end === 'number' ? n.end : pos;
             if (n.type === 'Assignment') {
                 if (typeof n.name !== 'string') continue;
-                const trusted = sound.has(n) && !n.append;
-                events.push({ name: n.name, pos, end, value: trusted ? valueOf(n.value, pos) : { kind: 'runtime' } });
+                if (nested || !sound.has(n) || n.append) taint(n.name, pos);
+                else events.push({ name: n.name, pos, value: valueOf(n.value, pos), scope: sound.get(n) });
                 continue;
             }
             if (!n.name) continue;
-            const argTexts = (n.suffix || []).map((s: any) => String(s.text ?? s.value ?? ''));
+            const argTexts = (n.suffix || []).map((x: any) => String(x.text ?? x.value ?? ''));
             const name = String(n.name.value ?? n.name.text ?? '');
+            if (CHANGES_ANY.has(name)) taint('*', pos);
+            if (CHANGES_NAMED.has(name)) {
+                for (const t of argTexts) {
+                    const m = t.match(/^([A-Za-z_]\w*)(?:\+?=|$)/);
+                    if (m) taint(m[1], pos);
+                }
+            }
             if (name === 'export') {
                 for (const text of argTexts) {
-                    const m = text.match(/^([A-Za-z_]\w*)=([\s\S]*)$/);
+                    const m = text.match(/^([A-Za-z_]\w*)(\+?)=([\s\S]*)$/);
                     if (!m) continue;
-                    const r = evalWord(m[2], view, pos);
-                    const value: ShellValue = sound.has(n) && !r.unresolved.length ? { kind: 'text', value: r.value } : { kind: 'runtime' };
-                    events.push({ name: m[1], pos, end, value });
+                    if (nested || !sound.has(n) || m[2]) { taint(m[1], pos); continue; }
+                    const r = evalWord(m[3], view, pos);
+                    events.push({ name: m[1], pos, value: r.unresolved.length ? { kind: 'runtime' } : { kind: 'text', value: r.value }, scope: sound.get(n) });
                 }
             }
             commands.push({ name, argTexts, pos });
         }
+        for (const m of command.slice(0, RESOLVE_MAX_CHARS).matchAll(/\$\{([A-Za-z_]\w*):?[=?]/g)) taint(m[1], m.index ?? 0);
         return view;
     }
 }
@@ -334,12 +359,14 @@ export function readConfigFile(path: string): string | null {
 }
 
 const BODY_EXTENSIONS = new Set(['.html', '.htm', '.txt', '.md', '.eml']);
-const SECRET_SEGMENT = /^\.|secret|credential|token|passw|private|\bkey\b|\.key$|\.pem$/i;
+const SECRET_SEGMENT = /^\.|secret|credential|token|passw|private|key|id_rsa|id_ed25519|id_ecdsa|\.pem$|\.p12$/i;
 
 function bodyRoots(cwd: string | undefined): string[] {
     const home = homedir();
     const roots = ['/workspace', '/tmp', tmpdir()];
-    if (cwd && cwd.startsWith('/') && cwd !== '/' && pathResolve(cwd) !== home) roots.push(cwd);
+    const cwdOk = cwd && cwd.startsWith('/') && cwd !== '/' && !home.startsWith(pathResolve(cwd))
+        && !pathResolve(cwd).split(sep).some(seg => SECRET_SEGMENT.test(seg));
+    if (cwdOk) roots.push(cwd);
     return roots.map(r => { try { return realpathSync(r); } catch { return r; } });
 }
 

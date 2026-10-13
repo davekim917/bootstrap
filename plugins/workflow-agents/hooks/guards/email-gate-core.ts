@@ -450,7 +450,9 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const to = inline(threadRecipients
         ? (flagTo ? `${threadRecipients}, plus ${flagTo}` : threadRecipients)
         : flagTo ?? envelope.to ?? 'unknown recipient');
-    const gwsWords = Math.max(calls.length, (command.match(/\bgws\b/g) ?? []).length);
+    // A send-shaped call, or one whose verb is hidden behind quoting or expansion.
+    const sendLike = calls.filter(c => c.verb || /[$`'"\\]/.test(c.verbText)).length;
+    const gwsWords = Math.max(sendLike, (scanned.match(/\bgws\s+gmail\s+(?:\+\S|users\s+(?:messages|drafts)\s+send\b)/g) ?? []).length);
     const probeFlag = send?.values.find(v => EMAIL_BYPASS_FLAGS.has(v));
     const named = gwsWords > 1
         ? [...new Set([...scanned.matchAll(/--(?:to|cc|bcc)[=\s]+['"]?([^\s'";&|)]+)/g)].map(m => inline(m[1])))]
@@ -511,6 +513,8 @@ const SEND_VERB = /^\+(send|reply|reply-all|forward)$/;
 interface GwsGmailCall {
     /** null when the call is not a recognisable send (another verb, or an obfuscated one). */
     verb: 'send' | 'reply' | 'reply-all' | 'forward' | null;
+    /** Source text of the word after `gmail`. */
+    verbText: string;
     helper: boolean;
     /** Source text of each argument after the verb. */
     texts: string[];
@@ -531,7 +535,7 @@ function gwsGmailCalls(view: ShellView): GwsGmailCall[] {
         const helper = rest[0]?.match(SEND_VERB)?.[1] as GwsGmailCall['verb'] | undefined;
         const raw = rest[0] === 'users' && (rest[1] === 'messages' || rest[1] === 'drafts') && rest[2] === 'send';
         const skip = at + 2 + (helper ? 1 : raw ? 3 : 0);
-        calls.push({ verb: helper ?? (raw ? 'send' : null), helper: !!helper, texts: texts.slice(skip), values: values.slice(skip), pos: c.pos });
+        calls.push({ verb: helper ?? (raw ? 'send' : null), verbText: texts[at + 2] ?? '', helper: !!helper, texts: texts.slice(skip), values: values.slice(skip), pos: c.pos });
     }
     return calls;
 }
@@ -558,6 +562,10 @@ function resolveBody(
     const name = soleVariable(text);
     if (name) {
         const value = view.valueAt(name, pos);
+        // Unquoted, the shell splits the value into several arguments.
+        if (value?.kind === 'text' && !text.startsWith('"') && /\s/.test(value.value)) {
+            return { text: null, note: `${code(text)} is unquoted, so the shell splits it into several arguments; the text sent is not what it holds.` };
+        }
         if (value?.kind === 'text') return { text: value.value };
         if (value?.kind === 'file') {
             const file = readBodyFile(value.path, cwd);
