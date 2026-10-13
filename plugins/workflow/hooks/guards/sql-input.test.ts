@@ -107,6 +107,19 @@ test('a pipeline inside an if feeds its client like a top-level one', () => {
     expect(verdict(`if echo 'DROP TABLE users' | psql; then :; fi`)).toBe('gate');
 });
 
+test('a cd inside a branch leaves the starting directory a candidate', () => {
+    expect(verdict(`if false; then cd /tmp; fi; psql -f bad.sql`)).toBe('gate');
+    expect(verdict(`if true; then cd /elsewhere; fi; psql -f bad.sql`)).toBe('gate');
+});
+
+test('printf output is rendered from its format', () => {
+    expect(verdict(`printf 'DROP %s users;' TABLE | psql`)).toBe('gate');
+});
+
+test('a file cat feeds through tee also reaches the next stage', () => {
+    expect(verdict(`cat bad.sql | tee copy.sql | psql`)).toBe('gate');
+});
+
 test('a relative write after a cd matches the absolute path the client reads', () => {
     expect(verdict(`cd ${dir} && echo 'DROP TABLE users' > fresh4.sql && psql -f ${dir}/fresh4.sql`)).toBe('gate');
 });
@@ -116,7 +129,6 @@ test('text echoed to the terminal is not fed to a client that is not in its pipe
     expect(verdict(`echo 'DROP TABLE users' | psql`)).toBe('gate');
 });
 
-test('after a cd the command does not prove, a relative file is not read from the starting directory, where it names a different file', () => {
+test('after a cd the command implies, a relative file is not read from the starting directory, where it names a different file', () => {
     expect(verdict(`cd /elsewhere && psql -f bad.sql`)).toBe('allow');
-    expect(verdict(`if true; then cd /elsewhere; fi; psql -f bad.sql`)).toBe('allow');
 });

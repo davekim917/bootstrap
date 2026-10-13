@@ -1033,7 +1033,7 @@ function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null 
         if (step.pos < 0) continue;
         if (cmd.pos === undefined) return null;
         if (step.pos >= cmd.pos) continue;
-        const next = step.topLevel && step.target !== undefined ? provable(step.target, step.pos) : null;
+        const next = step.target !== undefined ? provable(step.target, step.pos) : null;
         if (next === null) return null;
         const moved = dirs.map(d => (next.startsWith('/') ? next : join(d, next)));
         const link = script?.links.get(step.pos);
@@ -1469,8 +1469,21 @@ function samePath(path: string): string {
 function emittedText(cmd: ResolvedCommand): string[] {
     const operands = cmd.args.filter(a => !a.startsWith('-'));
     if (cmd.name === 'cat' || cmd.name === 'tee') return [...(cmd.stdinTexts ?? [])];
-    // printf formats its operands into the format string; each operand is scanned on its own as well.
-    return [...(cmd.stdinTexts ?? []), operands.join(' '), ...(cmd.name === 'printf' ? operands : [])];
+    if (cmd.name !== 'printf') return [...(cmd.stdinTexts ?? []), operands.join(' ')];
+    return [...(cmd.stdinTexts ?? []), operands.join(' '), ...operands, renderPrintf(operands)];
+}
+
+const PRINTF_DIRECTIVE = /%(?:%|[-+ #0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[sbqdiouxXcfFeEgGaA])/g;
+
+/** printf's output for a format and its arguments, reusing the format until the arguments run out. */
+function renderPrintf(operands: string[]): string {
+    const [format = '', ...values] = operands;
+    let out = '';
+    let next = 0;
+    do {
+        out += format.replace(PRINTF_DIRECTIVE, d => (d === '%%' ? '%' : values[next++] ?? ''));
+    } while (next > 0 && next < values.length && out.length < 100_000);
+    return out.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
 }
 
 /**
@@ -1502,8 +1515,10 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             const input: PipedInput = { texts: [], catFiles: [] };
             for (const up of stageCommands(stages[i - 1])) {
                 if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
-                input.texts.push(...emittedText(up), ...(pipedInto.get(up.pos ?? -1)?.texts ?? []));
+                const fed = pipedInto.get(up.pos ?? -1);
+                input.texts.push(...emittedText(up), ...(fed?.texts ?? []));
                 if (up.name === 'cat') input.catFiles.push(...up.args.filter(a => !a.startsWith('-')));
+                if (up.name === 'cat' || up.name === 'tee') input.catFiles.push(...(fed?.catFiles ?? []));
             }
             for (const down of stageCommands(stage)) if (down.pos !== undefined) pipedInto.set(down.pos, input);
         });
