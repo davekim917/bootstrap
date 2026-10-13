@@ -68,6 +68,41 @@ const BASH_GATE = [
   'echo $(psql -c "DROP TABLE users")',
   'X=$(snow sql -q "DROP TABLE prod.orders")',
   'snow sql -q "select 1;\ndrop table prod.orders"',
+  // Places bash runs a command that the walker once skipped: if/while/until
+  // conditions, case arms and subjects, redirect targets, unquoted heredoc
+  // bodies, ${x:-…} operands, array elements, [[ ]], $(( )) and the command
+  // name itself.
+  'if psql -c "DROP TABLE users"; then :; fi',
+  'while psql -c "DROP TABLE users"; do :; done',
+  'until psql -c "DROP TABLE users"; do :; done',
+  'case x in a) psql -c "DROP TABLE users";; esac',
+  'case $(psql -c "DROP TABLE users") in a) :;; esac',
+  'echo > "$(psql -c "DROP TABLE users")"',
+  'while read l; do :; done < <(psql -c "DROP TABLE users")',
+  'cat <<EOF\n$(psql -c "DROP TABLE users")\nEOF',
+  'x=${y:-$(psql -c "DROP TABLE users")}',
+  'a=( $(psql -c "DROP TABLE users") )',
+  '[[ -n $(psql -c "DROP TABLE users") ]]',
+  'echo $(( $(psql -c "DROP TABLE users") ))',
+  'if $(psql -c "DROP TABLE users"); then :; fi',
+  // SQL the scanner once could not see: glued option values, stdin, files
+  // written in the same command, includes, templates, scripting blocks.
+  'snow sql --query="drop table prod.orders"',
+  'snow sql -q"drop table prod.orders"',
+  'psql -c"drop table users"',
+  'mysql -e"drop table users"',
+  'psql <<EOF\ndrop table users;\nEOF',
+  'psql <<< "drop table users"',
+  'echo "drop table users" > x.sql; psql -f x.sql',
+  "cat > x.sql <<'EOF'\ndrop table users;\nEOF\nsnow sql -f x.sql",
+  'snow sql -q "&{x}" -D "x=drop table prod.orders"',
+  'snow sql -q "drop &{k} prod.orders" -D k=table',
+  'snow sql -q "begin drop table prod.orders; end"',
+  'psql -c "DO $$ BEGIN DROP TABLE users; END $$"',
+  'snow sql -q "alter table prod.orders swap with prod.orders_new"',
+  'snow sql -q "alter table prod.orders rename to prod.orders_old"',
+  'snow sql -q "grant ownership on table prod.orders to role r"',
+  'git push --prune origin',
   'psql -c "-- note; with a semicolon\ndrop table users"',
   'git push --mirror backup',
   'git push origin --delete feature-x',
@@ -96,6 +131,13 @@ const BASH_ALLOW = [
   'git push -odelete origin main',
   'git push -o :note origin main',
   'git push -- -f/repo main',
+  'if git status; then :; fi',
+  'snow sql -q "alter table prod.orders rename column a to b"',
+  'psql -c "select \'drop table t\'"',
+  'snow sql -q "select 1" -D x=y',
+  'echo "drop table t"; psql -c "select 1"',
+  'git fetch --prune',
+  'git remote prune origin',
 ];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);

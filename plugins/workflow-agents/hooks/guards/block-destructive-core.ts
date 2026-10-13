@@ -67,6 +67,17 @@ export interface ResolvedCommand {
     chdir?: string;             // working directory set by an `env -C/--chdir` wrapper
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
+    stdinTexts?: string[];      // heredoc and here-string text fed to this command
+    stdinFiles?: string[];      // files redirected into this command with `<`
+    script?: ScriptContext;     // what the whole command line shows, shared by its commands
+}
+
+/** Facts about the whole command line that a single step's checks need. */
+export interface ScriptContext {
+    texts: string[];            // every heredoc/here-string body, and the text echo/printf/tee emit
+    catFiles: string[];         // files `cat` reads, which may be piped into a SQL client
+    changesDir: boolean;        // a cd/pushd/popd somewhere, so relative paths are ambiguous
+    cwd?: string;               // the directory the command line starts in
 }
 
 export interface DestructiveMatch {
@@ -524,7 +535,16 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     // After string-strip, a DROP keyword inside a string literal cannot reach
     // this check, so anywhere-in-statement matching is safe.
     { rx: /^ALTER\b[\s\S]*\bDROP\b/i, label: 'ALTER ... DROP' },
+    { rx: /^ALTER\b[\s\S]*\bSWAP\s+WITH\b/i, label: 'ALTER ... SWAP WITH' },
+    { rx: /^ALTER\b[\s\S]*\bRENAME\s+TO\b/i, label: 'ALTER ... RENAME TO' },
+    { rx: /^GRANT\s+OWNERSHIP\b/i, label: 'GRANT OWNERSHIP' },
 ];
+
+// Control-flow words that can open a statement inside a scripting block
+// (Snowflake Scripting, PL/pgSQL, T-SQL). Stripped before matching, so the
+// statement they lead into is checked like a top-level one.
+const BLOCK_LEAD = /^(?:(?:BEGIN|ELSE|LOOP|DO|REPEAT)\b\s*|(?:IF|ELSEIF|ELSIF|WHEN)\b[\s\S]*?\bTHEN\b\s*|(?:FOR|WHILE)\b[\s\S]*?\b(?:DO|LOOP)\b\s*)/i;
+const BLOCK_LEAD_MAX_STRIPS = 16;
 
 const UPDATE_LEADING = /^UPDATE\b/i;
 const HAS_WHERE = /\bWHERE\b/i;
@@ -532,7 +552,7 @@ const HAS_WHERE = /\bWHERE\b/i;
 // Cheap superset prefilter — if none of these verbs appear anywhere in the
 // SQL arg, no destructive pattern can match. Skips the full strip+scan
 // pipeline on SELECT-only queries (the common case).
-const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE)\b/i;
+const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE|GRANT)\b/i;
 
 // Hoisted to module scope — these regexes are matched per-segment / per-call
 // inside the SQL scanner; defining them inline would recompile on every
@@ -540,7 +560,7 @@ const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTE
 const WITH_LEADING = /^WITH\b/i;
 const WITH_PREFIX = /^WITH\s+(?:RECURSIVE\s+)?/i;
 const CTE_NAME_AS = /^(?:"\s*"|"[^"]*"|`[^`]*`|[A-Za-z_][\w$]*)\s*(?:\([^)]*\))?\s+AS\s+/i;
-const EXECUTE_IMMEDIATE = /EXECUTE\s+IMMEDIATE\s+/gi;
+const EXECUTE_IMMEDIATE = /(?:EXECUTE\s+IMMEDIATE|\bDO)\s+/gi;
 const DOLLAR_TAG = /^\$([A-Za-z0-9_]*)\$/;
 
 const STATEMENT_PREVIEW_CHARS = 200;
@@ -685,7 +705,10 @@ export function decomposeSqlSegment(skel: string): Array<{ body: string; isCTE: 
 }
 
 export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | null {
-    const trimmed = body.trim();
+    let trimmed = body.trim();
+    for (let i = 0; i < BLOCK_LEAD_MAX_STRIPS && BLOCK_LEAD.test(trimmed); i++) {
+        trimmed = trimmed.replace(BLOCK_LEAD, '').trim();
+    }
     if (!trimmed) return null;
     const preview = trimmed.slice(0, STATEMENT_PREVIEW_CHARS);
 
@@ -782,6 +805,119 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0): Des
     return null;
 }
 
+const SQL_FILE_MAX_BYTES = 1_000_000;
+// Options whose value is a file of SQL the client runs.
+const SQL_FILE_OPTIONS: Record<string, string[]> = {
+    snow: ['-f', '--filename'], psql: ['-f', '--file'], duckdb: ['-f', '-init'], sqlite3: ['-init'], sqlite: ['-init'],
+};
+// Options whose value is SQL. A client given none of them reads SQL from stdin.
+const SQL_TEXT_OPTIONS: Record<string, string[]> = {
+    snow: ['-q', '--query'], psql: ['-c', '--command'], mysql: ['-e', '--execute'],
+};
+// Client commands inside SQL text that run another file: snow `!source`/`!load`,
+// psql `\i`/`\ir`/`\include`, sqlite `.read`, mysql `source`.
+const SQL_INCLUDE = /^\s*(?:!(?:source|load)|\\(?:i|ir|include|include_relative)|\.read|source)\s+['"]?([^\s'";]+)/gim;
+const SNOW_TEMPLATE = /&\{\s*([\w.]+)\s*\}|<%\s*([\w.]+)\s*%>|&([A-Za-z_]\w*)/g;
+
+export interface SqlInput {
+    texts: string[];            // every SQL text the client could run, as far as the command line shows
+    unreadable: string | null;  // a SQL file too large to check
+}
+
+/** The value `option` gives in `args[i]`: `-q X`, `--query=X`, or glued `-qX`. */
+function optionValueAt(args: string[], i: number, option: string): string | undefined {
+    const a = args[i];
+    if (a === option) return args[i + 1];
+    if (option.startsWith('--')) return a.startsWith(`${option}=`) ? a.slice(option.length + 1) : undefined;
+    return a.startsWith(option) && a.length > option.length && !a.startsWith('--') ? a.slice(option.length) : undefined;
+}
+
+/**
+ * Every SQL text a SQL client step could run: its arguments (with a glued
+ * `-qSQL` or `--query=SQL` value unglued), heredoc and here-string input,
+ * `-f` and `<` files, files the SQL itself includes, and snow `-D` template
+ * values rendered in. When the SQL arrives from a file or stdin, the text the
+ * rest of the command writes (heredocs, echo/printf/tee, `cat`ed files) is
+ * included too, since that is where such a file usually comes from.
+ */
+export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
+    const client = cmd.name === 'snow' ? 'snow' : cmd.name;
+    const args = client === 'snow' ? cmd.args.slice(1) : cmd.args;
+    const fileOptions = SQL_FILE_OPTIONS[client] ?? [];
+    const textOptions = SQL_TEXT_OPTIONS[client] ?? [];
+    const texts: string[] = [...(cmd.stdinTexts ?? [])];
+    const files: string[] = [...(cmd.stdinFiles ?? [])];
+    const vars = new Map<string, string>();
+    let sqlInArgs = false;
+    let readsStdin = texts.length > 0 || files.length > 0;
+
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        texts.push(a);
+        if (/^-[A-Za-z]./.test(a) && !a.startsWith('--')) texts.push(a.slice(2));
+        else if (a.startsWith('--') && a.includes('=')) texts.push(a.slice(a.indexOf('=') + 1));
+        for (const o of fileOptions) {
+            const v = optionValueAt(args, i, o);
+            if (v !== undefined) files.push(v);
+        }
+        for (const o of textOptions) {
+            if (optionValueAt(args, i, o) !== undefined) sqlInArgs = true;
+        }
+        if (client === 'snow') {
+            for (const o of ['-D', '--variable']) {
+                const v = optionValueAt(args, i, o);
+                const m = v?.match(/^([\w.]+)=([\s\S]*)$/);
+                if (m) vars.set(m[1], m[2]);
+            }
+            if (a === '--stdin' || a === '-i') readsStdin = true;
+        }
+    }
+    if (client === 'psql' || client === 'mysql' || client === 'snow') {
+        if (!sqlInArgs && files.length === 0) readsStdin = true;
+    } else {
+        readsStdin = true;
+    }
+    if (vars.size) {
+        const rendered = texts.map(t => t.replace(SNOW_TEMPLATE, (m, a, b, c) => vars.get(a ?? b ?? c) ?? m));
+        texts.push(...rendered, ...vars.values());
+    }
+    for (const t of [...texts]) {
+        for (const m of t.matchAll(SQL_INCLUDE)) files.push(m[1]);
+    }
+    if (files.length || readsStdin) {
+        texts.push(...(cmd.script?.texts ?? []));
+        if (readsStdin) files.push(...(cmd.script?.catFiles ?? []));
+    }
+
+    let unreadable: string | null = null;
+    for (const f of files) {
+        const content = readSqlFile(f, cmd);
+        if (content === 'too-large') unreadable ??= f;
+        else if (content !== null) texts.push(content);
+    }
+    return { texts, unreadable };
+}
+
+/**
+ * A SQL file's text, null when it cannot be read now (missing, not a regular
+ * file, a path the shell would expand, or relative after a `cd` in the same
+ * command), or 'too-large'. A missing file is usually written earlier in the
+ * same command, which sqlInputOf covers by scanning that command's text.
+ */
+function readSqlFile(file: string, cmd: ResolvedCommand): string | null | 'too-large' {
+    if (!file || /[$`*?[{~]/.test(file) || file === '-') return null;
+    if (!file.startsWith('/') && cmd.script?.changesDir) return null;
+    const path = file.startsWith('/') ? file : join(cmd.chdir ?? cmd.script?.cwd ?? currentWorkingDir(), file);
+    try {
+        const st = statSync(path);
+        if (!st.isFile()) return null;
+        if (st.size > SQL_FILE_MAX_BYTES) return 'too-large';
+        return readFileSync(path, 'utf-8');
+    } catch {
+        return null;
+    }
+}
+
 // Platform CLIs → destructive subcommand verbs
 export const PLATFORM_DESTRUCTIVE: Record<string, Set<string>> = {
     render:  new Set(['delete', 'down', 'destroy']),
@@ -834,57 +970,171 @@ export function isSafePath(p: string): boolean {
 
 // ── AST helpers ──────────────────────────────────────────────────────────────
 
-/** Recursively walk an unbash AST node, accumulating all Command nodes into `out` */
+/**
+ * Walk an unbash AST node and collect every Command node bash could run: in a
+ * list, pipeline, condition (`if`/`while`/`until`), case arm, loop, function,
+ * group or coproc, and inside any `$(…)`, backticks or `<(…)` wherever a word
+ * can hold one: a command name, argument, assignment value or array element,
+ * redirect target, unquoted heredoc body, `${x:-…}` operand, `[[ ]]` operand,
+ * `$(( ))`, `(( ))` or case subject.
+ */
 export function walkCommandNodes(node: any, out: any[] = []): any[] {
-    if (!node) return out;
-
-    if (node.type === 'Command') {
-        out.push(node);
-        // Recurse into command substitutions embedded in arguments and assignment values
-        for (const s of (node.suffix || [])) {
-            walkPartsForSubstitutions(s, out);
-        }
-        for (const p of (node.prefix || [])) {
-            if (p?.type === 'Assignment') walkPartsForSubstitutions(p.value, out);
-        }
-        return out;
+    if (!node || typeof node !== 'object') return out;
+    switch (node.type) {
+        case 'Command':
+            out.push(node);
+            walkPartsForSubstitutions(node.name, out);
+            for (const s of (node.suffix || [])) walkPartsForSubstitutions(s, out);
+            for (const p of (node.prefix || [])) {
+                walkPartsForSubstitutions(p?.value, out);
+                for (const w of (p?.array || [])) walkPartsForSubstitutions(w, out);
+            }
+            walkRedirectsForCommands(node.redirects, out);
+            return out;
+        case 'Statement':
+            walkCommandNodes(node.command, out);
+            walkRedirectsForCommands(node.redirects, out);
+            return out;
+        case 'If':
+        case 'While':
+            walkCommandNodes(node.clause, out);
+            walkCommandNodes(node.then, out);
+            walkCommandNodes(node.body, out);
+            walkCommandNodes(node.else, out);
+            return out;
+        case 'Case':
+            walkPartsForSubstitutions(node.word, out);
+            for (const item of (node.items || [])) {
+                for (const w of (item?.pattern || [])) walkPartsForSubstitutions(w, out);
+                walkCommandNodes(item?.body, out);
+            }
+            return out;
+        case 'TestCommand':
+            walkTestExpression(node.expression, out);
+            return out;
+        case 'ArithmeticCommand':
+            collectCommandsInText(String(node.body ?? ''), out);
+            return out;
+        case 'ArithmeticFor':
+            for (const e of [node.initialize, node.test, node.update]) walkArithmeticExpression(e, out);
+            walkCommandNodes(node.body, out);
+            return out;
+        default:
+            for (const w of (node.wordlist || [])) walkPartsForSubstitutions(w, out);
+            for (const child of (node.commands || [])) walkCommandNodes(child, out);
+            walkCommandNodes(node.body, out);
+            walkCommandNodes(node.command, out);
+            walkRedirectsForCommands(node.redirects, out);
+            return out;
     }
-    for (const w of (node.wordlist || [])) {
-        walkPartsForSubstitutions(w, out);
-    }
-
-    // Recurse into all known container types
-    for (const child of (node.commands || [])) {
-        walkCommandNodes(child, out);
-    }
-    if (node.body) walkCommandNodes(node.body, out);
-    if (node.command) walkCommandNodes(node.command, out);
-    if (node.then) walkCommandNodes(node.then, out);
-    if (node.else) walkCommandNodes(node.else, out);
-    if (node.condition) walkCommandNodes(node.condition, out);
-    for (const clause of (node.clauses || [])) {
-        walkCommandNodes(clause, out);
-    }
-
-    return out;
 }
 
 // Command nodes found inside a substitution. unbash gives them offsets relative
 // to the substitution, so they must not be matched against top-level offsets.
 const NESTED_COMMAND_NODES = new WeakSet<object>();
 
+function addNestedCommands(script: any, commands: any[]): void {
+    for (const inner of walkCommandNodes(script)) {
+        NESTED_COMMAND_NODES.add(inner);
+        commands.push(inner);
+    }
+}
+
 /** Walk a word's parts (computed lazily by unbash) to find the commands inside `$(…)`, backticks and `<(…)` */
 export function walkPartsForSubstitutions(node: any, commands: any[]): void {
-    if (!node) return;
+    if (!node || typeof node !== 'object') return;
     if (['CommandExpansion', 'ProcessSubstitution', 'CommandSubstitution', 'Backtick'].includes(node.type)) {
-        for (const inner of walkCommandNodes(node.script ?? node.body ?? node.command)) {
-            NESTED_COMMAND_NODES.add(inner);
-            commands.push(inner);
-        }
+        addNestedCommands(node.script ?? node.body ?? node.command, commands);
+    }
+    if (node.type === 'ArithmeticExpansion') collectCommandsInText(String(node.text ?? ''), commands);
+    if (node.type === 'ParameterExpansion') {
+        walkPartsForSubstitutions(node.operand, commands);
+        walkPartsForSubstitutions(node.slice?.offset, commands);
+        walkPartsForSubstitutions(node.slice?.length, commands);
+        walkPartsForSubstitutions(node.replace?.pattern, commands);
+        walkPartsForSubstitutions(node.replace?.replacement, commands);
     }
     for (const part of (node.parts || [])) {
         walkPartsForSubstitutions(part, commands);
     }
+}
+
+function walkRedirectsForCommands(redirects: any, commands: any[]): void {
+    for (const r of (redirects || [])) {
+        walkPartsForSubstitutions(r?.target, commands);
+        // An unquoted heredoc body is expanded like a double-quoted word.
+        if ((r?.operator === '<<' || r?.operator === '<<-') && !r.heredocQuoted) {
+            collectCommandsInText(String(r.content ?? ''), commands);
+        }
+    }
+}
+
+function walkTestExpression(expr: any, commands: any[]): void {
+    if (!expr || typeof expr !== 'object') return;
+    walkPartsForSubstitutions(expr.operand?.type ? null : expr.operand, commands);
+    walkPartsForSubstitutions(expr.left?.type ? null : expr.left, commands);
+    walkPartsForSubstitutions(expr.right?.type ? null : expr.right, commands);
+    for (const sub of [expr.operand, expr.left, expr.right, expr.expression]) {
+        if (sub?.type) walkTestExpression(sub, commands);
+    }
+}
+
+function walkArithmeticExpression(expr: any, commands: any[]): void {
+    if (!expr || typeof expr !== 'object') return;
+    if (expr.type === 'ArithmeticWord') collectCommandsInText(String(expr.value ?? ''), commands);
+    for (const sub of [expr.left, expr.right, expr.operand, expr.test, expr.consequent, expr.alternate, expr.expression]) {
+        walkArithmeticExpression(sub, commands);
+    }
+}
+
+/**
+ * Commands inside every `$(…)` and backtick span of raw text that bash expands
+ * but unbash leaves unparsed: an unquoted heredoc body, `$(( ))`, `(( ))`.
+ * Each span is parsed as its own script.
+ */
+function collectCommandsInText(text: string, commands: any[]): void {
+    if (!text.includes('$(') && !text.includes('`')) return;
+    for (const inner of substitutionSpans(text)) {
+        try {
+            addNestedCommands(parse(inner), commands);
+        } catch {
+            // An unparsable span cannot be inspected; its text still reaches the regex fallback below.
+            commands.push(...fallbackExtract(inner).map(c => ({ __resolved: c })));
+        }
+    }
+}
+
+/** The inner text of each `$(…)` (not `$((`) and backtick span in `text`, outermost first. */
+function substitutionSpans(text: string): string[] {
+    const spans: string[] = [];
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] === '\\') { i++; continue; }
+        if (text[i] === '`') {
+            const close = text.indexOf('`', i + 1);
+            if (close === -1) break;
+            spans.push(text.slice(i + 1, close));
+            i = close;
+            continue;
+        }
+        if (text[i] === '$' && text[i + 1] === '(') {
+            if (text[i + 2] === '(') { i += 2; continue; }
+            let depth = 1;
+            let j = i + 2;
+            let quote: string | null = null;
+            for (; j < text.length && depth > 0; j++) {
+                const c = text[j];
+                if (c === '\\') { j++; continue; }
+                if (quote) { if (c === quote) quote = null; continue; }
+                if (c === "'" || c === '"') quote = c;
+                else if (c === '(') depth++;
+                else if (c === ')') depth--;
+            }
+            if (depth !== 0) break;
+            spans.push(text.slice(i + 2, j - 1));
+            i = j - 1;
+        }
+    }
+    return spans;
 }
 
 /** Split an `env -S` string into words the way GNU env does: whitespace and
@@ -1023,6 +1273,13 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const hasInputRedirect = (node.redirects || []).some((r: any) =>
         ['<<', '<<<', '<<-'].includes(r.operator)
     );
+    const stdinTexts: string[] = [];
+    const stdinFiles: string[] = [];
+    for (const r of (node.redirects || [])) {
+        if (r?.operator === '<<' || r?.operator === '<<-') stdinTexts.push(String(r.content ?? ''));
+        else if (r?.operator === '<<<') stdinTexts.push(wordValue(r.target));
+        else if (r?.operator === '<' || r?.operator === '<>') stdinFiles.push(wordValue(r.target));
+    }
 
     // Reconstruct raw text for error messages
     const rawParts = [node.name.text || node.name.value, ...(node.suffix || []).map((s: any) => s.text || s.value)];
@@ -1035,6 +1292,8 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         ...(chdir !== undefined ? { chdir } : {}),
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
+        ...(stdinTexts.length ? { stdinTexts } : {}),
+        ...(stdinFiles.length ? { stdinFiles } : {}),
     };
 }
 
@@ -1053,14 +1312,33 @@ export function extractCommands(command: string): ResolvedCommand[] {
     try {
         const ast = parse(command);
         const nodes = walkCommandNodes(ast);
-        return nodes.map(node => {
+        const commands = nodes.map(node => {
+            if (node.__resolved) return node.__resolved as ResolvedCommand;
             const cmd = resolveCommand(node);
             if (cmd && NESTED_COMMAND_NODES.has(node)) delete cmd.pos;
             return cmd;
         }).filter((c): c is ResolvedCommand => c !== null);
+        const script = scriptContextOf(commands);
+        for (const cmd of commands) cmd.script = script;
+        return commands;
     } catch {
         return fallbackExtract(command);
     }
+}
+
+const TEXT_EMITTERS = new Set(['echo', 'printf', 'tee']);
+
+function scriptContextOf(commands: ResolvedCommand[]): ScriptContext {
+    const texts: string[] = [];
+    const catFiles: string[] = [];
+    let changesDir = false;
+    for (const cmd of commands) {
+        texts.push(...(cmd.stdinTexts ?? []));
+        if (TEXT_EMITTERS.has(cmd.name)) texts.push(cmd.args.filter(a => !a.startsWith('-')).join(' '));
+        if (cmd.name === 'cat') catFiles.push(...cmd.args.filter(a => !a.startsWith('-')));
+        if (cmd.name === 'cd' || cmd.name === 'pushd' || cmd.name === 'popd' || cmd.chdir !== undefined) changesDir = true;
+    }
+    return { texts, catFiles, changesDir };
 }
 
 /** Regex-based fallback for when the AST parser fails */
@@ -1749,9 +2027,10 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
 
     const allowed = new Set(entry.databases.map(d => d.toUpperCase()));
     let matched = false;
-    for (const arg of cmd.args) {
+    if (cmd.stdinTexts?.length || cmd.stdinFiles?.length) return null;
+    for (const arg of sqlInputOf(cmd).texts) {
         if (!findDestructiveSqlStatement(arg)) continue;
-        if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b/i.test(arg)) return null;
+        if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b|^\s*DO\b|[!\\]\w/im.test(arg)) return null;
         for (const st of destructiveStatements(arg)) {
             const target = statementTarget(st.pattern, st.statement);
             if (!target) return null;
@@ -2194,8 +2473,10 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     // emit. Coverage and false-positive guards live in findDestructiveSqlStatement.
     const sqlDialect = SQL_CLIS[name] ?? (name === 'snow' && args[0] === 'sql' ? 'Snowflake' : null);
     if (sqlDialect) {
-        for (const a of args) {
-            const matched = findDestructiveSqlStatement(a);
+        const input = sqlInputOf(cmd);
+        if (input.unreadable) return `${sqlDialect} SQL file ${input.unreadable} is too large to check.`;
+        for (const text of input.texts) {
+            const matched = findDestructiveSqlStatement(text);
             if (matched) {
                 return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
             }
@@ -2333,6 +2614,9 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
             }
             if (options.includes('--mirror')) {
                 return 'git push --mirror force-updates every remote ref.';
+            }
+            if (options.includes('--prune')) {
+                return 'git push --prune deletes every remote branch that has no local counterpart.';
             }
             // `+refspec` is per-ref force; `:refspec` deletes the remote ref.
             if (options.includes('--delete') || hasShortFlag(options, 'd', GIT_PUSH_SHORT_VALUE_FLAGS) ||
@@ -2497,7 +2781,7 @@ function databaseLine(cmd: ResolvedCommand): string | null {
 }
 
 function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
-    const statements = cmd.args.flatMap(a => destructiveStatements(a)).slice(0, 3);
+    const statements = sqlInputOf(cmd).texts.flatMap(t => destructiveStatements(t)).slice(0, 3);
     const lines: string[] = [];
     let label = `Run destructive ${dialect} SQL`;
     statements.forEach((st, i) => {
@@ -2584,6 +2868,11 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
     if (flags.has('--mirror')) {
         return { dir, label: `Mirror-push every branch and tag to ${remote}`, lines: [
             `If you approve: every branch and tag on ${code(remote)} is made to match this clone. Remote branches and tags that don't exist here are deleted.`,
+        ] };
+    }
+    if (flags.has('--prune')) {
+        return { dir, label: `Delete remote branches on ${remote} that don't exist locally (--prune)`, lines: [
+            `If you approve: every branch on ${code(remote)} with no matching local branch is deleted. Pull requests from those branches close.`,
         ] };
     }
     const deleted = flags.has('--delete') || flags.has('-d') ? refs : refs.filter(r => r.startsWith(':'));
@@ -2697,6 +2986,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
     const fallback = { label: reason, summary: reason };
     try {
         const commands = extractCommands(command);
+        if (commands[0]?.script) commands[0].script.cwd = cwd;
         const gated = [...gatedSteps(commands, command, cwd, isLabSession(), false)];
         if (gated.length === 0) return fallback;
         const view = viewShell(command);
@@ -2876,6 +3166,7 @@ export function evaluateBashCommand(
     const ephemeralMktempVariables = findEphemeralMktempVariables(command);
     const lab = isLabSession();
     const cwd = opts.cwd ?? currentWorkingDir();
+    if (commands[0]?.script) commands[0].script.cwd = cwd;
 
     // --- Hard block checks (no bypass, ever — lab included) ---
     for (const cmd of commands) {
