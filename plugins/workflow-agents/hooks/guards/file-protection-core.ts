@@ -39,11 +39,13 @@ export const PROTECTED_SEGMENTS = [
     '.env.development',
     // These files relax a gate: the public-boundary allowlist exempts values from
     // the leak scan, its baseline sets how many flagged lines each file may hold,
-    // and a lab scope names the org whose LAB-* repos skip destructive-command
-    // approval in lab sessions. Their owner edits them.
+    // a lab scope names the org whose LAB-* repos skip destructive-command
+    // approval in lab sessions, and a dev scope names the Snowflake connections
+    // that skip it everywhere. Their owner edits them.
     '.public-boundary-allowlist.json',
     '.public-boundary-baseline.json',
     'lab-scope.local.json',
+    'dev-scope.local.json',
 ];
 
 // Protected glob patterns (IaC state/config). Match path segments rather than

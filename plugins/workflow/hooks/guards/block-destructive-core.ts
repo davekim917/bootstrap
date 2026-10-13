@@ -34,7 +34,7 @@ import { homedir } from 'os';
 import { dirname, join, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, readConfigFile, viewShell } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, readConfigFile, shellUnquote, viewShell } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -836,11 +836,17 @@ export function walkCommandNodes(node: any, out: any[] = []): any[] {
 
     if (node.type === 'Command') {
         out.push(node);
-        // Recurse into command substitutions embedded in suffix values
+        // Recurse into command substitutions embedded in arguments and assignment values
         for (const s of (node.suffix || [])) {
             walkPartsForSubstitutions(s, out);
         }
+        for (const p of (node.prefix || [])) {
+            if (p?.type === 'Assignment') walkPartsForSubstitutions(p.value, out);
+        }
         return out;
+    }
+    for (const w of (node.wordlist || [])) {
+        walkPartsForSubstitutions(w, out);
     }
 
     // Recurse into all known container types
@@ -859,11 +865,18 @@ export function walkCommandNodes(node: any, out: any[] = []): any[] {
     return out;
 }
 
-/** Walk into suffix parts to find CommandSubstitution nodes */
+// Command nodes found inside a substitution. unbash gives them offsets relative
+// to the substitution, so they must not be matched against top-level offsets.
+const NESTED_COMMAND_NODES = new WeakSet<object>();
+
+/** Walk a word's parts (computed lazily by unbash) to find the commands inside `$(…)`, backticks and `<(…)` */
 export function walkPartsForSubstitutions(node: any, commands: any[]): void {
     if (!node) return;
-    if (node.type === 'CommandSubstitution' || node.type === 'Backtick') {
-        commands.push(...walkCommandNodes(node.body || node.command));
+    if (['CommandExpansion', 'ProcessSubstitution', 'CommandSubstitution', 'Backtick'].includes(node.type)) {
+        for (const inner of walkCommandNodes(node.script ?? node.body ?? node.command)) {
+            NESTED_COMMAND_NODES.add(inner);
+            commands.push(inner);
+        }
     }
     for (const part of (node.parts || [])) {
         walkPartsForSubstitutions(part, commands);
@@ -929,7 +942,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     if (!node.name) return null;
 
     let name = node.name.value || '';
-    let args = (node.suffix || []).map((s: any) => s.value ?? s.text ?? '');
+    let args = (node.suffix || []).map(wordValue);
     let chdir: string | undefined;
     const env: string[] = (node.prefix || [])
         .filter((p: any) => p?.type === 'Assignment' && typeof p.name === 'string')
@@ -1021,12 +1034,26 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     };
 }
 
+/**
+ * A word's value with its quotes removed. unbash leaves a multi-line quoted word
+ * unsplit, quotes included, so `"select 1;\ndrop table t"` would otherwise reach
+ * the SQL scanner as one quoted identifier and hide the DROP.
+ */
+function wordValue(word: any): string {
+    const value = String(word?.value ?? word?.text ?? '');
+    return typeof word?.text === 'string' && word.text === value && /['"]/.test(value) ? shellUnquote(value) : value;
+}
+
 /** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */
 export function extractCommands(command: string): ResolvedCommand[] {
     try {
         const ast = parse(command);
         const nodes = walkCommandNodes(ast);
-        return nodes.map(resolveCommand).filter((c): c is ResolvedCommand => c !== null);
+        return nodes.map(node => {
+            const cmd = resolveCommand(node);
+            if (cmd && NESTED_COMMAND_NODES.has(node)) delete cmd.pos;
+            return cmd;
+        }).filter((c): c is ResolvedCommand => c !== null);
     } catch {
         return fallbackExtract(command);
     }
@@ -1260,7 +1287,6 @@ export interface LabScope {
 
 export const LAB_SCOPE_FILE_ENV = 'BOOTSTRAP_LAB_SCOPE_FILE';
 const LAB_SCOPE_FILE = 'lab-scope.local.json';
-const LAB_SCOPE_CONTAINER_PATH = `/workspace/plugins/bootstrap/${LAB_SCOPE_FILE}`;
 const GITHUB_OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const GITHUB_REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
 // `https://[user[:token]@]github.com[:port]/`, `ssh://git@github.com/`,
@@ -1285,21 +1311,28 @@ export function parseLabScope(text: string): LabScope | null {
     return { org, extraRepos: extraRepos as string[] };
 }
 
-function labScopeRepoRootPath(): string | null {
-    try {
-        return fileURLToPath(new URL(`../../../../${LAB_SCOPE_FILE}`, import.meta.url));
-    } catch {
-        return null;
-    }
-}
-
-function labScopePath(): string | null {
-    const explicit = process.env[LAB_SCOPE_FILE_ENV];
+/**
+ * Where an untracked deployment file lives: the path in `envVar` when that is set
+ * (and then only there), else the plugin repo root above this module, else the
+ * NanoClaw container mount of that repo.
+ */
+function deploymentFilePath(fileName: string, envVar: string): string | null {
+    const explicit = process.env[envVar];
     if (explicit !== undefined) return explicit || null;
-    for (const candidate of [labScopeRepoRootPath(), LAB_SCOPE_CONTAINER_PATH]) {
+    let repoRoot: string | null = null;
+    try {
+        repoRoot = fileURLToPath(new URL(`../../../../${fileName}`, import.meta.url));
+    } catch {
+        repoRoot = null;
+    }
+    for (const candidate of [repoRoot, `/workspace/plugins/bootstrap/${fileName}`]) {
         if (candidate && existsSync(candidate)) return candidate;
     }
     return null;
+}
+
+function labScopePath(): string | null {
+    return deploymentFilePath(LAB_SCOPE_FILE, LAB_SCOPE_FILE_ENV);
 }
 
 function escapeRegexLiteral(value: string): string {
@@ -1579,6 +1612,115 @@ export function isLabTarget(cmd: ResolvedCommand, cwd: string = currentWorkingDi
 
 function logLabScope(message: string): void {
     console.error(`lab-scope: ${message}`);
+}
+
+// ── Dev-scope exemption ──────────────────────────────────────────────────────
+// Destructive SQL on a Snowflake connection the operator lists as dev runs
+// without approval, in every session: an approval prompt for every scratch-table
+// DROP teaches the approver to click yes on the ones that matter. Which
+// connections count is deployment data in an untracked `dev-scope.local.json`,
+// found like lab-scope.local.json:
+//   {"snowflake": [{"connection": "<dev>"}, {"connection": "<prod>", "databases": ["<dev db>"]}]}
+// An entry without `databases` exempts the whole connection. An entry with them
+// exempts only statements whose every target is fully qualified inside one of
+// those databases. No readable, valid file exempts nothing.
+//
+// It fails closed: the connection must be a literal `-c`/`--connection`, nothing
+// in the command may point it elsewhere (account, host or config overrides, a
+// temporary connection, a SNOWFLAKE_* variable), and a database-limited entry
+// refuses any statement it cannot name exactly (variables, IDENTIFIER(),
+// EXECUTE IMMEDIATE, CTE-wrapped DML, a two-part table name, DROP DATABASE).
+
+export const DEV_SCOPE_FILE_ENV = 'BOOTSTRAP_DEV_SCOPE_FILE';
+const DEV_SCOPE_FILE = 'dev-scope.local.json';
+const SNOWFLAKE_NAME_RE = /^[A-Za-z0-9_.-]{1,128}$/;
+
+export interface DevScope {
+    snowflake: Array<{ connection: string; databases?: string[] }>;
+}
+
+/** Parse a dev-scope file's text. Null when anything about it is unusable. */
+export function parseDevScope(text: string): DevScope | null {
+    let raw: unknown;
+    try {
+        raw = JSON.parse(text);
+    } catch {
+        return null;
+    }
+    const entries = (raw as { snowflake?: unknown } | null)?.snowflake;
+    if (!Array.isArray(entries)) return null;
+    for (const e of entries) {
+        if (!e || typeof e !== 'object' || typeof e.connection !== 'string' || !SNOWFLAKE_NAME_RE.test(e.connection)) return null;
+        if (e.databases !== undefined
+            && !(Array.isArray(e.databases) && e.databases.length > 0 && e.databases.every((d: unknown) => typeof d === 'string' && SNOWFLAKE_NAME_RE.test(d)))) {
+            return null;
+        }
+    }
+    return { snowflake: entries as DevScope['snowflake'] };
+}
+
+function currentDevScope(): DevScope | null {
+    const file = deploymentFilePath(DEV_SCOPE_FILE, DEV_SCOPE_FILE_ENV);
+    if (!file) return null;
+    try {
+        return parseDevScope(readFileSync(file, 'utf-8'));
+    } catch {
+        return null;
+    }
+}
+
+const SNOW_REDIRECT_FLAGS = [
+    '--account', '--accountname', '--account-name', '--host', '--port', '--region', '-x',
+    '--temporary-connection', '--config-file', '--private-key-file', '--authenticator',
+];
+
+/** The fully qualified object a destructive statement acts on, split into parts. */
+function statementTargetParts(pattern: string, statement: string): { kind: string; parts: string[] } | null {
+    const s = oneLine(statement.slice(0, STATEMENT_MAX_CHARS));
+    const name = String.raw`([^\s;(]+)`;
+    const m =
+        pattern === 'DROP' ? s.match(new RegExp(String.raw`^DROP\s+(MATERIALIZED\s+VIEW|\w+)\s+(?:IF\s+EXISTS\s+)?` + name, 'i'))
+        : pattern === 'TRUNCATE' ? s.match(new RegExp(String.raw`^TRUNCATE\s+(?:(TABLE)\s+)?(?:IF\s+EXISTS\s+)?` + name, 'i'))
+        : pattern === 'DELETE FROM' ? s.match(new RegExp(String.raw`^DELETE\s+FROM()\s+` + name, 'i'))
+        : pattern === 'CREATE OR REPLACE' ? s.match(new RegExp(String.raw`^CREATE\s+OR\s+REPLACE\s+((?:(?:TEMP|TEMPORARY|EXTERNAL|MATERIALIZED|TRANSIENT|SECURE)\s+)*\w+)\s+(?:IF\s+NOT\s+EXISTS\s+)?` + name, 'i'))
+        : pattern === 'INSERT OVERWRITE' ? s.match(new RegExp(String.raw`^INSERT\s+OVERWRITE\s+(?:INTO\s+)?(?:(TABLE)\s+)?` + name, 'i'))
+        : pattern === 'MERGE' ? s.match(new RegExp(String.raw`^MERGE\s+INTO()\s+` + name, 'i'))
+        : pattern === 'ALTER ... DROP' ? s.match(new RegExp(String.raw`^ALTER\s+(\w+)\s+(?:IF\s+EXISTS\s+)?` + name, 'i'))
+        : pattern === 'UPDATE without WHERE' ? s.match(new RegExp(String.raw`^UPDATE()\s+` + name, 'i'))
+        : null;
+    if (!m) return null;
+    const kind = (m[1] || 'table').toLowerCase().replace(/\s+/g, ' ');
+    return { kind, parts: m[2].split('.').map(p => p.replace(/^"|"$/g, '').toLowerCase()) };
+}
+
+/**
+ * The dev connection a `snow sql` command is exempt under, or null. `command`
+ * is the whole command line, so an exported SNOWFLAKE_* variable counts too.
+ */
+export function devScopeTargetOf(cmd: ResolvedCommand, command: string): string | null {
+    if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
+    const scope = currentDevScope();
+    if (!scope) return null;
+    const connections = flagValues(cmd.args, ['-c', '--connection']);
+    if (connections.length !== 1 || !SNOWFLAKE_NAME_RE.test(connections[0])) return null;
+    if (cmd.args.some(a => SNOW_REDIRECT_FLAGS.some(f => a === f || a.startsWith(`${f}=`)))) return null;
+    if ((cmd.env ?? []).some(e => e.startsWith('SNOWFLAKE_')) || /\bSNOWFLAKE_\w*=/.test(command)) return null;
+    const entry = scope.snowflake.find(e => e.connection === connections[0]);
+    if (!entry) return null;
+    if (!entry.databases) return `snowflake connection ${entry.connection}`;
+
+    const allowed = new Set(entry.databases.map(d => d.toLowerCase()));
+    for (const arg of cmd.args) {
+        if (!findDestructiveSqlStatement(arg)) continue;
+        if (/[$]|\bIDENTIFIER\s*\(|\bEXECUTE\s+IMMEDIATE\b/i.test(arg)) return null;
+        for (const st of destructiveStatements(arg)) {
+            const target = statementTargetParts(st.pattern, st.statement);
+            if (!target) return null;
+            const needed = target.kind === 'schema' ? 2 : target.kind === 'database' ? 0 : 3;
+            if (needed === 0 || target.parts.length !== needed || !allowed.has(target.parts[0])) return null;
+        }
+    }
+    return `snowflake connection ${entry.connection}, database ${entry.databases.join('/')}`;
 }
 
 // ── Git hook bypass ──────────────────────────────────────────────────────────
@@ -1960,6 +2102,28 @@ export function stageAllDuringConflictReason(cmd: ResolvedCommand, cwd: string):
 
 // ── Gated checks ─────────────────────────────────────────────────────────────
 
+/** True when `-<ch>` is given alone or inside a short-option cluster such as `-uf`. */
+function hasShortFlag(args: string[], ch: string): boolean {
+    return args.some(a => /^-[A-Za-z0-9]+$/.test(a) && a.slice(1).includes(ch));
+}
+
+// AWS CLI global options that take a value; they may come before the service.
+const AWS_GLOBAL_VALUE_OPTS = new Set([
+    '--profile', '--region', '--output', '--endpoint-url', '--query', '--ca-bundle',
+    '--cli-read-timeout', '--cli-connect-timeout', '--color', '--cli-binary-format',
+]);
+
+/** `aws [global options] <service> <operation> …` → [service, operation]. */
+export function awsServiceAndOperation(args: string[]): [string, string] {
+    const positional: string[] = [];
+    for (let i = 0; i < args.length && positional.length < 2; i++) {
+        const a = args[i];
+        if (!a.startsWith('-')) positional.push(a);
+        else if (AWS_GLOBAL_VALUE_OPTS.has(a)) i++;
+    }
+    return [positional[0] ?? '', positional[1] ?? ''];
+}
+
 /** Returns gate reason if the command requires approval, null otherwise */
 const CF_DESTRUCTIVE_VERB = /^(?:[a-z]+-)*(?:delete|purge|destroy|remove|reset|revoke|roll|rollback|terminate|clear|rotate|invalidate|replace)(?:[-A-Z][-A-Za-z]*)?$/;
 
@@ -1993,10 +2157,11 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     // ── Cloud providers ──────────────────────────────────────────────────
 
     if (name === 'aws') {
-        if (args[0] === 's3' && ['rm', 'rb'].includes(args[1])) {
+        const [service, operation] = awsServiceAndOperation(args);
+        if (service === 's3' && ['rm', 'rb'].includes(operation)) {
             return 'Destructive AWS S3 command (rm/rb).';
         }
-        if (args.length >= 2 && /^(?:terminate|delete)/.test(args[1] || '')) {
+        if (/^(?:terminate|delete)/.test(operation || '')) {
             return 'Destructive AWS CLI command detected.';
         }
     }
@@ -2103,14 +2268,14 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         }
         if (args[i] === 'push') {
             const pushArgs = args.slice(i + 1);
-            if (pushArgs.includes('--force') || pushArgs.includes('-f')) {
+            if (pushArgs.includes('--force') || hasShortFlag(pushArgs, 'f')) {
                 return 'git push --force rewrites remote history. Use --force-with-lease (refuses to clobber unseen work) or get approval.';
             }
             if (pushArgs.includes('--mirror')) {
                 return 'git push --mirror force-updates every remote ref.';
             }
             // `+refspec` is per-ref force; `:refspec` deletes the remote ref.
-            if (pushArgs.includes('--delete') || pushArgs.includes('-d') ||
+            if (pushArgs.includes('--delete') || hasShortFlag(pushArgs, 'd') ||
                 pushArgs.some(a => (a.startsWith(':') || a.startsWith('+')) && a.length > 1)) {
                 return 'git push deleting or force-updating a remote ref (+/: refspec, --delete).';
             }
@@ -2375,8 +2540,8 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
 }
 
 function awsStep(cmd: ResolvedCommand): StepCard {
-    const [service = '', op = ''] = cmd.args;
-    const operands = cmd.args.slice(2).filter(a => !a.startsWith('-'));
+    const [service, op] = awsServiceAndOperation(cmd.args);
+    const operands = cmd.args.slice(cmd.args.indexOf(op) + 1).filter(a => !a.startsWith('-'));
     const lines: string[] = [];
     let label = `AWS ${service} ${op}`;
     if (service === 's3' && op === 'rm') {
@@ -2431,11 +2596,12 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
 
 /**
  * Yield each command the gate decides on, with its reason, in order: gated by
- * checkGatedCommand and not exempted as a lab target. evaluateBashCommand
+ * checkGatedCommand and not exempted as a dev-scope or lab target. evaluateBashCommand
  * gates on the first; the description describes the same ones.
  */
 function* gatedSteps(
     commands: ResolvedCommand[],
+    command: string,
     cwd: string,
     lab: boolean,
     log: boolean,
@@ -2443,6 +2609,11 @@ function* gatedSteps(
     for (const cmd of commands) {
         const reason = checkGatedCommand(cmd);
         if (!reason) continue;
+        const dev = devScopeTargetOf(cmd, command);
+        if (dev !== null) {
+            if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
+            continue;
+        }
         if (lab) {
             const target = labTargetOf(cmd, cwd);
             if (target !== null) {
@@ -2463,7 +2634,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
     const fallback = { label: reason, summary: reason };
     try {
         const commands = extractCommands(command);
-        const gated = [...gatedSteps(commands, cwd, isLabSession(), false)];
+        const gated = [...gatedSteps(commands, command, cwd, isLabSession(), false)];
         if (gated.length === 0) return fallback;
         const view = viewShell(command);
 
@@ -2655,7 +2826,7 @@ export function evaluateBashCommand(
 
     // --- Gated checks ---
     if (!opts.skipGate) {
-        const first = gatedSteps(commands, cwd, lab, true).next();
+        const first = gatedSteps(commands, command, cwd, lab, true).next();
         if (!first.done) return { action: 'gate', reason: first.value.reason };
     }
 
