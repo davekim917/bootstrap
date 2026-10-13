@@ -238,6 +238,13 @@ interface VarEvent {
     scope?: [number, number];
 }
 
+const NO_VARIABLES: ShellView = { commands: [], valueAt: () => undefined, commandAt: () => undefined };
+
+/** Remove a word's shell quoting without expanding anything: `"a $X"` → `a $X`. */
+export function shellUnquote(text: string): string {
+    return evalWord(text, NO_VARIABLES, 0).value;
+}
+
 /**
  * Parse `command` into its simple commands and the variables it provably sets.
  * Only a top-level assignment counts, alone or in an `&&` chain (then only for

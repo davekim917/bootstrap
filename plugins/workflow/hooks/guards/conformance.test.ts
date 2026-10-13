@@ -58,6 +58,15 @@ const BASH_GATE = [
   'git push --force origin main',
   'git push -f',
   'git -C /workspace/worktrees/APP push -f origin develop',
+  // Spellings that once slipped through: a clustered short flag, AWS global
+  // options before the service, a command inside $(…) or an assignment's value,
+  // and SQL in a multi-line quoted argument.
+  'git push -uf origin main',
+  'aws --profile prod s3 rm s3://bucket/key',
+  'echo $(psql -c "DROP TABLE users")',
+  'X=$(snow sql -q "DROP TABLE prod.orders")',
+  'snow sql -q "select 1;\ndrop table prod.orders"',
+  'psql -c "-- note; with a semicolon\ndrop table users"',
   'git push --mirror backup',
   'git push origin --delete feature-x',
   'git push origin :feature-x',
