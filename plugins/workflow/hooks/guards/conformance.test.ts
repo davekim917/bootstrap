@@ -95,6 +95,7 @@ const BASH_ALLOW = [
   'git push -of origin main',
   'git push -odelete origin main',
   'git push -o :note origin main',
+  'git push -- -f/repo main',
 ];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);

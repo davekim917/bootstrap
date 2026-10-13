@@ -2326,14 +2326,16 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         }
         if (args[i] === 'push') {
             const pushArgs = pushArgsWithoutValues(args.slice(i + 1));
-            if (pushArgs.includes('--force') || hasShortFlag(pushArgs, 'f', GIT_PUSH_SHORT_VALUE_FLAGS)) {
+            const end = pushArgs.indexOf('--');
+            const options = end === -1 ? pushArgs : pushArgs.slice(0, end);
+            if (options.includes('--force') || hasShortFlag(options, 'f', GIT_PUSH_SHORT_VALUE_FLAGS)) {
                 return 'git push --force rewrites remote history. Use --force-with-lease (refuses to clobber unseen work) or get approval.';
             }
-            if (pushArgs.includes('--mirror')) {
+            if (options.includes('--mirror')) {
                 return 'git push --mirror force-updates every remote ref.';
             }
             // `+refspec` is per-ref force; `:refspec` deletes the remote ref.
-            if (pushArgs.includes('--delete') || hasShortFlag(pushArgs, 'd', GIT_PUSH_SHORT_VALUE_FLAGS) ||
+            if (options.includes('--delete') || hasShortFlag(options, 'd', GIT_PUSH_SHORT_VALUE_FLAGS) ||
                 pushArgs.some(a => (a.startsWith(':') || a.startsWith('+')) && a.length > 1)) {
                 return 'git push deleting or force-updating a remote ref (+/: refspec, --delete).';
             }
@@ -2564,8 +2566,10 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
     const rest = cmd.args.slice(i + 1);
     const positional: string[] = [];
     const flags = new Set<string>();
+    let operandsOnly = false;
     for (const a of pushArgsWithoutValues(rest)) {
-        if (!a.startsWith('-')) positional.push(a);
+        if (a === '--' && !operandsOnly) { operandsOnly = true; continue; }
+        if (operandsOnly || !a.startsWith('-')) positional.push(a);
         else if (a.startsWith('--')) flags.add(a.split('=')[0]);
         else for (const ch of a.slice(1)) {
             flags.add(`-${ch}`);
