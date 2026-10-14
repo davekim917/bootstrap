@@ -1,0 +1,25 @@
+{
+  "fixture": "consequential-api",
+  "domain": "API design",
+  "notes": "A consequential shared API starts from how its callers will use it. The gate passes when a fenced code line calling a function appears before any line that declares a def, func, function, interface, type, class or struct.",
+  "rubric": {
+    "tier": "smoke",
+    "hardGates": [
+      {
+        "id": "normative-plan",
+        "check": {
+          "type": "output_contains",
+          "value": "plan.md"
+        }
+      },
+      {
+        "id": "call-site-before-declaration",
+        "check": {
+          "type": "output_matches",
+          "regex": "^(?:(?!\\n[ \\t]*(?:export[ \\t]+)?(?:async[ \\t]+)?(?:def|func|function|interface|type|class|struct)[ \\t]+[A-Za-z_])[\\s\\S])*?\\n[ \\t]*\\x60\\x60\\x60[^\\n]*\\n(?:(?!\\x60\\x60\\x60|[ \\t]*(?:export[ \\t]+)?(?:async[ \\t]+)?(?:def|func|function|interface|type|class|struct)[ \\t]+[A-Za-z_])[^\\n]*\\n)*?(?![ \\t]*(?:export[ \\t]+)?(?:async[ \\t]+)?(?:def|func|function|interface|type|class|struct)[ \\t]+[A-Za-z_])[^\\n]*[A-Za-z_][\\w.]*\\([^\\n]*\\)",
+          "flags": "i"
+        }
+      }
+    ]
+  }
+}

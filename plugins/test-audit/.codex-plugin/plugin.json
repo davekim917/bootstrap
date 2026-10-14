@@ -1,6 +1,6 @@
 {
   "name": "test-audit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Authoring gate and evidence-first audit workflow for tests: junk patterns, retention bar, containment before pruning, and preservation proof before any deletion, with an always-on nudge. Adapted from OpenClaw (MIT).",
   "author": {
     "name": "David Kim"
