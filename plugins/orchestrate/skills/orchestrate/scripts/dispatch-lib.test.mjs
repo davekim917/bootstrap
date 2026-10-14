@@ -190,6 +190,9 @@ test('humanPins: only the skill invocations pin a model or effort', () => {
     ['No problem, use an opus subagent at high effort', { model: true, effort: true }],
     ['/orchestrate claude-opus-5 high do it', { model: true, effort: true }],
     ['this is not working\n/orchestrate opus high fix it', { model: true, effort: true }],
+    ['/orchestrate opus high-priority bug', { model: true, effort: false }],
+    ['/orchestrate opus-related cleanup', { model: false, effort: false }],
+    ['/orchestrate opus high', { model: true, effort: true }],
     ['use a claude-opus-5 subagent at high to do it', { model: true, effort: true }],
   ];
   for (const [text, expected] of cases) assert.deepEqual(humanPins(spawn, text), expected, text);

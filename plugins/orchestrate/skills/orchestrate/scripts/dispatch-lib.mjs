@@ -380,8 +380,10 @@ const FAMILY = MODEL_FAMILIES.join('|');
 const LEVEL = EFFORTS.join('|');
 // The skill's two documented invocations; leading chat mentions (`@bot`) are allowed before the slash form, and the
 // model token may carry a version (`claude-opus-5`).
-const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\\s+(?:\\S*?(${FAMILY})\\S*\\s*)?(?:(${LEVEL})\\b)?`, 'g');
-const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+\\S*?(${FAMILY})\\S*\\s+sub-?agent(?:\\s+at\\s+(${LEVEL})\\b)?`, 'g');
+const MODEL_TOKEN = `(?:claude-)?(${FAMILY})(?:-[\\d.]+)*(?=\\s|$)`;
+const EFFORT_TOKEN = `(${LEVEL})(?=\\s|$)`;
+const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\\s+(?:${MODEL_TOKEN}\\s*)?(?:${EFFORT_TOKEN})?`, 'g');
+const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+${MODEL_TOKEN}\\s+sub-?agent(?:\\s+at\\s+${EFFORT_TOKEN})?`, 'g');
 const NEGATED = /\b(?:not|never)\b|n't\b/;
 
 /**
