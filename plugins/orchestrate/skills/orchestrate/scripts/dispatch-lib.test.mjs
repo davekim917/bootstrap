@@ -194,6 +194,16 @@ test('humanTurns keeps only the turns people wrote', () => {
     ...noise,
   ]);
   assert.deepEqual(humanTurns(batched, container), ['words-b', 'words-j', 'words-n']);
+  const saved = process.env.NANOCLAW_ASSISTANT_NAME;
+  try {
+    delete process.env.NANOCLAW_ASSISTANT_NAME;
+    assert.deepEqual(humanTurns(write('plain.jsonl', [user('/orchestrate opus high fix it')])), ['/orchestrate opus high fix it']);
+    process.env.NANOCLAW_ASSISTANT_NAME = '';
+    assert.deepEqual(humanTurns(batched), ['words-b', 'words-j', 'words-n']);
+  } finally {
+    if (saved === undefined) delete process.env.NANOCLAW_ASSISTANT_NAME;
+    else process.env.NANOCLAW_ASSISTANT_NAME = saved;
+  }
   assert.deepEqual(humanTurns(path.join(root, 'missing.jsonl'), host), []);
   assert.deepEqual(humanTurns(undefined, container), []);
 });

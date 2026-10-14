@@ -344,13 +344,13 @@ function addressedEnvelopes(text) {
  * The human-written user turns of a Claude Code transcript, oldest first.
  * Skips tool results, skill loads (isMeta), sidechains, harness notices, and
  * turns left empty by that. On the host every remaining record is one turn.
- * In a NanoClaw container people only ever reach the agent as `<message>`
+ * In a NanoClaw session people only ever reach the agent as `<message>`
  * envelopes, so each envelope addressed to the agent is its own turn and
  * nothing else is: thread context the agent was not addressed in, system and
  * agent senders, tasks and runner notices yield none. An unreadable transcript
  * has no turns.
  */
-export function humanTurns(transcriptPath, { container = isContainerRuntime(process.env, fs.existsSync) } = {}) {
+export function humanTurns(transcriptPath, { container = 'NANOCLAW_ASSISTANT_NAME' in process.env } = {}) {
   let raw;
   try {
     raw = fs.readFileSync(transcriptPath, 'utf8');
