@@ -204,6 +204,9 @@ test('humanPins: only the skill invocations pin a model or effort', () => {
     ['this is not working\n/orchestrate opus high fix it', { model: true, effort: true }],
     ['/orchestrate opus high-priority bug', { model: true, effort: false }],
     ['/orchestrate opus-related cleanup', { model: false, effort: false }],
+    ['/orchestrate opus.js cleanup', { model: false, effort: false }],
+    ['/orchestrate opus high.priority cleanup', { model: true, effort: false }],
+    ['/orchestrate opus high!) now', { model: true, effort: true }],
     ['/orchestrate opus high', { model: true, effort: true }],
     ['use a claude-opus-5 subagent at high to do it', { model: true, effort: true }],
   ];

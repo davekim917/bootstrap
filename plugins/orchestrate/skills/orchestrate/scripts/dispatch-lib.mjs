@@ -382,7 +382,7 @@ const FAMILY = MODEL_FAMILIES.join('|');
 const LEVEL = EFFORTS.join('|');
 // The skill's two documented invocations; leading chat mentions (`@bot`) are allowed before the slash form, and the
 // model token may carry a version (`claude-opus-5`).
-const TOKEN_END = `(?=[\\s.,;:!?)\\]]|$)`;
+const TOKEN_END = `(?=\\s|$|[.,;:!?)\\]]+(?:\\s|$))`;
 const MODEL_TOKEN = `(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*${TOKEN_END}`;
 const EFFORT_TOKEN = `(${LEVEL})${TOKEN_END}`;
 const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\\s+(?:${MODEL_TOKEN}\\s*)?(?:${EFFORT_TOKEN})?`, 'g');
