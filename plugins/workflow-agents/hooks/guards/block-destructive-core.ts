@@ -1666,13 +1666,27 @@ const RUNS_RM = 'runs rm';
  */
 function innerHardBlock(inner: ResolvedCommand | null): string | null {
     if (!inner) return null;
-    const c = SHELLS.has(inner.name) ? inner.args.findIndex(a => /^-[a-z]*c$/.test(a)) : -1;
-    if (c < 0) return inner.name === 'rm' ? RUNS_RM : checkHardBlock(inner);
-    for (const nested of extractCommands(inner.args[c + 1] ?? '')) {
-        const reason = nested.name === 'rm' ? RUNS_RM : checkHardBlock(nested);
+    const script = SHELLS.has(inner.name) ? shellScriptIndex(inner.args) : -1;
+    if (script < 0) return inner.name === 'rm' ? RUNS_RM : checkHardBlock(inner);
+    // Words after the script are $0, $1, …; a script that runs one of them (`"$@"`, `$1`) runs those words.
+    const positional = inner.args.slice(script + 2);
+    for (const nested of extractCommands(inner.args[script] ?? '')) {
+        const reason = nested.name.includes('$')
+            ? innerHardBlock(innerCommand(positional, inner))
+            : nested.name === 'rm' ? RUNS_RM : checkHardBlock(nested);
         if (reason) return reason;
     }
     return null;
+}
+
+/**
+ * Where a shell's `-c` script is in its arguments, or -1. `-c` may sit anywhere in a short-option cluster (`-xc`,
+ * `-ec`, `-ce`), and a `--` after it ends the options before the script.
+ */
+export function shellScriptIndex(args: string[]): number {
+    const c = args.findIndex(a => /^-[A-Za-z]*c[A-Za-z]*$/.test(a));
+    if (c < 0) return -1;
+    return args[c + 1] === '--' ? c + 2 : c + 1;
 }
 
 /** The command `words` (a command word and its arguments, as xargs or find -exec take them) runs, past any wrapper. */
@@ -2657,9 +2671,12 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     if (cmd.name === 'find') {
         for (let i = 0; i < cmd.args.length; i++) {
             if (!['-exec', '-execdir', '-ok', '-okdir'].includes(cmd.args[i])) continue;
-            const reason = innerHardBlock(innerCommand(cmd.args.slice(i + 1), cmd));
+            // The command runs up to its `;` or `+` terminator; what follows is find's own expression.
+            const end = cmd.args.findIndex((a, j) => j > i && (a === ';' || a === '+'));
+            const reason = innerHardBlock(innerCommand(cmd.args.slice(i + 1, end < 0 ? undefined : end), cmd));
             if (reason === RUNS_RM) return 'find -exec rm is not allowed. Use trash for file deletion.';
             if (reason) return `find ${cmd.args[i]} runs a blocked command. ${reason}`;
+            if (end > i) i = end;
         }
         if (cmd.args.includes('-delete')) {
             return 'find -delete permanently deletes files. Use trash instead.';
@@ -2675,7 +2692,7 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
 
     // Shell -c / here-string wrappers — bypass vectors for all other checks
     if (SHELLS.has(cmd.name)) {
-        if (cmd.args.includes('-c') || cmd.hasInputRedirect) {
+        if (shellScriptIndex(cmd.args) >= 0 || cmd.hasInputRedirect) {
             return 'Shell inline execution (shell -c, here-strings) is not allowed. Run commands directly.';
         }
     }

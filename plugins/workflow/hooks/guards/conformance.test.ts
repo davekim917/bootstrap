@@ -65,6 +65,11 @@ const BASH_BLOCK = [
   // What xargs or find -exec runs is hard-blocked on the same terms as at top level.
   `xargs sh -c 'rm "$@"' _ < list`,
   "find . -name '*.bak' -exec sh -c 'rm \"$1\"' _ {} \\;",
+  // A shell's -c script: -c anywhere in a cluster, after --, or running its positional words.
+  "sh -ce 'rm -rf /etc'",
+  "bash -xc 'rm -rf /etc'",
+  "xargs -I{} sh -c -- 'rm {}' < list",
+  `printf 'target\n' | xargs sh -c '"$@"' _ rm`,
   'xargs unlink < list',
   'find . -exec shred -u {} +',
   'eval echo x',
@@ -161,6 +166,8 @@ const BASH_ALLOW = [
   'ls -la',
   'xargs echo < list',
   'xargs -r git add < list',
+  // find's own expression resumes after -exec's terminator.
+  'find . -exec echo -exec rm {} \\;',
   // A shell that xargs or find -exec runs is judged by its script.
   "ls | xargs -I{} sh -c 'grep -o x {} | head -1'",
   "find . -name f -exec sh -c 'echo == $1; cat $1' _ {} \\;",
