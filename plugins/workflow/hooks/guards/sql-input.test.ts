@@ -138,6 +138,8 @@ test('deeply nested pipelines and many same-file writes resolve in bounded time'
         'echo x | ' + '{ echo x | '.repeat(d) + 'psql' + '; }'.repeat(d),
         'echo>f;'.repeat(4000) + 'psql<f;'.repeat(4000),
         'echo a | ' + 'tee f | '.repeat(3000) + 'cat; ' + 'psql<f;'.repeat(3000),
+        `printf '%s' '${'insert into t values (1); '.repeat(1200)}' > f; ` + 'psql<f;'.repeat(4500),
+        'Q0="insert into t values (1); "; ' + Array.from({ length: 22 }, (_, i) => `Q${i + 1}="$Q${i}$Q${i}"; `).join('') + 'psql<<<"$Q22"',
     ]) {
         const started = Date.now();
         verdict(command);

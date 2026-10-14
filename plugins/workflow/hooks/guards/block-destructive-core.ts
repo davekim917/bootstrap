@@ -121,7 +121,7 @@ function flattenInput(root: PipedInput | undefined, script?: ScriptContext): Fla
         const [node, withFiles] = stack.pop()!;
         if (withFiles ? seen.has(node) : textSeen.has(node) || seen.has(node)) continue;
         (withFiles ? seen : textSeen).add(node);
-        if (!spendTrace(script, 1 + node.texts.length + node.catFiles.length)) {
+        if (!spendTrace(script, 1 + textSize(node.texts) + node.catFiles.length)) {
             over = true;
             break;
         }
@@ -150,9 +150,16 @@ function spendTrace(script: ScriptContext | undefined, n: number): boolean {
     return script.traceBudget >= 0;
 }
 
-// Pipe nodes and texts one command line may walk while tracing what reaches its SQL clients. Past it the client's input
-// is unknown and the command gates: no real command comes near it, and a crafted one must not hang the guard or pass.
-const SQL_TRACE_BUDGET = 50_000;
+// Characters of SQL text (plus pipe nodes walked) one command line may trace into its SQL clients, counting a text again
+// for every client it reaches, since each one scans it. Past it the client's input is unknown and the command gates: no
+// real command comes near it, and a crafted one must neither hang the guard nor pass.
+const SQL_TRACE_BUDGET = 4_000_000;
+
+function textSize(texts: string[]): number {
+    let n = 0;
+    for (const t of texts) n += t.length;
+    return n;
+}
 
 /** A command's place in a top-level list: which chain, which link, and the operators joining the links. */
 interface ChainLink {
@@ -921,7 +928,7 @@ const SNOW_TEMPLATE = /&\{\s*([\w.]+)\s*\}|<%\s*([\w.]+)\s*%>|&([A-Za-z_]\w*)/g;
 
 export interface SqlInput {
     texts: string[];            // every SQL text the client could run, as far as the command line shows
-    unreadable: string | null;  // a SQL file too large to check, or past the include limit
+    unreadable: string | null;  // a SQL file too large to check, past the include limit, or input past the trace budget
 }
 
 /** The value `option` gives in `args[i]`: `-q X`, `--query=X`, or glued `-qX`. */
@@ -946,17 +953,19 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const fileOptions = SQL_FILE_OPTIONS[client] ?? [];
     const textOptions = SQL_TEXT_OPTIONS[client] ?? [];
     const texts: string[] = [...(cmd.stdinTexts ?? [])];
+    let traceOver = false;
     for (const t of cmd.stdinExpanded ?? []) {
         if (!/[$`]/.test(t) || cmd.pos === undefined || !cmd.script) continue;
         cmd.script.view ??= viewShell(cmd.script.command);
         const r = evalWord(`"${t.replace(/(["\\])/g, '\\$1')}"`, cmd.script.view, cmd.pos);
-        if (r.value !== t) texts.push(r.value);
+        if (r.value === t) continue;
+        if (spendTrace(cmd.script, r.value.length)) texts.push(r.value);
+        else traceOver = true;
     }
     const files: string[] = [...(cmd.stdinFiles ?? [])];
     const vars = new Map<string, string>();
     let sqlInArgs = false;
     let readsStdin = texts.length > 0 || files.length > 0;
-    let traceOver = false;
 
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
@@ -991,7 +1000,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     if (files.includes('-')) readsStdin = true;
     if (readsStdin && !files.some(f => f !== '-') && !(cmd.stdinTexts?.length)) {
         const piped = flattenInput(cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos), cmd.script);
-        if (piped.over || !spendTrace(cmd.script, piped.texts.length + piped.catFiles.length)) traceOver = true;
+        if (piped.over || !spendTrace(cmd.script, textSize(piped.texts) + piped.catFiles.length)) traceOver = true;
         else {
             texts.push(...piped.texts);
             files.push(...piped.catFiles);
@@ -1014,7 +1023,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
             continue;
         }
         for (const written of writes.map(w => flattenInput(w, cmd.script))) {
-            if (written.over || !spendTrace(cmd.script, written.texts.length + written.catFiles.length)) {
+            if (written.over || !spendTrace(cmd.script, textSize(written.texts) + written.catFiles.length)) {
                 unreadable ??= f;
                 break;
             }
@@ -1026,6 +1035,10 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         }
         for (const { path, content } of readSqlFiles(f, cmd)) {
             if (content === 'too-large') {
+                unreadable ??= f;
+                continue;
+            }
+            if (!spendTrace(cmd.script, content.length)) {
                 unreadable ??= f;
                 continue;
             }
@@ -2840,7 +2853,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     const sqlDialect = SQL_CLIS[name] ?? (name === 'snow' && args[0] === 'sql' ? 'Snowflake' : null);
     if (sqlDialect) {
         const input = sqlInputOf(cmd);
-        if (input.unreadable) return `${sqlDialect} SQL file ${input.unreadable} can't be checked: too large, or too many included files.`;
+        if (input.unreadable) return `${sqlDialect} SQL input (${input.unreadable}) can't be checked: too large, too many included files, or more text than the guard traces.`;
         for (const text of input.texts) {
             const matched = findDestructiveSqlStatement(text);
             if (matched) {
