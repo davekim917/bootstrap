@@ -109,7 +109,7 @@ Picker abstention or failure does not choose a model or effort. Output records `
 an effective route. Existing explicit choices stay intact subject to the existing compatibility
 caps; a coordinator may still deliberately select a normal model, role, or effort shim from the
 task. On a confident route, the Claude Code hook keeps an explicit model or effort shim only when a
-human chose it through one of the skill's invocations — `/orchestrate <model> <effort> …` (an
+human chose it through the latest of the skill's invocations — `/orchestrate <model> <effort> …` (an
 `@mention` may precede it) or "use a <model> subagent at <effort> …" — in the session transcript (user turns, minus tool results, skill loads, harness
 notices and, in a NanoClaw container, system- or agent-sent `<message>` envelopes); the rest take
 the route. Fields it leaves omitted follow the client's native inheritance and configuration rather

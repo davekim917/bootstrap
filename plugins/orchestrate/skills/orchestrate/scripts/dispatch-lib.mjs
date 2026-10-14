@@ -382,19 +382,20 @@ const INVOCATIONS = [
 
 /**
  * Which of a spawn's explicit fields (model, shim effort) a human chose through
- * one of the skill's invocations in `text`. Any other wording is the router's
- * call, so a stray mention ("compare Opus and Sonnet", "failed at high effort")
- * never pins.
+ * the latest of the skill's invocations in `text` (oldest first, as humanText
+ * returns it); an earlier invocation's choice does not carry over. Any other
+ * wording is the router's call, so a stray mention ("compare Opus and Sonnet",
+ * "failed at high effort") never pins.
  */
 export function humanPins(input, text) {
   const t = text.toLowerCase().replace(/<command-name>\s*(\/\S+?)\s*<\/command-name>[\s\S]*?<command-args>/g, '\n$1 ');
   const model = typeof input.model === 'string' ? input.model.toLowerCase() : '';
   const family = MODEL_FAMILIES.find((f) => model.includes(f));
   const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
-  const chosen = INVOCATIONS.flatMap((re) => [...t.matchAll(re)]);
+  const latest = INVOCATIONS.flatMap((re) => [...t.matchAll(re)]).sort((a, b) => b.index - a.index)[0];
   return {
-    model: Boolean(family) && chosen.some((m) => m[1] === family),
-    effort: Boolean(effort) && chosen.some((m) => m[2] === effort),
+    model: Boolean(family) && latest?.[1] === family,
+    effort: Boolean(effort) && latest?.[2] === effort,
   };
 }
 
