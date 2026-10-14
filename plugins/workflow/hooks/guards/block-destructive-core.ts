@@ -1476,6 +1476,8 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
                 skip += optionWords(args[skip], 'aCcDghpRrTtUu', SUDO_LONG_VALUE_OPTIONS);
             }
             if (args[skip] === '--') skip += 1;
+            // `sudo [options] [VAR=value]... command`, like env.
+            while (skip < args.length && /^\w+=/.test(args[skip])) env.push(args[skip++]);
         } else if (name === 'env') {
             // Skip flags and VAR=val assignments, keeping the assignments.
             // `-u NAME` and `-C DIR` take the next argument; `-S STRING` IS the
@@ -1621,7 +1623,11 @@ const XARGS_LONG_VALUE_OPTIONS = new Set(['--arg-file', '--delimiter', '--max-li
  * first letter in `valueLetters` takes the rest of the word as its value (`-uroot`), or the next word when it is last.
  */
 function optionWords(arg: string, valueLetters: string, longValueOptions?: Set<string>): 1 | 2 {
-    if (arg.startsWith('--')) return longValueOptions?.has(arg) ? 2 : 1;
+    if (arg.startsWith('--')) {
+        // getopt_long accepts any unambiguous abbreviation (`--arg-f`); a prefix of a value-taking option takes one.
+        if (arg.includes('=') || !longValueOptions) return 1;
+        return [...longValueOptions].some(o => o.startsWith(arg) && arg.length > 2) ? 2 : 1;
+    }
     for (let i = 1; i < arg.length; i++) {
         if (valueLetters.includes(arg[i])) return i === arg.length - 1 ? 2 : 1;
     }
