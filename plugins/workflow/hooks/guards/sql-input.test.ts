@@ -123,6 +123,15 @@ test('many SQL readers over a deep variable chain resolve in bounded time', () =
     expect(Date.now() - started).toBeLessThan(3000);
 });
 
+test('a SQL client inside a command substitution after a cd reads the file there', () => {
+    expect(evaluateBashCommand(`cd ${dir} && echo "$(psql -f bad.sql)"`, { cwd: '/' }).action).toBe('gate');
+});
+
+test('a quoted heredoc is not variable-expanded', () => {
+    expect(verdict(`sql='DROP TABLE users'; psql <<'EOF'\n$sql\nEOF`)).toBe('allow');
+    expect(verdict(`sql='DROP TABLE users'; psql <<EOF\n$sql\nEOF`)).toBe('gate');
+});
+
 test('echo -e newlines are rendered before scanning', () => {
     expect(verdict(`echo -e "SELECT 1;\\nDROP TABLE users;" | psql`)).toBe('gate');
     expect(verdict(`echo -e 'BEGIN;\\nDROP TABLE users;\\nCOMMIT;' | psql`)).toBe('gate');

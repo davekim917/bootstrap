@@ -64,6 +64,7 @@ export interface ResolvedCommand {
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
     stdinTexts?: string[];      // heredoc and here-string text fed to this command
+    stdinExpanded?: string[];   // the part of stdinTexts bash expands variables in (not a quoted heredoc or '…' here-string)
     stdinFiles?: string[];      // files redirected into this command with `<`
     stdoutFiles?: string[];     // files this command's output is redirected into
     script?: ScriptContext;     // what the whole command line shows, shared by its commands
@@ -890,7 +891,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const fileOptions = SQL_FILE_OPTIONS[client] ?? [];
     const textOptions = SQL_TEXT_OPTIONS[client] ?? [];
     const texts: string[] = [...(cmd.stdinTexts ?? [])];
-    for (const t of cmd.stdinTexts ?? []) {
+    for (const t of cmd.stdinExpanded ?? []) {
         if (!/[$`]/.test(t) || cmd.pos === undefined || !cmd.script) continue;
         cmd.script.view ??= viewShell(cmd.script.command);
         const r = evalWord(`"${t.replace(/(["\\])/g, '\\$1')}"`, cmd.script.view, cmd.pos);
@@ -1064,8 +1065,8 @@ function resolvePathCandidates(file: string, cmd: ResolvedCommand): string[] | n
     const here = cmd.pos === undefined ? undefined : script?.links.get(cmd.pos);
     for (const step of script?.cds ?? []) {
         if (step.pos < 0) continue;
-        if (cmd.pos === undefined) return null;
-        if (step.pos >= cmd.pos) continue;
+        // A reader inside $(…) carries no position, so every cd is a possible prior one and none is implied.
+        if (cmd.pos !== undefined && step.pos >= cmd.pos) continue;
         const next = step.target !== undefined ? provable(step.target, step.pos) : null;
         if (next === null) return null;
         const moved = dirs.map(d => (next.startsWith('/') ? next : join(d, next)));
@@ -1439,14 +1440,20 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         ['<<', '<<<', '<<-'].includes(r.operator)
     );
     const stdinTexts: string[] = [];
+    const stdinExpanded: string[] = [];
     const stdinFiles: string[] = [];
     const stdoutFiles: string[] = [];
     for (const r of (node.redirects || [])) {
         if (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && (r.fileDescriptor === undefined || r.fileDescriptor === 1)) {
             stdoutFiles.push(wordValue(r.target));
         }
-        if (r?.operator === '<<' || r?.operator === '<<-') stdinTexts.push(String(r.content ?? ''));
-        else if (r?.operator === '<<<') stdinTexts.push(wordValue(r.target));
+        if (r?.operator === '<<' || r?.operator === '<<-') {
+            stdinTexts.push(String(r.content ?? ''));
+            if (!r.heredocQuoted) stdinExpanded.push(String(r.content ?? ''));
+        } else if (r?.operator === '<<<') {
+            stdinTexts.push(wordValue(r.target));
+            if (!String(r.target?.text ?? '').startsWith("'")) stdinExpanded.push(wordValue(r.target));
+        }
         else if (r?.operator === '<' || r?.operator === '<>') stdinFiles.push(wordValue(r.target));
     }
 
@@ -1462,6 +1469,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
         ...(stdinTexts.length ? { stdinTexts } : {}),
+        ...(stdinExpanded.length ? { stdinExpanded } : {}),
         ...(stdinFiles.length ? { stdinFiles } : {}),
         ...(stdoutFiles.length ? { stdoutFiles } : {}),
     };
