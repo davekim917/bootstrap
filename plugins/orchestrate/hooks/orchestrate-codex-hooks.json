@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo \"Before spawn_agent with a missing model or effort: pipe the task into node '${PLUGIN_ROOT}/skills/orchestrate/scripts/pick-dispatch.mjs' --runtime codex. On decision route, use its pick only for missing fields. Decision inherit means no picker override: preserve explicit choices subject to existing caps, otherwise use normal native judgment and omit fields for the runtime to resolve; select an effort shim only when you deliberately choose that effort. Preserve roles and retained workers.\"",
+            "command": "echo \"Before spawn_agent: pipe the task into node '${PLUGIN_ROOT}/skills/orchestrate/scripts/pick-dispatch.mjs' --runtime codex. On decision route, use its pick for every model or effort the user did not name, in place of your own choice. Decision inherit means no picker override: preserve the user's choices subject to existing caps, otherwise use normal native judgment and omit fields for the runtime to resolve; select an effort shim only when you deliberately choose that effort. Preserve roles and retained workers.\"",
             "timeout": 5
           }
         ]

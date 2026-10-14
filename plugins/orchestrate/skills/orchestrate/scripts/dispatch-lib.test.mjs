@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
   capEffort,
+  humanPins,
+  humanText,
   loadRubric,
   pick,
   requestSystemOne,
@@ -128,9 +130,87 @@ test('no override preserves a custom role and its native model inheritance', () 
   assert.equal(rewriteClaudeSpawn({ subagent_type: 'qa-adjudicator', prompt: 'p' }, picked, rubric), null);
 });
 
-test('an explicit model is never replaced; a roleless spawn still gets the effort, capped to that model', () => {
-  const out = rewriteClaudeSpawn({ model: 'fable', prompt: 'p' }, route('opus', 'xhigh'), rubric);
-  assert.deepEqual([out.model, out.subagent_type], ['fable', 'bootstrap-orchestrate:worker-high']);
+test('a confident route replaces what the agent named; a field the human named is kept', () => {
+  const shim = (e) => `bootstrap-orchestrate:worker-${e}`;
+  const cases = [
+    [{ model: 'opus', subagent_type: shim('high') }, route('opus', 'low'), {}, ['opus', shim('low')]],
+    [{ model: 'sonnet', subagent_type: 'general-purpose' }, route('opus', 'low'), {}, ['opus', shim('low')]],
+    [{ model: 'fable', prompt: 'p' }, route('opus', 'xhigh'), { model: true }, ['fable', shim('high')]],
+    [{ model: 'sonnet', subagent_type: shim('high') }, route('opus', 'low'), { effort: true }, ['opus', shim('high')]],
+  ];
+  for (const [input, r, pins, expected] of cases) {
+    const out = rewriteClaudeSpawn(input, r, rubric, pins);
+    assert.deepEqual([out.model, out.subagent_type], expected, JSON.stringify([input, pins]));
+  }
+  assert.equal(rewriteClaudeSpawn({ model: 'opus', subagent_type: shim('high') }, route('opus', 'low'), rubric, { model: true, effort: true }), null);
+});
+
+test('humanText keeps only what people wrote', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-transcript-'));
+  const file = path.join(root, 't.jsonl');
+  const user = (content, extra = {}) => JSON.stringify({ type: 'user', message: { role: 'user', content }, ...extra });
+  const envelope = (attrs, body) => `<message ${attrs}>${body}</message>`;
+  fs.writeFileSync(file, [
+    user('words-a <task-notification>words-g</task-notification>'),
+    user([{ type: 'text', text: [
+      '<context timezone="UTC" />',
+      envelope('id="1" from="chat-team-1" sender="Avery Lane" sender_id="U0TEST1"', 'words-b'),
+      envelope('id="2" from="unknown:agent:ag-test" sender="system" sender_id="system"', 'words-c'),
+      envelope('id="3" from="unknown:agent:ag-test" sender="helper" sender_id="U0BOT"', 'words-d'),
+    ].join('\n') }]),
+    user([{ type: 'text', text: 'words-e' }], { isMeta: true }),
+    user([{ type: 'tool_result', tool_use_id: 't1', content: 'words-f' }]),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'words-h' }] } }),
+    user('words-i', { isSidechain: true }),
+    'not json',
+  ].join('\n'));
+  const text = humanText(file);
+  assert.deepEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'].filter((k) => text.includes(`words-${k}`)), ['a', 'b']);
+  assert.equal(humanText(path.join(root, 'missing.jsonl')), '');
+  assert.equal(humanText(undefined), '');
+});
+
+test('humanPins: a human names a model by family and an effort as an effort', () => {
+  const spawn = { model: 'opus', subagent_type: 'bootstrap-orchestrate:worker-high' };
+  const cases = [
+    ['/orchestrate opus high fix the login bug', { model: true, effort: true }],
+    ['use an Opus subagent at high', { model: true, effort: true }],
+    ['run it at high effort', { model: false, effort: true }],
+    ['effort: high please', { model: false, effort: true }],
+    ['use opus for this', { model: true, effort: false }],
+    ['the xhigh run failed; this is a high priority bug', { model: false, effort: false }],
+    ['', { model: false, effort: false }],
+  ];
+  for (const [text, expected] of cases) assert.deepEqual(humanPins(spawn, text), expected, text);
+  assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, 'opus high'), { model: false, effort: false });
+});
+
+test('the installed hook replaces an agent-named model and effort unless a human named them', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));
+  const preload = path.join(root, 'preload.mjs');
+  fs.writeFileSync(preload, `globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(${JSON.stringify({
+    answers: { dispatch: { choice: 'workhorse-low', confidence: 0.9, probabilities: { 'workhorse-low': 0.9, ask: 0.1 } } },
+  })}) });`);
+  const hook = fileURLToPath(new URL('../../../hooks/route-spawn.mjs', import.meta.url));
+  const run = (humanSays) => {
+    const transcript = path.join(root, `t-${humanSays.length}.jsonl`);
+    fs.writeFileSync(transcript, JSON.stringify({ type: 'user', message: { role: 'user', content: humanSays } }) + '\n');
+    const r = spawnSync(process.execPath, [hook], {
+      input: JSON.stringify({
+        tool_name: 'Agent',
+        transcript_path: transcript,
+        tool_input: { model: 'opus', subagent_type: 'bootstrap-orchestrate:worker-high', description: 'd', prompt: 'rename a variable' },
+      }),
+      encoding: 'utf8',
+      timeout: 15000,
+      env: { PATH: process.env.PATH, HOME: root, TYPESAFE_API_KEY: 'test-key', NODE_OPTIONS: `--import ${preload}`, ORCHESTRATE_DISPATCH_LOG: path.join(root, 'log.jsonl') },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.updatedInput : null;
+  };
+  const out = run('please clean this up');
+  assert.deepEqual([out.model, out.subagent_type], ['opus', 'bootstrap-orchestrate:worker-low']);
+  assert.equal(run('/orchestrate opus high clean this up'), null);
 });
 
 test('an explicit shim above the cap is lowered; within the cap nothing changes', () => {

@@ -295,21 +295,22 @@ export function isNamedRole(type) {
 }
 
 /**
- * Claude Agent-tool input → the input to run, given a pick (or null).
+ * Claude Agent-tool input → the input to run, given a pick (or null) and which
+ * of the call's explicit fields a human asked for (`pins`, from humanPins).
  *
- * Fills only what the spawn left out: `model` when absent; effort (expressed as
- * a `bootstrap-orchestrate:worker-<effort>` shim type, the only way the Agent
- * tool takes effort) only for a roleless spawn — no subagent_type or
- * `general-purpose`. A named role (Explore, Plan, any custom or plugin agent)
- * is never rewritten: Claude Code gives a per-call `model` precedence over the
- * role's own `model` frontmatter (including `inherit`), and a role's effective
+ * A confident route sets `model` and effort (expressed as a
+ * `bootstrap-orchestrate:worker-<effort>` shim type, the only way the Agent
+ * tool takes effort), replacing whatever the calling agent named itself; a
+ * field the human named is kept. Without a route the call keeps its own
+ * choices. A named role (Explore, Plan, any custom or plugin agent) is never
+ * rewritten: Claude Code gives a per-call `model` precedence over the role's
+ * own `model` frontmatter (including `inherit`), and a role's effective
  * definition can live where a hook cannot see it (managed settings, `--agents`),
  * so any filled model could silently replace the role's installed intent
- * (code.claude.com/docs/en/sub-agents, "Choose a model"). An explicit shim type
- * keeps its effort. No-override decisions add no model or effort; the
- * independent model-effort caps still apply. Returns null when nothing changes.
+ * (code.claude.com/docs/en/sub-agents, "Choose a model"). The model-effort caps
+ * apply either way. Returns null when nothing changes.
  */
-export function rewriteClaudeSpawn(input, picked, rubric) {
+export function rewriteClaudeSpawn(input, picked, rubric, pins = {}) {
   const out = { ...input };
   const type = typeof input.subagent_type === 'string' ? input.subagent_type : '';
   const roleless = isRoleless(type);
@@ -317,14 +318,81 @@ export function rewriteClaudeSpawn(input, picked, rubric) {
   if (!roleless && !shim) return null;
   const route = picked?.decision === 'route' && picked.pick?.model ? picked.pick : null;
 
-  if (!out.model && route) out.model = route.model;
-  let effort = shim ? shim[1] : roleless && route ? route.effort : undefined;
+  if (route && !(out.model && pins.model)) out.model = route.model;
+  let effort = shim && (pins.effort || !route) ? shim[1] : route?.effort;
   const tier = out.model ? tierOf(rubric, 'claude', out.model) : undefined;
   if (effort && tier) effort = capEffort(effort, tier.maxEffort);
-  if (effort && (shim || roleless)) out.subagent_type = `bootstrap-orchestrate:worker-${effort}`;
+  if (effort) out.subagent_type = `bootstrap-orchestrate:worker-${effort}`;
 
   const changed = out.model !== input.model || out.subagent_type !== input.subagent_type;
   return changed ? out : null;
+}
+
+const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
+const HARNESS_BLOCK = /<(task-notification|system|system-reminder|local-command-stdout|local-command-caveat)>[\s\S]*?<\/\1>/g;
+const ENVELOPE = /<message\b([^>]*)>([\s\S]*?)<\/message>/g;
+
+/**
+ * Everything humans wrote in a Claude Code transcript. Skips tool results,
+ * skill loads (isMeta) and harness notices. A NanoClaw container wraps chat in
+ * `<message>` envelopes; there only envelopes not sent by the system or an
+ * agent count. An unreadable transcript reads as no human text.
+ */
+export function humanText(transcriptPath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(transcriptPath, 'utf8');
+  } catch {
+    return '';
+  }
+  const out = [];
+  for (const line of raw.split('\n')) {
+    if (!line.includes('"type":"user"')) continue;
+    let rec;
+    try {
+      rec = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (rec?.type !== 'user' || rec.isMeta || rec.isSidechain) continue;
+    const content = rec.message?.content;
+    const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : [];
+    if (blocks.some((b) => b?.type === 'tool_result')) continue;
+    const text = blocks
+      .filter((b) => b?.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('\n')
+      .replace(HARNESS_BLOCK, '');
+    const envelopes = [...text.matchAll(ENVELOPE)];
+    if (envelopes.length === 0) out.push(text);
+    for (const [, attrs, body] of envelopes) {
+      if (!/\bsender_id="system"/.test(attrs) && !/\bfrom="unknown:agent:/.test(attrs)) out.push(body);
+    }
+  }
+  return out.join('\n');
+}
+
+function effortNamed(text, effort) {
+  const families = MODEL_FAMILIES.join('|');
+  return [
+    `\\b${effort}[\\s-]*effort\\b`,
+    `\\beffort(?:\\s+level)?\\s*(?:of|at|to|is|=|:)?\\s*${effort}\\b`,
+    `\\b(?:${families})[\\s/:-]+${effort}\\b`,
+    `\\bworker-${effort}\\b`,
+    `\\bsub-?agents?\\s+at\\s+${effort}\\b`,
+  ].some((p) => new RegExp(p).test(text));
+}
+
+/** Which of a spawn's explicit fields (model, shim effort) a human named in `text`. */
+export function humanPins(input, text) {
+  const t = text.toLowerCase();
+  const model = typeof input.model === 'string' ? input.model.toLowerCase() : '';
+  const family = MODEL_FAMILIES.find((f) => model.includes(f));
+  const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
+  return {
+    model: Boolean(family) && new RegExp(`\\b${family}\\b`).test(t),
+    effort: Boolean(effort) && effortNamed(t, effort),
+  };
 }
 
 async function runOnecliHelper() {
