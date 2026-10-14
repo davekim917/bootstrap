@@ -1691,7 +1691,7 @@ export function shellScriptIndex(args: string[]): number {
         const a = args[i];
         if (a === '--' || !/^[-+]/.test(a)) return -1;
         if (/^-[A-Za-z]*c[A-Za-z]*$/.test(a)) return args[i + 1] === '--' ? i + 2 : i + 1;
-        if (['-o', '+o', '-O', '+O', '--rcfile', '--init-file'].includes(a)) i++;
+        if (['-o', '+o', '-O', '+O', '--rcfile', '--init-file', '-C', '--init-command'].includes(a)) i++;
     }
     return -1;
 }

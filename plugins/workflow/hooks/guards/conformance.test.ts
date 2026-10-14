@@ -68,6 +68,7 @@ const BASH_BLOCK = [
   // A shell's -c script: -c anywhere in a cluster, after --, or running its positional words.
   "sh -ce 'rm -rf /etc'",
   "bash -xc 'rm -rf /etc'",
+  "fish -C 'echo init' -c 'rm -rf /etc'",
   "xargs -I{} sh -c -- 'rm {}' < list",
   `printf 'target\n' | xargs sh -c '"$@"' _ rm`,
   `printf 'target\n' | xargs sh -c '"$0" "$@"' rm`,
