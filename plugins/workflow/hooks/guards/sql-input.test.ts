@@ -132,6 +132,26 @@ test('a quoted heredoc is not variable-expanded', () => {
     expect(verdict(`sql='DROP TABLE users'; psql <<EOF\n$sql\nEOF`)).toBe('gate');
 });
 
+test('deeply nested pipelines and many same-file writes resolve in bounded time', () => {
+    const d = 2000;
+    for (const command of [
+        'echo x | ' + '{ echo x | '.repeat(d) + 'psql' + '; }'.repeat(d),
+        'echo>f;'.repeat(4000) + 'psql<f;'.repeat(4000),
+    ]) {
+        const started = Date.now();
+        verdict(command);
+        expect(Date.now() - started).toBeLessThan(3000);
+    }
+});
+
+test('readers inside separate $(...) with different env -C directories resolve separately', () => {
+    mkdirSync(join(dir, 'safe'), { recursive: true });
+    writeFileSync(join(dir, 'safe', 'q.sql'), 'SELECT 1;');
+    mkdirSync(join(dir, 'bad'), { recursive: true });
+    writeFileSync(join(dir, 'bad', 'q.sql'), 'DROP TABLE users;');
+    expect(verdict(`X=$(env -C ${dir}/safe psql -f q.sql); Y=$(env -C ${dir}/bad psql -f q.sql)`)).toBe('gate');
+});
+
 test('echo -e newlines are rendered before scanning', () => {
     expect(verdict(`echo -e "SELECT 1;\\nDROP TABLE users;" | psql`)).toBe('gate');
     expect(verdict(`echo -e 'BEGIN;\\nDROP TABLE users;\\nCOMMIT;' | psql`)).toBe('gate');

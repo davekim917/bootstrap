@@ -81,6 +81,7 @@ export interface ScriptContext {
     view?: ReturnType<typeof viewShell>; // the parsed variable view of `command`, built on first use
     words?: Map<string, string | null>; // provableWord results by position and text
     paths?: Map<string, string[] | null>; // sqlPathCandidates results by reader position and file
+    writesByTarget?: Map<string, FileWrite[]>; // writes by the path as spelled, built once a line has too many to match pairwise
     wordBudget?: number;        // evalWord calls left for this command line before every further word is unprovable
 }
 
@@ -97,6 +98,30 @@ interface FileWrite {
 interface PipedInput {
     texts: string[];            // text echo/printf/cat emit into the pipe
     catFiles: string[];         // files cat reads into it
+    from?: PipedInput[];        // inputs whose text and files also flow in
+    textFrom?: PipedInput[];    // inputs whose text (not files) also flows in
+}
+
+/**
+ * Everything an input carries, following its `from` links. Inputs link to each other instead of copying, because a
+ * copy at each nesting level made deep pipelines cost the cube of their depth; each node is visited once.
+ */
+function flattenInput(root: PipedInput | undefined): { texts: string[]; catFiles: string[] } {
+    const texts: string[] = [];
+    const catFiles: string[] = [];
+    const seen = new Set<PipedInput>();
+    const textSeen = new Set<PipedInput>();
+    const stack: Array<[PipedInput, boolean]> = root ? [[root, true]] : [];
+    while (stack.length) {
+        const [node, withFiles] = stack.pop()!;
+        if (withFiles ? seen.has(node) : textSeen.has(node) || seen.has(node)) continue;
+        (withFiles ? seen : textSeen).add(node);
+        texts.push(...node.texts);
+        if (withFiles) catFiles.push(...node.catFiles);
+        for (const next of node.from ?? []) stack.push([next, withFiles]);
+        for (const next of node.textFrom ?? []) stack.push([next, false]);
+    }
+    return { texts, catFiles };
 }
 
 /** A command's place in a top-level list: which chain, which link, and the operators joining the links. */
@@ -934,9 +959,9 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     }
     if (files.includes('-')) readsStdin = true;
     if (readsStdin && !files.some(f => f !== '-') && !(cmd.stdinTexts?.length)) {
-        const piped = cmd.script?.pipedInto.get(cmd.pos ?? -1);
-        texts.push(...(piped?.texts ?? []));
-        files.push(...(piped?.catFiles ?? []));
+        const piped = flattenInput(cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos));
+        texts.push(...piped.texts);
+        files.push(...piped.catFiles);
     }
 
     // Read each file, plus any text the command writes to it first; follow
@@ -949,7 +974,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const f = pending.shift()!;
         if (seen.has(f)) continue;
         seen.add(f);
-        for (const written of writesTo(f, cmd)) {
+        for (const written of writesTo(f, cmd).map(flattenInput)) {
             for (const t of written.texts) {
                 texts.push(t);
                 pending.push(...sqlIncludes(t, null));
@@ -973,6 +998,7 @@ const SQL_PATH_CANDIDATES_MAX = 8;
 // Past this many directory changes or file writes before a reader, a path is treated as unprovable: matching every
 // write against every cd is quadratic, and no real command comes near it.
 const SQL_PATH_STEPS_MAX = 64;
+const PIPE_NESTING_MAX = 64;
 
 /**
  * The text of every file a SQL client step could open for `file`: one per
@@ -1030,14 +1056,27 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] {
     if (!file || file === '-') return [];
     let readerPaths: Set<string> | undefined;
     const out: PipedInput[] = [];
-    const writes = reader.script?.writes ?? [];
-    for (const w of writes) {
-        if (w.writer.pos !== undefined && reader.pos !== undefined && w.writer.pos > reader.pos) continue;
+    const script = reader.script;
+    const all = script?.writes ?? [];
+    const before = (w: FileWrite) => w.writer.pos === undefined || reader.pos === undefined || w.writer.pos < reader.pos;
+    if (all.length > SQL_PATH_STEPS_MAX && script) {
+        if (!script.writesByTarget) {
+            script.writesByTarget = new Map();
+            for (const w of all) {
+                const key = samePath(w.target);
+                const list = script.writesByTarget.get(key);
+                if (list) list.push(w);
+                else script.writesByTarget.set(key, [w]);
+            }
+        }
+        return (script.writesByTarget.get(samePath(file)) ?? []).filter(before).slice(-SQL_PATH_STEPS_MAX).map(w => w.input);
+    }
+    for (const w of all) {
+        if (!before(w)) continue;
         if (samePath(w.target) === samePath(file)) {
             out.push(w.input);
             continue;
         }
-        if (writes.length > SQL_PATH_STEPS_MAX) continue;
         readerPaths ??= new Set(sqlPathCandidates(file, reader) ?? []);
         if ((sqlPathCandidates(w.target, w.writer) ?? []).some(p => readerPaths!.has(p))) out.push(w.input);
     }
@@ -1046,8 +1085,8 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] {
 
 function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
     const script = cmd.script;
-    if (!script) return resolvePathCandidates(file, cmd);
-    const key = `${cmd.pos ?? -1}\0${file}`;
+    if (!script || cmd.pos === undefined) return resolvePathCandidates(file, cmd);
+    const key = `${cmd.pos}\0${cmd.chdir ?? ''}\0${file}`;
     script.paths ??= new Map();
     if (!script.paths.has(key)) script.paths.set(key, resolvePathCandidates(file, cmd));
     return script.paths.get(key)!;
@@ -1555,59 +1594,60 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
     const pipeline = (node: any): any[] => (node?.type === 'Pipeline' ? node.commands || [] : [node]);
     const stageCommands = (node: any): ResolvedCommand[] =>
         walkCommandNodes(node).map(n => (typeof n.pos === 'number' ? byPos.get(n.pos) : undefined)).filter((c): c is ResolvedCommand => !!c);
-    const visitLink = (node: any, chain: number, index: number, operators: string[]) => {
+    const visitLink = (node: any, chain: number, index: number, operators: string[], depth: number) => {
         const stages = pipeline(node?.type === 'Statement' ? node.command : node);
         stages.forEach((stage: any, i: number) => {
             if (stage?.type === 'Command' && typeof stage.pos === 'number') {
                 links.set(stage.pos, { chain, index, operators });
             } else {
-                visitCompound(stage);
+                visitCompound(stage, depth);
             }
             if (i === 0) return;
-            const input: PipedInput = { texts: [], catFiles: [] };
+            const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [] };
             for (const up of stageCommands(stages[i - 1])) {
                 if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
-                const fed = pipedInto.get(up.pos ?? -1);
-                input.texts.push(...emittedText(up), ...(fed?.texts ?? []));
+                const fed = up.pos === undefined ? undefined : pipedInto.get(up.pos);
+                input.texts.push(...emittedText(up));
                 if (up.name === 'cat') input.catFiles.push(...up.args.filter(a => !a.startsWith('-')));
-                if (up.name === 'cat' || up.name === 'tee') input.catFiles.push(...(fed?.catFiles ?? []));
+                if (fed) (up.name === 'cat' || up.name === 'tee' ? input.from! : input.textFrom!).push(fed);
             }
             for (const down of stageCommands(stage)) {
                 if (down.pos === undefined) continue;
                 const inner = pipedInto.get(down.pos);
-                pipedInto.set(down.pos, inner
-                    ? { texts: [...inner.texts, ...input.texts], catFiles: [...inner.catFiles, ...input.catFiles] }
-                    : input);
+                pipedInto.set(down.pos, inner ? { texts: [], catFiles: [], from: [inner, input] } : input);
             }
         });
     };
-    const visit = (node: any) => {
+    const visit = (node: any, depth: number) => {
         if (!node) return;
-        if (node.type === 'Statement') return visit(node.command);
-        if (node.type === 'Script' || node.type === 'CompoundList') return (node.commands || []).forEach((c: any) => visit(c));
+        if (node.type === 'Statement') return visit(node.command, depth);
+        if (node.type === 'Script' || node.type === 'CompoundList') return (node.commands || []).forEach((c: any) => visit(c, depth));
         const chain = chains++;
         if (node.type === 'AndOr') {
-            (node.commands || []).forEach((link: any, i: number) => visitLink(link, chain, i, node.operators || []));
+            (node.commands || []).forEach((link: any, i: number) => visitLink(link, chain, i, node.operators || [], depth));
         } else {
-            visitLink(node, chain, 0, []);
+            visitLink(node, chain, 0, [], depth);
         }
     };
     // Lists inside if/while/for/case bodies, groups, subshells and functions: their pipelines feed text like top-level ones.
-    const visitCompound = (node: any) => {
-        if (!node || node.type === 'Command') return;
-        for (const child of [node.clause, node.then, node.else, node.body, node.command]) visit(child);
-        for (const item of node.items || []) visit(item?.body);
+    // Past PIPE_NESTING_MAX levels the pipes inside are left untraced: each level re-walks its subtree, and no real
+    // command nests anywhere near that deep.
+    const visitCompound = (node: any, depth: number) => {
+        if (!node || node.type === 'Command' || depth >= PIPE_NESTING_MAX) return;
+        for (const child of [node.clause, node.then, node.else, node.body, node.command]) visit(child, depth + 1);
+        for (const item of node.items || []) visit(item?.body, depth + 1);
     };
-    visit(ast);
+    visit(ast, 0);
 
     const writes: FileWrite[] = [];
     for (const cmd of commands) {
         if (!TEXT_EMITTERS.has(cmd.name)) continue;
         const operands = cmd.args.filter(a => !a.startsWith('-'));
-        const fed = cmd.name === 'tee' || cmd.name === 'cat' ? pipedInto.get(cmd.pos ?? -1) : undefined;
-        const input = {
-            texts: [...emittedText(cmd), ...(fed?.texts ?? [])],
-            catFiles: [...(cmd.name === 'cat' ? operands : []), ...(fed?.catFiles ?? [])],
+        const fed = (cmd.name === 'tee' || cmd.name === 'cat') && cmd.pos !== undefined ? pipedInto.get(cmd.pos) : undefined;
+        const input: PipedInput = {
+            texts: emittedText(cmd),
+            catFiles: cmd.name === 'cat' ? operands : [],
+            ...(fed ? { from: [fed] } : {}),
         };
         for (const target of [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? operands : [])]) {
             writes.push({ writer: cmd, target, input });
