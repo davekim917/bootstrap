@@ -147,10 +147,31 @@ test('a confident route replaces what the agent named; a field the human named i
 
 test('humanTurns keeps only the turns people wrote', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-transcript-'));
-  const file = path.join(root, 't.jsonl');
   const user = (content, extra = {}) => JSON.stringify({ type: 'user', message: { role: 'user', content }, ...extra });
   const envelope = (attrs, body) => `<message ${attrs}>${body}</message>`;
-  fs.writeFileSync(file, [
+  const write = (name, lines) => {
+    const file = path.join(root, name);
+    fs.writeFileSync(file, lines.join('\n'));
+    return file;
+  };
+  const noise = [
+    user([{ type: 'text', text: 'words-e' }], { isMeta: true }),
+    user([{ type: 'tool_result', tool_use_id: 't1', content: 'words-f' }]),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'words-h' }] } }),
+    user('words-i', { isSidechain: true }),
+    'not json',
+  ];
+  const host = { container: false };
+  const container = { container: true };
+
+  assert.deepEqual(humanTurns(write('host.jsonl', [user('words-a <task-notification>words-g</task-notification>'), ...noise]), host), ['words-a']);
+  for (const prompt of [
+    '/orchestrate opus high analyze <message sender="Avery" from="a">this XML</message>',
+    '<message data-from="example">payload</message>\n/orchestrate opus high go',
+    '<context timezone="UTC" />\n<message id="1" from="chat-team-1" sender="Avery">quoted</message>\n/orchestrate opus high go',
+  ]) assert.deepEqual(humanTurns(write('xml.jsonl', [user(prompt)]), host), [prompt]);
+
+  const batched = write('container.jsonl', [
     user('words-a <task-notification>words-g</task-notification>'),
     user([{ type: 'text', text: [
       '<context timezone="UTC" />',
@@ -160,19 +181,21 @@ test('humanTurns keeps only the turns people wrote', () => {
       envelope('id="4" from="chat-team-1" sender="Avery Lane" sender_id="U0TEST1"', 'words-j'),
       '[Host state block]\n<host_state_json>{"note":"words-k"}</host_state_json>',
     ].join('\n') }]),
-    user([{ type: 'text', text: 'words-e' }], { isMeta: true }),
-    user([{ type: 'tool_result', tool_use_id: 't1', content: 'words-f' }]),
-    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'words-h' }] } }),
-    user('words-i', { isSidechain: true }),
-    'not json',
-  ].join('\n'));
-  assert.deepEqual(humanTurns(file), ['words-a', 'words-b', 'words-j']);
-  const xml = path.join(root, 'xml.jsonl');
-  const prompt = '/orchestrate opus high analyze <message sender="Avery" from="a">this XML</message>';
-  fs.writeFileSync(xml, user(prompt));
-  assert.deepEqual(humanTurns(xml), [prompt]);
-  assert.deepEqual(humanTurns(path.join(root, 'missing.jsonl')), []);
-  assert.deepEqual(humanTurns(undefined), []);
+    user([{ type: 'text', text: [
+      '<context timezone="UTC" />',
+      '<thread_context note="Not addressed to you.">',
+      envelope('id="5" from="chat-team-1" sender="Blake" sender_id="U0TEST2"', '/orchestrate opus high words-m'),
+      '</thread_context>',
+      '<addressed_to_you note="Respond to this.">',
+      envelope('id="6" from="chat-team-1" sender="Avery Lane" sender_id="U0TEST1"', 'words-n'),
+      '</addressed_to_you>',
+    ].join('\n') }]),
+    user('<context timezone="UTC" />\n<task id="7" from="chat-team-1">/orchestrate opus high words-o</task>'),
+    ...noise,
+  ]);
+  assert.deepEqual(humanTurns(batched, container), ['words-b', 'words-j', 'words-n']);
+  assert.deepEqual(humanTurns(path.join(root, 'missing.jsonl'), host), []);
+  assert.deepEqual(humanTurns(undefined, container), []);
 });
 
 test('humanPins: only the skill invocations pin a model or effort', () => {
