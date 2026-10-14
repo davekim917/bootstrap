@@ -1477,7 +1477,7 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
             // Skip flags. A short option (or cluster such as `-nu`) ending in a value-taking letter consumes the next
             // word; `--opt=value` forms are one word.
             while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
-                skip += /^-[A-Za-z]*[aCcDghpRrTtUu]$/.test(args[skip]) || SUDO_LONG_VALUE_OPTIONS.has(args[skip]) ? 2 : 1;
+                skip += optionWords(args[skip], 'aCcDghpRrTtUu', SUDO_LONG_VALUE_OPTIONS);
             }
             if (args[skip] === '--') skip += 1;
         } else if (name === 'env') {
@@ -1520,7 +1520,7 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
         } else if (name === 'exec') {
             // `exec -a NAME` sets argv[0]; -c and -l take nothing, and the three cluster (`-ca NAME`).
             while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
-                skip += /^-[cl]*a$/.test(args[skip]) ? 2 : 1;
+                skip += optionWords(args[skip], 'a');
             }
             if (args[skip] === '--') skip += 1;
         } else if (name === 'npx' || name === 'bunx') {
@@ -1617,8 +1617,20 @@ const SUDO_LONG_VALUE_OPTIONS = new Set(['--user', '--group', '--close-from', '-
     '--role', '--type', '--command-timeout', '--other-user', '--auth-type', '--login-class']);
 
 // `--eof[=END]` takes its value only attached, so a bare `--eof` is a flag.
-const XARGS_VALUE_OPTIONS = new Set(['-a', '-d', '-E', '-I', '-J', '-L', '-n', '-P', '-R', '-s', '-S', '--arg-file', '--delimiter',
-    '--max-lines', '--max-args', '--max-procs', '--max-chars', '--process-slot-var']);
+const XARGS_LONG_VALUE_OPTIONS = new Set(['--arg-file', '--delimiter', '--max-lines', '--max-args', '--max-procs',
+    '--max-chars', '--process-slot-var']);
+
+/**
+ * How many words a command's option takes, read the way getopt does: in a short cluster such as `-0a` or `-nu`, the
+ * first letter in `valueLetters` takes the rest of the word as its value (`-uroot`), or the next word when it is last.
+ */
+function optionWords(arg: string, valueLetters: string, longValueOptions?: Set<string>): 1 | 2 {
+    if (arg.startsWith('--')) return longValueOptions?.has(arg) ? 2 : 1;
+    for (let i = 1; i < arg.length; i++) {
+        if (valueLetters.includes(arg[i])) return i === arg.length - 1 ? 2 : 1;
+    }
+    return 1;
+}
 
 /** The command xargs runs and its arguments, past xargs's own options (`-0`, `-I{}`, `-n 1`, `--max-procs=4`, …). */
 function xargsCommand(args: string[]): string[] {
@@ -1626,7 +1638,7 @@ function xargsCommand(args: string[]): string[] {
     while (i < args.length && args[i].startsWith('-')) {
         const a = args[i];
         if (a === '--') return args.slice(i + 1);
-        i += XARGS_VALUE_OPTIONS.has(a) ? 2 : 1;
+        i += optionWords(a, 'adEIJLnPRsS', XARGS_LONG_VALUE_OPTIONS);
     }
     return args.slice(i);
 }
