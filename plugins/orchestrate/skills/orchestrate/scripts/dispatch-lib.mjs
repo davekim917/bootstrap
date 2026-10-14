@@ -331,7 +331,8 @@ export function rewriteClaudeSpawn(input, picked, rubric, pins = {}) {
 const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
 const HARNESS_BLOCK = /<(task-notification|system|system-reminder|local-command-stdout|local-command-caveat)>[\s\S]*?<\/\1>/g;
 const ENVELOPE = /<message\b([^>]*)>([\s\S]*?)<\/message>/g;
-// A NanoClaw batch is nothing but envelopes, optionally after a `<context …/>` line.
+// A NanoClaw batch opens with its envelopes, optionally after a `<context …/>` line; the host may append its own
+// blocks after them, so only the opening identifies one.
 const NANOCLAW_BATCH = /^\s*(?:<context\b[^>]*\/>\s*)?<message\b[^>]*\bfrom="/;
 
 /**
@@ -402,7 +403,7 @@ export function humanPins(input, text) {
   const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
   const prose = [...t.matchAll(PROSE_INVOCATION)];
   const latest = [...t.matchAll(SLASH_INVOCATION), ...prose].sort((a, b) => b.index - a.index)[0];
-  const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(/[.!?;:\n\u2014]/).at(-1));
+  const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(/[.!?;:\n\u2014]|,\s*(?:but|and|so|then|yet)\b/).at(-1));
   if (negated) return { model: false, effort: false };
   return {
     model: Boolean(family) && latest?.[1] === family,
