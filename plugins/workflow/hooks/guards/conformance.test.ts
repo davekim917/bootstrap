@@ -60,6 +60,13 @@ const BASH_BLOCK = [
   'sudo FOO=1 rm -rf ~',
   'xargs sudo FOO=1 rm < list',
   'xargs --arg-f list rm',
+  'sudo --login rm -rf ~',
+  'xargs --max-lines rm < list',
+  // What xargs or find -exec runs is hard-blocked on the same terms as at top level.
+  `xargs sh -c 'rm "$@"' _ < list`,
+  "find . -name '*.bak' -exec sh -c 'rm \"$1\"' _ {} \\;",
+  'xargs unlink < list',
+  'find . -exec shred -u {} +',
   'eval echo x',
   'unlink secret',
   'shred -u f',
@@ -73,6 +80,7 @@ const BASH_BLOCK = [
 // Gated (require approval): destructive infra/DB/cloud/IaC/containers/dbt.
 const BASH_GATE = [
   '\\git push --force origin main',
+  'sudo --login git push --force origin main',
   '\\psql -c "DROP TABLE x"',
   'terraform destroy -auto-approve',
   'psql -c "DROP TABLE users"',
@@ -152,6 +160,11 @@ const BASH_GATE = [
 const BASH_ALLOW = [
   'ls -la',
   'xargs echo < list',
+  'xargs -r git add < list',
+  // A shell that xargs or find -exec runs is judged by its script.
+  "ls | xargs -I{} sh -c 'grep -o x {} | head -1'",
+  "find . -name f -exec sh -c 'echo == $1; cat $1' _ {} \\;",
+  'find . -exec chmod 644 {} +',
   'find . -exec echo {} +',
   'exec bash-completion-loader',
   'git status',
