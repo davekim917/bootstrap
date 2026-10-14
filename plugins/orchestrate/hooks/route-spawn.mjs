@@ -23,7 +23,7 @@ try {
   const named = lib.isNamedRole(input.subagent_type);
   const picked = named ? null : lib.resolveDispatch(await lib.pick(task, 'claude', { timeoutMs: 3000, rubric }), 'claude');
   const contested = picked?.decision === 'route' && (input.model || !lib.isRoleless(input.subagent_type));
-  const pins = contested ? lib.humanPins(input, lib.humanText(event.transcript_path)) : undefined;
+  const pins = contested ? lib.humanPins(input, lib.humanTurns(event.transcript_path).at(-1) ?? '') : undefined;
   const updated = lib.rewriteClaudeSpawn(input, picked, rubric, pins);
   lib.logDispatch({
     source: 'spawn-hook',

@@ -333,17 +333,18 @@ const HARNESS_BLOCK = /<(task-notification|system|system-reminder|local-command-
 const ENVELOPE = /<message\b([^>]*)>([\s\S]*?)<\/message>/g;
 
 /**
- * Everything humans wrote in a Claude Code transcript. Skips tool results,
- * skill loads (isMeta) and harness notices. A NanoClaw container wraps chat in
- * `<message>` envelopes; there only envelopes not sent by the system or an
- * agent count. An unreadable transcript reads as no human text.
+ * The human-written user turns of a Claude Code transcript, oldest first.
+ * Skips tool results, skill loads (isMeta) and harness notices, and turns left
+ * empty by that. A NanoClaw container wraps chat in `<message>` envelopes;
+ * there only envelopes not sent by the system or an agent count. An unreadable
+ * transcript has no turns.
  */
-export function humanText(transcriptPath) {
+export function humanTurns(transcriptPath) {
   let raw;
   try {
     raw = fs.readFileSync(transcriptPath, 'utf8');
   } catch {
-    return '';
+    return [];
   }
   const out = [];
   for (const line of raw.split('\n')) {
@@ -364,12 +365,15 @@ export function humanText(transcriptPath) {
       .join('\n')
       .replace(HARNESS_BLOCK, '');
     const envelopes = [...text.matchAll(ENVELOPE)];
-    if (envelopes.length === 0) out.push(text);
-    for (const [, attrs, body] of envelopes) {
-      if (!/\bsender_id="system"/.test(attrs) && !/\bfrom="unknown:agent:/.test(attrs)) out.push(body);
-    }
+    const human = envelopes.length === 0
+      ? text
+      : envelopes
+        .filter(([, attrs]) => !/\bsender_id="system"/.test(attrs) && !/\bfrom="unknown:agent:/.test(attrs))
+        .map(([, , body]) => body)
+        .join('\n');
+    if (human.trim()) out.push(human.trim());
   }
-  return out.join('\n');
+  return out;
 }
 
 const FAMILY = MODEL_FAMILIES.join('|');
@@ -377,13 +381,13 @@ const LEVEL = EFFORTS.join('|');
 // The skill's two documented invocations; leading chat mentions (`@bot`) are allowed before the slash form.
 const INVOCATIONS = [
   new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\\s+(?:(${FAMILY})\\b\\s*)?(?:(${LEVEL})\\b)?`, 'g'),
-  new RegExp(`\\buse\\s+an?\\s+(${FAMILY})\\s+sub-?agent(?:\\s+at\\s+(${LEVEL})\\b)?`, 'g'),
+  new RegExp(`(?<!\\b(?:not|never|don'?t|no)\\s+)\\buse\\s+an?\\s+(${FAMILY})\\s+sub-?agent(?:\\s+at\\s+(${LEVEL})\\b)?`, 'g'),
 ];
 
 /**
  * Which of a spawn's explicit fields (model, shim effort) a human chose through
- * the latest of the skill's invocations in `text` (oldest first, as humanText
- * returns it); an earlier invocation's choice does not carry over. Any other
+ * the latest of the skill's invocations in `text`, the human's latest turn, so
+ * an earlier turn's choice does not carry over. Any other
  * wording is the router's call, so a stray mention ("compare Opus and Sonnet",
  * "failed at high effort") never pins.
  */

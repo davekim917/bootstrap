@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   capEffort,
   humanPins,
-  humanText,
+  humanTurns,
   loadRubric,
   pick,
   requestSystemOne,
@@ -145,7 +145,7 @@ test('a confident route replaces what the agent named; a field the human named i
   assert.equal(rewriteClaudeSpawn({ model: 'opus', subagent_type: shim('high') }, route('opus', 'low'), rubric, { model: true, effort: true }), null);
 });
 
-test('humanText keeps only what people wrote', () => {
+test('humanTurns keeps only the turns people wrote', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-transcript-'));
   const file = path.join(root, 't.jsonl');
   const user = (content, extra = {}) => JSON.stringify({ type: 'user', message: { role: 'user', content }, ...extra });
@@ -164,10 +164,9 @@ test('humanText keeps only what people wrote', () => {
     user('words-i', { isSidechain: true }),
     'not json',
   ].join('\n'));
-  const text = humanText(file);
-  assert.deepEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'].filter((k) => text.includes(`words-${k}`)), ['a', 'b']);
-  assert.equal(humanText(path.join(root, 'missing.jsonl')), '');
-  assert.equal(humanText(undefined), '');
+  assert.deepEqual(humanTurns(file), ['words-a', 'words-b']);
+  assert.deepEqual(humanTurns(path.join(root, 'missing.jsonl')), []);
+  assert.deepEqual(humanTurns(undefined), []);
 });
 
 test('humanPins: only the skill invocations pin a model or effort', () => {
@@ -185,6 +184,7 @@ test('humanPins: only the skill invocations pin a model or effort', () => {
     ['', { model: false, effort: false }],
     ['/orchestrate opus high first task\n/orchestrate second task', { model: false, effort: false }],
     ['/orchestrate opus high first task\nuse an opus subagent to do the second', { model: true, effort: false }],
+    ['do not use an opus subagent at high effort', { model: false, effort: false }],
   ];
   for (const [text, expected] of cases) assert.deepEqual(humanPins(spawn, text), expected, text);
   assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, '/orchestrate opus high go'), { model: false, effort: false });
@@ -196,9 +196,10 @@ test('the installed hook replaces an agent-named model and effort unless a human
     answers: { dispatch: { choice: 'workhorse-low', confidence: 0.9, probabilities: { 'workhorse-low': 0.9, ask: 0.1 } } },
   })}) });`);
   const hook = fileURLToPath(new URL('../../../hooks/route-spawn.mjs', import.meta.url));
-  const run = (humanSays) => {
-    const transcript = path.join(root, `t-${humanSays.length}.jsonl`);
-    fs.writeFileSync(transcript, JSON.stringify({ type: 'user', message: { role: 'user', content: humanSays } }) + '\n');
+  let runs = 0;
+  const run = (turns) => {
+    const transcript = path.join(root, `t-${runs++}.jsonl`);
+    fs.writeFileSync(transcript, turns.map((content) => JSON.stringify({ type: 'user', message: { role: 'user', content } })).join('\n') + '\n');
     const r = spawnSync(process.execPath, [hook], {
       input: JSON.stringify({
         tool_name: 'Agent',
@@ -212,9 +213,11 @@ test('the installed hook replaces an agent-named model and effort unless a human
     assert.equal(r.status, 0, r.stderr);
     return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.updatedInput : null;
   };
-  const out = run('please clean this up');
+  const out = run(['please clean this up']);
   assert.deepEqual([out.model, out.subagent_type], ['opus', 'bootstrap-orchestrate:worker-low']);
-  assert.equal(run('/orchestrate opus high clean this up'), null);
+  assert.equal(run(['/orchestrate opus high clean this up']), null);
+  const later = run(['/orchestrate opus high clean this up', 'now look at a different issue']);
+  assert.deepEqual([later.model, later.subagent_type], ['opus', 'bootstrap-orchestrate:worker-low']);
 });
 
 test('an explicit shim above the cap is lowered; within the cap nothing changes', () => {
