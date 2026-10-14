@@ -33,14 +33,16 @@ Only edit the verification skill's own directory (its SKILL.md, features/, and a
 
 5. **Triage.** Wrong or missing user-POV description → doc drift, fix it. Working behavior the harness can't drive → harness gap, fix it; a harness fix follows the same helpers rule as generation (scripts executable, invocation documented in the skill body). Behavior that's actually broken → product gap; record it for the user, and leave the map's expectation as it was.
 
-6. **Record.** Corrections are written in place under edit scope during the pass; for changed, re-read every changed file before reporting. A promoted skill is the exception: its corrections go to the project repo as one pull request, following that repo's conventions, for the user to merge. For every outcome, write `<evidence root>/maintenance-<UTC YYYYMMDDTHHMMSSZ>-<short revision>-<random suffix>.md` beside the run directories (revision driven, runs, features covered, unreachable prerequisites, mocks, gaps, confirmed drift, product gaps, outcome) and report it with the coverage stated honestly.
+6. **Record.** Corrections are written in place under edit scope during the pass; for changed, re-read every changed file before reporting. A promoted skill is the exception: its corrections go to the project repo as one pull request, following that repo's conventions and the publishing rule below, for the user to merge. For every outcome, write `<evidence root>/maintenance-<UTC YYYYMMDDTHHMMSSZ>-<short revision>-<random suffix>.md` beside the run directories (revision driven, runs, features covered, unreachable prerequisites, mocks, gaps, confirmed drift, product gaps, outcome) and report it with the coverage stated honestly.
 
 ## Promote to the repo
 
 Only on the user's explicit request to move the skill into the project repo. Never promote on your own, and never because the user owns the repo.
 
+Publishing rule, for this and every later pull request to the project repo: the files, commit messages and PR text carry no absolute host paths, hostnames, credentials, session names, fleet-only notes or evidence artifacts.
+
 1. **Confirm the binding** and hold the `.inuse` lock, as in step 0.
 2. **Copy** the skill directory, without `evidence/` or `.inuse`, to `.claude/skills/verify-<project>/` in a new branch of the repo, and add the relative symlink `.agents/skills/verify-<project>` → `../../.claude/skills/verify-<project>`. Claude reads the first path, Codex the second, and OpenCode reads both and keeps one.
-3. **Scrub** every copied file: no absolute host paths, hostnames, credentials, session names or notes meant only for the fleet. Rewrite the `Project` section to repo-relative paths and name the evidence root as the private location outside the repository, never a path inside it.
-4. **Open one pull request** in the project repo, following its own branch, commit and PR conventions, carrying the latest evidence record's summary (not its artifacts). The user merges it.
-5. **Retire the private copy** once that pull request has merged: replace the private directory's contents, except `evidence/`, with a one-line `PROMOTED` file naming the repo and path. One copy stays live; two would drift.
+3. **Scrub and re-prove.** Apply the publishing rule to every copied file. Rewrite the `Project` section to repo-relative paths, name the evidence root as the private location outside the repository, and point every evidence writer, helpers included, at it. Then run the copy once from the branch (launch, doctor, one feature, cleanup) and confirm nothing landed in the checkout.
+4. **Open one pull request** in the project repo, following its own branch, commit and PR conventions, carrying the latest evidence record's summary under the publishing rule. The user merges it.
+5. **Retire the private copy** once that pull request has merged: replace the private directory's contents, except `evidence/` and your `.inuse` until you release it, with a one-line `PROMOTED` file naming the repo and path. One copy stays live; two would drift.
