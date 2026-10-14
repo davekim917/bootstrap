@@ -1470,14 +1470,12 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
         let skip = 0;
 
         if (name === 'sudo') {
-            // Skip flags; handle -u/-g/-C which take an argument
-            while (skip < args.length && args[skip].startsWith('-')) {
-                if (['-u', '-g', '-C'].includes(args[skip]) && skip + 1 < args.length) {
-                    skip += 2;
-                } else {
-                    skip += 1;
-                }
+            // Skip flags. A short option (or cluster such as `-nu`) ending in a value-taking letter consumes the next
+            // word; `--opt=value` forms are one word.
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += /^-[A-Za-z]*[aCcDghpRrTtUu]$/.test(args[skip]) || SUDO_LONG_VALUE_OPTIONS.has(args[skip]) ? 2 : 1;
             }
+            if (args[skip] === '--') skip += 1;
         } else if (name === 'env') {
             // Skip flags and VAR=val assignments, keeping the assignments.
             // `-u NAME` and `-C DIR` take the next argument; `-S STRING` IS the
@@ -1611,8 +1609,11 @@ export function commandName(word: string): string {
     return unescapeCommandWord(word).replace(/^.*\//, '');
 }
 
+const SUDO_LONG_VALUE_OPTIONS = new Set(['--user', '--group', '--close-from', '--chdir', '--host', '--prompt', '--chroot',
+    '--role', '--type', '--command-timeout', '--other-user', '--auth-type', '--login-class']);
+
 // `--eof[=END]` takes its value only attached, so a bare `--eof` is a flag.
-const XARGS_VALUE_OPTIONS = new Set(['-a', '-d', '-E', '-I', '-L', '-n', '-P', '-s', '--arg-file', '--delimiter',
+const XARGS_VALUE_OPTIONS = new Set(['-a', '-d', '-E', '-I', '-J', '-L', '-n', '-P', '-R', '-s', '-S', '--arg-file', '--delimiter',
     '--max-lines', '--max-args', '--max-procs', '--max-chars', '--process-slot-var']);
 
 /** The command xargs runs and its arguments, past xargs's own options (`-0`, `-I{}`, `-n 1`, `--max-procs=4`, …). */
