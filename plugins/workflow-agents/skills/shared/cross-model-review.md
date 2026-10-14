@@ -93,7 +93,7 @@ placeholders rather than rewriting or replacing it:
   diff for `/team-review --implementation`).
 - `{{USER_FOCUS}}` — the user-specified focus area, followed by the rubric lenses that have no
   analog in the vendored prompt's `<attack_surface>`: **plan fidelity**, **verification quality**,
-  **simplicity** and **comments** (see Review rubric below for their definitions). The vendored prompt has never
+  **simplicity**, **comments** and, when selected, **design** (see Review rubric below for their definitions). The vendored prompt has never
   seen `plan.md` and cannot on its own check scope adherence or whether a test would fail if the
   logic broke, so the workflow supplies those checks here instead of trying to fold them into a
   rewritten prompt. If the repo under review defines a review policy file (`docs/review-policy.md`
@@ -167,7 +167,7 @@ accepting it.
 
 Send a Claude reviewer the rubric items for the selected lenses directly, as part of its prompt. A
 Codex reviewer instead gets its own vendored `<attack_surface>`/`<review_method>` sections plus the
-**Plan fidelity**, **Verification quality**, **Simplicity** and **Comments** lenses via `{{USER_FOCUS}}` (see
+**Plan fidelity**, **Verification quality**, **Simplicity**, **Comments** and selected **Design** lenses via `{{USER_FOCUS}}` (see
 above); this rubric then serves as the grounding bar the lead checks every finding against,
 Codex's included. Every finding must ground in one of them or in a named external invariant — for a
 Claude reviewer, the `requirement` field is where it goes. This exists so two reviewers judge the
@@ -195,9 +195,11 @@ Always applied:
 - **Comments** — judge every comment the change adds: keep it only when a reader, human or agent,
   would get something wrong without it (an external system's quirk, why the obvious approach is
   wrong). Narration, restatement and history are findings to cut; a `file:line` or PR/issue/ticket
-  citation in a comment always is.
+  citation in a comment always is. A comment that states a constraint code could check is a finding
+  too: encode it as a type, test, assert or lint rule and delete the comment.
 - **Plan fidelity** — every acceptance criterion is implemented; nothing outside approved scope
-  rides along; deviations are recorded in `run.md` rather than silent.
+  rides along; deviations are recorded in `run.md` rather than silent. A necessary design fix at
+  the owning boundary, recorded in `run.md`, is fidelity, not scope creep.
 - **Failure handling** — failures surface rather than swallow; partial writes cannot strand
   inconsistent state; retries are bounded; an error path that loses user data is a blocker.
 - **Verification quality** — tests exercise the criteria, not the implementation's shape, and would
@@ -216,6 +218,25 @@ Applied when the changed surface warrants:
   and contrast basics hold for new UI.
 - **External currency** — any claim about an external API, framework, or standard is checked against
   a current authoritative source rather than model memory.
+- **Design** — for a new or reshaped module, interface, shared state or list. Assume the next
+  contributor is an agent that sees only the files it opened, copies the nearest example and takes
+  the shortest path that compiles. Each flag is a prompt to investigate, not a defect: a finding
+  names a plausible next change, grounded in the plan or the repository's history, that the shape
+  makes costly or wrong, and the owning boundary that should change.
+  - *split ownership* — more than one module writes the same state or keeps its own copy;
+  - *two ways to do one task* — every way keeps gaining callers;
+  - *pass-through* — a layer forwards the same arguments without adding policy or adaptation;
+  - *shallow module* — callers coordinate several calls for one operation, or must learn the
+    implementation anyway;
+  - *information leakage* — one representation, policy or wire detail is known to several modules;
+  - *temporal decomposition* — modules split by execution order repeat one representation and its
+    invariants;
+  - *importable internals* — code outside a module can import its internals;
+  - *hand-synced list* — adding an item means editing several lists.
+
+  When the change adds one, an importable internal gets a lint or build rule that rejects the
+  import, and a hand-synced list gets a test that derives one list from the other or fails when
+  they disagree. A note is not the fix.
 
 ## Preflight and evidence
 

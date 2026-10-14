@@ -105,7 +105,13 @@ The core of how he instructs an agent, applied every time you build:
   Re-correcting per session is a bug in the system, not in the session. And prune:
   for every standing instruction, ask "would removing this cause a mistake?"
 - **Two failed corrections → stop patching.** Step back, reframe, and restate the
-  problem cleanly instead of pushing a third fix onto a cluttered approach.
+  problem cleanly instead of pushing a third fix onto a cluttered approach. The same
+  goes when the design itself keeps fighting you. The tells are a pattern, not one
+  awkward edge case: the same shape of workaround showing up in unrelated places,
+  types that only compile through `any`, casts, or always-set optional fields, the
+  "we need a lock" reflex for state the design said wasn't shared, and callers that
+  must know the abstraction's internal rules to use it. Redesign as if the new
+  constraints had been there on day one, and make the new design smaller first.
 - **Demand elegance on substantial changes only.** On a real change, pause and ask
   "knowing everything I know now, what's the elegant solution?" On a trivial fix,
   gold-plating IS the over-engineering.

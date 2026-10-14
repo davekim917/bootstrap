@@ -27,3 +27,20 @@ split, whole-subsystem single PRs, shrink-only line caps, automatic retention of
 deletions when main moves, and acceptance of truncated inventories. In their
 place it uses bounded PRs, complete evidence, and fresh decisions whenever main
 changes a classified file.
+
+## pstack
+
+One sentence of the authoring gate, the question whether a test would still
+pass if every function it imports returned `undefined` or a wrong value, is
+adapted from pstack.
+
+- Upstream repository: https://github.com/cursor/plugins
+- Upstream path: `pstack/skills/principle-test-behavior-not-implementation/SKILL.md`
+- Upstream commit: `c86f349b102feb91f1966f8a6a60882a4e601b50`
+- Copyright (c) 2026 Lauren Tan, licensed under the MIT License. The full
+  license text is in [LICENSE-PSTACK](LICENSE-PSTACK), copied from the upstream
+  `pstack/LICENSE` at that commit.
+
+Changes: the upstream rule is folded into the gate's second question as a check
+on the credible regression, with the upstream fix in one line. The list of
+failing assertion shapes is left out, since the junk patterns above cover them.
