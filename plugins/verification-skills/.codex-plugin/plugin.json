@@ -1,0 +1,33 @@
+{
+  "name": "verification-skills",
+  "version": "1.0.0",
+  "description": "Generate and maintain a private verify-<project> skill that drives a web app, CLI, service or dbt/Snowflake project the way a user does and records evidence a reviewer can check. Invoke-only. Adapted from pstack (MIT).",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "verification",
+    "evidence",
+    "qa",
+    "dbt",
+    "playwright"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Verification skills",
+    "shortDescription": "Create and maintain a per-project verify skill",
+    "longDescription": "Generates a private verify-<project> skill with launch, doctor, drive, evidence and cleanup steps plus a feature map, proves it once end to end, and keeps it honest with a periodic source-and-live pass. Evidence records the revision, action, result, side effects, mocks and gaps, and an unreachable feature never counts as passed.",
+    "developerName": "David Kim",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/davekim917/bootstrap",
+    "defaultPrompt": [
+      "Create a verification skill for this repo.",
+      "Maintain the verify skill for this project."
+    ]
+  }
+}

@@ -9,7 +9,7 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
-      "version": "5.11.0"
+      "version": "5.12.0"
     },
     {
       "name": "bootstrap-orchestrate",
@@ -52,6 +52,12 @@
       "source": "./plugins/test-audit",
       "description": "Authoring gate and evidence-first audit workflow for tests, with an always-on nudge to run the gate and never weaken an existing test. Adapted from OpenClaw (MIT).",
       "version": "1.1.0"
+    },
+    {
+      "name": "verification-skills",
+      "source": "./plugins/verification-skills",
+      "description": "Generate and maintain a private verify-<project> skill that drives a web app, CLI, service or dbt/Snowflake project the way a user does and records evidence a reviewer can check. Invoke-only. Adapted from pstack (MIT).",
+      "version": "1.0.0"
     },
     {
       "name": "comment-rule",
