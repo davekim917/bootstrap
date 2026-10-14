@@ -166,6 +166,9 @@ test('humanTurns keeps only the turns people wrote', () => {
     'not json',
   ].join('\n'));
   assert.deepEqual(humanTurns(file), ['words-a', 'words-b', 'words-j']);
+  const xml = path.join(root, 'xml.jsonl');
+  fs.writeFileSync(xml, user('/orchestrate opus high analyze <message>this XML</message>'));
+  assert.deepEqual(humanTurns(xml), ['/orchestrate opus high analyze <message>this XML</message>']);
   assert.deepEqual(humanTurns(path.join(root, 'missing.jsonl')), []);
   assert.deepEqual(humanTurns(undefined), []);
 });
@@ -189,6 +192,11 @@ test('humanPins: only the skill invocations pin a model or effort', () => {
     ["I don't want you to use an opus subagent at high effort", { model: false, effort: false }],
     ['No problem, use an opus subagent at high effort', { model: true, effort: true }],
     ["I don't mind; use an opus subagent at high effort", { model: true, effort: true }],
+    ['do not, under any circumstances, use an opus subagent at high effort', { model: false, effort: false }],
+    ['You cannot use an opus subagent at high effort', { model: false, effort: false }],
+    ['use an opus subagent at high effort for task A. Do not use an opus subagent at high effort for this one', { model: false, effort: false }],
+    ['use an opus subagent at high.', { model: true, effort: true }],
+    ['/orchestrate opus high, then report back', { model: true, effort: true }],
     ['/orchestrate claude-opus-5 high do it', { model: true, effort: true }],
     ['this is not working\n/orchestrate opus high fix it', { model: true, effort: true }],
     ['/orchestrate opus high-priority bug', { model: true, effort: false }],

@@ -330,7 +330,7 @@ export function rewriteClaudeSpawn(input, picked, rubric, pins = {}) {
 
 const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
 const HARNESS_BLOCK = /<(task-notification|system|system-reminder|local-command-stdout|local-command-caveat)>[\s\S]*?<\/\1>/g;
-const ENVELOPE = /<message\b([^>]*)>([\s\S]*?)<\/message>/g;
+const ENVELOPE = /<message\b([^>]*\bsender="[^>]*)>([\s\S]*?)<\/message>/g;
 
 /**
  * The human-written user turns of a Claude Code transcript, oldest first; each
@@ -380,11 +380,12 @@ const FAMILY = MODEL_FAMILIES.join('|');
 const LEVEL = EFFORTS.join('|');
 // The skill's two documented invocations; leading chat mentions (`@bot`) are allowed before the slash form, and the
 // model token may carry a version (`claude-opus-5`).
-const MODEL_TOKEN = `(?:claude-)?(${FAMILY})(?:-[\\d.]+)*(?=\\s|$)`;
-const EFFORT_TOKEN = `(${LEVEL})(?=\\s|$)`;
+const TOKEN_END = `(?=[\\s.,;:!?)\\]]|$)`;
+const MODEL_TOKEN = `(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*${TOKEN_END}`;
+const EFFORT_TOKEN = `(${LEVEL})${TOKEN_END}`;
 const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\\s+(?:${MODEL_TOKEN}\\s*)?(?:${EFFORT_TOKEN})?`, 'g');
 const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+${MODEL_TOKEN}\\s+sub-?agent(?:\\s+at\\s+${EFFORT_TOKEN})?`, 'g');
-const NEGATED = /\b(?:not|never)\b|n't\b/;
+const NEGATED = /\b(?:not|never|cannot)\b|n't\b/;
 
 /**
  * Which of a spawn's explicit fields (model, shim effort) a human chose through
@@ -398,9 +399,10 @@ export function humanPins(input, text) {
   const model = typeof input.model === 'string' ? input.model.toLowerCase() : '';
   const family = MODEL_FAMILIES.find((f) => model.includes(f));
   const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
-  const negated = (m) => NEGATED.test(t.slice(0, m.index).split(/[.!?;:,\n\u2014]/).at(-1));
-  const latest = [...t.matchAll(SLASH_INVOCATION), ...[...t.matchAll(PROSE_INVOCATION)].filter((m) => !negated(m))]
-    .sort((a, b) => b.index - a.index)[0];
+  const prose = [...t.matchAll(PROSE_INVOCATION)];
+  const latest = [...t.matchAll(SLASH_INVOCATION), ...prose].sort((a, b) => b.index - a.index)[0];
+  const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(/[.!?;:\n\u2014]/).at(-1));
+  if (negated) return { model: false, effort: false };
   return {
     model: Boolean(family) && latest?.[1] === family,
     effort: Boolean(effort) && latest?.[2] === effort,
