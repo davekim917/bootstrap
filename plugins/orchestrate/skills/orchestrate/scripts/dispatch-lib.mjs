@@ -380,6 +380,7 @@ function effortNamed(text, effort) {
     `\\b(?:${families})[\\s/:-]+${effort}\\b`,
     `\\bworker-${effort}\\b`,
     `\\bsub-?agents?\\s+at\\s+${effort}\\b`,
+    `\\borchestrate(?:\\s*</command-name>[\\s\\S]*?<command-args>|\\s)\\s*(?:(?:${families})\\s+)?${effort}\\b`,
   ].some((p) => new RegExp(p).test(text));
 }
 
