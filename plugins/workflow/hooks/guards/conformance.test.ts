@@ -35,6 +35,16 @@ const BASH_BLOCK = [
   '\\rm -rf ~',
   'r\\m -rf ~',
   'sudo \\rm -rf ~',
+  // The command exec, xargs and find -exec run, past their options and spelled by any path.
+  'exec rm -rf ~',
+  'exec -a x rm -rf ~',
+  '/opt/homebrew/bin/rm -rf ~',
+  'xargs -0 rm -rf < list',
+  'xargs -I{} rm -rf {} < list',
+  'xargs -n1 /bin/rm -f < list',
+  'xargs -0 sudo rm < list',
+  'find . -exec /bin/rm -rf {} \\;',
+  'find . -execdir /usr/bin/rm {} +',
   'eval echo x',
   'unlink secret',
   'shred -u f',
@@ -126,6 +136,9 @@ const BASH_GATE = [
 // uses), plain pushes, local branch ops, and `git stash push -f` (not a push).
 const BASH_ALLOW = [
   'ls -la',
+  'xargs echo < list',
+  'find . -exec echo {} +',
+  'exec bash-completion-loader',
   'git status',
   'rm -rf node_modules',
   'echo hello',

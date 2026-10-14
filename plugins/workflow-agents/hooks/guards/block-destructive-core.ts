@@ -579,6 +579,7 @@ export const WRAPPERS = new Set([
     // check passed — and since `Bash(pnpm exec *)` is commonly allow-listed,
     // that also meant no prompt. A ten-character prefix defeated both layers.
     'pnpm', 'yarn', 'npx', 'bunx',
+    'exec',
 ]);
 
 // Protected home subdirectories — rm targeting anything inside these is blocked
@@ -1462,15 +1463,13 @@ function splitEnvString(text: string): string[] | null {
 export function resolveCommand(node: any): ResolvedCommand | null {
     if (!node.name) return null;
 
-    let name = unescapeCommandWord(node.name.value || '');
+    let name = commandName(node.name.value || '');
     let args = (node.suffix || []).map(wordValue);
     let chdir: string | undefined;
     const env: string[] = (node.prefix || [])
         .filter((p: any) => p?.type === 'Assignment' && typeof p.name === 'string')
         .map((p: any) => `${p.name}=${p.value?.value ?? p.value?.text ?? ''}`);
 
-    // Strip path prefix (e.g., /usr/bin/rm → rm)
-    name = name.replace(/^\/(?:usr\/(?:local\/)?)?(?:s?bin)\//, '');
 
     // Resolve through wrapper commands
     while (WRAPPERS.has(name) && args.length > 0) {
@@ -1522,6 +1521,9 @@ export function resolveCommand(node: any): ResolvedCommand | null {
             while (skip < args.length && args[skip].startsWith('-')) skip += 1;
             if (!(skip < args.length && (args[skip] === 'exec' || args[skip] === 'dlx'))) break;
             skip += 1;
+        } else if (name === 'exec') {
+            // `exec -a NAME` sets argv[0]; -c and -l take nothing.
+            while (skip < args.length && args[skip].startsWith('-')) skip += args[skip] === '-a' ? 2 : 1;
         } else if (name === 'npx' || name === 'bunx') {
             // The command follows the flags; -p/--package takes a value.
             while (skip < args.length && args[skip].startsWith('-')) {
@@ -1532,7 +1534,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
 
         if (skip >= args.length) break;
 
-        name = unescapeCommandWord(args[skip]).replace(/^\/(?:usr\/(?:local\/)?)?(?:s?bin)\//, '');
+        name = commandName(args[skip]);
         args = args.slice(skip + 1);
     }
 
@@ -1592,6 +1594,35 @@ function wordValue(word: any): string {
  */
 function unescapeCommandWord(word: string): string {
     return word.replace(/\\(.)/gs, '$1');
+}
+
+/** A command word as the rules match it: unescaped, and by basename, so `/bin/rm`, `/opt/homebrew/bin/rm` and `\rm` are all `rm`. */
+export function commandName(word: string): string {
+    return unescapeCommandWord(word).replace(/^.*\//, '');
+}
+
+const XARGS_VALUE_OPTIONS = new Set(['-a', '-d', '-E', '-I', '-L', '-n', '-P', '-s', '--arg-file', '--delimiter', '--eof',
+    '--max-lines', '--max-args', '--max-procs', '--max-chars', '--process-slot-var']);
+
+/** The command xargs runs and its arguments, past xargs's own options (`-0`, `-I{}`, `-n 1`, `--max-procs=4`, …). */
+function xargsCommand(args: string[]): string[] {
+    let i = 0;
+    while (i < args.length && args[i].startsWith('-')) {
+        const a = args[i];
+        if (a === '--') return args.slice(i + 1);
+        i += XARGS_VALUE_OPTIONS.has(a) ? 2 : 1;
+    }
+    return args.slice(i);
+}
+
+/** True when `words` (a command and its arguments) runs rm, directly or under sudo. */
+function runsRm(words: string[]): boolean {
+    const [first, ...rest] = words;
+    if (first === undefined) return false;
+    if (commandName(first) === 'rm') return true;
+    if (commandName(first) !== 'sudo') return false;
+    const target = rest.find(a => !a.startsWith('-'));
+    return target !== undefined && commandName(target) === 'rm';
 }
 
 /** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */
@@ -1749,7 +1780,7 @@ export function fallbackExtract(command: string): ResolvedCommand[] {
             const normalized = normalizeCommandFallback(rest);
             const parts = normalized.split(/\s+/);
             return {
-                name: unescapeCommandWord(parts[0] || ''),
+                name: commandName(parts[0] || ''),
                 args: parts.slice(1),
                 raw: seg,
                 env,
@@ -2567,8 +2598,8 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     // find -exec rm / find -delete
     if (cmd.name === 'find') {
         for (let i = 0; i < cmd.args.length; i++) {
-            if ((cmd.args[i] === '-exec' || cmd.args[i] === '-execdir') &&
-                (cmd.args[i + 1] === 'rm' || cmd.args[i + 1] === 'sudo')) {
+            if ((cmd.args[i] === '-exec' || cmd.args[i] === '-execdir' || cmd.args[i] === '-ok' || cmd.args[i] === '-okdir') &&
+                runsRm(cmd.args.slice(i + 1))) {
                 return 'find -exec rm is not allowed. Use trash for file deletion.';
             }
         }
@@ -2579,7 +2610,7 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
 
     // xargs rm
     if (cmd.name === 'xargs') {
-        if (cmd.args[0] === 'rm' || (cmd.args[0] === 'sudo' && cmd.args[1] === 'rm')) {
+        if (runsRm(xargsCommand(cmd.args))) {
             return 'xargs rm is not allowed. Use trash for file deletion.';
         }
     }
