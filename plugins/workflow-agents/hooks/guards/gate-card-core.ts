@@ -144,8 +144,9 @@ export function evalWord(
         if (simple) {
             const value = view.valueAt(simple[1] ?? simple[2], pos);
             // Unquoted, the shell splits a value on whitespace into several words.
-            if (value?.kind === 'text' && (quote === '"' || !/\s/.test(value.value))) out += value.value;
-            else { out += simple[0]; note(simple[0]); }
+            if (value?.kind === 'text' && (quote === '"' || !/\s/.test(value.value)) && out.length + value.value.length <= RESOLVE_MAX_CHARS) {
+                out += value.value;
+            } else { out += simple[0]; note(simple[0]); }
             i += simple[0].length;
             return;
         }
@@ -298,7 +299,8 @@ export function viewShell(command: string): ShellView {
                 return path ? { kind: 'file', path } : { kind: 'runtime' };
             }
             const r = evalWord(String(word?.text ?? ''), view, pos);
-            return r.unresolved.length ? { kind: 'runtime' } : { kind: 'text', value: r.value };
+            // A value longer than any command line can only come from self-concatenation (doubling); it is not resolved.
+            return r.unresolved.length || r.value.length > RESOLVE_MAX_CHARS ? { kind: 'runtime' } : { kind: 'text', value: r.value };
         };
 
         const sound = new Map<any, [number, number] | undefined>();

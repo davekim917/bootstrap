@@ -67,6 +67,114 @@ export interface ResolvedCommand {
     chdir?: string;             // working directory set by an `env -C/--chdir` wrapper
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
+    stdinTexts?: string[];      // heredoc and here-string text fed to this command
+    stdinExpanded?: string[];   // the part of stdinTexts bash expands variables in (not a quoted heredoc or '…' here-string)
+    stdinFiles?: string[];      // files redirected into this command with `<`
+    stdoutFiles?: string[];     // files this command's output is redirected into
+    script?: ScriptContext;     // what the whole command line shows, shared by its commands
+}
+
+/** Facts about the whole command line that a single step's checks need. */
+export interface ScriptContext {
+    writes: FileWrite[];        // what echo/printf/cat/tee write to files
+    pipedInto: Map<number, PipedInput>; // what the previous stage of a pipeline feeds each command, by command offset
+    cds: CdStep[];              // every cd/pushd/popd, in source order
+    links: Map<number, ChainLink>; // where each top-level command sits in its &&/|| chain, by command offset
+    command: string;            // the whole command line, for resolving variables
+    cwd?: string;               // the directory the command line starts in
+    view?: ReturnType<typeof viewShell>; // the parsed variable view of `command`, built on first use
+    words?: Map<string, string | null>; // provableWord results by position and text
+    paths?: Map<string, string[] | null>; // sqlPathCandidates results by reader position and file
+    writesByTarget?: Map<string, FileWrite[]>; // writes by the path as spelled, built once a line has too many to match pairwise
+    wordBudget?: number;        // evalWord calls left for this command line before every further word is unprovable
+    traceBudget?: number;       // pipe nodes and texts left to trace before a client's input counts as unknown
+}
+
+// evalWord calls one command line may spend resolving paths. Each reader re-resolves every write and cd, so without a
+// line-wide budget a hostile command multiplies the work by its reader count; no real command needs a tenth of this.
+const SQL_WORD_BUDGET = 256;
+
+interface FileWrite {
+    writer: ResolvedCommand;
+    target: string;             // the path as the writer spells it
+    input: PipedInput;
+}
+
+interface PipedInput {
+    texts: string[];            // text echo/printf/cat emit into the pipe
+    catFiles: string[];         // files cat reads into it
+    from?: PipedInput[];        // inputs whose text and files also flow in
+    textFrom?: PipedInput[];    // inputs whose text (not files) also flows in
+}
+
+/**
+ * Everything an input carries, following its `from` links. Inputs link to each other instead of copying, because a
+ * copy at each nesting level made deep pipelines cost the cube of their depth; each node is visited once.
+ */
+function flattenInput(root: PipedInput | undefined, script?: ScriptContext): FlatInput {
+    if (!root) return { texts: [], catFiles: [] };
+    const cached = flattened.get(root);
+    if (cached) return cached;
+    const texts: string[] = [];
+    const catFiles: string[] = [];
+    const seen = new Set<PipedInput>();
+    const textSeen = new Set<PipedInput>();
+    const stack: Array<[PipedInput, boolean]> = [[root, true]];
+    let over = false;
+    while (stack.length) {
+        const [node, withFiles] = stack.pop()!;
+        if (withFiles ? seen.has(node) : textSeen.has(node) || seen.has(node)) continue;
+        (withFiles ? seen : textSeen).add(node);
+        if (!spendTrace(script, 1 + textSize(node.texts) + node.catFiles.length)) {
+            over = true;
+            break;
+        }
+        texts.push(...node.texts);
+        if (withFiles) catFiles.push(...node.catFiles);
+        for (const next of node.from ?? []) stack.push([next, withFiles]);
+        for (const next of node.textFrom ?? []) stack.push([next, false]);
+    }
+    const result = { texts, catFiles, ...(over ? { over } : {}) };
+    flattened.set(root, result);
+    return result;
+}
+
+interface FlatInput {
+    texts: string[];
+    catFiles: string[];
+    over?: boolean;             // the line's trace budget ran out, so this is incomplete
+}
+
+const flattened = new WeakMap<PipedInput, FlatInput>();
+
+/** Charges `n` units to the line's trace budget; false once it is spent. */
+function spendTrace(script: ScriptContext | undefined, n: number): boolean {
+    if (!script) return true;
+    script.traceBudget = (script.traceBudget ?? SQL_TRACE_BUDGET) - n;
+    return script.traceBudget >= 0;
+}
+
+// Characters of SQL text (plus pipe nodes walked) one command line may trace into its SQL clients, counting a text again
+// for every client it reaches, since each one scans it. Past it the client's input is unknown and the command gates: no
+// real command comes near it, and a crafted one must neither hang the guard nor pass.
+const SQL_TRACE_BUDGET = 4_000_000;
+
+function textSize(texts: string[]): number {
+    let n = 0;
+    for (const t of texts) n += t.length;
+    return n;
+}
+
+/** A command's place in a top-level list: which chain, which link, and the operators joining the links. */
+interface ChainLink {
+    chain: number;
+    index: number;
+    operators: string[];
+}
+
+interface CdStep {
+    pos: number;
+    target: string | undefined;
 }
 
 export interface DestructiveMatch {
@@ -524,7 +632,16 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     // After string-strip, a DROP keyword inside a string literal cannot reach
     // this check, so anywhere-in-statement matching is safe.
     { rx: /^ALTER\b[\s\S]*\bDROP\b/i, label: 'ALTER ... DROP' },
+    { rx: /^ALTER\b[\s\S]*\bSWAP\s+WITH\b/i, label: 'ALTER ... SWAP WITH' },
+    { rx: /^ALTER\b[\s\S]*\bRENAME\s+TO\b/i, label: 'ALTER ... RENAME TO' },
+    { rx: /^GRANT\s+OWNERSHIP\b/i, label: 'GRANT OWNERSHIP' },
 ];
+
+// Control-flow words that can open a statement inside a scripting block
+// (Snowflake Scripting, PL/pgSQL, T-SQL). Stripped before matching, so the
+// statement they lead into is checked like a top-level one.
+const BLOCK_LEAD = /^(?:(?:BEGIN|ELSE|LOOP|DO|REPEAT)\b\s*|(?:EXCEPTION\s+)?(?:IF|ELSEIF|ELSIF|WHEN)\b[\s\S]*?\bTHEN\b\s*|(?:FOR|WHILE)\b[\s\S]*?\b(?:DO|LOOP)\b\s*)/i;
+const BLOCK_LEAD_MAX_STRIPS = 16;
 
 const UPDATE_LEADING = /^UPDATE\b/i;
 const HAS_WHERE = /\bWHERE\b/i;
@@ -532,7 +649,7 @@ const HAS_WHERE = /\bWHERE\b/i;
 // Cheap superset prefilter — if none of these verbs appear anywhere in the
 // SQL arg, no destructive pattern can match. Skips the full strip+scan
 // pipeline on SELECT-only queries (the common case).
-const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE)\b/i;
+const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE|GRANT)\b/i;
 
 // Hoisted to module scope — these regexes are matched per-segment / per-call
 // inside the SQL scanner; defining them inline would recompile on every
@@ -540,7 +657,7 @@ const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTE
 const WITH_LEADING = /^WITH\b/i;
 const WITH_PREFIX = /^WITH\s+(?:RECURSIVE\s+)?/i;
 const CTE_NAME_AS = /^(?:"\s*"|"[^"]*"|`[^`]*`|[A-Za-z_][\w$]*)\s*(?:\([^)]*\))?\s+AS\s+/i;
-const EXECUTE_IMMEDIATE = /EXECUTE\s+IMMEDIATE\s+/gi;
+const EXECUTE_IMMEDIATE = /(?:EXECUTE\s+IMMEDIATE|\bDO(?:\s+LANGUAGE\s+\w+)?)\s+/gi;
 const DOLLAR_TAG = /^\$([A-Za-z0-9_]*)\$/;
 
 const STATEMENT_PREVIEW_CHARS = 200;
@@ -685,7 +802,10 @@ export function decomposeSqlSegment(skel: string): Array<{ body: string; isCTE: 
 }
 
 export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | null {
-    const trimmed = body.trim();
+    let trimmed = body.trim();
+    for (let i = 0; i < BLOCK_LEAD_MAX_STRIPS && BLOCK_LEAD.test(trimmed); i++) {
+        trimmed = trimmed.replace(BLOCK_LEAD, '').trim();
+    }
     if (!trimmed) return null;
     const preview = trimmed.slice(0, STATEMENT_PREVIEW_CHARS);
 
@@ -782,6 +902,289 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0): Des
     return null;
 }
 
+const SQL_FILE_MAX_BYTES = 1_000_000;
+const SQL_FILES_MAX = 16;
+// Options whose value is a file of SQL the client runs.
+const SQL_FILE_OPTIONS: Record<string, string[]> = {
+    snow: ['-f', '--filename'], psql: ['-f', '--file'], duckdb: ['-f', '-init'], sqlite3: ['-init'], sqlite: ['-init'],
+};
+// Options whose value is SQL. A client given none of them reads SQL from stdin.
+const SQL_TEXT_OPTIONS: Record<string, string[]> = {
+    snow: ['-q', '--query'], psql: ['-c', '--command'], mysql: ['-e', '--execute'],
+};
+// Client commands inside SQL text that run another file: snow `!source`/`!load`,
+// psql `\i`/`\ir`/`\include`, sqlite `.read`, mysql `source`.
+const SQL_INCLUDE = /^\s*(!(?:source|load)|\\(?:ir|include_relative|i|include)|\.read|source)\s+('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|[^\s;]+)/gim;
+// psql's \ir and \include_relative resolve a relative name against the including file's directory.
+const SQL_INCLUDE_RELATIVE = new Set(['\\ir', '\\include_relative']);
+
+/** Each file the SQL text includes; a relative \ir name is resolved against `includingFile`'s directory. */
+function sqlIncludes(text: string, includingFile: string | null): string[] {
+    const files: string[] = [];
+    for (const m of text.matchAll(SQL_INCLUDE)) {
+        const raw = m[2];
+        const name = /^['"]/.test(raw) ? raw.slice(1, -1).replace(/\\(.)/g, '$1') : raw;
+        files.push(includingFile && SQL_INCLUDE_RELATIVE.has(m[1]) && !name.startsWith('/') ? join(dirname(includingFile), name) : name);
+    }
+    return files;
+}
+const SNOW_TEMPLATE = /&\{\s*([\w.]+)\s*\}|<%\s*([\w.]+)\s*%>|&([A-Za-z_]\w*)/g;
+
+export interface SqlInput {
+    texts: string[];            // every SQL text the client could run, as far as the command line shows
+    unreadable: string | null;  // a SQL file too large to check, past the include limit, or input past the trace budget
+}
+
+/** The value `option` gives in `args[i]`: `-q X`, `--query=X`, or glued `-qX`. */
+function optionValueAt(args: string[], i: number, option: string): string | undefined {
+    const a = args[i];
+    if (a === option) return args[i + 1];
+    if (option.startsWith('--')) return a.startsWith(`${option}=`) ? a.slice(option.length + 1) : undefined;
+    return a.startsWith(option) && a.length > option.length && !a.startsWith('--') ? a.slice(option.length) : undefined;
+}
+
+/**
+ * Every SQL text a SQL client step could run: its arguments (with a glued
+ * `-qSQL` or `--query=SQL` value unglued), heredoc and here-string input,
+ * `-f` and `<` files, files the SQL itself includes, and snow `-D` template
+ * values rendered in. When the SQL arrives from a file or stdin, the text the
+ * rest of the command writes (heredocs, echo/printf/tee, `cat`ed files) is
+ * included too, since that is where such a file usually comes from.
+ */
+export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
+    const client = cmd.name === 'snow' ? 'snow' : cmd.name;
+    const args = client === 'snow' ? cmd.args.slice(1) : cmd.args;
+    const fileOptions = SQL_FILE_OPTIONS[client] ?? [];
+    const textOptions = SQL_TEXT_OPTIONS[client] ?? [];
+    const texts: string[] = [...(cmd.stdinTexts ?? [])];
+    let traceOver = false;
+    for (const t of cmd.stdinExpanded ?? []) {
+        if (!/[$`]/.test(t) || cmd.pos === undefined || !cmd.script) continue;
+        cmd.script.view ??= viewShell(cmd.script.command);
+        const r = evalWord(`"${t.replace(/(["\\])/g, '\\$1')}"`, cmd.script.view, cmd.pos);
+        if (r.value === t) continue;
+        if (spendTrace(cmd.script, r.value.length)) texts.push(r.value);
+        else traceOver = true;
+    }
+    const files: string[] = [...(cmd.stdinFiles ?? [])];
+    const vars = new Map<string, string>();
+    let sqlInArgs = false;
+    let readsStdin = texts.length > 0 || files.length > 0;
+
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        texts.push(a);
+        if (/^-[A-Za-z]./.test(a) && !a.startsWith('--')) texts.push(a.slice(2));
+        else if (a.startsWith('--') && a.includes('=')) texts.push(a.slice(a.indexOf('=') + 1));
+        for (const o of fileOptions) {
+            const v = optionValueAt(args, i, o);
+            if (v !== undefined) files.push(v);
+        }
+        for (const o of textOptions) {
+            if (optionValueAt(args, i, o) !== undefined) sqlInArgs = true;
+        }
+        if (client === 'snow') {
+            for (const o of ['-D', '--variable']) {
+                const v = optionValueAt(args, i, o);
+                const m = v?.match(/^([\w.]+)=([\s\S]*)$/);
+                if (m) vars.set(m[1], m[2]);
+            }
+            if (a === '--stdin' || a === '-i') readsStdin = true;
+        }
+    }
+    if (client === 'psql' || client === 'mysql' || client === 'snow') {
+        if (!sqlInArgs && files.length === 0) readsStdin = true;
+    } else {
+        readsStdin = true;
+    }
+    if (vars.size) {
+        const rendered = texts.map(t => t.replace(SNOW_TEMPLATE, (m, a, b, c) => vars.get(a ?? b ?? c) ?? m));
+        texts.push(...rendered, ...vars.values());
+    }
+    if (files.includes('-')) readsStdin = true;
+    if (readsStdin && !files.some(f => f !== '-') && !(cmd.stdinTexts?.length)) {
+        const piped = flattenInput(cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos), cmd.script);
+        if (piped.over || !spendTrace(cmd.script, textSize(piped.texts) + piped.catFiles.length)) traceOver = true;
+        else {
+            texts.push(...piped.texts);
+            files.push(...piped.catFiles);
+        }
+    }
+
+    // Read each file, plus any text the command writes to it first; follow
+    // includes found in what is read, up to a fixed number of files.
+    let unreadable: string | null = traceOver ? 'its piped input' : null;
+    const pending = [...files];
+    for (const t of texts) pending.push(...sqlIncludes(t, null));
+    const seen = new Set<string>();
+    while (pending.length && seen.size < SQL_FILES_MAX) {
+        const f = pending.shift()!;
+        if (seen.has(f)) continue;
+        seen.add(f);
+        const writes = writesTo(f, cmd);
+        if (writes === null) {
+            unreadable ??= f;
+            continue;
+        }
+        for (const written of writes.map(w => flattenInput(w, cmd.script))) {
+            if (written.over || !spendTrace(cmd.script, textSize(written.texts) + written.catFiles.length)) {
+                unreadable ??= f;
+                break;
+            }
+            for (const t of written.texts) {
+                texts.push(t);
+                pending.push(...sqlIncludes(t, null));
+            }
+            pending.push(...written.catFiles);
+        }
+        for (const { path, content } of readSqlFiles(f, cmd)) {
+            if (content === 'too-large') {
+                unreadable ??= f;
+                continue;
+            }
+            if (!spendTrace(cmd.script, content.length)) {
+                unreadable ??= f;
+                continue;
+            }
+            texts.push(content);
+            pending.push(...sqlIncludes(content, path));
+        }
+    }
+    if (pending.length) unreadable ??= pending[0];
+    return { texts, unreadable };
+}
+
+const SQL_PATH_CANDIDATES_MAX = 8;
+// Past this many directory changes or file writes before a reader, a path is treated as unprovable: matching every
+// write against every cd is quadratic, and no real command comes near it.
+const SQL_PATH_STEPS_MAX = 64;
+const PIPE_NESTING_MAX = 64;
+
+/**
+ * The text of every file a SQL client step could open for `file`: one per
+ * directory it could run in. Missing files and non-regular files are skipped
+ * (a missing one is usually written earlier in the same command, whose text
+ * sqlInputOf scans), and so is a path the command line does not prove.
+ */
+function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string; content: string | 'too-large' }> {
+    if (!file || file === '-') return [];
+    const out: Array<{ path: string; content: string | 'too-large' }> = [];
+    for (const path of sqlPathCandidates(file, cmd) ?? []) {
+        try {
+            const st = statSync(path);
+            if (!st.isFile()) continue;
+            out.push({ path, content: st.size > SQL_FILE_MAX_BYTES ? 'too-large' : readFileSync(path, 'utf-8') });
+        } catch {
+            continue;
+        }
+    }
+    return out;
+}
+
+/**
+ * Every absolute path `file` can name when the step runs, or null when the
+ * command line does not prove it (a variable without a provable value, a glob,
+ * or a cd whose target or effect cannot be known). A top-level cd narrows the
+ * directory only when the step follows it in an unbroken && chain, where its
+ * success is implied; otherwise the step may run in either directory.
+ */
+function provableWord(text: string, cmd: ResolvedCommand, pos: number): string | null {
+    if (!/[$`]/.test(text)) return /[*?[{]/.test(text) || text.startsWith('~') ? null : text;
+    const script = cmd.script;
+    if (!script || pos < 0) return null;
+    const key = `${pos}\0${text}`;
+    script.words ??= new Map();
+    if (script.words.has(key)) return script.words.get(key)!;
+    script.wordBudget ??= SQL_WORD_BUDGET;
+    let value: string | null = null;
+    if (script.wordBudget > 0) {
+        script.wordBudget--;
+        script.view ??= viewShell(script.command);
+        const r = evalWord(text, script.view, pos);
+        value = r.unresolved.length || /[$`*?[{]/.test(r.value) ? null : r.value;
+    }
+    script.words.set(key, value);
+    return value;
+}
+
+/**
+ * What the command line writes to the file `reader` names as `file`: a write
+ * spelled the same way, or one whose possible absolute paths meet the
+ * reader's (each resolved from its own command's directory and variables).
+ */
+/** Null when more writes to the file precede the reader than can be checked (appends all count). */
+function writesTo(file: string, reader: ResolvedCommand): PipedInput[] | null {
+    if (!file || file === '-') return [];
+    let readerPaths: Set<string> | undefined;
+    const out: PipedInput[] = [];
+    const script = reader.script;
+    const all = script?.writes ?? [];
+    const before = (w: FileWrite) => w.writer.pos === undefined || reader.pos === undefined || w.writer.pos < reader.pos;
+    if (all.length > SQL_PATH_STEPS_MAX && script) {
+        if (!script.writesByTarget) {
+            script.writesByTarget = new Map();
+            for (const w of all) {
+                const key = samePath(w.target);
+                const list = script.writesByTarget.get(key);
+                if (list) list.push(w);
+                else script.writesByTarget.set(key, [w]);
+            }
+        }
+        const prior = (script.writesByTarget.get(samePath(file)) ?? []).filter(before);
+        return prior.length > SQL_PATH_STEPS_MAX ? null : prior.map(w => w.input);
+    }
+    for (const w of all) {
+        if (!before(w)) continue;
+        if (samePath(w.target) === samePath(file)) {
+            out.push(w.input);
+            continue;
+        }
+        readerPaths ??= new Set(sqlPathCandidates(file, reader) ?? []);
+        if ((sqlPathCandidates(w.target, w.writer) ?? []).some(p => readerPaths!.has(p))) out.push(w.input);
+    }
+    return out;
+}
+
+function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
+    const script = cmd.script;
+    if (!script || cmd.pos === undefined) return resolvePathCandidates(file, cmd);
+    const key = `${cmd.pos}\0${cmd.chdir ?? ''}\0${file}`;
+    script.paths ??= new Map();
+    if (!script.paths.has(key)) script.paths.set(key, resolvePathCandidates(file, cmd));
+    return script.paths.get(key)!;
+}
+
+function resolvePathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
+    const script = cmd.script;
+    const provable = (text: string, pos: number) => provableWord(text, cmd, pos);
+    const target = provable(file, cmd.pos ?? -1);
+    if (target === null) return null;
+    if (target.startsWith('/')) return [target];
+
+    if ((script?.cds.length ?? 0) > SQL_PATH_STEPS_MAX) return null;
+    let dirs = [script?.cwd ?? currentWorkingDir()];
+    const here = cmd.pos === undefined ? undefined : script?.links.get(cmd.pos);
+    for (const step of script?.cds ?? []) {
+        if (step.pos < 0) continue;
+        // A reader inside $(…) carries no position, so every cd is a possible prior one and none is implied.
+        if (cmd.pos !== undefined && step.pos >= cmd.pos) continue;
+        const next = step.target !== undefined ? provable(step.target, step.pos) : null;
+        if (next === null) return null;
+        const moved = dirs.map(d => (next.startsWith('/') ? next : join(d, next)));
+        const link = script?.links.get(step.pos);
+        const implied = !!link && !!here && link.chain === here.chain && link.index < here.index
+            && here.operators.slice(link.index, here.index).every(op => op === '&&');
+        dirs = implied ? moved : [...new Set([...dirs, ...moved])];
+        if (dirs.length > SQL_PATH_CANDIDATES_MAX) return null;
+    }
+    if (cmd.chdir !== undefined) {
+        const chdir = provable(cmd.chdir, cmd.pos ?? -1);
+        if (chdir === null) return null;
+        dirs = dirs.map(d => (chdir.startsWith('/') ? chdir : join(d, chdir)));
+    }
+    return dirs.map(d => join(d, target));
+}
+
 // Platform CLIs → destructive subcommand verbs
 export const PLATFORM_DESTRUCTIVE: Record<string, Set<string>> = {
     render:  new Set(['delete', 'down', 'destroy']),
@@ -834,57 +1237,171 @@ export function isSafePath(p: string): boolean {
 
 // ── AST helpers ──────────────────────────────────────────────────────────────
 
-/** Recursively walk an unbash AST node, accumulating all Command nodes into `out` */
+/**
+ * Walk an unbash AST node and collect every Command node bash could run: in a
+ * list, pipeline, condition (`if`/`while`/`until`), case arm, loop, function,
+ * group or coproc, and inside any `$(…)`, backticks or `<(…)` wherever a word
+ * can hold one: a command name, argument, assignment value or array element,
+ * redirect target, unquoted heredoc body, `${x:-…}` operand, `[[ ]]` operand,
+ * `$(( ))`, `(( ))` or case subject.
+ */
 export function walkCommandNodes(node: any, out: any[] = []): any[] {
-    if (!node) return out;
-
-    if (node.type === 'Command') {
-        out.push(node);
-        // Recurse into command substitutions embedded in arguments and assignment values
-        for (const s of (node.suffix || [])) {
-            walkPartsForSubstitutions(s, out);
-        }
-        for (const p of (node.prefix || [])) {
-            if (p?.type === 'Assignment') walkPartsForSubstitutions(p.value, out);
-        }
-        return out;
+    if (!node || typeof node !== 'object') return out;
+    switch (node.type) {
+        case 'Command':
+            out.push(node);
+            walkPartsForSubstitutions(node.name, out);
+            for (const s of (node.suffix || [])) walkPartsForSubstitutions(s, out);
+            for (const p of (node.prefix || [])) {
+                walkPartsForSubstitutions(p?.value, out);
+                for (const w of (p?.array || [])) walkPartsForSubstitutions(w, out);
+            }
+            walkRedirectsForCommands(node.redirects, out);
+            return out;
+        case 'Statement':
+            walkCommandNodes(node.command, out);
+            walkRedirectsForCommands(node.redirects, out);
+            return out;
+        case 'If':
+        case 'While':
+            walkCommandNodes(node.clause, out);
+            walkCommandNodes(node.then, out);
+            walkCommandNodes(node.body, out);
+            walkCommandNodes(node.else, out);
+            return out;
+        case 'Case':
+            walkPartsForSubstitutions(node.word, out);
+            for (const item of (node.items || [])) {
+                for (const w of (item?.pattern || [])) walkPartsForSubstitutions(w, out);
+                walkCommandNodes(item?.body, out);
+            }
+            return out;
+        case 'TestCommand':
+            walkTestExpression(node.expression, out);
+            return out;
+        case 'ArithmeticCommand':
+            collectCommandsInText(String(node.body ?? ''), out);
+            return out;
+        case 'ArithmeticFor':
+            for (const e of [node.initialize, node.test, node.update]) walkArithmeticExpression(e, out);
+            walkCommandNodes(node.body, out);
+            return out;
+        default:
+            for (const w of (node.wordlist || [])) walkPartsForSubstitutions(w, out);
+            for (const child of (node.commands || [])) walkCommandNodes(child, out);
+            walkCommandNodes(node.body, out);
+            walkCommandNodes(node.command, out);
+            walkRedirectsForCommands(node.redirects, out);
+            return out;
     }
-    for (const w of (node.wordlist || [])) {
-        walkPartsForSubstitutions(w, out);
-    }
-
-    // Recurse into all known container types
-    for (const child of (node.commands || [])) {
-        walkCommandNodes(child, out);
-    }
-    if (node.body) walkCommandNodes(node.body, out);
-    if (node.command) walkCommandNodes(node.command, out);
-    if (node.then) walkCommandNodes(node.then, out);
-    if (node.else) walkCommandNodes(node.else, out);
-    if (node.condition) walkCommandNodes(node.condition, out);
-    for (const clause of (node.clauses || [])) {
-        walkCommandNodes(clause, out);
-    }
-
-    return out;
 }
 
 // Command nodes found inside a substitution. unbash gives them offsets relative
 // to the substitution, so they must not be matched against top-level offsets.
 const NESTED_COMMAND_NODES = new WeakSet<object>();
 
+function addNestedCommands(script: any, commands: any[]): void {
+    for (const inner of walkCommandNodes(script)) {
+        NESTED_COMMAND_NODES.add(inner);
+        commands.push(inner);
+    }
+}
+
 /** Walk a word's parts (computed lazily by unbash) to find the commands inside `$(…)`, backticks and `<(…)` */
 export function walkPartsForSubstitutions(node: any, commands: any[]): void {
-    if (!node) return;
+    if (!node || typeof node !== 'object') return;
     if (['CommandExpansion', 'ProcessSubstitution', 'CommandSubstitution', 'Backtick'].includes(node.type)) {
-        for (const inner of walkCommandNodes(node.script ?? node.body ?? node.command)) {
-            NESTED_COMMAND_NODES.add(inner);
-            commands.push(inner);
-        }
+        addNestedCommands(node.script ?? node.body ?? node.command, commands);
+    }
+    if (node.type === 'ArithmeticExpansion') collectCommandsInText(String(node.text ?? ''), commands);
+    if (node.type === 'ParameterExpansion') {
+        walkPartsForSubstitutions(node.operand, commands);
+        walkPartsForSubstitutions(node.slice?.offset, commands);
+        walkPartsForSubstitutions(node.slice?.length, commands);
+        walkPartsForSubstitutions(node.replace?.pattern, commands);
+        walkPartsForSubstitutions(node.replace?.replacement, commands);
     }
     for (const part of (node.parts || [])) {
         walkPartsForSubstitutions(part, commands);
     }
+}
+
+function walkRedirectsForCommands(redirects: any, commands: any[]): void {
+    for (const r of (redirects || [])) {
+        walkPartsForSubstitutions(r?.target, commands);
+        // An unquoted heredoc body is expanded like a double-quoted word.
+        if ((r?.operator === '<<' || r?.operator === '<<-') && !r.heredocQuoted) {
+            collectCommandsInText(String(r.content ?? ''), commands);
+        }
+    }
+}
+
+function walkTestExpression(expr: any, commands: any[]): void {
+    if (!expr || typeof expr !== 'object') return;
+    walkPartsForSubstitutions(expr.operand?.type ? null : expr.operand, commands);
+    walkPartsForSubstitutions(expr.left?.type ? null : expr.left, commands);
+    walkPartsForSubstitutions(expr.right?.type ? null : expr.right, commands);
+    for (const sub of [expr.operand, expr.left, expr.right, expr.expression]) {
+        if (sub?.type) walkTestExpression(sub, commands);
+    }
+}
+
+function walkArithmeticExpression(expr: any, commands: any[]): void {
+    if (!expr || typeof expr !== 'object') return;
+    if (expr.type === 'ArithmeticWord') collectCommandsInText(String(expr.value ?? ''), commands);
+    for (const sub of [expr.left, expr.right, expr.operand, expr.test, expr.consequent, expr.alternate, expr.expression]) {
+        walkArithmeticExpression(sub, commands);
+    }
+}
+
+/**
+ * Commands inside every `$(…)` and backtick span of raw text that bash expands
+ * but unbash leaves unparsed: an unquoted heredoc body, `$(( ))`, `(( ))`.
+ * Each span is parsed as its own script.
+ */
+function collectCommandsInText(text: string, commands: any[]): void {
+    if (!text.includes('$(') && !text.includes('`')) return;
+    for (const inner of substitutionSpans(text)) {
+        try {
+            addNestedCommands(parse(inner), commands);
+        } catch {
+            // An unparsable span cannot be inspected; its text still reaches the regex fallback below.
+            commands.push(...fallbackExtract(inner).map(c => ({ __resolved: c })));
+        }
+    }
+}
+
+/** The inner text of each `$(…)` (not `$((`) and backtick span in `text`, outermost first. */
+function substitutionSpans(text: string): string[] {
+    const spans: string[] = [];
+    for (let i = 0; i < text.length; i++) {
+        if (text[i] === '\\') { i++; continue; }
+        if (text[i] === '`') {
+            const close = text.indexOf('`', i + 1);
+            if (close === -1) break;
+            spans.push(text.slice(i + 1, close));
+            i = close;
+            continue;
+        }
+        if (text[i] === '$' && text[i + 1] === '(') {
+            if (text[i + 2] === '(') { i += 2; continue; }
+            let depth = 1;
+            let j = i + 2;
+            let quote: string | null = null;
+            for (; j < text.length && depth > 0; j++) {
+                const c = text[j];
+                if (c === '\\') { j++; continue; }
+                if (quote) { if (c === quote) quote = null; continue; }
+                if (c === "'" || c === '"') quote = c;
+                else if (c === '(') depth++;
+                else if (c === ')') depth--;
+            }
+            if (depth !== 0) break;
+            spans.push(text.slice(i + 2, j - 1));
+            i = j - 1;
+        }
+    }
+    return spans;
 }
 
 /** Split an `env -S` string into words the way GNU env does: whitespace and
@@ -1023,6 +1540,23 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const hasInputRedirect = (node.redirects || []).some((r: any) =>
         ['<<', '<<<', '<<-'].includes(r.operator)
     );
+    const stdinTexts: string[] = [];
+    const stdinExpanded: string[] = [];
+    const stdinFiles: string[] = [];
+    const stdoutFiles: string[] = [];
+    for (const r of (node.redirects || [])) {
+        if (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && (r.fileDescriptor === undefined || r.fileDescriptor === 1)) {
+            stdoutFiles.push(wordValue(r.target));
+        }
+        if (r?.operator === '<<' || r?.operator === '<<-') {
+            stdinTexts.push(String(r.content ?? ''));
+            if (!r.heredocQuoted) stdinExpanded.push(String(r.content ?? ''));
+        } else if (r?.operator === '<<<') {
+            stdinTexts.push(wordValue(r.target));
+            if (!String(r.target?.text ?? '').startsWith("'")) stdinExpanded.push(wordValue(r.target));
+        }
+        else if (r?.operator === '<' || r?.operator === '<>') stdinFiles.push(wordValue(r.target));
+    }
 
     // Reconstruct raw text for error messages
     const rawParts = [node.name.text || node.name.value, ...(node.suffix || []).map((s: any) => s.text || s.value)];
@@ -1035,6 +1569,10 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         ...(chdir !== undefined ? { chdir } : {}),
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
+        ...(stdinTexts.length ? { stdinTexts } : {}),
+        ...(stdinExpanded.length ? { stdinExpanded } : {}),
+        ...(stdinFiles.length ? { stdinFiles } : {}),
+        ...(stdoutFiles.length ? { stdoutFiles } : {}),
     };
 }
 
@@ -1045,7 +1583,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
  */
 function wordValue(word: any): string {
     const value = String(word?.value ?? word?.text ?? '');
-    return typeof word?.text === 'string' && word.text === value && /['"]/.test(value) ? shellUnquote(value) : value;
+    return typeof word?.text === 'string' && word.text === value && /['"\\]/.test(value) ? shellUnquote(value) : value;
 }
 
 /** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */
@@ -1053,14 +1591,137 @@ export function extractCommands(command: string): ResolvedCommand[] {
     try {
         const ast = parse(command);
         const nodes = walkCommandNodes(ast);
-        return nodes.map(node => {
+        const commands = nodes.map(node => {
+            if (node.__resolved) return node.__resolved as ResolvedCommand;
             const cmd = resolveCommand(node);
             if (cmd && NESTED_COMMAND_NODES.has(node)) delete cmd.pos;
             return cmd;
         }).filter((c): c is ResolvedCommand => c !== null);
+        const script = scriptContextOf(ast, commands, command);
+        for (const cmd of commands) cmd.script = script;
+        return commands;
     } catch {
         return fallbackExtract(command);
     }
+}
+
+const TEXT_EMITTERS = new Set(['echo', 'printf', 'cat', 'tee']);
+
+function samePath(path: string): string {
+    return path.replace(/^(?:\.\/)+/, '');
+}
+
+/** The text an emitter writes to stdout or its files (not counting what a pipe feeds it). */
+function emittedText(cmd: ResolvedCommand): string[] {
+    const operands = cmd.args.filter(a => !a.startsWith('-'));
+    if (cmd.name === 'cat' || cmd.name === 'tee') return [...(cmd.stdinTexts ?? [])];
+    if (cmd.name === 'echo') {
+        const text = operands.join(' ');
+        return [...(cmd.stdinTexts ?? []), text, ...(text.includes('\\') ? [renderEscapes(text)] : [])];
+    }
+    if (cmd.name !== 'printf') return [...(cmd.stdinTexts ?? []), operands.join(' ')];
+    return [...(cmd.stdinTexts ?? []), operands.join(' '), ...operands, renderPrintf(operands)];
+}
+
+const PRINTF_DIRECTIVE = /%(?:%|[-+ #0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[sbqdiouxXcfFeEgGaA])/g;
+
+/** printf's output for a format and its arguments, reusing the format until the arguments run out. */
+function renderPrintf(operands: string[]): string {
+    const [format = '', ...values] = operands;
+    let out = '';
+    let next = 0;
+    do {
+        out += format.replace(PRINTF_DIRECTIVE, d => (d === '%%' ? '%' : values[next++] ?? ''));
+    } while (next > 0 && next < values.length && out.length < 100_000);
+    return renderEscapes(out);
+}
+
+/** The newline and tab escapes `echo -e` and printf render; scanned beside the raw text, so it can only add a match. */
+function renderEscapes(text: string): string {
+    return text.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+}
+
+/**
+ * What the whole command line shows about where text and directories go: the
+ * text each file is written with, what each pipeline stage feeds the next,
+ * each command's place in its &&/|| chain, and the cds.
+ */
+function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string): ScriptContext {
+    const byPos = new Map<number, ResolvedCommand>();
+    for (const c of commands) if (c.pos !== undefined) byPos.set(c.pos, c);
+    const pipedInto = new Map<number, PipedInput>();
+    const links = new Map<number, ChainLink>();
+    let chains = 0;
+
+    const pipeline = (node: any): any[] => (node?.type === 'Pipeline' ? node.commands || [] : [node]);
+    const stageCommands = (node: any): ResolvedCommand[] =>
+        walkCommandNodes(node).map(n => (typeof n.pos === 'number' ? byPos.get(n.pos) : undefined)).filter((c): c is ResolvedCommand => !!c);
+    const visitLink = (node: any, chain: number, index: number, operators: string[], depth: number) => {
+        const stages = pipeline(node?.type === 'Statement' ? node.command : node);
+        stages.forEach((stage: any, i: number) => {
+            if (stage?.type === 'Command' && typeof stage.pos === 'number') {
+                links.set(stage.pos, { chain, index, operators });
+            } else {
+                visitCompound(stage, depth);
+            }
+            if (i === 0) return;
+            const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [] };
+            for (const up of stageCommands(stages[i - 1])) {
+                if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
+                const fed = up.pos === undefined ? undefined : pipedInto.get(up.pos);
+                input.texts.push(...emittedText(up));
+                if (up.name === 'cat') input.catFiles.push(...up.args.filter(a => !a.startsWith('-')));
+                if (fed) (up.name === 'cat' || up.name === 'tee' ? input.from! : input.textFrom!).push(fed);
+            }
+            for (const down of stageCommands(stage)) {
+                if (down.pos === undefined) continue;
+                const inner = pipedInto.get(down.pos);
+                pipedInto.set(down.pos, inner ? { texts: [], catFiles: [], from: [inner, input] } : input);
+            }
+        });
+    };
+    const visit = (node: any, depth: number) => {
+        if (!node) return;
+        if (node.type === 'Statement') return visit(node.command, depth);
+        if (node.type === 'Script' || node.type === 'CompoundList') return (node.commands || []).forEach((c: any) => visit(c, depth));
+        const chain = chains++;
+        if (node.type === 'AndOr') {
+            (node.commands || []).forEach((link: any, i: number) => visitLink(link, chain, i, node.operators || [], depth));
+        } else {
+            visitLink(node, chain, 0, [], depth);
+        }
+    };
+    // Lists inside if/while/for/case bodies, groups, subshells and functions: their pipelines feed text like top-level ones.
+    // Past PIPE_NESTING_MAX levels the pipes inside are left untraced: each level re-walks its subtree, and no real
+    // command nests anywhere near that deep.
+    const visitCompound = (node: any, depth: number) => {
+        if (!node || node.type === 'Command' || depth >= PIPE_NESTING_MAX) return;
+        for (const child of [node.clause, node.then, node.else, node.body, node.command]) visit(child, depth + 1);
+        for (const item of node.items || []) visit(item?.body, depth + 1);
+    };
+    visit(ast, 0);
+
+    const writes: FileWrite[] = [];
+    for (const cmd of commands) {
+        if (!TEXT_EMITTERS.has(cmd.name)) continue;
+        const operands = cmd.args.filter(a => !a.startsWith('-'));
+        const fed = (cmd.name === 'tee' || cmd.name === 'cat') && cmd.pos !== undefined ? pipedInto.get(cmd.pos) : undefined;
+        const input: PipedInput = {
+            texts: emittedText(cmd),
+            catFiles: cmd.name === 'cat' ? operands : [],
+            ...(fed ? { from: [fed] } : {}),
+        };
+        for (const target of [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? operands : [])]) {
+            writes.push({ writer: cmd, target, input });
+        }
+    }
+    const cds = commands
+        .filter(c => c.name === 'cd' || c.name === 'pushd' || c.name === 'popd')
+        .map(c => ({
+            pos: c.pos ?? -1,
+            target: c.name === 'cd' && c.args.length === 1 && c.args[0] !== '-' ? c.args[0] : undefined,
+        }));
+    return { writes, pipedInto, cds, links, command };
 }
 
 /** Regex-based fallback for when the AST parser fails */
@@ -1749,9 +2410,10 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
 
     const allowed = new Set(entry.databases.map(d => d.toUpperCase()));
     let matched = false;
-    for (const arg of cmd.args) {
+    if (cmd.stdinTexts?.length || cmd.stdinFiles?.length) return null;
+    for (const arg of sqlInputOf(cmd).texts) {
         if (!findDestructiveSqlStatement(arg)) continue;
-        if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b/i.test(arg)) return null;
+        if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b|^\s*DO\b|[!\\]\w/im.test(arg)) return null;
         for (const st of destructiveStatements(arg)) {
             const target = statementTarget(st.pattern, st.statement);
             if (!target) return null;
@@ -2194,8 +2856,10 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     // emit. Coverage and false-positive guards live in findDestructiveSqlStatement.
     const sqlDialect = SQL_CLIS[name] ?? (name === 'snow' && args[0] === 'sql' ? 'Snowflake' : null);
     if (sqlDialect) {
-        for (const a of args) {
-            const matched = findDestructiveSqlStatement(a);
+        const input = sqlInputOf(cmd);
+        if (input.unreadable) return `${sqlDialect} SQL input (${input.unreadable}) can't be checked: too large, too many included files, or more text than the guard traces.`;
+        for (const text of input.texts) {
+            const matched = findDestructiveSqlStatement(text);
             if (matched) {
                 return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
             }
@@ -2333,6 +2997,9 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
             }
             if (options.includes('--mirror')) {
                 return 'git push --mirror force-updates every remote ref.';
+            }
+            if (options.includes('--prune')) {
+                return 'git push --prune deletes every remote ref, in the refspecs pushed, that has no local counterpart.';
             }
             // `+refspec` is per-ref force; `:refspec` deletes the remote ref.
             if (options.includes('--delete') || hasShortFlag(options, 'd', GIT_PUSH_SHORT_VALUE_FLAGS) ||
@@ -2497,7 +3164,7 @@ function databaseLine(cmd: ResolvedCommand): string | null {
 }
 
 function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
-    const statements = cmd.args.flatMap(a => destructiveStatements(a)).slice(0, 3);
+    const statements = sqlInputOf(cmd).texts.flatMap(t => destructiveStatements(t)).slice(0, 3);
     const lines: string[] = [];
     let label = `Run destructive ${dialect} SQL`;
     statements.forEach((st, i) => {
@@ -2584,6 +3251,12 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
     if (flags.has('--mirror')) {
         return { dir, label: `Mirror-push every branch and tag to ${remote}`, lines: [
             `If you approve: every branch and tag on ${code(remote)} is made to match this clone. Remote branches and tags that don't exist here are deleted.`,
+        ] };
+    }
+    if (flags.has('--prune')) {
+        const scope = refs.length ? `matching ${code(refs.join(' '))}` : 'covered by the push (branches, by default)';
+        return { dir, label: `Delete remote refs on ${remote} that don't exist locally (--prune)`, lines: [
+            `If you approve: every ref on ${code(remote)} ${scope} with no local counterpart is deleted. That can include tags when the refspec names them; pull requests from deleted branches close.`,
         ] };
     }
     const deleted = flags.has('--delete') || flags.has('-d') ? refs : refs.filter(r => r.startsWith(':'));
@@ -2697,6 +3370,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
     const fallback = { label: reason, summary: reason };
     try {
         const commands = extractCommands(command);
+        if (commands[0]?.script) commands[0].script.cwd = cwd;
         const gated = [...gatedSteps(commands, command, cwd, isLabSession(), false)];
         if (gated.length === 0) return fallback;
         const view = viewShell(command);
@@ -2876,6 +3550,7 @@ export function evaluateBashCommand(
     const ephemeralMktempVariables = findEphemeralMktempVariables(command);
     const lab = isLabSession();
     const cwd = opts.cwd ?? currentWorkingDir();
+    if (commands[0]?.script) commands[0].script.cwd = cwd;
 
     // --- Hard block checks (no bypass, ever — lab included) ---
     for (const cmd of commands) {
