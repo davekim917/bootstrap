@@ -1669,7 +1669,7 @@ function innerHardBlock(inner: ResolvedCommand | null): string | null {
     const script = SHELLS.has(inner.name) ? shellScript(inner.name, inner.args) : null;
     if (!script) return inner.name === 'rm' ? RUNS_RM : checkHardBlock(inner);
     for (const nested of extractCommands(script.text)) {
-        // The words xargs appends come from its input, so a command taken from a parameter cannot be known.
+        // A command taken from a parameter is whatever xargs reads from input or find matches, which cannot be known.
         if (nested.name.includes('$')) return RUNS_VARIABLE;
         const args = expandPositional(inner.name, nested.args, inner.args.slice(script.rest));
         const cmd = args ? { ...nested, args } : nested;
@@ -1740,14 +1740,19 @@ export function shellScript(shell: string, args: string[]): { text: string; rest
             i += optionWords(a, '', values.long, values.flags) - 1;
             continue;
         }
+        // fish reads a cluster getopt-style: a value option takes the rest of it, or the next word. A Bourne shell
+        // takes each value option's value from the next unread word and goes on reading the cluster (`bash -Oc x S`).
+        const option = i;
         for (let k = 1; k < a.length; k++) {
             if (a[k] === 'c' && a[0] === '-') {
-                if (shell === 'fish') return atScript(i + 1);
+                if (shell === 'fish') return k < a.length - 1 ? { text: a.slice(k + 1), rest: i + 1 } : atScript(i + 1);
                 inline = true;
                 continue;
             }
-            if (values.short.includes(a[k])) {
-                if (k === a.length - 1) i++;
+            if (!values.short.includes(a[k])) continue;
+            if (shell !== 'fish') i++;
+            else {
+                if (k === a.length - 1) i = option + 1;
                 break;
             }
         }

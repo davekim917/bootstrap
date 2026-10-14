@@ -159,6 +159,17 @@ describe('Codex local approval transport', () => {
   test('accepts array-form command inputs', async () => {
     expectDecision(await runGuard(shell(['terraform', 'destroy'])), 'deny', /terraform/i);
   });
+
+  test('judges the script of a shell-wrapped array command, not the wrapper', async () => {
+    expect((await runGuard(shell(['bash', '-lc', 'git status']))).output).toEqual({ continue: true });
+    expectDecision(await runGuard(shell(['/bin/bash', '-lc', 'terraform destroy'])), 'deny', /terraform/i);
+    expectDecision(await runGuard(shell(['bash', '-lc', 'rm -rf ~/.codex/skills'])), 'deny', /blocked/i);
+  });
+
+  test('keeps the word boundaries of an array command', async () => {
+    expect((await runGuard(shell(['echo', 'a; rm -rf ~/.codex/skills']))).output).toEqual({ continue: true });
+    expectDecision(await runGuard(shell(['bash', '-c', 'echo hi', 'extra'])), 'deny', /inline/i);
+  });
 });
 
 describe('Codex hard blocks', () => {
