@@ -21,7 +21,7 @@ Only edit the verification skill's own directory (its SKILL.md, features/, and a
 
 ## Pass
 
-0. **Locate the target.** Look in the current repo's `.claude/skills/verify-*/` first: a skill there is the copy to maintain, and its evidence and lock live in this project's private directory, created if this host has none yet. Otherwise the skill lives privately: in a NanoClaw container under `/workspace/workgroup/.claude/skills/`, in a host session under `~/.agents/skills/` (a private directory holding only a `PROMOTED` file points at the repo copy). Pick the `verify-*` skill whose `Project` section names the current checkout's remote (or its path, for a repo with no remote), and confirm the match before anything else. Hold the skill's `.inuse` lock, as `create-verification-skill` defines it, from here until the pass record is written; the runs this pass starts run under that hold. Several candidates → ask which one; none → stop and point at `create-verification-skill` instead of inventing a target.
+0. **Locate the target.** Find the skill and confirm its binding as [binding.md](../create-verification-skill/references/binding.md) says, then hold its lock from here until the pass record is written. None → stop and point at `create-verification-skill` instead of inventing a target.
 
 1. **Index hygiene.** Read the feature map README and glob its sibling files. Fix missing, extra, duplicate, or dead entries. Lightweight; no generated inventory.
 
@@ -33,16 +33,14 @@ Only edit the verification skill's own directory (its SKILL.md, features/, and a
 
 5. **Triage.** Wrong or missing user-POV description → doc drift, fix it. Working behavior the harness can't drive → harness gap, fix it; a harness fix follows the same helpers rule as generation (scripts executable, invocation documented in the skill body). Behavior that's actually broken → product gap; record it for the user, and leave the map's expectation as it was.
 
-6. **Record.** Corrections are written in place under edit scope during the pass; for changed, re-read every changed file before reporting. A promoted skill is the exception: its corrections go to the project repo as one pull request, following that repo's conventions and the publishing rule below, for the user to merge. For every outcome, write `<evidence root>/maintenance-<UTC YYYYMMDDTHHMMSSZ>-<short revision>-<random suffix>.md` beside the run directories (revision driven, runs, features covered, unreachable prerequisites, mocks, gaps, confirmed drift, product gaps, outcome) and report it with the coverage stated honestly.
+6. **Record.** Corrections are written in place under edit scope during the pass; for changed, re-read every changed file before reporting. A promoted skill is the exception: its corrections go to the project repo as one pull request, following that repo's conventions and the publishing rule ([binding.md](../create-verification-skill/references/binding.md)), for the user to merge. For every outcome, write `<evidence root>/maintenance-<UTC YYYYMMDDTHHMMSSZ>-<short revision>-<random suffix>.md` beside the run directories (revision driven, runs, features covered, unreachable prerequisites, mocks, gaps, confirmed drift, product gaps, outcome) and report it with the coverage stated honestly.
 
 ## Promote to the repo
 
-Only on the user's explicit request to move the skill into the project repo. Never promote on your own, and never because the user owns the repo.
+Only on the user's explicit request ([binding.md](../create-verification-skill/references/binding.md)). Never promote on your own.
 
-Publishing rule, for this and every later pull request to the project repo: the files, commit messages and PR text carry no absolute host paths, hostnames, credentials, session names, fleet-only notes or evidence artifacts.
-
-1. **Confirm the binding** and hold the `.inuse` lock, as in step 0.
-2. **Copy** the skill directory, without `evidence/` or `.inuse`, to `.claude/skills/verify-<project>/` in a new branch of the repo, and add the relative symlink `.agents/skills/verify-<project>` → `../../.claude/skills/verify-<project>`. Claude reads the first path, Codex the second, and OpenCode reads both and keeps one.
-3. **Scrub and re-prove.** Apply the publishing rule to every copied file. Rewrite the `Project` section to repo-relative paths, name the private directory outside the repository as the home of the evidence root and the `.inuse` lock, and point every evidence writer and lock user, helpers included, at it; Launch creates that directory and its `evidence/` when missing, so a fresh host's first run works. Then run the copy once from the branch (launch, doctor, one feature, cleanup) and confirm nothing landed in the checkout.
+1. **Confirm the binding** and hold the lock, as in step 0.
+2. **Copy** the skill, without its evidence or lock, into a new branch of the repo at the promoted layout [binding.md](../create-verification-skill/references/binding.md) describes.
+3. **Scrub and re-prove.** Apply the publishing rule to every copied file. Rewrite the `Project` section to the promoted binding, and point every evidence writer and lock user, helpers included, at the private directory; Launch creates that directory when missing, so a fresh host's first run works. Then run the copy once from the branch (launch, doctor, one feature, cleanup) and confirm nothing landed in the checkout.
 4. **Open one pull request** in the project repo, following its own branch, commit and PR conventions, carrying the latest evidence record's summary under the publishing rule. The user merges it.
-5. **Retire the private copy** once that pull request has merged: replace the private directory's contents, except `evidence/` and your `.inuse` until you release it, with a one-line `PROMOTED` file naming the repo and path. One copy stays live; two would drift.
+5. **Retire the private copy** once that pull request has merged, to the pointer [binding.md](../create-verification-skill/references/binding.md) describes, releasing the lock last.

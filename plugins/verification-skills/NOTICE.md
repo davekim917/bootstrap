@@ -26,7 +26,10 @@ shared skill directories), and bound to its project by remote URL;
 maintenance writes proven corrections and a pass record back to that
 location. Moving a skill into the project repository is a separate step taken
 only on the user's explicit request, after which upstream's pull-request
-route applies to that copy and the private one is retired. Evidence records
+route applies to that copy and the private one is retired. The placement,
+binding, evidence, lock and publishing rules live once, in
+`skills/create-verification-skill/references/binding.md`, which both skills
+cite. Evidence records
 the revision, action, result, side effects, mocks and gaps of each run, an
 unreachable feature never counts as passed, and an expected result is never
 rewritten to match a regression. A stack reference adds dbt/Snowflake (build

@@ -583,9 +583,32 @@ if (verificationClaudeManifest?.version !== verificationCodexManifest?.version) 
 }
 for (const file of [
   'skills/create-verification-skill/references/stacks.md',
+  'skills/create-verification-skill/references/binding.md',
   'skills/create-verification-skill/references/feature-map-example/README.md',
 ]) {
   if (!exists(`plugins/verification-skills/${file}`)) fail(`plugins/verification-skills must ship ${file}`);
+}
+const VERIFY_BINDING = 'plugins/verification-skills/skills/create-verification-skill/references/binding.md';
+const VERIFY_BINDING_RULE_MARKERS = [
+  '/workspace/workgroup',
+  '~/.agents/skills',
+  'user:token@',
+  'fails if the',
+  'two hours',
+  'fleet-only',
+  'PROMOTED',
+  'mkdir -p',
+];
+requireTextTokens(VERIFY_BINDING, VERIFY_BINDING_RULE_MARKERS, 'the one statement of the verify-skill placement, binding, evidence, lock and publishing rules');
+for (const skill of ['create-verification-skill', 'maintain-verification-skill']) {
+  const skillMd = readText(`plugins/verification-skills/skills/${skill}/SKILL.md`);
+  if (skillMd === undefined) continue;
+  if (!skillMd.includes('references/binding.md')) fail(`plugins/verification-skills/skills/${skill}/SKILL.md must cite references/binding.md`);
+  for (const marker of VERIFY_BINDING_RULE_MARKERS) {
+    if (skillMd.includes(marker)) {
+      fail(`plugins/verification-skills/skills/${skill}/SKILL.md restates a binding.md rule (${JSON.stringify(marker)}); cite references/binding.md instead`);
+    }
+  }
 }
 for (const skill of ['create-verification-skill', 'maintain-verification-skill']) {
   const skillMd = readText(`plugins/verification-skills/skills/${skill}/SKILL.md`);
