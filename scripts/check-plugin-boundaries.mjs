@@ -550,7 +550,7 @@ requireTextTokens(
   ['Copyright (c) 2026 OpenClaw Foundation', 'Permission is hereby granted, free of charge'],
   'the adapted-material license notice',
 );
-for (const plugin of ['test-audit', 'wwbd', 'workflow', 'workflow-agents']) {
+for (const plugin of ['test-audit', 'wwbd', 'workflow', 'workflow-agents', 'verification-skills']) {
   if (!exists(`plugins/${plugin}/NOTICE.md`)) fail(`plugins/${plugin} must ship NOTICE.md for its pstack-derived text`);
   requireTextTokens(
     `plugins/${plugin}/LICENSE-PSTACK`,
@@ -583,24 +583,12 @@ for (const file of [
   'skills/create-verification-skill/references/stacks.md',
   'skills/create-verification-skill/references/feature-map-example/README.md',
   'skills/maintain-verification-skill/SKILL.md',
-  'NOTICE.md',
-  'LICENSE-PSTACK',
 ]) {
   if (!exists(`plugins/verification-skills/${file}`)) fail(`plugins/verification-skills must ship ${file}`);
 }
 for (const activationPath of ['plugins/verification-skills/hooks', 'plugins/verification-skills/always-on.md']) {
   if (exists(activationPath)) fail(`${activationPath} must not exist; verification-skills is invoke-only`);
 }
-requireTextTokens(
-  'plugins/verification-skills/LICENSE-PSTACK',
-  ['Copyright (c) 2026 Lauren Tan', 'Permission is hereby granted, free of charge'],
-  'the adapted-material license notice',
-);
-requireTextTokens(
-  'plugins/verification-skills/NOTICE.md',
-  ['https://github.com/cursor/plugins', 'c86f349b102feb91f1966f8a6a60882a4e601b50', 'LICENSE-PSTACK'],
-  'the adapted-material provenance',
-);
 
 // Codex does not expand ${CLAUDE_PLUGIN_ROOT}, so comment-rule ships a separate Codex hook file.
 const commentRuleClaudeManifest = readJson('plugins/comment-rule/.claude-plugin/plugin.json');
@@ -765,11 +753,11 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.11.0') {
-  fail(`bootstrap-workflow release must be version 5.11.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.12.0') {
+  fail(`bootstrap-workflow release must be version 5.12.0 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.11.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.11.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.12.0') {
+  fail(`bootstrap-workflow-agents release must be version 2.12.0 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
 if (orchestrateClaudeManifest?.version !== '3.0.0') {
