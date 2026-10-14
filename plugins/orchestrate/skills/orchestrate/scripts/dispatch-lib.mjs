@@ -330,7 +330,9 @@ export function rewriteClaudeSpawn(input, picked, rubric, pins = {}) {
 
 const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
 const HARNESS_BLOCK = /<(task-notification|system|system-reminder|local-command-stdout|local-command-caveat)>[\s\S]*?<\/\1>/g;
-const ENVELOPE = /<message\b([^>]*\bsender="[^>]*)>([\s\S]*?)<\/message>/g;
+const ENVELOPE = /<message\b([^>]*)>([\s\S]*?)<\/message>/g;
+// A NanoClaw batch is nothing but envelopes, optionally after a `<context …/>` line.
+const NANOCLAW_BATCH = /^\s*(?:<context\b[^>]*\/>\s*)?<message\b[^>]*\bfrom="/;
 
 /**
  * The human-written user turns of a Claude Code transcript, oldest first; each
@@ -365,10 +367,9 @@ export function humanTurns(transcriptPath) {
       .map((b) => b.text)
       .join('\n')
       .replace(HARNESS_BLOCK, '');
-    const envelopes = [...text.matchAll(ENVELOPE)];
-    const human = envelopes.length === 0
+    const human = !NANOCLAW_BATCH.test(text)
       ? [text]
-      : envelopes
+      : [...text.matchAll(ENVELOPE)]
         .filter(([, attrs]) => !/\bsender_id="system"/.test(attrs) && !/\bfrom="unknown:agent:/.test(attrs))
         .map(([, , body]) => body);
     for (const turn of human) if (turn.trim()) out.push(turn.trim());

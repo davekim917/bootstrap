@@ -167,8 +167,9 @@ test('humanTurns keeps only the turns people wrote', () => {
   ].join('\n'));
   assert.deepEqual(humanTurns(file), ['words-a', 'words-b', 'words-j']);
   const xml = path.join(root, 'xml.jsonl');
-  fs.writeFileSync(xml, user('/orchestrate opus high analyze <message>this XML</message>'));
-  assert.deepEqual(humanTurns(xml), ['/orchestrate opus high analyze <message>this XML</message>']);
+  const prompt = '/orchestrate opus high analyze <message sender="Avery" from="a">this XML</message>';
+  fs.writeFileSync(xml, user(prompt));
+  assert.deepEqual(humanTurns(xml), [prompt]);
   assert.deepEqual(humanTurns(path.join(root, 'missing.jsonl')), []);
   assert.deepEqual(humanTurns(undefined), []);
 });
