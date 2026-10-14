@@ -41,9 +41,9 @@ missing, don't add the test yet.
 
 1. What observable behavior, invariant, or independent contract does it protect?
 2. What credible regression makes it fail? Would it still pass if every
-   function it imports returned `undefined` or a wrong value? Then nothing
-   makes it fail: call the subject with one concrete input and assert the
-   literal output or effect.
+   production function it exercises returned `undefined` or a wrong value?
+   Then nothing makes it fail: call the subject with one concrete input and
+   assert the literal output or effect.
 3. Why doesn't existing coverage already catch that failure? Each contract has
    one primary test at the cheapest boundary that proves it. A second layer
    needs its own distinct risk, such as an integration, transport, or

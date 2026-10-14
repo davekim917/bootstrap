@@ -31,7 +31,8 @@ changes a classified file.
 ## pstack
 
 One sentence of the authoring gate, the question whether a test would still
-pass if every function it imports returned `undefined` or a wrong value, is
+pass if every production function it exercises returned `undefined` or a
+wrong value, is
 adapted from pstack.
 
 - Upstream repository: https://github.com/cursor/plugins
