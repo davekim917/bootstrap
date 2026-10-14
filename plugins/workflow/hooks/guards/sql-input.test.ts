@@ -137,11 +137,16 @@ test('deeply nested pipelines and many same-file writes resolve in bounded time'
     for (const command of [
         'echo x | ' + '{ echo x | '.repeat(d) + 'psql' + '; }'.repeat(d),
         'echo>f;'.repeat(4000) + 'psql<f;'.repeat(4000),
+        'echo a | ' + 'tee f | '.repeat(3000) + 'cat; ' + 'psql<f;'.repeat(3000),
     ]) {
         const started = Date.now();
         verdict(command);
         expect(Date.now() - started).toBeLessThan(3000);
     }
+});
+
+test('more writes to a SQL file than can be checked make it unknown, so the command gates', () => {
+    expect(verdict(`echo 'DROP TABLE users;' > q.sql; ` + `echo 'SELECT 1;' >> q.sql; `.repeat(65) + 'psql -f q.sql')).toBe('gate');
 });
 
 test('readers inside separate $(...) with different env -C directories resolve separately', () => {

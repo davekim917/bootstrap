@@ -83,6 +83,7 @@ export interface ScriptContext {
     paths?: Map<string, string[] | null>; // sqlPathCandidates results by reader position and file
     writesByTarget?: Map<string, FileWrite[]>; // writes by the path as spelled, built once a line has too many to match pairwise
     wordBudget?: number;        // evalWord calls left for this command line before every further word is unprovable
+    traceBudget?: number;       // pipe nodes and texts left to trace before a client's input counts as unknown
 }
 
 // evalWord calls one command line may spend resolving paths. Each reader re-resolves every write and cd, so without a
@@ -106,23 +107,52 @@ interface PipedInput {
  * Everything an input carries, following its `from` links. Inputs link to each other instead of copying, because a
  * copy at each nesting level made deep pipelines cost the cube of their depth; each node is visited once.
  */
-function flattenInput(root: PipedInput | undefined): { texts: string[]; catFiles: string[] } {
+function flattenInput(root: PipedInput | undefined, script?: ScriptContext): FlatInput {
+    if (!root) return { texts: [], catFiles: [] };
+    const cached = flattened.get(root);
+    if (cached) return cached;
     const texts: string[] = [];
     const catFiles: string[] = [];
     const seen = new Set<PipedInput>();
     const textSeen = new Set<PipedInput>();
-    const stack: Array<[PipedInput, boolean]> = root ? [[root, true]] : [];
+    const stack: Array<[PipedInput, boolean]> = [[root, true]];
+    let over = false;
     while (stack.length) {
         const [node, withFiles] = stack.pop()!;
         if (withFiles ? seen.has(node) : textSeen.has(node) || seen.has(node)) continue;
         (withFiles ? seen : textSeen).add(node);
+        if (!spendTrace(script, 1 + node.texts.length + node.catFiles.length)) {
+            over = true;
+            break;
+        }
         texts.push(...node.texts);
         if (withFiles) catFiles.push(...node.catFiles);
         for (const next of node.from ?? []) stack.push([next, withFiles]);
         for (const next of node.textFrom ?? []) stack.push([next, false]);
     }
-    return { texts, catFiles };
+    const result = { texts, catFiles, ...(over ? { over } : {}) };
+    flattened.set(root, result);
+    return result;
 }
+
+interface FlatInput {
+    texts: string[];
+    catFiles: string[];
+    over?: boolean;             // the line's trace budget ran out, so this is incomplete
+}
+
+const flattened = new WeakMap<PipedInput, FlatInput>();
+
+/** Charges `n` units to the line's trace budget; false once it is spent. */
+function spendTrace(script: ScriptContext | undefined, n: number): boolean {
+    if (!script) return true;
+    script.traceBudget = (script.traceBudget ?? SQL_TRACE_BUDGET) - n;
+    return script.traceBudget >= 0;
+}
+
+// Pipe nodes and texts one command line may walk while tracing what reaches its SQL clients. Past it the client's input
+// is unknown and the command gates: no real command comes near it, and a crafted one must not hang the guard or pass.
+const SQL_TRACE_BUDGET = 50_000;
 
 /** A command's place in a top-level list: which chain, which link, and the operators joining the links. */
 interface ChainLink {
@@ -926,6 +956,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const vars = new Map<string, string>();
     let sqlInArgs = false;
     let readsStdin = texts.length > 0 || files.length > 0;
+    let traceOver = false;
 
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
@@ -959,14 +990,17 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     }
     if (files.includes('-')) readsStdin = true;
     if (readsStdin && !files.some(f => f !== '-') && !(cmd.stdinTexts?.length)) {
-        const piped = flattenInput(cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos));
-        texts.push(...piped.texts);
-        files.push(...piped.catFiles);
+        const piped = flattenInput(cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos), cmd.script);
+        if (piped.over || !spendTrace(cmd.script, piped.texts.length + piped.catFiles.length)) traceOver = true;
+        else {
+            texts.push(...piped.texts);
+            files.push(...piped.catFiles);
+        }
     }
 
     // Read each file, plus any text the command writes to it first; follow
     // includes found in what is read, up to a fixed number of files.
-    let unreadable: string | null = null;
+    let unreadable: string | null = traceOver ? 'its piped input' : null;
     const pending = [...files];
     for (const t of texts) pending.push(...sqlIncludes(t, null));
     const seen = new Set<string>();
@@ -974,7 +1008,16 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const f = pending.shift()!;
         if (seen.has(f)) continue;
         seen.add(f);
-        for (const written of writesTo(f, cmd).map(flattenInput)) {
+        const writes = writesTo(f, cmd);
+        if (writes === null) {
+            unreadable ??= f;
+            continue;
+        }
+        for (const written of writes.map(w => flattenInput(w, cmd.script))) {
+            if (written.over || !spendTrace(cmd.script, written.texts.length + written.catFiles.length)) {
+                unreadable ??= f;
+                break;
+            }
             for (const t of written.texts) {
                 texts.push(t);
                 pending.push(...sqlIncludes(t, null));
@@ -1052,7 +1095,8 @@ function provableWord(text: string, cmd: ResolvedCommand, pos: number): string |
  * spelled the same way, or one whose possible absolute paths meet the
  * reader's (each resolved from its own command's directory and variables).
  */
-function writesTo(file: string, reader: ResolvedCommand): PipedInput[] {
+/** Null when more writes to the file precede the reader than can be checked (appends all count). */
+function writesTo(file: string, reader: ResolvedCommand): PipedInput[] | null {
     if (!file || file === '-') return [];
     let readerPaths: Set<string> | undefined;
     const out: PipedInput[] = [];
@@ -1069,7 +1113,8 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] {
                 else script.writesByTarget.set(key, [w]);
             }
         }
-        return (script.writesByTarget.get(samePath(file)) ?? []).filter(before).slice(-SQL_PATH_STEPS_MAX).map(w => w.input);
+        const prior = (script.writesByTarget.get(samePath(file)) ?? []).filter(before);
+        return prior.length > SQL_PATH_STEPS_MAX ? null : prior.map(w => w.input);
     }
     for (const w of all) {
         if (!before(w)) continue;
