@@ -82,7 +82,14 @@ export interface ScriptContext {
     command: string;            // the whole command line, for resolving variables
     cwd?: string;               // the directory the command line starts in
     view?: ReturnType<typeof viewShell>; // the parsed variable view of `command`, built on first use
+    words?: Map<string, string | null>; // provableWord results by position and text
+    paths?: Map<string, string[] | null>; // sqlPathCandidates results by reader position and file
+    wordBudget?: number;        // evalWord calls left for this command line before every further word is unprovable
 }
+
+// evalWord calls one command line may spend resolving paths. Each reader re-resolves every write and cd, so without a
+// line-wide budget a hostile command multiplies the work by its reader count; no real command needs a tenth of this.
+const SQL_WORD_BUDGET = 256;
 
 interface FileWrite {
     writer: ResolvedCommand;
@@ -1000,10 +1007,21 @@ function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string;
  */
 function provableWord(text: string, cmd: ResolvedCommand, pos: number): string | null {
     if (!/[$`]/.test(text)) return /[*?[{]/.test(text) || text.startsWith('~') ? null : text;
-    if (!cmd.script || pos < 0) return null;
-    cmd.script.view ??= viewShell(cmd.script.command);
-    const r = evalWord(text, cmd.script.view, pos);
-    return r.unresolved.length || /[$`*?[{]/.test(r.value) ? null : r.value;
+    const script = cmd.script;
+    if (!script || pos < 0) return null;
+    const key = `${pos}\0${text}`;
+    script.words ??= new Map();
+    if (script.words.has(key)) return script.words.get(key)!;
+    script.wordBudget ??= SQL_WORD_BUDGET;
+    let value: string | null = null;
+    if (script.wordBudget > 0) {
+        script.wordBudget--;
+        script.view ??= viewShell(script.command);
+        const r = evalWord(text, script.view, pos);
+        value = r.unresolved.length || /[$`*?[{]/.test(r.value) ? null : r.value;
+    }
+    script.words.set(key, value);
+    return value;
 }
 
 /**
@@ -1030,6 +1048,15 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] {
 }
 
 function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
+    const script = cmd.script;
+    if (!script) return resolvePathCandidates(file, cmd);
+    const key = `${cmd.pos ?? -1}\0${file}`;
+    script.paths ??= new Map();
+    if (!script.paths.has(key)) script.paths.set(key, resolvePathCandidates(file, cmd));
+    return script.paths.get(key)!;
+}
+
+function resolvePathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
     const script = cmd.script;
     const provable = (text: string, pos: number) => provableWord(text, cmd, pos);
     const target = provable(file, cmd.pos ?? -1);

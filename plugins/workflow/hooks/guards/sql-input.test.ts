@@ -115,6 +115,14 @@ test('a write after the SQL client does not count as the file it read', () => {
     expect(verdict(`psql -f safe.sql; echo 'DROP TABLE users' > safe.sql`)).toBe('allow');
 });
 
+test('many SQL readers over a deep variable chain resolve in bounded time', () => {
+    const chain = 'A0=/;' + Array.from({ length: 1000 }, (_, i) => `A${i + 1}=$A${i};`).join('');
+    const reader = 'psql ' + Array.from({ length: 16 }, (_, i) => `-f g${i}`).join(' ') + ';';
+    const started = Date.now();
+    verdict(chain + 'N=f;' + 'cd $A1000;echo>$N;'.repeat(64) + reader.repeat(400));
+    expect(Date.now() - started).toBeLessThan(3000);
+});
+
 test('echo -e newlines are rendered before scanning', () => {
     expect(verdict(`echo -e "SELECT 1;\\nDROP TABLE users;" | psql`)).toBe('gate');
     expect(verdict(`echo -e 'BEGIN;\\nDROP TABLE users;\\nCOMMIT;' | psql`)).toBe('gate');
