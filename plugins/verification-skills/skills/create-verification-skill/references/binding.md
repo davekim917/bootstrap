@@ -19,7 +19,7 @@ A promoted skill lives in the repo at `.claude/skills/verify-<project>/`, with t
 
 ## Binding
 
-Each skill's `Project` section records: the repository's remote URL with any credentials stripped (no `user:token@`), or its absolute path when it has none; the checkout it was proven against; the directory the skill lives in; and its private directory. In a promoted copy these are repo-relative, and the private directory is named as the location above, outside the repository. Before any run, the agent confirms the current checkout's remote (or path, without a remote) matches, and stops on a mismatch.
+Each skill's `Project` section records: the repository's remote URL with any credentials stripped (no `user:token@`), or its absolute path when it has none; the checkout it was proven against; the directory the skill lives in; and its private directory. In a promoted copy these are repo-relative, and the private directory is `${VERIFY_PRIVATE_DIR:-$HOME/.local/state/verify-<project>}`, resolved at run time: an agent with this plugin passes `VERIFY_PRIVATE_DIR` set to the private directory above on every helper call, and anyone else gets the default. No absolute path to either is written into the repo. Before any run, the agent confirms the current checkout's remote (or path, without a remote) matches, and stops on a mismatch.
 
 ## Evidence root
 
