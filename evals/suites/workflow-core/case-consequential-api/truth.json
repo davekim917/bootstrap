@@ -1,0 +1,25 @@
+{
+  "fixture": "consequential-api",
+  "domain": "API design",
+  "notes": "A consequential shared API starts from how its callers will use it; the signature is derived from that usage.",
+  "rubric": {
+    "tier": "smoke",
+    "hardGates": [
+      {
+        "id": "normative-plan",
+        "check": {
+          "type": "output_contains",
+          "value": "plan.md"
+        }
+      },
+      {
+        "id": "caller-usage-before-signature",
+        "check": {
+          "type": "output_matches",
+          "regex": "^(?:(?!signature|interface)[\\s\\S])*?(call[- ]sites?|caller usage|usage)[\\s\\S]*?(signature|interface)",
+          "flags": "i"
+        }
+      }
+    ]
+  }
+}
