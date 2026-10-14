@@ -372,16 +372,23 @@ export function humanText(transcriptPath) {
   return out.join('\n');
 }
 
+const RETROSPECTIVE = /\b(?:fail\w*|attempt\w*|tried|earlier|previous\w*|didn'?t work)\b/;
+
+/** An effort worded as a request; a sentence about a past attempt ("failed at high effort") is history, not a pin. */
 function effortNamed(text, effort) {
   const families = MODEL_FAMILIES.join('|');
-  return [
+  const patterns = [
     `\\b${effort}[\\s-]*effort\\b`,
     `\\beffort(?:\\s+level)?\\s*(?:of|at|to|is|=|:)?\\s*${effort}\\b`,
     `\\b(?:${families})[\\s/:-]+${effort}\\b`,
     `\\bworker-${effort}\\b`,
     `\\bsub-?agents?\\s+at\\s+${effort}\\b`,
-    `\\borchestrate(?:\\s*</command-name>[\\s\\S]*?<command-args>|\\s)\\s*(?:(?:${families})\\s+)?${effort}\\b`,
-  ].some((p) => new RegExp(p).test(text));
+    `\\borchestrate\\s+(?:(?:${families})\\s+)?${effort}\\b`,
+  ].map((p) => new RegExp(p));
+  return text
+    .replace(/<\/command-name>[\s\S]*?<command-args>/g, ' ')
+    .split(/[.!?\n]+/)
+    .some((sentence) => !RETROSPECTIVE.test(sentence) && patterns.some((p) => p.test(sentence)));
 }
 
 /** Which of a spawn's explicit fields (model, shim effort) a human named in `text`. */

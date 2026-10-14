@@ -179,6 +179,8 @@ test('humanPins: a human names a model by family and an effort as an effort', ()
     ['/orchestrate high fix the bug', { model: false, effort: true }],
     ['<command-name>/orchestrate</command-name>\n<command-args>high fix the bug</command-args>', { model: false, effort: true }],
     ['/orchestrate can you look at high memory use', { model: false, effort: false }],
+    ['the earlier attempt failed at high effort, try again', { model: false, effort: false }],
+    ['that failed. Run it at high effort', { model: false, effort: true }],
     ['effort: high please', { model: false, effort: true }],
     ['use opus for this', { model: true, effort: false }],
     ['the xhigh run failed; this is a high priority bug', { model: false, effort: false }],
