@@ -551,7 +551,6 @@ requireTextTokens(
   'the adapted-material license notice',
 );
 
-// verification-skills is invoke-only (no hooks, no always-on file) and carries pstack's MIT notice.
 const verificationClaudeManifest = readJson('plugins/verification-skills/.claude-plugin/plugin.json');
 const verificationCodexManifest = readJson('plugins/verification-skills/.codex-plugin/plugin.json');
 for (const [label, manifest, entries] of [
