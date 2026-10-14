@@ -398,7 +398,7 @@ export function humanPins(input, text) {
   const model = typeof input.model === 'string' ? input.model.toLowerCase() : '';
   const family = MODEL_FAMILIES.find((f) => model.includes(f));
   const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
-  const negated = (m) => NEGATED.test(t.slice(0, m.index).split(/[.!?\n]/).at(-1));
+  const negated = (m) => NEGATED.test(t.slice(0, m.index).split(/[.!?;:,\n\u2014]/).at(-1));
   const latest = [...t.matchAll(SLASH_INVOCATION), ...[...t.matchAll(PROSE_INVOCATION)].filter((m) => !negated(m))]
     .sort((a, b) => b.index - a.index)[0];
   return {

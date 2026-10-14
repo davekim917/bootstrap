@@ -188,6 +188,7 @@ test('humanPins: only the skill invocations pin a model or effort', () => {
     ['do not use an opus subagent at high effort', { model: false, effort: false }],
     ["I don't want you to use an opus subagent at high effort", { model: false, effort: false }],
     ['No problem, use an opus subagent at high effort', { model: true, effort: true }],
+    ["I don't mind; use an opus subagent at high effort", { model: true, effort: true }],
     ['/orchestrate claude-opus-5 high do it', { model: true, effort: true }],
     ['this is not working\n/orchestrate opus high fix it', { model: true, effort: true }],
     ['/orchestrate opus high-priority bug', { model: true, effort: false }],
