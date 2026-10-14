@@ -21,7 +21,7 @@ Only edit the verification skill's own directory (its SKILL.md, features/, and a
 
 ## Pass
 
-0. **Locate the target.** The skill lives privately, not in the project repo: in a NanoClaw container under `/workspace/workgroup/.claude/skills/`, in a host session under `~/.agents/skills/`, or in the repo itself only where its owner chose that. Pick the `verify-*` skill whose `Project` section names the current checkout's remote (or its path, for a repo with no remote), and confirm the match before anything else. Only one pass edits a skill at a time: claim it the way your environment claims shared work (in a NanoClaw workgroup, its work claims) and stop if another pass holds it. Several candidates → ask which one; none → stop and point at `create-verification-skill` instead of inventing a target.
+0. **Locate the target.** The skill lives privately, not in the project repo: in a NanoClaw container under `/workspace/workgroup/.claude/skills/`, in a host session under `~/.agents/skills/`, or in the repo itself only where its owner chose that. Pick the `verify-*` skill whose `Project` section names the current checkout's remote (or its path, for a repo with no remote), and confirm the match before anything else. Take the skill's `.verifylock` as `create-verification-skill` defines it before the first edit, stop if another writer holds it, and release it after the last. Several candidates → ask which one; none → stop and point at `create-verification-skill` instead of inventing a target.
 
 1. **Index hygiene.** Read the feature map README and glob its sibling files. Fix missing, extra, duplicate, or dead entries. Lightweight; no generated inventory.
 
