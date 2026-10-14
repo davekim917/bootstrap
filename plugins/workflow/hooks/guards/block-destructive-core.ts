@@ -1664,11 +1664,12 @@ function innerHardBlock(inner: ResolvedCommand | null): string | null {
     if (!inner) return null;
     const script = SHELLS.has(inner.name) ? shellScriptIndex(inner.args) : -1;
     if (script < 0) return inner.name === 'rm' ? RUNS_RM : checkHardBlock(inner);
-    // Words after the script are $0, $1, …; a script that runs one of them (`"$@"`, `$1`) runs those words.
-    const positional = inner.args.slice(script + 2);
+    // Words after the script are $0, $1, …; a script that runs one (`"$@"`, `"$0"`, `$2`) runs it and those after it.
+    const positional = inner.args.slice(script + 1);
     for (const nested of extractCommands(inner.args[script] ?? '')) {
+        const param = nested.name.match(/^\$\{?(\d+|[@*])\}?$/);
         const reason = nested.name.includes('$')
-            ? innerHardBlock(innerCommand(positional, inner))
+            ? innerHardBlock(innerCommand(positional.slice(param && /\d/.test(param[1]) ? Number(param[1]) : 1), inner))
             : nested.name === 'rm' ? RUNS_RM : checkHardBlock(nested);
         if (reason) return reason;
     }
@@ -1680,9 +1681,15 @@ function innerHardBlock(inner: ResolvedCommand | null): string | null {
  * `-ec`, `-ce`), and a `--` after it ends the options before the script.
  */
 export function shellScriptIndex(args: string[]): number {
-    const c = args.findIndex(a => /^-[A-Za-z]*c[A-Za-z]*$/.test(a));
-    if (c < 0) return -1;
-    return args[c + 1] === '--' ? c + 2 : c + 1;
+    // Only the shell's own leading options count: a script file operand (or `--`) ends them, and what follows is
+    // the script's arguments (`bash deploy.sh -xc v` runs deploy.sh).
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--' || !/^[-+]/.test(a)) return -1;
+        if (/^-[A-Za-z]*c[A-Za-z]*$/.test(a)) return args[i + 1] === '--' ? i + 2 : i + 1;
+        if (['-o', '+o', '-O', '+O', '--rcfile', '--init-file'].includes(a)) i++;
+    }
+    return -1;
 }
 
 /** The command `words` (a command word and its arguments, as xargs or find -exec take them) runs, past any wrapper. */

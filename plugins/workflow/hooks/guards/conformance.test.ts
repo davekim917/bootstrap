@@ -70,6 +70,7 @@ const BASH_BLOCK = [
   "bash -xc 'rm -rf /etc'",
   "xargs -I{} sh -c -- 'rm {}' < list",
   `printf 'target\n' | xargs sh -c '"$@"' _ rm`,
+  `printf 'target\n' | xargs sh -c '"$0" "$@"' rm`,
   'xargs unlink < list',
   'find . -exec shred -u {} +',
   'eval echo x',
@@ -166,6 +167,7 @@ const BASH_ALLOW = [
   'ls -la',
   'xargs echo < list',
   'xargs -r git add < list',
+  'bash deploy.sh -xc value',
   // find's own expression resumes after -exec's terminator.
   'find . -exec echo -exec rm {} \\;',
   // A shell that xargs or find -exec runs is judged by its script.
