@@ -17,7 +17,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 |---|---|---:|---|
 | Claude Code | `bootstrap-workflow` | 5.12.0 | The seven `team-*` skills and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.12.0 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.0.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.1.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.2.4 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
@@ -34,7 +34,7 @@ tells a session to reach for a sub-agent, and nothing gates a session that reads
 source, runs a check, or implements a fix itself.
 
 `bootstrap-orchestrate` adds no standing delegation directive or dispatch-first gate.
-Its hooks only route omitted model/effort fields and validate explicit Codex context;
+Its hooks only route the model/effort of sub-agent spawns and validate explicit Codex context;
 the Codex `SessionStart` entry is a one-line reminder for the opt-in picker. Invoke the
 skill when you want one sub-agent to do all the work in a single thread —
 `/orchestrate opus high <task>`, or "use an opus subagent at high effort to …".
@@ -58,7 +58,8 @@ A parameterized delegation prompt, and nothing else.
 ```
 
 The first two words are the model and the effort when they look like one; everything
-after is the task. Leave either out and a confident usable Jev route may fill it. When Jev is
+after is the task. Leave either out and a confident usable Jev route sets it; on Claude Code it also
+replaces a model or effort the coordinator named itself, since only the user's own choices are kept. When Jev is
 unavailable, abstains, or returns no usable route, the workflow adds no override: the coordinator
 may make its normal task-based choice, or leave the field omitted for the runtime's native
 inheritance and configuration. It dispatches ONE
@@ -108,7 +109,11 @@ Picker abstention or failure does not choose a model or effort. Output records `
 `pick: null`, and `provenance: "native"` so a raw low-confidence suggestion cannot be mistaken for
 an effective route. Existing explicit choices stay intact subject to the existing compatibility
 caps; a coordinator may still deliberately select a normal model, role, or effort shim from the
-task. Fields it leaves omitted follow the client's native inheritance and configuration rather
+task. On a confident route, the Claude Code hook keeps an explicit model or effort shim only when a
+human chose it through the latest of the skill's invocations — `/orchestrate <model> <effort> …` (an
+`@mention` may precede it) or "use a <model> subagent at <effort> …" — in the human's latest turn of the session transcript (user turns, minus tool results, skill loads, harness
+notices and, in a NanoClaw container, system- or agent-sent `<message>` envelopes); the rest take
+the route. Fields it leaves omitted follow the client's native inheritance and configuration rather
 than a workflow-owned fallback.
 
 A named role is never rewritten. Claude Code gives a per-call `model` precedence over a role's
