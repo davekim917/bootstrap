@@ -81,6 +81,8 @@ const BASH_BLOCK = [
   "printf target | xargs fish -c '$argv' rm",
   `printf 'rm target\n' | xargs sh -c '"$@"' _`,
   "printf x | xargs bash -c -x 'rm -rf /etc'",
+  "fish --init 'echo init' -c 'rm -rf /etc'",
+  "fish -D 3 -c 'rm -rf /etc'",
   `printf 'target\n' | xargs sh -c '"$0"/rm "$@"' /bin`,
   `printf x | xargs sh -c 'find . "-$1"' _ delete`,
   'xargs unlink < list',

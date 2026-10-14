@@ -1705,9 +1705,15 @@ function expandPositional(shell: string, words: string[], positional: string[]):
 }
 
 /** Options that take a value in each shell's own argument parsing; bash's `-C` (noclobber) takes none, fish's does. */
-const SHELL_VALUE_OPTIONS: Record<string, { short: string; long: string[] }> = {
-    bash: { short: 'oO', long: ['--rcfile', '--init-file'] },
-    fish: { short: 'Cdofp', long: ['--init-command', '--debug', '--debug-output', '--features', '--profile', '--profile-startup'] },
+const SHELL_VALUE_OPTIONS: Record<string, { short: string; long: Set<string>; flags?: Set<string> }> = {
+    bash: { short: 'oO', long: new Set(['--rcfile', '--init-file']) },
+    fish: {
+        short: 'CdDofp',
+        long: new Set(['--init-command', '--debug', '--debug-output', '--debug-stack-frames', '--features', '--profile',
+            '--profile-startup']),
+        flags: new Set(['--interactive', '--login', '--no-config', '--no-execute', '--print-rusage-self', '--private',
+            '--help', '--version']),
+    },
 };
 
 /**
@@ -1717,7 +1723,7 @@ const SHELL_VALUE_OPTIONS: Record<string, { short: string; long: string[] }> = {
  * its first operand after any further options (`bash -c -x SCRIPT`); fish's `-c` takes the next word.
  */
 export function shellScript(shell: string, args: string[]): { text: string; rest: number } | null {
-    const values = SHELL_VALUE_OPTIONS[shell] ?? { short: 'o', long: [] };
+    const values = SHELL_VALUE_OPTIONS[shell] ?? { short: 'o', long: new Set<string>() };
     const atScript = (i: number) => {
         const at = args[i] === '--' ? i + 1 : i;
         return at < args.length ? { text: args[at], rest: at + 1 } : null;
@@ -1731,7 +1737,7 @@ export function shellScript(shell: string, args: string[]): { text: string; rest
             if (shell === 'fish' && name.length > 2 && '--command'.startsWith(name)) {
                 return value !== undefined ? { text: value, rest: i + 1 } : atScript(i + 1);
             }
-            if (value === undefined && values.long.includes(name)) i++;
+            i += optionWords(a, '', values.long, values.flags) - 1;
             continue;
         }
         for (let k = 1; k < a.length; k++) {
