@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -550,13 +551,14 @@ requireTextTokens(
   ['Copyright (c) 2026 OpenClaw Foundation', 'Permission is hereby granted, free of charge'],
   'the adapted-material license notice',
 );
+// SHA-256 of pstack/LICENSE at the commit each NOTICE.md pins; the copies must be verbatim.
+const PSTACK_LICENSE_SHA256 = 'bc957ca6bee02792566a1a028d105e02e247c6e77cf057061674273da77b200e';
 for (const plugin of ['test-audit', 'wwbd', 'workflow', 'workflow-agents', 'verification-skills']) {
   if (!exists(`plugins/${plugin}/NOTICE.md`)) fail(`plugins/${plugin} must ship NOTICE.md for its pstack-derived text`);
-  requireTextTokens(
-    `plugins/${plugin}/LICENSE-PSTACK`,
-    ['Copyright (c) 2026 Lauren Tan', 'Permission is hereby granted, free of charge'],
-    'the pstack license notice',
-  );
+  const license = readText(`plugins/${plugin}/LICENSE-PSTACK`);
+  if (license !== undefined && createHash('sha256').update(license).digest('hex') !== PSTACK_LICENSE_SHA256) {
+    fail(`plugins/${plugin}/LICENSE-PSTACK must be upstream pstack/LICENSE verbatim`);
+  }
 }
 
 const verificationClaudeManifest = readJson('plugins/verification-skills/.claude-plugin/plugin.json');
@@ -567,6 +569,7 @@ for (const [label, manifest, entries] of [
 ]) {
   if (manifest?.name !== 'verification-skills') fail(`plugins/verification-skills ${label} manifest name must be verification-skills`);
   if (manifest?.hooks !== undefined) fail(`plugins/verification-skills ${label} manifest must not declare hooks; its skills are invoke-only`);
+  if (normalizeSource(manifest?.skills) !== './skills') fail(`plugins/verification-skills ${label} manifest skills must point at ./skills/`);
   const entry = entries.find((candidate) => candidate.name === 'verification-skills');
   if (!entry) fail(`${label} marketplace must register verification-skills`);
   else if (entry.version !== manifest?.version) {
@@ -579,12 +582,16 @@ if (verificationClaudeManifest?.version !== verificationCodexManifest?.version) 
   );
 }
 for (const file of [
-  'skills/create-verification-skill/SKILL.md',
   'skills/create-verification-skill/references/stacks.md',
   'skills/create-verification-skill/references/feature-map-example/README.md',
-  'skills/maintain-verification-skill/SKILL.md',
 ]) {
   if (!exists(`plugins/verification-skills/${file}`)) fail(`plugins/verification-skills must ship ${file}`);
+}
+for (const skill of ['create-verification-skill', 'maintain-verification-skill']) {
+  const skillMd = readText(`plugins/verification-skills/skills/${skill}/SKILL.md`);
+  if (skillMd !== undefined && !new RegExp(`^---\\n(?:(?!---)[^\\n]*\\n)*?name: ${skill}\\n`).test(skillMd)) {
+    fail(`plugins/verification-skills/skills/${skill}/SKILL.md must open with frontmatter naming ${skill}`);
+  }
 }
 for (const activationPath of ['plugins/verification-skills/hooks', 'plugins/verification-skills/always-on.md']) {
   if (exists(activationPath)) fail(`${activationPath} must not exist; verification-skills is invoke-only`);
