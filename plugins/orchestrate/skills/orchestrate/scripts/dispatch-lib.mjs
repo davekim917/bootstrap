@@ -378,11 +378,11 @@ export function humanTurns(transcriptPath) {
 
 const FAMILY = MODEL_FAMILIES.join('|');
 const LEVEL = EFFORTS.join('|');
-// The skill's two documented invocations; leading chat mentions (`@bot`) are allowed before the slash form.
-const INVOCATIONS = [
-  new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\\s+(?:(${FAMILY})\\b\\s*)?(?:(${LEVEL})\\b)?`, 'g'),
-  new RegExp(`(?<!\\b(?:not|never|don'?t|no)\\s+)\\buse\\s+an?\\s+(${FAMILY})\\s+sub-?agent(?:\\s+at\\s+(${LEVEL})\\b)?`, 'g'),
-];
+// The skill's two documented invocations; leading chat mentions (`@bot`) are allowed before the slash form, and the
+// model token may carry a version (`claude-opus-5`).
+const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\\s+(?:\\S*?(${FAMILY})\\S*\\s*)?(?:(${LEVEL})\\b)?`, 'g');
+const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+\\S*?(${FAMILY})\\S*\\s+sub-?agent(?:\\s+at\\s+(${LEVEL})\\b)?`, 'g');
+const NEGATED = /\b(?:not|never|no)\b|n't\b/;
 
 /**
  * Which of a spawn's explicit fields (model, shim effort) a human chose through
@@ -396,7 +396,9 @@ export function humanPins(input, text) {
   const model = typeof input.model === 'string' ? input.model.toLowerCase() : '';
   const family = MODEL_FAMILIES.find((f) => model.includes(f));
   const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
-  const latest = INVOCATIONS.flatMap((re) => [...t.matchAll(re)]).sort((a, b) => b.index - a.index)[0];
+  const negated = (m) => NEGATED.test(t.slice(0, m.index).split(/[.!?\n]/).at(-1));
+  const latest = [...t.matchAll(SLASH_INVOCATION), ...[...t.matchAll(PROSE_INVOCATION)].filter((m) => !negated(m))]
+    .sort((a, b) => b.index - a.index)[0];
   return {
     model: Boolean(family) && latest?.[1] === family,
     effort: Boolean(effort) && latest?.[2] === effort,
