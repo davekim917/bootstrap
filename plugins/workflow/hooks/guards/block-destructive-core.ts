@@ -1662,34 +1662,74 @@ const RUNS_RM = 'runs rm';
  */
 function innerHardBlock(inner: ResolvedCommand | null): string | null {
     if (!inner) return null;
-    const script = SHELLS.has(inner.name) ? shellScriptIndex(inner.args) : -1;
-    if (script < 0) return inner.name === 'rm' ? RUNS_RM : checkHardBlock(inner);
-    // Words after the script are $0, $1, …; a script that runs one (`"$@"`, `"$0"`, `$2`) runs it and those after it.
-    const positional = inner.args.slice(script + 1);
-    for (const nested of extractCommands(inner.args[script] ?? '')) {
-        const param = nested.name.match(/^\$\{?(\d+|[@*])\}?$/);
-        const reason = nested.name.includes('$')
-            ? innerHardBlock(innerCommand(positional.slice(param && /\d/.test(param[1]) ? Number(param[1]) : 1), inner))
-            : nested.name === 'rm' ? RUNS_RM : checkHardBlock(nested);
+    const script = SHELLS.has(inner.name) ? shellScript(inner.name, inner.args) : null;
+    if (!script) return inner.name === 'rm' ? RUNS_RM : checkHardBlock(inner);
+    for (const nested of extractCommands(script.text)) {
+        const words = expandPositional(inner.name, [nested.name, ...nested.args], inner.args.slice(script.rest));
+        const reason = words ? innerHardBlock(innerCommand(words, inner)) : nested.name === 'rm' ? RUNS_RM : checkHardBlock(nested);
         if (reason) return reason;
     }
     return null;
 }
 
 /**
- * Where a shell's `-c` script is in its arguments, or -1. `-c` may sit anywhere in a short-option cluster (`-xc`,
- * `-ec`, `-ce`), and a `--` after it ends the options before the script.
+ * `words` with the script's positional parameters filled in from the words after the script, or null when none is
+ * used. Bourne shells number them from `$0`; fish passes every one as `$argv`. A command word left as an unknown
+ * variable is taken to run the arguments, as `xargs sh -c '$cmd "$@"'` would.
  */
-export function shellScriptIndex(args: string[]): number {
-    // Only the shell's own leading options count: a script file operand (or `--`) ends them, and what follows is
-    // the script's arguments (`bash deploy.sh -xc v` runs deploy.sh).
+function expandPositional(shell: string, words: string[], positional: string[]): string[] | null {
+    const fish = shell === 'fish';
+    const all = fish ? positional : positional.slice(1);
+    let used = false;
+    const out = words.flatMap(word => {
+        const m = fish ? word.match(/^\$argv(?:\[(\d+)\])?$/) : word.match(/^\$\{?(\d+|[@*])\}?$/);
+        if (!m) return [word];
+        used = true;
+        if (m[1] === undefined || m[1] === '@' || m[1] === '*') return all;
+        const at = fish ? Number(m[1]) - 1 : Number(m[1]);
+        return positional[at] === undefined ? [] : [positional[at]];
+    });
+    if (out[0]?.includes('$')) return [...all];
+    return used ? out : null;
+}
+
+/** Options that take a value in each shell's own argument parsing; bash's `-C` (noclobber) takes none, fish's does. */
+const SHELL_VALUE_OPTIONS: Record<string, { short: string; long: string[] }> = {
+    bash: { short: 'oO', long: ['--rcfile', '--init-file'] },
+    fish: { short: 'Cdofp', long: ['--init-command', '--debug', '--debug-output', '--features', '--profile', '--profile-startup'] },
+};
+
+/**
+ * A shell's inline script (`-c SCRIPT`, fish's `--command=SCRIPT`) and the index where its positional words start,
+ * or null. Only the shell's leading options count: a script file operand (or `--`) ends them, and what follows is
+ * the script's arguments (`bash deploy.sh -xc v` runs deploy.sh).
+ */
+export function shellScript(shell: string, args: string[]): { text: string; rest: number } | null {
+    const values = SHELL_VALUE_OPTIONS[shell] ?? { short: 'o', long: [] };
+    const atScript = (i: number) => {
+        const at = args[i] === '--' ? i + 1 : i;
+        return at < args.length ? { text: args[at], rest: at + 1 } : null;
+    };
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (a === '--' || !/^[-+]/.test(a)) return -1;
-        if (/^-[A-Za-z]*c[A-Za-z]*$/.test(a)) return args[i + 1] === '--' ? i + 2 : i + 1;
-        if (['-o', '+o', '-O', '+O', '--rcfile', '--init-file', '-C', '--init-command'].includes(a)) i++;
+        if (a === '--' || !/^[-+]/.test(a)) return null;
+        if (a.startsWith('--')) {
+            const [name, inline] = a.split(/=(.*)/s);
+            if (shell === 'fish' && name.length > 2 && '--command'.startsWith(name)) {
+                return inline !== undefined ? { text: inline, rest: i + 1 } : atScript(i + 1);
+            }
+            if (inline === undefined && values.long.includes(name)) i++;
+            continue;
+        }
+        for (let k = 1; k < a.length; k++) {
+            if (a[k] === 'c' && a[0] === '-') return atScript(i + 1);
+            if (values.short.includes(a[k])) {
+                if (k === a.length - 1) i++;
+                break;
+            }
+        }
     }
-    return -1;
+    return null;
 }
 
 /** The command `words` (a command word and its arguments, as xargs or find -exec take them) runs, past any wrapper. */
@@ -2674,8 +2714,8 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     if (cmd.name === 'find') {
         for (let i = 0; i < cmd.args.length; i++) {
             if (!['-exec', '-execdir', '-ok', '-okdir'].includes(cmd.args[i])) continue;
-            // The command runs up to its `;` or `+` terminator; what follows is find's own expression.
-            const end = cmd.args.findIndex((a, j) => j > i && (a === ';' || a === '+'));
+            // The command runs up to its `;`, or a `+` right after `{}`; what follows is find's own expression.
+            const end = cmd.args.findIndex((a, j) => j > i && (a === ';' || (a === '+' && cmd.args[j - 1] === '{}')));
             const reason = innerHardBlock(innerCommand(cmd.args.slice(i + 1, end < 0 ? undefined : end), cmd));
             if (reason === RUNS_RM) return 'find -exec rm is not allowed. Use trash for file deletion.';
             if (reason) return `find ${cmd.args[i]} runs a blocked command. ${reason}`;
@@ -2695,7 +2735,7 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
 
     // Shell -c / here-string wrappers — bypass vectors for all other checks
     if (SHELLS.has(cmd.name)) {
-        if (shellScriptIndex(cmd.args) >= 0 || cmd.hasInputRedirect) {
+        if (shellScript(cmd.name, cmd.args) || cmd.hasInputRedirect) {
             return 'Shell inline execution (shell -c, here-strings) is not allowed. Run commands directly.';
         }
     }

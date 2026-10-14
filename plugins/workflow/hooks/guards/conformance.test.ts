@@ -72,6 +72,13 @@ const BASH_BLOCK = [
   "xargs -I{} sh -c -- 'rm {}' < list",
   `printf 'target\n' | xargs sh -c '"$@"' _ rm`,
   `printf 'target\n' | xargs sh -c '"$0" "$@"' rm`,
+  "bash -C -c 'rm -rf /etc'",
+  "fish --command='rm -rf /etc'",
+  "fish --command 'rm -rf /etc'",
+  "fish -d 3 -c 'rm -rf /etc'",
+  `printf x | xargs sh -c '"$0" -c "rm -rf /etc"' sh`,
+  `printf x | xargs sh -c 'find . "$1"' _ -delete`,
+  "printf target | xargs fish -c '$argv' rm",
   'xargs unlink < list',
   'find . -exec shred -u {} +',
   'eval echo x',
@@ -171,6 +178,7 @@ const BASH_ALLOW = [
   'bash deploy.sh -xc value',
   // find's own expression resumes after -exec's terminator.
   'find . -exec echo -exec rm {} \\;',
+  'find . -exec echo + -exec rm {} \\;',
   // A shell that xargs or find -exec runs is judged by its script.
   "ls | xargs -I{} sh -c 'grep -o x {} | head -1'",
   "find . -name f -exec sh -c 'echo == $1; cat $1' _ {} \\;",
