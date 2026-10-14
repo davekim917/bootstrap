@@ -1455,18 +1455,16 @@ function splitEnvString(text: string): string[] | null {
     return words;
 }
 
-/** Resolve a Command AST node: strip wrapper commands, extract name + args */
-export function resolveCommand(node: any): ResolvedCommand | null {
-    if (!node.name) return null;
-
-    let name = commandName(node.name.value || '');
-    let args = (node.suffix || []).map(wordValue);
+/**
+ * The command a wrapper chain finally runs (sudo, env, nice, timeout, exec, npx, pnpm exec, …), with the env
+ * assignments and `env -C` directory picked up on the way. Shared by the top-level resolver and by the commands
+ * xargs and find -exec run, so a wrapper is unwrapped the same way wherever it appears.
+ */
+export function stripWrappers(word: string, rest: string[]): { name: string; args: string[]; env: string[]; chdir?: string } {
+    let name = commandName(word);
+    let args = rest;
     let chdir: string | undefined;
-    const env: string[] = (node.prefix || [])
-        .filter((p: any) => p?.type === 'Assignment' && typeof p.name === 'string')
-        .map((p: any) => `${p.name}=${p.value?.value ?? p.value?.text ?? ''}`);
-
-
+    const env: string[] = [];
     // Resolve through wrapper commands
     while (WRAPPERS.has(name) && args.length > 0) {
         let skip = 0;
@@ -1518,8 +1516,11 @@ export function resolveCommand(node: any): ResolvedCommand | null {
             if (!(skip < args.length && (args[skip] === 'exec' || args[skip] === 'dlx'))) break;
             skip += 1;
         } else if (name === 'exec') {
-            // `exec -a NAME` sets argv[0]; -c and -l take nothing.
-            while (skip < args.length && args[skip].startsWith('-')) skip += args[skip] === '-a' ? 2 : 1;
+            // `exec -a NAME` sets argv[0]; -c and -l take nothing, and the three cluster (`-ca NAME`).
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += /^-[cl]*a$/.test(args[skip]) ? 2 : 1;
+            }
+            if (args[skip] === '--') skip += 1;
         } else if (name === 'npx' || name === 'bunx') {
             // The command follows the flags; -p/--package takes a value.
             while (skip < args.length && args[skip].startsWith('-')) {
@@ -1533,6 +1534,19 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         name = commandName(args[skip]);
         args = args.slice(skip + 1);
     }
+    return { name, args, env, ...(chdir !== undefined ? { chdir } : {}) };
+}
+
+/** Resolve a Command AST node: strip wrapper commands, extract name + args */
+export function resolveCommand(node: any): ResolvedCommand | null {
+    if (!node.name) return null;
+
+    const env: string[] = (node.prefix || [])
+        .filter((p: any) => p?.type === 'Assignment' && typeof p.name === 'string')
+        .map((p: any) => `${p.name}=${p.value?.value ?? p.value?.text ?? ''}`);
+    const stripped = stripWrappers(node.name.value || '', (node.suffix || []).map(wordValue));
+    const { name, args, chdir } = stripped;
+    env.push(...stripped.env);
 
     // Check for input redirects (<<, <<<) on the original Command node
     const hasInputRedirect = (node.redirects || []).some((r: any) =>
@@ -1597,7 +1611,8 @@ export function commandName(word: string): string {
     return unescapeCommandWord(word).replace(/^.*\//, '');
 }
 
-const XARGS_VALUE_OPTIONS = new Set(['-a', '-d', '-E', '-I', '-L', '-n', '-P', '-s', '--arg-file', '--delimiter', '--eof',
+// `--eof[=END]` takes its value only attached, so a bare `--eof` is a flag.
+const XARGS_VALUE_OPTIONS = new Set(['-a', '-d', '-E', '-I', '-L', '-n', '-P', '-s', '--arg-file', '--delimiter',
     '--max-lines', '--max-args', '--max-procs', '--max-chars', '--process-slot-var']);
 
 /** The command xargs runs and its arguments, past xargs's own options (`-0`, `-I{}`, `-n 1`, `--max-procs=4`, …). */
@@ -1611,14 +1626,10 @@ function xargsCommand(args: string[]): string[] {
     return args.slice(i);
 }
 
-/** True when `words` (a command and its arguments) runs rm, directly or under sudo. */
+/** True when `words` (a command and its arguments) runs rm, directly or through any wrapper. */
 function runsRm(words: string[]): boolean {
     const [first, ...rest] = words;
-    if (first === undefined) return false;
-    if (commandName(first) === 'rm') return true;
-    if (commandName(first) !== 'sudo') return false;
-    const target = rest.find(a => !a.startsWith('-'));
-    return target !== undefined && commandName(target) === 'rm';
+    return first !== undefined && stripWrappers(first, rest).name === 'rm';
 }
 
 /** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */
