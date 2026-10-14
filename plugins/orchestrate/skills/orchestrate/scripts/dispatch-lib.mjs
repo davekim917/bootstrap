@@ -331,16 +331,26 @@ export function rewriteClaudeSpawn(input, picked, rubric, pins = {}) {
 const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
 const HARNESS_BLOCK = /<(task-notification|system|system-reminder|local-command-stdout|local-command-caveat)>[\s\S]*?<\/\1>/g;
 const ENVELOPE = /<message\b([^>]*)>([\s\S]*?)<\/message>/g;
+const THREAD_CONTEXT = /<thread_context\b[^>]*>[\s\S]*?<\/thread_context>/g;
+
+/** Bodies of the runner envelopes in `text` that people sent to the agent, outside thread context it was not addressed in. */
+function addressedEnvelopes(text) {
+  return [...text.replace(THREAD_CONTEXT, '').matchAll(ENVELOPE)]
+    .filter(([, attrs]) => !/\bsender_id="system"/.test(attrs) && !/\bfrom="unknown:agent:/.test(attrs))
+    .map(([, , body]) => body);
+}
 
 /**
- * The human-written user turns of a Claude Code transcript, oldest first; each
- * human `<message>` envelope in a batched NanoClaw record is its own turn.
- * Skips tool results, skill loads (isMeta) and harness notices, and turns left
- * empty by that. A NanoClaw container wraps chat in `<message>` envelopes;
- * there only envelopes not sent by the system or an agent count. An unreadable
- * transcript has no turns.
+ * The human-written user turns of a Claude Code transcript, oldest first.
+ * Skips tool results, skill loads (isMeta), sidechains, harness notices, and
+ * turns left empty by that. On the host every remaining record is one turn.
+ * In a NanoClaw session people only ever reach the agent as `<message>`
+ * envelopes, so each envelope addressed to the agent is its own turn and
+ * nothing else is: thread context the agent was not addressed in, system and
+ * agent senders, tasks and runner notices yield none. An unreadable transcript
+ * has no turns.
  */
-export function humanTurns(transcriptPath) {
+export function humanTurns(transcriptPath, { container = 'NANOCLAW_ASSISTANT_NAME' in process.env } = {}) {
   let raw;
   try {
     raw = fs.readFileSync(transcriptPath, 'utf8');
@@ -365,12 +375,7 @@ export function humanTurns(transcriptPath) {
       .map((b) => b.text)
       .join('\n')
       .replace(HARNESS_BLOCK, '');
-    const envelopes = [...text.matchAll(ENVELOPE)];
-    const human = envelopes.length === 0
-      ? [text]
-      : envelopes
-        .filter(([, attrs]) => !/\bsender_id="system"/.test(attrs) && !/\bfrom="unknown:agent:/.test(attrs))
-        .map(([, , body]) => body);
+    const human = container ? addressedEnvelopes(text) : [text];
     for (const turn of human) if (turn.trim()) out.push(turn.trim());
   }
   return out;
@@ -380,11 +385,12 @@ const FAMILY = MODEL_FAMILIES.join('|');
 const LEVEL = EFFORTS.join('|');
 // The skill's two documented invocations; leading chat mentions (`@bot`) are allowed before the slash form, and the
 // model token may carry a version (`claude-opus-5`).
-const MODEL_TOKEN = `(?:claude-)?(${FAMILY})(?:-[\\d.]+)*(?=\\s|$)`;
-const EFFORT_TOKEN = `(${LEVEL})(?=\\s|$)`;
+const TOKEN_END = `(?=\\s|$|[.,;:!?)\\]]+(?:\\s|$))`;
+const MODEL_TOKEN = `(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*${TOKEN_END}`;
+const EFFORT_TOKEN = `(${LEVEL})${TOKEN_END}`;
 const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\\s+(?:${MODEL_TOKEN}\\s*)?(?:${EFFORT_TOKEN})?`, 'g');
 const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+${MODEL_TOKEN}\\s+sub-?agent(?:\\s+at\\s+${EFFORT_TOKEN})?`, 'g');
-const NEGATED = /\b(?:not|never)\b|n't\b/;
+const NEGATED = /\b(?:not|never|cannot)\b|n't\b/;
 
 /**
  * Which of a spawn's explicit fields (model, shim effort) a human chose through
@@ -398,9 +404,10 @@ export function humanPins(input, text) {
   const model = typeof input.model === 'string' ? input.model.toLowerCase() : '';
   const family = MODEL_FAMILIES.find((f) => model.includes(f));
   const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
-  const negated = (m) => NEGATED.test(t.slice(0, m.index).split(/[.!?;:,\n\u2014]/).at(-1));
-  const latest = [...t.matchAll(SLASH_INVOCATION), ...[...t.matchAll(PROSE_INVOCATION)].filter((m) => !negated(m))]
-    .sort((a, b) => b.index - a.index)[0];
+  const prose = [...t.matchAll(PROSE_INVOCATION)];
+  const latest = [...t.matchAll(SLASH_INVOCATION), ...prose].sort((a, b) => b.index - a.index)[0];
+  const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(/[.!?;:\n\u2014]|,\s*(?:but|and|so|then|yet)\b/).at(-1));
+  if (negated) return { model: false, effort: false };
   return {
     model: Boolean(family) && latest?.[1] === family,
     effort: Boolean(effort) && latest?.[2] === effort,

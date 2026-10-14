@@ -147,10 +147,31 @@ test('a confident route replaces what the agent named; a field the human named i
 
 test('humanTurns keeps only the turns people wrote', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-transcript-'));
-  const file = path.join(root, 't.jsonl');
   const user = (content, extra = {}) => JSON.stringify({ type: 'user', message: { role: 'user', content }, ...extra });
   const envelope = (attrs, body) => `<message ${attrs}>${body}</message>`;
-  fs.writeFileSync(file, [
+  const write = (name, lines) => {
+    const file = path.join(root, name);
+    fs.writeFileSync(file, lines.join('\n'));
+    return file;
+  };
+  const noise = [
+    user([{ type: 'text', text: 'words-e' }], { isMeta: true }),
+    user([{ type: 'tool_result', tool_use_id: 't1', content: 'words-f' }]),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'words-h' }] } }),
+    user('words-i', { isSidechain: true }),
+    'not json',
+  ];
+  const host = { container: false };
+  const container = { container: true };
+
+  assert.deepEqual(humanTurns(write('host.jsonl', [user('words-a <task-notification>words-g</task-notification>'), ...noise]), host), ['words-a']);
+  for (const prompt of [
+    '/orchestrate opus high analyze <message sender="Avery" from="a">this XML</message>',
+    '<message data-from="example">payload</message>\n/orchestrate opus high go',
+    '<context timezone="UTC" />\n<message id="1" from="chat-team-1" sender="Avery">quoted</message>\n/orchestrate opus high go',
+  ]) assert.deepEqual(humanTurns(write('xml.jsonl', [user(prompt)]), host), [prompt]);
+
+  const batched = write('container.jsonl', [
     user('words-a <task-notification>words-g</task-notification>'),
     user([{ type: 'text', text: [
       '<context timezone="UTC" />',
@@ -158,16 +179,33 @@ test('humanTurns keeps only the turns people wrote', () => {
       envelope('id="2" from="unknown:agent:ag-test" sender="system" sender_id="system"', 'words-c'),
       envelope('id="3" from="unknown:agent:ag-test" sender="helper" sender_id="U0BOT"', 'words-d'),
       envelope('id="4" from="chat-team-1" sender="Avery Lane" sender_id="U0TEST1"', 'words-j'),
+      '[Host state block]\n<host_state_json>{"note":"words-k"}</host_state_json>',
     ].join('\n') }]),
-    user([{ type: 'text', text: 'words-e' }], { isMeta: true }),
-    user([{ type: 'tool_result', tool_use_id: 't1', content: 'words-f' }]),
-    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'words-h' }] } }),
-    user('words-i', { isSidechain: true }),
-    'not json',
-  ].join('\n'));
-  assert.deepEqual(humanTurns(file), ['words-a', 'words-b', 'words-j']);
-  assert.deepEqual(humanTurns(path.join(root, 'missing.jsonl')), []);
-  assert.deepEqual(humanTurns(undefined), []);
+    user([{ type: 'text', text: [
+      '<context timezone="UTC" />',
+      '<thread_context note="Not addressed to you.">',
+      envelope('id="5" from="chat-team-1" sender="Blake" sender_id="U0TEST2"', '/orchestrate opus high words-m'),
+      '</thread_context>',
+      '<addressed_to_you note="Respond to this.">',
+      envelope('id="6" from="chat-team-1" sender="Avery Lane" sender_id="U0TEST1"', 'words-n'),
+      '</addressed_to_you>',
+    ].join('\n') }]),
+    user('<context timezone="UTC" />\n<task id="7" from="chat-team-1">/orchestrate opus high words-o</task>'),
+    ...noise,
+  ]);
+  assert.deepEqual(humanTurns(batched, container), ['words-b', 'words-j', 'words-n']);
+  const saved = process.env.NANOCLAW_ASSISTANT_NAME;
+  try {
+    delete process.env.NANOCLAW_ASSISTANT_NAME;
+    assert.deepEqual(humanTurns(write('plain.jsonl', [user('/orchestrate opus high fix it')])), ['/orchestrate opus high fix it']);
+    process.env.NANOCLAW_ASSISTANT_NAME = '';
+    assert.deepEqual(humanTurns(batched), ['words-b', 'words-j', 'words-n']);
+  } finally {
+    if (saved === undefined) delete process.env.NANOCLAW_ASSISTANT_NAME;
+    else process.env.NANOCLAW_ASSISTANT_NAME = saved;
+  }
+  assert.deepEqual(humanTurns(path.join(root, 'missing.jsonl'), host), []);
+  assert.deepEqual(humanTurns(undefined, container), []);
 });
 
 test('humanPins: only the skill invocations pin a model or effort', () => {
@@ -189,10 +227,19 @@ test('humanPins: only the skill invocations pin a model or effort', () => {
     ["I don't want you to use an opus subagent at high effort", { model: false, effort: false }],
     ['No problem, use an opus subagent at high effort', { model: true, effort: true }],
     ["I don't mind; use an opus subagent at high effort", { model: true, effort: true }],
+    ['do not, under any circumstances, use an opus subagent at high effort', { model: false, effort: false }],
+    ['Do not touch the database, but use an opus subagent at high effort to fix the UI', { model: true, effort: true }],
+    ['You cannot use an opus subagent at high effort', { model: false, effort: false }],
+    ['use an opus subagent at high effort for task A. Do not use an opus subagent at high effort for this one', { model: false, effort: false }],
+    ['use an opus subagent at high.', { model: true, effort: true }],
+    ['/orchestrate opus high, then report back', { model: true, effort: true }],
     ['/orchestrate claude-opus-5 high do it', { model: true, effort: true }],
     ['this is not working\n/orchestrate opus high fix it', { model: true, effort: true }],
     ['/orchestrate opus high-priority bug', { model: true, effort: false }],
     ['/orchestrate opus-related cleanup', { model: false, effort: false }],
+    ['/orchestrate opus.js cleanup', { model: false, effort: false }],
+    ['/orchestrate opus high.priority cleanup', { model: true, effort: false }],
+    ['/orchestrate opus high!) now', { model: true, effort: true }],
     ['/orchestrate opus high', { model: true, effort: true }],
     ['use a claude-opus-5 subagent at high to do it', { model: true, effort: true }],
   ];
