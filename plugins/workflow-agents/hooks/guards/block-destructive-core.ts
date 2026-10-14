@@ -1669,31 +1669,38 @@ function innerHardBlock(inner: ResolvedCommand | null): string | null {
     const script = SHELLS.has(inner.name) ? shellScript(inner.name, inner.args) : null;
     if (!script) return inner.name === 'rm' ? RUNS_RM : checkHardBlock(inner);
     for (const nested of extractCommands(script.text)) {
-        const words = expandPositional(inner.name, [nested.name, ...nested.args], inner.args.slice(script.rest));
-        const reason = words ? innerHardBlock(innerCommand(words, inner)) : nested.name === 'rm' ? RUNS_RM : checkHardBlock(nested);
+        // The words xargs appends come from its input, so a command taken from a parameter cannot be known.
+        if (nested.name.includes('$')) return RUNS_VARIABLE;
+        const args = expandPositional(inner.name, nested.args, inner.args.slice(script.rest));
+        const cmd = args ? { ...nested, args } : nested;
+        const reason = cmd.name === 'rm' ? RUNS_RM : checkHardBlock(cmd);
         if (reason) return reason;
     }
     return null;
 }
 
+const RUNS_VARIABLE = 'Its shell script takes the command to run from a variable, so what it runs cannot be checked. Name the command in the script.';
+
 /**
- * `words` with the script's positional parameters filled in from the words after the script, or null when none is
- * used. Bourne shells number them from `$0`; fish passes every one as `$argv`. A command word left as an unknown
- * variable is taken to run the arguments, as `xargs sh -c '$cmd "$@"'` would.
+ * `words` with the script's positional parameters filled in from the words written after the script, or null when
+ * none is used. Bourne shells number them from `$0`; fish passes every one as `$argv`.
  */
 function expandPositional(shell: string, words: string[], positional: string[]): string[] | null {
     const fish = shell === 'fish';
     const all = fish ? positional : positional.slice(1);
+    const one = fish ? /\$argv\[(\d+)\]/g : /\$(\d)|\$\{(\d+)\}/g;
     let used = false;
     const out = words.flatMap(word => {
-        const m = fish ? word.match(/^\$argv(?:\[(\d+)\])?$/) : word.match(/^\$\{?(\d+|[@*])\}?$/);
-        if (!m) return [word];
-        used = true;
-        if (m[1] === undefined || m[1] === '@' || m[1] === '*') return all;
-        const at = fish ? Number(m[1]) - 1 : Number(m[1]);
-        return positional[at] === undefined ? [] : [positional[at]];
+        if (fish ? /^\$argv$/.test(word) : /^\$\{?[@*]\}?$/.test(word)) {
+            used = true;
+            return all;
+        }
+        return [word.replace(one, (_m, a: string | undefined, b: string | undefined) => {
+            used = true;
+            const n = Number(a ?? b);
+            return positional[fish ? n - 1 : n] ?? '';
+        })];
     });
-    if (out[0]?.includes('$')) return [...all];
     return used ? out : null;
 }
 
@@ -1706,7 +1713,8 @@ const SHELL_VALUE_OPTIONS: Record<string, { short: string; long: string[] }> = {
 /**
  * A shell's inline script (`-c SCRIPT`, fish's `--command=SCRIPT`) and the index where its positional words start,
  * or null. Only the shell's leading options count: a script file operand (or `--`) ends them, and what follows is
- * the script's arguments (`bash deploy.sh -xc v` runs deploy.sh).
+ * the script's arguments (`bash deploy.sh -xc v` runs deploy.sh). A Bourne shell's `-c` is a flag, and the script is
+ * its first operand after any further options (`bash -c -x SCRIPT`); fish's `-c` takes the next word.
  */
 export function shellScript(shell: string, args: string[]): { text: string; rest: number } | null {
     const values = SHELL_VALUE_OPTIONS[shell] ?? { short: 'o', long: [] };
@@ -1714,19 +1722,24 @@ export function shellScript(shell: string, args: string[]): { text: string; rest
         const at = args[i] === '--' ? i + 1 : i;
         return at < args.length ? { text: args[at], rest: at + 1 } : null;
     };
+    let inline = false;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (a === '--' || !/^[-+]/.test(a)) return null;
+        if (a === '--' || !/^[-+]/.test(a)) return inline ? atScript(i) : null;
         if (a.startsWith('--')) {
-            const [name, inline] = a.split(/=(.*)/s);
+            const [name, value] = a.split(/=(.*)/s);
             if (shell === 'fish' && name.length > 2 && '--command'.startsWith(name)) {
-                return inline !== undefined ? { text: inline, rest: i + 1 } : atScript(i + 1);
+                return value !== undefined ? { text: value, rest: i + 1 } : atScript(i + 1);
             }
-            if (inline === undefined && values.long.includes(name)) i++;
+            if (value === undefined && values.long.includes(name)) i++;
             continue;
         }
         for (let k = 1; k < a.length; k++) {
-            if (a[k] === 'c' && a[0] === '-') return atScript(i + 1);
+            if (a[k] === 'c' && a[0] === '-') {
+                if (shell === 'fish') return atScript(i + 1);
+                inline = true;
+                continue;
+            }
             if (values.short.includes(a[k])) {
                 if (k === a.length - 1) i++;
                 break;
