@@ -382,7 +382,7 @@ const LEVEL = EFFORTS.join('|');
 // model token may carry a version (`claude-opus-5`).
 const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\\s+(?:\\S*?(${FAMILY})\\S*\\s*)?(?:(${LEVEL})\\b)?`, 'g');
 const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+\\S*?(${FAMILY})\\S*\\s+sub-?agent(?:\\s+at\\s+(${LEVEL})\\b)?`, 'g');
-const NEGATED = /\b(?:not|never|no)\b|n't\b/;
+const NEGATED = /\b(?:not|never)\b|n't\b/;
 
 /**
  * Which of a spawn's explicit fields (model, shim effort) a human chose through
