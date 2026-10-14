@@ -372,34 +372,29 @@ export function humanText(transcriptPath) {
   return out.join('\n');
 }
 
-const RETROSPECTIVE = /\b(?:fail\w*|attempt\w*|tried|earlier|previous\w*|didn'?t work)\b/;
+const FAMILY = MODEL_FAMILIES.join('|');
+const LEVEL = EFFORTS.join('|');
+// The skill's two documented invocations; leading chat mentions (`@bot`) are allowed before the slash form.
+const INVOCATIONS = [
+  new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\\s+(?:(${FAMILY})\\b\\s*)?(?:(${LEVEL})\\b)?`, 'g'),
+  new RegExp(`\\buse\\s+an?\\s+(${FAMILY})\\s+sub-?agent(?:\\s+at\\s+(${LEVEL})\\b)?`, 'g'),
+];
 
-/** An effort worded as a request; a sentence about a past attempt ("failed at high effort") is history, not a pin. */
-function effortNamed(text, effort) {
-  const families = MODEL_FAMILIES.join('|');
-  const patterns = [
-    `\\b${effort}[\\s-]*effort\\b`,
-    `\\beffort(?:\\s+level)?\\s*(?:of|at|to|is|=|:)?\\s*${effort}\\b`,
-    `\\b(?:${families})[\\s/:-]+${effort}\\b`,
-    `\\bworker-${effort}\\b`,
-    `\\bsub-?agents?\\s+at\\s+${effort}\\b`,
-    `\\borchestrate\\s+(?:(?:${families})\\s+)?${effort}\\b`,
-  ].map((p) => new RegExp(p));
-  return text
-    .replace(/<\/command-name>[\s\S]*?<command-args>/g, ' ')
-    .split(/[.!?\n]+/)
-    .some((sentence) => !RETROSPECTIVE.test(sentence) && patterns.some((p) => p.test(sentence)));
-}
-
-/** Which of a spawn's explicit fields (model, shim effort) a human named in `text`. */
+/**
+ * Which of a spawn's explicit fields (model, shim effort) a human chose through
+ * one of the skill's invocations in `text`. Any other wording is the router's
+ * call, so a stray mention ("compare Opus and Sonnet", "failed at high effort")
+ * never pins.
+ */
 export function humanPins(input, text) {
-  const t = text.toLowerCase();
+  const t = text.toLowerCase().replace(/<command-name>\s*(\/\S+?)\s*<\/command-name>[\s\S]*?<command-args>/g, '\n$1 ');
   const model = typeof input.model === 'string' ? input.model.toLowerCase() : '';
   const family = MODEL_FAMILIES.find((f) => model.includes(f));
   const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
+  const chosen = INVOCATIONS.flatMap((re) => [...t.matchAll(re)]);
   return {
-    model: Boolean(family) && new RegExp(`\\b${family}\\b`).test(t),
-    effort: Boolean(effort) && effortNamed(t, effort),
+    model: Boolean(family) && chosen.some((m) => m[1] === family),
+    effort: Boolean(effort) && chosen.some((m) => m[2] === effort),
   };
 }
 

@@ -170,26 +170,23 @@ test('humanText keeps only what people wrote', () => {
   assert.equal(humanText(undefined), '');
 });
 
-test('humanPins: a human names a model by family and an effort as an effort', () => {
+test('humanPins: only the skill invocations pin a model or effort', () => {
   const spawn = { model: 'opus', subagent_type: 'bootstrap-orchestrate:worker-high' };
   const cases = [
     ['/orchestrate opus high fix the login bug', { model: true, effort: true }],
-    ['use an Opus subagent at high', { model: true, effort: true }],
-    ['run it at high effort', { model: false, effort: true }],
-    ['/orchestrate high fix the bug', { model: false, effort: true }],
-    ['<command-name>/orchestrate</command-name>\n<command-args>high fix the bug</command-args>', { model: false, effort: true }],
-    ['/orchestrate can you look at high memory use', { model: false, effort: false }],
+    ['@helper /orchestrate high fix the bug', { model: false, effort: true }],
+    ['<command-name>/orchestrate</command-name>\n<command-args>opus high fix the bug</command-args>', { model: true, effort: true }],
+    ['use an Opus subagent at high effort to fix it', { model: true, effort: true }],
+    ['use an opus subagent to fix it', { model: true, effort: false }],
+    ['/orchestrate fable low fix it', { model: false, effort: false }],
+    ['orchestrate high availability testing', { model: false, effort: false }],
+    ['compare Opus and Sonnet, then run it at high effort', { model: false, effort: false }],
     ['the earlier attempt failed at high effort, try again', { model: false, effort: false }],
-    ['that failed. Run it at high effort', { model: false, effort: true }],
-    ['effort: high please', { model: false, effort: true }],
-    ['use opus for this', { model: true, effort: false }],
-    ['the xhigh run failed; this is a high priority bug', { model: false, effort: false }],
     ['', { model: false, effort: false }],
   ];
   for (const [text, expected] of cases) assert.deepEqual(humanPins(spawn, text), expected, text);
-  assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, 'opus high'), { model: false, effort: false });
+  assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, '/orchestrate opus high go'), { model: false, effort: false });
 });
-
 test('the installed hook replaces an agent-named model and effort unless a human named them', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));
   const preload = path.join(root, 'preload.mjs');
