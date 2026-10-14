@@ -1666,11 +1666,96 @@ const RUNS_RM = 'runs rm';
  */
 function innerHardBlock(inner: ResolvedCommand | null): string | null {
     if (!inner) return null;
-    const c = SHELLS.has(inner.name) ? inner.args.findIndex(a => /^-[a-z]*c$/.test(a)) : -1;
-    if (c < 0) return inner.name === 'rm' ? RUNS_RM : checkHardBlock(inner);
-    for (const nested of extractCommands(inner.args[c + 1] ?? '')) {
-        const reason = nested.name === 'rm' ? RUNS_RM : checkHardBlock(nested);
+    const script = SHELLS.has(inner.name) ? shellScript(inner.name, inner.args) : null;
+    if (!script) return inner.name === 'rm' ? RUNS_RM : checkHardBlock(inner);
+    for (const nested of extractCommands(script.text)) {
+        // A command taken from a parameter is whatever xargs reads from input or find matches, which cannot be known.
+        if (nested.name.includes('$')) return RUNS_VARIABLE;
+        const args = expandPositional(inner.name, nested.args, inner.args.slice(script.rest));
+        const cmd = args ? { ...nested, args } : nested;
+        const reason = cmd.name === 'rm' ? RUNS_RM : checkHardBlock(cmd);
         if (reason) return reason;
+    }
+    return null;
+}
+
+const RUNS_VARIABLE = 'Its shell script takes the command to run from a variable, so what it runs cannot be checked. Name the command in the script.';
+
+/**
+ * `words` with the script's positional parameters filled in from the words written after the script, or null when
+ * none is used. Bourne shells number them from `$0`; fish passes every one as `$argv`.
+ */
+function expandPositional(shell: string, words: string[], positional: string[]): string[] | null {
+    const fish = shell === 'fish';
+    const all = fish ? positional : positional.slice(1);
+    const one = fish ? /\$argv\[(\d+)\]/g : /\$(\d)|\$\{(\d+)\}/g;
+    let used = false;
+    const out = words.flatMap(word => {
+        if (fish ? /^\$argv$/.test(word) : /^\$\{?[@*]\}?$/.test(word)) {
+            used = true;
+            return all;
+        }
+        return [word.replace(one, (_m, a: string | undefined, b: string | undefined) => {
+            used = true;
+            const n = Number(a ?? b);
+            return positional[fish ? n - 1 : n] ?? '';
+        })];
+    });
+    return used ? out : null;
+}
+
+/** Options that take a value in each shell's own argument parsing; bash's `-C` (noclobber) takes none, fish's does. */
+const SHELL_VALUE_OPTIONS: Record<string, { short: string; long: Set<string>; flags?: Set<string> }> = {
+    bash: { short: 'oO', long: new Set(['--rcfile', '--init-file']) },
+    fish: {
+        short: 'CdDofp',
+        long: new Set(['--init-command', '--debug', '--debug-output', '--debug-stack-frames', '--features', '--profile',
+            '--profile-startup']),
+        flags: new Set(['--interactive', '--login', '--no-config', '--no-execute', '--print-rusage-self', '--private',
+            '--help', '--version']),
+    },
+};
+
+/**
+ * A shell's inline script (`-c SCRIPT`, fish's `--command=SCRIPT`) and the index where its positional words start,
+ * or null. Only the shell's leading options count: a script file operand (or `--`) ends them, and what follows is
+ * the script's arguments (`bash deploy.sh -xc v` runs deploy.sh). A Bourne shell's `-c` is a flag, and the script is
+ * its first operand after any further options (`bash -c -x SCRIPT`); fish's `-c` takes the next word.
+ */
+export function shellScript(shell: string, args: string[]): { text: string; rest: number } | null {
+    const values = SHELL_VALUE_OPTIONS[shell] ?? { short: 'o', long: new Set<string>() };
+    const atScript = (i: number) => {
+        const at = args[i] === '--' ? i + 1 : i;
+        return at < args.length ? { text: args[at], rest: at + 1 } : null;
+    };
+    let inline = false;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--' || !/^[-+]/.test(a)) return inline ? atScript(i) : null;
+        if (a.startsWith('--')) {
+            const [name, value] = a.split(/=(.*)/s);
+            if (shell === 'fish' && name.length > 2 && '--command'.startsWith(name)) {
+                return value !== undefined ? { text: value, rest: i + 1 } : atScript(i + 1);
+            }
+            i += optionWords(a, '', values.long, values.flags) - 1;
+            continue;
+        }
+        // fish reads a cluster getopt-style: a value option takes the rest of it, or the next word. A Bourne shell
+        // takes each value option's value from the next unread word and goes on reading the cluster (`bash -Oc x S`).
+        const option = i;
+        for (let k = 1; k < a.length; k++) {
+            if (a[k] === 'c' && a[0] === '-') {
+                if (shell === 'fish') return k < a.length - 1 ? { text: a.slice(k + 1), rest: i + 1 } : atScript(i + 1);
+                inline = true;
+                continue;
+            }
+            if (!values.short.includes(a[k])) continue;
+            if (shell !== 'fish') i++;
+            else {
+                if (k === a.length - 1) i = option + 1;
+                break;
+            }
+        }
     }
     return null;
 }
@@ -2657,9 +2742,12 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     if (cmd.name === 'find') {
         for (let i = 0; i < cmd.args.length; i++) {
             if (!['-exec', '-execdir', '-ok', '-okdir'].includes(cmd.args[i])) continue;
-            const reason = innerHardBlock(innerCommand(cmd.args.slice(i + 1), cmd));
+            // The command runs up to its `;`, or a `+` right after `{}`; what follows is find's own expression.
+            const end = cmd.args.findIndex((a, j) => j > i && (a === ';' || (a === '+' && cmd.args[j - 1] === '{}')));
+            const reason = innerHardBlock(innerCommand(cmd.args.slice(i + 1, end < 0 ? undefined : end), cmd));
             if (reason === RUNS_RM) return 'find -exec rm is not allowed. Use trash for file deletion.';
             if (reason) return `find ${cmd.args[i]} runs a blocked command. ${reason}`;
+            if (end > i) i = end;
         }
         if (cmd.args.includes('-delete')) {
             return 'find -delete permanently deletes files. Use trash instead.';
@@ -2675,7 +2763,7 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
 
     // Shell -c / here-string wrappers — bypass vectors for all other checks
     if (SHELLS.has(cmd.name)) {
-        if (cmd.args.includes('-c') || cmd.hasInputRedirect) {
+        if (shellScript(cmd.name, cmd.args) || cmd.hasInputRedirect) {
             return 'Shell inline execution (shell -c, here-strings) is not allowed. Run commands directly.';
         }
     }
