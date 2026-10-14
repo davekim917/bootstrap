@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "bootstrap-workflow-agents",
-      "version": "2.10.0",
+      "version": "2.11.0",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
       "source": {
         "source": "local",
@@ -34,7 +34,7 @@
     },
     {
       "name": "wwbd",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "description": "What Would Boris Do \u2014 engineering-judgment advisory skill channeling Boris Cherny's published guidance.",
       "source": {
         "source": "local",
@@ -104,7 +104,7 @@
     },
     {
       "name": "test-audit",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "description": "Authoring gate and evidence-first audit workflow for tests, with an always-on nudge to run the gate and never weaken an existing test. Adapted from OpenClaw (MIT).",
       "source": {
         "source": "local",

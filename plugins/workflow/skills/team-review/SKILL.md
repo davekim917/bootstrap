@@ -23,7 +23,8 @@ Add specialist lenses only when the changed surface warrants them:
 - concurrency, lifecycle, persistence, or migration → state and rollback;
 - hot paths or material scale claims → performance;
 - user-visible UI or workflow → relevant product/accessibility behavior;
-- changing external API, framework, security rule, or standard → current authoritative sources.
+- changing external API, framework, security rule, or standard → current authoritative sources;
+- new or reshaped modules, interfaces, shared state, or lists kept in step by hand → design.
 
 Do not spawn a fixed swarm. One other-family reviewer is required at consequential plan and implementation
 gates; routine work does not automatically require both. Honor explicit review requests; other reviewers need a named risk justification.
