@@ -333,7 +333,8 @@ const HARNESS_BLOCK = /<(task-notification|system|system-reminder|local-command-
 const ENVELOPE = /<message\b([^>]*)>([\s\S]*?)<\/message>/g;
 
 /**
- * The human-written user turns of a Claude Code transcript, oldest first.
+ * The human-written user turns of a Claude Code transcript, oldest first; each
+ * human `<message>` envelope in a batched NanoClaw record is its own turn.
  * Skips tool results, skill loads (isMeta) and harness notices, and turns left
  * empty by that. A NanoClaw container wraps chat in `<message>` envelopes;
  * there only envelopes not sent by the system or an agent count. An unreadable
@@ -366,12 +367,11 @@ export function humanTurns(transcriptPath) {
       .replace(HARNESS_BLOCK, '');
     const envelopes = [...text.matchAll(ENVELOPE)];
     const human = envelopes.length === 0
-      ? text
+      ? [text]
       : envelopes
         .filter(([, attrs]) => !/\bsender_id="system"/.test(attrs) && !/\bfrom="unknown:agent:/.test(attrs))
-        .map(([, , body]) => body)
-        .join('\n');
-    if (human.trim()) out.push(human.trim());
+        .map(([, , body]) => body);
+    for (const turn of human) if (turn.trim()) out.push(turn.trim());
   }
   return out;
 }

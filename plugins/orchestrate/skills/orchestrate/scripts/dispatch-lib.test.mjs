@@ -157,6 +157,7 @@ test('humanTurns keeps only the turns people wrote', () => {
       envelope('id="1" from="chat-team-1" sender="Avery Lane" sender_id="U0TEST1"', 'words-b'),
       envelope('id="2" from="unknown:agent:ag-test" sender="system" sender_id="system"', 'words-c'),
       envelope('id="3" from="unknown:agent:ag-test" sender="helper" sender_id="U0BOT"', 'words-d'),
+      envelope('id="4" from="chat-team-1" sender="Avery Lane" sender_id="U0TEST1"', 'words-j'),
     ].join('\n') }]),
     user([{ type: 'text', text: 'words-e' }], { isMeta: true }),
     user([{ type: 'tool_result', tool_use_id: 't1', content: 'words-f' }]),
@@ -164,7 +165,7 @@ test('humanTurns keeps only the turns people wrote', () => {
     user('words-i', { isSidechain: true }),
     'not json',
   ].join('\n'));
-  assert.deepEqual(humanTurns(file), ['words-a', 'words-b']);
+  assert.deepEqual(humanTurns(file), ['words-a', 'words-b', 'words-j']);
   assert.deepEqual(humanTurns(path.join(root, 'missing.jsonl')), []);
   assert.deepEqual(humanTurns(undefined), []);
 });
