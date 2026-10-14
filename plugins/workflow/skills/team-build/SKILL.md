@@ -14,6 +14,9 @@ irreversible decision. Keep the same sub-agent through build, tests and fixes.
    Only brief logistical or mechanical actions execute directly; substantive work uses the sub-agent.
 3. Add meaningful acceptance/regression tests when practical. Confirm the expected failure before
    the fix when useful; use proportional alternatives for mechanical edits or unisolatable behavior.
+   When the change alters user- or data-visible behaviour (a route, CLI output, a dbt model) or
+   touches a path the standing instructions mark high-risk, drive it through the project's
+   `verify-<project>` skill, which `create-verification-skill` locates or, when none exists, makes.
 4. Diagnose unexpected failures with `/team-debug`; apply the shared maximum of 3 corrective rounds
    across the task. Reconsider a repeated failure signature once, and stop on no progress.
 5. Inspect the complete diff, run the self-simplify pass (`../shared/workflow-contract.md`) when it

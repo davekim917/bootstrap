@@ -295,6 +295,7 @@ const codexRoster = new Map([
   ['wwed', './plugins/wwed'],
   ['analytics-verify', './plugins/analytics-verify'],
   ['test-audit', './plugins/test-audit'],
+  ['verification-skills', './plugins/verification-skills'],
   ['comment-rule', './plugins/comment-rule'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
@@ -385,6 +386,7 @@ const claudeRoster = new Map([
   ['wwed', './plugins/wwed'],
   ['analytics-verify', './plugins/analytics-verify'],
   ['test-audit', './plugins/test-audit'],
+  ['verification-skills', './plugins/verification-skills'],
   ['comment-rule', './plugins/comment-rule'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
@@ -547,6 +549,50 @@ requireTextTokens(
   'plugins/test-audit/LICENSE-OPENCLAW',
   ['Copyright (c) 2026 OpenClaw Foundation', 'Permission is hereby granted, free of charge'],
   'the adapted-material license notice',
+);
+
+// verification-skills is invoke-only (no hooks, no always-on file) and carries pstack's MIT notice.
+const verificationClaudeManifest = readJson('plugins/verification-skills/.claude-plugin/plugin.json');
+const verificationCodexManifest = readJson('plugins/verification-skills/.codex-plugin/plugin.json');
+for (const [label, manifest, entries] of [
+  ['.claude-plugin', verificationClaudeManifest, claudeEntries],
+  ['.agents', verificationCodexManifest, codexEntries],
+]) {
+  if (manifest?.name !== 'verification-skills') fail(`plugins/verification-skills ${label} manifest name must be verification-skills`);
+  if (manifest?.hooks !== undefined) fail(`plugins/verification-skills ${label} manifest must not declare hooks; its skills are invoke-only`);
+  const entry = entries.find((candidate) => candidate.name === 'verification-skills');
+  if (!entry) fail(`${label} marketplace must register verification-skills`);
+  else if (entry.version !== manifest?.version) {
+    fail(`verification-skills version must match between the ${label} marketplace and its manifest (${entry.version} !== ${manifest?.version})`);
+  }
+}
+if (verificationClaudeManifest?.version !== verificationCodexManifest?.version) {
+  fail(
+    `verification-skills Claude and Codex manifests must share one version (${verificationClaudeManifest?.version} !== ${verificationCodexManifest?.version})`,
+  );
+}
+for (const file of [
+  'skills/create-verification-skill/SKILL.md',
+  'skills/create-verification-skill/references/stacks.md',
+  'skills/create-verification-skill/references/feature-map-example/README.md',
+  'skills/maintain-verification-skill/SKILL.md',
+  'NOTICE.md',
+  'LICENSE-PSTACK',
+]) {
+  if (!exists(`plugins/verification-skills/${file}`)) fail(`plugins/verification-skills must ship ${file}`);
+}
+for (const activationPath of ['plugins/verification-skills/hooks', 'plugins/verification-skills/always-on.md']) {
+  if (exists(activationPath)) fail(`${activationPath} must not exist; verification-skills is invoke-only`);
+}
+requireTextTokens(
+  'plugins/verification-skills/LICENSE-PSTACK',
+  ['Copyright (c) 2026 Lauren Tan', 'Permission is hereby granted, free of charge'],
+  'the adapted-material license notice',
+);
+requireTextTokens(
+  'plugins/verification-skills/NOTICE.md',
+  ['https://github.com/cursor/plugins', 'c86f349b102feb91f1966f8a6a60882a4e601b50', 'LICENSE-PSTACK'],
+  'the adapted-material provenance',
 );
 
 // Codex does not expand ${CLAUDE_PLUGIN_ROOT}, so comment-rule ships a separate Codex hook file.
@@ -1264,6 +1310,7 @@ checkSkillMarkdownLinks(orchestrateSkillsRoot);
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/wwbd/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/concise/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/test-audit/skills'));
+checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/verification-skills/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/slack-humanizer/skills'));
 checkSkillMarkdownLinks(claudeSkillsRoot);
 

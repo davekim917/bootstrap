@@ -22,6 +22,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.2.4 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex | `test-audit` | 1.0.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
+| Claude Code / Codex / OpenCode | `verification-skills` | 1.0.0 | Invoke-only skills that generate and maintain a private `verify-<project>` skill (launch, doctor, drive, evidence, cleanup, feature map) for web apps, CLIs, services and dbt/Snowflake projects; adapted from pstack (MIT) |
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 | Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.1 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
@@ -262,6 +263,7 @@ artifact, environment and command, and invalidate it after relevant changes.
 /plugin install wwed@davekim917-bootstrap
 /plugin install analytics-verify@davekim917-bootstrap
 /plugin install test-audit@davekim917-bootstrap
+/plugin install verification-skills@davekim917-bootstrap
 /plugin install comment-rule@davekim917-bootstrap
 /plugin install concise@davekim917-bootstrap
 /plugin install slack-humanizer@davekim917-bootstrap
@@ -277,6 +279,7 @@ codex plugin add wwbd@davekim917-bootstrap
 codex plugin add wwed@davekim917-bootstrap
 codex plugin add analytics-verify@davekim917-bootstrap
 codex plugin add test-audit@davekim917-bootstrap
+codex plugin add verification-skills@davekim917-bootstrap
 codex plugin add comment-rule@davekim917-bootstrap
 codex plugin add concise@davekim917-bootstrap
 codex plugin add slack-humanizer@davekim917-bootstrap
@@ -292,6 +295,7 @@ codex plugin add wwbd@davekim917-bootstrap
 codex plugin add wwed@davekim917-bootstrap
 codex plugin add analytics-verify@davekim917-bootstrap
 codex plugin add test-audit@davekim917-bootstrap
+codex plugin add verification-skills@davekim917-bootstrap
 codex plugin add comment-rule@davekim917-bootstrap
 ```
 

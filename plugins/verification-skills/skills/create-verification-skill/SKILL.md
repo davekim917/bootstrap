@@ -1,0 +1,53 @@
+---
+name: create-verification-skill
+description: "Generate a private verify-<project> skill that drives a project the way a user does (web app, CLI, service, or dbt/Snowflake project) and records evidence a reviewer can check. Invoke-only: use when asked to create-verification-skill or \"make a verify skill for this repo\", or when team-build points here. Nothing loads this on its own."
+---
+
+# Create a verification skill
+
+Every serious project needs a scripted way to drive the real thing and prove behavior: launch it, exercise a feature the way a user would, and capture evidence. This skill generates that as a `verify-<project>` skill tailored to one project. You write the generator's output for the next agent, not for a human: it will be read cold, mid-task, by an agent that has never seen the project, on Claude, Codex or OpenCode.
+
+## 1. Interview the repo, not the user
+
+Answer these from the codebase and only ask the user what you cannot observe:
+
+- **Surface:** what does a user actually touch? A web UI, a CLI/TUI, an API, a library, or tables and metrics built by a dbt project? A repo can have several; pick the primary one and note the rest.
+- **Run:** how does the project start locally? Prefer the repo's own documented dev command (package scripts, Makefile, README quickstart, `dbt build`). Note ports, env vars, seed data, auth, dev targets.
+- **Drive:** how can an agent interact with it programmatically? Existing harnesses first: Playwright specs, expect scripts, curl-able endpoints, dbt tests and selectors. Only then pick a generic recipe from [references/stacks.md](references/stacks.md).
+- **Observe:** what evidence can be captured? Screenshots, terminal transcripts, response bodies, logs, exit codes, `run_results.json`, query results, DB state.
+- **Isolate:** can a verification instance run without touching anything shared (ports, data dirs, profiles, warehouse schemas)? If not, say so in the generated skill: refusing to double-drive a shared instance beats corrupting someone's session. Production is never a verification target.
+
+If the checkout doesn't build or start as-is, fix that first (or report it precisely) before generating; a skill written against a broken base teaches wrong steps. When an irrelevant missing asset blocks startup (a static dir the API never serves, a sample config), the generated skill may create it, clearly marked as verification scaffolding, and remove it in cleanup.
+
+## 2. Choose where it lives
+
+The skill is private by default. A client repository that receives a `verify-*` directory has received a visible change, so commit it into the repo only when the user owns the repo or its owner asked for it. Otherwise:
+
+- **NanoClaw container:** `/workspace/workgroup/.claude/skills/verify-<project>/`. The workgroup tree is the one directory every sibling agent (Claude, Codex, OpenCode) mounts, and it outlives the container; a group's own folder is private to one sibling. No runtime discovers skills there yet, so the skill is used by reading its `SKILL.md` by path. If `/workspace/workgroup` is missing, stop and ask the operator rather than writing somewhere a sibling cannot read.
+- **Host session:** `~/.agents/skills/verify-<project>/`, plus an absolute symlink to it at `~/.claude/skills/verify-<project>`. Codex and OpenCode read the first, Claude reads the second.
+
+`<project>` is a short slug of the repository name. One skill per project: if a `verify-<project>` already exists there, use it, or run `maintain-verification-skill` when it has drifted, instead of generating a second one.
+
+## 3. Generate the skill
+
+Write `verify-<project>/SKILL.md` with YAML frontmatter (`name: verify-<project>` and a `description` that names the project, the surface, and when to reach for it; without frontmatter the skill never registers) and these sections, each grounded in what the interview actually found (no placeholders left):
+
+- **Project:** the binding. The repository's remote URL (or its absolute path when it has none), the checkout path it was proven against, the directory this skill lives in, and its evidence root, `<skill directory>/evidence/` so evidence is exactly as private and as shared as the skill. Before any run, the agent confirms the current checkout's remote matches and stops on a mismatch.
+- **Launch:** the exact command that starts the project for verification, and how to tell it's ready (a log line, a prompt, `dbt debug` passing). Launch must reach a usable state from an empty data dir, including any migrations and seed data. Ready means usable, not just that a process answers. A database health check can pass while its init scripts are still running. Include teardown. For a short-lived CLI or TUI there is no server to keep alive: launch means build the binary (or install deps) once, then start each drive as its own isolated process, in a PTY or tmux session only when the program needs a terminal (a PTY merges stdout and stderr).
+- **Doctor:** one read-only check that answers "is this instance worth driving?": process up, right revision, port owned by us, auth valid, target is not production (for a CLI: the right build and an isolated config and data dir). An agent runs this first whenever anything looks off.
+- **Drive:** the harness recipe with real selectors/commands from this repo, not examples. Prefer stable handles (ARIA labels, data attributes, prompt strings, route paths, model names) over coordinates and tab order.
+- **Evidence:** what to capture and where it goes. Each run writes `<evidence root>/<UTC YYYYMMDDTHHMMSSZ>-<short revision>/record.md` plus its artifacts, and the record states: the revision driven (commit and whether the tree was dirty); per feature the action taken, the result, the side effects checked, every mock in play, and the gaps (paths not exercised and why). Proof standards: exercise the real user path, not internal setters or test-only endpoints; capture the action and the resulting state, not just the final screen; verify side effects (files written, rows inserted, messages sent) alongside what's visible; mocks only where a production boundary already isolates the external system. When the safe path is a dry-run or test mode, verify what it actually skips by observing (files, network, git refs) rather than trusting its name: some dry-runs still touch the network or open a browser. A feature that could not be reached is `unreachable`, with the unmet prerequisite and the route attempted. It never counts as passed.
+- **Cleanup:** how to tear down instances the run created. Never kill by process name; kill what you started. Drop only the schemas, files and fixtures this run created. Cleanup removes instances and scratch state, never the evidence: the evidence root survives the teardown.
+- **Helpers:** any script the skill tells the reader to run is executable and its invocation is shown in the skill body. A helper the reader has to reverse-engineer is not a helper. Agent tool calls rarely keep shell state between calls, so each helper call stands alone: pass the run's evidence path as an argument or variable on every call, never through `eval` or an earlier `export`.
+
+## 4. Seed the feature map
+
+Create `verify-<project>/features/README.md` plus one file per user-facing feature you can identify (aim for the top 3-5 to start, from routes, commands, menus, docs, or the marts and metrics people consume). Follow the shape in [`references/feature-map-example/`](references/feature-map-example/), with a README index and one file per feature. Each file answers, from the user's point of view: what the feature is, how to reach it, how to drive it with the harness, and what observable end state proves it works. The four H2s are `Sub-features`, `How to get to it (user POV)`, `Driving it with <harness>` (the helper, browser tool or command the Drive section names), and `Gotchas`; the example README's other sections are a model, not a requirement. If the seed data lacks a precondition that a journey needs, the journey reports a failure and the reason goes in that feature's `Gotchas`. Never weaken the journey, and never rewrite an expected result to match what a regression now produces. The map is the project's maintained verification source; a proof that drives one convenient entry point is incomplete when the map lists others.
+
+## 5. Prove the generated skill before handing it over
+
+Run its own instructions end to end once: launch, doctor, drive ONE mapped feature (one is enough; the map exists so later runs can cover the rest, and the record lists them as gaps), capture evidence, clean up. After cleanup, confirm the evidence still exists at the named location: a cleanup that eats the proof fails this step. Fix what fails, and run the generated cleanup after every failed iteration too, so broken attempts don't strand processes, ports or schemas. A generated skill that was never executed is a draft, not a deliverable. If you proved it in a stand-in for the real target (a container in place of a fresh VM, a local stack in place of a remote one), list every setup step the stand-in did that the target will not. Those steps stay unverified until a run on the real target covers them.
+
+## 6. Offer the maintenance loop
+
+Point the user at `maintain-verification-skill` for keeping the map honest as the project changes. Suggest a cadence only if they ask.

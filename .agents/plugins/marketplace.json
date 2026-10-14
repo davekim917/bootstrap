@@ -117,6 +117,20 @@
       "category": "Coding"
     },
     {
+      "name": "verification-skills",
+      "version": "1.0.0",
+      "description": "Generate and maintain a private verify-<project> skill that drives a web app, CLI, service or dbt/Snowflake project the way a user does and records evidence a reviewer can check. Invoke-only. Adapted from pstack (MIT).",
+      "source": {
+        "source": "local",
+        "path": "./plugins/verification-skills"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Coding"
+    },
+    {
       "name": "comment-rule",
       "version": "2.0.0",
       "description": "One comment checker for every repo: blocks file:line citations and PR/issue/ticket history in comments, and lists every new comment line for a reviewer to judge. CLI for CI and merge gates, plus write-time feedback after each edit.",
