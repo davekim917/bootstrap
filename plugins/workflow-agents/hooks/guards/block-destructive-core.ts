@@ -579,6 +579,7 @@ export const WRAPPERS = new Set([
     // check passed — and since `Bash(pnpm exec *)` is commonly allow-listed,
     // that also meant no prompt. A ten-character prefix defeated both layers.
     'pnpm', 'yarn', 'npx', 'bunx',
+    'exec',
 ]);
 
 // Protected home subdirectories — rm targeting anything inside these is blocked
@@ -1458,33 +1459,29 @@ function splitEnvString(text: string): string[] | null {
     return words;
 }
 
-/** Resolve a Command AST node: strip wrapper commands, extract name + args */
-export function resolveCommand(node: any): ResolvedCommand | null {
-    if (!node.name) return null;
-
-    let name = unescapeCommandWord(node.name.value || '');
-    let args = (node.suffix || []).map(wordValue);
+/**
+ * The command a wrapper chain finally runs (sudo, env, nice, timeout, exec, npx, pnpm exec, …), with the env
+ * assignments and `env -C` directory picked up on the way. Shared by the top-level resolver and by the commands
+ * xargs and find -exec run, so a wrapper is unwrapped the same way wherever it appears.
+ */
+export function stripWrappers(word: string, rest: string[]): { name: string; args: string[]; env: string[]; chdir?: string } {
+    let name = commandName(word);
+    let args = rest;
     let chdir: string | undefined;
-    const env: string[] = (node.prefix || [])
-        .filter((p: any) => p?.type === 'Assignment' && typeof p.name === 'string')
-        .map((p: any) => `${p.name}=${p.value?.value ?? p.value?.text ?? ''}`);
-
-    // Strip path prefix (e.g., /usr/bin/rm → rm)
-    name = name.replace(/^\/(?:usr\/(?:local\/)?)?(?:s?bin)\//, '');
-
+    const env: string[] = [];
     // Resolve through wrapper commands
     while (WRAPPERS.has(name) && args.length > 0) {
         let skip = 0;
 
         if (name === 'sudo') {
-            // Skip flags; handle -u/-g/-C which take an argument
-            while (skip < args.length && args[skip].startsWith('-')) {
-                if (['-u', '-g', '-C'].includes(args[skip]) && skip + 1 < args.length) {
-                    skip += 2;
-                } else {
-                    skip += 1;
-                }
+            // Skip flags. A short option (or cluster such as `-nu`) ending in a value-taking letter consumes the next
+            // word; `--opt=value` forms are one word.
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += optionWords(args[skip], 'aCcDghpRrTtUu', SUDO_LONG_VALUE_OPTIONS, SUDO_LONG_FLAGS);
             }
+            if (args[skip] === '--') skip += 1;
+            // `sudo [options] [VAR=value]... command`, like env.
+            while (skip < args.length && /^\w+=/.test(args[skip])) env.push(args[skip++]);
         } else if (name === 'env') {
             // Skip flags and VAR=val assignments, keeping the assignments.
             // `-u NAME` and `-C DIR` take the next argument; `-S STRING` IS the
@@ -1522,6 +1519,12 @@ export function resolveCommand(node: any): ResolvedCommand | null {
             while (skip < args.length && args[skip].startsWith('-')) skip += 1;
             if (!(skip < args.length && (args[skip] === 'exec' || args[skip] === 'dlx'))) break;
             skip += 1;
+        } else if (name === 'exec') {
+            // `exec -a NAME` sets argv[0]; -c and -l take nothing, and the three cluster (`-ca NAME`).
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += optionWords(args[skip], 'a');
+            }
+            if (args[skip] === '--') skip += 1;
         } else if (name === 'npx' || name === 'bunx') {
             // The command follows the flags; -p/--package takes a value.
             while (skip < args.length && args[skip].startsWith('-')) {
@@ -1532,9 +1535,22 @@ export function resolveCommand(node: any): ResolvedCommand | null {
 
         if (skip >= args.length) break;
 
-        name = unescapeCommandWord(args[skip]).replace(/^\/(?:usr\/(?:local\/)?)?(?:s?bin)\//, '');
+        name = commandName(args[skip]);
         args = args.slice(skip + 1);
     }
+    return { name, args, env, ...(chdir !== undefined ? { chdir } : {}) };
+}
+
+/** Resolve a Command AST node: strip wrapper commands, extract name + args */
+export function resolveCommand(node: any): ResolvedCommand | null {
+    if (!node.name) return null;
+
+    const env: string[] = (node.prefix || [])
+        .filter((p: any) => p?.type === 'Assignment' && typeof p.name === 'string')
+        .map((p: any) => `${p.name}=${p.value?.value ?? p.value?.text ?? ''}`);
+    const stripped = stripWrappers(node.name.value || '', (node.suffix || []).map(wordValue));
+    const { name, args, chdir } = stripped;
+    env.push(...stripped.env);
 
     // Check for input redirects (<<, <<<) on the original Command node
     const hasInputRedirect = (node.redirects || []).some((r: any) =>
@@ -1592,6 +1608,79 @@ function wordValue(word: any): string {
  */
 function unescapeCommandWord(word: string): string {
     return word.replace(/\\(.)/gs, '$1');
+}
+
+/** A command word as the rules match it: unescaped, and by basename, so `/bin/rm`, `/opt/homebrew/bin/rm` and `\rm` are all `rm`. */
+export function commandName(word: string): string {
+    return unescapeCommandWord(word).replace(/^.*\//, '');
+}
+
+const SUDO_LONG_FLAGS = new Set(['--login', '--preserve-env', '--non-interactive', '--background', '--shell', '--stdin',
+    '--set-home', '--edit', '--list', '--validate', '--remove-timestamp', '--reset-timestamp', '--askpass', '--bell',
+    '--help', '--version']);
+const SUDO_LONG_VALUE_OPTIONS = new Set(['--user', '--group', '--close-from', '--chdir', '--host', '--prompt', '--chroot',
+    '--role', '--type', '--command-timeout', '--other-user', '--auth-type', '--login-class']);
+
+// `--eof[=END]` takes its value only attached, so a bare `--eof` is a flag.
+// `--max-lines[=N]`, `--eof[=END]` and `--replace[=R]` take a value only when attached.
+const XARGS_LONG_VALUE_OPTIONS = new Set(['--arg-file', '--delimiter', '--max-args', '--max-procs', '--max-chars',
+    '--process-slot-var']);
+const XARGS_LONG_FLAGS = new Set(['--null', '--interactive', '--no-run-if-empty', '--verbose', '--exit', '--open-tty',
+    '--show-limits', '--max-lines', '--eof', '--replace', '--help', '--version']);
+
+/**
+ * How many words a command's option takes, read the way getopt does: in a short cluster such as `-0a` or `-nu`, the
+ * first letter in `valueLetters` takes the rest of the word as its value (`-uroot`), or the next word when it is last.
+ */
+function optionWords(arg: string, valueLetters: string, longValueOptions?: Set<string>, longFlags?: Set<string>): 1 | 2 {
+    if (arg.startsWith('--')) {
+        // getopt_long takes an exact name first (`--login` is not `--login-class`), then any unambiguous abbreviation
+        // (`--arg-f`); a prefix of a value-taking option takes one.
+        if (arg.includes('=') || !longValueOptions || longFlags?.has(arg)) return 1;
+        if (longValueOptions.has(arg)) return 2;
+        return [...longValueOptions].some(o => o.startsWith(arg) && arg.length > 2) ? 2 : 1;
+    }
+    for (let i = 1; i < arg.length; i++) {
+        if (valueLetters.includes(arg[i])) return i === arg.length - 1 ? 2 : 1;
+    }
+    return 1;
+}
+
+/** The command xargs runs and its arguments, past xargs's own options (`-0`, `-I{}`, `-n 1`, `--max-procs=4`, …). */
+function xargsCommand(args: string[]): string[] {
+    let i = 0;
+    while (i < args.length && args[i].startsWith('-')) {
+        const a = args[i];
+        if (a === '--') return args.slice(i + 1);
+        i += optionWords(a, 'adEIJLnPRsS', XARGS_LONG_VALUE_OPTIONS, XARGS_LONG_FLAGS);
+    }
+    return args.slice(i);
+}
+
+const RUNS_RM = 'runs rm';
+
+/**
+ * Why the command xargs or find -exec runs is blocked, or null. A shell it runs with `-c` is judged by the commands
+ * in its script, not refused outright as a top-level `sh -c` is: `xargs -I{} sh -c 'grep … {}'` is routine, while
+ * `xargs sh -c 'rm "$@"'` still deletes.
+ */
+function innerHardBlock(inner: ResolvedCommand | null): string | null {
+    if (!inner) return null;
+    const c = SHELLS.has(inner.name) ? inner.args.findIndex(a => /^-[a-z]*c$/.test(a)) : -1;
+    if (c < 0) return inner.name === 'rm' ? RUNS_RM : checkHardBlock(inner);
+    for (const nested of extractCommands(inner.args[c + 1] ?? '')) {
+        const reason = nested.name === 'rm' ? RUNS_RM : checkHardBlock(nested);
+        if (reason) return reason;
+    }
+    return null;
+}
+
+/** The command `words` (a command word and its arguments, as xargs or find -exec take them) runs, past any wrapper. */
+function innerCommand(words: string[], outer: ResolvedCommand): ResolvedCommand | null {
+    const [first, ...rest] = words;
+    if (first === undefined) return null;
+    const { name, args, env } = stripWrappers(first, rest);
+    return { name, args, raw: outer.raw, env, hasInputRedirect: false };
 }
 
 /** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */
@@ -1749,7 +1838,7 @@ export function fallbackExtract(command: string): ResolvedCommand[] {
             const normalized = normalizeCommandFallback(rest);
             const parts = normalized.split(/\s+/);
             return {
-                name: unescapeCommandWord(parts[0] || ''),
+                name: commandName(parts[0] || ''),
                 args: parts.slice(1),
                 raw: seg,
                 env,
@@ -2564,24 +2653,24 @@ export function gitHookBypassReason(cmd: ResolvedCommand): string | null {
 
 /** Returns block reason if the command is unconditionally blocked, null otherwise */
 export function checkHardBlock(cmd: ResolvedCommand): string | null {
-    // find -exec rm / find -delete
+    // find -exec rm (and any other blocked command it runs) / find -delete
     if (cmd.name === 'find') {
         for (let i = 0; i < cmd.args.length; i++) {
-            if ((cmd.args[i] === '-exec' || cmd.args[i] === '-execdir') &&
-                (cmd.args[i + 1] === 'rm' || cmd.args[i + 1] === 'sudo')) {
-                return 'find -exec rm is not allowed. Use trash for file deletion.';
-            }
+            if (!['-exec', '-execdir', '-ok', '-okdir'].includes(cmd.args[i])) continue;
+            const reason = innerHardBlock(innerCommand(cmd.args.slice(i + 1), cmd));
+            if (reason === RUNS_RM) return 'find -exec rm is not allowed. Use trash for file deletion.';
+            if (reason) return `find ${cmd.args[i]} runs a blocked command. ${reason}`;
         }
         if (cmd.args.includes('-delete')) {
             return 'find -delete permanently deletes files. Use trash instead.';
         }
     }
 
-    // xargs rm
+    // xargs rm, and anything else xargs runs that is blocked on its own
     if (cmd.name === 'xargs') {
-        if (cmd.args[0] === 'rm' || (cmd.args[0] === 'sudo' && cmd.args[1] === 'rm')) {
-            return 'xargs rm is not allowed. Use trash for file deletion.';
-        }
+        const reason = innerHardBlock(innerCommand(xargsCommand(cmd.args), cmd));
+        if (reason === RUNS_RM) return 'xargs rm is not allowed. Use trash for file deletion.';
+        if (reason) return `xargs runs a blocked command. ${reason}`;
     }
 
     // Shell -c / here-string wrappers — bypass vectors for all other checks
