@@ -128,6 +128,9 @@ export function evalWord(
     view: ShellView,
     pos: number,
     keepQuotes = false,
+    // Take an unquoted value whole instead of leaving it unresolved for word splitting: right for a reader of the
+    // words joined back together, such as the text echo or printf emits.
+    joinSplit = false,
 ): { value: string; unresolved: string[] } {
     const unresolved: string[] = [];
     const note = (s: string) => { const c = clip(s, 40); if (!unresolved.includes(c)) unresolved.push(c); };
@@ -140,7 +143,7 @@ export function evalWord(
         if (simple) {
             const value = view.valueAt(simple[1] ?? simple[2], pos);
             // Unquoted, the shell splits a value on whitespace into several words.
-            if (value?.kind === 'text' && (quote === '"' || !/\s/.test(value.value)) && out.length + value.value.length <= RESOLVE_MAX_CHARS) {
+            if (value?.kind === 'text' && (quote === '"' || joinSplit || !/\s/.test(value.value)) && out.length + value.value.length <= RESOLVE_MAX_CHARS) {
                 out += value.value;
             } else { out += simple[0]; note(simple[0]); }
             i += simple[0].length;

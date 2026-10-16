@@ -58,7 +58,6 @@ export const IS_NANOCLAW = existsSync(NANOCLAW_OUTBOUND_DB) && existsSync(NANOCL
 export interface ResolvedCommand {
     name: string;               // resolved command name (e.g., "rm", "aws", "kubectl")
     args: string[];             // argument values after wrapper stripping
-    argWords?: string[];        // each of args as written, quotes included, when the parser gave them
     raw: string;                // original text for error messages
     env?: string[];             // NAME=value assignments applied to this command (prefix or `env` wrapper)
     chdir?: string;             // working directory set by an `env -C/--chdir` wrapper
@@ -153,12 +152,18 @@ const flattened = new WeakMap<PipedInput, FlatInput>();
 
 /** Charges `n` units to the line's trace budget; false once it is spent. */
 /** Shell words to expand, each beside the value it has unexpanded; a heredoc body is expanded as if double-quoted. */
-type ExpandableWord = { word: string; plain: string };
+type ExpandableWord = { word: string; plain: string; joinSplit?: boolean };
 
 const heredocWord = (t: string): ExpandableWord => ({ word: `"${t.replace(/(["\\])/g, '\\$1')}"`, plain: t });
 
-function argumentWords(cmd: ResolvedCommand): ExpandableWord[] {
-    return (cmd.argWords ?? []).map((word, i) => ({ word, plain: cmd.args[i] }));
+/** Each of `cmd`'s arguments as written (quotes included), when the parsed command line has it. */
+function argumentWords(cmd: ResolvedCommand, joinSplit = false): ExpandableWord[] {
+    const script = cmd.script;
+    if (cmd.pos === undefined || !script || !cmd.args.some(a => /[$`]/.test(a))) return [];
+    script.view ??= viewShell(script.command);
+    const texts = script.view.commandAt(cmd.pos)?.argTexts;
+    if (!texts || texts.length < cmd.args.length) return [];
+    return texts.slice(texts.length - cmd.args.length).map((word, i) => ({ word, plain: cmd.args[i], joinSplit }));
 }
 
 /**
@@ -169,12 +174,12 @@ function expandWords(words: ExpandableWord[], cmd: ResolvedCommand): string[] | 
     const out: string[] = [];
     const script = cmd.script;
     if (cmd.pos === undefined || !script) return out;
-    for (const { word, plain } of words) {
+    for (const { word, plain, joinSplit } of words) {
         if (!/[$`]/.test(word)) continue;
         script.wordBudget ??= SQL_WORD_BUDGET;
         if (script.wordBudget-- <= 0) return null;
         script.view ??= viewShell(script.command);
-        const r = evalWord(word, script.view, cmd.pos);
+        const r = evalWord(word, script.view, cmd.pos, false, joinSplit);
         if (r.value === plain) continue;
         if (!spendTrace(script, r.value.length)) return null;
         out.push(r.value);
@@ -184,7 +189,7 @@ function expandWords(words: ExpandableWord[], cmd: ResolvedCommand): string[] | 
 
 /** An emitter with its arguments and expanded heredoc input after variable expansion, or null over budget. */
 function expandedEmitter(cmd: ResolvedCommand): ResolvedCommand | null {
-    const words = argumentWords(cmd);
+    const words = argumentWords(cmd, true);
     const args = [...cmd.args];
     for (let i = 0; i < words.length; i++) {
         const e = expandWords([words[i]], cmd);
@@ -1597,10 +1602,6 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const stripped = stripWrappers(node.name.value || '', (node.suffix || []).map(wordValue));
     const { name, args, chdir } = stripped;
     env.push(...stripped.env);
-    const tail = (node.suffix || []).slice(Math.max(0, (node.suffix || []).length - args.length));
-    const argWords = tail.length === args.length && tail.every((w: any, i: number) => wordValue(w) === args[i])
-        ? tail.map((w: any) => String(w?.text ?? w?.value ?? ''))
-        : undefined;
 
     // Check for input redirects (<<, <<<) on the original Command node
     const hasInputRedirect = (node.redirects || []).some((r: any) =>
@@ -1630,7 +1631,6 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     return {
         name,
         args,
-        ...(argWords ? { argWords } : {}),
         raw: rawParts.join(' '),
         env,
         ...(chdir !== undefined ? { chdir } : {}),
@@ -2011,7 +2011,7 @@ function samePath(path: string): string {
 
 /** The text an emitter writes to stdout or its files (not counting what a pipe feeds it). */
 function holdsVariable(cmd: ResolvedCommand): boolean {
-    return [...(cmd.argWords ?? []), ...(cmd.stdinExpanded ?? [])].some(t => /[$`]/.test(t));
+    return [...cmd.args, ...(cmd.stdinExpanded ?? [])].some(t => /[$`]/.test(t));
 }
 
 function emittedText(cmd: ResolvedCommand): string[] {
