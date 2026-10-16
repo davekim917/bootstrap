@@ -145,6 +145,7 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
         `export B='DROP TABLE users;'; mysql -e "$B"`,
         `B='DROP TABLE users;'; echo $B | psql`,
         `B='DROP TABLE users;'; printf '%s\\n' $B | psql`,
+        `B='-e DROP TABLE users;'; echo $B | psql`,
     ]) {
         expect(verdict(command)).toBe('gate');
     }

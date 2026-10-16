@@ -191,13 +191,17 @@ function expandWords(words: ExpandableWord[], cmd: ResolvedCommand): string[] | 
 function expandedEmitter(cmd: ResolvedCommand): ResolvedCommand | null {
     const words = argumentWords(cmd, true);
     const args = [...cmd.args];
+    const values: string[] = [];
     for (let i = 0; i < words.length; i++) {
         const e = expandWords([words[i]], cmd);
         if (e === null) return null;
         if (e.length) args[i] = e[0];
+        values.push(...e.flatMap(v => [v, v.replace(/^(?:-\S*\s+)+/, '')]));
     }
     const stdin = expandWords((cmd.stdinExpanded ?? []).map(heredocWord), cmd);
-    return stdin === null ? null : { ...cmd, args, stdinTexts: [...(cmd.stdinTexts ?? []), ...stdin] };
+    // Each value is scanned whole and without leading option words too: an unquoted `-e DROP …` splits into an option
+    // and the SQL echo prints, while emittedText would drop the joined word as an option.
+    return stdin === null ? null : { ...cmd, args, stdinTexts: [...(cmd.stdinTexts ?? []), ...stdin, ...values] };
 }
 
 function spendTrace(script: ScriptContext | undefined, n: number): boolean {
