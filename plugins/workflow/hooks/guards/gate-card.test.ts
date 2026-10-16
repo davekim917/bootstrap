@@ -317,7 +317,7 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
     });
 
     test('flags a lone help or dry-run call that is gated only because the command chains other steps', () => {
-        const v = evaluateEmailSend('gws gmail +reply --help 2>&1 | grep -i to; echo ok', INTERACTIVE);
+        const v = evaluateEmailSend('gws gmail +reply --help 2>&1 | grep -i to; node notify.js', INTERACTIVE);
         expect(v.action).toBe('gate');
         expect(v.label).toContain('(--help — check the command)');
         expect(v.summary).toContain('which on its own sends nothing');

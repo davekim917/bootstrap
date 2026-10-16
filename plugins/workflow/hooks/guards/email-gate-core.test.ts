@@ -120,12 +120,79 @@ describe('evaluateEmailSend — gate decision', () => {
             'export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/primary.json && gws gmail users messages send --help 2>&1 | head -60';
         expect(evaluateEmailSend(helpProbe, INTERACTIVE)).toEqual({ action: 'allow' });
 
-        // The special case must not admit a real second command, a further
-        // pipe, or a help-looking value consumed by another option.
+        // A probe must not admit a real second send, a pipe into anything that can
+        // run code, or a help-looking value consumed by another option.
         for (const command of [
             helpProbe + ' && gws gmail +send --to victim@example.com --body x',
-            helpProbe + ' | cat',
+            helpProbe + ' | sh',
+            helpProbe + ' | python3 -c "import sys"',
             'gws gmail +send --subject --help 2>&1 | head -60',
+        ]) {
+            expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
+        }
+        expect(evaluateEmailSend(helpProbe + ' | cat', INTERACTIVE)).toEqual({ action: 'allow' });
+    });
+
+    test('allows probes in the shapes agents write them', () => {
+        for (const command of [
+            'export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/primary.json; timeout 60 gws gmail +send --help 2>&1 | head -20',
+            "BODY='<p>Hi</p>'\ngws gmail +reply --message-id 1a0 --body \"$BODY\" --html --dry-run 2>&1 | grep -v '\"raw\"' | head -30",
+            "gws gmail users messages send --help | sed -n '1,180p'",
+            'gws gmail --help 2>&1 | grep -E "^\\s*\\+" ; gws gmail +reply-all --help 2>&1 | head -40',
+            "set -euo pipefail\ngws gmail users messages list --params '{\"q\":\"from:a\"}' | head -30\ngws gmail +reply --help | head -40",
+            'B=$(cat body.html); gws gmail +send --to a@example.com --body "$B" --html --dry-run --format json',
+            'gws gmail +reply --help 2>&1 | grep -i to; echo ok',
+            "gws gmail +send --help | sed -n -e '1,40p'",
+            "gws gmail +send --help | sed --quiet --expression=/^Options/p",
+            'env GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/creds.json gws gmail +send --help | head',
+        ]) {
+            expect(evaluateEmailSend(command, INTERACTIVE)).toEqual({ action: 'allow' });
+        }
+    });
+
+    test('a probe-looking command that can send, or change what a probe runs, gates', () => {
+        for (const command of [
+            'if gws gmail +send --to victim@example.net --body x; then :; fi; gws gmail +send --help',
+            'B=$(gws gmail +send --to victim@example.net --body x); gws gmail +send --help',
+            'gws gmail +send --to a@example.com --body "$(gws gmail +send --to victim@example.net --body x)" --dry-run',
+            'cat <<EOF\n$(gws gmail +send --to victim@example.net --body x)\nEOF\ngws gmail +send --help',
+            'head() { gws gmail +send --to victim@example.net --body x; }; gws gmail +send --help | head',
+            'X=--; gws gmail +send --to victim@example.net --body x $X --dry-run',
+            'gws gmail +send --to victim@example.net --body x $FLAGS',
+            'PATH=/tmp/x:$PATH; gws gmail +send --help | head',
+            'export PATH=/tmp/x; gws gmail +send --help | head',
+            'export BASH_ENV=/tmp/x; gws gmail +send --help | head',
+            'printf -v PATH /tmp/x; gws gmail +send --help | head',
+            "gws gmail +send --help | sed 'e gws gmail +send --to victim@example.net'",
+            "gws gmail +send --help | sed -i '1d' x",
+            'gws gmail +send --help; eval "gws gmail +send --to victim@example.net --body x"',
+            'gws gmail +send --to victim@example.net --body x --dry-run=false',
+            'gws gmail +send --to victim@example.net -- --dry-run',
+            'gws gmail users messages send --params x; gws gmail +send --help',
+            "gws gmail +send --help | sed --expression='e /usr/bin/gws gmail +send --to victim@example.net --body x'",
+            "gws gmail +send --help | sed -e'e /usr/bin/gws gmail +send --to victim@example.net'",
+            "gws gmail +send --help | sed -ne 'e /usr/bin/gws gmail +send --to victim@example.net'",
+            "gws gmail +send --help | sed -n 1p -e 'w /tmp/out'",
+            "gws gmail +send --help | sed -f script.sed",
+            'env PATH=/tmp gws gmail +send --to victim@example.net --body x --help',
+            'sudo LD_PRELOAD=/tmp/x.so gws gmail +send --help | head',
+            'npx --yes --package=/tmp/evil-gws gws gmail +send --to victim@example.net --body x --help',
+            'bunx gws gmail +send --to victim@example.net --body x --dry-run',
+            'pnpm exec gws gmail +send --to victim@example.net --body x --help',
+            'timeout 60 npx gws gmail +send --to victim@example.net --body x --help',
+            'gws gmail +send --help; sort --compress-program=/tmp/evil --buffer-size=1 /etc/passwd',
+            'for PATH in /tmp/evil; do gws gmail +send --to victim@example.net --body x --help; done',
+            'env -u gws npx --yes --package=/tmp/evil-gws \\gws gmail +send --to victim@example.net --body x --help',
+            '\\gws gmail +send --to victim@example.net --body x --help',
+            '( gws gmail +send --help )',
+            'while read -r PATH; do gws gmail +send --help; done < dirs',
+            "test -v 'x[$(\\gws gmail +send --to victim@example.net --body x)]'; gws gmail +send --help",
+            "[ -v 'x[0]' ] && gws gmail +send --help",
+            ': {PATH}>/tmp/f; gws gmail +send --to victim@example.net --help',
+            'gws gmail +send --help; /tmp/grep x',
+            'gws gmail +send --help | ./head',
+            'gws gmail +send --help | timeout 5 /tmp/head',
+            "export EXECIGNORE='*/usr/local/bin/gws'; gws gmail +send --to victim@example.net --body x --help",
         ]) {
             expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
         }
@@ -284,17 +351,22 @@ describe('evaluateEmailSend — gate decision', () => {
     });
 
     test('test_email_bypass_only_simple_single_command (chaining gates, codex #5)', () => {
-        // Bypass is honored ONLY for a single simple send. Any chaining — even of
-        // an otherwise-harmless dry-run — gates, because a separator is exactly
-        // what a decoy attack needs and we cannot tell a benign follow-up from an
-        // obfuscated second send. Fail-closed by design (the bypass is a
-        // convenience for simple exploration, not a chained-pipeline feature).
+        // A chain is allowed only when the parser accounts for every command in
+        // it: a dry-run beside echo is fine, a dry-run beside anything that can
+        // send or run code is not.
+        for (const cmd of [
+            'gws gmail +send --dry-run --to a@example.com && gws gmail +send --to a@example.com --body x',
+            'gws gmail +send --dry-run --to a@example.com; bash -c "x"',
+            'echo start && gws gmail +send --dry-run --to a@example.com && node x.js',
+        ]) {
+            expect(evaluateEmailSend(cmd, INTERACTIVE).action).toBe('gate');
+        }
         for (const cmd of [
             'gws gmail +send --dry-run --to a@example.com && echo done',
             'gws gmail +send --dry-run --to a@example.com; echo done',
             'echo start && gws gmail +send --dry-run --to a@example.com',
         ]) {
-            expect(evaluateEmailSend(cmd, INTERACTIVE).action).toBe('gate');
+            expect(evaluateEmailSend(cmd, INTERACTIVE)).toEqual({ action: 'allow' });
         }
         // …but a plain single dry-run / help / draft send still bypasses.
         for (const cmd of [
@@ -334,13 +406,18 @@ describe('evaluateEmailSend — gate decision', () => {
         // path-spoofing vector), quote-spliced / fully-quoted flags, a flag right
         // after a boolean option, and a non-consuming wrapper. Locked as
         // intentional so a future change that "fixes" them is a conscious choice.
+        expect(evaluateEmailSend('/home/ubuntu/.npm-global/bin/gws gmail +send --to a@example.com --body x --dry-run', INTERACTIVE).action).toBe('gate');
+    });
+
+    test('dry-runs the shell parser reads exactly: quote-spliced or quoted flags, non-consuming wrappers', () => {
         for (const cmd of [
-            '/home/ubuntu/.npm-global/bin/gws gmail +send --to a@example.com --body x --dry-run', // abs path (codex #9)
-            `gws gmail +send --dry'-'run --to a@example.com --body x`, // quote-spliced flag
-            `gws gmail +send '--dry-run' --to a@example.com --body x`, // fully-quoted flag
-            'command gws gmail +send --to a@example.com --body x --dry-run', // non-consuming wrapper
+            `gws gmail +send --dry'-'run --to a@example.com --body x`,
+            `gws gmail +send '--dry-run' --to a@example.com --body x`,
+            'command gws gmail +send --to a@example.com --body x --dry-run',
+            'time gws gmail +send --to a@example.com --body x --dry-run',
+            'nice gws gmail +send --to a@example.com --body x --help',
         ]) {
-            expect(evaluateEmailSend(cmd, INTERACTIVE).action).toBe('gate');
+            expect(evaluateEmailSend(cmd, INTERACTIVE)).toEqual({ action: 'allow' });
         }
     });
 
@@ -352,8 +429,6 @@ describe('evaluateEmailSend — gate decision', () => {
         for (const cmd of [
             'exec -a --dry-run gws gmail +send --to victim@example.net --subject hi --body x',
             'env --dry-run=1 gws gmail +send --to victim@example.net --body x',
-            'time gws gmail +send --to victim@example.net --body x --dry-run',
-            'nice gws gmail +send --to victim@example.net --body x --help',
         ]) {
             const v = evaluateEmailSend(cmd, INTERACTIVE);
             expect(v.action).toBe('gate');
