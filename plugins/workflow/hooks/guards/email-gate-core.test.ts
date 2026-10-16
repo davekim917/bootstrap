@@ -186,6 +186,10 @@ describe('evaluateEmailSend — gate decision', () => {
             '\\gws gmail +send --to victim@example.net --body x --help',
             '( gws gmail +send --help )',
             'while read -r PATH; do gws gmail +send --help; done < dirs',
+            'gws gmail +send --help; /tmp/grep x',
+            'gws gmail +send --help | ./head',
+            'gws gmail +send --help | timeout 5 /tmp/head',
+            "export EXECIGNORE='*/usr/local/bin/gws'; gws gmail +send --to victim@example.net --body x --help",
         ]) {
             expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
         }

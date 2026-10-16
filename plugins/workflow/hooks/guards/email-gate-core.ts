@@ -166,7 +166,7 @@ const PROBE_COMPANIONS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq'
 // Variables a probe may set. Anything that changes how a later command is found
 // or started (PATH, BASH_ENV, LD_PRELOAD, IFS, …) or how gws behaves (its own
 // GOOGLE_*/GWS_* settings other than the credentials file) is refused.
-const PROBE_VARIABLE_DENY = /^(?:PATH|CDPATH|IFS|ENV|BASH_ENV|BASH\w*|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|LD_\w+|DYLD_\w+|GCONV_PATH|HOSTALIASES|NODE_\w+|HOME|XDG_\w+|TMPDIR|LANG|LC_\w+|GWS_\w+|GOOGLE_\w+)$/;
+const PROBE_VARIABLE_DENY = /^(?:PATH|EXECIGNORE|GLOBIGNORE|POSIXLY_CORRECT|CDPATH|IFS|ENV|BASH_ENV|BASH\w*|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|LD_\w+|DYLD_\w+|GCONV_PATH|HOSTALIASES|NODE_\w+|HOME|XDG_\w+|TMPDIR|LANG|LC_\w+|GWS_\w+|GOOGLE_\w+)$/;
 const PROBE_VARIABLE_ALLOW = new Set(['GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE']);
 
 /**
@@ -307,6 +307,8 @@ export function probeOnlyCommand(command: string): boolean {
         if (!wordIsFixed(node.name)) return false;
         const cmd = resolveCommand(node);
         if (!cmd) return false;
+        // Anything but gws runs as a plain bare word: a path or a wrapper could run a different program than the name says.
+        if (cmd.name !== 'gws' && (String(node.name.text ?? '') !== cmd.name || cmd.name.includes('/'))) return false;
         if (!(cmd.env ?? []).every(a => probeMaySet(a.split('=')[0]))) return false;
         if (cmd.name === 'gws') {
             if (!gwsReachedDirectly(node)) return false;
