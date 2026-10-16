@@ -985,7 +985,7 @@ const SQL_FILE_OPTIONS: Record<string, string[]> = {
 const SQL_PRELUDE_OPTIONS: Record<string, string[]> = { duckdb: ['-init'], sqlite3: ['-init'], sqlite: ['-init'] };
 // Options whose value is SQL. A client given none of them reads SQL from stdin.
 const SQL_TEXT_OPTIONS: Record<string, string[]> = {
-    snow: ['-q', '--query'], psql: ['-c', '--command'], mysql: ['-e', '--execute'],
+    snow: ['-q', '--query'], psql: ['-c', '--command'], mysql: ['-e', '--execute'], duckdb: ['-c', '-s'],
 };
 // Client commands inside SQL text that run another file: snow `!source`/`!load`,
 // psql `\i`/`\ir`/`\include`, sqlite `.read`, mysql `source`.
@@ -1098,6 +1098,8 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         }
         for (const o of textOptions) {
             if (optionValueAt(args, i, o) !== undefined) sqlInArgs = true;
+            // `-XcSQL`: a single-letter text option clustered after flags still takes the SQL.
+            if (/^-[a-z]$/i.test(o) && /^-[A-Za-z]+/.test(a) && !a.startsWith('--') && a.slice(1).match(/^[A-Za-z]+/)![0].slice(0, -1).includes(o[1])) sqlInArgs = true;
         }
         if (client === 'snow') {
             for (const o of ['-D', '--variable']) {
@@ -1110,7 +1112,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     }
     const render = (t: string) => (vars.size ? t.replace(SNOW_TEMPLATE, (m, a, b, c) => vars.get(a ?? b ?? c) ?? m) : t);
     if (vars.size) texts.push(...texts.map(render), ...vars.values());
-    if (client === 'psql' || client === 'mysql' || client === 'snow') {
+    if (client === 'psql' || client === 'mysql' || client === 'snow' || (client === 'duckdb' && sqlInArgs)) {
         if (!sqlInArgs && files.length === 0) readsStdin = true;
     } else if (!((client === 'sqlite3' || client === 'sqlite') && sqlitePositionals(args) >= 2)) {
         // sqlite3 [OPTIONS] [FILENAME [SQL]]: given SQL as an operand it runs that and never reads stdin.
@@ -1453,9 +1455,8 @@ function addNestedCommands(script: any, commands: any[]): void {
  * command's offset: offsets there are relative to the substitution, so the top-level map can neither hold nor be
  * matched against them. Only the substitution's own pipelines are read (by node, not offset), so each is visited once.
  */
-function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): ResolvedCommand[] {
+function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>, command: string): void {
     const byNode = new Map<any, ResolvedCommand>(nested);
-    const expandLater: ResolvedCommand[] = [];
     let views = 0;
     const inSub = new Map<object, ResolvedCommand[]>();
     for (const [n, c] of nested) {
@@ -1474,8 +1475,12 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): Resolved
         const hostPos = SUBSTITUTION_HOST.get(sub)?.pos;
         const text = SUBSTITUTION_TEXT.get(sub);
         // Variables set inside the substitution expand against its own text, at the emitter's own offset.
-        const local = text && ++views <= SUBSTITUTION_VIEWS_MAX
+        const withinCap = ++views <= SUBSTITUTION_VIEWS_MAX;
+        const local = text && withinCap
             ? ({ writes: [], pipedInto: new Map(), cds: [], links: new Map(), command: text } as ScriptContext)
+            : null;
+        const hostView = typeof hostPos === 'number' && withinCap
+            ? ({ writes: [], pipedInto: new Map(), cds: [], links: new Map(), command: command.slice(0, hostPos) } as ScriptContext)
             : null;
         // A relative `cd`/`pushd` earlier in the substitution moves where its `cat` files are read from.
         const catDir = new Map<ResolvedCommand, string>();
@@ -1486,9 +1491,10 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): Resolved
             const target = c.args.length === 1 && !/[$`*?]|^[+-]/.test(c.args[0]) ? c.args[0] : null;
             dir = target === null || dir === null ? null : target.startsWith('/') ? target : join(dir ?? '', target);
         }
+        // A `cd` may fail and the shell runs on, so a relative file may be read from either directory.
         const catFilesOf = (up: ResolvedCommand) => {
             const at = catDir.get(up);
-            return catOperands(up).map(f => (at && !f.startsWith('/') ? join(at, f) : f));
+            return catOperands(up).flatMap(f => (at && !f.startsWith('/') ? [join(at, f), f] : [f]));
         };
         const pipelines: any[] = [];
         pipelinesIn(sub, pipelines, 0);
@@ -1502,12 +1508,11 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): Resolved
                     if (up.name === 'cat') input.catFiles.push(...catFilesOf(up));
                     if (up.pipedInput) (up.name === 'cat' || up.name === 'tee' ? input.from! : input.textFrom!).push(up.pipedInput);
                     if (!holdsVariable(up)) continue;
-                    // Variables set before the substitution expand where the command holding it runs, unless the
-                    // substitution assigns them itself, which shadows the outer value.
-                    if (typeof hostPos === 'number' && !assignsInside(text, up)) {
-                        const atHost = { ...up, pos: hostPos, argsAreValues: true };
-                        expandLater.push(atHost);
-                        input.emitters!.push(atHost);
+                    // Variables set before the substitution expand where the command holding it starts, read from the
+                    // line up to there (the full line's view counts any assignment inside a substitution as unknown),
+                    // unless the substitution assigns them itself first, which shadows the outer value.
+                    if (hostView && typeof hostPos === 'number' && !assignsInside(text?.slice(0, up.pos ?? 0), up)) {
+                        input.emitters!.push({ ...up, pos: hostPos, argsAreValues: true, script: hostView });
                     }
                     if (local && up.pos !== undefined) input.emitters!.push({ ...up, script: local });
                 }
@@ -1518,10 +1523,9 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): Resolved
         }
     }
     for (const [, cmd] of nested) delete cmd.pos;
-    return expandLater;
 }
 
-/** The substitution text assigns a variable `cmd`'s words reference. */
+/** The substitution text before `cmd` assigns a variable its words reference. */
 function assignsInside(text: string | undefined, cmd: ResolvedCommand): boolean {
     if (!text) return false;
     const names = [...cmd.args, ...(cmd.stdinExpanded ?? [])].flatMap(t => [...t.matchAll(/\$\{?([A-Za-z_]\w*)/g)].map(m => m[1]));
@@ -2198,9 +2202,9 @@ export function extractCommands(command: string): ResolvedCommand[] {
             if (cmd && NESTED_COMMAND_NODES.has(node)) nested.push([node, cmd]);
             return cmd;
         }).filter((c): c is ResolvedCommand => c !== null);
-        const nestedEmitters = traceSubstitutionPipes(nested);
+        traceSubstitutionPipes(nested, command);
         const script = scriptContextOf(ast, commands, command);
-        for (const cmd of [...commands, ...nestedEmitters]) cmd.script = script;
+        for (const cmd of commands) cmd.script = script;
         return commands;
     } catch {
         return fallbackExtract(command);

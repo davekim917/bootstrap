@@ -198,6 +198,8 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `psql -XXXXXXXXXXXXXXXXXXXXc'DROP TABLE users'`,
         `x=$(cd job; cat drop.sql | psql)`,
         `x=$(printf '' | { cat bad.sql | psql; })`,
+        `B='DROP TABLE users'; x=$(echo "$B" | psql; B='SELECT 1')`,
+        `x=$(cd missing; cat bad.sql | psql)`,
     ]) {
         expect(verdict(command)).toBe('gate');
     }
@@ -214,6 +216,8 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `x=$(B='SELECT 1'; echo "$B" | psql)`,
         `x=$(cd job; cat ok.sql | psql)`,
         `B='DROP TABLE users'; x=$(B='SELECT 1'; echo "$B" | psql)`,
+        `printf 'DROP TABLE users' | psql -Xc'SELECT 1'`,
+        `printf 'DROP TABLE users' | duckdb -init ok.sql -c 'SELECT 1'`,
         `snow sql -f include-template.sql -D path=ok.sql`,
     ]) {
         expect(verdict(command)).toBe('allow');
