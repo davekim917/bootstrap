@@ -87,9 +87,15 @@ invoking_root() {
   project_root "${cwd:-$PWD}"
 }
 
-# The holder file for project $1. Percent-encoding only % and / keeps distinct roots distinct.
+# A fixed-length file name for project root $1: the root itself can exceed the 255-byte limit on
+# one path component. The record keeps the full root.
+project_key() {
+  printf '%s' "$1" | git hash-object --stdin
+}
+
+# The holder file for project $1.
 holder_path() {
-  printf '%s/%s.json\n' "$holders" "$(printf '%s' "$1" | sed -e 's/%/%25/g' -e 's|/|%2F|g')"
+  printf '%s/%s.json\n' "$holders" "$(project_key "$1")"
 }
 
 # True when registry entry $1 is the live process that holder record $2 names. A pid alone would

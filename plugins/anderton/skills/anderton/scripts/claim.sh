@@ -26,6 +26,11 @@ lock="$state.lock"
 take_lock() {
   local tries=0 owner
   until mkdir "$lock" 2>/dev/null; do
+    # Not there, so mkdir failed for another reason: retry once and let it say why.
+    if [ ! -e "$lock" ]; then
+      mkdir "$lock" && break
+      exit 1
+    fi
     owner=$(cat "$lock/pid" 2>/dev/null || true)
     if [ -n "$owner" ] && [ -z "$(proc_age "$owner")" ]; then
       echo "$lock was left by claim process $owner, which is gone. Remove it and rerun." >&2

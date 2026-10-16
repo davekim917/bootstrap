@@ -276,6 +276,14 @@ printf '{"pid":%s,"sessionId":"gone-1","claimedAt":"%s"}\n' "$p_delta" "$five_mi
 claim_status dlta-2 "$p_delta2"
 check "a pid from an earlier version's record, now running a later process, does not block a claim" [ "$status" -eq 0 ]
 
+# A project root too long to be one file name still gets a holder file.
+long="$work/$(printf 'l%.0s' {1..120})/$(printf 'm%.0s' {1..120})/$(printf 'n%.0s' {1..120})"
+mkdir -p "$long"
+spawn; p_long=$pid; session "$p_long" long-1 "$long" long-session
+claim_status long-1 "$p_long"
+check "a project whose root is longer than a file name can be claimed" [ "$status" -eq 0 ]
+check "its record keeps the full root" [ "$(jq -r .root "$(holder_path "$long")")" = "$long" ]
+
 # Without git, worktrees of one repository would be separate projects: refuse instead.
 nogit="$work/nogit"
 mkdir "$nogit"

@@ -443,7 +443,8 @@ git dir), so every worktree of it belongs to one project; outside a repository, 
 directory.
 
 - `scripts/claim.sh` records the claiming session as the project's holder in
-  `~/.claude/anderton/<project root, percent-encoded>.json` and exits 3 while another live session
+  `~/.claude/anderton/<key>.json` (the key is `git hash-object` of the project root, which the
+  record also holds) and exits 3 while another live session
   holds that project (`--take-over` replaces it). A holder in the machine-wide
   `~/.claude/anderton.json` that earlier versions wrote still holds its project until that project's
   next claim, which retires the file to `anderton.json.migrated`.

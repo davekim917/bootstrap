@@ -19,7 +19,7 @@ this role exists to fix: several sessions each asking whether to deploy.
 ## 1. Claim the role
 
 Run `scripts/claim.sh` (in this skill's folder) once at invocation. It records this
-session as the project's holder in `~/.claude/anderton/<project>.json` and refuses
+session as the project's holder in a file under `~/.claude/anderton/` and refuses
 when another live session holds the role for the same project.
 On refusal, stop and tell the user which session holds the role. Do not take it over
 unless the user says so. A prose rule is not a lock.
