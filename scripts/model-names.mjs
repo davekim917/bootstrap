@@ -6,8 +6,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const LEVEL = '(?:minimal|low|medium|high|xhigh|max|ultra)';
-const QUOTE = '["\'`]?';
+const LEVEL = '(?:low|medium|high|xhigh|max|ultra)';
+const MARK = '[*_`"\']{0,2}';
 
 const PATTERNS = [
   { kind: 'model', re: /\b(?:opus|sonnet|haiku|fable|gemini|astra|sol|terra|luna)\b/gi },
@@ -15,9 +15,14 @@ const PATTERNS = [
   { kind: 'model', re: /\bgpt-?\d+(?:[.-]\w+)*/gi },
   { kind: 'model', re: /(?<![\w-])o[1-4](?:-mini|-pro)?\b/gi },
   { kind: 'effort', re: /\bxhigh\b/gi },
-  { kind: 'effort', re: new RegExp(`\\b${LEVEL}${QUOTE}(?:-|\\s+)(?:reasoning\\s+)?effort\\b`, 'gi') },
-  { kind: 'effort', re: new RegExp(`\\beffort(?:\\s+level)?\\s*[:=]?\\s*${QUOTE}${LEVEL}\\b`, 'gi') },
-  { kind: 'effort', re: new RegExp(`(?:--effort|\\b(?:model_)?reasoning_effort)${QUOTE}\\s*(?:[:=]|\\s+to\\s+|\\s)\\s*${QUOTE}${LEVEL}\\b`, 'gi') },
+  { kind: 'effort', re: new RegExp(`(?<![\\w-])${LEVEL}(?![\\w-])${MARK}\\s+(?:reasoning\\s+)?effort\\b`, 'gi') },
+  {
+    kind: 'effort',
+    re: new RegExp(
+      `(?:--effort|\\b(?:model_)?reasoning_effort|\\beffort)${MARK}(?:\\s+level)?(?:\\s+set)?\\s*(?:[:=]|\\bto\\b|\\bof\\b|\\bat\\b)?\\s*${MARK}(?:minimal|${LEVEL})(?![\\w-])`,
+      'gi',
+    ),
+  },
 ];
 
 /** Per-file exemptions for skills whose subject is models; a listed file with nothing to suppress is stale. */
