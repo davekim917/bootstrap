@@ -4,7 +4,7 @@
 # questions asked in another tab. The session holding the Anderton role is left out.
 # Portable to macOS's bash 3.2 and BSD userland: jq does the date arithmetic, not date -d.
 set -euo pipefail
-# shellcheck source=session-lib.sh
+# shellcheck source=SCRIPTDIR/session-lib.sh
 . "$(dirname "$0")/session-lib.sh"
 
 command -v jq >/dev/null 2>&1 || {
@@ -55,8 +55,9 @@ EOF
                | test("\\S")));
     (now - 2 * 86400 | todate) as $since
     | reduce (inputs | fromjson? | objects) as $e (null;
-        if ($e.timestamp // "") > $since and ($e.type == "assistant" or ($e | human)) then $e else . end)
-    | select(. != null and .type == "assistant")
+        if ($e.timestamp // "") > $since and ($e.isSidechain | not) and ($e.type == "assistant" or ($e | human))
+        then $e else . end)
+    | select(. != null and .type == "assistant" and all(.message.content[]?; .type != "tool_use"))
     | ([.message.content[]? | select(.type == "text") | .text] | join("\n")) as $txt
     | select($txt != "")
     | "=== \($name)  \($cwd)  (last reply \(.timestamp))\n\($txt | .[-900:])\n"' ||

@@ -3,7 +3,7 @@
 # Exit 0: claimed (or already held by this session). Exit 3: held by another live session.
 # Portable to macOS's bash 3.2 and BSD userland: macOS has no flock, so the lock is a directory.
 set -euo pipefail
-# shellcheck source=session-lib.sh
+# shellcheck source=SCRIPTDIR/session-lib.sh
 . "$(dirname "$0")/session-lib.sh"
 
 command -v jq >/dev/null 2>&1 || {
@@ -39,7 +39,7 @@ lock="$state.lock"
 tries=0
 until mkdir "$lock" 2>/dev/null; do
   owner=$(cat "$lock/pid" 2>/dev/null || true)
-  if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+  if [ -n "$owner" ] && [ -z "$(proc_age "$owner")" ]; then
     rm -rf "$lock"
     continue
   fi

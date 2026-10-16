@@ -48,7 +48,7 @@ session() {
     "$1" "${5:-$now_ms}" "$2" "$3" "$4" > "$CLAUDE_CONFIG_DIR/sessions/$1.json"
 }
 
-# transcript <project> <id> <timestamp> <last entry: assistant|user|user-blocks|harness> <text>
+# transcript <project> <id> <timestamp> <last entry: assistant|user|user-blocks|harness|working> <text>
 transcript() {
   {
     printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":"start"}}\n' "$3"
@@ -59,6 +59,10 @@ transcript() {
       assistant) printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$3" "$5" ;;
       user) printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":"%s"}}\n' "$3" "$5" ;;
       user-blocks) printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":[{"type":"text","text":"%s"},{"type":"image"}]}}\n' "$3" "$5" ;;
+      working)
+        printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"text","text":"%s"},{"type":"tool_use","name":"Bash"}]}}\n' "$3" "$5"
+        printf '{"type":"user","timestamp":"%s","message":{"content":[{"type":"tool_result","content":"x"}]}}\n' "$3"
+        ;;
       harness)
         printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$3" "$5"
         printf '{"type":"user","isMeta":true,"timestamp":"%s","message":{"role":"user","content":"Base directory for this skill"}}\n' "$3"
@@ -78,6 +82,7 @@ spawn; p_blocks=$pid
 spawn; p_stale=$pid
 spawn; p_harness=$pid
 spawn; p_reused=$pid
+spawn; p_working=$pid
 spawn dead; p_dead=$pid
 session "$p_alpha" aaaa-1 /src/alpha alpha-session
 session "$p_beta" bbbb-2 /src/beta ""
@@ -88,6 +93,11 @@ session "$p_stale" eeee-5 /src/beta stale-session
 session "$p_dead" ffff-6 /src/alpha dead-session
 session "$p_harness" hhhh-8 /src/alpha harness-session
 session "$p_reused" iiii-9 /src/beta reused-session "$long_ago_ms"
+session "$p_working" jjjj-0 /src/beta working-session
+# pid 1 belongs to root, so a non-root kill -0 gets EPERM, as a sandboxed shell does for a peer.
+# shellcheck source=SCRIPTDIR/../skills/anderton/scripts/session-lib.sh
+. "$scripts/session-lib.sh"
+session 1 kkkk-1 /src/alpha unsignalled-session "$(( $(date +%s) - $(proc_age 1) ))000"
 transcript -src-alpha aaaa-1 "$recent" assistant "Should I merge the alpha change?"
 transcript -src-beta bbbb-2 "$recent" assistant "Beta needs a decision on the schema."
 transcript -src-alpha cccc-3 "$recent" assistant "Holder question."
@@ -97,6 +107,8 @@ transcript -src-beta eeee-5 2020-01-01T00:00:00Z assistant "Stale question."
 transcript -src-alpha ffff-6 "$recent" assistant "Dead question."
 transcript -src-alpha hhhh-8 "$recent" harness "Question before harness records."
 transcript -src-beta iiii-9 "$recent" assistant "Question from a crashed session."
+transcript -src-beta jjjj-0 "$recent" working "Running the build now."
+transcript -src-alpha kkkk-1 "$recent" assistant "Question from a session this shell cannot signal."
 
 state="$CLAUDE_CONFIG_DIR/anderton.json"
 claim_status() { # claim_status <session id> <pid> [args...]: sets $out and $status
@@ -146,6 +158,8 @@ check "leaves out a turn older than two days" eval '! has "Stale question."'
 check "leaves out a session whose process is gone" eval '! has "Dead question."'
 check "skill loads, task notifications and sidechains are not replies" has "Question before harness records."
 check "leaves out a stale registry entry whose pid now runs another process" eval '! has "Question from a crashed session."'
+check "leaves out a session whose last assistant record is a tool call" eval '! has "working-session"'
+check "lists a live session this shell may not signal" has "=== unsignalled-session"
 
 check "the cleared holder re-claims under its new session id" env CLAUDE_CODE_SESSION_ID=cccc-9 "$scripts/claim.sh"
 

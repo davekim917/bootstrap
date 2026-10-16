@@ -5,7 +5,7 @@
 proc_age() {
   local t d=0 h=0 m s a b c
   t=$(ps -o etime= -p "$1" 2>/dev/null | tr -d ' ') || true
-  [ -n "$t" ] || return 0
+  case $t in '' | *[!0-9:-]*) return 0 ;; esac
   case $t in *-*) d=${t%%-*}; t=${t#*-} ;; esac
   IFS=: read -r a b c <<EOF
 $t
@@ -15,14 +15,13 @@ EOF
 }
 
 # True when pid $1 is running and started when the session registry says it did ($2, epoch ms).
-# A registry file outlives a crashed session, and its pid can then belong to an unrelated process,
-# so kill -0 alone is not proof. Without a recorded start time, kill -0 is all there is.
+# A registry file outlives a crashed session, and its pid can then belong to an unrelated process.
+# ps, not kill -0: a sandboxed shell can be denied signalling a live process (EPERM).
 registered_alive() {
   local age drift
-  kill -0 "$1" 2>/dev/null || return 1
-  [ -n "$2" ] || return 0
   age=$(proc_age "$1")
   [ -n "$age" ] || return 1
+  [ -n "$2" ] || return 0
   drift=$(( $(date +%s) - age - $2 / 1000 ))
   [ "$drift" -ge -60 ] && [ "$drift" -le 60 ]
 }
