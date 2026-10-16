@@ -645,6 +645,9 @@ for (const script of ['claim.sh', 'waiting.sh']) {
   else if ((fs.statSync(scriptPath).mode & 0o111) === 0) fail(`plugins/anderton/skills/anderton/scripts/${script} must be executable`);
 }
 if (!exists('plugins/anderton/skills/anderton/scripts/session-lib.sh')) fail('plugins/anderton must ship skills/anderton/scripts/session-lib.sh, which both scripts source');
+if (readJson('plugins/anderton/nanoclaw-plugin.json')?.hostOnly !== true) {
+  fail('plugins/anderton/nanoclaw-plugin.json must declare "hostOnly": true; the Anderton is a host operator role, never a container agent');
+}
 
 // Codex does not expand ${CLAUDE_PLUGIN_ROOT}, so comment-rule ships a separate Codex hook file.
 const commentRuleClaudeManifest = readJson('plugins/comment-rule/.claude-plugin/plugin.json');

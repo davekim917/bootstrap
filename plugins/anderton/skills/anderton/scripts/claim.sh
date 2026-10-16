@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Claim the Anderton role for the calling Claude Code session.
-# Exit 0: claimed (or already held by this session). Exit 3: held by another live session.
+# Claim the Anderton role for the calling Claude Code session, in that session's project.
+# Exit 0: claimed (or already held by this session). Exit 3: held by another live session in this project.
 # Portable to macOS's bash 3.2 and BSD userland.
 set -euo pipefail
 # shellcheck source=SCRIPTDIR/session-lib.sh
@@ -12,29 +12,17 @@ command -v jq >/dev/null 2>&1 || {
 }
 require_ps claim.sh
 
-home="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-sessions="$home/sessions"
-state="${ANDERTON_STATE:-$home/anderton.json}"
 sid="${CLAUDE_CODE_SESSION_ID:?not running inside a Claude Code session}"
 force="${1:-}"
-
-# The pid of the session whose id is $1, from its registration file, or nothing.
-session_pid() {
-  for f in "$sessions"/*.json; do
-    [ -e "$f" ] || continue
-    if [ "$(jq -r '.sessionId // empty' "$f" 2>/dev/null)" = "$1" ]; then
-      jq -r '.pid // empty' "$f"
-      return
-    fi
-  done
-}
 
 pid="${CLAUDE_PID:-$(session_pid "$sid")}"
 if [ -z "$pid" ]; then
   echo "Cannot find the pid of session $sid under $sessions." >&2
   exit 1
 fi
-
+root=$(invoking_root)
+state=$(holder_path "$root")
+mkdir -p "$holders"
 lock="$state.lock"
 
 # The claim lock is a directory, since macOS has no flock. Only the claim that made it removes it:
@@ -73,20 +61,23 @@ holder_alive() {
   { [ -z "$2" ] || [ "$started" = "$2" ]; } && registered_alive "$1" "$started"
 }
 
-if [ -f "$state" ] && [ "$force" != "--take-over" ]; then
-  hpid=$(jq -r '.pid // empty' "$state" 2>/dev/null || true)
-  hstart=$(jq -r '.startedAt // empty' "$state" 2>/dev/null || true)
+record=$(holder_record "$root")
+if [ -n "$record" ] && [ "$force" != "--take-over" ]; then
+  hpid=$(jq -r '.pid // empty' "$record" 2>/dev/null || true)
+  hstart=$(jq -r '.startedAt // empty' "$record" 2>/dev/null || true)
   if [ -n "$hpid" ] && [ "$hpid" != "$pid" ] && holder_alive "$hpid" "$hstart"; then
     name=$(jq -r '.name // empty' "$sessions/$hpid.json" 2>/dev/null || true)
     hsid=$(jq -r '.sessionId // empty' "$sessions/$hpid.json" 2>/dev/null || true)
-    echo "Anderton is held by live session '${name:-unknown}' (pid $hpid, session ${hsid:-unknown})."
+    echo "Anderton for $root is held by live session '${name:-unknown}' (pid $hpid, session ${hsid:-unknown})."
     echo "Rerun with --take-over only if the user says so."
     exit 3
   fi
 fi
 
-jq -nc --argjson pid "$pid" --arg started "$(started_at "$pid")" --arg sid "$sid" \
+jq -nc --arg root "$root" --argjson pid "$pid" --arg started "$(started_at "$pid")" --arg sid "$sid" \
   --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{pid: $pid, startedAt: ($started | tonumber? // null), sessionId: $sid, claimedAt: $at}' > "$state.tmp"
+  '{root: $root, pid: $pid, startedAt: ($started | tonumber? // null), sessionId: $sid, claimedAt: $at}' > "$state.tmp"
 mv "$state.tmp" "$state"
-echo "Anderton claimed by session $sid (pid $pid)."
+# The machine-wide file now speaks for no project, so nothing reads a stale holder from it.
+if [ "$record" = "$legacy_holder" ]; then mv "$legacy_holder" "$legacy_holder.migrated"; fi
+echo "Anderton for $root claimed by session $sid (pid $pid)."

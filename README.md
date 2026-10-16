@@ -26,7 +26,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 | Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.1 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
-| Claude Code (host only) | `anderton` | 1.0.0 | `/anderton`, an invoke-only skill that makes one session the operator above every other live session and PR on the machine |
+| Claude Code (host only) | `anderton` | 1.0.0 | `/anderton`, an invoke-only skill that makes one session per project the operator above every other live session and PR in it |
 
 ### Delegation is invoke-only
 
@@ -434,24 +434,33 @@ the skill through the same enabler as `concise`.
 ### Anderton
 
 `anderton` is one invoke-only skill, `/anderton`, for the Claude Code session the user picks to
-own the line to production: it watches every other session and PR, reviews against the bar in
+own a project's line to production: it watches the project's other sessions and PRs, reviews against the bar in
 `references/good-code.md`, and turns each repeated correction into a check. Claude Code only, on
 the host: its two scripts read Claude Code's own session registry, and there is no Codex manifest.
 
-- `scripts/claim.sh` records the claiming session in `~/.claude/anderton.json` and exits 3 while
-  another live session holds the role (`--take-over` replaces it).
-- `scripts/waiting.sh` lists every live Claude Code session on the machine, in any project, whose
-  last turn ended with Claude talking, or that is blocked on a permission prompt or an
-  `AskUserQuestion` (the registry's `status`), with the tail of that message or the question. It reads
-  `~/.claude/sessions/*.json`, keeps sessions whose process is alive and started when the registry
-  says, finds each transcript under `~/.claude/projects/*/<session id>.jsonl`, and leaves out the
-  session holding the role.
+A project is the main worktree of the session's repository, so linked worktrees belong to it, or
+the session's directory outside a repository.
+
+- `scripts/claim.sh` records the claiming session as the project's holder in
+  `~/.claude/anderton/<project root, percent-encoded>.json` and exits 3 while another live session
+  holds that project (`--take-over` replaces it). A holder in the machine-wide
+  `~/.claude/anderton.json` that earlier versions wrote still holds its project until that project's
+  next claim, which retires the file to `anderton.json.migrated`.
+- `scripts/waiting.sh` lists the live sessions in the caller's project (`--all`: every project) that
+  wait on a person: the turn ended with Claude's text; the registry's `status` says it is blocked on
+  a permission prompt or an `AskUserQuestion`, in the main thread or a sub-agent; or, without that
+  status, a tool call has gone unanswered for over a minute (`PERMISSION PROMPT?`, with the tool and
+  the first 200 characters of its input). It reads `~/.claude/sessions/*.json`, keeps sessions whose
+  process is alive and started when the registry says, finds each transcript under
+  `~/.claude/projects/*/<session id>.jsonl`, and leaves out the project's holder.
 
 The role belongs to a Claude Code process (pid plus its registry start time), not a session id, so
-it survives `/clear`. Both scripts honour `CLAUDE_CONFIG_DIR`, need `jq` and a POSIX `ps`, and run under macOS's bash 3.2 and BSD userland as well
-as Linux. NanoClaw mounts every plugin under `~/plugins` into its agent containers, so an install
-that clones this repo there must withhold `bootstrap/plugins/anderton` from them (`excludePlugins`);
-this repo cannot do it on the host's behalf.
+it survives `/clear`. Both scripts honour `CLAUDE_CONFIG_DIR`, need `jq`, `git` and a POSIX `ps`,
+and run under macOS's bash 3.2 and BSD userland as well as Linux.
+
+`nanoclaw-plugin.json` declares `"hostOnly": true`: NanoClaw mounts `~/plugins` into its agent
+containers, and a host-only plugin is withheld from every container walker. The declaration does
+nothing on a NanoClaw that predates `hostOnly`.
 
 ## Upgrading from pre-4.0 / pre-1.0
 
