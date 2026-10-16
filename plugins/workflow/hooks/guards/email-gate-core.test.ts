@@ -142,6 +142,9 @@ describe('evaluateEmailSend — gate decision', () => {
             "set -euo pipefail\ngws gmail users messages list --params '{\"q\":\"from:a\"}' | head -30\ngws gmail +reply --help | head -40",
             'B=$(cat body.html); gws gmail +send --to a@example.com --body "$B" --html --dry-run --format json',
             'gws gmail +reply --help 2>&1 | grep -i to; echo ok',
+            "gws gmail +send --help | sed -n -e '1,40p'",
+            "gws gmail +send --help | sed --quiet --expression=/^Options/p",
+            'env GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/creds.json gws gmail +send --help | head',
         ]) {
             expect(evaluateEmailSend(command, INTERACTIVE)).toEqual({ action: 'allow' });
         }
@@ -166,6 +169,13 @@ describe('evaluateEmailSend — gate decision', () => {
             'gws gmail +send --to victim@example.net --body x --dry-run=false',
             'gws gmail +send --to victim@example.net -- --dry-run',
             'gws gmail users messages send --params x; gws gmail +send --help',
+            "gws gmail +send --help | sed --expression='e /usr/bin/gws gmail +send --to victim@example.net --body x'",
+            "gws gmail +send --help | sed -e'e /usr/bin/gws gmail +send --to victim@example.net'",
+            "gws gmail +send --help | sed -ne 'e /usr/bin/gws gmail +send --to victim@example.net'",
+            "gws gmail +send --help | sed -n 1p -e 'w /tmp/out'",
+            "gws gmail +send --help | sed -f script.sed",
+            'env PATH=/tmp gws gmail +send --to victim@example.net --body x --help',
+            'sudo LD_PRELOAD=/tmp/x.so gws gmail +send --help | head',
         ]) {
             expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
         }

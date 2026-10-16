@@ -183,6 +183,32 @@ const PROBE_PARENS_MAX = 64;
 
 // A sed script that only prints or deletes lines: `1,40p`, `/^x/p`, `$d`.
 const SED_PRINT_ONLY = /^(?:(?:\d+|\$|\/[^/\n]*\/)(?:,(?:\d+|\$|\/[^/\n]*\/))?)?[pd]$/;
+// sed options that only change how lines are matched or whether they print by default.
+const SED_QUIET_OPTIONS = /^(?:-[nEr]+|--quiet|--silent|--regexp-extended|--posix)$/;
+
+/**
+ * True when every script sed is given (`-e S`, `-eS`, `-neS`, `--expression[=]S`, or the first
+ * operand when there is no -e) only prints or deletes lines, and no option or operand is anything
+ * else: no -i, -f, -s, -z, `--`, and no input files beside an -e script.
+ */
+function sedOnlyPrints(args: string[]): boolean {
+    const scripts: string[] = [];
+    const operands: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (SED_QUIET_OPTIONS.test(a)) continue;
+        const attached = a.match(/^-[nEr]*e(.*)$/s) ?? a.match(/^--expression=(.*)$/s);
+        if (attached && attached[1] !== '') scripts.push(attached[1]);
+        else if (attached || a === '--expression') {
+            if (i + 1 >= args.length) return false;
+            scripts.push(args[++i]);
+        } else if (a.startsWith('-')) return false;
+        else operands.push(a);
+    }
+    if (scripts.length === 0) scripts.push(...operands.splice(0, 1));
+    return scripts.length > 0 && operands.length === 0 && scripts.every(sc => SED_PRINT_ONLY.test(sc));
+}
+
 // Word parts whose value the shell splits or globs, so one word can become
 // several arguments (an injected `--`, or a flag where the parser saw a value).
 const SPLITTING_PARTS = new Set(['SimpleExpansion', 'ParameterExpansion', 'CommandExpansion', 'ArithmeticExpansion', 'ProcessSubstitution', 'BraceExpansion', 'ExtendedGlob']);
@@ -244,6 +270,7 @@ export function probeOnlyCommand(command: string): boolean {
         if (!wordIsFixed(node.name)) return false;
         const cmd = resolveCommand(node);
         if (!cmd) return false;
+        if (!(cmd.env ?? []).every(a => probeMaySet(a.split('=')[0]))) return false;
         if (cmd.name === 'gws') {
             if (!gwsCallIsProbe(node, cmd.args) && !gwsCallOnlyReads(node, cmd.args)) return false;
             gwsCalls++;
@@ -254,8 +281,7 @@ export function probeOnlyCommand(command: string): boolean {
         } else if (cmd.name === 'printf' && cmd.args.some(a => a.startsWith('-v'))) {
             return false;
         } else if (cmd.name === 'sed') {
-            const scripts = cmd.args.filter(a => !a.startsWith('-'));
-            if (cmd.args.some(a => /^-i|^--in-place/.test(a)) || !scripts.every(a => SED_PRINT_ONLY.test(a))) return false;
+            if (!sedOnlyPrints(cmd.args)) return false;
         } else if (!PROBE_COMPANIONS.has(cmd.name)) {
             return false;
         }
