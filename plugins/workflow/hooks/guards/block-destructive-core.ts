@@ -101,6 +101,7 @@ interface PipedInput {
     catFiles: string[];         // files cat reads into it
     from?: PipedInput[];        // inputs whose text and files also flow in
     textFrom?: PipedInput[];    // inputs whose text (not files) also flows in
+    emitters?: ResolvedCommand[]; // emitters whose words hold a variable, expanded only when a SQL client traces them
 }
 
 /**
@@ -126,6 +127,12 @@ function flattenInput(root: PipedInput | undefined, script?: ScriptContext): Fla
             break;
         }
         texts.push(...node.texts);
+        for (const emitter of node.emitters ?? []) {
+            const expanded = expandedEmitter(emitter);
+            if (expanded === null) over = true;
+            else texts.push(...emittedText(expanded));
+        }
+        if (over) break;
         if (withFiles) catFiles.push(...node.catFiles);
         for (const next of node.from ?? []) stack.push([next, withFiles]);
         for (const next of node.textFrom ?? []) stack.push([next, false]);
@@ -144,6 +151,72 @@ interface FlatInput {
 const flattened = new WeakMap<PipedInput, FlatInput>();
 
 /** Charges `n` units to the line's trace budget; false once it is spent. */
+/** Shell words to expand, each beside the value it has unexpanded; a heredoc body is expanded as if double-quoted. */
+type ExpandableWord = { word: string; plain: string; joinSplit?: boolean };
+
+const heredocWord = (t: string): ExpandableWord => ({ word: `"${t.replace(/(["\\])/g, '\\$1')}"`, plain: t });
+
+/** Each of `cmd`'s arguments as written (quotes included), when the parsed command line has it. */
+function argumentWords(cmd: ResolvedCommand, joinSplit = false): ExpandableWord[] {
+    const script = cmd.script;
+    if (cmd.pos === undefined || !script || !cmd.args.some(a => /[$`]/.test(a))) return [];
+    script.view ??= viewShell(script.command);
+    const texts = script.view.commandAt(cmd.pos)?.argTexts;
+    if (!texts || texts.length < cmd.args.length) return [];
+    return texts.slice(texts.length - cmd.args.length).map((word, i) => ({ word, plain: cmd.args[i], joinSplit }));
+}
+
+/**
+ * The value of each word whose provable variables change it (a word without one, or whose variables stay unknown, is
+ * left out); null once the line's word or trace budget runs out.
+ */
+function expandWords(words: ExpandableWord[], cmd: ResolvedCommand): string[] | null {
+    const out: string[] = [];
+    const script = cmd.script;
+    if (cmd.pos === undefined || !script) return out;
+    for (const { word, plain, joinSplit } of words) {
+        if (!/[$`]/.test(word)) continue;
+        script.wordBudget ??= SQL_WORD_BUDGET;
+        if (script.wordBudget-- <= 0) return null;
+        script.view ??= viewShell(script.command);
+        const r = evalWord(word, script.view, cmd.pos, false, joinSplit);
+        if (r.value === plain) continue;
+        if (!spendTrace(script, r.value.length)) return null;
+        out.push(r.value);
+    }
+    return out;
+}
+
+/** An emitter with its arguments and expanded heredoc input after variable expansion, or null over budget. */
+function expandedEmitter(cmd: ResolvedCommand): ResolvedCommand | null {
+    const words = argumentWords(cmd, true);
+    const args = [...cmd.args];
+    const values: string[] = [];
+    // The argv the command actually gets, word by word: an unquoted value splits into several.
+    const argv: string[] = [];
+    for (let i = 0; i < words.length; i++) {
+        const e = expandWords([words[i]], cmd);
+        if (e === null) return null;
+        if (e.length) args[i] = e[0];
+        const quoted = /^"[\s\S]*"$/.test(words[i].word) || /^'[\s\S]*'$/.test(words[i].word);
+        // echo reads options only before its first operand.
+        const atOptions = argv.every(t => /^-[neE]+$/.test(t));
+        argv.push(...(e.length && !quoted ? e[0].split(/\s+/).filter(Boolean) : [args[i]]));
+        // cat and tee name files with their operands; only echo and printf write them as text.
+        if (cmd.name !== 'echo' && cmd.name !== 'printf') continue;
+        // Only an unquoted value splits, so only there can a leading word become an option echo drops.
+        const unquoted = !/^"[\s\S]*"$/.test(words[i].word);
+        // Only the options echo takes are dropped: `echo -- x` prints `-- x`, a SQL comment.
+        values.push(...e.flatMap(v => (unquoted && atOptions && cmd.name === 'echo' ? [v, v.replace(/^(?:-[neE]+\s+)+/, '')] : [v])));
+    }
+    // A leading `printf -v NAME` (from one word or several) assigns the output instead of printing it.
+    if (cmd.name === 'printf' && /^-v/.test(argv[0] ?? '')) return { ...cmd, args: [], stdinTexts: [] };
+    const stdin = expandWords((cmd.stdinExpanded ?? []).map(heredocWord), cmd);
+    // Each value is scanned whole and without leading option words too: an unquoted `-e DROP …` splits into an option
+    // and the SQL echo prints, while emittedText would drop the joined word as an option.
+    return stdin === null ? null : { ...cmd, args, stdinTexts: [...(cmd.stdinTexts ?? []), ...stdin, ...values] };
+}
+
 function spendTrace(script: ScriptContext | undefined, n: number): boolean {
     if (!script) return true;
     script.traceBudget = (script.traceBudget ?? SQL_TRACE_BUDGET) - n;
@@ -940,6 +1013,13 @@ function optionValueAt(args: string[], i: number, option: string): string | unde
     return a.startsWith(option) && a.length > option.length && !a.startsWith('--') ? a.slice(option.length) : undefined;
 }
 
+/** An argument, plus the value glued to it when it is an option (`-cSQL`, `--command=SQL`), where SQL would read `--…` as a comment. */
+function withOptionValue(a: string): string[] {
+    if (/^-[A-Za-z]./.test(a) && !a.startsWith('--')) return [a, a.slice(2)];
+    if (a.startsWith('--') && a.includes('=')) return [a, a.slice(a.indexOf('=') + 1)];
+    return [a];
+}
+
 /**
  * Every SQL text a SQL client step could run: its arguments (with a glued
  * `-qSQL` or `--query=SQL` value unglued), heredoc and here-string input,
@@ -954,25 +1034,20 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const fileOptions = SQL_FILE_OPTIONS[client] ?? [];
     const textOptions = SQL_TEXT_OPTIONS[client] ?? [];
     const texts: string[] = [...(cmd.stdinTexts ?? [])];
-    let traceOver = false;
-    for (const t of cmd.stdinExpanded ?? []) {
-        if (!/[$`]/.test(t) || cmd.pos === undefined || !cmd.script) continue;
-        cmd.script.view ??= viewShell(cmd.script.command);
-        const r = evalWord(`"${t.replace(/(["\\])/g, '\\$1')}"`, cmd.script.view, cmd.pos);
-        if (r.value === t) continue;
-        if (spendTrace(cmd.script, r.value.length)) texts.push(r.value);
-        else traceOver = true;
-    }
+    // A file option's value names a file (read below), not SQL.
+    const fileValue = (i: number) => fileOptions.includes(cmd.args[i - 1] ?? '') || fileOptions.some(o => cmd.args[i].startsWith(o) && cmd.args[i] !== o);
+    const expanded = expandWords([...(cmd.stdinExpanded ?? []).map(heredocWord), ...argumentWords(cmd).filter((_, i) => !fileValue(i))], cmd);
+    let traceOver = expanded === null;
+    for (const e of expanded ?? []) texts.push(...withOptionValue(e));
     const files: string[] = [...(cmd.stdinFiles ?? [])];
     const vars = new Map<string, string>();
     let sqlInArgs = false;
-    let readsStdin = texts.length > 0 || files.length > 0;
+    // Expanded argument text is not stdin: only a heredoc, here-string or `<` file is.
+    let readsStdin = Boolean(cmd.stdinTexts?.length) || files.length > 0;
 
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        texts.push(a);
-        if (/^-[A-Za-z]./.test(a) && !a.startsWith('--')) texts.push(a.slice(2));
-        else if (a.startsWith('--') && a.includes('=')) texts.push(a.slice(a.indexOf('=') + 1));
+        texts.push(...withOptionValue(a));
         for (const o of fileOptions) {
             const v = optionValueAt(args, i, o);
             if (v !== undefined) files.push(v);
@@ -1954,6 +2029,11 @@ function samePath(path: string): string {
     return path.replace(/^(?:\.\/)+/, '');
 }
 
+/** An emitter's words or heredoc input hold a variable or command substitution, so its text may change when expanded. */
+function holdsVariable(cmd: ResolvedCommand): boolean {
+    return [...cmd.args, ...(cmd.stdinExpanded ?? [])].some(t => /[$`]/.test(t));
+}
+
 /** The text an emitter writes to stdout or its files (not counting what a pipe feeds it). */
 function emittedText(cmd: ResolvedCommand): string[] {
     const operands = cmd.args.filter(a => !a.startsWith('-'));
@@ -2008,11 +2088,12 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
                 visitCompound(stage, depth);
             }
             if (i === 0) return;
-            const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [] };
+            const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [], emitters: [] };
             for (const up of stageCommands(stages[i - 1])) {
                 if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
                 const fed = up.pos === undefined ? undefined : pipedInto.get(up.pos);
                 input.texts.push(...emittedText(up));
+                if (holdsVariable(up)) input.emitters!.push(up);
                 if (up.name === 'cat') input.catFiles.push(...up.args.filter(a => !a.startsWith('-')));
                 if (fed) (up.name === 'cat' || up.name === 'tee' ? input.from! : input.textFrom!).push(fed);
             }
@@ -2051,6 +2132,7 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
         const fed = (cmd.name === 'tee' || cmd.name === 'cat') && cmd.pos !== undefined ? pipedInto.get(cmd.pos) : undefined;
         const input: PipedInput = {
             texts: emittedText(cmd),
+            ...(holdsVariable(cmd) ? { emitters: [cmd] } : {}),
             catFiles: cmd.name === 'cat' ? operands : [],
             ...(fed ? { from: [fed] } : {}),
         };
