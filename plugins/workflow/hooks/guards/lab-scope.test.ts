@@ -206,6 +206,42 @@ describe('lab session + lab target → allow', () => {
     const command = 'psql -d lab_app -c "DROP TABLE users" && psql -d app_prod -c "DROP TABLE users"';
     expect(evaluateBashCommand(command, { cwd: LAB_WORKTREE }).action).toBe('gate');
   });
+
+  test('a step xargs runs under env -C takes its target from that directory', () => {
+    inLab();
+    const prod = 'xargs -a /dev/null env -C /prod/repo git push --force origin main';
+    expect(evaluateBashCommand(prod, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const viaShell = "xargs -a /dev/null env -C /prod/repo sh -c 'git push --force origin main'";
+    expect(evaluateBashCommand(viaShell, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const runtime = "printf '%s\\n' 'push --force https://github.com/Prod-Org/APP.git main' | xargs git";
+    expect(evaluateBashCommand(runtime, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const lab = `xargs -a /dev/null env -C ${LAB_WORKTREE} git push --force origin main`;
+    expect(evaluateBashCommand(lab, { cwd: '/tmp' }).action).toBe('allow');
+  });
+
+  test('a cd before a step xargs or find runs moves its target', () => {
+    inLab();
+    const inScript = "printf x | xargs sh -c 'cd /prod/repo; git push --force origin main'";
+    expect(evaluateBashCommand(inScript, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const before = 'cd /prod/repo && find . -maxdepth 0 -exec git push --force origin main \\;';
+    expect(evaluateBashCommand(before, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const topLevel = 'cd /prod/repo && git push --force origin main';
+    expect(evaluateBashCommand(topLevel, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const unknown = 'cd "$REPO" && git push --force origin main';
+    expect(evaluateBashCommand(unknown, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const intoLab = `cd ${LAB_WORKTREE}/src && git push --force origin main`;
+    expect(evaluateBashCommand(intoLab, { cwd: LAB_WORKTREE }).action).toBe('allow');
+    const scriptIntoLab = `printf x | xargs sh -c 'cd ${LAB_WORKTREE}; git push --force origin main'`;
+    expect(evaluateBashCommand(scriptIntoLab, { cwd: LAB_WORKTREE }).action).toBe('allow');
+  });
+
+  test('inside xargs, a lab step does not exempt a later non-lab step', () => {
+    inLab();
+    const prod = `xargs sh -c 'psql -d lab_app -c "DROP TABLE scratch"; psql -d app_prod -c "DROP TABLE users"' < list`;
+    expect(evaluateBashCommand(prod, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const labOnly = `xargs sh -c 'psql -d lab_app -c "DROP TABLE scratch"' < list`;
+    expect(evaluateBashCommand(labOnly, { cwd: LAB_WORKTREE }).action).toBe('allow');
+  });
 });
 
 describe('lab session + non-lab target → unchanged', () => {

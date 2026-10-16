@@ -175,6 +175,45 @@ const BASH_GATE = [
   'git push origin --delete feature-x',
   'git push origin :feature-x',
   'git push origin +main',
+  // What xargs or find -exec runs needs approval on the same terms as at top level.
+  'find . -name repo -exec git push --force origin main \\;',
+  'xargs -I{} git push --force origin {} < branches',
+  "xargs -I{} sh -c 'git push --force origin {}' < list",
+  "find . -name '*.sql' -exec psql -c 'DROP TABLE users' \\;",
+  'xargs -n1 terraform destroy -auto-approve < dirs',
+  "printf 'main\\n' | xargs bash -c 'git push --force origin \"$1\"' _",
+  "printf 'destroy\\n' | xargs terraform",
+  "printf \"'-c' 'rm -rf /tmp/x'\\n\" | xargs sh",
+  "find destroy -maxdepth 0 -exec terraform {} \\;",
+  "find . -name '*.sh' -exec bash {} \\;",
+  "printf '%s\\n' --force | xargs git push origin main",
+  // An appended branch name of `+main` or `--force` force-pushes, so pushing what xargs reads needs approval.
+  'xargs -r git push origin < branches',
+  "printf '%s\\n' 'push --force origin main' | xargs git -C /prod",
+  "printf x | xargs bash -O extglob",
+  "printf '%sI' --force | xargs -dI git push origin main",
+  "printf '%s\\n' 'rm s3://prod --recursive' | xargs aws s3",
+  // xargs input, or a find match, that names the command: a wrapper or executor left without one, or `{}` in its place.
+  "printf '%s\\n' rm /home/user/data | xargs xargs -a /dev/null",
+  "printf '%s\\n' rm -rf /home/user/data | xargs env",
+  "printf '%s\\n' rm -rf /home/user/data | xargs sudo -u app",
+  "printf '%s\\n' rm -rf /home/user/data | xargs timeout 5",
+  "printf '%s\\n' x | xargs -I{} {} rm -rf /home/user/data",
+  "printf '%s\\n' rm | xargs -I{} env {} -rf /home/user/data",
+  "printf -- '-delete\\n' | xargs find /home/user/data",
+  "find . -name x -exec env {} \\;",
+  // xargs adds what it reads to a shell's positional words, so `"$@"` there is filled at run time.
+  "printf '%s\\n' destroy | xargs sh -c 'terraform \"$@\"' _",
+  "printf '%s\\n' destroy | xargs sh -c 'terraform $1' _",
+  "printf '%s\\n' --force | xargs sh -c 'git push origin main \"$@\"' _",
+  "printf '%s\\n' --force | xargs -I{} sh -c 'git push {} origin main'",
+  "printf '%s\\n' --force | xargs -I{} git push {} origin main",
+  'xargs -n1 terraform fmt < dirs',
+  // Appending, xargs input can complete a multi-word CLI operation; substituted, it can put --force in place.
+  'xargs -I{} git push origin {} < branches',
+  'xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null terraform destroy',
+  "printf 'x' | xargs -I{} xargs psql -c 'DROP TABLE users'",
+  "find . -name x -exec xargs git push --force origin main \\;",
 ];
 
 // Allowed: safe / ephemeral. The git rows pin the DELIBERATE non-gates:
@@ -193,6 +232,12 @@ const BASH_ALLOW = [
   "find . -name f -exec sh -c 'echo == $1; cat $1' _ {} \\;",
   'find . -exec chmod 644 {} +',
   'find . -exec echo {} +',
+  // Routine commands xargs and find run still pass.
+  "find . -name '*.sql' -exec psql -c 'SELECT 1' \\;",
+  'xargs -I{} git -C {} status < repos',
+  'xargs -n1 git fetch origin < branches',
+  "xargs -I{} sh -c 'git -C {} pull --ff-only' < repos",
+  "printf x | xargs -I{} xargs echo",
   'exec bash-completion-loader',
   'git status',
   'rm -rf node_modules',
@@ -222,6 +267,13 @@ const BASH_ALLOW = [
   'echo "DROP TABLE users"; psql < safe.sql',
   "printf 'DROP TABLE %s\\n' users; mysql < safe.sql",
   'cat drop.sql; psql < safe.sql',
+  // A shell under xargs that passes what it reads to a command without operation or modifier power.
+  "git ls-files -z | xargs -0 sh -c 'git add \"$@\"' _",
+  "printf '%s\\n' a.txt | xargs sh -c 'wc -l \"$@\"' _",
+  "printf '%s\\n' a | xargs sh -c 'echo \"$1\"' _",
+  // Bare xargs runs echo, and a wrapper that names its own command passes.
+  "printf '%s\\n' a b | xargs",
+  "printf '%s\\n' a b | xargs -n1 env FOO=1 echo",
 ];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);
