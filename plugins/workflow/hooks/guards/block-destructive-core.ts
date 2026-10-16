@@ -69,6 +69,7 @@ export interface ResolvedCommand {
     stdoutFiles?: string[];     // files this command's output is redirected into
     pipedInput?: PipedInput;    // what its pipeline feeds a command inside `$(…)`, whose offset can't key pipedInto
     argsAreValues?: boolean;    // pos is not this command's own, so its args are expanded from their values, not the view's words
+    expandAs?: ResolvedCommand[] | null; // inside `$(…)`: the views its words expand in; null past the cap, so they're unknown
     script?: ScriptContext;     // what the whole command line shows, shared by its commands
 }
 
@@ -988,6 +989,20 @@ const SQL_FILE_OPTIONS: Record<string, string[]> = {
 };
 // Options naming a file run before the client reads stdin, which it still reads after.
 const SQL_PRELUDE_OPTIONS: Record<string, string[]> = { duckdb: ['-init'], sqlite3: ['-init'], sqlite: ['-init'] };
+// Short options that take a value, from each client's getopt spec: in a cluster the first of them takes the rest.
+const SQL_SHORT_VALUE_OPTIONS: Record<string, string> = { psql: 'cdfFhLopPRTUv', mysql: 'DehPSup', snow: 'cDfq' };
+
+/** The value-taking short option a cluster such as `-Xc…` ends at (`-dprod` ends at `d`), or null. */
+function clusterValueOption(client: string, word: string): string | null {
+    const spec = SQL_SHORT_VALUE_OPTIONS[client];
+    if (!spec || !/^-[A-Za-z]/.test(word)) return null;
+    for (const ch of word.slice(1)) {
+        if (spec.includes(ch)) return ch;
+        if (!/[A-Za-z0-9?]/.test(ch)) return null;
+    }
+    return null;
+}
+
 // Options whose value is SQL. A client given none of them reads SQL from stdin.
 const SQL_TEXT_OPTIONS: Record<string, string[]> = {
     snow: ['-q', '--query'], psql: ['-c', '--command'], mysql: ['-e', '--execute'], duckdb: ['-c', '-s'],
@@ -1081,7 +1096,16 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const texts: string[] = [...(cmd.stdinTexts ?? [])];
     // A file option's value names a file (read below), not SQL.
     const fileValue = (i: number) => fileOptions.includes(cmd.args[i - 1] ?? '') || fileOptions.some(o => cmd.args[i].startsWith(o) && cmd.args[i] !== o);
-    const expanded = expandWords([...(cmd.stdinExpanded ?? []).map(heredocWord), ...argumentWords(cmd).filter((_, i) => !fileValue(i))], cmd);
+    let expanded: string[] | null = [];
+    for (const view of cmd.expandAs === undefined ? [cmd] : cmd.expandAs ?? []) {
+        const e = expandWords([...(view.stdinExpanded ?? []).map(heredocWord), ...argumentWords(view).filter((_, i) => !fileValue(i))], view);
+        if (e === null) {
+            expanded = null;
+            break;
+        }
+        expanded.push(...e);
+    }
+    if (cmd.expandAs === null) expanded = null;
     let traceOver = expanded === null;
     for (const e of expanded ?? []) texts.push(...withOptionValue(e));
     const files: string[] = [...(cmd.stdinFiles ?? [])];
@@ -1104,7 +1128,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         for (const o of textOptions) {
             if (optionValueAt(args, i, o) !== undefined) sqlInArgs = true;
             // `-XcSQL`: a single-letter text option clustered after flags still takes the SQL.
-            if (/^-[a-z]$/i.test(o) && /^-[A-Za-z]+/.test(a) && !a.startsWith('--') && a.slice(1).match(/^[A-Za-z]+/)![0].slice(0, -1).includes(o[1])) sqlInArgs = true;
+            if (/^-[a-z]$/i.test(o) && clusterValueOption(client, a) === o[1]) sqlInArgs = true;
         }
         if (client === 'snow') {
             for (const o of ['-D', '--variable']) {
@@ -1487,6 +1511,20 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>, command: 
         const hostView = typeof hostPos === 'number' && withinCap
             ? ({ writes: [], pipedInto: new Map(), cds: [], links: new Map(), command: command.slice(0, hostPos) } as ScriptContext)
             : null;
+        // A client's own words expand like an emitter's: against the substitution's text, and against the line before it
+        // unless the substitution assigns the variable first.
+        for (const c of inSub.get(sub) ?? []) {
+            if ((!SQL_CLIS[c.name] && c.name !== 'snow') || !holdsVariable(c)) continue;
+            if (!withinCap) {
+                c.expandAs = null;
+                continue;
+            }
+            c.expandAs = [];
+            if (local && c.pos !== undefined) c.expandAs.push({ ...c, script: local });
+            if (hostView && typeof hostPos === 'number' && !assignsInside(text?.slice(0, c.pos ?? 0), c)) {
+                c.expandAs.push({ ...c, pos: hostPos, argsAreValues: true, script: hostView });
+            }
+        }
         // A relative `cd`/`pushd` earlier in the substitution moves where its `cat` files are read from.
         const catDir = new Map<ResolvedCommand, string>();
         let dir: string | null | undefined;

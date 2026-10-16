@@ -294,3 +294,19 @@ test('text echoed to the terminal is not fed to a client that is not in its pipe
 test('after a cd the command implies, a relative file is not read from the starting directory, where it names a different file', () => {
     expect(verdict(`cd /elsewhere && psql -f bad.sql`)).toBe('allow');
 });
+
+test('a SQL client inside a substitution expands its own variables', () => {
+    for (const command of [
+        `B='DROP TABLE users;'; out=$(psql -c "$B")`,
+        "B='DROP TABLE users;'; out=`psql -c \"$B\"`",
+        `out=$(B='DROP TABLE users'; psql -c "$B")`,
+        `B='SELECT 1'; out=$(B='DROP TABLE users'; psql -c "$B")`,
+    ]) expect(verdict(command)).toBe('gate');
+    expect(verdict(`B='SELECT 1'; out=$(psql -c "$B")`)).toBe('allow');
+});
+
+test('a short-option cluster ends at the first option that takes a value', () => {
+    expect(verdict(`printf 'DROP TABLE users' | psql -dproduction`)).toBe('gate');
+    expect(verdict(`printf 'DROP TABLE users' | psql -XcSELECT`)).toBe('allow');
+    expect(verdict(`printf 'SELECT 1' | psql -Xc 'DROP TABLE users'`)).toBe('gate');
+});
