@@ -6,17 +6,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const LEVEL = '(?:minimal|low|medium|high|xhigh|max)';
+const LEVEL = '(?:minimal|low|medium|high|xhigh|max|ultra)';
+const QUOTE = '["\'`]?';
 
 const PATTERNS = [
   { kind: 'model', re: /\b(?:opus|sonnet|haiku|fable|gemini|astra|sol|terra|luna)\b/gi },
   { kind: 'model', re: /\bclaude-\d+(?:[.-]\w+)*/gi },
   { kind: 'model', re: /\bgpt-?\d+(?:[.-]\w+)*/gi },
-  { kind: 'model', re: /(?<![\w-])o[1-4](?:-mini|-pro)?\b/g },
+  { kind: 'model', re: /(?<![\w-])o[1-4](?:-mini|-pro)?\b/gi },
   { kind: 'effort', re: /\bxhigh\b/gi },
-  { kind: 'effort', re: new RegExp(`\\b${LEVEL}[- ]effort\\b`, 'gi') },
-  { kind: 'effort', re: new RegExp(`\\beffort(?:\\s+level)?\\s*[:=]?\\s*["'\`]?${LEVEL}\\b`, 'gi') },
-  { kind: 'effort', re: /--effort\b|\b(?:model_)?reasoning_effort\b/gi },
+  { kind: 'effort', re: new RegExp(`\\b${LEVEL}${QUOTE}(?:-|\\s+)(?:reasoning\\s+)?effort\\b`, 'gi') },
+  { kind: 'effort', re: new RegExp(`\\beffort(?:\\s+level)?\\s*[:=]?\\s*${QUOTE}${LEVEL}\\b`, 'gi') },
+  { kind: 'effort', re: new RegExp(`(?:--effort|\\b(?:model_)?reasoning_effort)${QUOTE}\\s*(?:[:=]|\\s+to\\s+|\\s)\\s*${QUOTE}${LEVEL}\\b`, 'gi') },
 ];
 
 /** Per-file exemptions for skills whose subject is models; a listed file with nothing to suppress is stale. */
@@ -55,7 +56,7 @@ function walk(dir, out) {
   return out;
 }
 
-export function promptFiles(root) {
+function promptFiles(root) {
   const pluginsRoot = path.join(root, 'plugins');
   if (!fs.existsSync(pluginsRoot)) return [];
   const files = [];
@@ -74,26 +75,22 @@ function frontmatterEnd(lines) {
   return close === -1 ? 0 : close + 1;
 }
 
-/** Returns `{ hits, stale }`: each unexempted model or effort name, and each exempted file with nothing to suppress. */
 export function findModelNames(root, exemptions = MODEL_NAME_EXEMPTIONS) {
   const hits = [];
   const used = new Set();
   for (const file of promptFiles(root)) {
-    const lines = fs.readFileSync(path.join(root, file), 'utf8').split('\n');
+    const lines = fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n?/g, '\n').split('\n');
     const fmEnd = frontmatterEnd(lines);
-    lines.forEach((line, index) => {
-      if (index < fmEnd && /^(?:model|effort):/.test(line)) return;
-      for (const { kind, re } of PATTERNS) {
-        for (const match of line.matchAll(re)) {
-          const exemption = exemptions.find((e) => e.files.includes(file) && e.kinds.includes(kind));
-          if (exemption) {
-            used.add(file);
-            continue;
-          }
-          hits.push({ file, line: index + 1, kind, text: match[0] });
+    const text = lines.map((line, index) => (index < fmEnd && /^(?:model|effort):/.test(line) ? '' : line)).join('\n');
+    for (const { kind, re } of PATTERNS) {
+      for (const match of text.matchAll(re)) {
+        if (exemptions.some((e) => e.files.includes(file) && e.kinds.includes(kind))) {
+          used.add(file);
+          continue;
         }
+        hits.push({ file, line: text.slice(0, match.index).split('\n').length, kind, text: match[0] });
       }
-    });
+    }
   }
   const stale = exemptions.flatMap((e) => e.files.filter((file) => !used.has(file)).map((file) => ({ file, reason: e.reason })));
   return { hits, stale };
