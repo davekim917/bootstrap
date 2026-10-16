@@ -21,6 +21,18 @@ function entrySource(entry) {
   return match ? match[1] : null;
 }
 
+function semver(version) {
+  const m = typeof version === 'string' ? /^(\d+)\.(\d+)\.(\d+)$/.exec(version) : null;
+  return m ? m.slice(1).map(Number) : null;
+}
+
+function greater(a, b) {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] > b[i];
+  }
+  return false;
+}
+
 function parse(text, label) {
   if (text === null) return null;
   try {
@@ -85,10 +97,21 @@ export function checkVersionBumps({ changedPaths, read }) {
       );
     }
     for (const surface of surfaces) {
-      if (surface.existedAtBase && surface.base === surface.head) {
+      const head = semver(surface.head);
+      if (!head) {
+        problems.push(`plugins/${plugin}: ${surface.label} has version ${JSON.stringify(surface.head)}, not MAJOR.MINOR.PATCH`);
+        continue;
+      }
+      if (!surface.existedAtBase) continue;
+      if (surface.base === surface.head) {
         problems.push(
           `plugins/${plugin} changed but ${surface.label} is still ${surface.head}; bump the plugin version in every manifest and marketplace entry`,
         );
+        continue;
+      }
+      const base = semver(surface.base);
+      if (base && !greater(head, base)) {
+        problems.push(`plugins/${plugin}: ${surface.label} goes from ${surface.base} to ${surface.head}; a bump must increase the version`);
       }
     }
   }

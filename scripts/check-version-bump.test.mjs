@@ -68,6 +68,20 @@ test('bumping the manifests but not a marketplace entry fails on that entry only
   assert.ok(!problems.some((p) => p.includes('.claude-plugin/plugin.json is still')));
 });
 
+test('a bump must be a valid, increasing MAJOR.MINOR.PATCH version', () => {
+  const changed = ['plugins/sample/hooks/guard.ts'];
+  for (const [head, pattern] of [
+    ['0.0.1', /goes from 1\.0\.0 to 0\.0\.1; a bump must increase the version/],
+    ['banana', /has version "banana", not MAJOR\.MINOR\.PATCH/],
+    [undefined, /has version undefined, not MAJOR\.MINOR\.PATCH/],
+  ]) {
+    const problems = run(tree('1.0.0'), tree(head), changed);
+    assert.ok(problems.some((p) => pattern.test(p)), `${head}: ${problems.join(' | ')}`);
+  }
+  assert.deepEqual(run(tree('1.9.9'), tree('1.10.0'), changed), []);
+  assert.deepEqual(run(tree('1.0.0'), tree('2.0.0'), changed), []);
+});
+
 test('a brand-new plugin needs no bump', () => {
   const base = { '.claude-plugin/marketplace.json': marketplace([]) };
   assert.deepEqual(run(base, tree('0.1.0', { codex: false }), ['plugins/sample/.claude-plugin/plugin.json']), []);
