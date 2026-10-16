@@ -1,0 +1,29 @@
+{
+  "name": "claim-check",
+  "version": "1.0.0",
+  "description": "Stop hook that checks the commit SHAs and merged/closed PR claims in an agent final message against git and GitHub, and sends the turn back once when one is proven false. Unverifiable claims pass.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "keywords": [
+    "verification",
+    "git",
+    "github",
+    "hooks"
+  ],
+  "hooks": "./hooks/claim-check-codex-hooks.json",
+  "interface": {
+    "displayName": "Claim check",
+    "shortDescription": "Final-message SHAs and PR states checked against git and GitHub",
+    "longDescription": "At the end of each turn, extracts the commit SHAs and merged or closed PR claims from the agent's final message, checks them with git and the GitHub API, and sends the turn back once when a claim is proven false. A claim it cannot prove passes.",
+    "developerName": "David Kim",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/davekim917/bootstrap",
+    "brandColor": "#b45309"
+  }
+}

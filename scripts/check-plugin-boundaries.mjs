@@ -301,6 +301,7 @@ const codexRoster = new Map([
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
   ['slack-humanizer', './plugins/slack-humanizer'],
+  ['claim-check', './plugins/claim-check'],
 ]);
 for (const entry of codexEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
@@ -392,6 +393,7 @@ const claudeRoster = new Map([
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
   ['slack-humanizer', './plugins/slack-humanizer'],
+  ['claim-check', './plugins/claim-check'],
 ]);
 for (const entry of claudeEntries) {
   const entrySource = normalizeSource(sourcePath(entry));

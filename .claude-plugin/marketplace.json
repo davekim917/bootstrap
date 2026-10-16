@@ -70,6 +70,12 @@
       "source": "./plugins/slack-humanizer",
       "description": "Slack messages drafted in the user's voice and posted as rich text, so bullets and numbered lists render as real Slack lists.",
       "version": "1.0.1"
+    },
+    {
+      "name": "claim-check",
+      "source": "./plugins/claim-check",
+      "description": "Stop hook that checks the commit SHAs and merged/closed PR claims in an agent's final message against GitHub, and sends the turn back once when one is proven false. Unverifiable claims pass.",
+      "version": "1.0.0"
     }
   ]
 }

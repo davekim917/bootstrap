@@ -65,3 +65,6 @@ jobs:
 
       - name: Run the comment-rule tests
         run: node --test plugins/comment-rule/test/comment-rule.test.mjs
+
+      - name: Run the claim-check Stop hook tests
+        run: node --test plugins/claim-check/test/claim-check.test.mjs

@@ -26,6 +26,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 | Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.1 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
+| Claude Code / Codex / NanoClaw | `claim-check` | 1.0.0 | Stop hook that checks the commit SHAs and merged/closed PR claims in the final message against GitHub and sends a proven-false claim back once |
 
 ### Delegation is invoke-only
 
@@ -272,6 +273,7 @@ artifact, environment and command, and invalidate it after relevant changes.
 /plugin install comment-rule@davekim917-bootstrap
 /plugin install concise@davekim917-bootstrap
 /plugin install slack-humanizer@davekim917-bootstrap
+/plugin install claim-check@davekim917-bootstrap
 ```
 
 ### Codex
@@ -288,6 +290,7 @@ codex plugin add verification-skills@davekim917-bootstrap
 codex plugin add comment-rule@davekim917-bootstrap
 codex plugin add concise@davekim917-bootstrap
 codex plugin add slack-humanizer@davekim917-bootstrap
+codex plugin add claim-check@davekim917-bootstrap
 ```
 
 For a local checkout at `~/plugins/bootstrap`:
@@ -399,6 +402,23 @@ base). No gate runs it, since only a model can judge it. It never answers "keep"
 assert or lint rule that replaces it and where that goes, or `none` with the reason code can't
 check it. The comment stays until that enforcement exists in the change or on the base branch.
 
+### Claim check
+
+At the end of each turn, `claim-check` reads the final message for commit SHAs and "merged" or
+"closed" PR claims and checks them with the GitHub API. When one is proven false (the PR is open,
+the number does not exist, the commit is not in that repository) it sends the turn back once with
+the contradiction, so the agent corrects the message. It respects `stop_hook_active`, so it never
+loops.
+
+It checks a claim only when the claim names its repository: a GitHub URL, `owner/repo#N`,
+`repo#N` matching one repository the session knows, or a bare `#N` that the session's own commands
+tied to exactly one repository (`--repo`, `REPO=… PR=…`, a URL). A SHA is checked only beside a PR
+reference ("#42 merged as `abc1234`"). Anything it cannot prove passes, with one line on stderr:
+no `gh` auth, an unreadable repository, offline, an ambiguous reference. Fenced code blocks are
+quoted output, not claims.
+
+Switch it off with `CLAIM_CHECK=off` in the environment, or uninstall the plugin.
+
 ### Concise
 
 `concise` is opt-in and applies only to the current conversation. In Claude Code, Codex, or
@@ -505,6 +525,7 @@ node --test evals/harness/*.test.mjs
 node scripts/check-plugin-boundaries.mjs
 node scripts/check-parity.mjs
 node --test plugins/comment-rule/test/comment-rule.test.mjs
+node --test plugins/claim-check/test/claim-check.test.mjs
 python3 -m unittest discover -s plugins/slack-humanizer/skills/slack-humanizer -p 'test_*.py'
 
 cd plugins/workflow/hooks && bun test && bun run check
