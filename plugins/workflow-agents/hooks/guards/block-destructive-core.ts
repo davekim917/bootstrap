@@ -1709,6 +1709,20 @@ function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCom
 
 // Tools whose operation is a positional word, so `xargs <tool>` with none lets its input choose the operation.
 const OPERATION_TOOLS = new Set(['terraform', 'tofu', 'aws', 'gcloud', 'az', 'kubectl', 'helm', 'git', 'gh', 'dbt', 'snow', 'firebase', 'heroku', 'vercel', 'fly', 'flyctl', 'pulumi', 'doctl']);
+// Arguments that turn a routine command into one needing approval when xargs appends them from its input.
+const GATING_MODIFIERS = ['--force', '-f', '--delete', '-d', '--mirror', '--prune', '--full-refresh', '-auto-approve', 'destroy', '--yes', '-y'];
+
+/** xargs appends its input to the command (it does unless -I/-i/-J/--replace substitutes it into one place). */
+function xargsAppends(args: string[]): boolean {
+    return !args.some(a => /^-[A-Za-z0-9]*[IiJ]/.test(a) || a.startsWith('--replace'));
+}
+
+/** A modifier that, appended to `step`, makes it need approval when it doesn't already. */
+function appendedModifier(step: ResolvedCommand): string | null {
+    if (checkGatedCommand(step)) return null;
+    return GATING_MODIFIERS.find(m => checkGatedCommand({ ...step, args: [...step.args, m] })) ?? null;
+}
+
 // xargs or find nested inside each other past this depth are not followed; no real command nests them twice.
 const EXEC_NESTING_MAX = 4;
 
@@ -1724,8 +1738,17 @@ function innerGatedSteps(cmd: ResolvedCommand, depth = 0): Array<{ step: Resolve
         const steps = innerSteps(inner);
         if (steps === RUNS_VARIABLE) continue;
         for (const step of steps) {
-            if (depth < EXEC_NESTING_MAX && (step.name === 'xargs' || step.name === 'find')) {
+            if (step.name === 'xargs' || step.name === 'find') {
+                if (depth >= EXEC_NESTING_MAX) {
+                    gated.push({ step: { ...step, pos: undefined }, reason: `${via} nests xargs or find too deeply for the guard to follow. Run the inner command directly.` });
+                    continue;
+                }
                 gated.push(...innerGatedSteps(step, depth + 1).map(g => ({ step: g.step, reason: `${via} runs ${g.reason}` })));
+            }
+            const appended = via === 'xargs' && inner === step && xargsAppends(cmd.args) ? appendedModifier(step) : null;
+            if (appended) {
+                gated.push({ step: { ...step, pos: undefined }, reason: `xargs appends its input to ${step.name}, and an appended ${appended} would need approval. Write the arguments in the command.` });
+                continue;
             }
             const reason = checkGatedCommand(step);
             // The step's offset, if any, is into the inner script, not the command line the card reads from.
@@ -3580,7 +3603,8 @@ function* gatedSteps(
                 continue;
             }
             if (lab) {
-                const target = labTargetOf(cmd, cwd);
+                // A step xargs or find runs under `env -C` resolves its target (a bare remote, a checkout) from there.
+                const target = labTargetOf(cmd, cmd.chdir ? pathResolve(cwd, cmd.chdir) : cwd);
                 if (target !== null) {
                     if (log) logLabScope(`allowed ${cmd.name} against lab target ${target}`);
                     continue;

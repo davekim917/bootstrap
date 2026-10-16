@@ -207,6 +207,14 @@ describe('lab session + lab target → allow', () => {
     expect(evaluateBashCommand(command, { cwd: LAB_WORKTREE }).action).toBe('gate');
   });
 
+  test('a step xargs runs under env -C takes its target from that directory', () => {
+    inLab();
+    const prod = 'xargs -a /dev/null env -C /prod/repo git push --force origin main';
+    expect(evaluateBashCommand(prod, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const lab = `xargs -a /dev/null env -C ${LAB_WORKTREE} git push --force origin main`;
+    expect(evaluateBashCommand(lab, { cwd: '/tmp' }).action).toBe('allow');
+  });
+
   test('inside xargs, a lab step does not exempt a later non-lab step', () => {
     inLab();
     const prod = `xargs sh -c 'psql -d lab_app -c "DROP TABLE scratch"; psql -d app_prod -c "DROP TABLE users"' < list`;

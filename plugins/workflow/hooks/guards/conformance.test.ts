@@ -186,6 +186,10 @@ const BASH_GATE = [
   "printf \"'-c' 'rm -rf /tmp/x'\\n\" | xargs sh",
   "find destroy -maxdepth 0 -exec terraform {} \\;",
   "find . -name '*.sh' -exec bash {} \\;",
+  "printf '%s\\n' --force | xargs git push origin main",
+  // An appended branch name of `+main` or `--force` force-pushes, so pushing what xargs reads needs approval.
+  'xargs -r git push origin < branches',
+  'xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null terraform destroy',
   "printf 'x' | xargs -I{} xargs psql -c 'DROP TABLE users'",
   "find . -name x -exec xargs git push --force origin main \\;",
 ];
@@ -207,11 +211,12 @@ const BASH_ALLOW = [
   'find . -exec chmod 644 {} +',
   'find . -exec echo {} +',
   // Routine commands xargs and find run still pass.
-  'xargs -r git push origin < branches',
   "find . -name '*.sql' -exec psql -c 'SELECT 1' \\;",
   'xargs -I{} git -C {} status < repos',
   "xargs -I{} sh -c 'git -C {} pull --ff-only' < repos",
   'xargs -r git add < files',
+  'xargs -I{} git push origin {} < branches',
+  'xargs -n1 git fetch origin < branches',
   'xargs -n1 terraform fmt < dirs',
   "printf x | xargs -I{} xargs echo",
   'exec bash-completion-loader',
