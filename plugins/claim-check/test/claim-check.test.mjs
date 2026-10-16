@@ -421,6 +421,6 @@ test('every gh call gets the time left in one budget, and nothing runs once it i
   assert.ok(seen.length > 0);
   for (const call of seen) {
     assert.ok(Number.isFinite(call.timeout) && call.timeout > 0, `${call.path} got timeout ${call.timeout}`);
-    assert.ok(call.at + call.timeout <= 20_000, `${call.path} at ${call.at} may run past the budget (${call.timeout})`);
+    assert.ok(call.at + call.timeout <= 3_000, `${call.path} at ${call.at} may run past the budget (${call.timeout})`);
   }
 });

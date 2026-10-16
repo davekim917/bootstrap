@@ -20,8 +20,8 @@ import { fileURLToPath } from 'node:url';
 
 const MAX_CLAIMS = 12;
 // The whole check, git and gh calls included, fits in this; the hook's own timeout is 30s.
-const BUDGET_MS = 20_000;
-const CALL_TIMEOUT_MS = 8_000;
+const BUDGET_MS = 3_000;
+const CALL_TIMEOUT_MS = 2_500;
 const TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024;
 const LOG_CAP_BYTES = 256 * 1024;
 const LOG_MESSAGE_CHARS = 600;
