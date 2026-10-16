@@ -192,19 +192,23 @@ function expandedEmitter(cmd: ResolvedCommand): ResolvedCommand | null {
     const words = argumentWords(cmd, true);
     const args = [...cmd.args];
     const values: string[] = [];
+    // The argv the command actually gets, word by word: an unquoted value splits into several.
+    const argv: string[] = [];
     for (let i = 0; i < words.length; i++) {
         const e = expandWords([words[i]], cmd);
         if (e === null) return null;
         if (e.length) args[i] = e[0];
+        const quoted = /^"[\s\S]*"$/.test(words[i].word) || /^'[\s\S]*'$/.test(words[i].word);
+        argv.push(...(e.length && !quoted ? e[0].split(/\s+/).filter(Boolean) : [args[i]]));
         // cat and tee name files with their operands; only echo and printf write them as text.
         if (cmd.name !== 'echo' && cmd.name !== 'printf') continue;
         // Only an unquoted value splits, so only there can a leading word become an option echo drops.
         const unquoted = !/^"[\s\S]*"$/.test(words[i].word);
-        // A leading `printf -v NAME` assigns its output instead of printing it; anywhere later it is just an argument.
-        if (i === 0 && unquoted && cmd.name === 'printf' && e.some(v => /^-v\s/.test(v))) return { ...cmd, args: [], stdinTexts: [] };
         // Only the options echo takes are dropped: `echo -- x` prints `-- x`, a SQL comment.
         values.push(...e.flatMap(v => (unquoted && cmd.name === 'echo' ? [v, v.replace(/^(?:-[neE]+\s+)+/, '')] : [v])));
     }
+    // A leading `printf -v NAME` (from one word or several) assigns the output instead of printing it.
+    if (cmd.name === 'printf' && /^-v/.test(argv[0] ?? '')) return { ...cmd, args: [], stdinTexts: [] };
     const stdin = expandWords((cmd.stdinExpanded ?? []).map(heredocWord), cmd);
     // Each value is scanned whole and without leading option words too: an unquoted `-e DROP …` splits into an option
     // and the SQL echo prints, while emittedText would drop the joined word as an option.
@@ -1034,7 +1038,8 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const files: string[] = [...(cmd.stdinFiles ?? [])];
     const vars = new Map<string, string>();
     let sqlInArgs = false;
-    let readsStdin = texts.length > 0 || files.length > 0;
+    // Expanded argument text is not stdin: only a heredoc, here-string or `<` file is.
+    let readsStdin = Boolean(cmd.stdinTexts?.length) || files.length > 0;
 
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
