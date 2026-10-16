@@ -229,6 +229,14 @@ test('the CLI never blocks: it records what it would have sent back, and stays s
   assert.equal(cli(input, { CLAIM_CHECK: 'off' }).stdout, '');
   assert.equal(records().length, 1);
 
+  const fromTranscript = transcript([
+    { type: 'assistant', message: { content: [{ type: 'text', text: `Merged ${REMOTE}#42 from the transcript.` }] } },
+  ]);
+  const fallback = cli(JSON.stringify({ session_id: 'sess-2', cwd: bin, transcript_path: fromTranscript }));
+  assert.equal(fallback.status, 0, fallback.stderr);
+  assert.equal(records().length, 2);
+  assert.match(records()[1].message, /Merged example-org\/example-app#42 from the transcript/);
+
   const garbage = cli('not json');
   assert.equal(garbage.status, 0);
   assert.equal(garbage.stdout, '');
@@ -413,6 +421,6 @@ test('every gh call gets the time left in one budget, and nothing runs once it i
   assert.ok(seen.length > 0);
   for (const call of seen) {
     assert.ok(Number.isFinite(call.timeout) && call.timeout > 0, `${call.path} got timeout ${call.timeout}`);
-    assert.ok(call.at + call.timeout <= 20_000, `${call.path} at ${call.at} may run past the budget (${call.timeout})`);
+    assert.ok(call.at + call.timeout <= 3_000, `${call.path} at ${call.at} may run past the budget (${call.timeout})`);
   }
 });
