@@ -3665,12 +3665,16 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
                 return 'git push deleting or force-updating a remote ref (+/: refspec, --delete).';
             }
         }
+    }
+    // git's own `git-clean` program, run by path from its exec dir, is the same command as `git clean`.
+    const cleanArgs = name === 'git' && args[gitSubcommandIndex(args)] === 'clean' ? args.slice(gitSubcommandIndex(args) + 1)
+        : name === 'git-clean' ? args
+        : null;
+    if (cleanArgs) {
         // Gated unless it is a dry run, -f or not: `clean.requireForce=false` lets it delete without -f.
-        if (args[i] === 'clean') {
-            const clean = parseGitClean(args.slice(i + 1));
-            if (!clean.dryRun && !clean.help) {
-                return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
-            }
+        const clean = parseGitClean(cleanArgs);
+        if (!clean.dryRun && !clean.help) {
+            return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
         }
     }
 
@@ -4004,7 +4008,8 @@ function gitCleanStep(cmd: ResolvedCommand): StepCard {
     const what = onlyIgnored ? 'ignored files' : ignored ? 'untracked and ignored files' : 'untracked files';
     const where = paths.length ? ` under ${paths.map(code).join(', ')}` : '';
     const lines = [
-        `If you approve: all ${what}${dirs ? ' and directories' : ''}${where} are deleted, skipping the trash. They cannot be recovered.`,
+        // A pathspec matches untracked directories whole, with or without -d.
+        `If you approve: all ${what}${dirs || paths.length ? ' and directories' : ''}${where} are deleted, skipping the trash. They cannot be recovered.`,
     ];
     if (ignored || onlyIgnored) lines.push('Ignored files include local secrets and data such as `.env`, caches and build output.');
     if (excluded.length) lines.push(`Kept: files matching ${excluded.map(code).join(', ')}.`);
@@ -4173,6 +4178,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             const step: StepCard =
                 sqlDialect ? sqlStep(sqlDialect, cmd)
                 : cmd.name === 'dbt' ? dbtStep(cmd, dirBefore)
+                : cmd.name === 'git-clean' ? gitCleanStep({ ...cmd, args: ['clean', ...cmd.args] })
                 : cmd.name === 'git' ? (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean' ? gitCleanStep(cmd) : gitPushStep(cmd))
                 : cmd.name === 'aws' ? awsStep(cmd)
                 : genericStep(cmd, why);

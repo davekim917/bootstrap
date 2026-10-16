@@ -130,6 +130,7 @@ const BASH_GATE = [
   'git clean -f --ex -npattern',
   'git clean -f --e -npattern',
   'git -c clean.requireForce=false --attr-source HEAD clean',
+  '/usr/lib/git-core/git-clean -fd',
   'git clean -f -e -npattern',
   'git clean -fe -n',
   'ENV=false git --config-env clean.requireForce=ENV clean',
