@@ -292,6 +292,8 @@ function gwsCallIsProbe(node: any, args: string[]): boolean {
  */
 export function probeOnlyCommand(command: string): boolean {
     if ((command.match(/\(/g) ?? []).length > PROBE_PARENS_MAX) return false;
+    // A `{VAR}>file` redirect assigns VAR (PATH included) outside any assignment word; a probe never needs one.
+    if (/\{[A-Za-z_]\w*\}\s*[<>]/.test(command)) return false;
     let script: any;
     try {
         script = parse(command);

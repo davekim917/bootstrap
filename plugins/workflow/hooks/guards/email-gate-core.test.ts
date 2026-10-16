@@ -188,6 +188,7 @@ describe('evaluateEmailSend — gate decision', () => {
             'while read -r PATH; do gws gmail +send --help; done < dirs',
             "test -v 'x[$(\\gws gmail +send --to victim@example.net --body x)]'; gws gmail +send --help",
             "[ -v 'x[0]' ] && gws gmail +send --help",
+            ': {PATH}>/tmp/f; gws gmail +send --to victim@example.net --help',
             'gws gmail +send --help; /tmp/grep x',
             'gws gmail +send --help | ./head',
             'gws gmail +send --help | timeout 5 /tmp/head',
