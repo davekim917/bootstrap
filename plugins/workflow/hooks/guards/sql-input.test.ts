@@ -189,6 +189,10 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `x=$(for t in a; do cat bad.sql | psql; done)`,
         `B='DROP TABLE users'; x=$(echo "$B" | psql)`,
         `snow sql -f include-template.sql -D path=bad.sql`,
+        `printf 'DROP TABLE users' | sqlite3 -lookaside 100 50 db.sqlite`,
+        `x=$(printf 'DROP TABLE users' | { psql; })`,
+        `x=$(printf 'DROP TABLE users' | ( psql ))`,
+        `x=$(B='DROP TABLE users'; echo "$B" | psql)`,
     ]) {
         expect(verdict(command)).toBe('gate');
     }
@@ -201,6 +205,7 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `pushd +1 && psql -c 'select 1'`,
         `printf 'DROP TABLE users' | sqlite3 -init ok.sql db.sqlite 'SELECT 1'`,
         `B='SELECT 1'; x=$(echo "$B" | psql)`,
+        `x=$(B='SELECT 1'; echo "$B" | psql)`,
         `snow sql -f include-template.sql -D path=ok.sql`,
     ]) {
         expect(verdict(command)).toBe('allow');

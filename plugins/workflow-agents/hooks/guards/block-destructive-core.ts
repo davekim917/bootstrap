@@ -1025,7 +1025,8 @@ function optionValueAt(args: string[], i: number, option: string): string | unde
 const SHORT_CLUSTER_MAX = 16;
 
 // sqlite3 options that take a value, single- or double-dashed.
-const SQLITE_VALUE_OPTIONS = new Set(['init', 'cmd', 'separator', 'newline', 'nullvalue', 'mmap', 'lookaside', 'pagecache', 'heap', 'maxsize', 'vfs', 'escape']);
+const SQLITE_VALUE_OPTIONS = new Set(['init', 'cmd', 'separator', 'newline', 'nullvalue', 'mmap', 'heap', 'maxsize', 'vfs', 'escape']);
+const SQLITE_TWO_VALUE_OPTIONS = new Set(['lookaside', 'pagecache']);
 
 /** How many operands (FILENAME, SQL) a sqlite3 command line gives, past its options and their values. */
 function sqlitePositionals(args: string[]): number {
@@ -1035,6 +1036,7 @@ function sqlitePositionals(args: string[]): number {
         if (a === '--') return n + args.length - i - 1;
         if (!a.startsWith('-')) n++;
         else if (SQLITE_VALUE_OPTIONS.has(a.replace(/^--?/, ''))) i++;
+        else if (SQLITE_TWO_VALUE_OPTIONS.has(a.replace(/^--?/, ''))) i += 2;
     }
     return n;
 }
@@ -1423,6 +1425,10 @@ const NESTED_COMMAND_NODES = new WeakSet<object>();
 const SUBSTITUTION_OF = new WeakMap<object, object>();
 // The outermost command whose words hold each substitution script; its offset is where the substitution runs.
 const SUBSTITUTION_HOST = new WeakMap<object, any>();
+// Each substitution script's own text, which its nested offsets index.
+const SUBSTITUTION_TEXT = new WeakMap<object, string>();
+// Substitutions per command line whose variables are expanded against their own text; past it only the host's apply.
+const SUBSTITUTION_VIEWS_MAX = 16;
 const hostCommands: any[] = [];
 
 function addNestedCommands(script: any, commands: any[]): void {
@@ -1445,6 +1451,7 @@ function addNestedCommands(script: any, commands: any[]): void {
 function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): ResolvedCommand[] {
     const byNode = new Map<any, ResolvedCommand>(nested);
     const expandLater: ResolvedCommand[] = [];
+    let views = 0;
     const done = new Set<object>();
     for (const [node, cmd] of nested) {
         if (!SQL_CLIS[cmd.name] && cmd.name !== 'snow') continue;
@@ -1452,28 +1459,55 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): Resolved
         if (!sub || done.has(sub)) continue;
         done.add(sub);
         const hostPos = SUBSTITUTION_HOST.get(sub)?.pos;
+        const text = SUBSTITUTION_TEXT.get(sub);
+        // Variables set inside the substitution expand against its own text, at the emitter's own offset.
+        const local = text && ++views <= SUBSTITUTION_VIEWS_MAX
+            ? ({ writes: [], pipedInto: new Map(), cds: [], links: new Map(), command: text } as ScriptContext)
+            : null;
         const pipelines: any[] = [];
         pipelinesIn(sub, pipelines, 0);
         for (const pipeline of pipelines) {
             const stages = pipeline.commands || [];
             for (let i = 1; i < stages.length; i++) {
-                const up = byNode.get(stages[i - 1]);
-                const down = byNode.get(stages[i]);
-                if (!up || !down || !TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
-                // Its words expand where the command holding this substitution runs, with the variables set by then.
-                const emitter = typeof hostPos === 'number' && holdsVariable(up) ? { ...up, pos: hostPos, argsAreValues: true } : null;
-                if (emitter) expandLater.push(emitter);
-                down.pipedInput = {
-                    texts: emittedText(up),
-                    catFiles: up.name === 'cat' ? catOperands(up) : [],
-                    ...(emitter ? { emitters: [emitter] } : {}),
-                    ...(up.pipedInput && (up.name === 'cat' || up.name === 'tee') ? { from: [up.pipedInput] } : {}),
-                };
+                const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [], emitters: [] };
+                for (const up of commandsIn(stages[i - 1], 0).map(n => byNode.get(n)).filter((c): c is ResolvedCommand => !!c)) {
+                    if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
+                    input.texts.push(...emittedText(up));
+                    if (up.name === 'cat') input.catFiles.push(...catOperands(up));
+                    if (up.pipedInput) (up.name === 'cat' || up.name === 'tee' ? input.from! : input.textFrom!).push(up.pipedInput);
+                    if (!holdsVariable(up)) continue;
+                    // Variables set before the substitution expand where the command holding it runs.
+                    if (typeof hostPos === 'number') {
+                        const atHost = { ...up, pos: hostPos, argsAreValues: true };
+                        expandLater.push(atHost);
+                        input.emitters!.push(atHost);
+                    }
+                    if (local && up.pos !== undefined) input.emitters!.push({ ...up, script: local });
+                }
+                for (const down of commandsIn(stages[i], 0).map(n => byNode.get(n)).filter((c): c is ResolvedCommand => !!c)) {
+                    down.pipedInput = down.pipedInput ? { texts: [], catFiles: [], from: [down.pipedInput, input] } : input;
+                }
             }
         }
     }
     for (const [, cmd] of nested) delete cmd.pos;
     return expandLater;
+}
+
+/** The command nodes a pipeline stage runs: itself, or those inside a group, subshell or compound stage. */
+function commandsIn(node: any, depth: number, out: any[] = []): any[] {
+    if (!node || typeof node !== 'object' || depth > PIPE_NESTING_MAX) return out;
+    if (Array.isArray(node)) {
+        for (const child of node) commandsIn(child, depth, out);
+        return out;
+    }
+    if (node.type === 'Command') {
+        out.push(node);
+        return out;
+    }
+    for (const child of [node.commands, node.command, node.clause, node.then, node.else, node.body]) commandsIn(child, depth + 1, out);
+    for (const item of node.items || []) commandsIn(item?.body, depth + 1, out);
+    return out;
 }
 
 /** Every pipeline in a substitution's own command lists, including those inside if/loop/case bodies and groups. */
@@ -1496,7 +1530,10 @@ function pipelinesIn(node: any, out: any[], depth: number): void {
 export function walkPartsForSubstitutions(node: any, commands: any[]): void {
     if (!node || typeof node !== 'object') return;
     if (['CommandExpansion', 'ProcessSubstitution', 'CommandSubstitution', 'Backtick'].includes(node.type)) {
-        addNestedCommands(node.script ?? node.body ?? node.command, commands);
+        const sub = node.script ?? node.body ?? node.command;
+        const text = typeof node.text === 'string' ? node.text : '';
+        if (sub && typeof sub === 'object' && text) SUBSTITUTION_TEXT.set(sub, text.startsWith('`') ? text.slice(1, -1) : text.slice(2, -1));
+        addNestedCommands(sub, commands);
     }
     if (node.type === 'ArithmeticExpansion') collectCommandsInText(String(node.text ?? ''), commands);
     if (node.type === 'ParameterExpansion') {
