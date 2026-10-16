@@ -211,6 +211,8 @@ describe('lab session + lab target → allow', () => {
     inLab();
     const prod = 'xargs -a /dev/null env -C /prod/repo git push --force origin main';
     expect(evaluateBashCommand(prod, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const viaShell = "xargs -a /dev/null env -C /prod/repo sh -c 'git push --force origin main'";
+    expect(evaluateBashCommand(viaShell, { cwd: LAB_WORKTREE }).action).toBe('gate');
     const lab = `xargs -a /dev/null env -C ${LAB_WORKTREE} git push --force origin main`;
     expect(evaluateBashCommand(lab, { cwd: '/tmp' }).action).toBe('allow');
   });

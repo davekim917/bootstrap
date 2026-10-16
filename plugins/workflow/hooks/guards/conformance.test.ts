@@ -189,6 +189,9 @@ const BASH_GATE = [
   "printf '%s\\n' --force | xargs git push origin main",
   // An appended branch name of `+main` or `--force` force-pushes, so pushing what xargs reads needs approval.
   'xargs -r git push origin < branches',
+  "printf '%s\\n' 'push --force origin main' | xargs git -C /prod",
+  "printf x | xargs bash -O extglob",
+  "printf '%sI' --force | xargs -dI git push origin main",
   'xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null terraform destroy',
   "printf 'x' | xargs -I{} xargs psql -c 'DROP TABLE users'",
   "find . -name x -exec xargs git push --force origin main \\;",

@@ -1680,7 +1680,9 @@ function innerSteps(inner: ResolvedCommand | null): ResolvedCommand[] | typeof R
         // A command taken from a parameter is whatever xargs reads from input or find matches, which cannot be known.
         if (nested.name.includes('$')) return RUNS_VARIABLE;
         const args = expandPositional(inner.name, nested.args, inner.args.slice(script.rest));
-        steps.push(args ? { ...nested, args } : nested);
+        const step = args ? { ...nested, args } : nested;
+        // A command the script runs starts in the shell's own directory (an `env -C` wrapper on the shell).
+        steps.push(inner.chdir !== undefined && step.chdir === undefined ? { ...step, chdir: inner.chdir } : step);
     }
     return steps;
 }
@@ -1710,7 +1712,38 @@ const GATING_MODIFIERS = ['--force', '-f', '--delete', '-d', '--mirror', '--prun
 
 /** xargs appends its input to the command (it does unless -I/-i/-J/--replace substitutes it into one place). */
 function xargsAppends(args: string[]): boolean {
-    return !args.some(a => /^-[A-Za-z0-9]*[IiJ]/.test(a) || a.startsWith('--replace'));
+    for (let i = 0; i < args.length && args[i].startsWith('-') && args[i] !== '--'; i += optionWords(args[i], 'adEIJLnPRsS', XARGS_LONG_VALUE_OPTIONS, XARGS_LONG_FLAGS)) {
+        const a = args[i];
+        if (a.startsWith('--')) {
+            const name = a.slice(2).split('=')[0];
+            if (name.length > 1 && 'replace'.startsWith(name)) return false;
+            continue;
+        }
+        // In a cluster, a letter that takes a value swallows the rest: `-dI` sets the delimiter to `I`.
+        for (const letter of a.slice(1)) {
+            if ('IiJ'.includes(letter)) return false;
+            if ('adELnPRsS'.includes(letter)) break;
+        }
+    }
+    return true;
+}
+
+/** The command names no operation (or, for a shell, no script): its input or a find match will supply one. */
+function writesNoOperation(inner: ResolvedCommand): boolean {
+    const placeholder = (words: string[]) => words.every(a => a === '{}');
+    if (inner.name === 'git') return placeholder(inner.args.slice(gitSubcommandIndex(inner.args), gitSubcommandIndex(inner.args) + 1));
+    if (SHELLS.has(inner.name)) {
+        if (shellScript(inner.name, inner.args)) return false;
+        const spec = SHELL_VALUE_OPTIONS[inner.name] ?? SHELL_VALUE_OPTIONS.bash;
+        const operands: string[] = [];
+        for (let i = 0; i < inner.args.length; i++) {
+            const a = inner.args[i];
+            if (!/^[-+]/.test(a)) operands.push(a);
+            else if (a.startsWith('--') ? spec.long.has(a) : spec.short.includes(a[a.length - 1])) i++;
+        }
+        return placeholder(operands);
+    }
+    return inner.args.every(a => a.startsWith('-') || a === '{}');
 }
 
 /** A modifier that, appended to `step`, makes it need approval when it doesn't already. */
@@ -1727,7 +1760,7 @@ function innerGatedSteps(cmd: ResolvedCommand, depth = 0): Array<{ step: Resolve
     const gated: Array<{ step: ResolvedCommand; reason: string }> = [];
     for (const { via, inner } of execRuns(cmd)) {
         // With no operation (or script) written, xargs input or a find match supplies it: `xargs sh` gets `-c …` at run time.
-        if (inner && (OPERATION_TOOLS.has(inner.name) || SHELLS.has(inner.name)) && inner.args.every(a => a.startsWith('-') || a === '{}')) {
+        if (inner && (OPERATION_TOOLS.has(inner.name) || SHELLS.has(inner.name)) && writesNoOperation(inner)) {
             gated.push({ step: { ...inner, pos: undefined }, reason: `${via} supplies ${inner.name}'s ${SHELLS.has(inner.name) ? 'script' : 'operation'} from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Write it in the command.` });
             continue;
         }
