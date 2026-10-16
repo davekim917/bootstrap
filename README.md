@@ -406,9 +406,10 @@ check it. The comment stays until that enforcement exists in the change or on th
 
 At the end of each turn, `claim-check` reads the final message for commit SHAs and "merged" or
 "closed" PR claims and checks them with the GitHub API. When one is proven false (the PR is open,
-the number does not exist, the commit is not in that repository) it sends the turn back once with
-the contradiction, so the agent corrects the message. It respects `stop_hook_active`, so it never
-loops.
+the number does not exist, the commit is not in that repository) it records the contradiction in
+`CLAIM_CHECK_LOG` (default `~/.claude/claim-check/would-block.jsonl`, trimmed past 256 KiB). It is
+advisory: it never blocks or sends the turn back. Whether it should is decided from the measured
+rate of false records. It respects `stop_hook_active`.
 
 It checks a claim only when the claim names its repository: a GitHub URL, `owner/repo#N`,
 `repo#N` matching one repository the session knows, or a bare `#N` that the session's own commands

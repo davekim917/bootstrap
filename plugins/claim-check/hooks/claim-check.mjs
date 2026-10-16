@@ -366,6 +366,7 @@ export function decide(input, { gh, git = run, log = () => {}, now = Date.now } 
   return {
     decision: 'block',
     claims: falseClaims,
+    message,
     reason:
       `Your last message states things GitHub contradicts:\n${falseClaims.map((c) => `- ${c}`).join('\n')}\n` +
       'Correct the message: report only what a command you ran printed, and include that output. ' +
@@ -408,14 +409,13 @@ function main() {
   });
   if (!verdict) return;
   const file = process.env.CLAIM_CHECK_LOG || path.join(os.homedir(), '.claude', 'claim-check', 'would-block.jsonl');
-  const message = typeof input.last_assistant_message === 'string' ? input.last_assistant_message : '';
   try {
     recordWouldBlock(file, {
       at: new Date().toISOString(),
       session_id: input.session_id ?? null,
       cwd: input.cwd ?? null,
       claims: verdict.claims,
-      message: message.slice(0, LOG_MESSAGE_CHARS),
+      message: verdict.message.slice(0, LOG_MESSAGE_CHARS),
     });
     process.stderr.write(`claim-check: would have sent this turn back (${verdict.claims.length} claim(s)); logged to ${file}\n`);
   } catch (error) {
