@@ -2823,6 +2823,10 @@ function gitRemoteArg(args: string[]): string | null {
 function labGitTarget(cmd: ResolvedCommand, cwd: string): string | null {
     // git clean touches only its work tree; its words (an `-e` pattern, a pathspec) name no repository.
     if (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean') {
+        // An exported GIT_WORK_TREE or GIT_DIR elsewhere on the line can move the work tree; only the command's own
+        // prefix (which overrides an export) is known.
+        const own = (cmd.env ?? []).some(e => e.startsWith('GIT_WORK_TREE='));
+        if (!own && /\bGIT_(?:WORK_TREE|DIR)\b/.test(cmd.script?.command ?? cmd.raw)) return null;
         const tree = gitEffectiveDir(cmd.args, cmd.env);
         const dir = tree === undefined ? cwd : pathResolve(cwd, tree);
         return isLabWorktreePath(dir) ? dir : null;
@@ -4020,10 +4024,14 @@ function gitCleanStep(cmd: ResolvedCommand): StepCard {
         `If you approve: all ${what}${dirs || paths.length ? ' and directories' : ''}${where} are deleted, skipping the trash. They cannot be recovered.`,
     ];
     if (ignored || onlyIgnored) lines.push('Ignored files include local secrets and data such as `.env`, caches and build output.');
-    // -e adds to the ignore rules: it protects files from a plain or -x clean, and adds to what -X deletes.
-    if (excluded.length) lines.push(onlyIgnored
-        ? `Also deleted: files matching ${excluded.map(code).join(', ')}, which -e marks as ignored.`
-        : `Kept: files matching ${excluded.map(code).join(', ')}.`);
+    // -e adds to the ignore rules: it protects files from a plain or -x clean, and adds to what -X deletes. A leading
+    // `!` un-ignores instead, so its effect is the reverse.
+    const negated = excluded.filter(p => p.startsWith('!')).map(p => p.slice(1));
+    const plain = excluded.filter(p => !p.startsWith('!'));
+    const kept = onlyIgnored ? negated : plain;
+    const added = onlyIgnored ? plain : negated;
+    if (kept.length) lines.push(`Kept: files matching ${kept.map(code).join(', ')}.`);
+    if (added.length) lines.push(`Also deleted: files matching ${added.map(code).join(', ')}, which -e ${onlyIgnored ? 'marks as ignored' : 'un-ignores'}.`);
     return { dir: gitEffectiveDir(cmd.args, cmd.env), label: `Permanently delete ${what}${where.replace(/`/g, '')} (git clean)`, lines };
 }
 

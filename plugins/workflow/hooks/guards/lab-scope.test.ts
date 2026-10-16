@@ -224,6 +224,9 @@ describe('lab session + lab target → allow', () => {
     expect(evaluateBashCommand('git clean -fd -e lab-org/LAB-X .', { cwd: PROD_WORKTREE }).action).toBe('gate');
     expect(evaluateBashCommand(`GIT_WORK_TREE=${PROD_WORKTREE} git clean -fd`, { cwd: LAB_WORKTREE }).action).toBe('gate');
     expect(evaluateBashCommand('git clean -fd', { cwd: LAB_WORKTREE }).action).toBe('allow');
+    expect(evaluateBashCommand(`export GIT_WORK_TREE=${PROD_WORKTREE}; git clean -fd`, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    expect(evaluateBashCommand(`export GIT_DIR=${PROD_WORKTREE}/.git; git clean -fd`, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    expect(evaluateBashCommand(`export GIT_WORK_TREE=${PROD_WORKTREE}; GIT_WORK_TREE=${LAB_WORKTREE} git clean -fd`, { cwd: LAB_WORKTREE }).action).toBe('allow');
   });
 
   test('a cd before a step xargs or find runs moves its target', () => {
