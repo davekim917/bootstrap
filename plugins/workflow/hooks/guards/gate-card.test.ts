@@ -173,6 +173,12 @@ describe('destructive approval description', () => {
         expect(c.summary).toContain(`\`${variable}\` is only known when the command runs`);
     });
 
+    test('git clean -X says an -e pattern is deleted, not kept', () => {
+        const c = card('git clean -f -X -e secret.env');
+        expect(c.summary).toContain('Also deleted: files matching `secret.env`');
+        expect(c.summary).not.toContain('Kept:');
+    });
+
     test('an && assignment holds only for the rest of its chain', () => {
         const c = card('cd /work/dbt && M=orders_daily; dbt run --select $M --full-refresh');
         expect(c.summary).toContain('`$M` is only known when the command runs');

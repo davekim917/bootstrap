@@ -4012,7 +4012,10 @@ function gitCleanStep(cmd: ResolvedCommand): StepCard {
         `If you approve: all ${what}${dirs || paths.length ? ' and directories' : ''}${where} are deleted, skipping the trash. They cannot be recovered.`,
     ];
     if (ignored || onlyIgnored) lines.push('Ignored files include local secrets and data such as `.env`, caches and build output.');
-    if (excluded.length) lines.push(`Kept: files matching ${excluded.map(code).join(', ')}.`);
+    // -e adds to the ignore rules: it protects files from a plain or -x clean, and adds to what -X deletes.
+    if (excluded.length) lines.push(onlyIgnored
+        ? `Also deleted: files matching ${excluded.map(code).join(', ')}, which -e marks as ignored.`
+        : `Kept: files matching ${excluded.map(code).join(', ')}.`);
     return { dir: gitEffectiveDir(cmd.args), label: `Permanently delete ${what}${where.replace(/`/g, '')} (git clean)`, lines };
 }
 
