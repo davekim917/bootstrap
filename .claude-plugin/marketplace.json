@@ -80,8 +80,8 @@
     {
       "name": "anderton",
       "source": {
-        "source": "github",
-        "repo": "davekim917/anderton"
+        "source": "url",
+        "url": "https://github.com/davekim917/anderton.git"
       },
       "description": "The /anderton skill: one operator session that owns a project's line to production, watches the project's other live Claude Code sessions and PRs, and turns repeated corrections into structure. Invoke-only; Claude Code on the host only."
     }

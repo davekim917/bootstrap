@@ -491,7 +491,7 @@ test('MUTATION: restoring orchestrate to the workflow skills tree breaks the dis
   );
 });
 
-test('the marketplace map holds only plugins shipped in this repository, not one fetched from GitHub', (t) => {
+test('the marketplace map holds only plugins shipped in this repository, not one fetched from another', (t) => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'enablement-marketplace-'));
   t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
   fs.mkdirSync(path.join(repo, '.claude-plugin'));
@@ -501,6 +501,7 @@ test('the marketplace map holds only plugins shipped in this repository, not one
       plugins: [
         { name: 'local', source: './plugins/local' },
         { name: 'elsewhere', source: { source: 'github', repo: 'example-org/elsewhere' } },
+        { name: 'by-url', source: { source: 'url', url: 'https://git.example.com/example-org/by-url.git' } },
       ],
     }),
   );

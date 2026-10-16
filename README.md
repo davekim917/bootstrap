@@ -455,8 +455,9 @@ the skill through the same enabler as `concise`.
 ### Anderton
 
 `anderton` is listed here but lives in [davekim917/anderton](https://github.com/davekim917/anderton):
-its entry has a `github` source, so Claude Code clones that repository into its own plugin cache
-(`~/.claude/plugins/cache/`) instead of reading it from this checkout. NanoClaw mounts `~/plugins`
+its entry has a `url` source with that public repository's `https://` address, so Claude Code clones
+it into its own plugin cache (`~/.claude/plugins/cache/`) instead of reading it from this checkout,
+with no git credentials and no SSH key needed. NanoClaw mounts `~/plugins`
 into its agent containers, and this operator skill must never reach one; living outside this
 repository keeps it out of every container. The entry pins no version, so an install or update
 takes that repository's latest commit. It is Claude Code only, and its README covers what it does.

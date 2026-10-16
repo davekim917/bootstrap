@@ -36,7 +36,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * Every plugin the Claude marketplace ships in this repository, by name → absolute plugin root. An entry fetched
- * from another repository (a `github` source) has no files here, so it is left out.
+ * from another repository (a `github` or `url` source) has no files here, so it is left out.
  */
 export function claudeMarketplacePlugins(repoRoot = REPO) {
   const marketplace = JSON.parse(

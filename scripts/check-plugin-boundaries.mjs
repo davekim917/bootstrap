@@ -397,7 +397,7 @@ const claudeRoster = new Map([
 ]);
 // Plugins kept in a repository of their own. Claude Code fetches one into its own plugin cache, so nothing that
 // mounts this repository (NanoClaw mounts ~/plugins into its agent containers) ever receives it.
-const claudeExternalRoster = new Map([['anderton', { source: 'github', repo: 'davekim917/anderton' }]]);
+const claudeExternalRoster = new Map([['anderton', { source: 'url', url: 'https://github.com/davekim917/anderton.git' }]]);
 for (const entry of claudeEntries) {
   const external = claudeExternalRoster.get(entry.name);
   if (external) {
