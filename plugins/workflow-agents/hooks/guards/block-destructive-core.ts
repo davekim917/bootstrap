@@ -108,6 +108,7 @@ interface PipedInput {
     from?: PipedInput[];        // inputs whose text and files also flow in
     textFrom?: PipedInput[];    // inputs whose text (not files) also flows in
     emitters?: ResolvedCommand[]; // emitters whose words hold a variable, expanded only when a SQL client traces them
+    unknown?: boolean;          // its text can't be worked out (a substitution past the expansion cap), so a reader gates
 }
 
 /**
@@ -133,6 +134,10 @@ function flattenInput(root: PipedInput | undefined, script?: ScriptContext): Fla
             break;
         }
         texts.push(...node.texts);
+        if (node.unknown) {
+            over = true;
+            break;
+        }
         for (const emitter of node.emitters ?? []) {
             const expanded = expandedEmitter(emitter);
             if (expanded === null) over = true;
@@ -1512,6 +1517,8 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>, command: 
                     if (up.name === 'cat') input.catFiles.push(...catFilesOf(up));
                     if (up.pipedInput) (up.name === 'cat' || up.name === 'tee' ? input.from! : input.textFrom!).push(up.pipedInput);
                     if (!holdsVariable(up)) continue;
+                    // Past the view cap its variables can't be expanded, so what it prints is unknown.
+                    if (!withinCap) input.unknown = true;
                     // Variables set before the substitution expand where the command holding it starts, read from the
                     // line up to there (the full line's view counts any assignment inside a substitution as unknown),
                     // unless the substitution assigns them itself first, which shadows the outer value.

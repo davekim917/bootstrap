@@ -200,6 +200,7 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `x=$(printf '' | { cat bad.sql | psql; })`,
         `B='DROP TABLE users'; x=$(echo "$B" | psql; B='SELECT 1')`,
         `x=$(cd missing; cat bad.sql | psql)`,
+        `S='SELECT 1'; D='DROP TABLE users'; ` + 'x=$(echo "$S" | psql); '.repeat(16) + 'x=$(echo "$D" | psql)',
     ]) {
         expect(verdict(command)).toBe('gate');
     }
