@@ -67,6 +67,12 @@ describe('destructive approval description', () => {
             has: ['and directories are deleted, skipping the trash', 'such as `.env`', 'Kept: files matching `.env`', 'Directory: `/work/app`'],
         },
         {
+            name: 'git clean reads an abbreviated --exclude as a kept pattern, and composes -C for the directory',
+            command: 'git -C /srv -C prod clean -fd --e keep',
+            label: 'Permanently delete untracked files (git clean)',
+            has: ['Kept: files matching `keep`', 'Directory: `/srv/prod`'],
+        },
+        {
             name: 'dbt --select= and --selector forms name the selection',
             command: 'dbt run --full-refresh --select=orders',
             label: 'Rebuild dbt model orders from scratch (--full-refresh)',

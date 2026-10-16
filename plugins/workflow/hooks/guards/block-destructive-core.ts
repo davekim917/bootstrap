@@ -2784,7 +2784,7 @@ function currentWorkingDir(): string {
 
 // ── git target resolution ────────────────────────────────────────────────────
 
-const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
+const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--attr-source', '--super-prefix']);
 // URL and scp-style (`git@github.com:org/repo`) remotes.
 const REPO_URL_RE = /^(?:(?:https?|ssh|git|git\+ssh|file):\/\/|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:)/;
 // A bare `org/repo` positional. Only consulted in the REMOTE position, so a
@@ -3663,7 +3663,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         }
         // Gated unless it is a dry run, -f or not: `clean.requireForce=false` lets it delete without -f.
         if (args[i] === 'clean') {
-            if (!gitCleanIsDryRun(args.slice(i + 1))) {
+            const clean = parseGitClean(args.slice(i + 1));
+            if (!clean.dryRun && !clean.help) {
                 return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
             }
         }
@@ -3935,42 +3936,67 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
     ] };
 }
 
-/** `git clean`'s options read in order: the last of `-n`/`--dry-run`/`--no-dry-run` wins, and `-e` takes a value. */
-function gitCleanIsDryRun(options: string[]): boolean {
-    let dry = false;
-    for (let i = 0; i < options.length; i++) {
-        const a = options[i];
-        if (a === '--') break;
-        // git accepts any unambiguous prefix of a long option.
-        const long = a.startsWith('--') ? a.slice(2).split('=')[0] : null;
-        if (long !== null && long.length > 0 && 'dry-run'.startsWith(long)) dry = true;
-        else if (long !== null && long.length > 3 && 'no-dry-run'.startsWith(long)) dry = false;
-        else if (long !== null && long.length > 0 && 'exclude'.startsWith(long)) { if (!a.includes('=')) i++; }
-        else if (a === '-e') i++;
-        else if (/^-[A-Za-z]/.test(a)) {
-            for (let k = 1; k < a.length; k++) {
-                if (a[k] === 'n') dry = true;
-                if (a[k] === 'e') {
-                    if (k === a.length - 1) i++;
-                    break;
-                }
+interface GitCleanArgs { dryRun: boolean; help: boolean; ignored: boolean; onlyIgnored: boolean; dirs: boolean; excluded: string[]; paths: string[] }
+
+/**
+ * `git clean`'s arguments read in order, as git's option parser does: the last of `-n`/`--dry-run`/`--no-dry-run`
+ * wins, `-e`/`--exclude` take a value, and a long option may be any unambiguous prefix of its name.
+ */
+function parseGitClean(rest: string[]): GitCleanArgs {
+    const out: GitCleanArgs = { dryRun: false, help: false, ignored: false, onlyIgnored: false, dirs: false, excluded: [], paths: [] };
+    for (let i = 0; i < rest.length; i++) {
+        const a = rest[i];
+        if (a === '--') {
+            out.paths.push(...rest.slice(i + 1));
+            break;
+        }
+        if (a.startsWith('--')) {
+            const [name, value] = [a.slice(2).split('=')[0], a.includes('=') ? a.slice(a.indexOf('=') + 1) : undefined];
+            if (name && 'dry-run'.startsWith(name)) out.dryRun = true;
+            else if (name.length > 3 && 'no-dry-run'.startsWith(name)) out.dryRun = false;
+            else if (name && 'exclude'.startsWith(name)) out.excluded.push(value ?? rest[++i] ?? '');
+            else if (name.length > 1 && 'help'.startsWith(name)) out.help = true;
+            continue;
+        }
+        if (!/^-[A-Za-z]/.test(a)) {
+            out.paths.push(a);
+            continue;
+        }
+        for (let k = 1; k < a.length; k++) {
+            const letter = a[k];
+            if (letter === 'n') out.dryRun = true;
+            else if (letter === 'h') out.help = true;
+            else if (letter === 'x') out.ignored = true;
+            else if (letter === 'X') out.onlyIgnored = true;
+            else if (letter === 'd') out.dirs = true;
+            else if (letter === 'e') {
+                out.excluded.push(k < a.length - 1 ? a.slice(k + 1) : rest[++i] ?? '');
+                break;
             }
         }
     }
-    return dry;
+    out.excluded = out.excluded.filter(Boolean);
+    return out;
+}
+
+/** The directory git runs in after every `-C` (relative ones compose) and `--work-tree`, or undefined when none is given. */
+function gitEffectiveDir(args: string[]): string | undefined {
+    let dir: string | undefined;
+    let workTree: string | undefined;
+    for (let i = 0; i < gitSubcommandIndex(args); i++) {
+        const a = args[i];
+        if (a === '-C') {
+            const next = args[++i] ?? '';
+            dir = next.startsWith('/') || dir === undefined ? next : join(dir, next);
+        } else if (a === '--work-tree') workTree = args[++i];
+        else if (a.startsWith('--work-tree=')) workTree = a.slice('--work-tree='.length);
+        else if (GIT_GLOBAL_VALUE_OPTS.has(a)) i++;
+    }
+    return workTree !== undefined ? (workTree.startsWith('/') || dir === undefined ? workTree : join(dir, workTree)) : dir;
 }
 
 function gitCleanStep(cmd: ResolvedCommand): StepCard {
-    const rest = cmd.args.slice(gitSubcommandIndex(cmd.args) + 1);
-    const end = rest.indexOf('--');
-    const options = end === -1 ? rest : rest.slice(0, end);
-    const paths = end === -1 ? options.filter((a, i) => !a.startsWith('-') && !/^-[A-Za-z]*e$|^--exclude$/.test(options[i - 1] ?? '')) : rest.slice(end + 1);
-    const excluded = options.flatMap((a, i) =>
-        a === '--exclude' || /^-[A-Za-z]*e$/.test(a) ? [options[i + 1] ?? ''] : a.startsWith('--exclude=') ? [a.slice(10)] : /^-[A-Za-z]*e./.test(a) ? [a.slice(a.indexOf('e') + 1)] : [],
-    ).filter(Boolean);
-    const ignored = options.includes('-x') || hasShortFlag(options, 'x', 'e');
-    const onlyIgnored = options.includes('-X') || hasShortFlag(options, 'X', 'e');
-    const dirs = options.includes('-d') || hasShortFlag(options, 'd', 'e');
+    const { ignored, onlyIgnored, dirs, excluded, paths } = parseGitClean(cmd.args.slice(gitSubcommandIndex(cmd.args) + 1));
     const what = onlyIgnored ? 'ignored files' : ignored ? 'untracked and ignored files' : 'untracked files';
     const where = paths.length ? ` under ${paths.map(code).join(', ')}` : '';
     const lines = [
@@ -3978,7 +4004,7 @@ function gitCleanStep(cmd: ResolvedCommand): StepCard {
     ];
     if (ignored || onlyIgnored) lines.push('Ignored files include local secrets and data such as `.env`, caches and build output.');
     if (excluded.length) lines.push(`Kept: files matching ${excluded.map(code).join(', ')}.`);
-    return { dir: gitRelocatedDir(cmd.args) ?? undefined, label: `Permanently delete ${what}${where.replace(/`/g, '')} (git clean)`, lines };
+    return { dir: gitEffectiveDir(cmd.args), label: `Permanently delete ${what}${where.replace(/`/g, '')} (git clean)`, lines };
 }
 
 function awsStep(cmd: ResolvedCommand): StepCard {
