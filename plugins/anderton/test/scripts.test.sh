@@ -48,7 +48,7 @@ session() {
     "$1" "${5:-$now_ms}" "$2" "$3" "$4" > "$CLAUDE_CONFIG_DIR/sessions/$1.json"
 }
 
-# transcript <project> <id> <timestamp> <last entry: assistant|user|user-blocks|harness|working> <text>
+# transcript <project> <id> <timestamp> <last entry: assistant|user|user-blocks|harness|working|asking> <text>
 transcript() {
   {
     printf '{"type":"user","timestamp":"%s","message":{"role":"user","content":"start"}}\n' "$3"
@@ -62,6 +62,10 @@ transcript() {
       working)
         printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"text","text":"%s"},{"type":"tool_use","name":"Bash"}]}}\n' "$3" "$5"
         printf '{"type":"user","timestamp":"%s","message":{"content":[{"type":"tool_result","content":"x"}]}}\n' "$3"
+        ;;
+      asking)
+        printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$3" "$5"
+        printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"tool_use","name":"AskUserQuestion","input":{"questions":[{"question":"Ship it today?","options":[{"label":"Yes"},{"label":"No"}]}]}}]}}\n' "$3"
         ;;
       harness)
         printf '{"type":"assistant","timestamp":"%s","message":{"content":[{"type":"text","text":"%s"}]}}\n' "$3" "$5"
@@ -83,6 +87,8 @@ spawn; p_stale=$pid
 spawn; p_harness=$pid
 spawn; p_reused=$pid
 spawn; p_working=$pid
+spawn; p_asking=$pid
+spawn; p_permission=$pid
 spawn dead; p_dead=$pid
 session "$p_alpha" aaaa-1 /src/alpha alpha-session
 session "$p_beta" bbbb-2 /src/beta ""
@@ -94,6 +100,16 @@ session "$p_dead" ffff-6 /src/alpha dead-session
 session "$p_harness" hhhh-8 /src/alpha harness-session
 session "$p_reused" iiii-9 /src/beta reused-session "$long_ago_ms"
 session "$p_working" jjjj-0 /src/beta working-session
+session "$p_asking" llll-2 /src/beta asking-session
+session "$p_permission" mmmm-3 /src/alpha permission-session
+# waiting <pid> <waitingFor>: the registry marks the turn as blocked on a person, as Claude Code does.
+waiting() {
+  local f="$CLAUDE_CONFIG_DIR/sessions/$1.json"
+  jq -c --arg why "$2" --argjson at "$now_ms" '.status = "waiting" | .waitingFor = $why | .statusUpdatedAt = $at' "$f" > "$f.tmp"
+  mv "$f.tmp" "$f"
+}
+waiting "$p_asking" "input needed"
+waiting "$p_permission" "permission prompt"
 # pid 1 belongs to root, so a non-root kill -0 gets EPERM, as a sandboxed shell does for a peer.
 # shellcheck source=SCRIPTDIR/../skills/anderton/scripts/session-lib.sh
 . "$scripts/session-lib.sh"
@@ -108,6 +124,8 @@ transcript -src-alpha ffff-6 "$recent" assistant "Dead question."
 transcript -src-alpha hhhh-8 "$recent" harness "Question before harness records."
 transcript -src-beta iiii-9 "$recent" assistant "Question from a crashed session."
 transcript -src-beta jjjj-0 "$recent" working "Running the build now."
+transcript -src-beta llll-2 "$recent" asking "Two options for the release."
+transcript -src-alpha mmmm-3 "$recent" working "Deleting the stale branch."
 transcript -src-alpha kkkk-1 "$recent" assistant "Question from a session this shell cannot signal."
 
 state="$CLAUDE_CONFIG_DIR/anderton.json"
@@ -160,6 +178,10 @@ check "skill loads, task notifications and sidechains are not replies" has "Ques
 check "leaves out a stale registry entry whose pid now runs another process" eval '! has "Question from a crashed session."'
 check "leaves out a session whose last assistant record is a tool call" eval '! has "working-session"'
 check "lists a live session this shell may not signal" has "=== unsignalled-session"
+check "lists a session blocked on AskUserQuestion, with its question" has "Ship it today? [Yes / No]"
+check "names what an AskUserQuestion session waits for" has "=== asking-session  /src/beta  (waiting: input needed"
+check "lists a session blocked on a permission prompt, with its last text" has "Deleting the stale branch."
+check "names what a permission-prompt session waits for" has "(waiting: permission prompt"
 
 check "the cleared holder re-claims under its new session id" env CLAUDE_CODE_SESSION_ID=cccc-9 "$scripts/claim.sh"
 

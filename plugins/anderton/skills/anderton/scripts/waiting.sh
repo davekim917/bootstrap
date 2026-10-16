@@ -43,23 +43,33 @@ EOF
   done
   [ -n "$transcript" ] || continue
 
-  # Reading only the tail is safe: tool results alternate with assistant entries, so the last
-  # assistant or human entry is always within the final few lines.
-  tail -n 1000 "$transcript" | jq -nrR --arg name "${name:-${sid%%-*}}" --arg cwd "$cwd" '
+  # The registry's status is Claude Code's own record that a turn is blocked on a person
+  # (a permission prompt, AskUserQuestion); the transcript then ends in a tool call. Otherwise a turn
+  # that ended with Claude's text is waiting. Reading only the tail is safe: tool results alternate
+  # with assistant entries, so the last assistant or human entry is within the final few lines.
+  tail -n 1000 "$transcript" | jq -nrR --slurpfile reg "$s" --arg name "${name:-${sid%%-*}}" --arg cwd "$cwd" '
     def blocks: .message.content | if type == "string" then [{type: "text", text: .}] elif type == "array" then . else [] end;
-    def human: .type == "user" and (.isMeta | not) and (.isSidechain | not)
+    def human: .type == "user" and (.isMeta | not)
       and (blocks | all(.[]; .type != "tool_result"))
       and (blocks | any(.[]; .type == "image")
            or ([.[] | select(.type == "text") | .text // ""] | join("\n")
                | gsub("<(?<t>task-notification|system|system-reminder|local-command-stdout|local-command-caveat)>[\\s\\S]*?</\\k<t>>"; "")
                | test("\\S")));
-    (now - 2 * 86400 | todate) as $since
-    | reduce (inputs | fromjson? | objects) as $e (null;
-        if ($e.timestamp // "") > $since and ($e.isSidechain | not) and ($e.type == "assistant" or ($e | human))
-        then $e else . end)
-    | select(. != null and .type == "assistant" and all(.message.content[]?; .type != "tool_use"))
-    | ([.message.content[]? | select(.type == "text") | .text] | join("\n")) as $txt
-    | select($txt != "")
-    | "=== \($name)  \($cwd)  (last reply \(.timestamp))\n\($txt | .[-900:])\n"' ||
+    def said: [.message.content[]? | select(.type == "text") | .text] | join("\n");
+    $reg[0] as $r
+    | (now - 2 * 86400 | todate) as $since
+    | reduce (inputs | fromjson? | objects | select((.timestamp // "") > $since and (.isSidechain | not))) as $e
+        ({last: null, said: ""};
+         if $e.type == "assistant" then .last = $e | (if ($e | said) != "" then .said = ($e | said) else . end)
+         elif ($e | human) then .last = $e | .said = ""
+         else . end)
+    | if $r.status == "waiting" then
+        ([.last.message.content[]? | select(.type == "tool_use" and .name == "AskUserQuestion")
+          | .input.questions[]? | "\(.question) [\([.options[]?.label] | join(" / "))]"] | join("\n")) as $ask
+        | (if $r.statusUpdatedAt then ", since \($r.statusUpdatedAt / 1000 | floor | todate)" else "" end) as $when
+        | "=== \($name)  \($cwd)  (waiting: \($r.waitingFor // "input")\($when))\n\(if $ask != "" then $ask else .said[-900:] end)\n"
+      elif .last.type == "assistant" and (.last | said) != "" and all(.last.message.content[]?; .type != "tool_use") then
+        "=== \($name)  \($cwd)  (last reply \(.last.timestamp))\n\(.said[-900:])\n"
+      else empty end' ||
     echo "waiting.sh: could not read $transcript" >&2
 done

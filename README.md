@@ -441,7 +441,8 @@ the host: its two scripts read Claude Code's own session registry, and there is 
 - `scripts/claim.sh` records the claiming session in `~/.claude/anderton.json` and exits 3 while
   another live session holds the role (`--take-over` replaces it).
 - `scripts/waiting.sh` lists every live Claude Code session on the machine, in any project, whose
-  last turn ended with Claude talking, with the tail of that message. It reads
+  last turn ended with Claude talking, or that is blocked on a permission prompt or an
+  `AskUserQuestion` (the registry's `status`), with the tail of that message or the question. It reads
   `~/.claude/sessions/*.json`, keeps sessions whose process is alive and started when the registry
   says, finds each transcript under `~/.claude/projects/*/<session id>.jsonl`, and leaves out the
   session holding the role.

@@ -35,7 +35,7 @@ unless the user says so. A prose rule is not a lock.
    stands: the project's dashboard, if it has one, `ListAgents`, `gh pr list`.
    Sessions often ask the user in their own tab and never tell you, so
    before any "waiting on you" list, run `scripts/waiting.sh` (each live
-   session's last unanswered message, in any project on this machine) and check
+   session's last unanswered message or open prompt, in any project on this machine) and check
    each item against its source (PR state, run list). The user may have answered
    elsewhere. Lead every status report with what is waiting on the user.
 3. **Review.** Judge every change headed for production on three axes: is it the
