@@ -310,3 +310,10 @@ test('a short-option cluster ends at the first option that takes a value', () =>
     expect(verdict(`printf 'DROP TABLE users' | psql -XcSELECT`)).toBe('allow');
     expect(verdict(`printf 'SELECT 1' | psql -Xc 'DROP TABLE users'`)).toBe('gate');
 });
+
+test('duckdb reads a one-dash long option as a flag, not -c with a value', () => {
+    expect(verdict(`printf 'DROP TABLE users' | duckdb -csv`)).toBe('gate');
+    expect(verdict(`printf 'DROP TABLE users' | duckdb -separator , db.duckdb`)).toBe('gate');
+    expect(verdict(`printf 'DROP TABLE users' | duckdb -c 'SELECT 1'`)).toBe('allow');
+});
+

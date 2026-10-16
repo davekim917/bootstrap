@@ -1035,12 +1035,15 @@ export interface SqlInput {
 }
 
 /** The value `option` gives in `args[i]`: `-q X`, `--query=X`, or glued `-qX`. */
-function optionValueAt(args: string[], i: number, option: string): string | undefined {
+function optionValueAt(args: string[], i: number, option: string, attached = true): string | undefined {
     const a = args[i];
     if (a === option) return args[i + 1];
+    if (!attached) return undefined;
     if (option.startsWith('--')) return a.startsWith(`${option}=`) ? a.slice(option.length + 1) : undefined;
     return a.startsWith(option) && a.length > option.length && !a.startsWith('--') ? a.slice(option.length) : undefined;
 }
+
+const SINGLE_DASH_CLIENTS = new Set(['duckdb', 'sqlite3', 'sqlite']);
 
 // sqlite3 options that take a value, single- or double-dashed.
 const SQLITE_VALUE_OPTIONS = new Set(['init', 'cmd', 'separator', 'newline', 'nullvalue', 'mmap', 'heap', 'maxsize', 'vfs', 'escape', 'nonce']);
@@ -1118,19 +1121,21 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     // Expanded argument text is not stdin: only a heredoc, here-string or `<` file is.
     let readsStdin = Boolean(cmd.stdinTexts?.length) || files.length > 0;
 
+    // duckdb and sqlite3 spell long options with one dash (`-csv`) and never glue a value on, so only an exact word counts.
+    const attaches = !SINGLE_DASH_CLIENTS.has(client);
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         texts.push(...withOptionValue(a));
         for (const o of fileOptions) {
-            const v = optionValueAt(args, i, o);
+            const v = optionValueAt(args, i, o, attaches);
             if (v !== undefined) files.push(v);
         }
         for (const o of preludeOptions) {
-            const v = optionValueAt(args, i, o);
+            const v = optionValueAt(args, i, o, attaches);
             if (v !== undefined) preludes.push(v);
         }
         for (const o of textOptions) {
-            if (optionValueAt(args, i, o) !== undefined) sqlInArgs = true;
+            if (optionValueAt(args, i, o, attaches) !== undefined) sqlInArgs = true;
             // `-XcSQL`: a single-letter text option clustered after flags still takes the SQL.
             if (/^-[a-z]$/i.test(o) && clusterValueOption(client, a) === o[1]) sqlInArgs = true;
         }
