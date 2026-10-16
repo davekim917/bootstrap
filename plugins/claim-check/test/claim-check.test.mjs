@@ -329,6 +329,10 @@ test('a negated or reported claim is not a claim', () => {
     `> Merged ${REMOTE}#42 as d30add0e.`,
     `The commit message reads "Merged ${REMOTE}#42 as d30add0e".`,
     `The title is \`Merged ${REMOTE}#42 as d30add0e\`.`,
+    `If ${REMOTE}#42 is merged as d30add0e, deploy it.`,
+    `Once ${REMOTE}#42 lands as squash d30add0e we can deploy.`,
+    `${REMOTE}#42 probably merged as d30add0e overnight.`,
+    `I will check whether ${REMOTE}#42 merged as d30add0e.`,
   ]) {
     const { prClaims, shaClaims } = extractClaims(claimText(text));
     assert.deepEqual([prClaims, shaClaims], [[], []], text);

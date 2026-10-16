@@ -24,9 +24,9 @@ const TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024;
 // A SHA is checked against GitHub only when the message says it was published there.
 const SHA_KEYWORD = /\b(?:merged|squash(?:ed)?|pushed|landed)\b/i;
 const NOT_A_COMMIT = /\b(?:image|docker|container|digest|sha-?256|checksum|md5|etag|blob|uuid|token|pid)\b/i;
-const NEGATION = /\b(?:not|never|no|unmerged|will|would|should|could|can|to be|once|after|before|until|if|when|pending|awaiting|ready to|about to|going to|unable|whether|unsure|unclear|unknown|uncertain|verify|confirm|check|maybe|might|may|possibly|probably|likely|seems?|appears?|supposedly|reportedly)\b|n't\b/i;
-// A sentence holding one of these states no claim at all: a denial, or someone else's statement being reported.
-const DISCLAIMER = /\b(?:not|never|no|neither|nor|without|failed|wrongly|incorrectly|mistakenly|falsely|false|wrong|untrue|claim(?:s|ed)?|said|says|stated|reported|reads|quoted|alleged(?:ly)?)\b|n't\b/i;
+// A sentence holding one of these states no claim at all: a denial, a condition, a plan, a guess, or someone else's
+// statement being reported. Precision over recall: a true claim that also says "after CI passed" goes unchecked.
+const DISCLAIMER = /\b(?:not|never|no|neither|nor|without|failed|unmerged|will|would|should|could|can|to be|once|after|before|until|if|when|unless|pending|awaiting|ready to|about to|going to|unable|whether|unsure|unclear|unknown|uncertain|verify|confirm|check|maybe|might|may|possibly|probably|likely|seems?|appears?|supposedly|reportedly|wrongly|incorrectly|mistakenly|falsely|false|wrong|untrue|claim(?:s|ed)?|said|says|stated|reported|reads|quoted|alleged(?:ly)?)\b|n't\b/i;
 const REF = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:pull|issues)\/(\d+)|(?:\b([\w.-]+\/[\w.-]+)|\b([\w.-]+))?#(\d+)\b/g;
 
 const BARE_TOKEN = /^(?:[0-9a-f]{7,40}|[\w.-]+\/[\w.-]+#\d+|[\w.-]*#\d+|https:\/\/github\.com\/\S+)$/;
@@ -92,12 +92,10 @@ export function extractClaims(text) {
       const after = sentence.slice(end, end + 40);
       let verb = null;
       const afterMatch = /^\s*[)\]]?\s*[:,—–-]?\s*(?:(?:is|was|were|are|has been|have been|got)\s+)?(?:(?:now|also|just|already|both)\s+)?(merged|closed)\b/i.exec(after);
-      if (afterMatch && !NEGATION.test(after.slice(0, afterMatch.index + afterMatch[0].length)) && !NEGATION.test(lead)) {
-        verb = afterMatch[1].toLowerCase();
-      }
+      if (afterMatch) verb = afterMatch[1].toLowerCase();
       if (!verb) {
         const beforeMatch = /\b(merged|closed)\s+(?:PR\s+|pull request\s+|issue\s+)?$/i.exec(lead);
-        if (beforeMatch && !NEGATION.test(lead)) verb = beforeMatch[1].toLowerCase();
+        if (beforeMatch) verb = beforeMatch[1].toLowerCase();
       }
       if (!verb) continue;
       const key = `${ref.repo ?? ref.name ?? ''}#${ref.number}:${verb}`;
@@ -108,7 +106,7 @@ export function extractClaims(text) {
     const urlShas = new Set();
     for (const m of sentence.matchAll(/https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/commit\/([0-9a-f]{7,40})\b/g)) {
       urlShas.add(m[3]);
-      if (seenSha.has(m[3]) || NEGATION.test(sentence.slice(Math.max(0, m.index - 40), m.index))) continue;
+      if (seenSha.has(m[3])) continue;
       seenSha.add(m[3]);
       shaClaims.push({ sha: m[3], repo: `${m[1]}/${m[2]}`, refs: [] });
     }
