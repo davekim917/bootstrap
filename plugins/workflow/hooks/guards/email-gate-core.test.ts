@@ -181,6 +181,11 @@ describe('evaluateEmailSend — gate decision', () => {
             'pnpm exec gws gmail +send --to victim@example.net --body x --help',
             'timeout 60 npx gws gmail +send --to victim@example.net --body x --help',
             'gws gmail +send --help; sort --compress-program=/tmp/evil --buffer-size=1 /etc/passwd',
+            'for PATH in /tmp/evil; do gws gmail +send --to victim@example.net --body x --help; done',
+            'env -u gws npx --yes --package=/tmp/evil-gws \\gws gmail +send --to victim@example.net --body x --help',
+            '\\gws gmail +send --to victim@example.net --body x --help',
+            '( gws gmail +send --help )',
+            'while read -r PATH; do gws gmail +send --help; done < dirs',
         ]) {
             expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
         }

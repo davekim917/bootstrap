@@ -169,18 +169,45 @@ const PROBE_COMPANIONS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq'
 const PROBE_VARIABLE_DENY = /^(?:PATH|CDPATH|IFS|ENV|BASH_ENV|BASH\w*|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|LD_\w+|DYLD_\w+|GCONV_PATH|HOSTALIASES|NODE_\w+|HOME|XDG_\w+|TMPDIR|LANG|LC_\w+|GWS_\w+|GOOGLE_\w+)$/;
 const PROBE_VARIABLE_ALLOW = new Set(['GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE']);
 
-// Words a probe's gws may be run through. A package runner (npx, bunx, pnpm exec, …) can supply its own gws, and
-// sudo looks it up on another PATH, so a gws reached through anything else is not the installed one.
-const PROBE_WRAPPERS = new Set(['command', 'time', 'nice', 'timeout', 'env']);
-
-/** Every word before gws is an allowed wrapper, one of its options or durations, or an assignment env makes. */
+/**
+ * gws is the command this node runs, reached through nothing but `command`, `time`, `nice [-n N]`, `timeout DURATION`
+ * or `env NAME=VALUE…`, each written plainly. A package runner (npx, bunx, pnpm exec, …) can supply its own gws, sudo
+ * looks it up on another PATH, and a quoted or escaped word, or another wrapper option, could move the command
+ * position, so any of those means this is not the installed gws.
+ */
 function gwsReachedDirectly(node: any): boolean {
-    for (const word of [node.name, ...(node.suffix || [])]) {
-        const value = String(word?.value ?? word?.text ?? '');
-        if (value === 'gws') return true;
-        if (!PROBE_WRAPPERS.has(value) && !value.startsWith('-') && !/^\d+(?:\.\d+)?[smhd]?$/.test(value) && !/^[A-Za-z_]\w*=/.test(value)) return false;
+    const words = [node.name, ...(node.suffix || [])].map((w: any) => ({ text: String(w?.text ?? ''), value: String(w?.value ?? w?.text ?? '') }));
+    const at = (i: number) => words[i]?.value ?? '';
+    for (let i = 0; i < words.length && words[i].text === words[i].value; ) {
+        const word = words[i++].value;
+        if (word === 'gws') return true;
+        if (word === 'command' || word === 'time') continue;
+        if (word === 'nice') {
+            if (at(i) === '-n' && /^-?\d+$/.test(at(i + 1))) i += 2;
+            else if (/^-\d+$/.test(at(i))) i++;
+        } else if (word === 'timeout') {
+            if (!/^\d+(?:\.\d+)?[smhd]?$/.test(at(i))) return false;
+            i++;
+        } else if (word === 'env') {
+            while (/^[A-Za-z_]\w*=/.test(at(i))) i++;
+        } else {
+            return false;
+        }
     }
     return false;
+}
+
+// Shell constructs a probe never needs. Each can run or repeat a command, or set a variable, outside a plain command list.
+const PROBE_COMPOUND_NODES = new Set(['For', 'ArithmeticFor', 'While', 'If', 'Case', 'Function', 'BraceGroup', 'Subshell', 'Select', 'Coproc', 'ArithmeticCommand', 'TestCommand', 'CompoundList']);
+
+function onlyPlainCommands(node: unknown, seen = new WeakSet<object>()): boolean {
+    if (!node || typeof node !== 'object' || seen.has(node)) return true;
+    seen.add(node);
+    const record = node as Record<string, unknown>;
+    if (typeof record.type === 'string' && PROBE_COMPOUND_NODES.has(record.type)) return false;
+    for (const child of Object.values(record)) if (!onlyPlainCommands(child, seen)) return false;
+    // unbash computes a word's parts (and the scripts inside them) lazily, so they are not own properties.
+    return !('text' in record && !Object.prototype.hasOwnProperty.call(record, 'parts')) || onlyPlainCommands(record.parts, seen);
 }
 
 function probeMaySet(name: string): boolean {
@@ -271,7 +298,7 @@ export function probeOnlyCommand(command: string): boolean {
     } catch {
         return false;
     }
-    if (script?.errors?.length) return false;
+    if (script?.errors?.length || !onlyPlainCommands(script)) return false;
     let gwsCalls = 0;
     for (const node of walkCommandNodes(script)) {
         if (node.__resolved) return false;
