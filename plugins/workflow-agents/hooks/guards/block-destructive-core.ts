@@ -1704,13 +1704,25 @@ function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCom
     return runs;
 }
 
+// Tools whose operation is a positional word, so `xargs <tool>` with none lets its input choose the operation.
+const OPERATION_TOOLS = new Set(['terraform', 'tofu', 'aws', 'gcloud', 'az', 'kubectl', 'helm', 'git', 'gh', 'dbt', 'snow', 'firebase', 'heroku', 'vercel', 'fly', 'flyctl', 'pulumi', 'doctl']);
+// xargs or find nested inside each other past this depth are not followed; no real command nests them twice.
+const EXEC_NESTING_MAX = 4;
+
 /** Every command xargs or find -exec runs that needs approval, with why; each gets its own exemption check. */
-function innerGatedSteps(cmd: ResolvedCommand): Array<{ step: ResolvedCommand; reason: string }> {
+function innerGatedSteps(cmd: ResolvedCommand, depth = 0): Array<{ step: ResolvedCommand; reason: string }> {
     const gated: Array<{ step: ResolvedCommand; reason: string }> = [];
     for (const { via, inner } of execRuns(cmd)) {
+        if (via === 'xargs' && inner && OPERATION_TOOLS.has(inner.name) && inner.args.every(a => a.startsWith('-') || a === '{}')) {
+            gated.push({ step: { ...inner, pos: undefined }, reason: `xargs supplies ${inner.name}'s operation from its input, so what it runs can't be checked. Name the operation in the command.` });
+            continue;
+        }
         const steps = innerSteps(inner);
         if (steps === RUNS_VARIABLE) continue;
         for (const step of steps) {
+            if (depth < EXEC_NESTING_MAX && (step.name === 'xargs' || step.name === 'find')) {
+                gated.push(...innerGatedSteps(step, depth + 1).map(g => ({ step: g.step, reason: `${via} runs ${g.reason}` })));
+            }
             const reason = checkGatedCommand(step);
             // The step's offset, if any, is into the inner script, not the command line the card reads from.
             if (reason) gated.push({ step: { ...step, pos: undefined }, reason: `${via} runs a command that needs approval. ${reason}` });
@@ -1804,8 +1816,8 @@ export function shellScript(shell: string, args: string[]): { text: string; rest
 function innerCommand(words: string[], outer: ResolvedCommand): ResolvedCommand | null {
     const [first, ...rest] = words;
     if (first === undefined) return null;
-    const { name, args, env } = stripWrappers(first, rest);
-    return { name, args, raw: outer.raw, env, hasInputRedirect: false };
+    const { name, args, env, chdir } = stripWrappers(first, rest);
+    return { name, args, raw: outer.raw, env, ...(chdir !== undefined ? { chdir } : {}), hasInputRedirect: false };
 }
 
 /** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */

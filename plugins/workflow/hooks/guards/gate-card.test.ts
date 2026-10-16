@@ -37,6 +37,12 @@ describe('destructive approval description', () => {
             has: ['Directory: `/work/dbt`'],
         },
         {
+            name: 'a command xargs runs through env -C is placed in that directory',
+            command: 'cd /safe; xargs env -C /prod dbt run --full-refresh --select orders < vars',
+            label: 'Rebuild dbt model orders from scratch (--full-refresh)',
+            has: ['Directory: `/prod`'],
+        },
+        {
             name: 'a command an xargs shell script runs is described like the same command at top level',
             command: "xargs -I{} sh -c 'psql -c \"DROP TABLE users\"' < list",
             label: 'Drop PostgreSQL table users',
