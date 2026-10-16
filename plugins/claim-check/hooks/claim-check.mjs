@@ -21,7 +21,7 @@ const TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024;
 
 const SHA_KEYWORD = /\b(?:commit(?:ted|s)?|merged?|squash(?:ed)?|sha|pushed|landed|revert(?:ed)?|cherry-pick(?:ed)?|head|rebased?|tagged)\b/i;
 const NOT_A_COMMIT = /\b(?:image|docker|container|digest|sha-?256|checksum|md5|etag|blob|uuid|token|pid)\b/i;
-const NEGATION = /\b(?:not|never|no|unmerged|will|would|should|could|can|to be|once|after|before|until|if|when|pending|awaiting|ready to|about to|going to)\b|n't\b/i;
+const NEGATION = /\b(?:not|never|no|unmerged|will|would|should|could|can|to be|once|after|before|until|if|when|pending|awaiting|ready to|about to|going to|unable|whether|unsure|unclear|unknown|uncertain|verify|confirm|check|maybe|might|may|possibly|probably|likely|seems?|appears?|supposedly|reportedly)\b|n't\b/i;
 const REF = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:pull|issues)\/(\d+)|(?:\b([\w.-]+\/[\w.-]+)|\b([\w.-]+))?#(\d+)\b/g;
 
 /** Message text with fenced code blocks removed: pasted output is quoted, not claimed. */
@@ -145,8 +145,13 @@ export function transcriptRefs(text) {
   for (const m of text.matchAll(/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/(?:pull|issues)\/(\d+)/g)) tie(`${m[1]}/${m[2]}`, Number(m[3]));
   for (const m of text.matchAll(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/g)) tie(m[1], Number(m[2]));
   for (const m of text.matchAll(/repos\/([\w.-]+\/[\w.-]+)\/(?:pulls|issues)\/(\d+)\b/g)) tie(m[1], Number(m[2]));
-  for (const m of text.matchAll(/\bgh\s+(?:-R|--repo)[ =]([\w.-]+\/[\w.-]+)\s+(?:pr|issue)\s+[a-z]+\s+(\d+)\b/g)) tie(m[1], Number(m[2]));
-  for (const m of text.matchAll(/\bgh\s+(?:pr|issue)\s+[a-z]+\s+(\d+)\b[^\n"|;&]{0,80}?(?:-R|--repo)[ =]([\w.-]+\/[\w.-]+)/g)) tie(m[2], Number(m[1]));
+  for (const m of text.matchAll(/\bgh\s+((?:(?:-R|--repo)[ =][\w.-]+\/[\w.-]+\s+)?(?:pr|issue)\s+(?:view|merge|close|comment|checks|edit|reopen|ready|diff|review|checkout)\b[^\n"|;&]{0,160})/g)) {
+    const segment = m[1];
+    const repo = /(?:^|\s)(?:-R|--repo)[ =]([\w.-]+\/[\w.-]+)/.exec(segment)?.[1];
+    const number = /(?:pr|issue)\s+[a-z]+\b(?:\s+(?:-R|--repo)[ =]\S+)*\s+(\d+)\b/.exec(segment)?.[1]
+      ?? /\s(\d+)(?=\s|$)/.exec(segment.replace(/(?:-R|--repo)[ =]\S+/g, ''))?.[1];
+    if (repo && number) tie(repo, Number(number));
+  }
   for (const m of text.matchAll(/\bREPO=([\w.-]+\/[\w.-]+)[^\n"]{0,40}?\bPR=(\d+)|\bPR=(\d+)[^\n"]{0,40}?\bREPO=([\w.-]+\/[\w.-]+)/g)) {
     tie(m[1] ?? m[4], Number(m[2] ?? m[3]));
   }
@@ -204,7 +209,10 @@ export function verifyClaims({ prClaims, shaClaims, known, gh, log = () => {}, d
     if (!accessible.has(repo)) accessible.set(repo, gh(['api', `repos/${repo}`, '--silent']).status === 0);
     return accessible.get(repo);
   };
-  const missing = (result) => result.status !== 0 && /HTTP 404|HTTP 422/.test(result.stderr);
+  // Not found is a 404, or for the commit endpoint a 422 whose message says so; any other 422 (validation, abuse
+  // protection) proves nothing.
+  const missing = (result) => result.status !== 0 && /HTTP 404/.test(result.stderr);
+  const missingCommit = (result) => missing(result) || (result.status !== 0 && /No commit found for SHA/i.test(result.stderr));
   const resolve = (ref) => {
     if (ref.repo) return ref.repo;
     if (ref.name) {
@@ -276,7 +284,7 @@ export function verifyClaims({ prClaims, shaClaims, known, gh, log = () => {}, d
       continue;
     }
     const result = gh(['api', `repos/${repo}/commits/${claim.sha}`, '--silent']);
-    if (missing(result)) falseClaims.push(`commit ${claim.sha} does not exist in ${repo}`);
+    if (missingCommit(result)) falseClaims.push(`commit ${claim.sha} does not exist in ${repo}`);
     else if (result.status !== 0) log(`claim-check: ${repo}@${claim.sha} unverified`);
   }
   return falseClaims;

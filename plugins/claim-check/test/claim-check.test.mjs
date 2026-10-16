@@ -60,7 +60,7 @@ function fakeGh(routes) {
     calls.push(args[1]);
     const route = routes[args[1]];
     if (route === undefined) return { status: 1, stdout: '', stderr: 'error connecting to api.github.com' };
-    if (route?.http) return { status: 1, stdout: '', stderr: `gh: Not Found (HTTP ${route.http})` };
+    if (route?.http) return { status: 1, stdout: '', stderr: `gh: ${route.message ?? 'Not Found'} (HTTP ${route.http})` };
     return { status: 0, stdout: typeof route === 'string' ? route : JSON.stringify(route), stderr: '' };
   };
   return { gh, calls };
@@ -76,7 +76,7 @@ function judge(message, { cwd, records, routes = {} } = {}) {
 
 const OPEN_PR_42 = {
   [`repos/${REMOTE}`]: '',
-  [`repos/${REMOTE}/commits/d30add0e`]: { http: 422 },
+  [`repos/${REMOTE}/commits/d30add0e`]: { http: 422, message: 'No commit found for SHA: d30add0e' },
   [`repos/${REMOTE}/issues/42`]: { state: 'open', pr: true },
   [`repos/${REMOTE}/pulls/42`]: 'false',
   [`repos/${REMOTE}/issues/43`]: { state: 'open', pr: true },
@@ -132,6 +132,19 @@ test('unverifiable claims pass with a log line: offline, an untied #N, a SHA wit
   const loose = judge('The head is still `d30add0e`; a teammate pushed the fix as `1a2b3c4d`.', { cwd: checkout(), routes: OPEN_PR_42 });
   assert.equal(loose.verdict, null);
   assert.deepEqual(loose.calls, []);
+});
+
+test('a 422 that is not "no commit found" proves nothing', () => {
+  const { verdict, logs } = judge(`[example-app#42](https://github.com/${REMOTE}/pull/42) merged as \`d30add0e\`.`, {
+    routes: {
+      ...OPEN_PR_42,
+      [`repos/${REMOTE}/pulls/42`]: 'true',
+      [`repos/${REMOTE}/issues/42`]: { state: 'closed', pr: true },
+      [`repos/${REMOTE}/commits/d30add0e`]: { http: 422, message: 'Validation Failed' },
+    },
+  });
+  assert.equal(verdict, null);
+  assert.ok(logs.some((l) => l.includes('d30add0e unverified')));
 });
 
 test('a bare #N tied to two repositories in the transcript is not guessed', () => {
@@ -212,6 +225,8 @@ test('only stated facts count: negated, conditional and future forms, fenced out
     'I will merge #42 after review.',
     '#42 needs review before it can be merged.',
     'It has not merged #42.',
+    `I was unable to verify whether ${REMOTE}#42 was merged.`,
+    `${REMOTE}#42 probably merged overnight.`,
   ]) {
     assert.deepEqual(extractClaims(text).prClaims, [], text);
   }
@@ -243,12 +258,15 @@ test('transcriptRefs ties numbers from URLs, owner/repo#N, gh --repo and REPO=/P
       `gh -R ${OTHER} pr merge 4`,
       `PR=5 REPO=${REMOTE} codex-review.sh merge`,
       `gh api repos/${OTHER}/pulls/6`,
+      `gh pr view --repo ${REMOTE} 7`,
+      `gh pr view -R ${OTHER} 8 --json state`,
+      `gh pr view 9 --json state --repo ${REMOTE}`,
       `gh pr list --repo ${REMOTE} --limit 50`,
     ].join('\n'),
   );
   assert.deepEqual(
-    [1, 2, 3, 4, 5, 6].map((n) => [...(numbers.get(n) ?? [])]),
-    [[REMOTE], [OTHER], [REMOTE], [OTHER], [REMOTE], [OTHER]],
+    [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [...(numbers.get(n) ?? [])]),
+    [[REMOTE], [OTHER], [REMOTE], [OTHER], [REMOTE], [OTHER], [REMOTE], [OTHER], [REMOTE]],
   );
   assert.equal(numbers.has(50), false);
   assert.ok(repos.has(REMOTE) && repos.has(OTHER));
