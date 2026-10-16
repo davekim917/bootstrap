@@ -9,7 +9,7 @@ import path from 'node:path';
 const LEVEL = '(?:minimal|low|medium|high|xhigh|max)';
 
 const PATTERNS = [
-  { kind: 'model', re: /\b(?:opus|sonnet|haiku|fable|gemini)\b/gi },
+  { kind: 'model', re: /\b(?:opus|sonnet|haiku|fable|gemini|astra|sol|terra|luna)\b/gi },
   { kind: 'model', re: /\bclaude-\d+(?:[.-]\w+)*/gi },
   { kind: 'model', re: /\bgpt-?\d+(?:[.-]\w+)*/gi },
   { kind: 'model', re: /(?<![\w-])o[1-4](?:-mini|-pro)?\b/g },

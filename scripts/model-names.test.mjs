@@ -30,7 +30,7 @@ test('model and effort names in skill bodies and always-on directives are flagge
   const result = scan({
     'plugins/sample/skills/sample/SKILL.md': '---\nname: sample\n---\nDispatch a Sonnet worker.\n',
     'plugins/sample/skills/sample/references/brief.md': 'Run the reviewer at high effort.\n',
-    'plugins/sample/always-on.md': 'Prefer gpt-7.2 for reviews.\n',
+    'plugins/sample/always-on.md': 'Prefer gpt-7.2 for reviews.\nRoute plans to Astra, builds to Sol.\n',
     'plugins/other/skills/x/SKILL.md': 'Pass --effort xhigh, or reasoning_effort: medium, or claude-9.1-preview.\n',
   });
   assert.deepEqual(found(result).sort(), [
@@ -40,6 +40,8 @@ test('model and effort names in skill bodies and always-on directives are flagge
     'plugins/other/skills/x/SKILL.md:1 effort xhigh',
     'plugins/other/skills/x/SKILL.md:1 model claude-9.1-preview',
     'plugins/sample/always-on.md:1 model gpt-7.2',
+    'plugins/sample/always-on.md:2 model Astra',
+    'plugins/sample/always-on.md:2 model Sol',
     'plugins/sample/skills/sample/SKILL.md:4 model Sonnet',
     'plugins/sample/skills/sample/references/brief.md:1 effort high effort',
   ]);
