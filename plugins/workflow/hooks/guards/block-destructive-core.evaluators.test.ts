@@ -1,4 +1,5 @@
 import { describe, test, expect, mock, afterEach } from 'bun:test';
+import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -407,5 +408,77 @@ describe('staging everything during a conflicted operation', () => {
         const clean = repoWith(null);
         expect(evaluateBashCommand('git add -A', { skipGate: true, cwd: clean }).action).toBe('allow');
         expect(evaluateBashCommand('git commit -am "x"', { skipGate: true, cwd: clean }).action).toBe('allow');
+    });
+});
+
+describe('npm lifecycle scripts in a linked worktree', () => {
+    const roots: string[] = [];
+    afterEach(() => {
+        for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+    });
+
+    /** A real repository with a linked worktree, both holding `pkg` as package.json. */
+    function linkedWorktree(pkg: object): { main: string; wt: string } {
+        const root = mkdtempSync(join(tmpdir(), 'npm-linked-'));
+        roots.push(root);
+        const main = join(root, 'main');
+        const wt = join(root, 'wt');
+        const env = {
+            PATH: process.env.PATH ?? '',
+            HOME: root,
+            GIT_CONFIG_NOSYSTEM: '1',
+            GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.invalid',
+            GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.invalid',
+        };
+        const git = (...args: string[]) => execFileSync('git', args, { cwd: main, env, stdio: 'ignore' });
+        mkdirSync(main);
+        git('init', '-q', '-b', 'main');
+        writeFileSync(join(main, 'package.json'), JSON.stringify(pkg));
+        git('add', 'package.json');
+        git('commit', '-q', '-m', 'init');
+        git('worktree', 'add', '-q', wt);
+        mkdirSync(join(wt, 'src'));
+        return { main, wt };
+    }
+
+    test('blocks a plain npm ci in a worktree whose package.json runs husky on prepare', () => {
+        const { wt } = linkedWorktree({ scripts: { prepare: 'husky' } });
+        const v = evaluateBashCommand('npm ci', { skipGate: true, cwd: wt });
+        expect(v.action).toBe('block');
+        expect(v.reason ?? '').toContain('npm ci --ignore-scripts');
+        expect(v.reason ?? '').toContain('prepare');
+    });
+
+    test('follows cd, a subdirectory, --prefix and the install aliases', () => {
+        const { wt } = linkedWorktree({ scripts: { postinstall: 'node setup.js' } });
+        for (const [cmd, cwd] of [
+            ['npm install', join(wt, 'src')],
+            ['npm i', wt],
+            ['npm clean-install', wt],
+            [`cd ${wt} && npm ci`, '/'],
+            [`npm --prefix ${wt} ci`, '/'],
+            [`npm --prefix=${wt} install`, '/'],
+            ['nice -n 10 npm ci', wt],
+        ]) {
+            expect(evaluateBashCommand(cmd, { skipGate: true, cwd }).action).toBe('block');
+        }
+    });
+
+    test('allows --ignore-scripts, the main checkout, a worktree with no root lifecycle script, and other npm verbs', () => {
+        const { main, wt } = linkedWorktree({ scripts: { prepare: 'husky', test: 'vitest' } });
+        for (const cmd of [
+            'npm ci --ignore-scripts',
+            'npm install --ignore-scripts=true',
+            'npm_config_ignore_scripts=true npm ci',
+            'npm test',
+            'npm run build',
+            'npm rebuild esbuild',
+            'cd /tmp && npm ci',
+        ]) {
+            expect(evaluateBashCommand(cmd, { skipGate: true, cwd: wt }).action).toBe('allow');
+        }
+        expect(evaluateBashCommand('npm ci', { skipGate: true, cwd: main }).action).toBe('allow');
+        const plain = linkedWorktree({ scripts: { test: 'vitest' } });
+        expect(evaluateBashCommand('npm ci', { skipGate: true, cwd: plain.wt }).action).toBe('allow');
     });
 });

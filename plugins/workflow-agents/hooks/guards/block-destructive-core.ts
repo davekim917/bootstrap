@@ -2987,6 +2987,83 @@ export function stageAllDuringConflictReason(cmd: ResolvedCommand, cwd: string):
         'Stage the resolved paths by name (git add <path>...), or abort the operation.';
 }
 
+// ── npm lifecycle scripts in a linked worktree ───────────────────────────────
+// Every linked worktree of a repository shares one .git/config. A root lifecycle script such as husky's `prepare`
+// writes core.hooksPath into it, which switches the hooks of every worktree of that repository at once.
+
+const NPM_INSTALL_VERBS = new Set([
+    'ci', 'clean-install', 'ic', 'install-clean', 'isntall-clean',
+    'install', 'i', 'in', 'ins', 'inst', 'insta', 'instal', 'isnt', 'isnta', 'isntal', 'isntall', 'add',
+]);
+const NPM_ROOT_LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepublish', 'preprepare', 'prepare', 'postprepare'];
+const NPM_VALUE_OPTS = new Set(['--prefix', '-w', '--workspace', '--userconfig', '--globalconfig', '--cache', '--registry', '--loglevel']);
+
+function isLinkedWorktreeGitDir(gitDir: string): boolean {
+    return existsSync(join(gitDir, 'commondir')) || /\/worktrees\/[^/]+\/?$/.test(gitDir);
+}
+
+/** The root lifecycle scripts the package.json nearest `dir` declares, or [] when there is none. */
+function rootLifecycleScripts(dir: string): string[] {
+    let current = dir;
+    for (;;) {
+        const file = join(current, 'package.json');
+        if (existsSync(file)) {
+            try {
+                const scripts = JSON.parse(readFileSync(file, 'utf-8'))?.scripts ?? {};
+                return NPM_ROOT_LIFECYCLE_SCRIPTS.filter(name => typeof scripts[name] === 'string');
+            } catch {
+                return [];
+            }
+        }
+        const parent = dirname(current);
+        if (parent === current) return [];
+        current = parent;
+    }
+}
+
+/** `npm ci`/`npm install` that would run a root lifecycle script inside a linked worktree. */
+export function npmLifecycleInLinkedWorktreeReason(cmd: ResolvedCommand, cwd: string): string | null {
+    if (cmd.name !== 'npm') return null;
+    if ((cmd.env ?? []).some(entry => /^npm_config_ignore_scripts=(?:true|1)$/i.test(entry))) return null;
+    let verb: string | undefined;
+    let prefix: string | undefined;
+    for (let i = 0; i < cmd.args.length; i++) {
+        const arg = cmd.args[i];
+        if (arg === '--ignore-scripts' || /^--ignore-scripts=(?:true|1)$/.test(arg)) return null;
+        if (arg.startsWith('--prefix=')) { prefix = arg.slice('--prefix='.length); continue; }
+        if (NPM_VALUE_OPTS.has(arg)) {
+            if (arg === '--prefix') prefix = cmd.args[i + 1];
+            i += 1;
+            continue;
+        }
+        if (!arg.startsWith('-') && verb === undefined) verb = arg;
+    }
+    if (!verb || !NPM_INSTALL_VERBS.has(verb)) return null;
+
+    let dirs = [cwd];
+    if (cmd.script) {
+        const candidates = resolvePathCandidates('.', cmd);
+        if (candidates === null) return null;
+        dirs = candidates;
+    }
+    if (prefix !== undefined) {
+        const provable = provableWord(prefix, cmd, cmd.pos ?? -1);
+        if (provable === null) return null;
+        dirs = dirs.map(d => pathResolve(d || '/', provable));
+    }
+    for (const dir of dirs) {
+        const gitDir = gitDirFor(dir);
+        if (!gitDir || !isLinkedWorktreeGitDir(gitDir)) continue;
+        const scripts = rootLifecycleScripts(dir);
+        if (scripts.length === 0) continue;
+        return `npm ${verb} in a linked worktree runs the project's ${scripts.join('/')} script, which can write ` +
+            'git config (husky sets core.hooksPath) that every worktree of this repository shares. ' +
+            `Run \`npm ${verb} --ignore-scripts\`, then run what you need by name: \`npm rebuild <pkg>\` for a ` +
+            'dependency\'s install script, `npm run <script>` for the project\'s own.';
+    }
+    return null;
+}
+
 // ── Gated checks ─────────────────────────────────────────────────────────────
 
 /** True when `-<ch>` is given alone or inside a short-option cluster such as `-uf`, before any value-taking letter in `valueFlags`. */
@@ -3739,7 +3816,8 @@ export function evaluateBashCommand(
 
     // --- Hard block checks (no bypass, ever — lab included) ---
     for (const cmd of commands) {
-        const reason = checkHardBlock(cmd) ?? stageAllDuringConflictReason(cmd, cwd);
+        const reason = checkHardBlock(cmd) ?? stageAllDuringConflictReason(cmd, cwd)
+            ?? npmLifecycleInLinkedWorktreeReason(cmd, cwd);
         if (reason) {
             return { action: 'block', reason };
         }
