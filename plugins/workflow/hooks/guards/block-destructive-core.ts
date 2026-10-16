@@ -2009,11 +2009,12 @@ function samePath(path: string): string {
     return path.replace(/^(?:\.\/)+/, '');
 }
 
-/** The text an emitter writes to stdout or its files (not counting what a pipe feeds it). */
+/** An emitter's words or heredoc input hold a variable or command substitution, so its text may change when expanded. */
 function holdsVariable(cmd: ResolvedCommand): boolean {
     return [...cmd.args, ...(cmd.stdinExpanded ?? [])].some(t => /[$`]/.test(t));
 }
 
+/** The text an emitter writes to stdout or its files (not counting what a pipe feeds it). */
 function emittedText(cmd: ResolvedCommand): string[] {
     const operands = cmd.args.filter(a => !a.startsWith('-'));
     if (cmd.name === 'cat' || cmd.name === 'tee') return [...(cmd.stdinTexts ?? [])];
