@@ -34,7 +34,10 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-/** Every plugin the Claude marketplace offers, by name → absolute plugin root. */
+/**
+ * Every plugin the Claude marketplace ships in this repository, by name → absolute plugin root. An entry fetched
+ * from another repository (a `github` or `url` source) has no files here, so it is left out.
+ */
 export function claudeMarketplacePlugins(repoRoot = REPO) {
   const marketplace = JSON.parse(
     fs.readFileSync(path.join(repoRoot, '.claude-plugin/marketplace.json'), 'utf8'),
@@ -42,6 +45,7 @@ export function claudeMarketplacePlugins(repoRoot = REPO) {
   const entries = new Map();
   for (const entry of marketplace.plugins ?? []) {
     const source = typeof entry.source === 'string' ? entry.source : entry.source?.path;
+    if (typeof source !== 'string') continue;
     entries.set(entry.name, path.resolve(repoRoot, source));
   }
   return entries;

@@ -395,15 +395,29 @@ const claudeRoster = new Map([
   ['slack-humanizer', './plugins/slack-humanizer'],
   ['claim-check', './plugins/claim-check'],
 ]);
+// Plugins kept in a repository of their own. Claude Code fetches one into its own plugin cache, so nothing that
+// mounts this repository (NanoClaw mounts ~/plugins into its agent containers) ever receives it.
+const claudeExternalRoster = new Map([['anderton', { source: 'url', url: 'https://github.com/davekim917/anderton.git' }]]);
 for (const entry of claudeEntries) {
+  const external = claudeExternalRoster.get(entry.name);
+  if (external) {
+    if (JSON.stringify(entry.source) !== JSON.stringify(external)) {
+      fail(`.claude-plugin/marketplace.json must source ${entry.name} as ${JSON.stringify(external)}`);
+    }
+    if (entry.version !== undefined) {
+      fail(`.claude-plugin/marketplace.json must not pin a version for ${entry.name}; its installs follow its repository's commits`);
+    }
+    continue;
+  }
   const entrySource = normalizeSource(sourcePath(entry));
   if (claudeRoster.get(entry.name) !== entrySource) {
     fail(`.claude-plugin/marketplace.json contains unsupported plugin entry ${entry.name ?? '<unnamed>'}`);
   }
 }
 
-if (claudeEntries.length !== claudeRoster.size) {
-  fail(`.claude-plugin/marketplace.json must expose exactly ${claudeRoster.size} plugins (found ${claudeEntries.length})`);
+const claudeRosterSize = claudeRoster.size + claudeExternalRoster.size;
+if (claudeEntries.length !== claudeRosterSize) {
+  fail(`.claude-plugin/marketplace.json must expose exactly ${claudeRosterSize} plugins (found ${claudeEntries.length})`);
 }
 
 const claudeOrchestrateEntry = claudeEntries.find((entry) => entry.name === 'bootstrap-orchestrate');

@@ -490,3 +490,21 @@ test('MUTATION: restoring orchestrate to the workflow skills tree breaks the dis
     'mutation did not reinstate the skill — the disabled-state skill test would pass vacuously',
   );
 });
+
+test('the marketplace map holds only plugins shipped in this repository, not one fetched from another', (t) => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'enablement-marketplace-'));
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(repo, '.claude-plugin'));
+  fs.writeFileSync(
+    path.join(repo, '.claude-plugin', 'marketplace.json'),
+    JSON.stringify({
+      plugins: [
+        { name: 'local', source: './plugins/local' },
+        { name: 'elsewhere', source: { source: 'github', repo: 'example-org/elsewhere' } },
+        { name: 'by-url', source: { source: 'url', url: 'https://git.example.com/example-org/by-url.git' } },
+      ],
+    }),
+  );
+  assert.deepEqual([...claudeMarketplacePlugins(repo)], [['local', path.join(repo, 'plugins', 'local')]]);
+  assert.equal(PLUGINS.has('anderton'), false);
+});

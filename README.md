@@ -27,6 +27,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 | Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.1 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
 | Claude Code / Codex / NanoClaw | `claim-check` | 1.0.1 | Stop hook that checks the commit SHAs and merged/closed PR claims in the final message against GitHub and logs proven-false claims (advisory, never blocks) |
+| Claude Code | `anderton` | latest commit | `/anderton`, an invoke-only operator skill for the one session that owns a project's line to production; kept in [its own repository](https://github.com/davekim917/anderton) |
 
 ### Delegation is invoke-only
 
@@ -274,6 +275,7 @@ artifact, environment and command, and invalidate it after relevant changes.
 /plugin install concise@davekim917-bootstrap
 /plugin install slack-humanizer@davekim917-bootstrap
 /plugin install claim-check@davekim917-bootstrap
+/plugin install anderton@davekim917-bootstrap
 ```
 
 ### Codex
@@ -449,6 +451,16 @@ The plugin carries no person's or company's details. Those live in a private voi
 `slack-voice.md`, kept in the workgroup directory, the project root or user memory; the skill reads
 it when present and describes how to build one from the user's own messages. NanoClaw agents get
 the skill through the same enabler as `concise`.
+
+### Anderton
+
+`anderton` is listed here but lives in [davekim917/anderton](https://github.com/davekim917/anderton):
+its entry has a `url` source with that public repository's `https://` address, so Claude Code clones
+it into its own plugin cache (`~/.claude/plugins/cache/`) instead of reading it from this checkout,
+with no git credentials and no SSH key needed. NanoClaw mounts `~/plugins`
+into its agent containers, and this operator skill must never reach one; living outside this
+repository keeps it out of every container. The entry pins no version, so an install or update
+takes that repository's latest commit. It is Claude Code only, and its README covers what it does.
 
 ## Upgrading from pre-4.0 / pre-1.0
 
