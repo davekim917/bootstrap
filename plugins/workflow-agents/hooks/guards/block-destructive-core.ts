@@ -1715,21 +1715,23 @@ const OPERATION_TOOLS = new Set(['terraform', 'tofu', 'aws', 'gcloud', 'az', 'ku
 const GATING_MODIFIERS = ['--force', '-f', '--delete', '-d', '--mirror', '--prune', '--full-refresh', '-auto-approve', 'destroy', '--yes', '-y'];
 
 /** xargs appends its input to the command (it does unless -I/-i/-J/--replace substitutes it into one place). */
-function xargsAppends(args: string[]): boolean {
+/** The string xargs replaces with its input (`-I R`, `-J R`, `-i`/`--replace` → `{}`), or null when it appends instead. */
+function xargsReplaceString(args: string[]): string | null {
     for (let i = 0; i < args.length && args[i].startsWith('-') && args[i] !== '--'; i += optionWords(args[i], 'adEIJLnPRsS', XARGS_LONG_VALUE_OPTIONS, XARGS_LONG_FLAGS)) {
         const a = args[i];
         if (a.startsWith('--')) {
-            const name = a.slice(2).split('=')[0];
-            if (name.length > 1 && 'replace'.startsWith(name)) return false;
+            const [name, value] = [a.slice(2).split('=')[0], a.includes('=') ? a.slice(a.indexOf('=') + 1) : ''];
+            if (name.length > 1 && 'replace'.startsWith(name)) return value || '{}';
             continue;
         }
         // In a cluster, a letter that takes a value swallows the rest: `-dI` sets the delimiter to `I`.
-        for (const letter of a.slice(1)) {
-            if ('IiJ'.includes(letter)) return false;
-            if ('adELnPRsS'.includes(letter)) break;
+        for (let k = 1; k < a.length; k++) {
+            if (a[k] === 'i') return a.slice(k + 1) || '{}';
+            if (a[k] === 'I' || a[k] === 'J') return a.slice(k + 1) || args[i + 1] || '{}';
+            if ('adELnPRsS'.includes(a[k])) break;
         }
     }
-    return true;
+    return null;
 }
 
 /** The command names no operation (or, for a shell, no script): its input or a find match will supply one. */
@@ -1750,6 +1752,12 @@ function writesNoOperation(inner: ResolvedCommand): boolean {
     return inner.args.every(a => a.startsWith('-') || a === '{}');
 }
 
+/** A modifier that, put where xargs substitutes its input, makes `step` need approval when it doesn't already. */
+function substitutedModifier(step: ResolvedCommand, replace: string): string | null {
+    if (!step.args.includes(replace) || checkGatedCommand(step)) return null;
+    return GATING_MODIFIERS.find(m => checkGatedCommand({ ...step, args: step.args.map(a => (a === replace ? m : a)) })) ?? null;
+}
+
 /** A modifier that, appended to `step`, makes it need approval when it doesn't already. */
 function appendedModifier(step: ResolvedCommand): string | null {
     if (checkGatedCommand(step)) return null;
@@ -1760,12 +1768,15 @@ function appendedModifier(step: ResolvedCommand): string | null {
 const EXEC_NESTING_MAX = 4;
 
 /** Every command xargs or find -exec runs that needs approval, with why; each gets its own exemption check. */
-function innerGatedSteps(cmd: ResolvedCommand, depth = 0): Array<{ step: ResolvedCommand; reason: string }> {
-    const gated: Array<{ step: ResolvedCommand; reason: string }> = [];
+// `runtime`: what the step does comes from xargs input or a find match, so no static exemption can apply to it.
+type InnerGate = { step: ResolvedCommand; reason: string; runtime?: boolean };
+
+function innerGatedSteps(cmd: ResolvedCommand, depth = 0): InnerGate[] {
+    const gated: InnerGate[] = [];
     for (const { via, inner } of execRuns(cmd)) {
         // With no operation (or script) written, xargs input or a find match supplies it: `xargs sh` gets `-c …` at run time.
         if (inner && (OPERATION_TOOLS.has(inner.name) || SHELLS.has(inner.name)) && writesNoOperation(inner)) {
-            gated.push({ step: { ...inner, pos: undefined }, reason: `${via} supplies ${inner.name}'s ${SHELLS.has(inner.name) ? 'script' : 'operation'} from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Write it in the command.` });
+            gated.push({ step: { ...inner, pos: undefined }, reason: `${via} supplies ${inner.name}'s ${SHELLS.has(inner.name) ? 'script' : 'operation'} from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Write it in the command.`, runtime: true });
             continue;
         }
         const steps = innerSteps(inner);
@@ -1776,12 +1787,19 @@ function innerGatedSteps(cmd: ResolvedCommand, depth = 0): Array<{ step: Resolve
                     gated.push({ step: { ...step, pos: undefined }, reason: `${via} nests xargs or find too deeply for the guard to follow. Run the inner command directly.` });
                     continue;
                 }
-                gated.push(...innerGatedSteps(step, depth + 1).map(g => ({ step: g.step, reason: `${via} runs ${g.reason}` })));
+                gated.push(...innerGatedSteps(step, depth + 1).map(g => ({ ...g, reason: `${via} runs ${g.reason}` })));
             }
-            const appended = via === 'xargs' && inner === step && xargsAppends(cmd.args) ? appendedModifier(step) : null;
-            if (appended) {
-                gated.push({ step: { ...step, pos: undefined }, reason: `xargs appends its input to ${step.name}, and an appended ${appended} would need approval. Write the arguments in the command.` });
-                continue;
+            if (via === 'xargs' && inner === step) {
+                const replace = xargsReplaceString(cmd.args);
+                // Appending, xargs input can complete a CLI whose operation spans several words (`aws s3` + `rm …`);
+                // git names its operation in one word, so for git only an appended modifier matters.
+                const fromInput = replace === null
+                    ? OPERATION_TOOLS.has(step.name) && step.name !== 'git' ? 'its operation and options' : appendedModifier(step)
+                    : substitutedModifier(step, replace);
+                if (fromInput) {
+                    gated.push({ step: { ...step, pos: undefined }, reason: `xargs fills in ${fromInput} for ${step.name} from its input, so what it runs can't be checked. Write the arguments in the command.`, runtime: true });
+                    continue;
+                }
             }
             const reason = checkGatedCommand(step);
             // The step's offset, if any, is into the inner script, not the command line the card reads from.
@@ -3629,7 +3647,11 @@ function* gatedSteps(
 ): Generator<{ cmd: ResolvedCommand; reason: string; outer: ResolvedCommand }> {
     for (const outer of commands) {
         const outerReason = checkGatedCommand(outer);
-        for (const { step: cmd, reason } of outerReason ? [{ step: outer, reason: outerReason }] : innerGatedSteps(outer)) {
+        for (const { step: cmd, reason, runtime } of outerReason ? [{ step: outer, reason: outerReason }] as InnerGate[] : innerGatedSteps(outer)) {
+            if (runtime) {
+                yield { cmd, reason, outer };
+                continue;
+            }
             const dev = devScopeTargetOf(cmd, commands, command);
             if (dev !== null) {
                 if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
