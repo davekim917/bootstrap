@@ -162,12 +162,26 @@ export function bypassFlagIsRealArgvToken(gwsSegment: string): boolean {
 const GWS_BOOLEAN_OPTIONS = new Set(['--html', '--dry-run', '--draft', '--help', '-h', '--no-original-attachments']);
 // Commands a probe may pipe through or run beside gws: none sends mail, runs
 // another command, or changes shell state a later gws call could read.
-const PROBE_COMPANIONS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq', 'wc', 'sort', 'uniq', 'cut', 'tr', 'cat', 'echo', 'printf', 'true', ':', 'test', '[', 'sleep']);
+const PROBE_COMPANIONS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq', 'wc', 'uniq', 'cut', 'tr', 'cat', 'echo', 'printf', 'true', ':', 'test', '[', 'sleep']);
 // Variables a probe may set. Anything that changes how a later command is found
 // or started (PATH, BASH_ENV, LD_PRELOAD, IFS, …) or how gws behaves (its own
 // GOOGLE_*/GWS_* settings other than the credentials file) is refused.
 const PROBE_VARIABLE_DENY = /^(?:PATH|CDPATH|IFS|ENV|BASH_ENV|BASH\w*|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|LD_\w+|DYLD_\w+|GCONV_PATH|HOSTALIASES|NODE_\w+|HOME|XDG_\w+|TMPDIR|LANG|LC_\w+|GWS_\w+|GOOGLE_\w+)$/;
 const PROBE_VARIABLE_ALLOW = new Set(['GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE']);
+
+// Words a probe's gws may be run through. A package runner (npx, bunx, pnpm exec, …) can supply its own gws, and
+// sudo looks it up on another PATH, so a gws reached through anything else is not the installed one.
+const PROBE_WRAPPERS = new Set(['command', 'time', 'nice', 'timeout', 'env']);
+
+/** Every word before gws is an allowed wrapper, one of its options or durations, or an assignment env makes. */
+function gwsReachedDirectly(node: any): boolean {
+    for (const word of [node.name, ...(node.suffix || [])]) {
+        const value = String(word?.value ?? word?.text ?? '');
+        if (value === 'gws') return true;
+        if (!PROBE_WRAPPERS.has(value) && !value.startsWith('-') && !/^\d+(?:\.\d+)?[smhd]?$/.test(value) && !/^[A-Za-z_]\w*=/.test(value)) return false;
+    }
+    return false;
+}
 
 function probeMaySet(name: string): boolean {
     return /^[A-Za-z_]\w*$/.test(name) && (PROBE_VARIABLE_ALLOW.has(name) || !PROBE_VARIABLE_DENY.test(name));
@@ -268,6 +282,7 @@ export function probeOnlyCommand(command: string): boolean {
         if (!cmd) return false;
         if (!(cmd.env ?? []).every(a => probeMaySet(a.split('=')[0]))) return false;
         if (cmd.name === 'gws') {
+            if (!gwsReachedDirectly(node)) return false;
             if (!gwsCallIsProbe(node, cmd.args) && !gwsCallOnlyReads(node, cmd.args)) return false;
             gwsCalls++;
         } else if (cmd.name === 'set') {
