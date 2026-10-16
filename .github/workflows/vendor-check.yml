@@ -1,11 +1,14 @@
 # Vendor-check CI: guards the shared destructive-guard core against drift.
 #
 # What this enforces:
-#   1. `node scripts/vendor-guards.mjs --check` — fails if any vendored copy
-#      under plugins/workflow-agents/hooks/guards/ is stale relative to the
-#      single source of truth in plugins/workflow/hooks/guards/. A contributor
-#      who edits a *-core.ts file but forgets to re-vendor will fail here.
-#   2. The guard test suite (bun test) over the source-of-truth guards.
+#   1. `node scripts/check-parity.mjs` — every drift gate the host pre-commit
+#      hook runs (vendored guard copies, generated skills, workflow contracts,
+#      plugin boundaries), so a commit from a clone without that hook is
+#      checked too.
+#   2. On a pull request, `node scripts/check-version-bump.mjs` — a change under
+#      plugins/<p>/ bumps that plugin's version in every manifest and
+#      marketplace entry, or installs never see it.
+#   3. The guard test suite (bun test) over the source-of-truth guards.
 #
 # KNOWN RISK R2 — this workflow is the MECHANISM, not the enforcement. Making it
 # a REQUIRED / non-bypassable status check is a GitHub branch-protection setting
@@ -25,14 +28,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
-      - name: Verify vendored guard copies are up to date
-        run: node scripts/vendor-guards.mjs --check
+      - name: Every changed plugin bumps its version
+        if: github.event_name == 'pull_request'
+        run: node scripts/check-version-bump.mjs --base origin/${{ github.base_ref }}
+
+      - name: Run the version-bump gate tests
+        run: node --test scripts/check-version-bump.test.mjs
 
       - name: Install workflow hook dependencies
         working-directory: plugins/workflow/hooks
@@ -50,8 +59,8 @@ jobs:
         working-directory: plugins/workflow-agents/hooks
         run: bun test
 
-      - name: Prove the orchestrate plugin's composition in both enablement states
-        run: node --test scripts/plugin-enablement.test.mjs
+      - name: Parity and boundary drift gates (the same set the pre-commit hook runs)
+        run: node scripts/check-parity.mjs
 
       - name: Run the analytics-verify check script tests
         run: python3 -m unittest discover -s plugins/analytics-verify/skills/analytics-verify/scripts -p 'test_*.py'
