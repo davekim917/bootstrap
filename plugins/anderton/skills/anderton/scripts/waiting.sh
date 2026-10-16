@@ -12,19 +12,23 @@ command -v jq >/dev/null 2>&1 || {
 
 home="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 state="${ANDERTON_STATE:-$home/anderton.json}"
-anderton=""
+holder_pid=""
+holder_start=""
 if [ -f "$state" ]; then
-  anderton=$(jq -r '.sessionId // empty' "$state" 2>/dev/null || true)
+  holder_pid=$(jq -r '.pid // empty' "$state" 2>/dev/null || true)
+  holder_start=$(jq -r '.procStart // empty' "$state" 2>/dev/null || true)
 fi
 
 for s in "$home"/sessions/*.json; do
   [ -e "$s" ] || continue
-  fields=$(jq -r '[(.pid // "" | tostring), .sessionId // "", .cwd // "", .name // ""] | join("\u001f")' "$s" 2>/dev/null) || continue
-  IFS=$'\x1f' read -r pid sid cwd name <<EOF
+  fields=$(jq -r '[(.pid // "" | tostring), .procStart // "", .sessionId // "", .cwd // "", .name // ""] | join("\u001f")' "$s" 2>/dev/null) || continue
+  IFS=$'\x1f' read -r pid start sid cwd name <<EOF
 $fields
 EOF
   [ -n "$pid" ] && [ -n "$sid" ] || continue
-  [ "$sid" != "$anderton" ] || continue
+  if [ "$pid" = "$holder_pid" ] && { [ -z "$holder_start" ] || [ "$start" = "$holder_start" ]; }; then
+    continue
+  fi
   kill -0 "$pid" 2>/dev/null || continue
 
   transcript=""
@@ -39,11 +43,12 @@ EOF
   # Reading only the tail is safe: tool results alternate with assistant entries, so the last
   # assistant or human entry is always within the final few lines.
   tail -n 1000 "$transcript" | jq -nrR --arg name "${name:-${sid%%-*}}" --arg cwd "$cwd" '
+    def human: .type == "user"
+      and ((.message.content | type) == "string"
+           or ((.message.content | type) == "array" and all(.message.content[]; .type != "tool_result")));
     (now - 2 * 86400 | todate) as $since
     | reduce (inputs | fromjson? | objects) as $e (null;
-        if ($e.timestamp // "") > $since
-           and ($e.type == "assistant" or ($e.type == "user" and ($e.message.content | type) == "string"))
-        then $e else . end)
+        if ($e.timestamp // "") > $since and ($e.type == "assistant" or ($e | human)) then $e else . end)
     | select(. != null and .type == "assistant")
     | ([.message.content[]? | select(.type == "text") | .text] | join("\n")) as $txt
     | select($txt != "")

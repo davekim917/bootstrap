@@ -50,23 +50,30 @@ done
 trap 'rm -rf "$lock"' EXIT
 echo $$ > "$lock/pid"
 
+# The holder is a Claude Code process, not a session id: /clear gives the same process a new
+# session id. procStart, from the registry, tells a reused pid apart from the process that claimed.
+proc_start() {
+  jq -r '.procStart // empty' "$sessions/$1.json" 2>/dev/null || true
+}
+
 holder_alive() {
-  local f="$sessions/$1.json"
-  kill -0 "$1" 2>/dev/null && [ -f "$f" ] && [ "$(jq -r '.sessionId // empty' "$f" 2>/dev/null)" = "$2" ]
+  kill -0 "$1" 2>/dev/null && [ -f "$sessions/$1.json" ] && { [ -z "$2" ] || [ "$(proc_start "$1")" = "$2" ]; }
 }
 
 if [ -f "$state" ] && [ "$force" != "--take-over" ]; then
   hpid=$(jq -r '.pid // empty' "$state" 2>/dev/null || true)
-  hsid=$(jq -r '.sessionId // empty' "$state" 2>/dev/null || true)
-  if [ "$hsid" != "$sid" ] && [ -n "$hpid" ] && holder_alive "$hpid" "$hsid"; then
+  hstart=$(jq -r '.procStart // empty' "$state" 2>/dev/null || true)
+  if [ -n "$hpid" ] && [ "$hpid" != "$pid" ] && holder_alive "$hpid" "$hstart"; then
     name=$(jq -r '.name // empty' "$sessions/$hpid.json" 2>/dev/null || true)
-    echo "Anderton is held by live session '${name:-unknown}' (pid $hpid, session $hsid)."
+    hsid=$(jq -r '.sessionId // empty' "$sessions/$hpid.json" 2>/dev/null || true)
+    echo "Anderton is held by live session '${name:-unknown}' (pid $hpid, session ${hsid:-unknown})."
     echo "Rerun with --take-over only if the user says so."
     exit 3
   fi
 fi
 
-jq -nc --argjson pid "$pid" --arg sid "$sid" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{pid: $pid, sessionId: $sid, claimedAt: $at}' > "$state.tmp"
+jq -nc --argjson pid "$pid" --arg start "$(proc_start "$pid")" --arg sid "$sid" \
+  --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{pid: $pid, procStart: $start, sessionId: $sid, claimedAt: $at}' > "$state.tmp"
 mv "$state.tmp" "$state"
 echo "Anderton claimed by session $sid (pid $pid)."
