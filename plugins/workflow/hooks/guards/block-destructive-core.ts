@@ -200,9 +200,10 @@ function expandedEmitter(cmd: ResolvedCommand): ResolvedCommand | null {
         if (cmd.name !== 'echo' && cmd.name !== 'printf') continue;
         // Only an unquoted value splits, so only there can a leading word become an option echo drops.
         const unquoted = !/^"[\s\S]*"$/.test(words[i].word);
-        // Only the options the emitter takes are dropped: `echo -- x` prints `-- x`, a SQL comment.
-        const options = cmd.name === 'echo' ? /^(?:-[neE]+\s+)+/ : /^(?:-v\s+\S+\s+)/;
-        values.push(...e.flatMap(v => (unquoted ? [v, v.replace(options, '')] : [v])));
+        // `printf -v NAME` assigns its output instead of printing it, so a value that splits into that prints nothing.
+        if (unquoted && cmd.name === 'printf' && e.some(v => /^-v\s/.test(v))) return { ...cmd, args: [], stdinTexts: [] };
+        // Only the options echo takes are dropped: `echo -- x` prints `-- x`, a SQL comment.
+        values.push(...e.flatMap(v => (unquoted && cmd.name === 'echo' ? [v, v.replace(/^(?:-[neE]+\s+)+/, '')] : [v])));
     }
     const stdin = expandWords((cmd.stdinExpanded ?? []).map(heredocWord), cmd);
     // Each value is scanned whole and without leading option words too: an unquoted `-e DROP …` splits into an option
