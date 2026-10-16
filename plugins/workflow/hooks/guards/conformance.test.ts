@@ -118,6 +118,12 @@ const BASH_GATE = [
   // spelling, mirror push, remote-ref deletion / per-ref force refspecs —
   // including behind git's global options (-C).
   'git push --force origin main',
+  // git clean deletes untracked files outside the trash; only a dry run passes.
+  'git clean -fdx',
+  'git clean -f',
+  'git -C repo clean -xdf',
+  'git -c clean.requireForce=false clean -d',
+  'git clean -f -e .env',
   'git push -f',
   'git -C /workspace/worktrees/APP push -f origin develop',
   // Spellings that once slipped through: a clustered short flag, AWS global
@@ -240,6 +246,10 @@ const BASH_ALLOW = [
   "printf x | xargs -I{} xargs echo",
   'exec bash-completion-loader',
   'git status',
+  'git clean -n',
+  'git clean -ndx',
+  'git clean --dry-run -fdx',
+  'git clean -e keep -n',
   'rm -rf node_modules',
   'echo hello',
   'cat README.md',

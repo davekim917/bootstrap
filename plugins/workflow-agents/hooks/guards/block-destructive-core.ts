@@ -3672,6 +3672,15 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
                 return 'git push deleting or force-updating a remote ref (+/: refspec, --delete).';
             }
         }
+        // Gated unless it is a dry run, -f or not: `clean.requireForce=false` lets it delete without -f.
+        if (args[i] === 'clean') {
+            const rest = args.slice(i + 1);
+            const end = rest.indexOf('--');
+            const options = end === -1 ? rest : rest.slice(0, end);
+            if (!options.includes('--dry-run') && !hasShortFlag(options, 'n', 'e')) {
+                return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
+            }
+        }
     }
 
     // ── dbt ──────────────────────────────────────────────────────────────
@@ -3940,6 +3949,27 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
     ] };
 }
 
+function gitCleanStep(cmd: ResolvedCommand): StepCard {
+    const rest = cmd.args.slice(gitSubcommandIndex(cmd.args) + 1);
+    const end = rest.indexOf('--');
+    const options = end === -1 ? rest : rest.slice(0, end);
+    const paths = end === -1 ? options.filter((a, i) => !a.startsWith('-') && !/^-[A-Za-z]*e$|^--exclude$/.test(options[i - 1] ?? '')) : rest.slice(end + 1);
+    const excluded = options.flatMap((a, i) =>
+        a === '--exclude' || /^-[A-Za-z]*e$/.test(a) ? [options[i + 1] ?? ''] : a.startsWith('--exclude=') ? [a.slice(10)] : /^-[A-Za-z]*e./.test(a) ? [a.slice(a.indexOf('e') + 1)] : [],
+    ).filter(Boolean);
+    const ignored = options.includes('-x') || hasShortFlag(options, 'x', 'e');
+    const onlyIgnored = options.includes('-X') || hasShortFlag(options, 'X', 'e');
+    const dirs = options.includes('-d') || hasShortFlag(options, 'd', 'e');
+    const what = onlyIgnored ? 'ignored files' : ignored ? 'untracked and ignored files' : 'untracked files';
+    const where = paths.length ? ` under ${paths.map(code).join(', ')}` : '';
+    const lines = [
+        `If you approve: all ${what}${dirs ? ' and directories' : ''}${where} are deleted, skipping the trash. They cannot be recovered.`,
+    ];
+    if (ignored || onlyIgnored) lines.push('Ignored files include local secrets and data such as `.env`, caches and build output.');
+    if (excluded.length) lines.push(`Kept: files matching ${excluded.map(code).join(', ')}.`);
+    return { dir: gitRelocatedDir(cmd.args) ?? undefined, label: `Permanently delete ${what}${where.replace(/`/g, '')} (git clean)`, lines };
+}
+
 function awsStep(cmd: ResolvedCommand): StepCard {
     const [service, op, opIndex] = awsServiceAndOperation(cmd.args);
     const operands = cmd.args.slice(opIndex + 1).filter(a => !a.startsWith('-'));
@@ -4102,7 +4132,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             const step: StepCard =
                 sqlDialect ? sqlStep(sqlDialect, cmd)
                 : cmd.name === 'dbt' ? dbtStep(cmd, dirBefore)
-                : cmd.name === 'git' ? gitPushStep(cmd)
+                : cmd.name === 'git' ? (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean' ? gitCleanStep(cmd) : gitPushStep(cmd))
                 : cmd.name === 'aws' ? awsStep(cmd)
                 : genericStep(cmd, why);
             const dir = step.dir ?? dirBefore;

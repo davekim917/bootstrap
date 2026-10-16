@@ -61,6 +61,12 @@ describe('destructive approval description', () => {
             has: ['Deletes the table `users`'],
         },
         {
+            name: 'git clean names what it deletes, that it skips the trash, and what -e keeps',
+            command: 'cd /work/app && git clean -fdx -e .env',
+            label: 'Permanently delete untracked and ignored files (git clean)',
+            has: ['and directories are deleted, skipping the trash', 'such as `.env`', 'Kept: files matching `.env`', 'Directory: `/work/app`'],
+        },
+        {
             name: 'dbt --select= and --selector forms name the selection',
             command: 'dbt run --full-refresh --select=orders',
             label: 'Rebuild dbt model orders from scratch (--full-refresh)',
