@@ -98,6 +98,8 @@ const BASH_BLOCK = [
   'rm -rf /',
   'find . -delete',
   'xargs rm < list',
+  // git submodule foreach runs its command in each submodule, on the same terms.
+  "git submodule foreach 'rm -rf /etc'",
 ];
 
 // Gated (require approval): destructive infra/DB/cloud/IaC/containers/dbt.
@@ -133,6 +135,10 @@ const BASH_GATE = [
   '/usr/lib/git-core/git-clean -fd',
   'git -c clean.requireForce=false --shallow-file /dev/null clean',
   'X=--no-dry-run; git clean -n $X -f',
+  // git submodule foreach runs its command in each submodule.
+  "git submodule foreach --recursive 'git clean -fdx'",
+  'git submodule foreach git clean -fdx',
+  "git submodule --quiet foreach 'git push --force origin main'",
   'git clean -n * -f',
   'git clean -n {a,b} -f',
   'git clean -n ./--no-dry-r[u]n -f',
@@ -307,6 +313,8 @@ const BASH_ALLOW = [
   'git --help clean',
   "git clean -n -- 'dir with spaces'",
   "git clean -n 'dir with spaces'",
+  "git submodule foreach --recursive 'git status --short'",
+  "git submodule foreach 'git fetch origin && git checkout main'",
 ];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);

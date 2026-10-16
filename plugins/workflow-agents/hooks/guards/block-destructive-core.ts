@@ -2008,6 +2008,7 @@ function innerSteps(inner: ResolvedCommand | null, appended = false): ResolvedCo
 /** What xargs, or each find -exec/-execdir/-ok/-okdir, runs: the option that runs it and the command it runs. */
 function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCommand | null }> {
     if (cmd.name === 'xargs') return [{ via: 'xargs', inner: innerCommand(xargsCommand(cmd.args), cmd) }];
+    if (cmd.name === 'git') return submoduleForeach(cmd);
     if (cmd.name !== 'find') return [];
     const runs: Array<{ via: string; inner: ResolvedCommand | null }> = [];
     for (let i = 0; i < cmd.args.length; i++) {
@@ -2021,6 +2022,18 @@ function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCom
         if (end > i) i = end;
     }
     return runs;
+}
+
+/** `git submodule [opts] foreach [--recursive] CMD…`: git joins CMD's words and runs them with `sh -c` in each submodule. */
+function submoduleForeach(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCommand | null }> {
+    let i = gitSubcommandIndex(cmd.args);
+    if (cmd.args[i] !== 'submodule') return [];
+    for (i++; cmd.args[i]?.startsWith('-'); i++);
+    if (cmd.args[i] !== 'foreach') return [];
+    for (i++; ['--recursive', '--quiet', '-q', '--'].includes(cmd.args[i]); i++);
+    const words = cmd.args.slice(i);
+    if (!words.length) return [];
+    return [{ via: 'git submodule foreach', inner: { name: 'sh', args: ['-c', words.join(' ')], raw: cmd.raw, env: [], chdir: 'each submodule', hasInputRedirect: false } }];
 }
 
 // Tools whose operation is a positional word, so `xargs <tool>` with none lets its input choose the operation.
@@ -4030,8 +4043,10 @@ function gitCleanStep(cmd: ResolvedCommand): StepCard {
     if (ignored || onlyIgnored) lines.push('Ignored files include local secrets and data such as `.env`, caches and build output.');
     // -e adds to the ignore rules: it protects files from a plain or -x clean, and adds to what -X deletes. A leading
     // `!` un-ignores instead, so its effect is the reverse.
-    const negated = excluded.filter(p => p.startsWith('!')).map(p => p.slice(1));
-    const plain = excluded.filter(p => !p.startsWith('!'));
+    // The last of several -e rules for one pattern wins, as in a .gitignore.
+    const last = new Map(excluded.map(p => [p.replace(/^!/, ''), p.startsWith('!')]));
+    const negated = [...last].filter(([, neg]) => neg).map(([p]) => p);
+    const plain = [...last].filter(([, neg]) => !neg).map(([p]) => p);
     const kept = onlyIgnored ? negated : plain;
     const added = onlyIgnored ? plain : negated;
     if (kept.length) lines.push(`Kept: files matching ${kept.map(code).join(', ')}.`);

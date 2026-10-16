@@ -183,6 +183,15 @@ describe('destructive approval description', () => {
         expect(card('GIT_WORK_TREE=/srv/staging git --work-tree=/srv/other clean -fd').summary).toContain('Directory: `/srv/other`');
     });
 
+    test('the last -e rule for a pattern decides what the card says', () => {
+        const removed = card("git clean -f -e foo -e '!foo'");
+        expect(removed.summary).toContain('Also deleted: files matching `foo`');
+        expect(removed.summary).not.toContain('Kept:');
+        const kept = card("git clean -f -e '!foo' -e foo");
+        expect(kept.summary).toContain('Kept: files matching `foo`');
+        expect(kept.summary).not.toContain('Also deleted');
+    });
+
     test('a negated -e pattern reverses what the card says', () => {
         const x = card("git clean -f -X -e '!secret.env'");
         expect(x.summary).toContain('Kept: files matching `secret.env`');
