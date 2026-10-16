@@ -26,6 +26,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 | Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.1 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
+| Claude Code (host only) | `anderton` | 1.0.0 | `/anderton`, an invoke-only skill that makes one session the operator above every other live session and PR on the machine |
 
 ### Delegation is invoke-only
 
@@ -272,6 +273,7 @@ artifact, environment and command, and invalidate it after relevant changes.
 /plugin install comment-rule@davekim917-bootstrap
 /plugin install concise@davekim917-bootstrap
 /plugin install slack-humanizer@davekim917-bootstrap
+/plugin install anderton@davekim917-bootstrap
 ```
 
 ### Codex
@@ -429,6 +431,25 @@ The plugin carries no person's or company's details. Those live in a private voi
 it when present and describes how to build one from the user's own messages. NanoClaw agents get
 the skill through the same enabler as `concise`.
 
+### Anderton
+
+`anderton` is one invoke-only skill, `/anderton`, for the Claude Code session the user picks to
+own the line to production: it watches every other session and PR, reviews against the bar in
+`references/good-code.md`, and turns each repeated correction into a check. Claude Code only, on
+the host: its two scripts read Claude Code's own session registry, and there is no Codex manifest.
+
+- `scripts/claim.sh` records the claiming session in `~/.claude/anderton.json` and exits 3 while
+  another live session holds the role (`--take-over` replaces it).
+- `scripts/waiting.sh` lists every live Claude Code session on the machine, in any project, whose
+  last turn ended with Claude talking, with the tail of that message. It reads
+  `~/.claude/sessions/*.json`, keeps sessions whose process is alive, finds each transcript under
+  `~/.claude/projects/*/<session id>.jsonl`, and leaves out the session holding the role.
+
+Both honour `CLAUDE_CONFIG_DIR`, need `jq`, and run under macOS's bash 3.2 and BSD userland as well
+as Linux. NanoClaw mounts every plugin under `~/plugins` into its agent containers, so an install
+that clones this repo there must withhold `bootstrap/plugins/anderton` from them (`excludePlugins`);
+this repo cannot do it on the host's behalf.
+
 ## Upgrading from pre-4.0 / pre-1.0
 
 Older Bootstrap releases leaked permanent Codex agent definitions into active runtime homes: six
@@ -490,7 +511,8 @@ bootstrap/
 │   ├── wwbd/
 │   ├── comment-rule/
 │   ├── concise/
-│   └── slack-humanizer/
+│   ├── slack-humanizer/
+│   └── anderton/
 ├── evals/
 ├── scripts/
 └── deprecated/
@@ -506,6 +528,7 @@ node scripts/check-plugin-boundaries.mjs
 node scripts/check-parity.mjs
 node --test plugins/comment-rule/test/comment-rule.test.mjs
 python3 -m unittest discover -s plugins/slack-humanizer/skills/slack-humanizer -p 'test_*.py'
+bash plugins/anderton/test/scripts.test.sh
 
 cd plugins/workflow/hooks && bun test && bun run check
 cd plugins/workflow-agents/hooks && bun test && bun run check

@@ -70,6 +70,12 @@
       "source": "./plugins/slack-humanizer",
       "description": "Slack messages drafted in the user's voice and posted as rich text, so bullets and numbered lists render as real Slack lists.",
       "version": "1.0.1"
+    },
+    {
+      "name": "anderton",
+      "source": "./plugins/anderton",
+      "description": "The /anderton skill: one operator session that owns the line to production, watches every live Claude Code session and PR on the machine, and turns repeated corrections into structure. Invoke-only; host sessions only.",
+      "version": "1.0.0"
     }
   ]
 }

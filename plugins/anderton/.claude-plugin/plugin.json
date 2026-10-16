@@ -1,0 +1,11 @@
+{
+  "name": "anderton",
+  "version": "1.0.0",
+  "description": "The /anderton skill: make one Claude Code session the operator that owns the line to production, watches every other live session and PR, holds the engineering bar, and turns repeated corrections into structure. Invoke-only; host sessions only.",
+  "author": {
+    "name": "David Kim"
+  },
+  "repository": "https://github.com/davekim917/bootstrap",
+  "license": "MIT",
+  "skills": "./skills/"
+}
