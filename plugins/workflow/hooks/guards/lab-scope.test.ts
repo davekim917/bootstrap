@@ -219,6 +219,22 @@ describe('lab session + lab target → allow', () => {
     expect(evaluateBashCommand(lab, { cwd: '/tmp' }).action).toBe('allow');
   });
 
+  test('a cd before a step xargs or find runs moves its target', () => {
+    inLab();
+    const inScript = "printf x | xargs sh -c 'cd /prod/repo; git push --force origin main'";
+    expect(evaluateBashCommand(inScript, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const before = 'cd /prod/repo && find . -maxdepth 0 -exec git push --force origin main \\;';
+    expect(evaluateBashCommand(before, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const topLevel = 'cd /prod/repo && git push --force origin main';
+    expect(evaluateBashCommand(topLevel, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const unknown = 'cd "$REPO" && git push --force origin main';
+    expect(evaluateBashCommand(unknown, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const intoLab = `cd ${LAB_WORKTREE}/src && git push --force origin main`;
+    expect(evaluateBashCommand(intoLab, { cwd: LAB_WORKTREE }).action).toBe('allow');
+    const scriptIntoLab = `printf x | xargs sh -c 'cd ${LAB_WORKTREE}; git push --force origin main'`;
+    expect(evaluateBashCommand(scriptIntoLab, { cwd: LAB_WORKTREE }).action).toBe('allow');
+  });
+
   test('inside xargs, a lab step does not exempt a later non-lab step', () => {
     inLab();
     const prod = `xargs sh -c 'psql -d lab_app -c "DROP TABLE scratch"; psql -d app_prod -c "DROP TABLE users"' < list`;

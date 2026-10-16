@@ -1670,8 +1670,11 @@ function innerHardBlock(inner: ResolvedCommand | null): string | null {
     return null;
 }
 
-/** The commands `inner` runs: itself, or the commands of the script it runs as a shell with `-c`. */
-function innerSteps(inner: ResolvedCommand | null): ResolvedCommand[] | typeof RUNS_VARIABLE {
+/**
+ * The commands `inner` runs: itself, or the commands of the script it runs as a shell with `-c`. With `appended`,
+ * xargs adds the words it reads after the written ones, so a positional parameter past them reads as `{}`.
+ */
+function innerSteps(inner: ResolvedCommand | null, appended = false): ResolvedCommand[] | typeof RUNS_VARIABLE {
     if (!inner) return [];
     const script = SHELLS.has(inner.name) ? shellScript(inner.name, inner.args) : null;
     if (!script) return [inner];
@@ -1679,7 +1682,7 @@ function innerSteps(inner: ResolvedCommand | null): ResolvedCommand[] | typeof R
     for (const nested of extractCommands(script.text)) {
         // A command taken from a parameter is whatever xargs reads from input or find matches, which cannot be known.
         if (nested.name.includes('$')) return RUNS_VARIABLE;
-        const args = expandPositional(inner.name, nested.args, inner.args.slice(script.rest));
+        const args = expandPositional(inner.name, nested.args, inner.args.slice(script.rest), appended);
         const step = args ? { ...nested, args } : nested;
         // A command the script runs starts in the shell's own directory (an `env -C` wrapper on the shell).
         steps.push(inner.chdir !== undefined && step.chdir === undefined ? { ...step, chdir: inner.chdir } : step);
@@ -1765,7 +1768,8 @@ const EXEC_NESTING_MAX = 4;
 
 /** Every command xargs or find -exec runs that needs approval, with why; each gets its own exemption check. */
 // `runtime`: what the step does comes from xargs input or a find match, so no static exemption can apply to it.
-type InnerGate = { step: ResolvedCommand; reason: string; runtime?: boolean };
+// `moves`: the directory changes the script makes before the step, which decide where it runs.
+type InnerGate = { step: ResolvedCommand; reason: string; runtime?: boolean; moves?: ResolvedCommand[] };
 
 function innerGatedSteps(cmd: ResolvedCommand, depth = 0): InnerGate[] {
     const gated: InnerGate[] = [];
@@ -1775,18 +1779,30 @@ function innerGatedSteps(cmd: ResolvedCommand, depth = 0): InnerGate[] {
             gated.push({ step: { ...inner, pos: undefined }, reason: `${via} supplies ${inner.name}'s ${SHELLS.has(inner.name) ? 'script' : 'operation'} from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Write it in the command.`, runtime: true });
             continue;
         }
-        const steps = innerSteps(inner);
+        const replace = via === 'xargs' ? xargsReplaceString(cmd.args) : null;
+        const steps = innerSteps(inner, via === 'xargs' && replace === null);
         if (steps === RUNS_VARIABLE) continue;
+        const moves: ResolvedCommand[] = [];
         for (const step of steps) {
+            if (DIRECTORY_CHANGERS.has(step.name)) {
+                moves.push(step);
+                continue;
+            }
+            const at = moves.length ? [...moves] : undefined;
             if (step.name === 'xargs' || step.name === 'find') {
                 if (depth >= EXEC_NESTING_MAX) {
                     gated.push({ step: { ...step, pos: undefined }, reason: `${via} nests xargs or find too deeply for the guard to follow. Run the inner command directly.` });
                     continue;
                 }
-                gated.push(...innerGatedSteps(step, depth + 1).map(g => ({ ...g, reason: `${via} runs ${g.reason}` })));
+                gated.push(...innerGatedSteps(step, depth + 1).map(g => ({ ...g, reason: `${via} runs ${g.reason}`, moves: [...moves, ...(g.moves ?? [])] })));
             }
-            if (via === 'xargs' && inner === step) {
-                const replace = xargsReplaceString(cmd.args);
+            // A script word xargs input fills in (`terraform "$@"`) is as open as an operation left unwritten.
+            if (step !== inner && step.args.includes('{}') && via === 'xargs' && replace === null
+                && (OPERATION_TOOLS.has(step.name) || SHELLS.has(step.name)) && writesNoOperation(step)) {
+                gated.push({ step: { ...step, pos: undefined }, reason: `xargs supplies ${step.name}'s ${SHELLS.has(step.name) ? 'script' : 'operation'} from its input, so what it runs can't be checked. Write it in the command.`, runtime: true });
+                continue;
+            }
+            if (via === 'xargs' && (inner === step || (replace === null ? step.args.includes('{}') : SHELLS.has(inner!.name)))) {
                 // Appending, xargs input can complete a CLI whose operation spans several words (`aws s3` + `rm …`);
                 // git names its operation in one word, so for git only an appended modifier matters.
                 const fromInput = replace === null
@@ -1799,7 +1815,7 @@ function innerGatedSteps(cmd: ResolvedCommand, depth = 0): InnerGate[] {
             }
             const reason = checkGatedCommand(step);
             // The step's offset, if any, is into the inner script, not the command line the card reads from.
-            if (reason) gated.push({ step: { ...step, pos: undefined }, reason: `${via} runs a command that needs approval. ${reason}` });
+            if (reason) gated.push({ step: { ...step, pos: undefined }, reason: `${via} runs a command that needs approval. ${reason}`, moves: at });
         }
     }
     return gated;
@@ -1811,9 +1827,10 @@ const RUNS_VARIABLE = 'Its shell script takes the command to run from a variable
  * `words` with the script's positional parameters filled in from the words written after the script, or null when
  * none is used. Bourne shells number them from `$0`; fish passes every one as `$argv`.
  */
-function expandPositional(shell: string, words: string[], positional: string[]): string[] | null {
+function expandPositional(shell: string, words: string[], positional: string[], appended: boolean): string[] | null {
     const fish = shell === 'fish';
-    const all = fish ? positional : positional.slice(1);
+    const written = fish ? positional : positional.slice(1);
+    const all = appended ? [...written, '{}'] : written;
     const one = fish ? /\$argv\[(\d+)\]/g : /\$(\d)|\$\{(\d+)\}/g;
     let used = false;
     const out = words.flatMap(word => {
@@ -1824,7 +1841,7 @@ function expandPositional(shell: string, words: string[], positional: string[]):
         return [word.replace(one, (_m, a: string | undefined, b: string | undefined) => {
             used = true;
             const n = Number(a ?? b);
-            return positional[fish ? n - 1 : n] ?? '';
+            return positional[fish ? n - 1 : n] ?? (appended ? '{}' : '');
         })];
     });
     return used ? out : null;
@@ -3629,6 +3646,20 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
     return { label: `Run ${[cmd.name, ...verbs].join(' ')}`, lines: [`If you approve: ${effect}`] };
 }
 
+const DIRECTORY_CHANGERS = new Set(['cd', 'pushd', 'popd']);
+
+/**
+ * The directories a later command may run in, given those it may have started in and a `cd`, `pushd` or `popd`
+ * before it; null once one can't be known. The parsed commands drop subshell and branch structure, so a change
+ * may not have applied and every directory along the way stays possible.
+ */
+function directoriesAfter(dirs: string[] | null, change: ResolvedCommand): string[] | null {
+    if (dirs === null || change.name === 'popd') return null;
+    const operands = change.args.filter(a => a !== '--' && !/^-[LPe@]+$/.test(a));
+    const target = operands[0];
+    if (operands.length !== 1 || !target || /^[-+~]|[$`*?[]/.test(target)) return null;
+    return [...new Set([...dirs, ...dirs.map(d => pathResolve(d, target))])];
+}
 /**
  * Yield each command the gate decides on, with its reason, in order: gated by
  * checkGatedCommand and not exempted as a dev-scope or lab target. evaluateBashCommand
@@ -3641,9 +3672,11 @@ function* gatedSteps(
     lab: boolean,
     log: boolean,
 ): Generator<{ cmd: ResolvedCommand; reason: string; outer: ResolvedCommand }> {
+    let dirs: string[] | null = [cwd];
     for (const outer of commands) {
+        if (DIRECTORY_CHANGERS.has(outer.name)) dirs = directoriesAfter(dirs, outer);
         const outerReason = checkGatedCommand(outer);
-        for (const { step: cmd, reason, runtime } of outerReason ? [{ step: outer, reason: outerReason }] as InnerGate[] : innerGatedSteps(outer)) {
+        for (const { step: cmd, reason, runtime, moves } of outerReason ? [{ step: outer, reason: outerReason }] as InnerGate[] : innerGatedSteps(outer)) {
             if (runtime) {
                 yield { cmd, reason, outer };
                 continue;
@@ -3654,8 +3687,11 @@ function* gatedSteps(
                 continue;
             }
             if (lab) {
-                // A step xargs or find runs under `env -C` resolves its target (a bare remote, a checkout) from there.
-                const target = labTargetOf(cmd, cmd.chdir ? pathResolve(cwd, cmd.chdir) : cwd);
+                // A step under `env -C`, or after a `cd`, resolves its target (a bare remote, a checkout) from there;
+                // it is exempt only if every directory it may be in is.
+                let from: string[] | null = dirs && cmd.chdir ? dirs.map(d => pathResolve(d, cmd.chdir!)) : dirs;
+                for (const move of moves ?? []) from = directoriesAfter(from, move);
+                const target = from && from.every(d => labTargetOf(cmd, d) !== null) ? labTargetOf(cmd, from[0]) : null;
                 if (target !== null) {
                     if (log) logLabScope(`allowed ${cmd.name} against lab target ${target}`);
                     continue;

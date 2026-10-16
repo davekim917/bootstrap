@@ -193,6 +193,11 @@ const BASH_GATE = [
   "printf x | xargs bash -O extglob",
   "printf '%sI' --force | xargs -dI git push origin main",
   "printf '%s\\n' 'rm s3://prod --recursive' | xargs aws s3",
+  // xargs adds what it reads to a shell's positional words, so `"$@"` there is filled at run time.
+  "printf '%s\\n' destroy | xargs sh -c 'terraform \"$@\"' _",
+  "printf '%s\\n' destroy | xargs sh -c 'terraform $1' _",
+  "printf '%s\\n' --force | xargs sh -c 'git push origin main \"$@\"' _",
+  "printf '%s\\n' --force | xargs -I{} sh -c 'git push {} origin main'",
   "printf '%s\\n' --force | xargs -I{} git push {} origin main",
   'xargs -n1 terraform fmt < dirs',
   // Appending, xargs input can complete a multi-word CLI operation; substituted, it can put --force in place.
@@ -253,6 +258,10 @@ const BASH_ALLOW = [
   'echo "DROP TABLE users"; psql < safe.sql',
   "printf 'DROP TABLE %s\\n' users; mysql < safe.sql",
   'cat drop.sql; psql < safe.sql',
+  // A shell under xargs that passes what it reads to a command without operation or modifier power.
+  "git ls-files -z | xargs -0 sh -c 'git add \"$@\"' _",
+  "printf '%s\\n' a.txt | xargs sh -c 'wc -l \"$@\"' _",
+  "printf '%s\\n' a | xargs sh -c 'echo \"$1\"' _",
 ];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);
