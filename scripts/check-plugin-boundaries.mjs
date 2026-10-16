@@ -301,6 +301,7 @@ const codexRoster = new Map([
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
   ['slack-humanizer', './plugins/slack-humanizer'],
+  ['claim-check', './plugins/claim-check'],
 ]);
 for (const entry of codexEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
@@ -392,7 +393,7 @@ const claudeRoster = new Map([
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
   ['slack-humanizer', './plugins/slack-humanizer'],
-  ['anderton', './plugins/anderton'],
+  ['claim-check', './plugins/claim-check'],
 ]);
 for (const entry of claudeEntries) {
   const entrySource = normalizeSource(sourcePath(entry));
@@ -554,7 +555,7 @@ requireTextTokens(
 );
 // SHA-256 of pstack/LICENSE at the commit each NOTICE.md pins; the copies must be verbatim.
 const PSTACK_LICENSE_SHA256 = 'bc957ca6bee02792566a1a028d105e02e247c6e77cf057061674273da77b200e';
-for (const plugin of ['test-audit', 'wwbd', 'workflow', 'workflow-agents', 'verification-skills', 'anderton']) {
+for (const plugin of ['test-audit', 'wwbd', 'workflow', 'workflow-agents', 'verification-skills']) {
   if (!exists(`plugins/${plugin}/NOTICE.md`)) fail(`plugins/${plugin} must ship NOTICE.md for its pstack-derived text`);
   const license = readText(`plugins/${plugin}/LICENSE-PSTACK`);
   if (license !== undefined && createHash('sha256').update(license).digest('hex') !== PSTACK_LICENSE_SHA256) {
@@ -619,34 +620,6 @@ for (const skill of ['create-verification-skill', 'maintain-verification-skill']
 }
 for (const activationPath of ['plugins/verification-skills/hooks', 'plugins/verification-skills/always-on.md']) {
   if (exists(activationPath)) fail(`${activationPath} must not exist; verification-skills is invoke-only`);
-}
-
-// anderton is Claude Code only: its scripts read Claude Code's own session registry and transcripts, so a
-// Codex manifest would install a skill that cannot work there. Invoke-only, with nothing that activates on its own.
-const andertonManifest = readJson('plugins/anderton/.claude-plugin/plugin.json');
-if (andertonManifest?.name !== 'anderton') fail('plugins/anderton/.claude-plugin/plugin.json name must be anderton');
-if (andertonManifest?.hooks !== undefined) fail('plugins/anderton/.claude-plugin/plugin.json must not declare hooks; anderton is invoke-only');
-if (normalizeSource(andertonManifest?.skills) !== './skills') fail('plugins/anderton/.claude-plugin/plugin.json skills must point at ./skills/');
-const andertonEntry = claudeEntries.find((entry) => entry.name === 'anderton');
-if (!andertonEntry) fail('.claude-plugin/marketplace.json must register anderton');
-else if (andertonEntry.version !== andertonManifest?.version) {
-  fail(`anderton version must match between .claude-plugin marketplace and plugin manifest (${andertonEntry.version} !== ${andertonManifest?.version})`);
-}
-for (const activationPath of ['plugins/anderton/.codex-plugin', 'plugins/anderton/hooks', 'plugins/anderton/always-on.md']) {
-  if (exists(activationPath)) fail(`${activationPath} must not exist; anderton is a Claude Code skill invoked by the user only`);
-}
-const andertonSkill = readText('plugins/anderton/skills/anderton/SKILL.md');
-if (andertonSkill !== undefined && !/^---\n(?:(?!---)[^\n]*\n)*?disable-model-invocation: true\n/.test(andertonSkill)) {
-  fail('plugins/anderton/skills/anderton/SKILL.md frontmatter must set disable-model-invocation: true; only the user makes a session the Anderton');
-}
-for (const script of ['claim.sh', 'waiting.sh']) {
-  const scriptPath = path.join(repoRoot, 'plugins/anderton/skills/anderton/scripts', script);
-  if (!fs.existsSync(scriptPath)) fail(`plugins/anderton must ship skills/anderton/scripts/${script}`);
-  else if ((fs.statSync(scriptPath).mode & 0o111) === 0) fail(`plugins/anderton/skills/anderton/scripts/${script} must be executable`);
-}
-if (!exists('plugins/anderton/skills/anderton/scripts/session-lib.sh')) fail('plugins/anderton must ship skills/anderton/scripts/session-lib.sh, which both scripts source');
-if (readJson('plugins/anderton/nanoclaw-plugin.json')?.hostOnly !== true) {
-  fail('plugins/anderton/nanoclaw-plugin.json must declare "hostOnly": true; the Anderton is a host operator role, never a container agent');
 }
 
 // Codex does not expand ${CLAUDE_PLUGIN_ROOT}, so comment-rule ships a separate Codex hook file.
@@ -1366,7 +1339,6 @@ checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/concise/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/test-audit/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/verification-skills/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/slack-humanizer/skills'));
-checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/anderton/skills'));
 checkSkillMarkdownLinks(claudeSkillsRoot);
 
 for (const skillName of codexSkills) {

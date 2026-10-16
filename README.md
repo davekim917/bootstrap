@@ -26,7 +26,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 | Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.1 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
-| Claude Code (host only) | `anderton` | 1.0.0 | `/anderton`, an invoke-only skill that makes one session per project the operator above every other live session and PR in it |
+| Claude Code / Codex / NanoClaw | `claim-check` | 1.0.0 | Stop hook that checks the commit SHAs and merged/closed PR claims in the final message against GitHub and logs proven-false claims (advisory, never blocks) |
 
 ### Delegation is invoke-only
 
@@ -273,7 +273,7 @@ artifact, environment and command, and invalidate it after relevant changes.
 /plugin install comment-rule@davekim917-bootstrap
 /plugin install concise@davekim917-bootstrap
 /plugin install slack-humanizer@davekim917-bootstrap
-/plugin install anderton@davekim917-bootstrap
+/plugin install claim-check@davekim917-bootstrap
 ```
 
 ### Codex
@@ -290,6 +290,7 @@ codex plugin add verification-skills@davekim917-bootstrap
 codex plugin add comment-rule@davekim917-bootstrap
 codex plugin add concise@davekim917-bootstrap
 codex plugin add slack-humanizer@davekim917-bootstrap
+codex plugin add claim-check@davekim917-bootstrap
 ```
 
 For a local checkout at `~/plugins/bootstrap`:
@@ -401,6 +402,23 @@ base). No gate runs it, since only a model can judge it. It never answers "keep"
 assert or lint rule that replaces it and where that goes, or `none` with the reason code can't
 check it. The comment stays until that enforcement exists in the change or on the base branch.
 
+### Claim check
+
+At the end of each turn, `claim-check` reads the final message for commit SHAs and "merged" or
+"closed" PR claims and checks them with the GitHub API. When one is proven false (the PR is open,
+the number does not exist, the commit is not in that repository) it sends the turn back once with
+the contradiction, so the agent corrects the message. It respects `stop_hook_active`, so it never
+loops.
+
+It checks a claim only when the claim names its repository: a GitHub URL, `owner/repo#N`,
+`repo#N` matching one repository the session knows, or a bare `#N` that the session's own commands
+tied to exactly one repository (`--repo`, `REPO=… PR=…`, a URL). A SHA is checked only beside a PR
+reference ("#42 merged as `abc1234`"). Anything it cannot prove passes, with one line on stderr:
+no `gh` auth, an unreadable repository, offline, an ambiguous reference. Fenced code blocks are
+quoted output, not claims.
+
+Switch it off with `CLAIM_CHECK=off` in the environment, or uninstall the plugin.
+
 ### Concise
 
 `concise` is opt-in and applies only to the current conversation. In Claude Code, Codex, or
@@ -430,39 +448,6 @@ The plugin carries no person's or company's details. Those live in a private voi
 `slack-voice.md`, kept in the workgroup directory, the project root or user memory; the skill reads
 it when present and describes how to build one from the user's own messages. NanoClaw agents get
 the skill through the same enabler as `concise`.
-
-### Anderton
-
-`anderton` is one invoke-only skill, `/anderton`, for the Claude Code session the user picks to
-own a project's line to production: it watches the project's other sessions and PRs, reviews against the bar in
-`references/good-code.md`, and turns each repeated correction into a check. Claude Code only, on
-the host: its two scripts read Claude Code's own session registry, and there is no Codex manifest.
-
-A project is the session's repository, named by its main checkout (or, for a bare repository, its
-git dir), so every worktree of it belongs to one project; outside a repository, the session's
-directory.
-
-- `scripts/claim.sh` records the claiming session as the project's holder in
-  `~/.claude/anderton/<key>.json` (the key is `git hash-object` of the project root, which the
-  record also holds) and exits 3 while another live session
-  holds that project (`--take-over` replaces it). A holder in the machine-wide
-  `~/.claude/anderton.json` that earlier versions wrote still holds its project until that project's
-  next claim, which retires the file to `anderton.json.migrated`.
-- `scripts/waiting.sh` lists the live sessions in the caller's project (`--all`: every project) that
-  wait on a person: the turn ended with Claude's text; the registry's `status` says it is blocked on
-  a permission prompt or an `AskUserQuestion`, in the main thread or a sub-agent; or, without that
-  status, a tool call has gone unanswered for over a minute (`PERMISSION PROMPT?`, with the tool and
-  the first 200 characters of its input). It reads `~/.claude/sessions/*.json`, keeps sessions whose
-  process is alive and started when the registry says, finds each transcript under
-  `~/.claude/projects/*/<session id>.jsonl`, and leaves out the project's holder.
-
-The role belongs to a Claude Code process (pid plus its registry start time), not a session id, so
-it survives `/clear`. Both scripts honour `CLAUDE_CONFIG_DIR`, need `jq`, `git` and a POSIX `ps`,
-and run under macOS's bash 3.2 and BSD userland as well as Linux.
-
-`nanoclaw-plugin.json` declares `"hostOnly": true`: NanoClaw mounts `~/plugins` into its agent
-containers, and a host-only plugin is withheld from every container walker. The declaration does
-nothing on a NanoClaw that predates `hostOnly`.
 
 ## Upgrading from pre-4.0 / pre-1.0
 
@@ -525,8 +510,7 @@ bootstrap/
 │   ├── wwbd/
 │   ├── comment-rule/
 │   ├── concise/
-│   ├── slack-humanizer/
-│   └── anderton/
+│   └── slack-humanizer/
 ├── evals/
 ├── scripts/
 └── deprecated/
@@ -541,8 +525,8 @@ node --test evals/harness/*.test.mjs
 node scripts/check-plugin-boundaries.mjs
 node scripts/check-parity.mjs
 node --test plugins/comment-rule/test/comment-rule.test.mjs
+node --test plugins/claim-check/test/claim-check.test.mjs
 python3 -m unittest discover -s plugins/slack-humanizer/skills/slack-humanizer -p 'test_*.py'
-bash plugins/anderton/test/scripts.test.sh
 
 cd plugins/workflow/hooks && bun test && bun run check
 cd plugins/workflow-agents/hooks && bun test && bun run check
