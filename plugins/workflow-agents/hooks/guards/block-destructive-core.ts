@@ -1704,18 +1704,19 @@ function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCom
     return runs;
 }
 
-/** The first command xargs or find -exec runs that needs approval, with why, or null. */
-function innerGatedStep(cmd: ResolvedCommand): { step: ResolvedCommand; reason: string } | null {
+/** Every command xargs or find -exec runs that needs approval, with why; each gets its own exemption check. */
+function innerGatedSteps(cmd: ResolvedCommand): Array<{ step: ResolvedCommand; reason: string }> {
+    const gated: Array<{ step: ResolvedCommand; reason: string }> = [];
     for (const { via, inner } of execRuns(cmd)) {
         const steps = innerSteps(inner);
         if (steps === RUNS_VARIABLE) continue;
         for (const step of steps) {
             const reason = checkGatedCommand(step);
             // The step's offset, if any, is into the inner script, not the command line the card reads from.
-            if (reason) return { step: { ...step, pos: undefined }, reason: `${via} runs a command that needs approval. ${reason}` };
+            if (reason) gated.push({ step: { ...step, pos: undefined }, reason: `${via} runs a command that needs approval. ${reason}` });
         }
     }
-    return null;
+    return gated;
 }
 
 const RUNS_VARIABLE = 'Its shell script takes the command to run from a variable, so what it runs cannot be checked. Name the command in the script.';
@@ -3553,25 +3554,24 @@ function* gatedSteps(
     cwd: string,
     lab: boolean,
     log: boolean,
-): Generator<{ cmd: ResolvedCommand; reason: string }> {
+): Generator<{ cmd: ResolvedCommand; reason: string; outer: ResolvedCommand }> {
     for (const outer of commands) {
         const outerReason = checkGatedCommand(outer);
-        const gated = outerReason ? { step: outer, reason: outerReason } : innerGatedStep(outer);
-        if (!gated) continue;
-        const { step: cmd, reason } = gated;
-        const dev = devScopeTargetOf(cmd, commands, command);
-        if (dev !== null) {
-            if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
-            continue;
-        }
-        if (lab) {
-            const target = labTargetOf(cmd, cwd);
-            if (target !== null) {
-                if (log) logLabScope(`allowed ${cmd.name} against lab target ${target}`);
+        for (const { step: cmd, reason } of outerReason ? [{ step: outer, reason: outerReason }] : innerGatedSteps(outer)) {
+            const dev = devScopeTargetOf(cmd, commands, command);
+            if (dev !== null) {
+                if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
                 continue;
             }
+            if (lab) {
+                const target = labTargetOf(cmd, cwd);
+                if (target !== null) {
+                    if (log) logLabScope(`allowed ${cmd.name} against lab target ${target}`);
+                    continue;
+                }
+            }
+            yield { cmd, reason, outer };
         }
-        yield { cmd, reason };
     }
 }
 
@@ -3602,24 +3602,25 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             });
             return { ...cmd, args };
         };
-        const directoryBefore = (target: ResolvedCommand): string | undefined => {
+        // `outer` is the top-level command `target` runs inside (itself, unless xargs or find -exec runs it).
+        const directoryBefore = (target: ResolvedCommand, outer: ResolvedCommand): string | undefined => {
             let dir: string | undefined;
             for (const c of commands) {
-                if (c === target) break;
+                if (c === outer) break;
                 if (c.name !== 'cd' || !c.args[0]) continue;
                 const next = evaluated(c, new Set()).args[0];
                 if (next.includes('$')) dir = undefined;
                 else if (next.startsWith('/')) dir = next;
                 else if (dir) dir = join(dir, next);
             }
-            return target.chdir ?? dir;
+            return target.chdir ?? outer.chdir ?? dir;
         };
 
-        const steps = gated.slice(0, 3).map(({ cmd: raw, reason: why }) => {
+        const steps = gated.slice(0, 3).map(({ cmd: raw, reason: why, outer }) => {
             const unresolved = new Set<string>();
             const cmd = evaluated(raw, unresolved);
             const sqlDialect = SQL_CLIS[cmd.name] ?? (cmd.name === 'snow' && cmd.args[0] === 'sql' ? 'Snowflake' : null);
-            const dirBefore = directoryBefore(raw);
+            const dirBefore = directoryBefore(raw, outer);
             const step: StepCard =
                 sqlDialect ? sqlStep(sqlDialect, cmd)
                 : cmd.name === 'dbt' ? dbtStep(cmd, dirBefore)

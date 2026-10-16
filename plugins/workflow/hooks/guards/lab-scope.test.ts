@@ -206,6 +206,14 @@ describe('lab session + lab target → allow', () => {
     const command = 'psql -d lab_app -c "DROP TABLE users" && psql -d app_prod -c "DROP TABLE users"';
     expect(evaluateBashCommand(command, { cwd: LAB_WORKTREE }).action).toBe('gate');
   });
+
+  test('inside xargs, a lab step does not exempt a later non-lab step', () => {
+    inLab();
+    const prod = `xargs sh -c 'psql -d lab_app -c "DROP TABLE scratch"; psql -d app_prod -c "DROP TABLE users"' < list`;
+    expect(evaluateBashCommand(prod, { cwd: LAB_WORKTREE }).action).toBe('gate');
+    const labOnly = `xargs sh -c 'psql -d lab_app -c "DROP TABLE scratch"' < list`;
+    expect(evaluateBashCommand(labOnly, { cwd: LAB_WORKTREE }).action).toBe('allow');
+  });
 });
 
 describe('lab session + non-lab target → unchanged', () => {

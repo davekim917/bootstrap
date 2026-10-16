@@ -31,6 +31,12 @@ describe('destructive approval description', () => {
             has: ['is overwritten with this local history', 'find -exec runs a command that needs approval'],
         },
         {
+            name: 'a command xargs runs is placed in the directory it runs in, not one a later cd moves to',
+            command: 'cd /work/dbt; xargs dbt run --full-refresh --select orders < vars; cd /tmp',
+            label: 'Rebuild dbt model orders from scratch (--full-refresh)',
+            has: ['Directory: `/work/dbt`'],
+        },
+        {
             name: 'a command an xargs shell script runs is described like the same command at top level',
             command: "xargs -I{} sh -c 'psql -c \"DROP TABLE users\"' < list",
             label: 'Drop PostgreSQL table users',
