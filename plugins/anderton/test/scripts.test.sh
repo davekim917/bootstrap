@@ -268,5 +268,24 @@ jq -nc --argjson pid "$p_reused" --argjson started "$long_ago_ms" '{pid: $pid, s
 claim_status wwww-1 "$p_wt"
 check "a crashed holder whose pid was reused does not block a claim" [ "$status" -eq 0 ]
 
+# A record from an earlier version has no start time; a later process given its pid is not the holder.
+mkdir "$work/delta"
+spawn; p_delta=$pid;  session "$p_delta" dlta-1 "$work/delta" delta-reused
+spawn; p_delta2=$pid; session "$p_delta2" dlta-2 "$work/delta" delta-claimant
+printf '{"pid":%s,"sessionId":"gone-1","claimedAt":"%s"}\n' "$p_delta" "$five_min_ago" > "$CLAUDE_CONFIG_DIR/anderton.json"
+claim_status dlta-2 "$p_delta2"
+check "a pid from an earlier version's record, now running a later process, does not block a claim" [ "$status" -eq 0 ]
+
+# Without git, worktrees of one repository would be separate projects: refuse instead.
+nogit="$work/nogit"
+mkdir "$nogit"
+for t in jq ps tr dirname; do ln -s "$(command -v "$t")" "$nogit/$t"; done
+set +e
+out=$(env PATH="$nogit" "$BASH" "$scripts/waiting.sh" 2>&1)
+status=$?
+set -e
+check "refuses to run without git" [ "$status" -eq 1 ]
+check "says git is missing" contains "needs: git."
+
 [ "$failures" -eq 0 ] || { echo "$failures check(s) failed"; exit 1; }
 echo "all checks passed"

@@ -26,9 +26,18 @@ registered_alive() {
   [ "$drift" -ge -60 ] && [ "$drift" -le 60 ]
 }
 
-# Without a ps that reports elapsed time (busybox ps, for one), every session would read as gone:
-# no listing, and any claim would succeed. Refuse instead.
-require_ps() {
+# Exits unless jq, git and a ps that reports elapsed time are present. Without git every worktree
+# would be its own project, and without etime (busybox ps, for one) every session would read as gone,
+# so any claim would succeed.
+require_tools() {
+  local tool missing=""
+  for tool in jq git; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+  done
+  if [ -n "$missing" ]; then
+    echo "$1 needs:$missing. Install with brew or your package manager, and rerun." >&2
+    exit 1
+  fi
   [ -n "$(proc_age $$)" ] || {
     echo "$1 needs a POSIX ps that supports: ps -o etime= -p <pid>" >&2
     exit 1
@@ -81,6 +90,21 @@ invoking_root() {
 # The holder file for project $1. Percent-encoding only % and / keeps distinct roots distinct.
 holder_path() {
   printf '%s/%s.json\n' "$holders" "$(printf '%s' "$1" | sed -e 's/%/%25/g' -e 's|/|%2F|g')"
+}
+
+# True when registry entry $1 is the live process that holder record $2 names. A pid alone would
+# also match a later process given the same pid, so the start times must agree; a record written by
+# an earlier version has none, and then the process must have started before the claim.
+is_holder() {
+  [ -f "$1" ] && [ -f "$2" ] || return 1
+  jq -en --slurpfile reg "$1" --slurpfile rec "$2" '
+    $reg[0] as $s | $rec[0] as $r
+    | $s.pid == $r.pid
+      and (if $s.startedAt == null then true
+           elif $r.startedAt != null then ($s.startedAt | floor) == ($r.startedAt | floor)
+           else (($r.claimedAt // "") | fromdateiso8601? // null) as $at | $at == null or $at * 1000 >= $s.startedAt
+           end)' >/dev/null 2>&1 &&
+    registered_alive "$(jq -r .pid "$1")" "$(jq -r '.startedAt // empty | floor' "$1")"
 }
 
 # The record of project $1's holder: its own file, else the machine-wide file earlier versions

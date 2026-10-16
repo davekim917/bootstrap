@@ -7,11 +7,7 @@ set -euo pipefail
 # shellcheck source=SCRIPTDIR/session-lib.sh
 . "$(dirname "$0")/session-lib.sh"
 
-command -v jq >/dev/null 2>&1 || {
-  echo "waiting.sh needs jq: install it (brew install jq, or your package manager) and rerun." >&2
-  exit 1
-}
-require_ps waiting.sh
+require_tools waiting.sh
 
 all=""
 case "${1:-}" in
@@ -21,13 +17,7 @@ case "${1:-}" in
 esac
 
 root=$(invoking_root)
-holder_pid=""
-holder_start=""
 record=$(holder_record "$root")
-if [ -n "$record" ]; then
-  holder_pid=$(jq -r '.pid // empty' "$record" 2>/dev/null || true)
-  holder_start=$(jq -r '.startedAt // empty' "$record" 2>/dev/null || true)
-fi
 
 for s in "$sessions"/*.json; do
   [ -e "$s" ] || continue
@@ -36,9 +26,7 @@ for s in "$sessions"/*.json; do
 $fields
 EOF
   [ -n "$pid" ] && [ -n "$sid" ] || continue
-  if [ "$pid" = "$holder_pid" ] && { [ -z "$holder_start" ] || [ "$start" = "$holder_start" ]; }; then
-    continue
-  fi
+  if [ -n "$record" ] && is_holder "$s" "$record"; then continue; fi
   if [ -z "$all" ] && { [ -z "$cwd" ] || [ "$(project_root "$cwd")" != "$root" ]; }; then
     continue
   fi

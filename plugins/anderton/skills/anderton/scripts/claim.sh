@@ -6,11 +6,7 @@ set -euo pipefail
 # shellcheck source=SCRIPTDIR/session-lib.sh
 . "$(dirname "$0")/session-lib.sh"
 
-command -v jq >/dev/null 2>&1 || {
-  echo "claim.sh needs jq: install it (brew install jq, or your package manager) and rerun." >&2
-  exit 1
-}
-require_ps claim.sh
+require_tools claim.sh
 
 sid="${CLAUDE_CODE_SESSION_ID:?not running inside a Claude Code session}"
 force="${1:-}"
@@ -48,24 +44,11 @@ take_lock() {
 }
 take_lock
 
-# The holder is a Claude Code process, not a session id: /clear gives the same process a new
-# session id. The registry's startedAt tells that process apart from a later one given its pid.
-started_at() {
-  jq -r '.startedAt // empty | floor' "$sessions/$1.json" 2>/dev/null || true
-}
-
-holder_alive() {
-  local started
-  [ -f "$sessions/$1.json" ] || return 1
-  started=$(started_at "$1")
-  { [ -z "$2" ] || [ "$started" = "$2" ]; } && registered_alive "$1" "$started"
-}
-
+# The holder is a Claude Code process, not a session id: /clear gives the same process a new one.
 record=$(holder_record "$root")
 if [ -n "$record" ] && [ "$force" != "--take-over" ]; then
   hpid=$(jq -r '.pid // empty' "$record" 2>/dev/null || true)
-  hstart=$(jq -r '.startedAt // empty' "$record" 2>/dev/null || true)
-  if [ -n "$hpid" ] && [ "$hpid" != "$pid" ] && holder_alive "$hpid" "$hstart"; then
+  if [ -n "$hpid" ] && [ "$hpid" != "$pid" ] && is_holder "$sessions/$hpid.json" "$record"; then
     name=$(jq -r '.name // empty' "$sessions/$hpid.json" 2>/dev/null || true)
     hsid=$(jq -r '.sessionId // empty' "$sessions/$hpid.json" 2>/dev/null || true)
     echo "Anderton for $root is held by live session '${name:-unknown}' (pid $hpid, session ${hsid:-unknown})."
@@ -74,7 +57,8 @@ if [ -n "$record" ] && [ "$force" != "--take-over" ]; then
   fi
 fi
 
-jq -nc --arg root "$root" --argjson pid "$pid" --arg started "$(started_at "$pid")" --arg sid "$sid" \
+started=$(jq -r '.startedAt // empty | floor' "$sessions/$pid.json" 2>/dev/null || true)
+jq -nc --arg root "$root" --argjson pid "$pid" --arg started "$started" --arg sid "$sid" \
   --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '{root: $root, pid: $pid, startedAt: ($started | tonumber? // null), sessionId: $sid, claimedAt: $at}' > "$state.tmp"
 mv "$state.tmp" "$state"
