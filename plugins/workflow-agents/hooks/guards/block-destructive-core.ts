@@ -3673,8 +3673,11 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (cleanArgs) {
         // Gated unless it is a dry run, -f or not: `clean.requireForce=false` lets it delete without -f.
         const clean = parseGitClean(cleanArgs);
-        // A word the shell expands can be any option (`$X` holding `--no-dry-run`), so it voids the dry-run exemption.
-        if ((!clean.dryRun && !clean.help) || cleanArgs.some(a => /[$`]/.test(a))) {
+        // The exemption holds only for words the shell passes as written: a variable, glob or brace can expand to
+        // `--no-dry-run` (an untracked file of that name matches `*`).
+        const literal = cleanArgs.every(a => /^[\w@%+=:,./-]*$/.test(a));
+        const globalHelp = name === 'git' && args.slice(0, gitSubcommandIndex(args)).some(a => a === '--help' || a === '-h');
+        if (!globalHelp && ((!clean.dryRun && !clean.help) || !literal)) {
             return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
         }
     }

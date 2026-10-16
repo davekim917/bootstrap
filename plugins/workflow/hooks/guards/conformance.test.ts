@@ -133,6 +133,9 @@ const BASH_GATE = [
   '/usr/lib/git-core/git-clean -fd',
   'git -c clean.requireForce=false --shallow-file /dev/null clean',
   'X=--no-dry-run; git clean -n $X -f',
+  'git clean -n * -f',
+  'git clean -n {a,b} -f',
+  'git clean -n ./--no-dry-r[u]n -f',
   'git clean -f -e -npattern',
   'git clean -fe -n',
   'ENV=false git --config-env clean.requireForce=ENV clean',
@@ -299,6 +302,9 @@ const BASH_ALLOW = [
   // Bare xargs runs echo, and a wrapper that names its own command passes.
   "printf '%s\\n' a b | xargs",
   "printf '%s\\n' a b | xargs -n1 env FOO=1 echo",
+  // A dry run whose words are all literal, and git's global help for clean, delete nothing.
+  'git clean -n -d -x -- build/',
+  'git --help clean',
 ];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);
