@@ -173,6 +173,11 @@ describe('destructive approval description', () => {
         expect(c.summary).toContain(`\`${variable}\` is only known when the command runs`);
     });
 
+    test('git clean names the work tree GIT_WORK_TREE sets', () => {
+        expect(card('cd /repo && GIT_DIR=/repo/.git GIT_WORK_TREE=/srv/staging git clean -fd').summary).toContain('Directory: `/srv/staging`');
+        expect(card('GIT_WORK_TREE=/srv/staging git --work-tree=/srv/other clean -fd').summary).toContain('Directory: `/srv/other`');
+    });
+
     test('git clean -X says an -e pattern is deleted, not kept', () => {
         const c = card('git clean -f -X -e secret.env');
         expect(c.summary).toContain('Also deleted: files matching `secret.env`');

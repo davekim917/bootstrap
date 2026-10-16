@@ -3673,7 +3673,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (cleanArgs) {
         // Gated unless it is a dry run, -f or not: `clean.requireForce=false` lets it delete without -f.
         const clean = parseGitClean(cleanArgs);
-        if (!clean.dryRun && !clean.help) {
+        // A word the shell expands can be any option (`$X` holding `--no-dry-run`), so it voids the dry-run exemption.
+        if ((!clean.dryRun && !clean.help) || cleanArgs.some(a => /[$`]/.test(a))) {
             return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
         }
     }
@@ -3988,9 +3989,10 @@ function parseGitClean(rest: string[]): GitCleanArgs {
 }
 
 /** The directory git runs in after every `-C` (relative ones compose) and `--work-tree`, or undefined when none is given. */
-function gitEffectiveDir(args: string[]): string | undefined {
+function gitEffectiveDir(args: string[], env: string[] = []): string | undefined {
     let dir: string | undefined;
-    let workTree: string | undefined;
+    // A GIT_WORK_TREE the command sets is the work tree unless --work-tree overrides it.
+    let workTree = env.findLast(e => e.startsWith('GIT_WORK_TREE='))?.slice('GIT_WORK_TREE='.length);
     for (let i = 0; i < gitSubcommandIndex(args); i++) {
         const a = args[i];
         if (a === '-C') {
@@ -4016,7 +4018,7 @@ function gitCleanStep(cmd: ResolvedCommand): StepCard {
     if (excluded.length) lines.push(onlyIgnored
         ? `Also deleted: files matching ${excluded.map(code).join(', ')}, which -e marks as ignored.`
         : `Kept: files matching ${excluded.map(code).join(', ')}.`);
-    return { dir: gitEffectiveDir(cmd.args), label: `Permanently delete ${what}${where.replace(/`/g, '')} (git clean)`, lines };
+    return { dir: gitEffectiveDir(cmd.args, cmd.env), label: `Permanently delete ${what}${where.replace(/`/g, '')} (git clean)`, lines };
 }
 
 function awsStep(cmd: ResolvedCommand): StepCard {
