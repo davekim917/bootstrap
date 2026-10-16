@@ -139,7 +139,7 @@ function main(argv) {
   }
   const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const mergeBase = git(repo, ['merge-base', base, 'HEAD']).trim();
-  const changedPaths = git(repo, ['diff', '--name-only', `${mergeBase}`, 'HEAD']).split('\n').filter(Boolean);
+  const changedPaths = git(repo, ['diff', '--name-only', '--no-renames', mergeBase, 'HEAD']).split('\n').filter(Boolean);
   const problems = checkVersionBumps({
     changedPaths,
     read: (side, file) => readAt(repo, side === 'base' ? mergeBase : 'HEAD', file),

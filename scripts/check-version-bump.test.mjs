@@ -92,7 +92,7 @@ test('changes outside plugins/ and to unlisted plugin dirs need no bump', () => 
   assert.deepEqual(run(base, { ...base }, ['scripts/check-parity.mjs', 'plugins/tools/x.mjs']), []);
 });
 
-test('the CLI fails a guard edit without a bump in a real repo, and passes once bumped', () => {
+test('the CLI fails a guard edit without a bump in a real repo, passes once bumped, and counts a move out of a plugin', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'version-bump-'));
   const env = {
     PATH: process.env.PATH,
@@ -130,6 +130,15 @@ test('the CLI fails a guard edit without a bump in a real repo, and passes once 
     git('commit', '-q', '-am', 'bump');
     const green = cli();
     assert.equal(green.status, 0, green.stdout + green.stderr);
+
+    // A move out of the plugin is a change to it, even when git reports the move as a rename.
+    git('checkout', '-q', '-b', 'move', 'main');
+    fs.mkdirSync(path.join(dir, 'outside'));
+    git('mv', 'plugins/sample/hooks/guard.ts', 'outside/guard.ts');
+    git('commit', '-q', '-m', 'move');
+    const moved = spawnSync('node', ['scripts/check-version-bump.mjs', '--base', 'main'], { cwd: dir, env, encoding: 'utf8' });
+    assert.equal(moved.status, 1, moved.stdout + moved.stderr);
+    assert.match(moved.stderr, /plugins\/sample changed/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
