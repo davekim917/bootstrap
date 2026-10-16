@@ -24,6 +24,7 @@ beforeAll(() => {
     writeFileSync(join(dir, 'job', 'drop.sql'), 'drop table users;\n');
     writeFileSync(join(dir, 'drop schema.sql'), 'drop schema s;\n');
     writeFileSync(join(dir, 'template.sql'), '<% action %> TABLE users;\n');
+    writeFileSync(join(dir, 'include-template.sql'), '!source <% path %>\n');
     mkdirSync(join(dir, 'source'));
     writeFileSync(join(dir, 'source', 'only-here.sql'), 'drop table users;\n');
     writeFileSync(join(dir, 'quoted.sql'), `\\i '${join(dir, 'drop schema.sql')}'\n`);
@@ -183,6 +184,11 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `psql -Xc'DROP TABLE users'`,
         `psql -Xqc 'DROP TABLE users'`,
         `pushd job && psql -f drop.sql`,
+        `psql -XAtqc'DROP TABLE users'`,
+        `x=$(if true; then printf 'DROP TABLE users' | psql; fi)`,
+        `x=$(for t in a; do cat bad.sql | psql; done)`,
+        `B='DROP TABLE users'; x=$(echo "$B" | psql)`,
+        `snow sql -f include-template.sql -D path=bad.sql`,
     ]) {
         expect(verdict(command)).toBe('gate');
     }
@@ -193,6 +199,9 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `psql -Xc'SELECT 1'`,
         `pushd job && psql -f ok.sql`,
         `pushd +1 && psql -c 'select 1'`,
+        `printf 'DROP TABLE users' | sqlite3 -init ok.sql db.sqlite 'SELECT 1'`,
+        `B='SELECT 1'; x=$(echo "$B" | psql)`,
+        `snow sql -f include-template.sql -D path=ok.sql`,
     ]) {
         expect(verdict(command)).toBe('allow');
     }

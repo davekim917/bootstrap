@@ -68,6 +68,7 @@ export interface ResolvedCommand {
     stdinFiles?: string[];      // files redirected into this command with `<`
     stdoutFiles?: string[];     // files this command's output is redirected into
     pipedInput?: PipedInput;    // what its pipeline feeds a command inside `$(…)`, whose offset can't key pipedInto
+    argsAreValues?: boolean;    // pos is not this command's own, so its args are expanded from their values, not the view's words
     script?: ScriptContext;     // what the whole command line shows, shared by its commands
 }
 
@@ -161,6 +162,7 @@ const heredocWord = (t: string): ExpandableWord => ({ word: `"${t.replace(/(["\\
 function argumentWords(cmd: ResolvedCommand, joinSplit = false): ExpandableWord[] {
     const script = cmd.script;
     if (cmd.pos === undefined || !script || !cmd.args.some(a => /[$`]/.test(a))) return [];
+    if (cmd.argsAreValues) return cmd.args.map(a => ({ ...heredocWord(a), joinSplit }));
     script.view ??= viewShell(script.command);
     const texts = script.view.commandAt(cmd.pos)?.argTexts;
     if (!texts || texts.length < cmd.args.length) return [];
@@ -1016,7 +1018,22 @@ function optionValueAt(args: string[], i: number, option: string): string | unde
     return a.startsWith(option) && a.length > option.length && !a.startsWith('--') ? a.slice(option.length) : undefined;
 }
 
-const SHORT_CLUSTER_MAX = 4;
+const SHORT_CLUSTER_MAX = 16;
+
+// sqlite3 options that take a value, single- or double-dashed.
+const SQLITE_VALUE_OPTIONS = new Set(['init', 'cmd', 'separator', 'newline', 'nullvalue', 'mmap', 'lookaside', 'pagecache', 'heap', 'maxsize', 'vfs', 'escape']);
+
+/** How many operands (FILENAME, SQL) a sqlite3 command line gives, past its options and their values. */
+function sqlitePositionals(args: string[]): number {
+    let n = 0;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') return n + args.length - i - 1;
+        if (!a.startsWith('-')) n++;
+        else if (SQLITE_VALUE_OPTIONS.has(a.replace(/^--?/, ''))) i++;
+    }
+    return n;
+}
 
 /** An argument, plus the value glued to it when it is an option (`-cSQL`, `--command=SQL`), where SQL would read `--…` as a comment. */
 function withOptionValue(a: string): string[] {
@@ -1080,9 +1097,12 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
             if (a === '--stdin' || a === '-i') readsStdin = true;
         }
     }
+    const render = (t: string) => (vars.size ? t.replace(SNOW_TEMPLATE, (m, a, b, c) => vars.get(a ?? b ?? c) ?? m) : t);
+    if (vars.size) texts.push(...texts.map(render), ...vars.values());
     if (client === 'psql' || client === 'mysql' || client === 'snow') {
         if (!sqlInArgs && files.length === 0) readsStdin = true;
-    } else {
+    } else if (!((client === 'sqlite3' || client === 'sqlite') && sqlitePositionals(args) >= 2)) {
+        // sqlite3 [OPTIONS] [FILENAME [SQL]]: given SQL as an operand it runs that and never reads stdin.
         readsStdin = true;
     }
     if (files.includes('-')) readsStdin = true;
@@ -1116,8 +1136,10 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
                 break;
             }
             for (const t of written.texts) {
-                texts.push(t);
-                pending.push(...sqlIncludes(t, null));
+                // Templates render before snow follows an include, so a rendered `!source` names a file too.
+                const r = render(t);
+                texts.push(...(r === t ? [t] : [t, r]));
+                pending.push(...sqlIncludes(r, null));
             }
             pending.push(...written.catFiles);
         }
@@ -1130,17 +1152,16 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
                 unreadable ??= f;
                 continue;
             }
-            texts.push(content);
-            pending.push(...sqlIncludes(content, path));
+            const rendered = render(content);
+            if (rendered !== content && !spendTrace(cmd.script, rendered.length)) {
+                unreadable ??= f;
+                continue;
+            }
+            texts.push(...(rendered === content ? [content] : [content, rendered]));
+            pending.push(...sqlIncludes(rendered, path));
         }
     }
     if (pending.length) unreadable ??= pending[0];
-    if (vars.size) {
-        // Templates render in -f files too, so this runs after they are read.
-        const rendered = texts.map(t => t.replace(SNOW_TEMPLATE, (m, a, b, c) => vars.get(a ?? b ?? c) ?? m));
-        if (!spendTrace(cmd.script, textSize(rendered))) unreadable ??= 'its rendered templates';
-        texts.push(...rendered, ...vars.values());
-    }
     return { texts, unreadable };
 }
 
@@ -1340,13 +1361,18 @@ export function walkCommandNodes(node: any, out: any[] = []): any[] {
     switch (node.type) {
         case 'Command':
             out.push(node);
-            walkPartsForSubstitutions(node.name, out);
-            for (const s of (node.suffix || [])) walkPartsForSubstitutions(s, out);
-            for (const p of (node.prefix || [])) {
-                walkPartsForSubstitutions(p?.value, out);
-                for (const w of (p?.array || [])) walkPartsForSubstitutions(w, out);
+            hostCommands.push(node);
+            try {
+                walkPartsForSubstitutions(node.name, out);
+                for (const s of (node.suffix || [])) walkPartsForSubstitutions(s, out);
+                for (const p of (node.prefix || [])) {
+                    walkPartsForSubstitutions(p?.value, out);
+                    for (const w of (p?.array || [])) walkPartsForSubstitutions(w, out);
+                }
+                walkRedirectsForCommands(node.redirects, out);
+            } finally {
+                hostCommands.pop();
             }
-            walkRedirectsForCommands(node.redirects, out);
             return out;
         case 'Statement':
             walkCommandNodes(node.command, out);
@@ -1391,8 +1417,12 @@ export function walkCommandNodes(node: any, out: any[] = []): any[] {
 const NESTED_COMMAND_NODES = new WeakSet<object>();
 // The substitution script each nested command node sits directly in.
 const SUBSTITUTION_OF = new WeakMap<object, object>();
+// The outermost command whose words hold each substitution script; its offset is where the substitution runs.
+const SUBSTITUTION_HOST = new WeakMap<object, any>();
+const hostCommands: any[] = [];
 
 function addNestedCommands(script: any, commands: any[]): void {
+    if (script && typeof script === 'object' && hostCommands.length && !SUBSTITUTION_HOST.has(script)) SUBSTITUTION_HOST.set(script, hostCommands[0]);
     for (const inner of walkCommandNodes(script)) {
         // A node a deeper substitution already claimed sits directly in that one, not in this script.
         if (!NESTED_COMMAND_NODES.has(inner)) {
@@ -1408,32 +1438,54 @@ function addNestedCommands(script: any, commands: any[]): void {
  * command's offset: offsets there are relative to the substitution, so the top-level map can neither hold nor be
  * matched against them. Only the substitution's own pipelines are read (by node, not offset), so each is visited once.
  */
-function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): void {
+function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): ResolvedCommand[] {
     const byNode = new Map<any, ResolvedCommand>(nested);
+    const expandLater: ResolvedCommand[] = [];
     const done = new Set<object>();
     for (const [node, cmd] of nested) {
         if (!SQL_CLIS[cmd.name] && cmd.name !== 'snow') continue;
         const sub: any = SUBSTITUTION_OF.get(node);
         if (!sub || done.has(sub)) continue;
         done.add(sub);
-        for (const statement of sub.commands || []) {
-            const list = statement?.command;
-            for (const link of list?.type === 'AndOr' ? list.commands || [] : [list]) {
-                const stages = link?.type === 'Pipeline' ? link.commands || [] : [];
-                for (let i = 1; i < stages.length; i++) {
-                    const up = byNode.get(stages[i - 1]);
-                    const down = byNode.get(stages[i]);
-                    if (!up || !down || !TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
-                    down.pipedInput = {
-                        texts: emittedText(up),
-                        catFiles: up.name === 'cat' ? catOperands(up) : [],
-                        ...(up.pipedInput && (up.name === 'cat' || up.name === 'tee') ? { from: [up.pipedInput] } : {}),
-                    };
-                }
+        const hostPos = SUBSTITUTION_HOST.get(sub)?.pos;
+        const pipelines: any[] = [];
+        pipelinesIn(sub, pipelines, 0);
+        for (const pipeline of pipelines) {
+            const stages = pipeline.commands || [];
+            for (let i = 1; i < stages.length; i++) {
+                const up = byNode.get(stages[i - 1]);
+                const down = byNode.get(stages[i]);
+                if (!up || !down || !TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
+                // Its words expand where the command holding this substitution runs, with the variables set by then.
+                const emitter = typeof hostPos === 'number' && holdsVariable(up) ? { ...up, pos: hostPos, argsAreValues: true } : null;
+                if (emitter) expandLater.push(emitter);
+                down.pipedInput = {
+                    texts: emittedText(up),
+                    catFiles: up.name === 'cat' ? catOperands(up) : [],
+                    ...(emitter ? { emitters: [emitter] } : {}),
+                    ...(up.pipedInput && (up.name === 'cat' || up.name === 'tee') ? { from: [up.pipedInput] } : {}),
+                };
             }
         }
     }
     for (const [, cmd] of nested) delete cmd.pos;
+    return expandLater;
+}
+
+/** Every pipeline in a substitution's own command lists, including those inside if/loop/case bodies and groups. */
+function pipelinesIn(node: any, out: any[], depth: number): void {
+    if (!node || typeof node !== 'object' || depth > PIPE_NESTING_MAX) return;
+    if (Array.isArray(node)) {
+        for (const child of node) pipelinesIn(child, out, depth);
+        return;
+    }
+    if (node.type === 'Pipeline') {
+        out.push(node);
+        return;
+    }
+    if (node.type === 'Command') return;
+    for (const child of [node.commands, node.command, node.clause, node.then, node.else, node.body]) pipelinesIn(child, out, depth + 1);
+    for (const item of node.items || []) pipelinesIn(item?.body, out, depth + 1);
 }
 
 /** Walk a word's parts (computed lazily by unbash) to find the commands inside `$(…)`, backticks and `<(…)` */
@@ -2073,9 +2125,9 @@ export function extractCommands(command: string): ResolvedCommand[] {
             if (cmd && NESTED_COMMAND_NODES.has(node)) nested.push([node, cmd]);
             return cmd;
         }).filter((c): c is ResolvedCommand => c !== null);
-        traceSubstitutionPipes(nested);
+        const nestedEmitters = traceSubstitutionPipes(nested);
         const script = scriptContextOf(ast, commands, command);
-        for (const cmd of commands) cmd.script = script;
+        for (const cmd of [...commands, ...nestedEmitters]) cmd.script = script;
         return commands;
     } catch {
         return fallbackExtract(command);
