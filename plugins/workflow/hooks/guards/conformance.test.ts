@@ -128,6 +128,7 @@ const BASH_GATE = [
   'git clean -n --no-dry-r -f',
   'git clean -n --no-d -f',
   'git clean -f --ex -npattern',
+  'git clean -f --e -npattern',
   'git clean -f -e -npattern',
   'git clean -fe -n',
   'ENV=false git --config-env clean.requireForce=ENV clean',

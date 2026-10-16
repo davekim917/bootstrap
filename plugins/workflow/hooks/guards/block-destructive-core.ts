@@ -3945,7 +3945,7 @@ function gitCleanIsDryRun(options: string[]): boolean {
         const long = a.startsWith('--') ? a.slice(2).split('=')[0] : null;
         if (long !== null && long.length > 0 && 'dry-run'.startsWith(long)) dry = true;
         else if (long !== null && long.length > 3 && 'no-dry-run'.startsWith(long)) dry = false;
-        else if (long !== null && long.length > 1 && 'exclude'.startsWith(long)) { if (!a.includes('=')) i++; }
+        else if (long !== null && long.length > 0 && 'exclude'.startsWith(long)) { if (!a.includes('=')) i++; }
         else if (a === '-e') i++;
         else if (/^-[A-Za-z]/.test(a)) {
             for (let k = 1; k < a.length; k++) {
