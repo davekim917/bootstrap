@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Claim the Anderton role for the calling Claude Code session.
 # Exit 0: claimed (or already held by this session). Exit 3: held by another live session.
-# Portable to macOS's bash 3.2 and BSD userland: macOS has no flock, so the lock is a directory.
+# Portable to macOS's bash 3.2 and BSD userland.
 set -euo pipefail
 # shellcheck source=SCRIPTDIR/session-lib.sh
 . "$(dirname "$0")/session-lib.sh"
@@ -36,22 +36,29 @@ if [ -z "$pid" ]; then
 fi
 
 lock="$state.lock"
-tries=0
-until mkdir "$lock" 2>/dev/null; do
-  owner=$(cat "$lock/pid" 2>/dev/null || true)
-  if [ -n "$owner" ] && [ -z "$(proc_age "$owner")" ]; then
-    rm -rf "$lock"
-    continue
-  fi
-  tries=$((tries + 1))
-  if [ "$tries" -ge 50 ]; then
-    echo "Could not take $lock within 10 seconds. If no other claim is running, remove it and rerun." >&2
-    exit 1
-  fi
-  sleep 0.2
-done
-trap 'rm -rf "$lock"' EXIT
-echo $$ > "$lock/pid"
+
+# The claim lock is a directory, since macOS has no flock. Only the claim that made it removes it:
+# deleting one whose owner looks dead races a concurrent claim that has just made a fresh one.
+take_lock() {
+  local tries=0 owner
+  until mkdir "$lock" 2>/dev/null; do
+    owner=$(cat "$lock/pid" 2>/dev/null || true)
+    if [ -n "$owner" ] && [ -z "$(proc_age "$owner")" ]; then
+      echo "$lock was left by claim process $owner, which is gone. Remove it and rerun." >&2
+      exit 1
+    fi
+    tries=$((tries + 1))
+    if [ "$tries" -ge 50 ]; then
+      echo "Could not take $lock within 10 seconds. If no other claim is running, remove it and rerun." >&2
+      exit 1
+    fi
+    sleep 0.2
+  done
+  trap 'rm -rf "$lock"' EXIT
+  trap 'exit 1' INT TERM HUP
+  echo $$ > "$lock/pid"
+}
+take_lock
 
 # The holder is a Claude Code process, not a session id: /clear gives the same process a new
 # session id. The registry's startedAt tells that process apart from a later one given its pid.

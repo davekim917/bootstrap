@@ -151,7 +151,15 @@ check "the holder re-claims, its pid read from the registry when CLAUDE_PID is u
 check "the re-claim records the same pid" [ "$(jq -r .pid "$state")" = "$p_holder" ]
 mkdir "$state.lock"
 echo "$p_dead" > "$state.lock/pid"
-check "a lock left by a dead claim is broken" env CLAUDE_CODE_SESSION_ID=cccc-3 "$scripts/claim.sh"
+claim_status cccc-3 "$p_holder"
+check "a lock left by a dead claim stops the claim" [ "$status" -eq 1 ]
+check "that lock is not deleted" [ -d "$state.lock" ]
+check "the report names the lock to remove" grep -q "anderton.json.lock was left by claim process $p_dead" <<EOF
+$out
+EOF
+rm -f "$state.lock/pid"
+rmdir "$state.lock"
+check "the holder claims once the lock is removed" env CLAUDE_CODE_SESSION_ID=cccc-3 "$scripts/claim.sh"
 check "the lock is released" [ ! -e "$state.lock" ]
 
 # /clear: the holder's process keeps its pid and gets a new session id and transcript.
