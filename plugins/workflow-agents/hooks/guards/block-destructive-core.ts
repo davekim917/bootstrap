@@ -1767,6 +1767,20 @@ function appendedModifier(step: ResolvedCommand): string | null {
     return GATING_MODIFIERS.find(m => checkGatedCommand({ ...step, args: [...step.args, m] })) ?? null;
 }
 
+/**
+ * Whether words xargs reads, or a find match, land where `inner` names the command it runs: a `{}`-style word in the
+ * command position (`xargs -I{} env {}`, `find -exec {} ;`), or, when xargs appends (`filled` undefined), a wrapper
+ * or executor left without a command of its own (`xargs env`, `xargs sudo -u x`, `xargs xargs`, `xargs find DIR`,
+ * whose appended words are find's expression).
+ */
+function namesCommandFromInput(inner: ResolvedCommand, filled: string | undefined): boolean {
+    if (filled !== undefined) return inner.name.includes(filled);
+    if (inner.name === 'xargs') return xargsCommand(inner.args).length === 0;
+    if (inner.name === 'find') return true;
+    if (inner.name === 'pnpm' || inner.name === 'yarn') return /^(?:exec|dlx)$/.test(inner.args.filter(a => !a.startsWith('-')).at(-1) ?? '');
+    return WRAPPERS.has(inner.name);
+}
+
 // xargs or find nested inside each other past this depth are not followed; no real command nests them twice.
 const EXEC_NESTING_MAX = 4;
 
@@ -1784,6 +1798,10 @@ function innerGatedSteps(cmd: ResolvedCommand, depth = 0): InnerGate[] {
             continue;
         }
         const replace = via === 'xargs' ? xargsReplaceString(cmd.args) : null;
+        if (inner && namesCommandFromInput(inner, via === 'xargs' ? replace ?? undefined : '{}')) {
+            gated.push({ step: { ...inner, pos: undefined }, reason: `${via} takes the command ${inner.name} runs from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Name the command.`, runtime: true });
+            continue;
+        }
         const steps = innerSteps(inner, via === 'xargs' && replace === null);
         if (steps === RUNS_VARIABLE) continue;
         const moves: ResolvedCommand[] = [];
@@ -3675,14 +3693,14 @@ function* gatedSteps(
     cwd: string,
     lab: boolean,
     log: boolean,
-): Generator<{ cmd: ResolvedCommand; reason: string; outer: ResolvedCommand }> {
+): Generator<{ cmd: ResolvedCommand; reason: string; outer: ResolvedCommand; moves?: ResolvedCommand[] }> {
     let dirs: string[] | null = [cwd];
     for (const outer of commands) {
         if (DIRECTORY_CHANGERS.has(outer.name)) dirs = directoriesAfter(dirs, outer);
         const outerReason = checkGatedCommand(outer);
         for (const { step: cmd, reason, runtime, moves } of outerReason ? [{ step: outer, reason: outerReason }] as InnerGate[] : innerGatedSteps(outer)) {
             if (runtime) {
-                yield { cmd, reason, outer };
+                yield { cmd, reason, outer, moves };
                 continue;
             }
             const dev = devScopeTargetOf(cmd, commands, command);
@@ -3701,7 +3719,7 @@ function* gatedSteps(
                     continue;
                 }
             }
-            yield { cmd, reason, outer };
+            yield { cmd, reason, outer, moves };
         }
     }
 }
@@ -3733,25 +3751,27 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             });
             return { ...cmd, args };
         };
-        // `outer` is the top-level command `target` runs inside (itself, unless xargs or find -exec runs it).
-        const directoryBefore = (target: ResolvedCommand, outer: ResolvedCommand): string | undefined => {
+        const cdTo = (dir: string | undefined, next: string): string | undefined =>
+            next.includes('$') ? undefined : next.startsWith('/') ? next : dir && join(dir, next);
+        // `outer` is the top-level command `target` runs inside (itself, unless xargs or find -exec runs it), and
+        // `moves` the `cd`s its script makes before it.
+        const directoryBefore = (target: ResolvedCommand, outer: ResolvedCommand, moves: ResolvedCommand[] = []): string | undefined => {
             let dir: string | undefined;
             for (const c of commands) {
                 if (c === outer) break;
                 if (c.name !== 'cd' || !c.args[0]) continue;
-                const next = evaluated(c, new Set()).args[0];
-                if (next.includes('$')) dir = undefined;
-                else if (next.startsWith('/')) dir = next;
-                else if (dir) dir = join(dir, next);
+                dir = cdTo(dir, evaluated(c, new Set()).args[0]);
             }
-            return target.chdir ?? outer.chdir ?? dir;
+            dir = target.chdir ?? outer.chdir ?? dir;
+            for (const m of moves) dir = m.name === 'cd' && m.args[0] ? cdTo(dir, m.args[0]) : undefined;
+            return dir;
         };
 
-        const steps = gated.slice(0, 3).map(({ cmd: raw, reason: why, outer }) => {
+        const steps = gated.slice(0, 3).map(({ cmd: raw, reason: why, outer, moves }) => {
             const unresolved = new Set<string>();
             const cmd = evaluated(raw, unresolved);
             const sqlDialect = SQL_CLIS[cmd.name] ?? (cmd.name === 'snow' && cmd.args[0] === 'sql' ? 'Snowflake' : null);
-            const dirBefore = directoryBefore(raw, outer);
+            const dirBefore = directoryBefore(raw, outer, moves);
             const step: StepCard =
                 sqlDialect ? sqlStep(sqlDialect, cmd)
                 : cmd.name === 'dbt' ? dbtStep(cmd, dirBefore)

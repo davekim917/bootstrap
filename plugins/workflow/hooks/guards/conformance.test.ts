@@ -193,6 +193,15 @@ const BASH_GATE = [
   "printf x | xargs bash -O extglob",
   "printf '%sI' --force | xargs -dI git push origin main",
   "printf '%s\\n' 'rm s3://prod --recursive' | xargs aws s3",
+  // xargs input, or a find match, that names the command: a wrapper or executor left without one, or `{}` in its place.
+  "printf '%s\\n' rm /home/user/data | xargs xargs -a /dev/null",
+  "printf '%s\\n' rm -rf /home/user/data | xargs env",
+  "printf '%s\\n' rm -rf /home/user/data | xargs sudo -u app",
+  "printf '%s\\n' rm -rf /home/user/data | xargs timeout 5",
+  "printf '%s\\n' x | xargs -I{} {} rm -rf /home/user/data",
+  "printf '%s\\n' rm | xargs -I{} env {} -rf /home/user/data",
+  "printf -- '-delete\\n' | xargs find /home/user/data",
+  "find . -name x -exec env {} \\;",
   // xargs adds what it reads to a shell's positional words, so `"$@"` there is filled at run time.
   "printf '%s\\n' destroy | xargs sh -c 'terraform \"$@\"' _",
   "printf '%s\\n' destroy | xargs sh -c 'terraform $1' _",
@@ -262,6 +271,9 @@ const BASH_ALLOW = [
   "git ls-files -z | xargs -0 sh -c 'git add \"$@\"' _",
   "printf '%s\\n' a.txt | xargs sh -c 'wc -l \"$@\"' _",
   "printf '%s\\n' a | xargs sh -c 'echo \"$1\"' _",
+  // Bare xargs runs echo, and a wrapper that names its own command passes.
+  "printf '%s\\n' a b | xargs",
+  "printf '%s\\n' a b | xargs -n1 env FOO=1 echo",
 ];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);
