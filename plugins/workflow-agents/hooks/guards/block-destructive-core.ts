@@ -2788,7 +2788,7 @@ function currentWorkingDir(): string {
 
 // ── git target resolution ────────────────────────────────────────────────────
 
-const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--attr-source', '--super-prefix']);
+const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--attr-source', '--super-prefix', '--shallow-file']);
 // URL and scp-style (`git@github.com:org/repo`) remotes.
 const REPO_URL_RE = /^(?:(?:https?|ssh|git|git\+ssh|file):\/\/|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:)/;
 // A bare `org/repo` positional. Only consulted in the REMOTE position, so a
