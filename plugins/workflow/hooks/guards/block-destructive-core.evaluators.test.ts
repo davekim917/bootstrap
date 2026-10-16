@@ -449,7 +449,7 @@ describe('npm lifecycle scripts in a linked worktree', () => {
         expect(v.reason ?? '').toContain('prepare');
     });
 
-    test('follows cd, a subdirectory, --prefix and the install aliases', () => {
+    test('follows cd, a subdirectory, --prefix, every install command and alias, option values, and the last ignore-scripts setting', () => {
         const { wt } = linkedWorktree({ scripts: { postinstall: 'node setup.js' } });
         for (const [cmd, cwd] of [
             ['npm install', join(wt, 'src')],
@@ -459,12 +459,23 @@ describe('npm lifecycle scripts in a linked worktree', () => {
             [`npm --prefix ${wt} ci`, '/'],
             [`npm --prefix=${wt} install`, '/'],
             ['nice -n 10 npm ci', wt],
+            ['npm install-test', wt],
+            ['npm it', wt],
+            ['npm install-ci-test', wt],
+            ['npm cit', wt],
+            ['npm sit', wt],
+            ['npm clean-install-test', wt],
+            ['npm --install-strategy hoisted ci', wt],
+            ['npm --color always ci', wt],
+            ['npm --ignore-scripts --ignore-scripts=false ci', wt],
+            ['npm ci --ignore-scripts --no-ignore-scripts', wt],
+            ['npm_config_ignore_scripts=true npm ci --ignore-scripts=false', wt],
         ]) {
             expect(evaluateBashCommand(cmd, { skipGate: true, cwd }).action).toBe('block');
         }
     });
 
-    test('allows --ignore-scripts, the main checkout, a worktree with no root lifecycle script, and other npm verbs', () => {
+    test('allows --ignore-scripts, --dry-run, a global install, the main checkout, a worktree with no root lifecycle script, and other npm commands', () => {
         const { main, wt } = linkedWorktree({ scripts: { prepare: 'husky', test: 'vitest' } });
         for (const cmd of [
             'npm ci --ignore-scripts',
@@ -474,6 +485,12 @@ describe('npm lifecycle scripts in a linked worktree', () => {
             'npm run build',
             'npm rebuild esbuild',
             'cd /tmp && npm ci',
+            'npm run ci',
+            'npm install --dry-run',
+            'npm install -g some-cli',
+            'npm i --global some-cli',
+            'npm install --location=global some-cli',
+            'npm --ignore-scripts=false --ignore-scripts ci',
         ]) {
             expect(evaluateBashCommand(cmd, { skipGate: true, cwd: wt }).action).toBe('allow');
         }
