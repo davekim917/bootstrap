@@ -13,7 +13,8 @@
  *       effort shims it dispatches to; both explicit cross-model review lanes
  *       survive and auto stops at team-ship's second tier.
  *   - BOUNDARIES → scripts/check-plugin-boundaries.mjs
- *       Plugin boundary invariants (user-facing skill-name parity, real SKILL.md).
+ *       Plugin boundary invariants (user-facing skill-name parity, real SKILL.md),
+ *       and no model or effort named in a skill body or always-on directive.
  *   - ORCHESTRATE SPLIT → scripts/plugin-enablement.test.mjs
  *       Resolves and RUNS the session composition with bootstrap-orchestrate
  *       enabled and disabled. The disabled state must let a coordinator read
@@ -45,6 +46,7 @@ const CHECKS = [
   { name: 'contracts (parity-lint tests)', argv: ['--test', 'evals/harness/parity-lint.test.mjs'] },
   { name: 'router   (spawn-router rewrite tests)', argv: ['--test', 'plugins/orchestrate/skills/orchestrate/scripts/dispatch-lib.test.mjs'] },
   { name: 'skills:contract (parity-lint --all)', argv: ['evals/harness/parity-lint.mjs', '--all'] },
+  { name: 'models   (model-name scanner tests)', argv: ['--test', 'scripts/model-names.test.mjs'] },
   { name: 'bounds   (check-plugin-boundaries)', argv: ['scripts/check-plugin-boundaries.mjs'] },
 ];
 

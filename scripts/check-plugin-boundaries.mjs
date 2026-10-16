@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { findModelNames } from './model-names.mjs';
 import { RETIRED_AGENT_NAMES, discoverRetiredAgents } from './retire-bootstrap-agents.mjs';
 
 /** The five effort shims the orchestrate plugin dispatches to, one per level. */
@@ -1343,6 +1344,19 @@ for (const filePath of activeContractFiles) {
   // be inert config that reads as live wiring.
   if (exists('plugins/orchestrate/nanoclaw-plugin.json')) {
     fail('plugins/orchestrate/nanoclaw-plugin.json must not exist; preToolUseGuards is a de-duplication signal for NanoClaw\'s own built-in gates (only "bash-email" is consumed), not how plugin hooks register — see the comment above');
+  }
+}
+
+{
+  const { hits, stale } = findModelNames(repoRoot);
+  for (const hit of hits) {
+    fail(
+      `${hit.file}:${hit.line} names ${hit.kind === 'model' ? 'a model' : 'an effort level'} (${JSON.stringify(hit.text)}); `
+        + 'skill bodies and always-on directives reach every agent, so a model or effort belongs in config or agent-def frontmatter, not prose',
+    );
+  }
+  for (const { file, reason } of stale) {
+    fail(`scripts/model-names.mjs exempts ${file}, which no longer names a model or effort (${reason}); drop it from the exemption`);
   }
 }
 
