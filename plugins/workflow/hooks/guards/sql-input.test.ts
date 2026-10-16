@@ -160,6 +160,8 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
         `B='-- DROP TABLE users;'; echo $B | psql`,
         `B='-v x DROP TABLE users;'; printf $B | psql`,
         `O=-v; SQL='DROP TABLE users;'; printf $O x "$SQL" | psql`,
+        `B='-e DROP TABLE users;'; echo 'SELECT 1; --' $B | psql`,
+        `F='DROP TABLE ok.sql'; psql -f "$F"`,
         `B='SELECT 1'; echo 'DROP TABLE users;' | psql -c "$B"`,
         `F='DROP TABLE ok.sql'; cat "$F" | psql`,
     ]) {

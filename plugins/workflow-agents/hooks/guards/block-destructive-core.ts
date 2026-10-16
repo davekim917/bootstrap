@@ -203,13 +203,15 @@ function expandedEmitter(cmd: ResolvedCommand): ResolvedCommand | null {
         if (e === null) return null;
         if (e.length) args[i] = e[0];
         const quoted = /^"[\s\S]*"$/.test(words[i].word) || /^'[\s\S]*'$/.test(words[i].word);
+        // echo reads options only before its first operand.
+        const atOptions = argv.every(t => /^-[neE]+$/.test(t));
         argv.push(...(e.length && !quoted ? e[0].split(/\s+/).filter(Boolean) : [args[i]]));
         // cat and tee name files with their operands; only echo and printf write them as text.
         if (cmd.name !== 'echo' && cmd.name !== 'printf') continue;
         // Only an unquoted value splits, so only there can a leading word become an option echo drops.
         const unquoted = !/^"[\s\S]*"$/.test(words[i].word);
         // Only the options echo takes are dropped: `echo -- x` prints `-- x`, a SQL comment.
-        values.push(...e.flatMap(v => (unquoted && cmd.name === 'echo' ? [v, v.replace(/^(?:-[neE]+\s+)+/, '')] : [v])));
+        values.push(...e.flatMap(v => (unquoted && atOptions && cmd.name === 'echo' ? [v, v.replace(/^(?:-[neE]+\s+)+/, '')] : [v])));
     }
     // A leading `printf -v NAME` (from one word or several) assigns the output instead of printing it.
     if (cmd.name === 'printf' && /^-v/.test(argv[0] ?? '')) return { ...cmd, args: [], stdinTexts: [] };
@@ -1036,7 +1038,9 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const fileOptions = SQL_FILE_OPTIONS[client] ?? [];
     const textOptions = SQL_TEXT_OPTIONS[client] ?? [];
     const texts: string[] = [...(cmd.stdinTexts ?? [])];
-    const expanded = expandWords([...(cmd.stdinExpanded ?? []).map(heredocWord), ...argumentWords(cmd)], cmd);
+    // A file option's value names a file (read below), not SQL.
+    const fileValue = (i: number) => fileOptions.includes(cmd.args[i - 1] ?? '') || fileOptions.some(o => cmd.args[i].startsWith(o) && cmd.args[i] !== o);
+    const expanded = expandWords([...(cmd.stdinExpanded ?? []).map(heredocWord), ...argumentWords(cmd).filter((_, i) => !fileValue(i))], cmd);
     let traceOver = expanded === null;
     for (const e of expanded ?? []) texts.push(...withOptionValue(e));
     const files: string[] = [...(cmd.stdinFiles ?? [])];
