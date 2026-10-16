@@ -175,6 +175,13 @@ const BASH_GATE = [
   'git push origin --delete feature-x',
   'git push origin :feature-x',
   'git push origin +main',
+  // What xargs or find -exec runs needs approval on the same terms as at top level.
+  'find . -name repo -exec git push --force origin main \\;',
+  'xargs -I{} git push --force origin {} < branches',
+  "xargs -I{} sh -c 'git push --force origin {}' < list",
+  "find . -name '*.sql' -exec psql -c 'DROP TABLE users' \\;",
+  'xargs -n1 terraform destroy -auto-approve < dirs',
+  "printf 'main\\n' | xargs bash -c 'git push --force origin \"$1\"' _",
 ];
 
 // Allowed: safe / ephemeral. The git rows pin the DELIBERATE non-gates:
@@ -193,6 +200,11 @@ const BASH_ALLOW = [
   "find . -name f -exec sh -c 'echo == $1; cat $1' _ {} \\;",
   'find . -exec chmod 644 {} +',
   'find . -exec echo {} +',
+  // Routine commands xargs and find run still pass.
+  'xargs -r git push origin < branches',
+  "find . -name '*.sql' -exec psql -c 'SELECT 1' \\;",
+  'xargs -I{} git -C {} status < repos',
+  "xargs -I{} sh -c 'git -C {} pull --ff-only' < repos",
   'exec bash-completion-loader',
   'git status',
   'rm -rf node_modules',

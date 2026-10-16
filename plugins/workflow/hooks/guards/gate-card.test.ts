@@ -25,6 +25,18 @@ describe('destructive approval description', () => {
             has: ['--select orders_daily', 'zero rows', "the profile's default", 'Directory: `/work/dbt`'],
         },
         {
+            name: 'a command find -exec runs is described like the same command at top level',
+            command: 'find . -name repo -exec git push --force origin main \\;',
+            label: 'Force-push main to origin',
+            has: ['is overwritten with this local history', 'find -exec runs a command that needs approval'],
+        },
+        {
+            name: 'a command an xargs shell script runs is described like the same command at top level',
+            command: "xargs -I{} sh -c 'psql -c \"DROP TABLE users\"' < list",
+            label: 'Drop PostgreSQL table users',
+            has: ['Deletes the table `users`'],
+        },
+        {
             name: 'dbt --select= and --selector forms name the selection',
             command: 'dbt run --full-refresh --select=orders',
             label: 'Rebuild dbt model orders from scratch (--full-refresh)',

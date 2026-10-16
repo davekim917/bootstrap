@@ -1661,16 +1661,55 @@ const RUNS_RM = 'runs rm';
  * `xargs sh -c 'rm "$@"'` still deletes.
  */
 function innerHardBlock(inner: ResolvedCommand | null): string | null {
-    if (!inner) return null;
+    const steps = innerSteps(inner);
+    if (steps === RUNS_VARIABLE) return RUNS_VARIABLE;
+    for (const cmd of steps) {
+        const reason = cmd.name === 'rm' ? RUNS_RM : checkHardBlock(cmd);
+        if (reason) return reason;
+    }
+    return null;
+}
+
+/** The commands `inner` runs: itself, or the commands of the script it runs as a shell with `-c`. */
+function innerSteps(inner: ResolvedCommand | null): ResolvedCommand[] | typeof RUNS_VARIABLE {
+    if (!inner) return [];
     const script = SHELLS.has(inner.name) ? shellScript(inner.name, inner.args) : null;
-    if (!script) return inner.name === 'rm' ? RUNS_RM : checkHardBlock(inner);
+    if (!script) return [inner];
+    const steps: ResolvedCommand[] = [];
     for (const nested of extractCommands(script.text)) {
         // A command taken from a parameter is whatever xargs reads from input or find matches, which cannot be known.
         if (nested.name.includes('$')) return RUNS_VARIABLE;
         const args = expandPositional(inner.name, nested.args, inner.args.slice(script.rest));
-        const cmd = args ? { ...nested, args } : nested;
-        const reason = cmd.name === 'rm' ? RUNS_RM : checkHardBlock(cmd);
-        if (reason) return reason;
+        steps.push(args ? { ...nested, args } : nested);
+    }
+    return steps;
+}
+
+/** What xargs, or each find -exec/-execdir/-ok/-okdir, runs: the option that runs it and the command it runs. */
+function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCommand | null }> {
+    if (cmd.name === 'xargs') return [{ via: 'xargs', inner: innerCommand(xargsCommand(cmd.args), cmd) }];
+    if (cmd.name !== 'find') return [];
+    const runs: Array<{ via: string; inner: ResolvedCommand | null }> = [];
+    for (let i = 0; i < cmd.args.length; i++) {
+        if (!['-exec', '-execdir', '-ok', '-okdir'].includes(cmd.args[i])) continue;
+        // The command runs up to its `;`, or a `+` right after `{}`; what follows is find's own expression.
+        const end = cmd.args.findIndex((a, j) => j > i && (a === ';' || (a === '+' && cmd.args[j - 1] === '{}')));
+        runs.push({ via: `find ${cmd.args[i]}`, inner: innerCommand(cmd.args.slice(i + 1, end < 0 ? undefined : end), cmd) });
+        if (end > i) i = end;
+    }
+    return runs;
+}
+
+/** The first command xargs or find -exec runs that needs approval, with why, or null. */
+function innerGatedStep(cmd: ResolvedCommand): { step: ResolvedCommand; reason: string } | null {
+    for (const { via, inner } of execRuns(cmd)) {
+        const steps = innerSteps(inner);
+        if (steps === RUNS_VARIABLE) continue;
+        for (const step of steps) {
+            const reason = checkGatedCommand(step);
+            // The step's offset, if any, is into the inner script, not the command line the card reads from.
+            if (reason) return { step: { ...step, pos: undefined }, reason: `${via} runs a command that needs approval. ${reason}` };
+        }
     }
     return null;
 }
@@ -2735,26 +2774,14 @@ export function gitHookBypassReason(cmd: ResolvedCommand): string | null {
 /** Returns block reason if the command is unconditionally blocked, null otherwise */
 export function checkHardBlock(cmd: ResolvedCommand): string | null {
     // find -exec rm (and any other blocked command it runs) / find -delete
-    if (cmd.name === 'find') {
-        for (let i = 0; i < cmd.args.length; i++) {
-            if (!['-exec', '-execdir', '-ok', '-okdir'].includes(cmd.args[i])) continue;
-            // The command runs up to its `;`, or a `+` right after `{}`; what follows is find's own expression.
-            const end = cmd.args.findIndex((a, j) => j > i && (a === ';' || (a === '+' && cmd.args[j - 1] === '{}')));
-            const reason = innerHardBlock(innerCommand(cmd.args.slice(i + 1, end < 0 ? undefined : end), cmd));
-            if (reason === RUNS_RM) return 'find -exec rm is not allowed. Use trash for file deletion.';
-            if (reason) return `find ${cmd.args[i]} runs a blocked command. ${reason}`;
-            if (end > i) i = end;
-        }
-        if (cmd.args.includes('-delete')) {
-            return 'find -delete permanently deletes files. Use trash instead.';
-        }
+    // find -exec rm and xargs rm, and anything else they run that is blocked on its own
+    for (const { via, inner } of execRuns(cmd)) {
+        const reason = innerHardBlock(inner);
+        if (reason === RUNS_RM) return `${via === 'xargs' ? 'xargs' : 'find -exec'} rm is not allowed. Use trash for file deletion.`;
+        if (reason) return `${via} runs a blocked command. ${reason}`;
     }
-
-    // xargs rm, and anything else xargs runs that is blocked on its own
-    if (cmd.name === 'xargs') {
-        const reason = innerHardBlock(innerCommand(xargsCommand(cmd.args), cmd));
-        if (reason === RUNS_RM) return 'xargs rm is not allowed. Use trash for file deletion.';
-        if (reason) return `xargs runs a blocked command. ${reason}`;
+    if (cmd.name === 'find' && cmd.args.includes('-delete')) {
+        return 'find -delete permanently deletes files. Use trash instead.';
     }
 
     // Shell -c / here-string wrappers — bypass vectors for all other checks
@@ -3523,9 +3550,11 @@ function* gatedSteps(
     lab: boolean,
     log: boolean,
 ): Generator<{ cmd: ResolvedCommand; reason: string }> {
-    for (const cmd of commands) {
-        const reason = checkGatedCommand(cmd);
-        if (!reason) continue;
+    for (const outer of commands) {
+        const outerReason = checkGatedCommand(outer);
+        const gated = outerReason ? { step: outer, reason: outerReason } : innerGatedStep(outer);
+        if (!gated) continue;
+        const { step: cmd, reason } = gated;
         const dev = devScopeTargetOf(cmd, commands, command);
         if (dev !== null) {
             if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
