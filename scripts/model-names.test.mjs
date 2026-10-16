@@ -33,11 +33,11 @@ test('model and effort names in skill bodies and always-on directives are flagge
     'plugins/sample/always-on.md': 'Prefer gpt-7.2 for reviews.\nRoute plans to Astra, builds to Sol.\n',
     'plugins/other/skills/x/SKILL.md': 'Pass --effort xhigh, or reasoning_effort: medium, or claude-9.1-preview.\n',
     'plugins/other/skills/y/SKILL.md':
-      'Run at `high` effort.\nUse low reasoning effort, or ultra effort.\nA wrapped max\neffort, and O3 for review.\n',
+      'Run at `high` effort.\nUse low reasoning effort, or ultra effort.\nA wrapped max\neffort, and O3 for review.\n'
+      + 'Set effort to high. Run with effort set to medium. Use reasoning effort of max, or **low** effort.\n',
   });
   assert.deepEqual(found(result).sort(), [
     'plugins/other/skills/x/SKILL.md:1 effort --effort xhigh',
-    'plugins/other/skills/x/SKILL.md:1 effort effort xhigh',
     'plugins/other/skills/x/SKILL.md:1 effort reasoning_effort: medium',
     'plugins/other/skills/x/SKILL.md:1 effort xhigh',
     'plugins/other/skills/x/SKILL.md:1 model claude-9.1-preview',
@@ -46,6 +46,10 @@ test('model and effort names in skill bodies and always-on directives are flagge
     'plugins/other/skills/y/SKILL.md:2 effort ultra effort',
     'plugins/other/skills/y/SKILL.md:3 effort max\neffort',
     'plugins/other/skills/y/SKILL.md:4 model O3',
+    'plugins/other/skills/y/SKILL.md:5 effort effort of max',
+    'plugins/other/skills/y/SKILL.md:5 effort effort set to medium',
+    'plugins/other/skills/y/SKILL.md:5 effort effort to high',
+    'plugins/other/skills/y/SKILL.md:5 effort low** effort',
     'plugins/sample/always-on.md:1 model gpt-7.2',
     'plugins/sample/always-on.md:2 model Astra',
     'plugins/sample/always-on.md:2 model Sol',
@@ -59,7 +63,8 @@ test('placeholders, generic effort prose, frontmatter config keys and non-prompt
     'plugins/sample/skills/sample/SKILL.md':
       '---\nname: sample\nmodel: opus\neffort: high\n---\nInvoke with `/sample <model> <effort>` or {effort_level}.\n'
       + 'Do not waste effort on small work. Prefer high-availability setups.\n'
-      + 'Pass --effort <effort_level>, or set reasoning_effort to {effort_level}. Compile with -O3.\n',
+      + 'Pass --effort <effort_level>, or set reasoning_effort to {effort_level}. Compile with -O3.\n'
+      + 'Use a low-effort workaround; this should require minimal effort and an effort of high-quality review.\n',
     'plugins/crlf/skills/crlf/SKILL.md': '---\r\nname: crlf\r\nmodel: opus\r\neffort: high\r\n---\r\nBody.\r\n',
     'plugins/sample/skills/sample/scripts/rubric.json': '{"claude": "opus", "effort": "high"}\n',
     'plugins/sample/README.md': 'Runs on Opus at high effort.\n',
