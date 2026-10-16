@@ -200,8 +200,8 @@ function expandedEmitter(cmd: ResolvedCommand): ResolvedCommand | null {
         if (cmd.name !== 'echo' && cmd.name !== 'printf') continue;
         // Only an unquoted value splits, so only there can a leading word become an option echo drops.
         const unquoted = !/^"[\s\S]*"$/.test(words[i].word);
-        // `printf -v NAME` assigns its output instead of printing it, so a value that splits into that prints nothing.
-        if (unquoted && cmd.name === 'printf' && e.some(v => /^-v\s/.test(v))) return { ...cmd, args: [], stdinTexts: [] };
+        // A leading `printf -v NAME` assigns its output instead of printing it; anywhere later it is just an argument.
+        if (i === 0 && unquoted && cmd.name === 'printf' && e.some(v => /^-v\s/.test(v))) return { ...cmd, args: [], stdinTexts: [] };
         // Only the options echo takes are dropped: `echo -- x` prints `-- x`, a SQL comment.
         values.push(...e.flatMap(v => (unquoted && cmd.name === 'echo' ? [v, v.replace(/^(?:-[neE]+\s+)+/, '')] : [v])));
     }
