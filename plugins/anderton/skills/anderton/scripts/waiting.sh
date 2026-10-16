@@ -56,8 +56,9 @@ EOF
   # The registry's status is Claude Code's own record that the session is blocked on a person (a
   # permission prompt, AskUserQuestion), in its main thread or in a sub-agent, whose transcripts sit
   # under <session>/subagents/. Without that status, a main-thread tool call left unanswered for over
-  # a minute is probably a permission prompt; a registry that says busy rules that out. Otherwise a
-  # turn that ended with Claude's text is waiting. Reading only the tails is safe: tool results
+  # a minute is probably a permission prompt. Otherwise a turn that ended with Claude's text is waiting.
+  # A registry that says busy rules out both: Claude writes each block as it finishes, so a turn
+  # that is still running can end in text for a while. Reading only the tails is safe: tool results
   # alternate with assistant entries, so the entries that decide this are within the final few lines.
   {
     tail -n 1000 "$transcript"
@@ -108,7 +109,8 @@ EOF
           + (if $ask != "" then $ask else ([($open | calls), .said[-900:]] | map(select(. != "")) | join("\n")) end) + "\n"
       elif $r.status != "busy" and ($stuck | length) > 0 then
         "=== \($name)  \($cwd)  PERMISSION PROMPT? (pending \($stuck[0].pending)s)\n\($stuck | calls)\n"
-      elif .last.type == "assistant" and (.last | said) != "" and all(.last.message.content[]; .type != "tool_use") then
+      elif $r.status != "busy" and .last.type == "assistant" and (.last | said) != ""
+           and all(.last.message.content[]; .type != "tool_use") then
         "=== \($name)  \($cwd)  (last reply \(.last.timestamp))\n\(.said[-900:])\n"
       else empty end' ||
     echo "waiting.sh: could not read $transcript" >&2

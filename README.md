@@ -438,8 +438,9 @@ own a project's line to production: it watches the project's other sessions and 
 `references/good-code.md`, and turns each repeated correction into a check. Claude Code only, on
 the host: its two scripts read Claude Code's own session registry, and there is no Codex manifest.
 
-A project is the main worktree of the session's repository, so linked worktrees belong to it, or
-the session's directory outside a repository.
+A project is the session's repository, named by its main checkout (or, for a bare repository, its
+git dir), so every worktree of it belongs to one project; outside a repository, the session's
+directory.
 
 - `scripts/claim.sh` records the claiming session as the project's holder in
   `~/.claude/anderton/<project root, percent-encoded>.json` and exits 3 while another live session

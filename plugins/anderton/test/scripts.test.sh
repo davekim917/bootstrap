@@ -23,6 +23,12 @@ git init -q "$alpha"
 git -C "$alpha" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m init
 git -C "$alpha" worktree add -q "$work/alpha-wt" 2>/dev/null
 beta="$work/beta"
+# Project gamma is a bare repository with two worktrees and no main checkout.
+gamma="$work/gamma.git"
+git init -q --bare "$gamma"
+git -C "$alpha" push -q "$gamma" HEAD:refs/heads/main 2>/dev/null
+git -C "$gamma" worktree add -q "$work/gamma-a" main 2>/dev/null
+git -C "$gamma" worktree add -q -b other "$work/gamma-b" main 2>/dev/null
 
 failures=0
 check() { # check <description> <command...>
@@ -110,6 +116,9 @@ spawn; p_subagent=$pid; session "$p_subagent" mmmm-3 "$alpha" subagent-session
 spawn; p_prompt=$pid;   session "$p_prompt" nnnn-4 "$alpha" prompt-session
 spawn; p_running=$pid;  session "$p_running" oooo-5 "$alpha" running-session
 spawn; p_busy=$pid;     session "$p_busy" qqqq-6 "$alpha" busy-session
+spawn; p_writing=$pid;  session "$p_writing" rrrr-7 "$alpha" writing-session
+spawn; p_gamma_a=$pid;  session "$p_gamma_a" gaaa-1 "$work/gamma-a" gamma-a-session
+spawn; p_gamma_b=$pid;  session "$p_gamma_b" gbbb-2 "$work/gamma-b" gamma-b-session
 # Project beta: a plain directory.
 spawn; p_beta=$pid;     session "$p_beta" bbbb-2 "$beta" ""
 spawn; p_replied=$pid;  session "$p_replied" dddd-4 "$beta" replied-session
@@ -126,6 +135,7 @@ session 1 kkkk-1 "$beta" unsignalled-session "$(( $(date +%s) - $(proc_age 1) ))
 registry "$p_asking" waiting "input needed"
 registry "$p_subagent" waiting "permission prompt"
 registry "$p_busy" busy
+registry "$p_writing" busy
 
 transcript aaaa-1 "$recent" assistant "Should I merge the alpha change?"
 transcript cccc-3 "$recent" assistant "Holder question."
@@ -139,6 +149,9 @@ printf '{"type":"assistant","isSidechain":true,"timestamp":"%s","message":{"cont
 transcript nnnn-4 "$five_min_ago" calling "rm -rf build"
 transcript oooo-5 "$recent" calling "pnpm test"
 transcript qqqq-6 "$five_min_ago" calling "sleep 600"
+transcript rrrr-7 "$recent" assistant "Next I will run the tests."
+transcript gaaa-1 "$recent" assistant "Question from gamma's first worktree."
+transcript gbbb-2 "$recent" assistant "Question from gamma's second worktree."
 transcript kkkk-1 "$recent" assistant "Question from a session this shell cannot signal."
 transcript bbbb-2 "$recent" assistant "Beta needs a decision on the schema."
 transcript dddd-4 "$recent" user "Yes, go ahead."
@@ -216,6 +229,7 @@ check "shows that call's tool and input" contains 'Bash (pending 3'
 check "shows the input text" contains '{"command":"rm -rf build"}'
 check "does not flag a tool call made seconds ago" eval '! contains "running-session"'
 check "does not flag a long call when the registry says the session is busy" eval '! contains "busy-session"'
+check "does not list a busy session whose newest block is text" eval '! contains "writing-session"'
 
 out=$(env CLAUDE_PID="$p_alpha" "$scripts/waiting.sh" --all)
 check "--all lists other projects, a session named by id when unnamed" contains "=== bbbb  $beta"
@@ -233,6 +247,13 @@ out=$(env CLAUDE_PID="$p_beta" "$scripts/waiting.sh")
 check "from project beta, lists beta's sessions" contains "=== unsignalled-session  $beta"
 check "from project beta, leaves out beta's own Anderton" eval '! contains "Beta needs a decision"'
 check "from project beta, leaves out alpha" eval '! contains "alpha-session"'
+
+claim_status gaaa-1 "$p_gamma_a"
+check "a worktree of a bare repository claims for the repository" [ "$status" -eq 0 ]
+claim_status gbbb-2 "$p_gamma_b"
+check "another worktree of the same bare repository is refused" [ "$status" -eq 3 ]
+out=$(env CLAUDE_PID="$p_gamma_a" "$scripts/waiting.sh")
+check "lists the other worktree of a bare repository as the same project" contains "Question from gamma's second worktree."
 
 check "the cleared holder re-claims under its new session id" env CLAUDE_CODE_SESSION_ID=cccc-9 "$scripts/claim.sh"
 

@@ -52,13 +52,16 @@ session_pid() {
   done
 }
 
-# The project directory $1 belongs to: its repository's main worktree, so a session in a linked
-# worktree shares the project of the checkout it came from; outside a repository, the directory.
+# The project directory $1 belongs to: its repository, named by the main checkout or, for a bare
+# repository or a separate git dir, by the git dir itself, so every worktree of one repository shares
+# a project. Outside a repository, the directory.
 project_root() {
   local common top
-  if common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
-    [ "${common##*/}" = .git ]; then
-    dirname "$common"
+  if common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+    case $common in
+      */.git) dirname "$common" ;;
+      *) printf '%s\n' "$common" ;;
+    esac
   elif top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null); then
     printf '%s\n' "$top"
   else
