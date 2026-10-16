@@ -1506,8 +1506,9 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): Resolved
                     if (up.name === 'cat') input.catFiles.push(...catFilesOf(up));
                     if (up.pipedInput) (up.name === 'cat' || up.name === 'tee' ? input.from! : input.textFrom!).push(up.pipedInput);
                     if (!holdsVariable(up)) continue;
-                    // Variables set before the substitution expand where the command holding it runs.
-                    if (typeof hostPos === 'number') {
+                    // Variables set before the substitution expand where the command holding it runs, unless the
+                    // substitution assigns them itself, which shadows the outer value.
+                    if (typeof hostPos === 'number' && !assignsInside(text, up)) {
                         const atHost = { ...up, pos: hostPos, argsAreValues: true };
                         expandLater.push(atHost);
                         input.emitters!.push(atHost);
@@ -1522,6 +1523,13 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): Resolved
     }
     for (const [, cmd] of nested) delete cmd.pos;
     return expandLater;
+}
+
+/** The substitution text assigns a variable `cmd`'s words reference. */
+function assignsInside(text: string | undefined, cmd: ResolvedCommand): boolean {
+    if (!text) return false;
+    const names = [...cmd.args, ...(cmd.stdinExpanded ?? [])].flatMap(t => [...t.matchAll(/\$\{?([A-Za-z_]\w*)/g)].map(m => m[1]));
+    return names.some(name => new RegExp(`(?:^|[\\s;&|(])(?:export\\s+|local\\s+|declare\\s+)?${name}=`).test(text));
 }
 
 /** The command nodes a pipeline stage runs: itself, or those inside a group, subshell or compound stage. */
@@ -1547,10 +1555,8 @@ function pipelinesIn(node: any, out: any[], depth: number): void {
         for (const child of node) pipelinesIn(child, out, depth);
         return;
     }
-    if (node.type === 'Pipeline') {
-        out.push(node);
-        return;
-    }
+    // A pipeline's compound stages can hold pipelines of their own (`… | { cat f | psql; }`), so keep descending.
+    if (node.type === 'Pipeline') out.push(node);
     if (node.type === 'Command') return;
     for (const child of [node.commands, node.command, node.clause, node.then, node.else, node.body]) pipelinesIn(child, out, depth + 1);
     for (const item of node.items || []) pipelinesIn(item?.body, out, depth + 1);

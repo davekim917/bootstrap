@@ -197,6 +197,7 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `x=$(B='DROP TABLE users'; echo "$B" | psql)`,
         `psql -XXXXXXXXXXXXXXXXXXXXc'DROP TABLE users'`,
         `x=$(cd job; cat drop.sql | psql)`,
+        `x=$(printf '' | { cat bad.sql | psql; })`,
     ]) {
         expect(verdict(command)).toBe('gate');
     }
@@ -212,6 +213,7 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `B='SELECT 1'; x=$(echo "$B" | psql)`,
         `x=$(B='SELECT 1'; echo "$B" | psql)`,
         `x=$(cd job; cat ok.sql | psql)`,
+        `B='DROP TABLE users'; x=$(B='SELECT 1'; echo "$B" | psql)`,
         `snow sql -f include-template.sql -D path=ok.sql`,
     ]) {
         expect(verdict(command)).toBe('allow');
