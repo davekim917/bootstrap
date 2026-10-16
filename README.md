@@ -26,7 +26,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 | Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.1 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
-| Claude Code / Codex / NanoClaw | `claim-check` | 1.0.0 | Stop hook that checks the commit SHAs and merged/closed PR claims in the final message against GitHub and sends a proven-false claim back once |
+| Claude Code / Codex / NanoClaw | `claim-check` | 1.0.0 | Stop hook that checks the commit SHAs and merged/closed PR claims in the final message against GitHub and logs proven-false claims (advisory, never blocks) |
 
 ### Delegation is invoke-only
 

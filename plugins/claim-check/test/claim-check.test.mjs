@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { claimText, decide, extractClaims, transcriptRefs } from '../hooks/claim-check.mjs';
+import { claimText, decide, extractClaims, recordWouldBlock, transcriptRefs } from '../hooks/claim-check.mjs';
 
 const HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'hooks', 'claim-check.mjs');
 const REMOTE = 'example-org/example-app';
@@ -192,7 +192,7 @@ test('repo#N resolves by name only to a repository the session knows', () => {
   assert.equal(unknown.verdict, null);
 });
 
-test('the CLI blocks once, passes on stop_hook_active and on the off switch, and never fails the turn', () => {
+test('the CLI never blocks: it records what it would have sent back, and stays silent on stop_hook_active, the off switch and garbage', () => {
   const bin = tempDir('claim-check-bin-');
   // gh stand-in: the repository is readable, the PR is open and unmerged.
   fs.writeFileSync(
@@ -209,25 +209,46 @@ test('the CLI blocks once, passes on stop_hook_active and on the off switch, and
     ].join('\n'),
     { mode: 0o755 },
   );
-  const input = JSON.stringify({ last_assistant_message: `Merged ${REMOTE}#42.` });
-  const env = { ...gitEnv(bin), PATH: `${bin}:${process.env.PATH}` };
+  const log = path.join(tempDir('claim-check-log-'), 'nested', 'would-block.jsonl');
+  const input = JSON.stringify({ last_assistant_message: `Merged ${REMOTE}#42.`, session_id: 'sess-1', cwd: bin });
+  const env = { ...gitEnv(bin), PATH: `${bin}:${process.env.PATH}`, CLAIM_CHECK_LOG: log };
   const cli = (stdin, extraEnv = {}) => spawnSync('node', [HOOK], { input: stdin, env: { ...env, ...extraEnv }, encoding: 'utf8' });
+  const records = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
 
-  const blocked = cli(input);
-  assert.equal(blocked.status, 0, blocked.stderr);
-  const verdict = JSON.parse(blocked.stdout);
-  assert.equal(verdict.decision, 'block');
-  assert.match(verdict.reason, /#42 is open, so it was not merged/);
+  const advisory = cli(input);
+  assert.equal(advisory.status, 0, advisory.stderr);
+  assert.equal(advisory.stdout, '');
+  assert.equal(records().length, 1);
+  assert.equal(records()[0].session_id, 'sess-1');
+  assert.deepEqual(records()[0].claims, [`${REMOTE}#42 is open, so it was not merged`]);
+  assert.match(records()[0].message, /Merged example-org\/example-app#42/);
 
   const again = cli(JSON.stringify({ ...JSON.parse(input), stop_hook_active: true }));
   assert.equal(again.status, 0);
   assert.equal(again.stdout, '');
-
   assert.equal(cli(input, { CLAIM_CHECK: 'off' }).stdout, '');
+  assert.equal(records().length, 1);
 
   const garbage = cli('not json');
   assert.equal(garbage.status, 0);
   assert.equal(garbage.stdout, '');
+
+  const unwritable = cli(input, { CLAIM_CHECK_LOG: path.join(bin, 'gh', 'cannot-be-a-dir.jsonl') });
+  assert.equal(unwritable.status, 0);
+  assert.equal(unwritable.stdout, '');
+});
+
+test('the would-block log keeps only its newest records once it passes its size cap', () => {
+  const dir = tempDir('claim-check-cap-');
+  const log = path.join(dir, 'would-block.jsonl');
+  const old = JSON.stringify({ at: '2026-01-01T00:00:00.000Z', claims: ['x'.repeat(1000)] });
+  fs.writeFileSync(log, `${old}\n`.repeat(400));
+  recordWouldBlock(log, { at: '2026-02-02T00:00:00.000Z', claims: ['newest'] }, 64 * 1024);
+  const text = fs.readFileSync(log, 'utf8');
+  assert.ok(text.length <= 64 * 1024, `log is ${text.length} bytes`);
+  const lines = text.trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(lines.at(-1).claims, ['newest']);
+  assert.ok(lines.length > 1);
 });
 
 test('only stated facts count: negated, conditional and future forms, fenced output and non-commit hashes are not claims', () => {

@@ -1,7 +1,7 @@
 {
   "name": "claim-check",
   "version": "1.0.0",
-  "description": "Stop hook that checks the commit SHAs and merged/closed PR claims in an agent final message against git and GitHub, and sends the turn back once when one is proven false. Unverifiable claims pass.",
+  "description": "Stop hook that checks the commit SHAs and merged/closed PR claims in an agent final message against git and GitHub, and logs each claim proven false to a local JSONL file (advisory: it never blocks). Unverifiable claims pass.",
   "author": {
     "name": "David Kim"
   },
@@ -17,7 +17,7 @@
   "interface": {
     "displayName": "Claim check",
     "shortDescription": "Final-message SHAs and PR states checked against git and GitHub",
-    "longDescription": "At the end of each turn, extracts the commit SHAs and merged or closed PR claims from the agent's final message, checks them with git and the GitHub API, and sends the turn back once when a claim is proven false. A claim it cannot prove passes.",
+    "longDescription": "At the end of each turn, extracts the commit SHAs and merged or closed PR claims from the agent's final message, checks them with git and the GitHub API, and appends each claim proven false to ~/.claude/claim-check/would-block.jsonl (or CLAIM_CHECK_LOG). It never blocks the turn; the log measures whether it should. A claim it cannot prove passes.",
     "developerName": "David Kim",
     "category": "Coding",
     "capabilities": [

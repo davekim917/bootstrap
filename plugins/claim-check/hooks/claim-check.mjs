@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 /**
- * Stop hook: checks the commit SHAs and "merged/closed #N" claims in the agent's final message against GitHub, and
- * sends the turn back once when a claim is proven false. A claim is checked only when it names its repository: a
+ * Stop hook, advisory: checks the commit SHAs and "merged/closed #N" claims in the agent's final message against
+ * GitHub, and appends each claim it finds proven false to a JSONL log instead of blocking. The turn always ends
+ * normally; the log is the measurement that decides whether the hook should ever send a turn back. A claim is checked only when it names its repository: a
  * GitHub URL, `owner/repo#N`, `repo#N` matching one repository the session knows, or a bare `#N` that the session's
  * own commands tied to exactly one repository. A SHA is checked in the repository of a PR the same sentence names.
  * Anything it cannot prove (no gh auth, an unreadable repository, offline, an ambiguous reference, any gh error or
  * malformed answer) passes, with one line on stderr. Only two answers prove a claim false: a well-formed state that
  * contradicts it, and GitHub's own not-found for an item or commit in a repository it just read.
  *
+ * Log: CLAIM_CHECK_LOG, else ~/.claude/claim-check/would-block.jsonl, trimmed to its newest records past LOG_CAP_BYTES.
  * Off switch: CLAIM_CHECK=off in the environment.
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,6 +23,8 @@ const MAX_CLAIMS = 12;
 const BUDGET_MS = 20_000;
 const CALL_TIMEOUT_MS = 8_000;
 const TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024;
+const LOG_CAP_BYTES = 256 * 1024;
+const LOG_MESSAGE_CHARS = 600;
 
 // A SHA is checked against GitHub only when the message says it was published there.
 const SHA_KEYWORD = /\b(?:merged|squash(?:ed)?|pushed|landed)\b/i;
@@ -360,11 +365,34 @@ export function decide(input, { gh, git = run, log = () => {}, now = Date.now } 
   if (falseClaims.length === 0) return null;
   return {
     decision: 'block',
+    claims: falseClaims,
     reason:
       `Your last message states things GitHub contradicts:\n${falseClaims.map((c) => `- ${c}`).join('\n')}\n` +
       'Correct the message: report only what a command you ran printed, and include that output. ' +
       'If you did not run the action, say so. This check runs once per turn.',
   };
+}
+
+/**
+ * Appends one record to the would-block log. Past `cap` bytes the oldest records are dropped, keeping about half the
+ * cap of the newest whole lines, so the log never grows without bound across a fleet that never reads it.
+ */
+export function recordWouldBlock(file, record, cap = LOG_CAP_BYTES) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const line = `${JSON.stringify(record)}\n`;
+  let size = 0;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    // No log yet.
+  }
+  if (size + line.length > cap) {
+    const kept = fs.readFileSync(file, 'utf8').slice(-Math.floor(cap / 2));
+    const firstWhole = kept.indexOf('\n') + 1;
+    fs.writeFileSync(file, kept.slice(firstWhole) + line);
+    return;
+  }
+  fs.appendFileSync(file, line);
 }
 
 function main() {
@@ -378,7 +406,21 @@ function main() {
     gh: (args, { timeout } = {}) => run('gh', args, timeout),
     log: (line) => process.stderr.write(`${line}\n`),
   });
-  if (verdict) process.stdout.write(`${JSON.stringify(verdict)}\n`);
+  if (!verdict) return;
+  const file = process.env.CLAIM_CHECK_LOG || path.join(os.homedir(), '.claude', 'claim-check', 'would-block.jsonl');
+  const message = typeof input.last_assistant_message === 'string' ? input.last_assistant_message : '';
+  try {
+    recordWouldBlock(file, {
+      at: new Date().toISOString(),
+      session_id: input.session_id ?? null,
+      cwd: input.cwd ?? null,
+      claims: verdict.claims,
+      message: message.slice(0, LOG_MESSAGE_CHARS),
+    });
+    process.stderr.write(`claim-check: would have sent this turn back (${verdict.claims.length} claim(s)); logged to ${file}\n`);
+  } catch (error) {
+    process.stderr.write(`claim-check: could not write ${file}: ${error instanceof Error ? error.message : String(error)}\n`);
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
