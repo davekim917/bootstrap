@@ -23,6 +23,10 @@ beforeAll(() => {
     writeFileSync(join(dir, 'job', 'outer.sql'), '\\ir drop.sql\n');
     writeFileSync(join(dir, 'job', 'drop.sql'), 'drop table users;\n');
     writeFileSync(join(dir, 'drop schema.sql'), 'drop schema s;\n');
+    writeFileSync(join(dir, 'template.sql'), '<% action %> TABLE users;\n');
+    writeFileSync(join(dir, 'include-template.sql'), '!source <% path %>\n');
+    mkdirSync(join(dir, 'source'));
+    writeFileSync(join(dir, 'source', 'only-here.sql'), 'drop table users;\n');
     writeFileSync(join(dir, 'quoted.sql'), `\\i '${join(dir, 'drop schema.sql')}'\n`);
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -169,10 +173,63 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
     }
 });
 
+test('SQL reaching a client through a substitution pipe, -init, a template file, env -C, a flag cluster or pushd', () => {
+    for (const command of [
+        `result=$(printf 'DROP TABLE users;' | psql)`,
+        `echo "$(cat bad.sql | psql)"`,
+        `printf 'DROP TABLE users;' | sqlite3 -init ok.sql db.sqlite`,
+        `printf 'DROP TABLE users;' | duckdb -init ok.sql`,
+        `snow sql -f template.sql -D action=DROP`,
+        `env -C source cat only-here.sql | psql`,
+        `psql -Xc'DROP TABLE users'`,
+        `psql -Xqc 'DROP TABLE users'`,
+        `pushd job && psql -f drop.sql`,
+        `psql -XAtqc'DROP TABLE users'`,
+        `x=$(if true; then printf 'DROP TABLE users' | psql; fi)`,
+        `x=$(for t in a; do cat bad.sql | psql; done)`,
+        `B='DROP TABLE users'; x=$(echo "$B" | psql)`,
+        `snow sql -f include-template.sql -D path=bad.sql`,
+        `printf 'DROP TABLE users' | sqlite3 -lookaside 100 50 db.sqlite`,
+        `printf 'DROP TABLE users' | sqlite3 -nonce token db.sqlite`,
+        `printf 'DROP TABLE users' | sqlite3 -unknown-option x db.sqlite`,
+        `x=$(printf 'DROP TABLE users' | { psql; })`,
+        `x=$(printf 'DROP TABLE users' | ( psql ))`,
+        `x=$(B='DROP TABLE users'; echo "$B" | psql)`,
+        `psql -XXXXXXXXXXXXXXXXXXXXc'DROP TABLE users'`,
+        `x=$(cd job; cat drop.sql | psql)`,
+        `x=$(printf '' | { cat bad.sql | psql; })`,
+        `B='DROP TABLE users'; x=$(echo "$B" | psql; B='SELECT 1')`,
+        `x=$(cd missing; cat bad.sql | psql)`,
+        `S='SELECT 1'; D='DROP TABLE users'; ` + 'x=$(echo "$S" | psql); '.repeat(16) + 'x=$(echo "$D" | psql)',
+    ]) {
+        expect(verdict(command)).toBe('gate');
+    }
+    for (const command of [
+        `result=$(printf 'SELECT 1;' | psql)`,
+        `printf 'select 1;' | sqlite3 -init ok.sql db.sqlite`,
+        `snow sql -f template.sql -D action=SELECT`,
+        `psql -Xc'SELECT 1'`,
+        `pushd job && psql -f ok.sql`,
+        `pushd +1 && psql -c 'select 1'`,
+        `printf 'DROP TABLE users' | sqlite3 -init ok.sql db.sqlite 'SELECT 1'`,
+        `printf 'DROP TABLE users' | sqlite3 -readonly -json db.sqlite 'SELECT 1'`,
+        `B='SELECT 1'; x=$(echo "$B" | psql)`,
+        `x=$(B='SELECT 1'; echo "$B" | psql)`,
+        `x=$(cd job; cat ok.sql | psql)`,
+        `B='DROP TABLE users'; x=$(B='SELECT 1'; echo "$B" | psql)`,
+        `printf 'DROP TABLE users' | psql -Xc'SELECT 1'`,
+        `printf 'DROP TABLE users' | duckdb -init ok.sql -c 'SELECT 1'`,
+        `snow sql -f include-template.sql -D path=ok.sql`,
+    ]) {
+        expect(verdict(command)).toBe('allow');
+    }
+});
+
 test('deeply nested pipelines and many same-file writes resolve in bounded time', () => {
     const d = 2000;
     for (const command of [
         'echo x | ' + '{ echo x | '.repeat(d) + 'psql' + '; }'.repeat(d),
+        'r=' + '$(echo x | '.repeat(d) + 'psql' + ')'.repeat(d),
         'echo>f;'.repeat(4000) + 'psql<f;'.repeat(4000),
         'echo a | ' + 'tee f | '.repeat(3000) + 'cat; ' + 'psql<f;'.repeat(3000),
         `printf '%s' '${'insert into t values (1); '.repeat(1200)}' > f; ` + 'psql<f;'.repeat(4500),
@@ -237,3 +294,26 @@ test('text echoed to the terminal is not fed to a client that is not in its pipe
 test('after a cd the command implies, a relative file is not read from the starting directory, where it names a different file', () => {
     expect(verdict(`cd /elsewhere && psql -f bad.sql`)).toBe('allow');
 });
+
+test('a SQL client inside a substitution expands its own variables', () => {
+    for (const command of [
+        `B='DROP TABLE users;'; out=$(psql -c "$B")`,
+        "B='DROP TABLE users;'; out=`psql -c \"$B\"`",
+        `out=$(B='DROP TABLE users'; psql -c "$B")`,
+        `B='SELECT 1'; out=$(B='DROP TABLE users'; psql -c "$B")`,
+    ]) expect(verdict(command)).toBe('gate');
+    expect(verdict(`B='SELECT 1'; out=$(psql -c "$B")`)).toBe('allow');
+});
+
+test('a short-option cluster ends at the first option that takes a value', () => {
+    expect(verdict(`printf 'DROP TABLE users' | psql -dproduction`)).toBe('gate');
+    expect(verdict(`printf 'DROP TABLE users' | psql -XcSELECT`)).toBe('allow');
+    expect(verdict(`printf 'SELECT 1' | psql -Xc 'DROP TABLE users'`)).toBe('gate');
+});
+
+test('duckdb reads a one-dash long option as a flag, not -c with a value', () => {
+    expect(verdict(`printf 'DROP TABLE users' | duckdb -csv`)).toBe('gate');
+    expect(verdict(`printf 'DROP TABLE users' | duckdb -separator , db.duckdb`)).toBe('gate');
+    expect(verdict(`printf 'DROP TABLE users' | duckdb -c 'SELECT 1'`)).toBe('allow');
+});
+
