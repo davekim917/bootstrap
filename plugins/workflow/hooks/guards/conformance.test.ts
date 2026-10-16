@@ -183,6 +183,9 @@ const BASH_GATE = [
   'xargs -n1 terraform destroy -auto-approve < dirs',
   "printf 'main\\n' | xargs bash -c 'git push --force origin \"$1\"' _",
   "printf 'destroy\\n' | xargs terraform",
+  "printf \"'-c' 'rm -rf /tmp/x'\\n\" | xargs sh",
+  "find destroy -maxdepth 0 -exec terraform {} \\;",
+  "find . -name '*.sh' -exec bash {} \\;",
   "printf 'x' | xargs -I{} xargs psql -c 'DROP TABLE users'",
   "find . -name x -exec xargs git push --force origin main \\;",
 ];

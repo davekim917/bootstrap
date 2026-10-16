@@ -43,6 +43,12 @@ describe('destructive approval description', () => {
             has: ['Directory: `/prod`'],
         },
         {
+            name: 'find -execdir says the command runs in each match\'s directory',
+            command: 'cd /safe; find /prod -name marker -execdir dbt run --full-refresh --select orders \\;',
+            label: 'Rebuild dbt model orders from scratch (--full-refresh)',
+            has: ['Directory: `the directory of each match`'],
+        },
+        {
             name: 'a command an xargs shell script runs is described like the same command at top level',
             command: "xargs -I{} sh -c 'psql -c \"DROP TABLE users\"' < list",
             label: 'Drop PostgreSQL table users',

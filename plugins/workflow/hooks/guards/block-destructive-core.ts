@@ -1694,7 +1694,10 @@ function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCom
         if (!['-exec', '-execdir', '-ok', '-okdir'].includes(cmd.args[i])) continue;
         // The command runs up to its `;`, or a `+` right after `{}`; what follows is find's own expression.
         const end = cmd.args.findIndex((a, j) => j > i && (a === ';' || (a === '+' && cmd.args[j - 1] === '{}')));
-        runs.push({ via: `find ${cmd.args[i]}`, inner: innerCommand(cmd.args.slice(i + 1, end < 0 ? undefined : end), cmd) });
+        const inner = innerCommand(cmd.args.slice(i + 1, end < 0 ? undefined : end), cmd);
+        // -execdir and -okdir run in each match's directory, which only the matches decide.
+        if (inner && cmd.args[i].endsWith('dir') && inner.chdir === undefined) inner.chdir = 'the directory of each match';
+        runs.push({ via: `find ${cmd.args[i]}`, inner });
         if (end > i) i = end;
     }
     return runs;
@@ -1709,8 +1712,9 @@ const EXEC_NESTING_MAX = 4;
 function innerGatedSteps(cmd: ResolvedCommand, depth = 0): Array<{ step: ResolvedCommand; reason: string }> {
     const gated: Array<{ step: ResolvedCommand; reason: string }> = [];
     for (const { via, inner } of execRuns(cmd)) {
-        if (via === 'xargs' && inner && OPERATION_TOOLS.has(inner.name) && inner.args.every(a => a.startsWith('-') || a === '{}')) {
-            gated.push({ step: { ...inner, pos: undefined }, reason: `xargs supplies ${inner.name}'s operation from its input, so what it runs can't be checked. Name the operation in the command.` });
+        // With no operation (or script) written, xargs input or a find match supplies it: `xargs sh` gets `-c …` at run time.
+        if (inner && (OPERATION_TOOLS.has(inner.name) || SHELLS.has(inner.name)) && inner.args.every(a => a.startsWith('-') || a === '{}')) {
+            gated.push({ step: { ...inner, pos: undefined }, reason: `${via} supplies ${inner.name}'s ${SHELLS.has(inner.name) ? 'script' : 'operation'} from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Write it in the command.` });
             continue;
         }
         const steps = innerSteps(inner);
