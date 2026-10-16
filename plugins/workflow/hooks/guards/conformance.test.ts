@@ -124,6 +124,10 @@ const BASH_GATE = [
   'git -C repo clean -xdf',
   'git -c clean.requireForce=false clean -d',
   'git clean -f -e .env',
+  'git clean -n --no-dry-run -f',
+  'git clean -f -e -npattern',
+  'git clean -fe -n',
+  'ENV=false git --config-env clean.requireForce=ENV clean',
   'git push -f',
   'git -C /workspace/worktrees/APP push -f origin develop',
   // Spellings that once slipped through: a clustered short flag, AWS global

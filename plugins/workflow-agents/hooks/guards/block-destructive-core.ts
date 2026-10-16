@@ -3644,15 +3644,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     // allowed: they refuse to clobber unseen remote work and are the
     // sanctioned recovery path the git_push tool itself uses.
     if (name === 'git') {
-        // Skip git's global options so `git -C /x push -f` classifies like
-        // `git push -f`. Only these take a separate value argument.
-        const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
-        let i = 0;
-        while (i < args.length) {
-            if (GIT_GLOBAL_VALUE_OPTS.has(args[i])) { i += 2; continue; }
-            if (args[i].startsWith('-')) { i += 1; continue; }
-            break;
-        }
+        // Skip git's global options so `git -C /x push -f` classifies like `git push -f`.
+        const i = gitSubcommandIndex(args);
         if (args[i] === 'push') {
             const pushArgs = pushArgsWithoutValues(args.slice(i + 1));
             const end = pushArgs.indexOf('--');
@@ -3674,10 +3667,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         }
         // Gated unless it is a dry run, -f or not: `clean.requireForce=false` lets it delete without -f.
         if (args[i] === 'clean') {
-            const rest = args.slice(i + 1);
-            const end = rest.indexOf('--');
-            const options = end === -1 ? rest : rest.slice(0, end);
-            if (!options.includes('--dry-run') && !hasShortFlag(options, 'n', 'e')) {
+            if (!gitCleanIsDryRun(args.slice(i + 1))) {
                 return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
             }
         }
@@ -3947,6 +3937,28 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
     return { dir, label: `Force-push ${which.replace(/`/g, '')} to ${remote}`, lines: [
         `If you approve: ${which} on ${code(remote)} is overwritten with this local history. Commits on the remote that aren't in this copy are discarded for everyone.`,
     ] };
+}
+
+/** `git clean`'s options read in order: the last of `-n`/`--dry-run`/`--no-dry-run` wins, and `-e` takes a value. */
+function gitCleanIsDryRun(options: string[]): boolean {
+    let dry = false;
+    for (let i = 0; i < options.length; i++) {
+        const a = options[i];
+        if (a === '--') break;
+        if (a === '--dry-run') dry = true;
+        else if (a === '--no-dry-run') dry = false;
+        else if (a === '--exclude' || a === '-e') i++;
+        else if (/^-[A-Za-z]/.test(a)) {
+            for (let k = 1; k < a.length; k++) {
+                if (a[k] === 'n') dry = true;
+                if (a[k] === 'e') {
+                    if (k === a.length - 1) i++;
+                    break;
+                }
+            }
+        }
+    }
+    return dry;
 }
 
 function gitCleanStep(cmd: ResolvedCommand): StepCard {
