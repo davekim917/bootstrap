@@ -132,6 +132,31 @@ test('a quoted heredoc is not variable-expanded', () => {
     expect(verdict(`sql='DROP TABLE users'; psql <<EOF\n$sql\nEOF`)).toBe('gate');
 });
 
+test('SQL held in a shell variable is expanded where a client reads it', () => {
+    for (const command of [
+        `B='DROP TABLE users;'; psql -c "$B"`,
+        `B='DROP TABLE users;'; psql -c "\${B}"`,
+        `B='DROP TABLE users;'; psql --command="$B"`,
+        `B='DROP TABLE users;'; echo "$B" | psql`,
+        `B='DROP TABLE users;'; printf '%s\n' "$B" | psql`,
+        `T=users; psql -c "DROP TABLE $T"`,
+        `B='DROP TABLE users;'; cat <<EOF | psql\n$B\nEOF`,
+        `B='DROP TABLE users;'; echo "$B" > q.sql && psql -f q.sql`,
+        `export B='DROP TABLE users;'; mysql -e "$B"`,
+    ]) {
+        expect(verdict(command)).toBe('gate');
+    }
+    for (const command of [
+        `B='SELECT 1;'; psql -c "$B"`,
+        `B='SELECT 1;'; echo "$B" | psql`,
+        `B='DROP TABLE users;'; echo "$B"`,
+        `psql -c "$UNKNOWN"`,
+        `B='DROP TABLE users;'; cat <<'EOF' | psql\n$B\nEOF`,
+    ]) {
+        expect(verdict(command)).toBe('allow');
+    }
+});
+
 test('deeply nested pipelines and many same-file writes resolve in bounded time', () => {
     const d = 2000;
     for (const command of [

@@ -62,6 +62,7 @@ export const IS_NANOCLAW = existsSync(NANOCLAW_OUTBOUND_DB) && existsSync(NANOCL
 export interface ResolvedCommand {
     name: string;               // resolved command name (e.g., "rm", "aws", "kubectl")
     args: string[];             // argument values after wrapper stripping
+    argWords?: string[];        // each of args as written, quotes included, when the parser gave them
     raw: string;                // original text for error messages
     env?: string[];             // NAME=value assignments applied to this command (prefix or `env` wrapper)
     chdir?: string;             // working directory set by an `env -C/--chdir` wrapper
@@ -105,6 +106,7 @@ interface PipedInput {
     catFiles: string[];         // files cat reads into it
     from?: PipedInput[];        // inputs whose text and files also flow in
     textFrom?: PipedInput[];    // inputs whose text (not files) also flows in
+    emitters?: ResolvedCommand[]; // emitters whose words hold a variable, expanded only when a SQL client traces them
 }
 
 /**
@@ -130,6 +132,12 @@ function flattenInput(root: PipedInput | undefined, script?: ScriptContext): Fla
             break;
         }
         texts.push(...node.texts);
+        for (const emitter of node.emitters ?? []) {
+            const expanded = expandedEmitter(emitter);
+            if (expanded === null) over = true;
+            else texts.push(...emittedText(expanded));
+        }
+        if (over) break;
         if (withFiles) catFiles.push(...node.catFiles);
         for (const next of node.from ?? []) stack.push([next, withFiles]);
         for (const next of node.textFrom ?? []) stack.push([next, false]);
@@ -148,6 +156,49 @@ interface FlatInput {
 const flattened = new WeakMap<PipedInput, FlatInput>();
 
 /** Charges `n` units to the line's trace budget; false once it is spent. */
+/** Shell words to expand, each beside the value it has unexpanded; a heredoc body is expanded as if double-quoted. */
+type ExpandableWord = { word: string; plain: string };
+
+const heredocWord = (t: string): ExpandableWord => ({ word: `"${t.replace(/(["\\])/g, '\\$1')}"`, plain: t });
+
+function argumentWords(cmd: ResolvedCommand): ExpandableWord[] {
+    return (cmd.argWords ?? []).map((word, i) => ({ word, plain: cmd.args[i] }));
+}
+
+/**
+ * The value of each word whose provable variables change it (a word without one, or whose variables stay unknown, is
+ * left out); null once the line's word or trace budget runs out.
+ */
+function expandWords(words: ExpandableWord[], cmd: ResolvedCommand): string[] | null {
+    const out: string[] = [];
+    const script = cmd.script;
+    if (cmd.pos === undefined || !script) return out;
+    for (const { word, plain } of words) {
+        if (!/[$`]/.test(word)) continue;
+        script.wordBudget ??= SQL_WORD_BUDGET;
+        if (script.wordBudget-- <= 0) return null;
+        script.view ??= viewShell(script.command);
+        const r = evalWord(word, script.view, cmd.pos);
+        if (r.value === plain) continue;
+        if (!spendTrace(script, r.value.length)) return null;
+        out.push(r.value);
+    }
+    return out;
+}
+
+/** An emitter with its arguments and expanded heredoc input after variable expansion, or null over budget. */
+function expandedEmitter(cmd: ResolvedCommand): ResolvedCommand | null {
+    const words = argumentWords(cmd);
+    const args = [...cmd.args];
+    for (let i = 0; i < words.length; i++) {
+        const e = expandWords([words[i]], cmd);
+        if (e === null) return null;
+        if (e.length) args[i] = e[0];
+    }
+    const stdin = expandWords((cmd.stdinExpanded ?? []).map(heredocWord), cmd);
+    return stdin === null ? null : { ...cmd, args, stdinTexts: [...(cmd.stdinTexts ?? []), ...stdin] };
+}
+
 function spendTrace(script: ScriptContext | undefined, n: number): boolean {
     if (!script) return true;
     script.traceBudget = (script.traceBudget ?? SQL_TRACE_BUDGET) - n;
@@ -944,6 +995,13 @@ function optionValueAt(args: string[], i: number, option: string): string | unde
     return a.startsWith(option) && a.length > option.length && !a.startsWith('--') ? a.slice(option.length) : undefined;
 }
 
+/** An argument, plus the value glued to it when it is an option (`-cSQL`, `--command=SQL`), where SQL would read `--…` as a comment. */
+function withOptionValue(a: string): string[] {
+    if (/^-[A-Za-z]./.test(a) && !a.startsWith('--')) return [a, a.slice(2)];
+    if (a.startsWith('--') && a.includes('=')) return [a, a.slice(a.indexOf('=') + 1)];
+    return [a];
+}
+
 /**
  * Every SQL text a SQL client step could run: its arguments (with a glued
  * `-qSQL` or `--query=SQL` value unglued), heredoc and here-string input,
@@ -958,15 +1016,9 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const fileOptions = SQL_FILE_OPTIONS[client] ?? [];
     const textOptions = SQL_TEXT_OPTIONS[client] ?? [];
     const texts: string[] = [...(cmd.stdinTexts ?? [])];
-    let traceOver = false;
-    for (const t of cmd.stdinExpanded ?? []) {
-        if (!/[$`]/.test(t) || cmd.pos === undefined || !cmd.script) continue;
-        cmd.script.view ??= viewShell(cmd.script.command);
-        const r = evalWord(`"${t.replace(/(["\\])/g, '\\$1')}"`, cmd.script.view, cmd.pos);
-        if (r.value === t) continue;
-        if (spendTrace(cmd.script, r.value.length)) texts.push(r.value);
-        else traceOver = true;
-    }
+    const expanded = expandWords([...(cmd.stdinExpanded ?? []).map(heredocWord), ...argumentWords(cmd)], cmd);
+    let traceOver = expanded === null;
+    for (const e of expanded ?? []) texts.push(...withOptionValue(e));
     const files: string[] = [...(cmd.stdinFiles ?? [])];
     const vars = new Map<string, string>();
     let sqlInArgs = false;
@@ -974,9 +1026,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
 
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        texts.push(a);
-        if (/^-[A-Za-z]./.test(a) && !a.startsWith('--')) texts.push(a.slice(2));
-        else if (a.startsWith('--') && a.includes('=')) texts.push(a.slice(a.indexOf('=') + 1));
+        texts.push(...withOptionValue(a));
         for (const o of fileOptions) {
             const v = optionValueAt(args, i, o);
             if (v !== undefined) files.push(v);
@@ -1551,6 +1601,10 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const stripped = stripWrappers(node.name.value || '', (node.suffix || []).map(wordValue));
     const { name, args, chdir } = stripped;
     env.push(...stripped.env);
+    const tail = (node.suffix || []).slice(Math.max(0, (node.suffix || []).length - args.length));
+    const argWords = tail.length === args.length && tail.every((w: any, i: number) => wordValue(w) === args[i])
+        ? tail.map((w: any) => String(w?.text ?? w?.value ?? ''))
+        : undefined;
 
     // Check for input redirects (<<, <<<) on the original Command node
     const hasInputRedirect = (node.redirects || []).some((r: any) =>
@@ -1580,6 +1634,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     return {
         name,
         args,
+        ...(argWords ? { argWords } : {}),
         raw: rawParts.join(' '),
         env,
         ...(chdir !== undefined ? { chdir } : {}),
@@ -1959,6 +2014,10 @@ function samePath(path: string): string {
 }
 
 /** The text an emitter writes to stdout or its files (not counting what a pipe feeds it). */
+function holdsVariable(cmd: ResolvedCommand): boolean {
+    return [...(cmd.argWords ?? []), ...(cmd.stdinExpanded ?? [])].some(t => /[$`]/.test(t));
+}
+
 function emittedText(cmd: ResolvedCommand): string[] {
     const operands = cmd.args.filter(a => !a.startsWith('-'));
     if (cmd.name === 'cat' || cmd.name === 'tee') return [...(cmd.stdinTexts ?? [])];
@@ -2012,11 +2071,12 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
                 visitCompound(stage, depth);
             }
             if (i === 0) return;
-            const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [] };
+            const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [], emitters: [] };
             for (const up of stageCommands(stages[i - 1])) {
                 if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
                 const fed = up.pos === undefined ? undefined : pipedInto.get(up.pos);
                 input.texts.push(...emittedText(up));
+                if (holdsVariable(up)) input.emitters!.push(up);
                 if (up.name === 'cat') input.catFiles.push(...up.args.filter(a => !a.startsWith('-')));
                 if (fed) (up.name === 'cat' || up.name === 'tee' ? input.from! : input.textFrom!).push(fed);
             }
@@ -2055,6 +2115,7 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
         const fed = (cmd.name === 'tee' || cmd.name === 'cat') && cmd.pos !== undefined ? pipedInto.get(cmd.pos) : undefined;
         const input: PipedInput = {
             texts: emittedText(cmd),
+            ...(holdsVariable(cmd) ? { emitters: [cmd] } : {}),
             catFiles: cmd.name === 'cat' ? operands : [],
             ...(fed ? { from: [fed] } : {}),
         };
