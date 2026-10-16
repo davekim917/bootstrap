@@ -2987,26 +2987,33 @@ export function stageAllDuringConflictReason(cmd: ResolvedCommand, cwd: string):
 // Every linked worktree of a repository shares one .git/config. A root lifecycle script such as husky's `prepare`
 // writes core.hooksPath into it, which switches the hooks of every worktree of that repository at once.
 
-// npm's own command names and aliases (npm's lib/utils/cmd-list.js). The first operand that names an npm command is
-// the command, so an option's value ("--install-strategy hoisted", "--color always") is never read as one.
+// npm's install commands and their aliases (npm's lib/utils/cmd-list.js). npm's command is its first operand once
+// option values are consumed, so "--install-strategy hoisted" or "--workspace test" never reads as the command.
 const NPM_INSTALL_COMMANDS = new Set([
     'install', 'i', 'add', 'in', 'ins', 'inst', 'insta', 'instal', 'isnt', 'isnta', 'isntal', 'isntall',
     'ci', 'clean-install', 'ic', 'install-clean', 'isntall-clean',
     'install-test', 'it',
     'install-ci-test', 'cit', 'clean-install-test', 'sit',
 ]);
-const NPM_OTHER_COMMANDS = new Set([
-    'access', 'adduser', 'audit', 'bugs', 'cache', 'completion', 'config', 'dedupe', 'deprecate', 'diff', 'dist-tag',
-    'docs', 'doctor', 'edit', 'exec', 'explain', 'explore', 'find-dupes', 'fund', 'get', 'help', 'help-search', 'hook',
-    'init', 'link', 'll', 'login', 'logout', 'ls', 'org', 'outdated', 'owner', 'pack', 'ping', 'pkg', 'prefix',
-    'profile', 'prune', 'publish', 'query', 'rebuild', 'repo', 'restart', 'root', 'run-script', 'sbom', 'search', 'set',
-    'shrinkwrap', 'star', 'stars', 'start', 'stop', 'team', 'test', 'token', 'uninstall', 'unpublish', 'unstar',
-    'update', 'version', 'view', 'whoami', 'author', 'home', 'issues', 'info', 'show', 'find', 'unlink', 'remove', 'rm',
-    'r', 'un', 'rb', 'list', 'ln', 'create', 'up', 'c', 's', 'se', 'tst', 't', 'ddp', 'v', 'run', 'x', 'why', 'la',
-    'verison', 'innit', 'hlep', 'dist-tags', 'upgrade', 'udpate', 'rum', 'urn', 'ogr', 'add-user',
-]);
 const NPM_ROOT_LIFECYCLE_SCRIPTS = ['preinstall', 'install', 'postinstall', 'prepublish', 'preprepare', 'prepare', 'postprepare'];
 const NPM_BOOL_WORDS = new Set(['true', 'false']);
+// npm options that take a value as the next argument (npm's @npmcli/config definitions with a non-boolean type), and
+// the one-letter shorthands that stand for one of them. `-d`/`-q`/`-s` are complete presets and take nothing.
+const NPM_VALUE_OPTIONS = new Set([
+    '_auth', 'access', 'also', 'audit-level', 'auth-type', 'before', 'browser', 'ca', 'cache', 'cache-max', 'cache-min',
+    'cafile', 'call', 'cert', 'cidr', 'color', 'cpu', 'depth', 'diff', 'diff-dst-prefix', 'diff-src-prefix',
+    'diff-unified', 'editor', 'expect-result-count', 'fetch-retries', 'fetch-retry-factor', 'fetch-retry-maxtimeout',
+    'fetch-retry-mintimeout', 'fetch-timeout', 'git', 'globalconfig', 'heading', 'https-proxy', 'include',
+    'init-author-email', 'init-author-name', 'init-author-url', 'init-license', 'init-module', 'init-version',
+    'init.author.email', 'init.author.name', 'init.author.url', 'init.license', 'init.module', 'init.version',
+    'install-strategy', 'key', 'libc', 'local-address', 'location', 'lockfile-version', 'loglevel', 'logs-dir',
+    'logs-max', 'maxsockets', 'message', 'node-options', 'noproxy', 'omit', 'only', 'os', 'otp', 'pack-destination',
+    'package', 'prefix', 'preid', 'provenance-file', 'proxy', 'registry', 'replace-registry-host', 'save-prefix',
+    'sbom-format', 'sbom-type', 'scope', 'script-shell', 'searchexclude', 'searchlimit', 'searchopts',
+    'searchstaleness', 'shell', 'tag', 'tag-version-prefix', 'umask', 'user-agent', 'userconfig', 'viewer', 'which',
+    'workspace',
+]);
+const NPM_VALUE_SHORTHANDS: Record<string, string> = { C: 'prefix', w: 'workspace', c: 'call', L: 'location', m: 'message' };
 
 function isLinkedWorktreeGitDir(gitDir: string): boolean {
     return existsSync(join(gitDir, 'commondir')) || /\/worktrees\/[^/]+\/?$/.test(gitDir);
@@ -3034,42 +3041,59 @@ function rootLifecycleScripts(dir: string): string[] {
 /** `npm ci`/`npm install` that would run a root lifecycle script inside a linked worktree. */
 export function npmLifecycleInLinkedWorktreeReason(cmd: ResolvedCommand, cwd: string): string | null {
     if (cmd.name !== 'npm') return null;
-    // The environment sets the starting value; the command line overrides it, and its last setting wins.
+    // The environment sets the starting values; the command line overrides them, and each setting's last value wins.
     let ignoreScripts = false;
     for (const entry of cmd.env ?? []) {
         const m = /^npm_config_ignore_scripts=(.*)$/i.exec(entry);
         if (m) ignoreScripts = /^(?:true|1)$/i.test(m[1]);
     }
-    let command: string | undefined;
+    let global = false;
+    let dryRun = false;
+    let location: string | undefined;
     let prefix: string | undefined;
-    let skipsProject = false;
+    let command: string | undefined;
+    const setOption = (name: string, value: string | boolean) => {
+        const truthy = value === true || (typeof value === 'string' && /^(?:true|1)$/i.test(value));
+        if (name === 'ignore-scripts') ignoreScripts = truthy;
+        else if (name === 'global') global = truthy;
+        else if (name === 'dry-run') dryRun = truthy;
+        else if (name === 'location' && typeof value === 'string') location = value;
+        else if (name === 'prefix' && typeof value === 'string') prefix = value;
+    };
     for (let i = 0; i < cmd.args.length; i++) {
         const arg = cmd.args[i];
         if (arg === '--') break;
-        const flag = /^--(no-)?([a-z-]+)(?:=(.*))?$/.exec(arg);
-        if (flag) {
-            const [, negated, name, value] = flag;
+        const long = /^--(no-)?([\w.-]+)(?:=(.*))?$/.exec(arg);
+        if (long) {
+            const [, negated, name, attached] = long;
+            if (negated) { setOption(name, false); continue; }
+            if (attached !== undefined) { setOption(name, attached); continue; }
             const next = cmd.args[i + 1];
-            const bool = () => {
-                if (negated) return false;
-                if (value !== undefined) return /^(?:true|1)$/i.test(value);
-                if (next !== undefined && NPM_BOOL_WORDS.has(next)) { i += 1; return next === 'true'; }
-                return true;
-            };
-            if (name === 'ignore-scripts') ignoreScripts = bool();
-            else if (name === 'dry-run' || name === 'global') skipsProject = bool() || skipsProject;
-            else if (name === 'location' && (value ?? next) === 'global') skipsProject = true;
-            else if (name === 'prefix' && !negated) {
-                prefix = value ?? next;
-                if (value === undefined) i += 1;
+            if (NPM_VALUE_OPTIONS.has(name)) {
+                if (next !== undefined) { setOption(name, next); i += 1; }
+                continue;
             }
+            if (next !== undefined && NPM_BOOL_WORDS.has(next)) { setOption(name, next); i += 1; continue; }
+            setOption(name, true);
             continue;
         }
-        if (arg === '-g') { skipsProject = true; continue; }
+        const short = /^-([A-Za-z])(.*)$/.exec(arg);
+        if (short) {
+            const [, letter, rest] = short;
+            const target = NPM_VALUE_SHORTHANDS[letter];
+            if (target) {
+                if (rest) setOption(target, rest);
+                else if (cmd.args[i + 1] !== undefined) { setOption(target, cmd.args[i + 1]); i += 1; }
+                continue;
+            }
+            if (/^[A-Za-z]+$/.test(letter + rest) && (letter + rest).includes('g')) setOption('global', true);
+            continue;
+        }
         if (arg.startsWith('-')) continue;
-        if (command === undefined && (NPM_INSTALL_COMMANDS.has(arg) || NPM_OTHER_COMMANDS.has(arg))) command = arg;
+        command ??= arg;
     }
-    if (!command || !NPM_INSTALL_COMMANDS.has(command) || ignoreScripts || skipsProject) return null;
+    if (!command || !NPM_INSTALL_COMMANDS.has(command)) return null;
+    if (ignoreScripts || global || dryRun || location === 'global') return null;
     const verb = command;
 
     let dirs = [cwd];

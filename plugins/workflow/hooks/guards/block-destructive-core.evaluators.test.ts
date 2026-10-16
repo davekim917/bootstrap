@@ -449,7 +449,7 @@ describe('npm lifecycle scripts in a linked worktree', () => {
         expect(v.reason ?? '').toContain('prepare');
     });
 
-    test('follows cd, a subdirectory, --prefix, every install command and alias, option values, and the last ignore-scripts setting', () => {
+    test('follows cd, a subdirectory, --prefix and -C, every install command and alias, option values, and the last value of each setting', () => {
         const { wt } = linkedWorktree({ scripts: { postinstall: 'node setup.js' } });
         for (const [cmd, cwd] of [
             ['npm install', join(wt, 'src')],
@@ -470,6 +470,14 @@ describe('npm lifecycle scripts in a linked worktree', () => {
             ['npm --ignore-scripts --ignore-scripts=false ci', wt],
             ['npm ci --ignore-scripts --no-ignore-scripts', wt],
             ['npm_config_ignore_scripts=true npm ci --ignore-scripts=false', wt],
+            [`npm -C ${wt} ci`, '/'],
+            [`npm -C${wt} install`, '/'],
+            ['npm --workspace test ci', wt],
+            ['npm -w test ci', wt],
+            ['npm install --global --global=false', wt],
+            ['npm install --dry-run --dry-run=false', wt],
+            ['npm install --location=global --location=project', wt],
+            ['npm install -g --no-global', wt],
         ]) {
             expect(evaluateBashCommand(cmd, { skipGate: true, cwd }).action).toBe('block');
         }
