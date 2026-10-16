@@ -166,7 +166,7 @@ export function bypassFlagIsRealArgvToken(gwsSegment: string): boolean {
 const GWS_BOOLEAN_OPTIONS = new Set(['--html', '--dry-run', '--draft', '--help', '-h', '--no-original-attachments']);
 // Commands a probe may pipe through or run beside gws: none sends mail, runs
 // another command, or changes shell state a later gws call could read.
-const PROBE_COMPANIONS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq', 'wc', 'uniq', 'cut', 'tr', 'cat', 'echo', 'printf', 'true', ':', 'test', '[', 'sleep']);
+const PROBE_COMPANIONS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq', 'wc', 'uniq', 'cut', 'tr', 'cat', 'echo', 'printf', 'true', ':', 'sleep']);
 // Variables a probe may set. Anything that changes how a later command is found
 // or started (PATH, BASH_ENV, LD_PRELOAD, IFS, …) or how gws behaves (its own
 // GOOGLE_*/GWS_* settings other than the credentials file) is refused.
