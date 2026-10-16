@@ -305,6 +305,8 @@ const BASH_ALLOW = [
   // A dry run whose words are all literal, and git's global help for clean, delete nothing.
   'git clean -n -d -x -- build/',
   'git --help clean',
+  "git clean -n -- 'dir with spaces'",
+  "git clean -n 'dir with spaces'",
 ];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);

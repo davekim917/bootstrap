@@ -2821,6 +2821,12 @@ function gitRemoteArg(args: string[]): string | null {
 }
 
 function labGitTarget(cmd: ResolvedCommand, cwd: string): string | null {
+    // git clean touches only its work tree; its words (an `-e` pattern, a pathspec) name no repository.
+    if (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean') {
+        const tree = gitEffectiveDir(cmd.args, cmd.env);
+        const dir = tree === undefined ? cwd : pathResolve(cwd, tree);
+        return isLabWorktreePath(dir) ? dir : null;
+    }
     // An explicit repo URL anywhere in the command decides on its own, and ALL
     // of them must be lab repos — a lab cwd does not launder a push to a prod URL.
     const urls = cmd.args.filter(a => REPO_URL_RE.test(a));
@@ -3671,7 +3677,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         const clean = parseGitClean(cleanArgs);
         // The exemption holds only for words the shell passes as written: a variable, glob or brace can expand to
         // `--no-dry-run` (an untracked file of that name matches `*`).
-        const literal = cleanArgs.every(a => /^[\w@%+=:,./-]*$/.test(a));
+        const end = cleanArgs.indexOf('--');
+        const literal = cleanArgs.slice(0, end < 0 ? undefined : end).every(a => /^[\w@%+=:,./ -]*$/.test(a));
         const globalHelp = name === 'git' && args.slice(0, gitSubcommandIndex(args)).some(a => a === '--help' || a === '-h');
         if (!globalHelp && ((!clean.dryRun && !clean.help) || !literal)) {
             return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
@@ -4186,7 +4193,9 @@ export function describeGate(command: string, reason: string, cwd: string = curr
                 : cmd.name === 'git' ? (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean' ? gitCleanStep(cmd) : gitPushStep(cmd))
                 : cmd.name === 'aws' ? awsStep(cmd)
                 : genericStep(cmd, why);
-            const dir = step.dir ?? dirBefore;
+            const dir = step.dir === undefined ? dirBefore
+                : step.dir.startsWith('/') || dirBefore === undefined || !dirBefore.startsWith('/') ? step.dir
+                : join(dirBefore, step.dir);
             const shown = raw.pos === undefined ? raw.raw : evalWord(raw.raw, view, raw.pos, true).value;
             const lines = [...step.lines];
             if (dir) lines.push(`Directory: ${code(dir)}`);
