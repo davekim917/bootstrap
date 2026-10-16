@@ -1025,18 +1025,24 @@ function optionValueAt(args: string[], i: number, option: string): string | unde
 const SHORT_CLUSTER_MAX = 16;
 
 // sqlite3 options that take a value, single- or double-dashed.
-const SQLITE_VALUE_OPTIONS = new Set(['init', 'cmd', 'separator', 'newline', 'nullvalue', 'mmap', 'heap', 'maxsize', 'vfs', 'escape']);
+const SQLITE_VALUE_OPTIONS = new Set(['init', 'cmd', 'separator', 'newline', 'nullvalue', 'mmap', 'heap', 'maxsize', 'vfs', 'escape', 'nonce']);
 const SQLITE_TWO_VALUE_OPTIONS = new Set(['lookaside', 'pagecache']);
+const SQLITE_FLAGS = new Set(['append', 'ascii', 'bail', 'batch', 'box', 'column', 'csv', 'deserialize', 'echo', 'header', 'noheader', 'help', 'html', 'interactive', 'json', 'line', 'list', 'markdown', 'memtrace', 'nofollow', 'pcachetrace', 'quote', 'readonly', 'safe', 'stats', 'table', 'tabs', 'unsafe-testing', 'utf8', 'version', 'zip']);
 
-/** How many operands (FILENAME, SQL) a sqlite3 command line gives, past its options and their values. */
+/**
+ * How many operands (FILENAME, SQL) a sqlite3 command line gives, past its options and their values; 0 when an
+ * option is not one listed here, since its arity is unknown and stdin must then be assumed read.
+ */
 function sqlitePositionals(args: string[]): number {
     let n = 0;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         if (a === '--') return n + args.length - i - 1;
+        const option = a.replace(/^--?/, '');
         if (!a.startsWith('-')) n++;
-        else if (SQLITE_VALUE_OPTIONS.has(a.replace(/^--?/, ''))) i++;
-        else if (SQLITE_TWO_VALUE_OPTIONS.has(a.replace(/^--?/, ''))) i += 2;
+        else if (SQLITE_VALUE_OPTIONS.has(option)) i++;
+        else if (SQLITE_TWO_VALUE_OPTIONS.has(option)) i += 2;
+        else if (!SQLITE_FLAGS.has(option)) return 0;
     }
     return n;
 }
