@@ -60,7 +60,11 @@ function fakeGh(routes) {
     calls.push(args[1]);
     const route = routes[args[1]];
     if (route === undefined) return { status: 1, stdout: '', stderr: 'error connecting to api.github.com' };
-    if (route?.http) return { status: 1, stdout: '', stderr: `gh: ${route.message ?? 'Not Found'} (HTTP ${route.http})` };
+    if (route?.http) {
+      // gh api prints an error response's body on stdout, whether or not --jq was given.
+      const body = route.body ?? '';
+      return { status: 1, stdout: typeof body === 'string' ? body : JSON.stringify(body), stderr: `gh: ${route.message ?? 'Not Found'} (HTTP ${route.http})` };
+    }
     return { status: 0, stdout: typeof route === 'string' ? route : JSON.stringify(route), stderr: '' };
   };
   return { gh, calls };
@@ -281,4 +285,109 @@ test('transcriptRefs ties numbers from URLs, owner/repo#N, gh --repo and REPO=/P
   );
   assert.equal(numbers.has(50), false);
   assert.ok(repos.has(REMOTE) && repos.has(OTHER));
+});
+
+test('a gh error is never a contradiction: error bodies, non-zero exits and malformed answers all pass', () => {
+  const merged = `Merged ${REMOTE}#42.`;
+  const closed = `Closed ${REMOTE}#43.`;
+  const rateLimit = { message: 'API rate limit exceeded for user ID 1.', documentation_url: 'https://docs.github.com/rest' };
+  for (const [name, message, overrides] of [
+    ['issue 403 rate limit with its body on stdout', merged, { [`repos/${REMOTE}/issues/42`]: { http: 403, message: 'API rate limit exceeded', body: rateLimit } }],
+    ['issue 401 auth error', merged, { [`repos/${REMOTE}/issues/42`]: { http: 401, message: 'Bad credentials', body: { message: 'Bad credentials' } } }],
+    ['issue 502', merged, { [`repos/${REMOTE}/issues/42`]: { http: 502, message: 'Bad Gateway', body: '<html>bad gateway</html>' } }],
+    ['issue exit 0 with an error body', merged, { [`repos/${REMOTE}/issues/42`]: rateLimit }],
+    ['issue exit 0 with an unparseable body', merged, { [`repos/${REMOTE}/issues/42`]: 'not json' }],
+    ['issue exit 0 with the wrong shape', merged, { [`repos/${REMOTE}/issues/42`]: { state: 'open' } }],
+    ['issue exit 0 with an unknown state', merged, { [`repos/${REMOTE}/issues/42`]: { state: 'locked', pr: true } }],
+    ['pulls 403 rate limit', merged, { [`repos/${REMOTE}/pulls/42`]: { http: 403, message: 'API rate limit exceeded', body: rateLimit } }],
+    ['pulls exit 0 with an error body', merged, { [`repos/${REMOTE}/pulls/42`]: JSON.stringify(rateLimit) }],
+    ['events 500', closed, { [`repos/${REMOTE}/issues/43/events`]: { http: 500, message: 'Server Error', body: { message: 'Server Error' } } }],
+    ['events exit 0 with an error body', closed, { [`repos/${REMOTE}/issues/43/events`]: JSON.stringify(rateLimit) }],
+    ['commit 403 rate limit', `${REMOTE}#42 merged as \`d30add0e\`.`, {
+      [`repos/${REMOTE}/issues/42`]: { state: 'closed', pr: true },
+      [`repos/${REMOTE}/pulls/42`]: 'true',
+      [`repos/${REMOTE}/commits/d30add0e`]: { http: 403, message: 'API rate limit exceeded', body: rateLimit },
+    }],
+    ['commit 403 whose message mentions no commit found', `${REMOTE}#42 merged as \`d30add0e\`.`, {
+      [`repos/${REMOTE}/issues/42`]: { state: 'closed', pr: true },
+      [`repos/${REMOTE}/pulls/42`]: 'true',
+      [`repos/${REMOTE}/commits/d30add0e`]: { http: 403, message: 'No commit found for SHA: d30add0e', body: rateLimit },
+    }],
+  ]) {
+    const { verdict } = judge(message, { routes: { ...OPEN_PR_42, ...overrides } });
+    assert.equal(verdict, null, name);
+  }
+});
+
+test('a negated or reported claim is not a claim', () => {
+  for (const text of [
+    `I did not merge ${REMOTE}#42 as d30add0e.`,
+    `I have neither merged ${REMOTE}#42 nor closed it.`,
+    `${REMOTE}#42 was never merged, and ${REMOTE}#43 was never closed.`,
+    `My earlier message claimed ${REMOTE}#42 was merged as d30add0e; that was wrong.`,
+    `The log says ${REMOTE}#42 merged as d30add0e, which is false.`,
+    `> Merged ${REMOTE}#42 as d30add0e.`,
+    `The commit message reads "Merged ${REMOTE}#42 as d30add0e".`,
+    `The title is \`Merged ${REMOTE}#42 as d30add0e\`.`,
+  ]) {
+    const { prClaims, shaClaims } = extractClaims(claimText(text));
+    assert.deepEqual([prClaims, shaClaims], [[], []], text);
+    assert.equal(judge(text, { routes: OPEN_PR_42 }).verdict, null, text);
+  }
+});
+
+test('output in a tilde fence or an indented block is quoted, not claimed', () => {
+  for (const text of [
+    `~~~\nMerged ${REMOTE}#42 as d30add0e.\n~~~`,
+    `~~~text\nMerged ${REMOTE}#42.\n~~~~`,
+    `Output:\n\n    Merged ${REMOTE}#42 as d30add0e.\n`,
+    `\`\`\`\`\nMerged ${REMOTE}#42.\n\`\`\`\``,
+  ]) {
+    assert.equal(judge(text, { routes: OPEN_PR_42 }).verdict, null, text);
+  }
+});
+
+test('a commit that exists in the local checkout is never reported missing, and an unpublished commit is not checked remotely', () => {
+  const cwd = checkout();
+  const env = gitEnv(cwd);
+  execFileSync('git', ['commit', '-q', '--allow-empty', '-m', 'local only'], { cwd, env });
+  const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, env, encoding: 'utf8' }).trim();
+  const routes = {
+    ...OPEN_PR_42,
+    [`repos/${REMOTE}/issues/42`]: { state: 'closed', pr: true },
+    [`repos/${REMOTE}/pulls/42`]: 'true',
+    [`repos/${REMOTE}/commits/${sha}`]: { http: 422, message: `No commit found for SHA: ${sha}` },
+    [`repos/${REMOTE}/commits/${sha.slice(0, 9)}`]: { http: 422, message: `No commit found for SHA: ${sha.slice(0, 9)}` },
+  };
+  const committed = judge(`Committed ${REMOTE}#42 as ${sha}.`, { cwd, routes });
+  assert.equal(committed.verdict, null);
+  assert.equal(committed.calls.some((c) => c.includes('/commits/')), false);
+  for (const text of [`${REMOTE}#42 merged as \`${sha.slice(0, 9)}\`.`, `https://github.com/${REMOTE}/commit/${sha} merged.`]) {
+    assert.equal(judge(text, { cwd, routes }).verdict, null, text);
+  }
+});
+
+test('every gh call gets the time left in one budget, and nothing runs once it is spent', () => {
+  let clock = 0;
+  const seen = [];
+  const routes = {
+    'repos/example-org/one': '',
+    'repos/example-org/one/issues/42': { state: 'open', pr: true },
+    'repos/example-org/one/pulls/42': 'false',
+    'repos/example-org/two': '',
+    'repos/example-org/two/issues/43': { state: 'open', pr: true },
+    'repos/example-org/two/pulls/43': 'false',
+  };
+  const { gh: inner } = fakeGh(routes);
+  const gh = (args, opts = {}) => {
+    seen.push({ path: args[1], at: clock, timeout: opts.timeout });
+    clock += 6_000;
+    return inner(args);
+  };
+  decide({ last_assistant_message: 'Merged example-org/one#42. Merged example-org/two#43.' }, { gh, now: () => clock });
+  assert.ok(seen.length > 0);
+  for (const call of seen) {
+    assert.ok(Number.isFinite(call.timeout) && call.timeout > 0, `${call.path} got timeout ${call.timeout}`);
+    assert.ok(call.at + call.timeout <= 20_000, `${call.path} at ${call.at} may run past the budget (${call.timeout})`);
+  }
 });

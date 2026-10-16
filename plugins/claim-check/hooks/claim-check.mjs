@@ -4,8 +4,9 @@
  * sends the turn back once when a claim is proven false. A claim is checked only when it names its repository: a
  * GitHub URL, `owner/repo#N`, `repo#N` matching one repository the session knows, or a bare `#N` that the session's
  * own commands tied to exactly one repository. A SHA is checked in the repository of a PR the same sentence names.
- * Anything it cannot prove (no gh auth, an unreadable repository, offline, an ambiguous reference) passes, with one
- * line on stderr.
+ * Anything it cannot prove (no gh auth, an unreadable repository, offline, an ambiguous reference, any gh error or
+ * malformed answer) passes, with one line on stderr. Only two answers prove a claim false: a well-formed state that
+ * contradicts it, and GitHub's own not-found for an item or commit in a repository it just read.
  *
  * Off switch: CLAIM_CHECK=off in the environment.
  */
@@ -15,18 +16,31 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const MAX_CLAIMS = 12;
+// The whole check, git and gh calls included, fits in this; the hook's own timeout is 30s.
 const BUDGET_MS = 20_000;
 const CALL_TIMEOUT_MS = 8_000;
 const TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024;
 
-const SHA_KEYWORD = /\b(?:commit(?:ted|s)?|merged?|squash(?:ed)?|sha|pushed|landed|revert(?:ed)?|cherry-pick(?:ed)?|head|rebased?|tagged)\b/i;
+// A SHA is checked against GitHub only when the message says it was published there.
+const SHA_KEYWORD = /\b(?:merged|squash(?:ed)?|pushed|landed)\b/i;
 const NOT_A_COMMIT = /\b(?:image|docker|container|digest|sha-?256|checksum|md5|etag|blob|uuid|token|pid)\b/i;
 const NEGATION = /\b(?:not|never|no|unmerged|will|would|should|could|can|to be|once|after|before|until|if|when|pending|awaiting|ready to|about to|going to|unable|whether|unsure|unclear|unknown|uncertain|verify|confirm|check|maybe|might|may|possibly|probably|likely|seems?|appears?|supposedly|reportedly)\b|n't\b/i;
+// A sentence holding one of these states no claim at all: a denial, or someone else's statement being reported.
+const DISCLAIMER = /\b(?:not|never|no|neither|nor|without|failed|wrongly|incorrectly|mistakenly|falsely|false|wrong|untrue|claim(?:s|ed)?|said|says|stated|reported|reads|quoted|alleged(?:ly)?)\b|n't\b/i;
 const REF = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/(?:pull|issues)\/(\d+)|(?:\b([\w.-]+\/[\w.-]+)|\b([\w.-]+))?#(\d+)\b/g;
 
-/** Message text with fenced code blocks removed: pasted output is quoted, not claimed. */
+const BARE_TOKEN = /^(?:[0-9a-f]{7,40}|[\w.-]+\/[\w.-]+#\d+|[\w.-]*#\d+|https:\/\/github\.com\/\S+)$/;
+
+/**
+ * Message text with quoted material removed, since pasted output and quoted text are not the agent's claims: fenced
+ * and indented code blocks, block quotes, double-quoted spans, and inline code other than a bare SHA, ref or URL.
+ */
 export function claimText(message) {
-  return message.replace(/```[\s\S]*?(?:```|$)/g, '\n');
+  return message
+    .replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[`~]*[ \t]*$|(?![\s\S]))/gm, '\n')
+    .replace(/^(?: {4}|\t|[ \t]*>).*$/gm, '')
+    .replace(/"[^"\n]*"|\u201c[^\u201d\n]*\u201d/g, ' ')
+    .replace(/`([^`\n]+)`/g, (span, inner) => (BARE_TOKEN.test(inner.trim()) ? span : ' '));
 }
 
 function sentences(text) {
@@ -63,7 +77,7 @@ export function extractClaims(text) {
   const seenPr = new Set();
   const seenSha = new Set();
   for (const sentence of sentences(text)) {
-    if (sentence.trim().endsWith('?')) continue;
+    if (sentence.trim().endsWith('?') || DISCLAIMER.test(sentence)) continue;
     const refMatches = [];
     for (const m of sentence.matchAll(REF)) {
       const ref = {
@@ -178,10 +192,10 @@ export function lastAssistantText(transcript) {
   return '';
 }
 
-function run(cmd, args) {
+function run(cmd, args, timeout = CALL_TIMEOUT_MS) {
   const r = spawnSync(cmd, args, {
     encoding: 'utf8',
-    timeout: CALL_TIMEOUT_MS,
+    timeout,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' },
   });
   return { status: r.error ? null : r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
@@ -199,21 +213,40 @@ export function cwdRepo(cwd, git = run) {
   return url.status === 0 ? githubRepoOf(url.stdout) : null;
 }
 
+/** A gh JSON answer of the expected shape, or null for anything else (an error body, partial output, junk). */
+function parseIssue(result) {
+  if (result.status !== 0) return null;
+  try {
+    const value = JSON.parse(result.stdout);
+    return (value?.state === 'open' || value?.state === 'closed') && typeof value.pr === 'boolean' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Resolves each claim's repository from what the session knows, then checks it. Returns the claims proven false.
  * `gh(args)` returns {status, stdout, stderr}; status null means the call could not run.
  */
-export function verifyClaims({ prClaims, shaClaims, known, gh, log = () => {}, deadline = Infinity }) {
+export function verifyClaims({ prClaims, shaClaims, known, gh, localCommit = () => false, log = () => {}, deadline = Infinity, now = Date.now }) {
   const falseClaims = [];
   const accessible = new Map();
+  const spent = () => deadline - now() < 250;
+  // Each call is bounded by what is left of the budget; a call that cannot start counts as one that could not run.
+  const call = (args) => {
+    const left = deadline - now();
+    if (left < 250) return { status: null, stdout: '', stderr: 'claim-check: time budget spent' };
+    return gh(args, { timeout: Math.min(CALL_TIMEOUT_MS, left) });
+  };
   const readable = (repo) => {
-    if (!accessible.has(repo)) accessible.set(repo, gh(['api', `repos/${repo}`, '--silent']).status === 0);
+    if (!accessible.has(repo)) accessible.set(repo, call(['api', `repos/${repo}`, '--silent']).status === 0);
     return accessible.get(repo);
   };
-  // Not found is a 404, or for the commit endpoint a 422 whose message says so; any other 422 (validation, abuse
-  // protection) proves nothing.
-  const missing = (result) => result.status !== 0 && /HTTP 404/.test(result.stderr);
-  const missingCommit = (result) => missing(result) || (result.status !== 0 && /No commit found for SHA/i.test(result.stderr));
+  // GitHub's not-found answers, and nothing else: a 404 on the item, or a 422 on the commit endpoint whose message says
+  // so. Any other failure (auth, rate limit, abuse protection, 5xx, a timeout) proves nothing.
+  const missing = (result) => result.status === 1 && /\(HTTP 404\)/.test(result.stderr);
+  const missingCommit = (result) =>
+    missing(result) || (result.status === 1 && /\(HTTP 422\)/.test(result.stderr) && /No commit found for SHA/i.test(result.stderr));
   const resolve = (ref) => {
     if (ref.repo) return ref.repo;
     if (ref.name) {
@@ -226,7 +259,7 @@ export function verifyClaims({ prClaims, shaClaims, known, gh, log = () => {}, d
   const label = (ref) => `${ref.repo ?? ref.name ?? ''}#${ref.number}`;
 
   for (const claim of prClaims) {
-    if (Date.now() > deadline) {
+    if (spent()) {
       log(`claim-check: time budget spent; ${label(claim)} not checked`);
       continue;
     }
@@ -239,24 +272,23 @@ export function verifyClaims({ prClaims, shaClaims, known, gh, log = () => {}, d
       log(`claim-check: ${repo} not readable; #${claim.number} unverified`);
       continue;
     }
-    const issue = gh(['api', `repos/${repo}/issues/${claim.number}`, '--jq', '{state: .state, pr: (.pull_request != null)}']);
+    const issue = call(['api', `repos/${repo}/issues/${claim.number}`, '--jq', '{state: .state, pr: (.pull_request != null)}']);
     if (missing(issue)) {
       falseClaims.push(`${repo}#${claim.number} does not exist, so it was not ${claim.verb}`);
       continue;
     }
-    let state;
-    try {
-      state = JSON.parse(issue.stdout);
-    } catch {
+    const state = parseIssue(issue);
+    if (!state) {
       log(`claim-check: ${repo}#${claim.number} unverified`);
       continue;
     }
     if (claim.verb === 'closed') {
       if (state.state !== 'open') continue;
       // A reopened item was closed once; only an item never closed contradicts the claim.
-      const closes = gh(['api', `repos/${repo}/issues/${claim.number}/events`, '--paginate', '--jq', '[.[] | select(.event == "closed")] | length']);
-      if (closes.status !== 0) log(`claim-check: ${repo}#${claim.number} close history unverified`);
-      else if (closes.stdout.trim().split('\n').every((n) => n.trim() === '0')) {
+      const closes = call(['api', `repos/${repo}/issues/${claim.number}/events`, '--paginate', '--jq', '[.[] | select(.event == "closed")] | length']);
+      const pages = closes.stdout.trim().split('\n').map((n) => n.trim());
+      if (closes.status !== 0 || !pages.every((n) => /^\d+$/.test(n))) log(`claim-check: ${repo}#${claim.number} close history unverified`);
+      else if (pages.every((n) => n === '0')) {
         falseClaims.push(`${repo}#${claim.number} is open and has never been closed, so it was not closed`);
       }
       continue;
@@ -265,8 +297,8 @@ export function verifyClaims({ prClaims, shaClaims, known, gh, log = () => {}, d
       falseClaims.push(`${repo}#${claim.number} is an issue, not a pull request, so it was not merged`);
       continue;
     }
-    const pull = gh(['api', `repos/${repo}/pulls/${claim.number}`, '--jq', '.merged']);
-    if (pull.status !== 0) {
+    const pull = call(['api', `repos/${repo}/pulls/${claim.number}`, '--jq', '.merged']);
+    if (pull.status !== 0 || !/^(?:true|false)$/.test(pull.stdout.trim())) {
       log(`claim-check: ${repo}#${claim.number} merge state unverified`);
       continue;
     }
@@ -276,7 +308,7 @@ export function verifyClaims({ prClaims, shaClaims, known, gh, log = () => {}, d
   }
 
   for (const claim of shaClaims) {
-    if (Date.now() > deadline) {
+    if (spent()) {
       log(`claim-check: time budget spent; ${claim.sha} not checked`);
       continue;
     }
@@ -290,7 +322,11 @@ export function verifyClaims({ prClaims, shaClaims, known, gh, log = () => {}, d
       log(`claim-check: ${repo} not readable; ${claim.sha} unverified`);
       continue;
     }
-    const result = gh(['api', `repos/${repo}/commits/${claim.sha}`, '--silent']);
+    if (localCommit(claim.sha, deadline - now())) {
+      log(`claim-check: ${claim.sha} exists in the local checkout; not checked on GitHub`);
+      continue;
+    }
+    const result = call(['api', `repos/${repo}/commits/${claim.sha}`, '--silent']);
     if (missingCommit(result)) falseClaims.push(`commit ${claim.sha} does not exist in ${repo}`);
     else if (result.status !== 0) log(`claim-check: ${repo}@${claim.sha} unverified`);
   }
@@ -300,6 +336,7 @@ export function verifyClaims({ prClaims, shaClaims, known, gh, log = () => {}, d
 export function decide(input, { gh, git = run, log = () => {}, now = Date.now } = {}) {
   if (process.env.CLAIM_CHECK === 'off') return null;
   if (input?.stop_hook_active) return null;
+  const deadline = now() + BUDGET_MS;
   const transcript = readTail(input?.transcript_path);
   const message = typeof input?.last_assistant_message === 'string' && input.last_assistant_message
     ? input.last_assistant_message
@@ -314,10 +351,14 @@ export function decide(input, { gh, git = run, log = () => {}, now = Date.now } 
 
   const known = transcriptRefs(transcript);
   for (const repo of transcriptRefs(message).repos) known.repos.add(repo);
-  const home = cwdRepo(input?.cwd, git);
+  const gitLeft = (cmd, args, left) => (left < 250 ? { status: null, stdout: '', stderr: '' } : git(cmd, args, Math.min(CALL_TIMEOUT_MS, left)));
+  const home = cwdRepo(input?.cwd, (cmd, args) => gitLeft(cmd, args, deadline - now()));
   if (home) known.repos.add(home);
+  // A commit present in the session's checkout exists, whether or not it reached GitHub yet.
+  const localCommit = (sha, left) =>
+    Boolean(input?.cwd) && gitLeft('git', ['-C', input.cwd, 'cat-file', '-e', `${sha}^{commit}`], left).status === 0;
 
-  const falseClaims = verifyClaims({ prClaims: keptPr, shaClaims: keptSha, known, gh, log, deadline: now() + BUDGET_MS });
+  const falseClaims = verifyClaims({ prClaims: keptPr, shaClaims: keptSha, known, gh, localCommit, log, deadline, now });
   if (falseClaims.length === 0) return null;
   return {
     decision: 'block',
@@ -336,7 +377,7 @@ function main() {
     return;
   }
   const verdict = decide(input, {
-    gh: (args) => run('gh', args),
+    gh: (args, { timeout } = {}) => run('gh', args, timeout),
     log: (line) => process.stderr.write(`${line}\n`),
   });
   if (verdict) process.stdout.write(`${JSON.stringify(verdict)}\n`);
