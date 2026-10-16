@@ -63,6 +63,7 @@ export function extractClaims(text) {
   const seenPr = new Set();
   const seenSha = new Set();
   for (const sentence of sentences(text)) {
+    if (sentence.trim().endsWith('?')) continue;
     const refMatches = [];
     for (const m of sentence.matchAll(REF)) {
       const ref = {
@@ -93,7 +94,7 @@ export function extractClaims(text) {
     const urlShas = new Set();
     for (const m of sentence.matchAll(/https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/commit\/([0-9a-f]{7,40})\b/g)) {
       urlShas.add(m[3]);
-      if (seenSha.has(m[3])) continue;
+      if (seenSha.has(m[3]) || NEGATION.test(sentence.slice(Math.max(0, m.index - 40), m.index))) continue;
       seenSha.add(m[3]);
       shaClaims.push({ sha: m[3], repo: `${m[1]}/${m[2]}`, refs: [] });
     }
@@ -251,7 +252,13 @@ export function verifyClaims({ prClaims, shaClaims, known, gh, log = () => {}, d
       continue;
     }
     if (claim.verb === 'closed') {
-      if (state.state === 'open') falseClaims.push(`${repo}#${claim.number} is still open, so it was not closed`);
+      if (state.state !== 'open') continue;
+      // A reopened item was closed once; only an item never closed contradicts the claim.
+      const closes = gh(['api', `repos/${repo}/issues/${claim.number}/events`, '--paginate', '--jq', '[.[] | select(.event == "closed")] | length']);
+      if (closes.status !== 0) log(`claim-check: ${repo}#${claim.number} close history unverified`);
+      else if (closes.stdout.trim().split('\n').every((n) => n.trim() === '0')) {
+        falseClaims.push(`${repo}#${claim.number} is open and has never been closed, so it was not closed`);
+      }
       continue;
     }
     if (!state.pr) {

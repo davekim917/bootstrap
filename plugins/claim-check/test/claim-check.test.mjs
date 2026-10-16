@@ -80,6 +80,7 @@ const OPEN_PR_42 = {
   [`repos/${REMOTE}/issues/42`]: { state: 'open', pr: true },
   [`repos/${REMOTE}/pulls/42`]: 'false',
   [`repos/${REMOTE}/issues/43`]: { state: 'open', pr: true },
+  [`repos/${REMOTE}/issues/43/events`]: '0',
 };
 
 test('the fabricated-merge replay is sent back: invented merge SHA, PR still open, and a claimed close of an open PR', () => {
@@ -95,7 +96,7 @@ test('the fabricated-merge replay is sent back: invented merge SHA, PR still ope
   assert.equal(verdict?.decision, 'block');
   assert.match(verdict.reason, /example-org\/example-app#42 is open, so it was not merged/);
   assert.match(verdict.reason, /commit d30add0e does not exist in example-org\/example-app/);
-  assert.match(verdict.reason, /example-org\/example-app#43 is still open, so it was not closed/);
+  assert.match(verdict.reason, /example-org\/example-app#43 is open and has never been closed, so it was not closed/);
 });
 
 test('the same claims written as links are checked without any transcript', () => {
@@ -145,6 +146,13 @@ test('a 422 that is not "no commit found" proves nothing', () => {
   });
   assert.equal(verdict, null);
   assert.ok(logs.some((l) => l.includes('d30add0e unverified')));
+});
+
+test('a reopened item was closed once, so a closed claim about it passes', () => {
+  const { verdict } = judge(`${REMOTE}#43 was closed yesterday and later reopened.`, {
+    routes: { ...OPEN_PR_42, [`repos/${REMOTE}/issues/43/events`]: '1' },
+  });
+  assert.equal(verdict, null);
 });
 
 test('a bare #N tied to two repositories in the transcript is not guessed', () => {
@@ -227,6 +235,7 @@ test('only stated facts count: negated, conditional and future forms, fenced out
     'It has not merged #42.',
     `I was unable to verify whether ${REMOTE}#42 was merged.`,
     `${REMOTE}#42 probably merged overnight.`,
+    `Was ${REMOTE}#42 merged?`,
   ]) {
     assert.deepEqual(extractClaims(text).prClaims, [], text);
   }
@@ -236,6 +245,8 @@ test('only stated facts count: negated, conditional and future forms, fenced out
     'For #42: container 3f9a2b1c7d restarted after the commit landed.',
     'See run 1234567 for #42.',
     'The commit message for #42 mentions deadbeefcafe.',
+    `Does https://github.com/${REMOTE}/commit/d30add0e exist?`,
+    `I could not find https://github.com/${REMOTE}/commit/d30add0e anywhere.`,
   ]) {
     assert.deepEqual(extractClaims(claimText(text)).shaClaims, [], text);
   }
