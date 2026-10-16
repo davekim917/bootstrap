@@ -644,6 +644,7 @@ for (const script of ['claim.sh', 'waiting.sh']) {
   if (!fs.existsSync(scriptPath)) fail(`plugins/anderton must ship skills/anderton/scripts/${script}`);
   else if ((fs.statSync(scriptPath).mode & 0o111) === 0) fail(`plugins/anderton/skills/anderton/scripts/${script} must be executable`);
 }
+if (!exists('plugins/anderton/skills/anderton/scripts/session-lib.sh')) fail('plugins/anderton must ship skills/anderton/scripts/session-lib.sh, which both scripts source');
 
 // Codex does not expand ${CLAUDE_PLUGIN_ROOT}, so comment-rule ships a separate Codex hook file.
 const commentRuleClaudeManifest = readJson('plugins/comment-rule/.claude-plugin/plugin.json');

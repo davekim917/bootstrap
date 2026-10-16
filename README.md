@@ -442,10 +442,12 @@ the host: its two scripts read Claude Code's own session registry, and there is 
   another live session holds the role (`--take-over` replaces it).
 - `scripts/waiting.sh` lists every live Claude Code session on the machine, in any project, whose
   last turn ended with Claude talking, with the tail of that message. It reads
-  `~/.claude/sessions/*.json`, keeps sessions whose process is alive, finds each transcript under
-  `~/.claude/projects/*/<session id>.jsonl`, and leaves out the session holding the role.
+  `~/.claude/sessions/*.json`, keeps sessions whose process is alive and started when the registry
+  says, finds each transcript under `~/.claude/projects/*/<session id>.jsonl`, and leaves out the
+  session holding the role.
 
-Both honour `CLAUDE_CONFIG_DIR`, need `jq`, and run under macOS's bash 3.2 and BSD userland as well
+The role belongs to a Claude Code process (pid plus its registry start time), not a session id, so
+it survives `/clear`. Both scripts honour `CLAUDE_CONFIG_DIR`, need `jq` and a POSIX `ps`, and run under macOS's bash 3.2 and BSD userland as well
 as Linux. NanoClaw mounts every plugin under `~/plugins` into its agent containers, so an install
 that clones this repo there must withhold `bootstrap/plugins/anderton` from them (`excludePlugins`);
 this repo cannot do it on the host's behalf.

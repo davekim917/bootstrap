@@ -3,11 +3,14 @@
 # Exit 0: claimed (or already held by this session). Exit 3: held by another live session.
 # Portable to macOS's bash 3.2 and BSD userland: macOS has no flock, so the lock is a directory.
 set -euo pipefail
+# shellcheck source=session-lib.sh
+. "$(dirname "$0")/session-lib.sh"
 
 command -v jq >/dev/null 2>&1 || {
   echo "claim.sh needs jq: install it (brew install jq, or your package manager) and rerun." >&2
   exit 1
 }
+require_ps claim.sh
 
 home="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 sessions="$home/sessions"
@@ -51,18 +54,21 @@ trap 'rm -rf "$lock"' EXIT
 echo $$ > "$lock/pid"
 
 # The holder is a Claude Code process, not a session id: /clear gives the same process a new
-# session id. procStart, from the registry, tells a reused pid apart from the process that claimed.
-proc_start() {
-  jq -r '.procStart // empty' "$sessions/$1.json" 2>/dev/null || true
+# session id. The registry's startedAt tells that process apart from a later one given its pid.
+started_at() {
+  jq -r '.startedAt // empty | floor' "$sessions/$1.json" 2>/dev/null || true
 }
 
 holder_alive() {
-  kill -0 "$1" 2>/dev/null && [ -f "$sessions/$1.json" ] && { [ -z "$2" ] || [ "$(proc_start "$1")" = "$2" ]; }
+  local started
+  [ -f "$sessions/$1.json" ] || return 1
+  started=$(started_at "$1")
+  { [ -z "$2" ] || [ "$started" = "$2" ]; } && registered_alive "$1" "$started"
 }
 
 if [ -f "$state" ] && [ "$force" != "--take-over" ]; then
   hpid=$(jq -r '.pid // empty' "$state" 2>/dev/null || true)
-  hstart=$(jq -r '.procStart // empty' "$state" 2>/dev/null || true)
+  hstart=$(jq -r '.startedAt // empty' "$state" 2>/dev/null || true)
   if [ -n "$hpid" ] && [ "$hpid" != "$pid" ] && holder_alive "$hpid" "$hstart"; then
     name=$(jq -r '.name // empty' "$sessions/$hpid.json" 2>/dev/null || true)
     hsid=$(jq -r '.sessionId // empty' "$sessions/$hpid.json" 2>/dev/null || true)
@@ -72,8 +78,8 @@ if [ -f "$state" ] && [ "$force" != "--take-over" ]; then
   fi
 fi
 
-jq -nc --argjson pid "$pid" --arg start "$(proc_start "$pid")" --arg sid "$sid" \
+jq -nc --argjson pid "$pid" --arg started "$(started_at "$pid")" --arg sid "$sid" \
   --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{pid: $pid, procStart: $start, sessionId: $sid, claimedAt: $at}' > "$state.tmp"
+  '{pid: $pid, startedAt: ($started | tonumber? // null), sessionId: $sid, claimedAt: $at}' > "$state.tmp"
 mv "$state.tmp" "$state"
 echo "Anderton claimed by session $sid (pid $pid)."
