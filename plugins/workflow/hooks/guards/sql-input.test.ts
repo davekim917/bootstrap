@@ -23,6 +23,9 @@ beforeAll(() => {
     writeFileSync(join(dir, 'job', 'outer.sql'), '\\ir drop.sql\n');
     writeFileSync(join(dir, 'job', 'drop.sql'), 'drop table users;\n');
     writeFileSync(join(dir, 'drop schema.sql'), 'drop schema s;\n');
+    writeFileSync(join(dir, 'template.sql'), '<% action %> TABLE users;\n');
+    mkdirSync(join(dir, 'source'));
+    writeFileSync(join(dir, 'source', 'only-here.sql'), 'drop table users;\n');
     writeFileSync(join(dir, 'quoted.sql'), `\\i '${join(dir, 'drop schema.sql')}'\n`);
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -169,10 +172,37 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
     }
 });
 
+test('SQL reaching a client through a substitution pipe, -init, a template file, env -C, a flag cluster or pushd', () => {
+    for (const command of [
+        `result=$(printf 'DROP TABLE users;' | psql)`,
+        `echo "$(cat bad.sql | psql)"`,
+        `printf 'DROP TABLE users;' | sqlite3 -init ok.sql db.sqlite`,
+        `printf 'DROP TABLE users;' | duckdb -init ok.sql`,
+        `snow sql -f template.sql -D action=DROP`,
+        `env -C source cat only-here.sql | psql`,
+        `psql -Xc'DROP TABLE users'`,
+        `psql -Xqc 'DROP TABLE users'`,
+        `pushd job && psql -f drop.sql`,
+    ]) {
+        expect(verdict(command)).toBe('gate');
+    }
+    for (const command of [
+        `result=$(printf 'SELECT 1;' | psql)`,
+        `printf 'select 1;' | sqlite3 -init ok.sql db.sqlite`,
+        `snow sql -f template.sql -D action=SELECT`,
+        `psql -Xc'SELECT 1'`,
+        `pushd job && psql -f ok.sql`,
+        `pushd +1 && psql -c 'select 1'`,
+    ]) {
+        expect(verdict(command)).toBe('allow');
+    }
+});
+
 test('deeply nested pipelines and many same-file writes resolve in bounded time', () => {
     const d = 2000;
     for (const command of [
         'echo x | ' + '{ echo x | '.repeat(d) + 'psql' + '; }'.repeat(d),
+        'r=' + '$(echo x | '.repeat(d) + 'psql' + ')'.repeat(d),
         'echo>f;'.repeat(4000) + 'psql<f;'.repeat(4000),
         'echo a | ' + 'tee f | '.repeat(3000) + 'cat; ' + 'psql<f;'.repeat(3000),
         `printf '%s' '${'insert into t values (1); '.repeat(1200)}' > f; ` + 'psql<f;'.repeat(4500),
