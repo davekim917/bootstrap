@@ -156,6 +156,7 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
         `psql -c "$UNKNOWN"`,
         `B='DROP TABLE users;'; cat <<'EOF' | psql\n$B\nEOF`,
         `B='-- DROP TABLE users;'; echo "$B" | psql`,
+        `B='-- DROP TABLE users;'; echo $B | psql`,
         `F='DROP TABLE ok.sql'; cat "$F" | psql`,
     ]) {
         expect(verdict(command)).toBe('allow');
