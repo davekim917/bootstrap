@@ -98,6 +98,8 @@ const BASH_BLOCK = [
   'rm -rf /',
   'find . -delete',
   'xargs rm < list',
+  // git submodule foreach runs its command in each submodule, on the same terms.
+  "git submodule foreach 'rm -rf /etc'",
 ];
 
 // Gated (require approval): destructive infra/DB/cloud/IaC/containers/dbt.
@@ -118,6 +120,31 @@ const BASH_GATE = [
   // spelling, mirror push, remote-ref deletion / per-ref force refspecs —
   // including behind git's global options (-C).
   'git push --force origin main',
+  // git clean deletes untracked files outside the trash; only a dry run passes.
+  'git clean -fdx',
+  'git clean -f',
+  'git -C repo clean -xdf',
+  'git -c clean.requireForce=false clean -d',
+  'git clean -f -e .env',
+  'git clean -n --no-dry-run -f',
+  'git clean -n --no-dry-r -f',
+  'git clean -n --no-d -f',
+  'git clean -f --ex -npattern',
+  'git clean -f --e -npattern',
+  'git -c clean.requireForce=false --attr-source HEAD clean',
+  '/usr/lib/git-core/git-clean -fd',
+  'git -c clean.requireForce=false --shallow-file /dev/null clean',
+  'X=--no-dry-run; git clean -n $X -f',
+  // git submodule foreach runs its command in each submodule.
+  "git submodule foreach --recursive 'git clean -fdx'",
+  'git submodule foreach git clean -fdx',
+  "git submodule --quiet foreach 'git push --force origin main'",
+  'git clean -n * -f',
+  'git clean -n {a,b} -f',
+  'git clean -n ./--no-dry-r[u]n -f',
+  'git clean -f -e -npattern',
+  'git clean -fe -n',
+  'ENV=false git --config-env clean.requireForce=ENV clean',
   'git push -f',
   'git -C /workspace/worktrees/APP push -f origin develop',
   // Spellings that once slipped through: a clustered short flag, AWS global
@@ -240,6 +267,13 @@ const BASH_ALLOW = [
   "printf x | xargs -I{} xargs echo",
   'exec bash-completion-loader',
   'git status',
+  'git clean -n',
+  'git clean -ndx',
+  'git clean --dry-run -fdx',
+  'git clean -e keep -n',
+  'git clean --dry -fdx',
+  'git clean -h',
+  'git clean --help',
   'rm -rf node_modules',
   'echo hello',
   'cat README.md',
@@ -274,6 +308,13 @@ const BASH_ALLOW = [
   // Bare xargs runs echo, and a wrapper that names its own command passes.
   "printf '%s\\n' a b | xargs",
   "printf '%s\\n' a b | xargs -n1 env FOO=1 echo",
+  // A dry run whose words are all literal, and git's global help for clean, delete nothing.
+  'git clean -n -d -x -- build/',
+  'git --help clean',
+  "git clean -n -- 'dir with spaces'",
+  "git clean -n 'dir with spaces'",
+  "git submodule foreach --recursive 'git status --short'",
+  "git submodule foreach 'git fetch origin && git checkout main'",
 ];
 
 // git-clone into a managed dir is blocked (must use clone_repo/create_worktree);

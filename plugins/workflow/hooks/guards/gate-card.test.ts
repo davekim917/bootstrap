@@ -61,6 +61,24 @@ describe('destructive approval description', () => {
             has: ['Deletes the table `users`'],
         },
         {
+            name: 'git clean names what it deletes, that it skips the trash, and what -e keeps',
+            command: 'cd /work/app && git clean -fdx -e .env',
+            label: 'Permanently delete untracked and ignored files (git clean)',
+            has: ['and directories are deleted, skipping the trash', 'such as `.env`', 'Kept: files matching `.env`', 'Directory: `/work/app`'],
+        },
+        {
+            name: 'git clean with a pathspec says matching directories go too, -d or not',
+            command: 'git clean -f untracked-dir',
+            label: 'Permanently delete untracked files under untracked-dir (git clean)',
+            has: ['untracked files and directories under `untracked-dir` are deleted'],
+        },
+        {
+            name: 'git clean reads an abbreviated --exclude as a kept pattern, and composes -C for the directory',
+            command: 'git -C /srv -C prod clean -fd --e keep',
+            label: 'Permanently delete untracked files (git clean)',
+            has: ['Kept: files matching `keep`', 'Directory: `/srv/prod`'],
+        },
+        {
             name: 'dbt --select= and --selector forms name the selection',
             command: 'dbt run --full-refresh --select=orders',
             label: 'Rebuild dbt model orders from scratch (--full-refresh)',
@@ -153,6 +171,40 @@ describe('destructive approval description', () => {
         const c = card(command);
         expect(c.summary).not.toContain('keep');
         expect(c.summary).toContain(`\`${variable}\` is only known when the command runs`);
+    });
+
+    test('a relative git -C resolves against the directory the command starts in', () => {
+        expect(card('cd /srv && git -C repo clean -fd').summary).toContain('Directory: `/srv/repo`');
+        expect(card('env -C /srv git -C repo clean -fd').summary).toContain('Directory: `/srv/repo`');
+    });
+
+    test('git clean names the work tree GIT_WORK_TREE sets', () => {
+        expect(card('cd /repo && GIT_DIR=/repo/.git GIT_WORK_TREE=/srv/staging git clean -fd').summary).toContain('Directory: `/srv/staging`');
+        expect(card('GIT_WORK_TREE=/srv/staging git --work-tree=/srv/other clean -fd').summary).toContain('Directory: `/srv/other`');
+    });
+
+    test('the last -e rule for a pattern decides what the card says', () => {
+        const removed = card("git clean -f -e foo -e '!foo'");
+        expect(removed.summary).toContain('Also deleted: files matching `foo`');
+        expect(removed.summary).not.toContain('Kept:');
+        const kept = card("git clean -f -e '!foo' -e foo");
+        expect(kept.summary).toContain('Kept: files matching `foo`');
+        expect(kept.summary).not.toContain('Also deleted');
+    });
+
+    test('a negated -e pattern reverses what the card says', () => {
+        const x = card("git clean -f -X -e '!secret.env'");
+        expect(x.summary).toContain('Kept: files matching `secret.env`');
+        expect(x.summary).not.toContain('Also deleted');
+        const plain = card("git clean -f -e '!secret.env'");
+        expect(plain.summary).toContain('Also deleted: files matching `secret.env`, which -e un-ignores');
+        expect(plain.summary).not.toContain('Kept:');
+    });
+
+    test('git clean -X says an -e pattern is deleted, not kept', () => {
+        const c = card('git clean -f -X -e secret.env');
+        expect(c.summary).toContain('Also deleted: files matching `secret.env`');
+        expect(c.summary).not.toContain('Kept:');
     });
 
     test('an && assignment holds only for the rest of its chain', () => {

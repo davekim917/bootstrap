@@ -2004,6 +2004,7 @@ function innerSteps(inner: ResolvedCommand | null, appended = false): ResolvedCo
 /** What xargs, or each find -exec/-execdir/-ok/-okdir, runs: the option that runs it and the command it runs. */
 function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCommand | null }> {
     if (cmd.name === 'xargs') return [{ via: 'xargs', inner: innerCommand(xargsCommand(cmd.args), cmd) }];
+    if (cmd.name === 'git') return submoduleForeach(cmd);
     if (cmd.name !== 'find') return [];
     const runs: Array<{ via: string; inner: ResolvedCommand | null }> = [];
     for (let i = 0; i < cmd.args.length; i++) {
@@ -2017,6 +2018,18 @@ function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCom
         if (end > i) i = end;
     }
     return runs;
+}
+
+/** `git submodule [opts] foreach [--recursive] CMD…`: git joins CMD's words and runs them with `sh -c` in each submodule. */
+function submoduleForeach(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCommand | null }> {
+    let i = gitSubcommandIndex(cmd.args);
+    if (cmd.args[i] !== 'submodule') return [];
+    for (i++; cmd.args[i]?.startsWith('-'); i++);
+    if (cmd.args[i] !== 'foreach') return [];
+    for (i++; ['--recursive', '--quiet', '-q', '--'].includes(cmd.args[i]); i++);
+    const words = cmd.args.slice(i);
+    if (!words.length) return [];
+    return [{ via: 'git submodule foreach', inner: { name: 'sh', args: ['-c', words.join(' ')], raw: cmd.raw, env: [], chdir: 'each submodule', hasInputRedirect: false } }];
 }
 
 // Tools whose operation is a positional word, so `xargs <tool>` with none lets its input choose the operation.
@@ -2784,7 +2797,7 @@ function currentWorkingDir(): string {
 
 // ── git target resolution ────────────────────────────────────────────────────
 
-const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
+const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--attr-source', '--super-prefix', '--shallow-file']);
 // URL and scp-style (`git@github.com:org/repo`) remotes.
 const REPO_URL_RE = /^(?:(?:https?|ssh|git|git\+ssh|file):\/\/|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:)/;
 // A bare `org/repo` positional. Only consulted in the REMOTE position, so a
@@ -2821,6 +2834,16 @@ function gitRemoteArg(args: string[]): string | null {
 }
 
 function labGitTarget(cmd: ResolvedCommand, cwd: string): string | null {
+    // git clean touches only its work tree; its words (an `-e` pattern, a pathspec) name no repository.
+    if (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean') {
+        // An exported GIT_WORK_TREE or GIT_DIR elsewhere on the line can move the work tree; only the command's own
+        // prefix (which overrides an export) is known.
+        const own = (cmd.env ?? []).some(e => e.startsWith('GIT_WORK_TREE='));
+        if (!own && /\bGIT_(?:WORK_TREE|DIR)\b/.test(cmd.script?.command ?? cmd.raw)) return null;
+        const tree = gitEffectiveDir(cmd.args, cmd.env);
+        const dir = tree === undefined ? cwd : pathResolve(cwd, tree);
+        return isLabWorktreePath(dir) ? dir : null;
+    }
     // An explicit repo URL anywhere in the command decides on its own, and ALL
     // of them must be lab repos — a lab cwd does not launder a push to a prod URL.
     const urls = cmd.args.filter(a => REPO_URL_RE.test(a));
@@ -3640,15 +3663,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     // allowed: they refuse to clobber unseen remote work and are the
     // sanctioned recovery path the git_push tool itself uses.
     if (name === 'git') {
-        // Skip git's global options so `git -C /x push -f` classifies like
-        // `git push -f`. Only these take a separate value argument.
-        const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
-        let i = 0;
-        while (i < args.length) {
-            if (GIT_GLOBAL_VALUE_OPTS.has(args[i])) { i += 2; continue; }
-            if (args[i].startsWith('-')) { i += 1; continue; }
-            break;
-        }
+        // Skip git's global options so `git -C /x push -f` classifies like `git push -f`.
+        const i = gitSubcommandIndex(args);
         if (args[i] === 'push') {
             const pushArgs = pushArgsWithoutValues(args.slice(i + 1));
             const end = pushArgs.indexOf('--');
@@ -3667,6 +3683,22 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
                 pushArgs.some(a => (a.startsWith(':') || a.startsWith('+')) && a.length > 1)) {
                 return 'git push deleting or force-updating a remote ref (+/: refspec, --delete).';
             }
+        }
+    }
+    // git's own `git-clean` program, run by path from its exec dir, is the same command as `git clean`.
+    const cleanArgs = name === 'git' && args[gitSubcommandIndex(args)] === 'clean' ? args.slice(gitSubcommandIndex(args) + 1)
+        : name === 'git-clean' ? args
+        : null;
+    if (cleanArgs) {
+        // Gated unless it is a dry run, -f or not: `clean.requireForce=false` lets it delete without -f.
+        const clean = parseGitClean(cleanArgs);
+        // The exemption holds only for words the shell passes as written: a variable, glob or brace can expand to
+        // `--no-dry-run` (an untracked file of that name matches `*`).
+        const end = cleanArgs.indexOf('--');
+        const literal = cleanArgs.slice(0, end < 0 ? undefined : end).every(a => /^[\w@%+=:,./ -]*$/.test(a));
+        const globalHelp = name === 'git' && args.slice(0, gitSubcommandIndex(args)).some(a => a === '--help' || a === '-h');
+        if (!globalHelp && ((!clean.dryRun && !clean.help) || !literal)) {
+            return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
         }
     }
 
@@ -3936,6 +3968,88 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
     ] };
 }
 
+interface GitCleanArgs { dryRun: boolean; help: boolean; ignored: boolean; onlyIgnored: boolean; dirs: boolean; excluded: string[]; paths: string[] }
+
+/**
+ * `git clean`'s arguments read in order, as git's option parser does: the last of `-n`/`--dry-run`/`--no-dry-run`
+ * wins, `-e`/`--exclude` take a value, and a long option may be any unambiguous prefix of its name.
+ */
+function parseGitClean(rest: string[]): GitCleanArgs {
+    const out: GitCleanArgs = { dryRun: false, help: false, ignored: false, onlyIgnored: false, dirs: false, excluded: [], paths: [] };
+    for (let i = 0; i < rest.length; i++) {
+        const a = rest[i];
+        if (a === '--') {
+            out.paths.push(...rest.slice(i + 1));
+            break;
+        }
+        if (a.startsWith('--')) {
+            const [name, value] = [a.slice(2).split('=')[0], a.includes('=') ? a.slice(a.indexOf('=') + 1) : undefined];
+            if (name && 'dry-run'.startsWith(name)) out.dryRun = true;
+            else if (name.length > 3 && 'no-dry-run'.startsWith(name)) out.dryRun = false;
+            else if (name && 'exclude'.startsWith(name)) out.excluded.push(value ?? rest[++i] ?? '');
+            else if (name.length > 1 && 'help'.startsWith(name)) out.help = true;
+            continue;
+        }
+        if (!/^-[A-Za-z]/.test(a)) {
+            out.paths.push(a);
+            continue;
+        }
+        for (let k = 1; k < a.length; k++) {
+            const letter = a[k];
+            if (letter === 'n') out.dryRun = true;
+            else if (letter === 'h') out.help = true;
+            else if (letter === 'x') out.ignored = true;
+            else if (letter === 'X') out.onlyIgnored = true;
+            else if (letter === 'd') out.dirs = true;
+            else if (letter === 'e') {
+                out.excluded.push(k < a.length - 1 ? a.slice(k + 1) : rest[++i] ?? '');
+                break;
+            }
+        }
+    }
+    out.excluded = out.excluded.filter(Boolean);
+    return out;
+}
+
+/** The directory git runs in after every `-C` (relative ones compose) and `--work-tree`, or undefined when none is given. */
+function gitEffectiveDir(args: string[], env: string[] = []): string | undefined {
+    let dir: string | undefined;
+    // A GIT_WORK_TREE the command sets is the work tree unless --work-tree overrides it.
+    let workTree = env.findLast(e => e.startsWith('GIT_WORK_TREE='))?.slice('GIT_WORK_TREE='.length);
+    for (let i = 0; i < gitSubcommandIndex(args); i++) {
+        const a = args[i];
+        if (a === '-C') {
+            const next = args[++i] ?? '';
+            dir = next.startsWith('/') || dir === undefined ? next : join(dir, next);
+        } else if (a === '--work-tree') workTree = args[++i];
+        else if (a.startsWith('--work-tree=')) workTree = a.slice('--work-tree='.length);
+        else if (GIT_GLOBAL_VALUE_OPTS.has(a)) i++;
+    }
+    return workTree !== undefined ? (workTree.startsWith('/') || dir === undefined ? workTree : join(dir, workTree)) : dir;
+}
+
+function gitCleanStep(cmd: ResolvedCommand): StepCard {
+    const { ignored, onlyIgnored, dirs, excluded, paths } = parseGitClean(cmd.args.slice(gitSubcommandIndex(cmd.args) + 1));
+    const what = onlyIgnored ? 'ignored files' : ignored ? 'untracked and ignored files' : 'untracked files';
+    const where = paths.length ? ` under ${paths.map(code).join(', ')}` : '';
+    const lines = [
+        // A pathspec matches untracked directories whole, with or without -d.
+        `If you approve: all ${what}${dirs || paths.length ? ' and directories' : ''}${where} are deleted, skipping the trash. They cannot be recovered.`,
+    ];
+    if (ignored || onlyIgnored) lines.push('Ignored files include local secrets and data such as `.env`, caches and build output.');
+    // -e adds to the ignore rules: it protects files from a plain or -x clean, and adds to what -X deletes. A leading
+    // `!` un-ignores instead, so its effect is the reverse.
+    // The last of several -e rules for one pattern wins, as in a .gitignore.
+    const last = new Map(excluded.map(p => [p.replace(/^!/, ''), p.startsWith('!')]));
+    const negated = [...last].filter(([, neg]) => neg).map(([p]) => p);
+    const plain = [...last].filter(([, neg]) => !neg).map(([p]) => p);
+    const kept = onlyIgnored ? negated : plain;
+    const added = onlyIgnored ? plain : negated;
+    if (kept.length) lines.push(`Kept: files matching ${kept.map(code).join(', ')}.`);
+    if (added.length) lines.push(`Also deleted: files matching ${added.map(code).join(', ')}, which -e ${onlyIgnored ? 'marks as ignored' : 'un-ignores'}.`);
+    return { dir: gitEffectiveDir(cmd.args, cmd.env), label: `Permanently delete ${what}${where.replace(/`/g, '')} (git clean)`, lines };
+}
+
 function awsStep(cmd: ResolvedCommand): StepCard {
     const [service, op, opIndex] = awsServiceAndOperation(cmd.args);
     const operands = cmd.args.slice(opIndex + 1).filter(a => !a.startsWith('-'));
@@ -4098,10 +4212,13 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             const step: StepCard =
                 sqlDialect ? sqlStep(sqlDialect, cmd)
                 : cmd.name === 'dbt' ? dbtStep(cmd, dirBefore)
-                : cmd.name === 'git' ? gitPushStep(cmd)
+                : cmd.name === 'git-clean' ? gitCleanStep({ ...cmd, args: ['clean', ...cmd.args] })
+                : cmd.name === 'git' ? (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean' ? gitCleanStep(cmd) : gitPushStep(cmd))
                 : cmd.name === 'aws' ? awsStep(cmd)
                 : genericStep(cmd, why);
-            const dir = step.dir ?? dirBefore;
+            const dir = step.dir === undefined ? dirBefore
+                : step.dir.startsWith('/') || dirBefore === undefined || !dirBefore.startsWith('/') ? step.dir
+                : join(dirBefore, step.dir);
             const shown = raw.pos === undefined ? raw.raw : evalWord(raw.raw, view, raw.pos, true).value;
             const lines = [...step.lines];
             if (dir) lines.push(`Directory: ${code(dir)}`);
