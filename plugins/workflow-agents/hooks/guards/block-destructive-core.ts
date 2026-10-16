@@ -1022,8 +1022,6 @@ function optionValueAt(args: string[], i: number, option: string): string | unde
     return a.startsWith(option) && a.length > option.length && !a.startsWith('--') ? a.slice(option.length) : undefined;
 }
 
-const SHORT_CLUSTER_MAX = 16;
-
 // sqlite3 options that take a value, single- or double-dashed.
 const SQLITE_VALUE_OPTIONS = new Set(['init', 'cmd', 'separator', 'newline', 'nullvalue', 'mmap', 'heap', 'maxsize', 'vfs', 'escape', 'nonce']);
 const SQLITE_TWO_VALUE_OPTIONS = new Set(['lookaside', 'pagecache']);
@@ -1050,9 +1048,14 @@ function sqlitePositionals(args: string[]): number {
 /** An argument, plus the value glued to it when it is an option (`-cSQL`, `--command=SQL`), where SQL would read `--…` as a comment. */
 function withOptionValue(a: string): string[] {
     if (/^-[A-Za-z]./.test(a) && !a.startsWith('--')) {
-        // The value may follow other flag letters clustered before its option (`psql -XcSQL`).
-        const out = [a];
-        for (let k = 2; k < a.length && k <= SHORT_CLUSTER_MAX + 1 && /[A-Za-z]/.test(a[k - 1]); k++) out.push(a.slice(k));
+        // The value may follow other flag letters clustered before its option (`psql -XAtqcSQL`): the first letter that
+        // takes SQL (psql -c, mysql -e, snow -q) consumes the rest of the word.
+        const out = [a, a.slice(2)];
+        const run = a.slice(1).match(/^[A-Za-z]+/)![0];
+        for (const letter of 'ceq') {
+            const at = run.indexOf(letter);
+            if (at > 0) out.push(a.slice(at + 2));
+        }
         return out;
     }
     if (a.startsWith('--') && a.includes('=')) return [a, a.slice(a.indexOf('=') + 1)];
@@ -1458,6 +1461,14 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): Resolved
     const byNode = new Map<any, ResolvedCommand>(nested);
     const expandLater: ResolvedCommand[] = [];
     let views = 0;
+    const inSub = new Map<object, ResolvedCommand[]>();
+    for (const [n, c] of nested) {
+        const owner = SUBSTITUTION_OF.get(n);
+        if (!owner) continue;
+        const list = inSub.get(owner);
+        if (list) list.push(c);
+        else inSub.set(owner, [c]);
+    }
     const done = new Set<object>();
     for (const [node, cmd] of nested) {
         if (!SQL_CLIS[cmd.name] && cmd.name !== 'snow') continue;
@@ -1470,6 +1481,19 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): Resolved
         const local = text && ++views <= SUBSTITUTION_VIEWS_MAX
             ? ({ writes: [], pipedInto: new Map(), cds: [], links: new Map(), command: text } as ScriptContext)
             : null;
+        // A relative `cd`/`pushd` earlier in the substitution moves where its `cat` files are read from.
+        const catDir = new Map<ResolvedCommand, string>();
+        let dir: string | null | undefined;
+        for (const c of inSub.get(sub) ?? []) {
+            if (typeof dir === 'string') catDir.set(c, dir);
+            if (c.name !== 'cd' && c.name !== 'pushd') continue;
+            const target = c.args.length === 1 && !/[$`*?]|^[+-]/.test(c.args[0]) ? c.args[0] : null;
+            dir = target === null || dir === null ? null : target.startsWith('/') ? target : join(dir ?? '', target);
+        }
+        const catFilesOf = (up: ResolvedCommand) => {
+            const at = catDir.get(up);
+            return catOperands(up).map(f => (at && !f.startsWith('/') ? join(at, f) : f));
+        };
         const pipelines: any[] = [];
         pipelinesIn(sub, pipelines, 0);
         for (const pipeline of pipelines) {
@@ -1479,7 +1503,7 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>): Resolved
                 for (const up of commandsIn(stages[i - 1], 0).map(n => byNode.get(n)).filter((c): c is ResolvedCommand => !!c)) {
                     if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
                     input.texts.push(...emittedText(up));
-                    if (up.name === 'cat') input.catFiles.push(...catOperands(up));
+                    if (up.name === 'cat') input.catFiles.push(...catFilesOf(up));
                     if (up.pipedInput) (up.name === 'cat' || up.name === 'tee' ? input.from! : input.textFrom!).push(up.pipedInput);
                     if (!holdsVariable(up)) continue;
                     // Variables set before the substitution expand where the command holding it runs.
