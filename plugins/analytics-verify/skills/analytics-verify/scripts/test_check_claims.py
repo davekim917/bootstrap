@@ -1218,7 +1218,8 @@ class AuthorChoices(LedgerCase):
         self.assertEqual(code, 1, out)
         self.assertIn("conv_derived must be read from a rerun's result file", out)
         alias = {'id': 'conv_alias', 'value': 0.2, 'expr': 'conv * 1', 'omit': 'sensitivity table'}
-        for result, extra in (('conv', []), ('conv_alias', [alias])):
+        same_cell = self.cell('conv_same_cell', 'Jul-Oct', omit='sensitivity table')
+        for result, extra in (('conv', []), ('conv_alias', [alias]), ('conv_same_cell', [same_cell])):
             choice['alternatives'] = [{'value': 'YTD', 'result': result}]
             code, out = self.check(self.ledger(choice=choice, extra_claims=extra), 'Conversion is up 0.2 pts.')
             self.assertEqual(code, 1, (result, out))

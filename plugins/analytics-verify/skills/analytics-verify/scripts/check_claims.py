@@ -1067,9 +1067,14 @@ def _not_a_rerun(res, head, by_id, sources):
     if any(not (isinstance(src := sources.get(by_id[r].raw.get('source')), dict) and src.get('type') in ('query', 'file'))
            for r in roots):
         return f'{res.id} must be read from a rerun\'s result file, not typed'
-    if roots <= _roots(head.id, by_id):
+    if _cells(roots, by_id) <= _cells(_roots(head.id, by_id), by_id):
         return f'{res.id} reads no result cell the headline doesn\'t: bind the rerun\'s own cell'
     return None
+
+
+def _cells(ids, by_id):
+    """Where each claim is read from: its source and its locate, whatever the claim is called."""
+    return {(by_id[i].raw.get('source'), json.dumps(by_id[i].raw.get('locate'), sort_keys=True, default=str)) for i in ids}
 
 
 def _sign(value: Decimal):
