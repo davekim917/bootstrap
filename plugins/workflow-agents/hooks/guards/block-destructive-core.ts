@@ -2008,6 +2008,9 @@ function innerSteps(inner: ResolvedCommand | null, appended = false): ResolvedCo
 // The word that stands for what xargs reads or find matches, wherever it lands in the command they run: xargs's
 // replace string, find's `{}`, and the words xargs appends all become it.
 const FILLED = '{}';
+// xargs appends any number of words, so its tail is several: enough for the values a wrapper's written options still
+// take (`timeout -s`, `env -C`, `sudo -u`) and then the command, which the first marker left over names.
+const FILLED_TAIL = [FILLED, FILLED, FILLED, FILLED];
 // Where -execdir and -okdir run the command: only the matches decide it.
 const EACH_MATCH_DIR = 'the directory of each match';
 
@@ -2019,7 +2022,7 @@ function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCom
     if (cmd.name === 'xargs') {
         const words = xargsCommand(cmd.args);
         const replace = xargsReplaceString(cmd.args);
-        const filled = replace !== null ? words.map(w => w.split(replace).join(FILLED)) : words.length ? [...words, FILLED] : [];
+        const filled = replace !== null ? words.map(w => w.split(replace).join(FILLED)) : words.length ? [...words, ...FILLED_TAIL] : [];
         return [{ via: 'xargs', inner: innerCommand(filled, cmd), tail: replace === null }];
     }
     if (cmd.name === 'git') return submoduleForeach(cmd);

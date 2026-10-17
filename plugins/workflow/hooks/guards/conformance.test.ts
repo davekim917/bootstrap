@@ -253,6 +253,11 @@ const BASH_GATE = [
   "xargs -I{} sh -c '{}' < cmds",
   "printf ALL | xargs -I{} redis-cli FLUSH{}",
   "printf ce | xargs -I{} git push --for{} origin main",
+  // The words xargs appends may first fill a wrapper's option values, then name the command.
+  "printf '5 rm -rf /etc\\n' | xargs timeout",
+  "printf '%s\\n' '/ rm -rf /etc' | xargs env -C",
+  "printf '%s\\n' 'root rm -rf /etc' | xargs sudo -u",
+  "printf '%s\\n' 'KILL 5 rm -rf /etc' | xargs timeout -s",
 ];
 
 // Allowed: safe / ephemeral. The git rows pin the DELIBERATE non-gates:
