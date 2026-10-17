@@ -1,7 +1,7 @@
 /**
  * Skill bodies and always-on directives reach every host and container agent, so a model or effort named in
  * prose pins the whole fleet while config says otherwise. Both belong in config or in `model:` / `effort:`
- * frontmatter, which is why those two frontmatter keys are skipped.
+ * frontmatter, which is why the frontmatter block is skipped whole.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -83,7 +83,7 @@ export function findModelNames(root, exemptions = MODEL_NAME_EXEMPTIONS) {
   for (const file of promptFiles(root)) {
     const lines = fs.readFileSync(path.join(root, file), 'utf8').replace(/\r\n?/g, '\n').split('\n');
     const fmEnd = frontmatterEnd(lines);
-    const text = lines.map((line, index) => (index < fmEnd && /^(?:model|effort):/.test(line) ? '' : line)).join('\n');
+    const text = lines.map((line, index) => (index < fmEnd ? '' : line)).join('\n');
     for (const { kind, re } of PATTERNS) {
       for (const match of text.matchAll(re)) {
         if (exemptions.some((e) => e.files.includes(file) && e.kinds.includes(kind))) {

@@ -83,6 +83,14 @@ test('placeholders, plain-English effort prose, frontmatter config keys and non-
   assert.deepEqual(found(result), []);
 });
 
+test('the whole frontmatter block is config, and prose right after it is still scanned', () => {
+  const result = scan({
+    'plugins/sample/skills/sample/SKILL.md':
+      '---\nname: sample\nmodel: |-\n  opus\n"model": sonnet\neffort: >\n  high\n  effort\n---\nUse Haiku.\n',
+  });
+  assert.deepEqual(found(result), ['plugins/sample/skills/sample/SKILL.md:10 model Haiku']);
+});
+
 test('model: and effort: in a SKILL.md body are prose, not frontmatter config', () => {
   const result = scan({ 'plugins/sample/skills/sample/SKILL.md': '# Sample\nmodel: opus\n' });
   assert.deepEqual(found(result), ['plugins/sample/skills/sample/SKILL.md:2 model opus']);
