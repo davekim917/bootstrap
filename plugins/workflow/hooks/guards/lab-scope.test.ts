@@ -215,8 +215,17 @@ describe('lab session + lab target → allow', () => {
     expect(evaluateBashCommand(viaShell, { cwd: LAB_WORKTREE }).action).toBe('gate');
     const runtime = "printf '%s\\n' 'push --force https://github.com/Prod-Org/APP.git main' | xargs git";
     expect(evaluateBashCommand(runtime, { cwd: LAB_WORKTREE }).action).toBe('gate');
-    const lab = `xargs -a /dev/null env -C ${LAB_WORKTREE} git push --force origin main`;
+    const lab = `xargs -a /dev/null -I{} env -C ${LAB_WORKTREE} git push --force origin main`;
     expect(evaluateBashCommand(lab, { cwd: '/tmp' }).action).toBe('allow');
+  });
+
+  test('a step holding a word xargs reads or find matches gets no lab exemption', () => {
+    inLab();
+    // Appended words are only known at run time, so the target they may name is too.
+    expect(evaluateBashCommand(`xargs -a /dev/null env -C ${LAB_WORKTREE} git push --force origin main`, { cwd: '/tmp' }).action).toBe('gate');
+    // -execdir, or a cd to a match, runs it in a directory only the matches decide.
+    expect(evaluateBashCommand('find / -name .git -execdir git clean -fdx \\;', { cwd: LAB_WORKTREE }).action).toBe('gate');
+    expect(evaluateBashCommand("find / -name .git -exec sh -c 'cd \"$1\"; git clean -fdx' _ {} \\;", { cwd: LAB_WORKTREE }).action).toBe('gate');
   });
 
   test('git clean is exempt only in a lab work tree, whatever its words name', () => {
