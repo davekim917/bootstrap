@@ -1053,6 +1053,19 @@ def _roots(cid, by_id, seen=None):
     return set().union(*(_roots(n, by_id, seen) for n in expr_names(str(claim.raw['expr']))))
 
 
+def _not_a_rerun(res, head, by_id, sources):
+    """Why an alternative's result isn't new evidence, or None. Every claim it derives from
+    is a cell of a query or file result, and at least one is a cell the headline doesn't
+    read: a typed number, the headline itself, or the headline rewritten is not a rerun."""
+    roots = _roots(res.id, by_id)
+    if any(not (isinstance(src := sources.get(by_id[r].raw.get('source')), dict) and src.get('type') in ('query', 'file'))
+           for r in roots):
+        return f'{res.id} must be read from a rerun\'s result file, not typed'
+    if roots <= _roots(head.id, by_id):
+        return f'{res.id} reads no result cell the headline doesn\'t: bind the rerun\'s own cell'
+    return None
+
+
 def _sign(value: Decimal):
     return (value > 0) - (value < 0)
 
@@ -1083,15 +1096,11 @@ def _check_ask_claims(ask, by_id, sources, f: Findings):
             if not isinstance(alt, dict):
                 continue
             res = by_id.get(alt.get('result'))
-            if alt.get('result') == ch.get('headline'):
-                f.fail('choice', f'{ch["name"]}: "{alt.get("value")}" points at the headline itself; its result is the '
-                                 'headline rerun under that alternative, a claim of its own')
-            elif res is None or res.value is None:
+            if res is None or res.value is None:
                 f.fail('choice', f'{ch["name"]}: result "{alt.get("result")}" for "{alt.get("value")}" is not a '
                                  'numeric claim in the ledger')
-            elif any(not (isinstance(src := sources.get(by_id[r].raw.get('source')), dict)
-                          and src.get('type') in ('query', 'file')) for r in _roots(res.id, by_id)):
-                f.fail('choice', f'{ch["name"]}: {res.id} must be read from a rerun\'s result file, not typed')
+            elif problem := _not_a_rerun(res, head, by_id, sources):
+                f.fail('choice', f'{ch["name"]}: {problem}')
             elif _sign(res.value) != _sign(head.value) and not res.raw.get('anchors'):
                 f.fail('choice', f'{ch["name"]}: under "{alt.get("value")}" the headline is {res.raw.get("value")}, '
                                  f'not {head.raw.get("value")}: the answer depends on this choice, so show both '

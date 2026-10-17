@@ -1217,10 +1217,12 @@ class AuthorChoices(LedgerCase):
         code, out = self.check(self.ledger(choice=choice, extra_claims=[typed, derived]), 'Conversion is up 0.2 pts.')
         self.assertEqual(code, 1, out)
         self.assertIn("conv_derived must be read from a rerun's result file", out)
-        choice['alternatives'] = [{'value': 'YTD', 'result': 'conv'}]
-        code, out = self.check(self.ledger(choice=choice), 'Conversion is up 0.2 pts.')
-        self.assertEqual(code, 1, out)
-        self.assertIn('period: "YTD" points at the headline itself', out)
+        alias = {'id': 'conv_alias', 'value': 0.2, 'expr': 'conv * 1', 'omit': 'sensitivity table'}
+        for result, extra in (('conv', []), ('conv_alias', [alias])):
+            choice['alternatives'] = [{'value': 'YTD', 'result': result}]
+            code, out = self.check(self.ledger(choice=choice, extra_claims=extra), 'Conversion is up 0.2 pts.')
+            self.assertEqual(code, 1, (result, out))
+            self.assertIn(f'{result} reads no result cell the headline doesn\'t', out)
         choice['alternatives'] = [{'value': 'YTD', 'result': 'nowhere'}]
         code, out = self.check(self.ledger(choice=choice), 'Conversion is up 0.2 pts.')
         self.assertIn('result "nowhere" for "YTD" is not a numeric claim', out)

@@ -78,7 +78,8 @@ deliverable against it, and checks it against the request itself.
 The check fails a ledger without `request`, `from`, `measure`, `premise`, `reference` or
 a `choices` list, and refuses the old `assumptions` field by name. It fails a reference
 claim that isn't a shown number, an alternative result that isn't read from a result
-file (directly, or through an `expr` whose every root is), and an alternative that
+file (directly, or through an `expr` whose every root is) or reads no cell the headline
+doesn't, and an alternative that
 flips the headline's sign (+ to - or to zero) but is only `omit`ted: the answer depends on that choice, so the deliverable shows both readings.
 `changed` reports an edited ask, and the verifier starts over from the question.
 

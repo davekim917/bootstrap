@@ -158,7 +158,8 @@ lines added around it when you send. It can't catch wrong evidence (a
 miscounted menu), a true number in a false sentence, wrong unit words, or stale facts
 about people and places. Nor can it tell whether you measured the right thing: it
 checks that `ask` is filled in, that the reference is shown and that an alternative
-which flips the headline is shown, but not that the choices listed are all of them or
-the alternatives the reasonable ones. Those are the verifier's job. Enforcement is
+which flips the headline is shown and reads a cell of its own, but not that the choices
+listed are all of them, the alternatives the reasonable ones, or that cell the real
+rerun. Those are the verifier's job. Enforcement is
 instruction-only, and a receipt shows what a verifier wrote, not who wrote it, so a
 human should still see the stamp before anything leaves.
