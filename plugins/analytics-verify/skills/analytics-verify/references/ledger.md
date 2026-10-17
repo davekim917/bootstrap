@@ -9,7 +9,17 @@ relative to the ledger's folder.
     "request": "How many new customers have we had since launch, by year?",
     "from": "the CFO's email, 2026-09-22",
     "measure": "new customer accounts (first completed order), Online and Studio combined and deduplicated, by calendar year, through 2026-09-23 17:00 PT",
-    "assumptions": ["a customer is an account, so someone with two accounts counts twice"]
+    "premise": "Studio is now the main source of new customers",
+    "reference": {"what": "finance dashboard, new Online customers tile", "where": "finance dashboard, Growth page",
+                  "claim": "dash_online_2025"},
+    "choices": [
+      {"name": "period", "chosen": "calendar years since launch", "decided_by": "requester",
+       "where": "the CFO's email: \"since launch, by year\""},
+      {"name": "customer", "chosen": "an account, so someone with two accounts counts twice",
+       "decided_by": "reference", "where": "the finance dashboard counts accounts"},
+      {"name": "studio_entry", "chosen": "first completed service", "decided_by": "author",
+       "headline": "studio_share_2025", "alternatives": [{"value": "any studio order", "result": "studio_share_2025_any"}]}
+    ]
   },
   "sources": {
     "q1":  {"type": "query", "sql": "query.sql", "result": "results.csv",
@@ -46,12 +56,32 @@ deliverable against it, and checks it against the request itself.
 - **`measure`**: exactly what is counted or summed and on what basis (retail sales or
   shipments to the retailer, product sales or product plus shipping), for which
   population, grain and period.
-- **`assumptions`**: a list of every assumption that would change the answer, `[]` if
-  there are none.
+- **`premise`**: what the requester believes or will decide, in their words ("conversion
+  is down", "this goes to investors"), or "none stated". A headline that contradicts it
+  needs a bridge before it.
+- **`reference`**: the number the requester already reads for this measure (a dashboard
+  tile, a wiki metric, last quarter's deck): `what` it is, `where` it lives, and `claim`,
+  the ledger claim that holds its value, which the deliverable must show. Or `{"none":
+  "searched: <where>"}`.
+- **`choices`**: every decision that could change the headline: period, population,
+  exclusions, basis, which date field, comparison set. `[]` only if the request fixes all
+  of them. Each has a `name`, what was `chosen`, and `decided_by`:
+  - `requester`: `where` quotes the message that settles it.
+  - `reference`: `where` names the reference's convention it follows (the dashboard reads
+    YTD, so the answer does too).
+  - `author`: you picked it. `headline` is the claim the conclusion rests on, and
+    `alternatives` lists the other reasonable picks, each with `result`: a claim of its
+    own holding the headline rerun under it, read from a result file like any other
+    number. If no
+    alternative exists, give `no_alternative` with the reason instead.
 
-The check fails a ledger without `request`, `from` and `measure`, or without an
-`assumptions` list. `changed` reports an edited ask, and the verifier starts over from
-the question.
+The check fails a ledger without `request`, `from`, `measure`, `premise`, `reference` or
+a `choices` list, and refuses the old `assumptions` field by name. It fails a reference
+claim that isn't a shown number, an alternative result that isn't read from a result
+file (directly, or through an `expr` whose every root is) or reads no cell the headline
+doesn't, and an alternative that
+flips the headline's sign (+ to - or to zero) but is only `omit`ted: the answer depends on that choice, so the deliverable shows both readings.
+`changed` reports an edited ask, and the verifier starts over from the question.
 
 ## Sources
 
@@ -174,11 +204,15 @@ Exit status: 0 pass, 1 findings, 2 input the script can't check.
   tolerance (as drift, not a match). It refuses a table with duplicate column names or
   ragged rows.
 - `receipt` reads only the header block at the very top of the report, and fails if
-  those fields appear anywhere else. It also fails a report that doesn't open with a
-  `## Frame` section right after the header giving `Question:`, `Measure:` and `Answers
-  it:` once each, and a CLEAR report that still lists items under Wrong, Stale or Unsupported or
-  whose `Answers it:` isn't "yes". It shows the Frame names a question and a measure, not
-  that they're right.
+  those fields appear anywhere else. `family:` is `other` or `same`. It fails a report
+  that doesn't open with a `## Frame` section right after the header giving `Question:`,
+  `Measure:`, `Choices:`, `Reference:` and `Answers it:` once each. A CLEAR report fails
+  if it still lists items under Wrong, Stale or Unsupported, or if its Frame doesn't say
+  `Choices: ok`, `Reference: reconciled`, `bridged` or `none`, and `Answers it: yes`. A
+  same-family CLEAR also fails when the highest-numbered cross-family `verify-r<k>.md`
+  beside it left its Frame open: one folder holds one deliverable's ledger and its
+  verification rounds. It shows the Frame was filled in, not that it's
+  right.
 - `labels` prints each number the deliverable shows, with the heading (or table header)
   above it, beside what its source calls it: the column and row, the quote, the doc or
   the formula. Every appearance is listed, in the deliverable's order. It judges

@@ -19,9 +19,12 @@ sources, embellished copy, and new errors added while fixing old ones. Rereading
 own work doesn't catch these, because you reread your own beliefs. What catches them is
 binding every claim to its source, then having someone who didn't write it check it.
 
-The costliest error sits upstream of all of these: an exact calculation on the wrong
-measure, such as shipments to a retailer when the question was the retailer's sales. So
-the loop starts from the question, and the verifier checks that before any number.
+The costliest errors sit upstream of all of these: an exact calculation of the wrong
+thing. The wrong measure (shipments to a retailer when the question was the retailer's
+sales), or the right measure over a window, population or comparison the author picked,
+where the answer flips under the one the requester uses. So the loop starts from the
+question, and every choice the request left open is recorded and tested before any
+number is trusted.
 
 ## Which loop
 
@@ -35,12 +38,20 @@ If you're unsure, use the full loop.
 
 ## Author loop
 
-1. **Pin down the question before any query.** Fill in the ledger's `ask`: the request
-   in the requester's own words and where it came from (the message, thread or call
-   transcript), the exact measure (what is counted or summed, on what basis, for which
-   population, grain and period), and your assumptions. When the request could mean two
-   measures (sales to a retailer or by it, accounts or people, gross or net), settle it
-   from the source material or ask. Don't pick one silently.
+1. **Pin down the question before any query.** Fill in the ledger's `ask`
+   ([references/ledger.md](references/ledger.md)):
+   - the request in the requester's own words, where it came from (the message, thread
+     or call transcript), and the exact measure: what is counted or summed, on what basis,
+     for which population, grain and period;
+   - the premise: what the requester believes or will decide;
+   - the reference: the number they already read for this measure (a dashboard tile, a
+     wiki metric, a prior deck). Pull it now. Your headline has to reconcile to it, or
+     open with the bridge;
+   - every choice that could change the headline (period, population, exclusions, basis,
+     date field) and who decided it. When the request leaves one open, use the
+     reference's convention, or ask in the thread. A choice you make yourself carries its
+     alternatives: rerun the headline under each, and if one flips the answer, the
+     deliverable leads with both readings.
 2. **Put the deliverable in a file** (message, Markdown, or the HTML a PDF renders
    from). What you send is exactly that file, including any caveats or open questions
    you plan to send with it (step 7).
@@ -61,9 +72,8 @@ If you're unsure, use the full loop.
      confirm which event the column records: created, updated, answered or shipped.
      One row per customer that is updated in place keeps its created date.
    - Every number in the deliverable is accounted for, including years, dates and
-     spelled-out counts. A range is two claims. Write large or compound numbers and
-     fractions in digits ("200", not "two hundred"; "75%", not "three quarters"), and state bounds plainly ("at least 50", not
-     "not under 50"): the check refuses what it can't read exactly.
+     spelled-out counts. A range is two claims. The check refuses wording it can't read
+     exactly; [references/ledger.md](references/ledger.md) lists what it reads.
 4. **Run the mechanical checks until they pass.** The script is
    `scripts/check_claims.py` in this skill's directory:
    ```
@@ -74,9 +84,7 @@ If you're unsure, use the full loop.
    data moved, rerun with `--rel-tol` and report the drift it lists.
 5. **Get an independent verifier.** Use the first of these you have:
    1. a fresh headless session of another model family that can reach the same data
-      (`codex exec`, `claude -p`). Start it with stdin closed or empty (in a POSIX shell,
-      `codex exec "<brief>" </dev/null`): it reads stdin whenever stdin is not a terminal,
-      so an open stdin makes it wait forever;
+      (`codex exec`, `claude -p`), with stdin closed (`</dev/null`) or it waits forever;
    2. a peer agent on another model family in this conversation (mention it);
    3. a fresh-context subagent of your own model. Call it a same-family check in the
       stamp.
@@ -88,10 +96,12 @@ If you're unsure, use the full loop.
    verifier. Notes of your own go after the brief, never in place of it. Don't give it
    your research files or conclusions: those are the blind spots it is there to avoid.
 
-   When the verifier is a headless session (option 1), run it in the foreground with
-   the invoking Bash or process timeout set to `3600000` milliseconds (60 minutes). A complex deliverable takes several
-   rounds, and a verifier still working after 30 minutes is healthy. Call it timed out
-   only when the 60 minutes are actually used up, and say so in the stamp.
+   Run a headless verifier in the foreground with a 60-minute (`3600000` ms) timeout;
+   30 minutes in is still healthy.
+
+   A same-family round can't clear a Frame that a cross-family round left open (the
+   receipt refuses it). If the other family isn't reachable again, stop and deliver with
+   the open Frame finding listed.
 6. **Fix in one pass.** Change only what the findings name. A new sentence or number
    goes into the ledger first. Re-run step 4, then send the verifier what changed:
    ```
@@ -126,21 +136,15 @@ If you're unsure, use the full loop.
 
 ## Writing rules
 
-These are the places the errors were.
+The check can't see these.
 
 - Name the measure and its basis wherever a number could be read two ways: retail
   sales or shipments to the retailer, product sales or product plus shipping.
-- Show numbers at the precision the source supports. "About" doesn't make a different
-  number true.
+- Name the period and population beside the headline, and the reference's reading
+  when yours differs.
 - Name the unit you counted: accounts, orders or appointments. Say "people" only if
   you deduplicated people.
-- Numbers that combine in a sentence combine in the ledger. State the overlap.
 - Give the exact cutoff (date, time, timezone) and flag partial periods.
-- Every requested row, year and segment appears, or you say why not.
-- Tie web facts to the exact business and location, the date of the evidence (not the
-  day you read it), and the source's own words. A chain's website isn't a store's
-  shelf, an old menu isn't the current one, and a working title isn't an official
-  serve.
 - Don't make absence claims ("has no rating") or use descriptions you can't source
   ("owner-run", "a big part of the business").
 
@@ -153,7 +157,9 @@ that don't hold, dropped rows, queries that don't reproduce, undated or old evid
 lines added around it when you send. It can't catch wrong evidence (a
 miscounted menu), a true number in a false sentence, wrong unit words, or stale facts
 about people and places. Nor can it tell whether you measured the right thing: it
-checks that `ask` is filled in, and the verifier checks that the deliverable answers
-it. Those are the verifier's job. Enforcement is
+checks that `ask` is filled in, that the reference is shown and that an alternative
+which flips the headline is shown and reads a cell of its own, but not that the choices
+listed are all of them, the alternatives the reasonable ones, or that cell the real
+rerun. Those are the verifier's job. Enforcement is
 instruction-only, and a receipt shows what a verifier wrote, not who wrote it, so a
 human should still see the stamp before anything leaves.
