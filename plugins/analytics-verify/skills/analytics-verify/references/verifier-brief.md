@@ -95,7 +95,7 @@ Work in this order. A number can only be right for a question you've pinned down
 ## Report
 
 Write `verify-r<N>.md` next to the deliverable. Don't edit the deliverable or the ledger.
-The four header lines go at the very top of the file, not in a code block, and appear
+The header lines go at the very top of the file, not in a code block, and appear
 nowhere else in it. `## Frame` comes right after them, before any other heading.
 
 ```

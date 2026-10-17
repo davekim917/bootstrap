@@ -1168,11 +1168,8 @@ class ReceiptFrame(ReceiptCase):
 
 
 class AuthorChoices(LedgerCase):
-    """Replays, with fictional figures, an exact analysis whose headline held only under the
-    window and exclusions the author picked: "conversion is up" in a recovery window, while
-    the requester's own dashboard read it down year to date. The verifier noted the window
-    was the author's choice and passed it. An author's choice now carries the headline rerun
-    under its alternatives, and an alternative that flips the sign is shown, not filed."""
+    """An author's choice carries the headline rerun under its alternatives, and an
+    alternative that flips the sign is shown, not filed."""
     CSV = 'window,conv_change_pts\nJul-Oct,0.2\nYTD,-0.4\nYTD all traffic,-0.6\nJul-Oct all traffic,0.1\n'
 
     def cell(self, cid, window, **extra):
@@ -1227,6 +1224,15 @@ class AuthorChoices(LedgerCase):
         choice['alternatives'] = [{'value': 'YTD', 'result': 'nowhere'}]
         code, out = self.check(self.ledger(choice=choice), 'Conversion is up 0.2 pts.')
         self.assertIn('result "nowhere" for "YTD" is not a numeric claim', out)
+
+    def test_a_long_derivation_chain_is_traced(self):
+        chain = [{'id': f'd{i}', 'value': -0.4, 'expr': f'd{i - 1} * 1' if i else 'conv_alt * 1',
+                  'omit': 'sensitivity table'} for i in range(500)]
+        choice = {'name': 'period', 'chosen': 'Jul-Oct', 'decided_by': 'author', 'headline': 'conv',
+                  'alternatives': [{'value': 'YTD', 'result': 'd499'}]}
+        code, out = self.check(self.ledger(choice=choice, extra_claims=chain), 'Conversion is up 0.2 pts.')
+        self.assertEqual(code, 1, out[-400:])
+        self.assertIn('the answer depends on this choice', out)
 
     def test_an_author_choice_needs_alternatives_or_a_reason(self):
         bare = {'name': 'period', 'chosen': 'Jul-Oct', 'decided_by': 'author'}
@@ -1293,9 +1299,7 @@ class AuthorChoices(LedgerCase):
 
 
 class SameFamilyClear(ReceiptCase):
-    """A same-family round can't clear a frame the cross-family round left open: in the
-    replayed incident a cross-family first round said "partly" and a same-family round,
-    re-checking only the diff, signed CLEAR."""
+    """A same-family round can't clear a Frame the latest cross-family round left open."""
 
     def round(self, n, family, answers='yes.', choices='ok, the request fixes the period.', verdict='CLEAR'):
         text = (SECTIONS.replace('Answers it: yes.', 'Answers it: ' + answers)

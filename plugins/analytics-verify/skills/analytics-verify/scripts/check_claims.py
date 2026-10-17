@@ -1047,16 +1047,20 @@ def _check_ask_shape(ask, f: Findings):
     return reruns
 
 
-def _roots(cid, by_id, seen=None):
+def _roots(cid, by_id):
     """The sourced claims an `expr` claim derives from (the claim itself when it is sourced)."""
-    seen = set() if seen is None else seen
-    claim = by_id.get(cid)
-    if claim is None or cid in seen:
-        return set()
-    seen.add(cid)
-    if 'expr' not in claim.raw:
-        return {cid}
-    return set().union(*(_roots(n, by_id, seen) for n in expr_names(str(claim.raw['expr']))))
+    roots, seen, todo = set(), set(), [cid]
+    while todo:
+        cur = todo.pop()
+        claim = by_id.get(cur)
+        if claim is None or cur in seen:
+            continue
+        seen.add(cur)
+        if 'expr' in claim.raw:
+            todo.extend(expr_names(str(claim.raw['expr'])))
+        else:
+            roots.add(cur)
+    return roots
 
 
 def _not_a_rerun(res, head, by_id, sources):
@@ -1082,8 +1086,8 @@ def _sign(value: Decimal):
 
 
 def _check_ask_claims(ask, reruns, by_id, sources, f: Findings):
-    """The reference is shown beside the answer, and each author choice was actually rerun:
-    an alternative that flips the headline's sign is shown, not left in a file."""
+    """The reference is shown beside the answer, each author choice's alternatives read
+    cells of their own, and an alternative that flips the headline's sign is shown."""
     ref = ask.get('reference')
     if isinstance(ref, dict) and _text(ref.get('claim')):
         claim = by_id.get(ref['claim'])
@@ -1790,7 +1794,6 @@ def _frame(body):
 
 
 def _frame_open(frame):
-    """The Frame fields that keep a report from being CLEAR."""
     return [k for k, pattern in _FRAME_CLEAR.items() if not re.match(pattern, frame.get(k, ''), re.I)]
 
 
