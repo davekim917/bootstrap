@@ -8,7 +8,7 @@ import path from 'node:path';
 
 const LEVEL = '(?:low|medium|high|xhigh|max|ultra)';
 const MARK = '[*_`"\']{0,3}';
-const LEVEL_EFFORT = `(?<![\\w-])${LEVEL}(?![\\w-])${MARK}\\s+${MARK}(?:reasoning\\s+)?effort\\b`;
+const LEVEL_EFFORT = `(?<![\\w-])${LEVEL}(?![\\w-])${MARK}\\s+${MARK}(?:reasoning${MARK}\\s+${MARK})?effort\\b`;
 const EFFORT_FIELD =
   `(?:--effort${MARK}(?:\\s*=\\s*|\\s+)|(?:\\b(?:model_)?reasoning_effort|\\beffort(?:\\s+level)?)${MARK}\\s*[:=]\\s*)${MARK}(?:minimal|${LEVEL})(?![\\w-])`;
 
