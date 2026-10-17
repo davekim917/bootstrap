@@ -45,7 +45,7 @@ const GATED_BY_RULE: string[][] = [
 const quote = (word: string) => `'${word.replace(/'/g, `'\\''`)}'`;
 const line = (words: string[]) => words.map(quote).join(' ');
 
-describe('a word xargs reads can be any word a rule gates on', () => {
+describe('a word xargs reads can be any word, or part of one, a rule gates on', () => {
     for (const [name, ...args] of GATED_BY_RULE) {
         it(`${name} ${args.join(' ')}`, () => {
             expect(evaluateBashCommand(line([name, ...args])).action).toBe('gate');
@@ -53,6 +53,14 @@ describe('a word xargs reads can be any word a rule gates on', () => {
             for (let i = 0; i < args.length; i++) {
                 const command = `xargs -I{} ${name} ${line(args.map((a, j) => (j === i ? '{}' : a)))} < list`;
                 expect([command, evaluateBashCommand(command).action]).toEqual([command, 'gate']);
+            }
+            // Or as part of one, either side of the written text.
+            for (let i = 0; i < args.length; i++) {
+                const half = Math.ceil(args[i].length / 2);
+                for (const part of [`${args[i].slice(0, half)}{}`, `{}${args[i].slice(half)}`]) {
+                    const command = `xargs -I{} ${name} ${line(args.map((a, j) => (j === i ? part : a)))} < list`;
+                    expect([command, evaluateBashCommand(command).action]).toEqual([command, 'gate']);
+                }
             }
             for (let k = 0; k < args.length; k++) {
                 const command = `xargs ${line([name, ...args.slice(0, k)])} < list`;

@@ -251,6 +251,8 @@ const BASH_GATE = [
   "find . -name '*.sql' -exec psql -f {} \\;",
   "printf '%s\\n' x | xargs -I{} env PATH={} git status",
   "xargs -I{} sh -c '{}' < cmds",
+  "printf ALL | xargs -I{} redis-cli FLUSH{}",
+  "printf ce | xargs -I{} git push --for{} origin main",
 ];
 
 // Allowed: safe / ephemeral. The git rows pin the DELIBERATE non-gates:

@@ -2084,8 +2084,7 @@ const RUNTIME_PROBES: string[][] = [
 // A filled word may complete an operation another word starts (`system {}`), so every run of words in a probe is one.
 const RUNTIME_FILLS = [...new Map(RUNTIME_PROBES.flatMap(probe => probe.flatMap((_, i) => probe.slice(i).map((__, j) => probe.slice(i, i + j + 1))))
     .map(words => [words.join('\0'), words])).values()];
-// Part of a word (`--{}`, `select … {}`) is filled with one word, an option's letters included.
-const RUNTIME_PROBE_WORDS = [...new Set(RUNTIME_PROBES.flat().flatMap(w => [w, w.replace(/^-/, ''), w.replace(/^-+/, '')]))];
+const RUNTIME_PROBE_WORDS = [...new Set(RUNTIME_PROBES.flat())];
 
 /** Each way to fill `args`' FILLED words from RUNTIME_PROBES, with the words it put there. */
 function* runtimeFills(args: string[]): Generator<{ args: string[]; words: string }> {
@@ -2093,9 +2092,14 @@ function* runtimeFills(args: string[]): Generator<{ args: string[]; words: strin
         if (args[i] === FILLED) {
             for (const fill of RUNTIME_FILLS) yield { args: [...args.slice(0, i), ...fill, ...args.slice(i + 1)], words: fill.join(' ') };
         } else if (args[i].includes(FILLED)) {
+            // Part of a word (`FLUSH{}`, `select … {}`) can complete a probe word around the written text, or hold one.
+            const [before, after] = [args[i].slice(0, args[i].indexOf(FILLED)), args[i].slice(args[i].lastIndexOf(FILLED) + FILLED.length)];
             for (const word of RUNTIME_PROBE_WORDS) {
-                const filled = args[i].split(FILLED).join(word);
-                yield { args: [...args.slice(0, i), filled, ...args.slice(i + 1)], words: filled };
+                const around = word.length >= before.length + after.length && word.toLowerCase().startsWith(before.toLowerCase())
+                    && word.toLowerCase().endsWith(after.toLowerCase());
+                for (const filled of around ? [word, args[i].split(FILLED).join(word)] : [args[i].split(FILLED).join(word)]) {
+                    yield { args: [...args.slice(0, i), filled, ...args.slice(i + 1)], words: filled };
+                }
             }
         }
     }
