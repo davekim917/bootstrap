@@ -22,7 +22,9 @@ from decimal import Decimal
 import check_claims as cc
 
 ASK = {'request': 'How many new customers have we had, by year?', 'from': 'the CFO email, 2026-09-22',
-       'measure': 'new customer accounts, Online and Studio deduplicated, by calendar year', 'assumptions': []}
+       'measure': 'new customer accounts, Online and Studio deduplicated, by calendar year',
+       'premise': 'none stated', 'reference': {'none': 'searched: the finance dashboard and the metric wiki'},
+       'choices': []}
 
 DELIVERED_CSV = """Year,New Online customers,New Studio customers (first service),"New customers, unique across Online + Studio",Studio service appointments
 2013,412,0,412,0
@@ -86,6 +88,8 @@ couple notes for the all-channel estimate
 SECTIONS = '''## Frame
 Question: new customers since launch, by year, for the board deck.
 Measure: new customer accounts (first completed order), Online and Studio deduplicated, by calendar year.
+Choices: ok, the request fixes the period and the population.
+Reference: none exists; the finance dashboard has no new-customer count.
 Answers it: yes.
 
 ## Wrong
@@ -444,7 +448,7 @@ class Mechanics(Tmp):
 
     def report(self, doc, led, verdict='CLEAR', body=SECTIONS):
         return '\n'.join([f'artifact-sha256: {cc.sha256(doc)}', f'ledger-sha256: {cc.sha256(led)}',
-                          f'verdict: {verdict}', 'verifier: gpt-6.1-sol (fresh codex exec session)', '', body])
+                          f'verdict: {verdict}', 'verifier: gpt-6.1-sol (fresh codex exec session)', 'family: other', '', body])
 
     def test_receipt_binds_to_exact_bytes(self):
         led = self.base([])
@@ -586,12 +590,12 @@ class ReceiptCase(Tmp):
         self.led = self.write('claims.json', {'sources': {}, 'claims': []})
         self.doc = self.write('d.md', 'final text')
 
-    def header(self, verdict='CLEAR', doc_hash=None):
+    def header(self, verdict='CLEAR', doc_hash=None, family='other'):
         return (f'artifact-sha256: {doc_hash or cc.sha256(self.doc)}\nledger-sha256: {cc.sha256(self.led)}\n'
-                f'verdict: {verdict}\nverifier: gpt-6.1-sol (fresh codex exec session)\n\n')
+                f'verdict: {verdict}\nverifier: gpt-6.1-sol (fresh codex exec session)\nfamily: {family}\n\n')
 
-    def receipt(self, text):
-        return run(['receipt', self.write('verify.md', text), self.led, self.doc])
+    def receipt(self, text, name='verify.md'):
+        return run(['receipt', self.write(name, text), self.led, self.doc])
 
 
 class ReceiptParsing(ReceiptCase):
@@ -740,7 +744,7 @@ class ReceiptRound2(ReceiptCase):
 
     def test_hash_command_output_can_fill_the_header(self):
         head = (f'artifact-sha256: {cc.sha256(self.doc)}  {self.doc}\nledger-sha256: {cc.sha256(self.led)}  claims.json\n'
-                'verdict: CLEAR\nverifier: gpt-6.1-sol (fresh codex exec session)\n\n')
+                'verdict: CLEAR\nverifier: gpt-6.1-sol (fresh codex exec session)\nfamily: other\n\n')
         code, out = self.receipt(head + SECTIONS)
         self.assertEqual(code, 0, out)
 
@@ -1062,17 +1066,26 @@ class FrameFirst(LedgerCase):
         self.assertIn('the ledger needs "ask"', out)
 
     def test_each_ask_field_is_required(self):
-        for field in ('request', 'from', 'measure'):
+        for field in ('request', 'from', 'measure', 'premise'):
             ask = {**ASK, field: ' '}
             code, out = self.check(self.led([], ask=ask), 'Nothing here.')
             self.assertEqual(code, 1, field)
             self.assertIn(f'"ask" needs "{field}"', out)
-        for assumptions in (None, 'none', [''], [3]):
-            code, out = self.check(self.led([], ask={**ASK, 'assumptions': assumptions}), 'Nothing here.')
-            self.assertEqual(code, 1, assumptions)
-            self.assertIn('"ask" needs "assumptions"', out)
-        code, out = self.check(self.led([], ask={**ASK, 'assumptions': ['accounts, not people']}), 'Nothing here.')
+        for choices in (None, 'none', {'period': 'YTD'}):
+            code, out = self.check(self.led([], ask={**ASK, 'choices': choices}), 'Nothing here.')
+            self.assertEqual(code, 1, choices)
+            self.assertIn('"ask" needs "choices"', out)
+        for bad in ([''], [3], [{'name': 'period'}]):
+            code, out = self.check(self.led([], ask={**ASK, 'choices': bad}), 'Nothing here.')
+            self.assertEqual(code, 1, bad)
+            self.assertIn('needs "name" and "chosen"', out)
+        code, out = self.check(self.led([], ask=ASK), 'Nothing here.')
         self.assertEqual(code, 0, out)
+
+    def test_assumptions_is_refused_by_name(self):
+        code, out = self.check(self.led([], ask={**ASK, 'assumptions': ['accounts, not people']}), 'Nothing here.')
+        self.assertEqual(code, 1)
+        self.assertIn('"assumptions" is now "choices"', out)
 
     def test_changed_reports_an_edited_ask(self):
         doc = self.write('d.md', 'Same.')
@@ -1105,7 +1118,7 @@ class ReceiptFrame(ReceiptCase):
             self.assert_fails(before + self.FRAME + self.BODY, 'a "## Frame" heading')
 
     def test_each_field_needs_a_value(self):
-        for field in ('Question', 'Measure', 'Answers it'):
+        for field in ('Question', 'Measure', 'Choices', 'Reference', 'Answers it'):
             lines = [l for l in self.FRAME.splitlines() if not l.startswith(field + ':')]
             self.assert_fails('\n'.join(lines) + '\n\n' + self.BODY, f'"{field}:"')
         for bad in ('Measure:', 'Measure: <what is counted or summed>', 'Measure: 42', '<!-- Measure: accounts -->',
@@ -1152,6 +1165,150 @@ class ReceiptFrame(ReceiptCase):
         code, out = self.receipt(self.header() + hidden)
         self.assertEqual(code, 1, out)
         self.assertIn('Wrong', out)
+
+
+class AuthorChoices(LedgerCase):
+    """Replays, with fictional figures, an exact analysis whose headline held only under the
+    window and exclusions the author picked: "conversion is up" in a recovery window, while
+    the requester's own dashboard read it down year to date. The verifier noted the window
+    was the author's choice and passed it. An author's choice now carries the headline rerun
+    under its alternatives, and an alternative that flips the sign is shown, not filed."""
+    CSV = 'window,conv_change_pts\nJul-Oct,0.2\nYTD,-0.4\nYTD all traffic,-0.6\nJul-Oct all traffic,0.1\n'
+
+    def cell(self, cid, window, **extra):
+        value = dict(row.split(',') for row in self.CSV.splitlines()[1:])[window]
+        return {'id': cid, 'value': float(value), 'source': 'q',
+                'locate': {'where': {'window': window}, 'column': 'conv_change_pts'}, **extra}
+
+    def ledger(self, alt_window='YTD', alt_shown=False, choice=None, reference=None, extra_claims=()):
+        shown = {'anchors': ['down 0.4 pts year to date' if alt_window == 'YTD' else 'down 0.6 pts'], 'magnitude': True}
+        alt = self.cell('conv_alt', alt_window, **(shown if alt_shown else {'omit': 'sensitivity table'}))
+        choice = choice or {'name': 'period', 'chosen': 'Jul-Oct, after the site revert', 'decided_by': 'author',
+                            'headline': 'conv', 'alternatives': [{'value': alt_window, 'result': 'conv_alt'}]}
+        ask = {**ASK, 'request': 'Why does our web conversion suck?', 'premise': 'conversion is down',
+               'reference': reference or {'none': 'searched: the growth dashboard has no conversion tile'},
+               'choices': [choice]}
+        return self.led([self.cell('conv', 'Jul-Oct', anchors=['up 0.2 pts']), alt, *extra_claims],
+                        sources={'q': {'type': 'query', 'sql': 'q.sql', 'result': 'conv.csv',
+                                       'as_of': '2026-10-13T23:59:00-04:00', 'grain': 'session'}},
+                        files={'q.sql': 'select 1', 'conv.csv': self.CSV}, ask=ask)
+
+    def test_a_sign_flip_left_in_a_file_fails(self):
+        code, out = self.check(self.ledger(), 'Conversion is up 0.2 pts since the revert.')
+        self.assertEqual(code, 1, out)
+        self.assertIn('the answer depends on this choice, so show both readings', out)
+        code, out = self.check(self.ledger(alt_shown=True),
+                               'Conversion is up 0.2 pts since the revert, but down 0.4 pts year to date.')
+        self.assertEqual(code, 0, out)
+
+    def test_an_alternative_that_agrees_may_stay_in_the_file(self):
+        code, out = self.check(self.ledger(alt_window='Jul-Oct all traffic'), 'Conversion is up 0.2 pts.')
+        self.assertEqual(code, 0, out)
+
+    def test_an_alternative_must_be_a_rerun_not_a_typed_number(self):
+        typed = {'id': 'conv_typed', 'value': -0.4, 'source': 'd', 'omit': 'sensitivity table'}
+        choice = {'name': 'period', 'chosen': 'Jul-Oct', 'decided_by': 'author', 'headline': 'conv',
+                  'alternatives': [{'value': 'YTD', 'result': 'conv_typed'}]}
+        code, out = self.check(self.ledger(choice=choice, extra_claims=[typed]), 'Conversion is up 0.2 pts.')
+        self.assertEqual(code, 1, out)
+        self.assertIn("conv_typed must be read from a rerun's result file", out)
+        choice['alternatives'] = [{'value': 'YTD', 'result': 'nowhere'}]
+        code, out = self.check(self.ledger(choice=choice), 'Conversion is up 0.2 pts.')
+        self.assertIn('result "nowhere" for "YTD" is not a numeric claim', out)
+
+    def test_an_author_choice_needs_alternatives_or_a_reason(self):
+        bare = {'name': 'period', 'chosen': 'Jul-Oct', 'decided_by': 'author'}
+        for choice in (bare, {**bare, 'headline': 'conv', 'alternatives': []},
+                       {**bare, 'headline': 'conv', 'alternatives': [{'value': 'YTD'}]}):
+            code, out = self.check(self.ledger(choice=choice), 'Conversion is up 0.2 pts.')
+            self.assertEqual(code, 1, choice)
+            self.assertIn('an author\'s choice needs "headline"', out)
+        code, out = self.check(self.ledger(choice={**bare, 'no_alternative': 'tracking starts in July'}),
+                               'Conversion is up 0.2 pts.')
+        self.assertEqual(code, 0, out)
+
+    def test_a_requester_or_reference_choice_cites_where(self):
+        for who in ('requester', 'reference'):
+            choice = {'name': 'period', 'chosen': 'YTD', 'decided_by': who}
+            code, out = self.check(self.ledger(choice=choice), 'Conversion is up 0.2 pts.')
+            self.assertEqual(code, 1, who)
+            self.assertIn(f'decided by the {who}; "where" cites', out)
+            code, out = self.check(self.ledger(choice={**choice, 'where': 'the growth dashboard reads YTD'}),
+                                   'Conversion is up 0.2 pts.')
+            self.assertEqual(code, 0, out)
+        code, out = self.check(self.ledger(choice={'name': 'period', 'chosen': 'YTD', 'decided_by': 'me'}), 'x')
+        self.assertIn('"decided_by" must be requester, reference or author', out)
+
+    def test_the_reference_number_is_shown(self):
+        ref = {'id': 'ref', 'value': -0.5, 'source': 'd', 'omit': 'we both know it'}
+        reference = {'what': 'growth dashboard, web conversion YoY', 'where': 'dashboard 7', 'claim': 'ref'}
+        alt_text = 'Conversion is up 0.2 pts since the revert, but down 0.4 pts year to date'
+        code, out = self.check(self.ledger(alt_shown=True, reference=reference, extra_claims=[ref]), alt_text + '.')
+        self.assertEqual(code, 1, out)
+        self.assertIn('ref: the reference number is not shown', out)
+        shown = {**ref, 'anchors': ['dashboard reads -0.5 pts']}
+        shown.pop('omit')
+        code, out = self.check(self.ledger(alt_shown=True, reference=reference, extra_claims=[shown]),
+                               alt_text + '; the dashboard reads -0.5 pts.')
+        self.assertEqual(code, 0, out)
+        code, out = self.check(self.ledger(reference={**reference, 'claim': 'ghost'}), 'x')
+        self.assertIn('reference claim "ghost" is not in the ledger', out)
+
+    def test_the_reference_is_required(self):
+        for reference in (None, {}, {'what': 'dashboard'}, {'none': ' '}, 'none'):
+            ask = {**ASK, 'reference': reference}
+            code, out = self.check(self.led([], ask=ask), 'Nothing here.')
+            self.assertEqual(code, 1, reference)
+            self.assertIn('"ask" needs "reference"', out)
+
+
+class SameFamilyClear(ReceiptCase):
+    """A same-family round can't clear a frame the cross-family round left open: in the
+    replayed incident a cross-family first round said "partly" and a same-family round,
+    re-checking only the diff, signed CLEAR."""
+
+    def round(self, n, family, answers='yes.', choices='ok, the request fixes the period.', verdict='CLEAR'):
+        text = (SECTIONS.replace('Answers it: yes.', 'Answers it: ' + answers)
+                        .replace(SECTIONS.split('Choices: ', 1)[1].split('\n', 1)[0], choices))
+        return self.header(verdict=verdict, family=family) + text, f'verify-r{n}.md'
+
+    def prior(self, *args, **kw):
+        text, name = self.round(*args, **kw)
+        self.write(name, text)
+
+    def test_same_family_cannot_clear_an_open_cross_family_frame(self):
+        self.prior(1, 'other', answers='partly: the window is the author\'s.', verdict='CHANGES')
+        code, out = self.receipt(*self.round(2, 'same'))
+        self.assertEqual(code, 1, out)
+        self.assertIn('verify-r1.md, a cross-family round, left the Frame open', out)
+        self.prior(2, 'same')
+        code, out = self.receipt(*self.round(3, 'other'))
+        self.assertEqual(code, 0, out)
+
+    def test_same_family_may_clear_after_a_clear_cross_family_frame(self):
+        self.prior(1, 'other', verdict='CHANGES')
+        code, out = self.receipt(*self.round(2, 'same'))
+        self.assertEqual(code, 0, out)
+
+    def test_same_family_alone_may_clear(self):
+        code, out = self.receipt(*self.round(1, 'same'))
+        self.assertEqual(code, 0, out)
+
+    def test_family_is_required(self):
+        for family in ('', 'claude', 'cross'):
+            code, out = self.receipt(self.header(family=family) + SECTIONS)
+            self.assertEqual(code, 1, family)
+            self.assertIn('"family:" is other or same', out)
+
+    def test_clear_needs_choices_ok_and_a_settled_reference(self):
+        for line, bad in (('Choices', 'the YTD alternative was not run.'), ('Reference', 'unbridged: -0.5 vs +0.2.')):
+            text = re.sub(rf'^{line}:.*$', f'{line}: {bad}', SECTIONS, flags=re.M)
+            code, out = self.receipt(self.header() + text)
+            self.assertEqual(code, 1, line)
+            self.assertIn(f'CLEAR, but the Frame says "{line}:', out)
+        for ref in ('reconciled to the dashboard.', 'bridged: window and cleaning.', 'None exists.'):
+            code, out = self.receipt(self.header() + re.sub(r'^Reference:.*$', 'Reference: ' + ref, SECTIONS, flags=re.M))
+            self.assertEqual(code, 0, out)
 
 
 class Labels(LedgerCase):

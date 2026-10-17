@@ -790,15 +790,17 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
 
     ask = ledger.get('ask')
     if not isinstance(ask, dict):
-        f.fail('ask', 'the ledger needs "ask": the request, where it came from, the measure and the '
-                      'assumptions, written before any query (see references/ledger.md)')
+        f.fail('ask', 'the ledger needs "ask": the request, where it came from, the measure, the premise, the '
+                      'reference and the choices, written before any query (see references/ledger.md)')
+        ask = None
     else:
-        for field in ('request', 'from', 'measure'):
-            if not (isinstance(ask.get(field), str) and ask[field].strip()):
+        for field in ('request', 'from', 'measure', 'premise'):
+            if not _text(ask.get(field)):
                 f.fail('ask', f'"ask" needs "{field}"')
-        assumptions = ask.get('assumptions')
-        if not isinstance(assumptions, list) or not all(isinstance(a, str) and a.strip() for a in assumptions):
-            f.fail('ask', '"ask" needs "assumptions": a list of what would change the answer, [] if none')
+        if 'assumptions' in ask:
+            f.fail('ask', '"assumptions" is now "choices": each one names who decided it, and an author\'s '
+                          'choice carries the headline rerun under its alternatives (see references/ledger.md)')
+        _check_ask_shape(ask, f)
 
     for sid, src in sources.items():
         kind = src.get('type') if isinstance(src, dict) else None
@@ -995,7 +997,87 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
             continue
         if not ok:
             f.fail('relation', f'{expr}: left side is {left}, right side is {right}')
+    if ask is not None:
+        _check_ask_claims(ask, by_id, sources, f)
     return by_id
+
+
+def _text(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+_DECIDERS = ('requester', 'reference', 'author')
+
+
+def _check_ask_shape(ask, f: Findings):
+    """The reference and the choices: who decided each part of the frame."""
+    ref = ask.get('reference')
+    if not isinstance(ref, dict) or not (_text(ref.get('none')) or all(_text(ref.get(k)) for k in ('what', 'where', 'claim'))):
+        f.fail('ask', '"ask" needs "reference": the number the requester already reads for this measure '
+                      '({"what", "where", "claim"}), or {"none": "searched: <where>"}')
+    choices = ask.get('choices')
+    if not isinstance(choices, list):
+        f.fail('ask', '"ask" needs "choices": every decision that could change the headline (period, '
+                      'population, exclusions, basis, date field), [] if the request fixes all of them')
+        return
+    for i, ch in enumerate(choices):
+        name = ch.get('name') if isinstance(ch, dict) else None
+        label = f'choices[{i}]' + (f' ({name})' if _text(name) else '')
+        if not isinstance(ch, dict) or not _text(name) or not _text(ch.get('chosen')):
+            f.fail('choice', f'{label}: needs "name" and "chosen"')
+            continue
+        who = ch.get('decided_by')
+        if who not in _DECIDERS:
+            f.fail('choice', f'{label}: "decided_by" must be requester, reference or author')
+        elif who != 'author' and not _text(ch.get('where')):
+            f.fail('choice', f'{label}: decided by the {who}; "where" cites the message or the reference\'s '
+                             'convention that settles it')
+        elif who == 'author' and not _text(ch.get('no_alternative')):
+            alts = ch.get('alternatives')
+            if not _text(ch.get('headline')) or not isinstance(alts, list) or not alts or not all(
+                    isinstance(a, dict) and _text(a.get('value')) and _text(a.get('result')) for a in alts):
+                f.fail('choice', f'{label}: an author\'s choice needs "headline" (the claim the conclusion rests '
+                                 'on) and "alternatives" [{"value", "result"}], each result the headline rerun '
+                                 'under that alternative; or "no_alternative" with the reason')
+
+
+def _sign(value: Decimal):
+    return (value > 0) - (value < 0)
+
+
+def _check_ask_claims(ask, by_id, sources, f: Findings):
+    """The reference is shown beside the answer, and each author choice was actually rerun:
+    an alternative that flips the headline's sign is shown, not left in a file."""
+    ref = ask.get('reference')
+    if isinstance(ref, dict) and _text(ref.get('claim')):
+        claim = by_id.get(ref['claim'])
+        if claim is None:
+            f.fail('reference', f'reference claim "{ref["claim"]}" is not in the ledger')
+        elif not claim.raw.get('anchors'):
+            f.fail('reference', f'{ref["claim"]}: the reference number is not shown; the reader needs it beside '
+                                'the answer, with the bridge if they differ')
+    for ch in ask.get('choices') if isinstance(ask.get('choices'), list) else []:
+        if not (isinstance(ch, dict) and ch.get('decided_by') == 'author' and isinstance(ch.get('alternatives'), list)
+                and not _text(ch.get('no_alternative'))):
+            continue
+        head = by_id.get(ch.get('headline'))
+        if head is None or head.value is None:
+            f.fail('choice', f'{ch.get("name")}: headline "{ch.get("headline")}" is not a numeric claim in the ledger')
+            continue
+        for alt in ch['alternatives']:
+            if not isinstance(alt, dict):
+                continue
+            res = by_id.get(alt.get('result'))
+            src = sources.get(res.raw.get('source')) if res is not None else None
+            if res is None or res.value is None:
+                f.fail('choice', f'{ch["name"]}: result "{alt.get("result")}" for "{alt.get("value")}" is not a '
+                                 'numeric claim in the ledger')
+            elif 'expr' not in res.raw and not (isinstance(src, dict) and src.get('type') in ('query', 'file')):
+                f.fail('choice', f'{ch["name"]}: {res.id} must be read from a rerun\'s result file, not typed')
+            elif _sign(res.value) != _sign(head.value) and not res.raw.get('anchors'):
+                f.fail('choice', f'{ch["name"]}: under "{alt.get("value")}" the headline is {res.raw.get("value")}, '
+                                 f'not {head.raw.get("value")}: the answer depends on this choice, so show both '
+                                 'readings, not one')
 
 
 def _check_derivation_roots(by_id, f: Findings):
@@ -1605,7 +1687,7 @@ def cmd_hash(args):
     return 0
 
 
-_META = re.compile(r'^\s*(artifact-sha256|ledger-sha256|verifier|verdict)\s*:\s*(.*?)\s*$', re.I)
+_META = re.compile(r'^\s*(artifact-sha256|ledger-sha256|verifier|family|verdict)\s*:\s*(.*?)\s*$', re.I)
 _OPEN_SECTIONS = ('wrong', 'stale', 'unsupported')
 
 
@@ -1640,15 +1722,16 @@ def _open_findings(lines):
     return counts
 
 
-_FRAME_FIELDS = ('question', 'measure', 'answers it')
+_FRAME_FIELDS = ('question', 'measure', 'choices', 'reference', 'answers it')
+_FRAME_CLEAR = {'choices': r'ok\b', 'reference': r'(reconciled|bridged|none)\b', 'answers it': r'yes\b'}
 
 
 def _frame(body):
     """The report's opening Frame: (what it is missing, its field values).
 
     The first non-blank line after the header must be exactly "## Frame", and the
-    section under it must give one value for each of "Question:", "Measure:" and "Answers
-    it:", once each (list markers, quote markers and bold allowed; a value in <angle brackets> is
+    section under it must give one value for each of "Question:", "Measure:", "Choices:",
+    "Reference:" and "Answers it:", once each (list markers, quote markers and bold allowed; a value in <angle brackets> is
     the template's placeholder). Position decides which heading counts, so an example
     quoted further down can't stand in for it. This shows the Frame names a question and
     a measure, not that they are right: that is the reader's call."""
@@ -1659,7 +1742,7 @@ def _frame(body):
     for line in rest[1:]:
         if line.lstrip().startswith('#'):
             break
-        m = re.match(r'^[\s>+-]*(question|measure|answers it)\s*:\s*(.*)$', re.sub(r'[*_]', '', line), re.I)
+        m = re.match(r'^[\s>+-]*(question|measure|choices|reference|answers it)\s*:\s*(.*)$', re.sub(r'[*_]', '', line), re.I)
         if m:
             found.setdefault(m.group(1).lower(), []).append(m.group(2).strip())
     gaps, values = [], {}
@@ -1674,24 +1757,49 @@ def _frame(body):
     return gaps, values
 
 
-def cmd_receipt(args):
-    with open(args.report, encoding='utf-8') as fh:
+def _frame_open(frame):
+    """The Frame fields that keep a report from being CLEAR."""
+    return [k for k, pattern in _FRAME_CLEAR.items() if not re.match(pattern, frame.get(k, ''), re.I)]
+
+
+def _read_report(path):
+    """(lines, index of the first line after the header, header fields)."""
+    with open(path, encoding='utf-8') as fh:
         lines = fh.read().splitlines()
-    f = Findings()
     i = 0
     while i < len(lines) and not lines[i].strip():
         i += 1
-    header = []
+    fields: dict[str, list[str]] = {}
     while i < len(lines) and _META.match(lines[i]):
-        header.append(_META.match(lines[i]).groups())
+        key, value = _META.match(lines[i]).groups()
+        fields.setdefault(key.lower(), []).append(value.strip('`* '))
         i += 1
+    return lines, i, fields
+
+
+def _open_cross_family_frame(report):
+    """The latest earlier cross-family round (verify-r<k>.md beside this report), if it
+    left the Frame open."""
+    m = re.fullmatch(r'verify-r(\d+)\.md', os.path.basename(report))
+    for k in range(int(m.group(1)) - 1, 0, -1) if m else ():
+        earlier = os.path.join(os.path.dirname(report), f'verify-r{k}.md')
+        if not os.path.isfile(earlier):
+            continue
+        lines, i, fields = _read_report(earlier)
+        if (fields.get('family') or [''])[0].lower() != 'other':
+            continue
+        gaps, frame = _frame(lines[i:])
+        return os.path.basename(earlier) if gaps or _frame_open(frame) else None
+    return None
+
+
+def cmd_receipt(args):
+    lines, i, fields = _read_report(args.report)
+    f = Findings()
     for line in lines[i:]:
         if _META.match(line):
             f.fail('receipt', f'"{line.strip()[:60]}" is outside the header block at the top of the report')
-    fields: dict[str, list[str]] = {}
-    for key, value in header:
-        fields.setdefault(key.lower(), []).append(value.strip('`* '))
-    for key in ('ledger-sha256', 'verifier', 'verdict'):
+    for key in ('ledger-sha256', 'verifier', 'family', 'verdict'):
         if len(fields.get(key, [])) != 1:
             f.fail('receipt', f'the header needs exactly one "{key}:" line (found {len(fields.get(key, []))})')
     arts = {v.split()[0].lower() for v in fields.get('artifact-sha256', []) if v}
@@ -1707,13 +1815,20 @@ def cmd_receipt(args):
         f.fail('receipt', f'verdict is {verdict or "missing"}, not CLEAR')
     if not who:
         f.fail('receipt', 'no verifier named')
+    family = (fields.get('family') or [''])[0].lower()
+    if family not in ('other', 'same'):
+        f.fail('receipt', '"family:" is other or same: whether the verifier is a different model family from the author')
+    elif family == 'same' and verdict == 'CLEAR' and (earlier := _open_cross_family_frame(args.report)):
+        f.fail('receipt', f'{earlier}, a cross-family round, left the Frame open; a same-family round can\'t '
+                          'clear it. Send the Frame back to a different model family')
     gaps, frame = _frame(lines[i:])
     if gaps:
         f.fail('receipt', 'the report must open with its Frame, the question the verifier checked the deliverable '
                           'against; missing: ' + ', '.join(gaps))
-    elif verdict == 'CLEAR' and not re.match(r'yes\b', frame['answers it'], re.I):
-        f.fail('receipt', f'CLEAR, but the Frame says "Answers it: {frame["answers it"][:40]}": partly or no means '
-                          'a finding is still open')
+    elif verdict == 'CLEAR':
+        for field in _frame_open(frame):
+            f.fail('receipt', f'CLEAR, but the Frame says "{field.capitalize()}: {frame[field][:40]}": a finding '
+                              'is still open')
     open_counts = _open_findings(lines[i:])
     for section in _OPEN_SECTIONS:
         if section not in open_counts:
