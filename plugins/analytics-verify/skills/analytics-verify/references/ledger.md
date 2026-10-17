@@ -207,7 +207,7 @@ Exit status: 0 pass, 1 findings, 2 input the script can't check.
   `Measure:`, `Choices:`, `Reference:` and `Answers it:` once each. A CLEAR report fails
   if it still lists items under Wrong, Stale or Unsupported, or if its Frame doesn't say
   `Choices: ok`, `Reference: reconciled`, `bridged` or `none`, and `Answers it: yes`. A
-  same-family CLEAR in `verify-r<N>.md` also fails when the latest earlier cross-family
+  same-family CLEAR must be named `verify-r<N>.md`, and fails when the latest earlier cross-family
   round beside it left its Frame open. It shows the Frame was filled in, not that it's
   right.
 - `labels` prints each number the deliverable shows, with the heading (or table header)

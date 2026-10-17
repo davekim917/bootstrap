@@ -1057,12 +1057,13 @@ def _check_ask_claims(ask, by_id, sources, f: Findings):
             f.fail('reference', f'{ref["claim"]}: the reference number is not shown; the reader needs it beside '
                                 'the answer, with the bridge if they differ')
     for ch in ask.get('choices') if isinstance(ask.get('choices'), list) else []:
-        if not (isinstance(ch, dict) and ch.get('decided_by') == 'author' and isinstance(ch.get('alternatives'), list)
+        if not (isinstance(ch, dict) and _text(ch.get('name')) and _text(ch.get('chosen'))
+                and ch.get('decided_by') == 'author' and isinstance(ch.get('alternatives'), list)
                 and not _text(ch.get('no_alternative'))):
             continue
         head = by_id.get(ch.get('headline'))
         if head is None or head.value is None:
-            f.fail('choice', f'{ch.get("name")}: headline "{ch.get("headline")}" is not a numeric claim in the ledger')
+            f.fail('choice', f'{ch["name"]}: headline "{ch.get("headline")}" is not a numeric claim in the ledger')
             continue
         for alt in ch['alternatives']:
             if not isinstance(alt, dict):
@@ -1777,11 +1778,13 @@ def _read_report(path):
     return lines, i, fields
 
 
+_ROUND = re.compile(r'verify-r(\d+)\.md')
+
+
 def _open_cross_family_frame(report):
     """The latest earlier cross-family round (verify-r<k>.md beside this report), if it
     left the Frame open."""
-    m = re.fullmatch(r'verify-r(\d+)\.md', os.path.basename(report))
-    for k in range(int(m.group(1)) - 1, 0, -1) if m else ():
+    for k in range(int(_ROUND.fullmatch(os.path.basename(report)).group(1)) - 1, 0, -1):
         earlier = os.path.join(os.path.dirname(report), f'verify-r{k}.md')
         if not os.path.isfile(earlier):
             continue
@@ -1818,6 +1821,9 @@ def cmd_receipt(args):
     family = (fields.get('family') or [''])[0].lower()
     if family not in ('other', 'same'):
         f.fail('receipt', '"family:" is other or same: whether the verifier is a different model family from the author')
+    elif family == 'same' and verdict == 'CLEAR' and not _ROUND.fullmatch(os.path.basename(args.report)):
+        f.fail('receipt', 'a same-family CLEAR is read against the earlier rounds beside it: name the report '
+                          'verify-r<N>.md')
     elif family == 'same' and verdict == 'CLEAR' and (earlier := _open_cross_family_frame(args.report)):
         f.fail('receipt', f'{earlier}, a cross-family round, left the Frame open; a same-family round can\'t '
                           'clear it. Send the Frame back to a different model family')

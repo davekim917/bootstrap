@@ -1227,6 +1227,13 @@ class AuthorChoices(LedgerCase):
                                'Conversion is up 0.2 pts.')
         self.assertEqual(code, 0, out)
 
+    def test_a_malformed_choice_reports_instead_of_crashing(self):
+        choice = {'chosen': 'Jul-Oct', 'decided_by': 'author', 'headline': 'conv',
+                  'alternatives': [{'value': 'YTD', 'result': 'nowhere'}]}
+        code, out = self.check(self.ledger(choice=choice), 'Conversion is up 0.2 pts.')
+        self.assertEqual(code, 1, out)
+        self.assertIn('choices[0]: needs "name" and "chosen"', out)
+
     def test_a_requester_or_reference_choice_cites_where(self):
         for who in ('requester', 'reference'):
             choice = {'name': 'period', 'chosen': 'YTD', 'decided_by': who}
@@ -1289,6 +1296,12 @@ class SameFamilyClear(ReceiptCase):
         self.prior(1, 'other', verdict='CHANGES')
         code, out = self.receipt(*self.round(2, 'same'))
         self.assertEqual(code, 0, out)
+
+    def test_same_family_clear_needs_a_round_numbered_name(self):
+        self.prior(1, 'other', answers='partly: the window is the author\'s.', verdict='CHANGES')
+        code, out = self.receipt(self.round(2, 'same')[0], name='verify-final.md')
+        self.assertEqual(code, 1, out)
+        self.assertIn('name the report verify-r<N>.md', out)
 
     def test_same_family_alone_may_clear(self):
         code, out = self.receipt(*self.round(1, 'same'))
