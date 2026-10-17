@@ -1244,6 +1244,12 @@ class AuthorChoices(LedgerCase):
         code, out = self.check(self.ledger(choice=choice), 'Conversion is up 0.2 pts.')
         self.assertEqual(code, 1, out)
         self.assertIn('choices[0]: needs "name" and "chosen"', out)
+        named = {'name': 'period', 'chosen': 'Jul-Oct', 'decided_by': 'author'}
+        for bad in ({**named, 'headline': [], 'alternatives': [{'value': 'YTD', 'result': 'conv_alt'}]},
+                    {**named, 'headline': 'conv', 'alternatives': [{'value': 'YTD', 'result': {}}]}):
+            code, out = self.check(self.ledger(choice=bad), 'Conversion is up 0.2 pts.')
+            self.assertEqual(code, 1, out)
+            self.assertIn('an author\'s choice needs "headline"', out)
 
     def test_a_requester_or_reference_choice_cites_where(self):
         for who in ('requester', 'reference'):

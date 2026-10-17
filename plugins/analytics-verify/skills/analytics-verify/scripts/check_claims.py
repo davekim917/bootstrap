@@ -800,7 +800,7 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
         if 'assumptions' in ask:
             f.fail('ask', '"assumptions" is now "choices": each one names who decided it, and an author\'s '
                           'choice carries the headline rerun under its alternatives (see references/ledger.md)')
-        _check_ask_shape(ask, f)
+        reruns = _check_ask_shape(ask, f)
 
     for sid, src in sources.items():
         kind = src.get('type') if isinstance(src, dict) else None
@@ -998,7 +998,7 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
         if not ok:
             f.fail('relation', f'{expr}: left side is {left}, right side is {right}')
     if ask is not None:
-        _check_ask_claims(ask, by_id, sources, f)
+        _check_ask_claims(ask, reruns, by_id, sources, f)
     return by_id
 
 
@@ -1010,7 +1010,10 @@ _DECIDERS = ('requester', 'reference', 'author')
 
 
 def _check_ask_shape(ask, f: Findings):
-    """The reference and the choices: who decided each part of the frame."""
+    """The reference and the choices: who decided each part of the frame. Returns the
+    author choices whose headline and alternatives are well formed, the only ones the
+    claim checks read."""
+    reruns = []
     ref = ask.get('reference')
     if not isinstance(ref, dict) or not (_text(ref.get('none')) or all(_text(ref.get(k)) for k in ('what', 'where', 'claim'))):
         f.fail('ask', '"ask" needs "reference": the number the requester already reads for this measure '
@@ -1019,7 +1022,7 @@ def _check_ask_shape(ask, f: Findings):
     if not isinstance(choices, list):
         f.fail('ask', '"ask" needs "choices": every decision that could change the headline (period, '
                       'population, exclusions, basis, date field), [] if the request fixes all of them')
-        return
+        return reruns
     for i, ch in enumerate(choices):
         name = ch.get('name') if isinstance(ch, dict) else None
         label = f'choices[{i}]' + (f' ({name})' if _text(name) else '')
@@ -1039,6 +1042,9 @@ def _check_ask_shape(ask, f: Findings):
                 f.fail('choice', f'{label}: an author\'s choice needs "headline" (the claim the conclusion rests '
                                  'on) and "alternatives" [{"value", "result"}], each result the headline rerun '
                                  'under that alternative; or "no_alternative" with the reason')
+            else:
+                reruns.append(ch)
+    return reruns
 
 
 def _roots(cid, by_id, seen=None):
@@ -1070,7 +1076,7 @@ def _sign(value: Decimal):
     return (value > 0) - (value < 0)
 
 
-def _check_ask_claims(ask, by_id, sources, f: Findings):
+def _check_ask_claims(ask, reruns, by_id, sources, f: Findings):
     """The reference is shown beside the answer, and each author choice was actually rerun:
     an alternative that flips the headline's sign is shown, not left in a file."""
     ref = ask.get('reference')
@@ -1083,19 +1089,13 @@ def _check_ask_claims(ask, by_id, sources, f: Findings):
         elif not claim.raw.get('anchors'):
             f.fail('reference', f'{ref["claim"]}: the reference number is not shown; the reader needs it beside '
                                 'the answer, with the bridge if they differ')
-    for ch in ask.get('choices') if isinstance(ask.get('choices'), list) else []:
-        if not (isinstance(ch, dict) and _text(ch.get('name')) and _text(ch.get('chosen'))
-                and ch.get('decided_by') == 'author' and isinstance(ch.get('alternatives'), list)
-                and not _text(ch.get('no_alternative'))):
-            continue
-        head = by_id.get(ch.get('headline'))
+    for ch in reruns:
+        head = by_id.get(ch['headline'])
         if head is None or head.value is None:
             f.fail('choice', f'{ch["name"]}: headline "{ch.get("headline")}" is not a numeric claim in the ledger')
             continue
         for alt in ch['alternatives']:
-            if not isinstance(alt, dict):
-                continue
-            res = by_id.get(alt.get('result'))
+            res = by_id.get(alt['result'])
             if res is None or res.value is None:
                 f.fail('choice', f'{ch["name"]}: result "{alt.get("result")}" for "{alt.get("value")}" is not a '
                                  'numeric claim in the ledger')
