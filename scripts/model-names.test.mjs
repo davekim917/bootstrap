@@ -36,7 +36,8 @@ test('model and effort names in skill bodies and always-on directives are flagge
       'Run at `high` effort.\nUse low reasoning effort, or ultra effort.\nA wrapped max\neffort, and O3 for review.\n'
       + 'Use **low** effort, or set effort: high, or effort level = max.\n'
       + 'Use GPT 5.6 or Claude 4.\n'
-      + 'Use high **effort**, or ***max*** effort, or gpt-oss-120b.\n',
+      + 'Use high **effort**, or ***max*** effort, or gpt-oss-120b.\n'
+      + 'Use medium reasoning **effort**, or low **reasoning** effort.\n',
   });
   assert.deepEqual(found(result).sort(), [
     'plugins/other/skills/x/SKILL.md:1 effort --effort xhigh',
@@ -56,6 +57,8 @@ test('model and effort names in skill bodies and always-on directives are flagge
     'plugins/other/skills/y/SKILL.md:7 effort high **effort',
     'plugins/other/skills/y/SKILL.md:7 effort max*** effort',
     'plugins/other/skills/y/SKILL.md:7 model gpt-oss-120b',
+    'plugins/other/skills/y/SKILL.md:8 effort low **reasoning** effort',
+    'plugins/other/skills/y/SKILL.md:8 effort medium reasoning **effort',
     'plugins/sample/always-on.md:1 model gpt-7.2',
     'plugins/sample/always-on.md:2 model Astra',
     'plugins/sample/always-on.md:2 model Sol',
