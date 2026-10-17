@@ -76,8 +76,8 @@ deliverable against it, and checks it against the request itself.
 
 The check fails a ledger without `request`, `from`, `measure`, `premise`, `reference` or
 a `choices` list, and refuses the old `assumptions` field by name. It fails a reference
-claim that isn't shown, an alternative result that is typed rather than read from a
-file, and an alternative that flips the headline's sign (+ to - or to zero) but is only
+claim that isn't a shown number, an alternative result that isn't read from a result
+file (directly, or through an `expr` whose every root is), and an alternative that flips the headline's sign (+ to - or to zero) but is only
 `omit`ted: the answer depends on that choice, so the deliverable shows both readings.
 `changed` reports an edited ask, and the verifier starts over from the question.
 
@@ -207,8 +207,8 @@ Exit status: 0 pass, 1 findings, 2 input the script can't check.
   `Measure:`, `Choices:`, `Reference:` and `Answers it:` once each. A CLEAR report fails
   if it still lists items under Wrong, Stale or Unsupported, or if its Frame doesn't say
   `Choices: ok`, `Reference: reconciled`, `bridged` or `none`, and `Answers it: yes`. A
-  same-family CLEAR must be named `verify-r<N>.md`, and fails when the latest earlier cross-family
-  round beside it left its Frame open. It shows the Frame was filled in, not that it's
+  same-family CLEAR also fails when the highest-numbered cross-family `verify-r<k>.md`
+  beside it left its Frame open. It shows the Frame was filled in, not that it's
   right.
 - `labels` prints each number the deliverable shows, with the heading (or table header)
   above it, beside what its source calls it: the column and row, the quote, the doc or

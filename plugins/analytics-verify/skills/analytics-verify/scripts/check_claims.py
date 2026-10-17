@@ -1041,6 +1041,18 @@ def _check_ask_shape(ask, f: Findings):
                                  'under that alternative; or "no_alternative" with the reason')
 
 
+def _roots(cid, by_id, seen=None):
+    """The sourced claims an `expr` claim derives from (the claim itself when it is sourced)."""
+    seen = set() if seen is None else seen
+    claim = by_id.get(cid)
+    if claim is None or cid in seen:
+        return set()
+    seen.add(cid)
+    if 'expr' not in claim.raw:
+        return {cid}
+    return set().union(*(_roots(n, by_id, seen) for n in expr_names(str(claim.raw['expr']))))
+
+
 def _sign(value: Decimal):
     return (value > 0) - (value < 0)
 
@@ -1053,6 +1065,8 @@ def _check_ask_claims(ask, by_id, sources, f: Findings):
         claim = by_id.get(ref['claim'])
         if claim is None:
             f.fail('reference', f'reference claim "{ref["claim"]}" is not in the ledger')
+        elif claim.value is None:
+            f.fail('reference', f'{ref["claim"]}: the reference claim must hold a number, the one the requester reads')
         elif not claim.raw.get('anchors'):
             f.fail('reference', f'{ref["claim"]}: the reference number is not shown; the reader needs it beside '
                                 'the answer, with the bridge if they differ')
@@ -1069,11 +1083,11 @@ def _check_ask_claims(ask, by_id, sources, f: Findings):
             if not isinstance(alt, dict):
                 continue
             res = by_id.get(alt.get('result'))
-            src = sources.get(res.raw.get('source')) if res is not None else None
             if res is None or res.value is None:
                 f.fail('choice', f'{ch["name"]}: result "{alt.get("result")}" for "{alt.get("value")}" is not a '
                                  'numeric claim in the ledger')
-            elif 'expr' not in res.raw and not (isinstance(src, dict) and src.get('type') in ('query', 'file')):
+            elif any(not (isinstance(src := sources.get(by_id[r].raw.get('source')), dict)
+                          and src.get('type') in ('query', 'file')) for r in _roots(res.id, by_id)):
                 f.fail('choice', f'{ch["name"]}: {res.id} must be read from a rerun\'s result file, not typed')
             elif _sign(res.value) != _sign(head.value) and not res.raw.get('anchors'):
                 f.fail('choice', f'{ch["name"]}: under "{alt.get("value")}" the headline is {res.raw.get("value")}, '
@@ -1782,17 +1796,18 @@ _ROUND = re.compile(r'verify-r(\d+)\.md')
 
 
 def _open_cross_family_frame(report):
-    """The latest earlier cross-family round (verify-r<k>.md beside this report), if it
-    left the Frame open."""
-    for k in range(int(_ROUND.fullmatch(os.path.basename(report)).group(1)) - 1, 0, -1):
-        earlier = os.path.join(os.path.dirname(report), f'verify-r{k}.md')
-        if not os.path.isfile(earlier):
-            continue
-        lines, i, fields = _read_report(earlier)
+    """The highest-numbered cross-family round (verify-r<k>.md) beside this report, if it
+    left the Frame open. The current report's own name plays no part."""
+    folder = os.path.dirname(os.path.abspath(report))
+    rounds = sorted(((int(m.group(1)), name) for name in os.listdir(folder)
+                     if (m := _ROUND.fullmatch(name)) and not os.path.samefile(os.path.join(folder, name), report)),
+                    reverse=True)
+    for _, name in rounds:
+        lines, i, fields = _read_report(os.path.join(folder, name))
         if (fields.get('family') or [''])[0].lower() != 'other':
             continue
         gaps, frame = _frame(lines[i:])
-        return os.path.basename(earlier) if gaps or _frame_open(frame) else None
+        return name if gaps or _frame_open(frame) else None
     return None
 
 
@@ -1821,9 +1836,6 @@ def cmd_receipt(args):
     family = (fields.get('family') or [''])[0].lower()
     if family not in ('other', 'same'):
         f.fail('receipt', '"family:" is other or same: whether the verifier is a different model family from the author')
-    elif family == 'same' and verdict == 'CLEAR' and not _ROUND.fullmatch(os.path.basename(args.report)):
-        f.fail('receipt', 'a same-family CLEAR is read against the earlier rounds beside it: name the report '
-                          'verify-r<N>.md')
     elif family == 'same' and verdict == 'CLEAR' and (earlier := _open_cross_family_frame(args.report)):
         f.fail('receipt', f'{earlier}, a cross-family round, left the Frame open; a same-family round can\'t '
                           'clear it. Send the Frame back to a different model family')

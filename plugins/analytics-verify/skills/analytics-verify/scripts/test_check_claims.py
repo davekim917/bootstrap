@@ -1212,6 +1212,11 @@ class AuthorChoices(LedgerCase):
         code, out = self.check(self.ledger(choice=choice, extra_claims=[typed]), 'Conversion is up 0.2 pts.')
         self.assertEqual(code, 1, out)
         self.assertIn("conv_typed must be read from a rerun's result file", out)
+        derived = {'id': 'conv_derived', 'value': -0.4, 'expr': 'conv_typed * 1', 'omit': 'sensitivity table'}
+        choice['alternatives'] = [{'value': 'YTD', 'result': 'conv_derived'}]
+        code, out = self.check(self.ledger(choice=choice, extra_claims=[typed, derived]), 'Conversion is up 0.2 pts.')
+        self.assertEqual(code, 1, out)
+        self.assertIn("conv_derived must be read from a rerun's result file", out)
         choice['alternatives'] = [{'value': 'YTD', 'result': 'nowhere'}]
         code, out = self.check(self.ledger(choice=choice), 'Conversion is up 0.2 pts.')
         self.assertIn('result "nowhere" for "YTD" is not a numeric claim', out)
@@ -1258,6 +1263,11 @@ class AuthorChoices(LedgerCase):
         code, out = self.check(self.ledger(alt_shown=True, reference=reference, extra_claims=[shown]),
                                alt_text + '; the dashboard reads -0.5 pts.')
         self.assertEqual(code, 0, out)
+        text_ref = {'id': 'ref', 'value': 'unknown', 'source': 'd', 'anchors': ['dashboard reads unknown']}
+        code, out = self.check(self.ledger(alt_shown=True, reference=reference, extra_claims=[text_ref]),
+                               alt_text + '; the dashboard reads unknown.')
+        self.assertEqual(code, 1, out)
+        self.assertIn('ref: the reference claim must hold a number', out)
         code, out = self.check(self.ledger(reference={**reference, 'claim': 'ghost'}), 'x')
         self.assertIn('reference claim "ghost" is not in the ledger', out)
 
@@ -1297,11 +1307,15 @@ class SameFamilyClear(ReceiptCase):
         code, out = self.receipt(*self.round(2, 'same'))
         self.assertEqual(code, 0, out)
 
-    def test_same_family_clear_needs_a_round_numbered_name(self):
+    def test_the_latest_cross_family_round_decides_whatever_this_report_is_called(self):
         self.prior(1, 'other', answers='partly: the window is the author\'s.', verdict='CHANGES')
-        code, out = self.receipt(self.round(2, 'same')[0], name='verify-final.md')
-        self.assertEqual(code, 1, out)
-        self.assertIn('name the report verify-r<N>.md', out)
+        for name in ('verify-final.md', 'verify-r0.md'):
+            code, out = self.receipt(self.round(2, 'same')[0], name=name)
+            self.assertEqual(code, 1, name)
+            self.assertIn('verify-r1.md, a cross-family round, left the Frame open', out)
+        self.prior(2, 'other', verdict='CHANGES')
+        code, out = self.receipt(self.round(3, 'same')[0], name='verify-final.md')
+        self.assertEqual(code, 0, out)
 
     def test_same_family_alone_may_clear(self):
         code, out = self.receipt(*self.round(1, 'same'))
