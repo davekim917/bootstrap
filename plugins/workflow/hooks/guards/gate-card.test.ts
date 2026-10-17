@@ -33,13 +33,13 @@ describe('destructive approval description', () => {
         {
             name: 'a command xargs runs is placed in the directory it runs in, not one a later cd moves to',
             command: 'cd /work/dbt; xargs dbt run --full-refresh --select orders < vars; cd /tmp',
-            label: 'Rebuild dbt model orders from scratch (--full-refresh)',
+            label: 'Rebuild dbt models chosen at run time from scratch (--full-refresh)',
             has: ['Directory: `/work/dbt`'],
         },
         {
             name: 'a command xargs runs through env -C is placed in that directory',
             command: 'cd /safe; xargs env -C /prod dbt run --full-refresh --select orders < vars',
-            label: 'Rebuild dbt model orders from scratch (--full-refresh)',
+            label: 'Rebuild dbt models chosen at run time from scratch (--full-refresh)',
             has: ['Directory: `/prod`'],
         },
         {

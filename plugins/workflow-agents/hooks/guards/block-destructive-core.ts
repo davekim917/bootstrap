@@ -2005,9 +2005,23 @@ function innerSteps(inner: ResolvedCommand | null, appended = false): ResolvedCo
     return steps;
 }
 
-/** What xargs, or each find -exec/-execdir/-ok/-okdir, runs: the option that runs it and the command it runs. */
-function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCommand | null }> {
-    if (cmd.name === 'xargs') return [{ via: 'xargs', inner: innerCommand(xargsCommand(cmd.args), cmd) }];
+// The word that stands for what xargs reads or find matches, wherever it lands in the command they run: xargs's
+// replace string, find's `{}`, and the words xargs appends all become it.
+const FILLED = '{}';
+// Where -execdir and -okdir run the command: only the matches decide it.
+const EACH_MATCH_DIR = 'the directory of each match';
+
+/**
+ * What xargs, or each find -exec/-execdir/-ok/-okdir, runs: the option that runs it and the command it runs, with
+ * FILLED where its input or a match goes. `tail`: xargs appends what it reads, so more words may follow the last.
+ */
+function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCommand | null; tail?: boolean }> {
+    if (cmd.name === 'xargs') {
+        const words = xargsCommand(cmd.args);
+        const replace = xargsReplaceString(cmd.args);
+        const filled = replace !== null ? words.map(w => w.split(replace).join(FILLED)) : words.length ? [...words, FILLED] : [];
+        return [{ via: 'xargs', inner: innerCommand(filled, cmd), tail: replace === null }];
+    }
     if (cmd.name === 'git') return submoduleForeach(cmd);
     if (cmd.name !== 'find') return [];
     const runs: Array<{ via: string; inner: ResolvedCommand | null }> = [];
@@ -2016,8 +2030,7 @@ function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCom
         // The command runs up to its `;`, or a `+` right after `{}`; what follows is find's own expression.
         const end = cmd.args.findIndex((a, j) => j > i && (a === ';' || (a === '+' && cmd.args[j - 1] === '{}')));
         const inner = innerCommand(cmd.args.slice(i + 1, end < 0 ? undefined : end), cmd);
-        // -execdir and -okdir run in each match's directory, which only the matches decide.
-        if (inner && cmd.args[i].endsWith('dir') && inner.chdir === undefined) inner.chdir = 'the directory of each match';
+        if (inner && cmd.args[i].endsWith('dir') && inner.chdir === undefined) inner.chdir = EACH_MATCH_DIR;
         runs.push({ via: `find ${cmd.args[i]}`, inner });
         if (end > i) i = end;
     }
@@ -2036,12 +2049,6 @@ function submoduleForeach(cmd: ResolvedCommand): Array<{ via: string; inner: Res
     return [{ via: 'git submodule foreach', inner: { name: 'sh', args: ['-c', words.join(' ')], raw: cmd.raw, env: [], chdir: 'each submodule', hasInputRedirect: false } }];
 }
 
-// Tools whose operation is a positional word, so `xargs <tool>` with none lets its input choose the operation.
-const OPERATION_TOOLS = new Set(['terraform', 'tofu', 'aws', 'gcloud', 'az', 'kubectl', 'helm', 'git', 'gh', 'dbt', 'snow', 'firebase', 'heroku', 'vercel', 'fly', 'flyctl', 'pulumi', 'doctl']);
-// Arguments that turn a routine command into one needing approval when xargs appends them from its input.
-const GATING_MODIFIERS = ['--force', '-f', '--delete', '-d', '--mirror', '--prune', '--full-refresh', '-auto-approve', 'destroy', '--yes', '-y'];
-
-/** xargs appends its input to the command (it does unless -I/-i/-J/--replace substitutes it into one place). */
 /** The string xargs replaces with its input (`-I R`, `-J R`, `-i`/`--replace` → `{}`), or null when it appends instead. */
 function xargsReplaceString(args: string[]): string | null {
     for (let i = 0; i < args.length && args[i].startsWith('-') && args[i] !== '--'; i += optionWords(args[i], 'adEIJLnPRsS', XARGS_LONG_VALUE_OPTIONS, XARGS_LONG_FLAGS)) {
@@ -2061,72 +2068,85 @@ function xargsReplaceString(args: string[]): string | null {
     return null;
 }
 
-/** The command names no operation (or, for a shell, no script): its input or a find match will supply one. */
-function writesNoOperation(inner: ResolvedCommand): boolean {
-    const placeholder = (words: string[]) => words.every(a => a === '{}');
-    if (inner.name === 'git') return placeholder(inner.args.slice(gitSubcommandIndex(inner.args), gitSubcommandIndex(inner.args) + 1));
-    if (SHELLS.has(inner.name)) {
-        if (shellScript(inner.name, inner.args)) return false;
-        const spec = SHELL_VALUE_OPTIONS[inner.name] ?? SHELL_VALUE_OPTIONS.bash;
-        const operands: string[] = [];
-        for (let i = 0; i < inner.args.length; i++) {
-            const a = inner.args[i];
-            if (!/^[-+]/.test(a)) operands.push(a);
-            else if (a.startsWith('--') ? spec.long.has(a) : spec.short.includes(a[a.length - 1])) i++;
+// Words that make a command need approval under checkGatedCommand's rules: an operation (with the words that lead to
+// it), a modifier, or text a client runs. A word filled in at run time is tried as each, so a rule whose words are
+// missing here lets xargs input or a find match choose them unseen; runtime-words.test.ts holds every rule to it.
+const RUNTIME_PROBES: string[][] = [
+    ['push', '--force'], ['clean'], ['--no-dry-run'], ['--force'], ['-f'], ['--delete'], ['-d'], ['--mirror'], ['--prune'],
+    ['+main'], [':main'],
+    ['destroy'], ['delete'], ['apply', '-auto-approve'], ['-auto-approve'], ['uninstall'], ['remove'], ['drain'], ['cordon'],
+    ['rm'], ['rb'], ['rmi'], ['system', 'prune'], ['volume', 'rm'], ['s3', 'rm'], ['ec2', 'terminate-instances'],
+    ['repo', 'delete'], ['db', 'reset'], ['pg:reset'], ['sites:delete'], ['projects:delete'], ['firestore:delete'],
+    ['hosting:disable'], ['run', '--full-refresh'], ['--full-refresh'], ['if=/dev/zero'], ['FLUSHALL'], ['db.x.drop()'],
+    ['x; DROP TABLE x'], ['-c', 'x; DROP TABLE x'], ['sql', '-q', 'DROP TABLE x'],
+    ...[...new Set(Object.values(PLATFORM_DESTRUCTIVE).flatMap(verbs => [...verbs]))].map(verb => [verb]),
+];
+// A filled word may complete an operation another word starts (`system {}`), so every run of words in a probe is one.
+const RUNTIME_FILLS = [...new Map(RUNTIME_PROBES.flatMap(probe => probe.flatMap((_, i) => probe.slice(i).map((__, j) => probe.slice(i, i + j + 1))))
+    .map(words => [words.join('\0'), words])).values()];
+// Part of a word (`--{}`, `select … {}`) is filled with one word, an option's letters included.
+const RUNTIME_PROBE_WORDS = [...new Set(RUNTIME_PROBES.flat().flatMap(w => [w, w.replace(/^-/, ''), w.replace(/^-+/, '')]))];
+
+/** Each way to fill `args`' FILLED words from RUNTIME_PROBES, with the words it put there. */
+function* runtimeFills(args: string[]): Generator<{ args: string[]; words: string }> {
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === FILLED) {
+            for (const fill of RUNTIME_FILLS) yield { args: [...args.slice(0, i), ...fill, ...args.slice(i + 1)], words: fill.join(' ') };
+        } else if (args[i].includes(FILLED)) {
+            for (const word of RUNTIME_PROBE_WORDS) {
+                const filled = args[i].split(FILLED).join(word);
+                yield { args: [...args.slice(0, i), filled, ...args.slice(i + 1)], words: filled };
+            }
         }
-        return placeholder(operands);
     }
-    return inner.args.every(a => a.startsWith('-') || a === '{}');
 }
 
-/** A modifier that, put where xargs substitutes its input, makes `step` need approval when it doesn't already. */
-function substitutedModifier(step: ResolvedCommand, replace: string): string | null {
-    if (!step.args.includes(replace) || checkGatedCommand(step)) return null;
-    return GATING_MODIFIERS.find(m => checkGatedCommand({ ...step, args: step.args.map(a => (a === replace ? m : a)) })) ?? null;
-}
+const holdsFilled = (cmd: ResolvedCommand): boolean =>
+    cmd.chdir === EACH_MATCH_DIR || [cmd.name, ...cmd.args, ...(cmd.env ?? []), cmd.chdir ?? ''].some(w => w.includes(FILLED));
 
-/** A modifier that, appended to `step`, makes it need approval when it doesn't already. */
-function appendedModifier(step: ResolvedCommand): string | null {
-    if (checkGatedCommand(step)) return null;
-    return GATING_MODIFIERS.find(m => checkGatedCommand({ ...step, args: [...step.args, m] })) ?? null;
+/** A shell without `-c`: its options and the operand naming the script file it runs, not that script's arguments. */
+function shellFileWords(shell: ResolvedCommand): string[] {
+    const spec = SHELL_VALUE_OPTIONS[shell.name] ?? SHELL_VALUE_OPTIONS.bash;
+    for (let i = 0; i < shell.args.length; i++) {
+        const a = shell.args[i];
+        if (a === '--') return shell.args.slice(0, i + 2);
+        if (!/^[-+]/.test(a)) return shell.args.slice(0, i + 1);
+        if (a.startsWith('--') ? spec.long.has(a) : spec.short.includes(a[a.length - 1])) i++;
+    }
+    return shell.args;
 }
 
 /**
- * Whether words xargs reads, or a find match, land where `inner` names the command it runs: a `{}`-style word in the
- * command position (`xargs -I{} env {}`, `find -exec {} ;`), or, when xargs appends (`filled` undefined), a wrapper
- * or executor left without a command of its own (`xargs env`, `xargs sudo -u x`, `xargs xargs`, `xargs find DIR`,
- * whose appended words are find's expression).
+ * What a word filled in at run time decides in `step` that makes what it runs unknowable, or null: the command it
+ * runs (its name, its environment, or find's expression), the script a shell runs, or arguments that make it need
+ * approval when it doesn't otherwise.
  */
-function namesCommandFromInput(inner: ResolvedCommand, filled: string | undefined): boolean {
-    if (filled !== undefined) return inner.name.includes(filled);
-    if (inner.name === 'xargs') return xargsCommand(inner.args).length === 0;
-    if (inner.name === 'find') return true;
-    if (inner.name === 'pnpm' || inner.name === 'yarn') return /^(?:exec|dlx)$/.test(inner.args.filter(a => !a.startsWith('-')).at(-1) ?? '');
-    return WRAPPERS.has(inner.name);
+function runtimeReach(step: ResolvedCommand): string | null {
+    if (!holdsFilled(step)) return null;
+    if (step.name.includes(FILLED) || step.env?.some(e => e.includes(FILLED))) return 'takes the command it runs';
+    if (step.name === 'find' && step.args.some(a => a.includes(FILLED))) return "takes find's expression";
+    if (SHELLS.has(step.name) && !shellScript(step.name, step.args) && shellFileWords(step).some(a => a.includes(FILLED))) {
+        return `supplies ${step.name}'s script`;
+    }
+    if (checkGatedCommand(step)) return null;
+    for (const fill of runtimeFills(step.args)) {
+        if (checkGatedCommand({ ...step, args: fill.args })) return `can fill in "${fill.words}" for ${step.name}`;
+    }
+    return null;
 }
 
 // xargs or find nested inside each other past this depth are not followed; no real command nests them twice.
 const EXEC_NESTING_MAX = 4;
 
 /** Every command xargs or find -exec runs that needs approval, with why; each gets its own exemption check. */
-// `runtime`: what the step does comes from xargs input or a find match, so no static exemption can apply to it.
+// `runtime`: xargs input or a find match decides the step or where it acts, so no static exemption can apply to it.
 // `moves`: the directory changes the script makes before the step, which decide where it runs.
 type InnerGate = { step: ResolvedCommand; reason: string; runtime?: boolean; moves?: ResolvedCommand[] };
 
 function innerGatedSteps(cmd: ResolvedCommand, depth = 0): InnerGate[] {
     const gated: InnerGate[] = [];
-    for (const { via, inner } of execRuns(cmd)) {
-        // With no operation (or script) written, xargs input or a find match supplies it: `xargs sh` gets `-c …` at run time.
-        if (inner && (OPERATION_TOOLS.has(inner.name) || SHELLS.has(inner.name)) && writesNoOperation(inner)) {
-            gated.push({ step: { ...inner, pos: undefined }, reason: `${via} supplies ${inner.name}'s ${SHELLS.has(inner.name) ? 'script' : 'operation'} from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Write it in the command.`, runtime: true });
-            continue;
-        }
-        const replace = via === 'xargs' ? xargsReplaceString(cmd.args) : null;
-        if (inner && namesCommandFromInput(inner, via === 'xargs' ? replace ?? undefined : '{}')) {
-            gated.push({ step: { ...inner, pos: undefined }, reason: `${via} takes the command ${inner.name} runs from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Name the command.`, runtime: true });
-            continue;
-        }
-        const steps = innerSteps(inner, via === 'xargs' && replace === null);
+    for (const { via, inner, tail } of execRuns(cmd)) {
+        const steps = innerSteps(inner, tail);
         if (steps === RUNS_VARIABLE) continue;
         const moves: ResolvedCommand[] = [];
         for (const step of steps) {
@@ -2135,6 +2155,11 @@ function innerGatedSteps(cmd: ResolvedCommand, depth = 0): InnerGate[] {
                 continue;
             }
             const at = moves.length ? [...moves] : undefined;
+            const reach = via === 'git submodule foreach' ? null : runtimeReach(step);
+            if (reach) {
+                gated.push({ step: { ...step, pos: undefined }, reason: `${via} ${reach} from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Write it in the command.`, runtime: true });
+                continue;
+            }
             if (step.name === 'xargs' || step.name === 'find') {
                 if (depth >= EXEC_NESTING_MAX) {
                     gated.push({ step: { ...step, pos: undefined }, reason: `${via} nests xargs or find too deeply for the guard to follow. Run the inner command directly.` });
@@ -2142,26 +2167,9 @@ function innerGatedSteps(cmd: ResolvedCommand, depth = 0): InnerGate[] {
                 }
                 gated.push(...innerGatedSteps(step, depth + 1).map(g => ({ ...g, reason: `${via} runs ${g.reason}`, moves: [...moves, ...(g.moves ?? [])] })));
             }
-            // A script word xargs input fills in (`terraform "$@"`) is as open as an operation left unwritten.
-            if (step !== inner && step.args.includes('{}') && via === 'xargs' && replace === null
-                && (OPERATION_TOOLS.has(step.name) || SHELLS.has(step.name)) && writesNoOperation(step)) {
-                gated.push({ step: { ...step, pos: undefined }, reason: `xargs supplies ${step.name}'s ${SHELLS.has(step.name) ? 'script' : 'operation'} from its input, so what it runs can't be checked. Write it in the command.`, runtime: true });
-                continue;
-            }
-            if (via === 'xargs' && (inner === step || (replace === null ? step.args.includes('{}') : SHELLS.has(inner!.name)))) {
-                // Appending, xargs input can complete a CLI whose operation spans several words (`aws s3` + `rm …`);
-                // git names its operation in one word, so for git only an appended modifier matters.
-                const fromInput = replace === null
-                    ? OPERATION_TOOLS.has(step.name) && step.name !== 'git' ? 'its operation and options' : appendedModifier(step)
-                    : substitutedModifier(step, replace);
-                if (fromInput) {
-                    gated.push({ step: { ...step, pos: undefined }, reason: `xargs fills in ${fromInput} for ${step.name} from its input, so what it runs can't be checked. Write the arguments in the command.`, runtime: true });
-                    continue;
-                }
-            }
             const reason = checkGatedCommand(step);
             // The step's offset, if any, is into the inner script, not the command line the card reads from.
-            if (reason) gated.push({ step: { ...step, pos: undefined }, reason: `${via} runs a command that needs approval. ${reason}`, moves: at });
+            if (reason) gated.push({ step: { ...step, pos: undefined }, reason: `${via} runs a command that needs approval. ${reason}`, moves: at, runtime: holdsFilled(step) || at?.some(holdsFilled) });
         }
     }
     return gated;
@@ -2175,8 +2183,7 @@ const RUNS_VARIABLE = 'Its shell script takes the command to run from a variable
  */
 function expandPositional(shell: string, words: string[], positional: string[], appended: boolean): string[] | null {
     const fish = shell === 'fish';
-    const written = fish ? positional : positional.slice(1);
-    const all = appended ? [...written, '{}'] : written;
+    const all = fish ? positional : positional.slice(1);
     const one = fish ? /\$argv\[(\d+)\]/g : /\$(\d)|\$\{(\d+)\}/g;
     let used = false;
     const out = words.flatMap(word => {
@@ -2187,7 +2194,7 @@ function expandPositional(shell: string, words: string[], positional: string[], 
         return [word.replace(one, (_m, a: string | undefined, b: string | undefined) => {
             used = true;
             const n = Number(a ?? b);
-            return positional[fish ? n - 1 : n] ?? (appended ? '{}' : '');
+            return positional[fish ? n - 1 : n] ?? (appended ? FILLED : '');
         })];
     });
     return used ? out : null;
@@ -3898,7 +3905,7 @@ function defaultDbtTarget(dir: string | undefined, cmd: ResolvedCommand): string
 function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
     const models = flagList(cmd.args, ['--select', '-s', '--models', '-m']);
     const selector = flagValue(cmd.args, ['--selector']);
-    const runtime = models.some(m => m.includes('$'));
+    const runtime = models.some(m => m.includes('$') || m.includes(FILLED));
     const what = selector ? `dbt models chosen by selector ${selector}`
         : runtime ? 'dbt models chosen at run time'
         : models.length === 1 ? `dbt model ${models[0]}`
@@ -4231,6 +4238,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
                 const list = [...unresolved];
                 lines.push(`⚠️ ${list.map(code).join(', ')} ${list.length === 1 ? 'is' : 'are'} only known when the command runs, so the value${list.length === 1 ? '' : 's'} above may differ.`);
             }
+            if ([raw.name, ...raw.args].some(w => w.includes(FILLED))) lines.push(`⚠️ Part of this step is ${outer.name === 'xargs' ? 'what xargs reads' : 'each file find matches'}, only known when the command runs.`);
             return { label: step.label, lines };
         });
 

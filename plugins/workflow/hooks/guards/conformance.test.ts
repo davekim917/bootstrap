@@ -235,12 +235,22 @@ const BASH_GATE = [
   "printf '%s\\n' --force | xargs sh -c 'git push origin main \"$@\"' _",
   "printf '%s\\n' --force | xargs -I{} sh -c 'git push {} origin main'",
   "printf '%s\\n' --force | xargs -I{} git push {} origin main",
-  'xargs -n1 terraform fmt < dirs',
   // Appending, xargs input can complete a multi-word CLI operation; substituted, it can put --force in place.
   'xargs -I{} git push origin {} < branches',
   'xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null xargs -a /dev/null terraform destroy',
   "printf 'x' | xargs -I{} xargs psql -c 'DROP TABLE users'",
   "find . -name x -exec xargs git push --force origin main \\;",
+  // A word xargs reads or find matches is tried in every place it lands, as any word that makes the command need
+  // approval: part of a word, a shell positional, a whole operation, or the environment.
+  "printf '%s\\n' force | xargs -I{} git push --{} origin main",
+  "printf '%s\\n' 'system prune' | xargs docker",
+  'printf FLUSHALL | xargs redis-cli',
+  "find destroy -maxdepth 0 -exec sh -c 'terraform \"$1\"' _ {} \\;",
+  'printf -- --no-dry-run | xargs git clean -n',
+  "xargs -I{} psql -c 'select count(*) from {}' < tables",
+  "find . -name '*.sql' -exec psql -f {} \\;",
+  "printf '%s\\n' x | xargs -I{} env PATH={} git status",
+  "xargs -I{} sh -c '{}' < cmds",
 ];
 
 // Allowed: safe / ephemeral. The git rows pin the DELIBERATE non-gates:
@@ -250,6 +260,13 @@ const BASH_ALLOW = [
   'ls -la',
   'xargs echo < list',
   'xargs -r git add < list',
+  // Input that can't turn the written operation into one needing approval passes.
+  'xargs -n1 terraform fmt < dirs',
+  'xargs -n1 kubectl logs < pods',
+  'xargs -I{} gh api {} < endpoints',
+  // A shell running a script file it names gets what xargs reads as that script's arguments.
+  "printf '%s\\n' a b | xargs -P 4 -I{} bash tools/review.sh {}",
+  'xargs -L 1 bash run.sh < jobs',
   'bash deploy.sh -xc value',
   // find's own expression resumes after -exec's terminator.
   'find . -exec echo -exec rm {} \\;',
