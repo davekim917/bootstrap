@@ -1083,7 +1083,10 @@ def _check_ask_claims(ask, by_id, sources, f: Findings):
             if not isinstance(alt, dict):
                 continue
             res = by_id.get(alt.get('result'))
-            if res is None or res.value is None:
+            if alt.get('result') == ch.get('headline'):
+                f.fail('choice', f'{ch["name"]}: "{alt.get("value")}" points at the headline itself; its result is the '
+                                 'headline rerun under that alternative, a claim of its own')
+            elif res is None or res.value is None:
                 f.fail('choice', f'{ch["name"]}: result "{alt.get("result")}" for "{alt.get("value")}" is not a '
                                  'numeric claim in the ledger')
             elif any(not (isinstance(src := sources.get(by_id[r].raw.get('source')), dict)

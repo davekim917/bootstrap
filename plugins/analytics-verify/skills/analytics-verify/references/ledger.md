@@ -70,15 +70,16 @@ deliverable against it, and checks it against the request itself.
   - `reference`: `where` names the reference's convention it follows (the dashboard reads
     YTD, so the answer does too).
   - `author`: you picked it. `headline` is the claim the conclusion rests on, and
-    `alternatives` lists the other reasonable picks, each with `result`, the claim holding
-    the headline rerun under it, read from a result file like any other number. If no
+    `alternatives` lists the other reasonable picks, each with `result`: a claim of its
+    own holding the headline rerun under it, read from a result file like any other
+    number. If no
     alternative exists, give `no_alternative` with the reason instead.
 
 The check fails a ledger without `request`, `from`, `measure`, `premise`, `reference` or
 a `choices` list, and refuses the old `assumptions` field by name. It fails a reference
 claim that isn't a shown number, an alternative result that isn't read from a result
-file (directly, or through an `expr` whose every root is), and an alternative that flips the headline's sign (+ to - or to zero) but is only
-`omit`ted: the answer depends on that choice, so the deliverable shows both readings.
+file (directly, or through an `expr` whose every root is), and an alternative that
+flips the headline's sign (+ to - or to zero) but is only `omit`ted: the answer depends on that choice, so the deliverable shows both readings.
 `changed` reports an edited ask, and the verifier starts over from the question.
 
 ## Sources
@@ -208,7 +209,8 @@ Exit status: 0 pass, 1 findings, 2 input the script can't check.
   if it still lists items under Wrong, Stale or Unsupported, or if its Frame doesn't say
   `Choices: ok`, `Reference: reconciled`, `bridged` or `none`, and `Answers it: yes`. A
   same-family CLEAR also fails when the highest-numbered cross-family `verify-r<k>.md`
-  beside it left its Frame open. It shows the Frame was filled in, not that it's
+  beside it left its Frame open: one folder holds one deliverable's ledger and its
+  verification rounds. It shows the Frame was filled in, not that it's
   right.
 - `labels` prints each number the deliverable shows, with the heading (or table header)
   above it, beside what its source calls it: the column and row, the quote, the doc or

@@ -1217,6 +1217,10 @@ class AuthorChoices(LedgerCase):
         code, out = self.check(self.ledger(choice=choice, extra_claims=[typed, derived]), 'Conversion is up 0.2 pts.')
         self.assertEqual(code, 1, out)
         self.assertIn("conv_derived must be read from a rerun's result file", out)
+        choice['alternatives'] = [{'value': 'YTD', 'result': 'conv'}]
+        code, out = self.check(self.ledger(choice=choice), 'Conversion is up 0.2 pts.')
+        self.assertEqual(code, 1, out)
+        self.assertIn('period: "YTD" points at the headline itself', out)
         choice['alternatives'] = [{'value': 'YTD', 'result': 'nowhere'}]
         code, out = self.check(self.ledger(choice=choice), 'Conversion is up 0.2 pts.')
         self.assertIn('result "nowhere" for "YTD" is not a numeric claim', out)
