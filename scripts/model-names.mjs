@@ -7,15 +7,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const LEVEL = '(?:low|medium|high|xhigh|max|ultra)';
-const MARK = '[*_`"\']{0,2}';
-const LEVEL_EFFORT = `(?<![\\w-])${LEVEL}(?![\\w-])${MARK}\\s+(?:reasoning\\s+)?effort\\b`;
+const MARK = '[*_`"\']{0,3}';
+const LEVEL_EFFORT = `(?<![\\w-])${LEVEL}(?![\\w-])${MARK}\\s+${MARK}(?:reasoning\\s+)?effort\\b`;
 const EFFORT_FIELD =
   `(?:--effort${MARK}(?:\\s*=\\s*|\\s+)|(?:\\b(?:model_)?reasoning_effort|\\beffort(?:\\s+level)?)${MARK}\\s*[:=]\\s*)${MARK}(?:minimal|${LEVEL})(?![\\w-])`;
 
 const PATTERNS = [
   { kind: 'model', re: /\b(?:opus|sonnet|haiku|fable|gemini|astra|sol|terra|luna)\b/gi },
   { kind: 'model', re: /\bclaude[- ]\d+(?:[.-]\w+)*/gi },
-  { kind: 'model', re: /\bgpt[- ]?\d+(?:[.-]\w+)*/gi },
+  { kind: 'model', re: /\bgpt(?:[- ]?\d+|-oss)(?:[.-]\w+)*/gi },
   { kind: 'model', re: /(?<![\w-])o[1-4](?:-mini|-pro)?\b/gi },
   { kind: 'effort', re: /\bxhigh\b/gi },
   { kind: 'effort', re: new RegExp(LEVEL_EFFORT, 'gi') },
