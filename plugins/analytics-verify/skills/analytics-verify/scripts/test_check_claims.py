@@ -1244,6 +1244,11 @@ class AuthorChoices(LedgerCase):
         code, out = self.check(self.ledger(choice={**bare, 'no_alternative': 'tracking starts in July'}),
                                'Conversion is up 0.2 pts.')
         self.assertEqual(code, 0, out)
+        both = {**bare, 'no_alternative': 'tracking starts in July', 'headline': 'conv',
+                'alternatives': [{'value': 'YTD', 'result': 'conv_alt'}]}
+        code, out = self.check(self.ledger(choice=both), 'Conversion is up 0.2 pts.')
+        self.assertEqual(code, 1, out)
+        self.assertIn('gives "no_alternative" and "alternatives"', out)
 
     def test_a_malformed_choice_reports_instead_of_crashing(self):
         choice = {'chosen': 'Jul-Oct', 'decided_by': 'author', 'headline': 'conv',

@@ -1035,6 +1035,8 @@ def _check_ask_shape(ask, f: Findings):
         elif who != 'author' and not _text(ch.get('where')):
             f.fail('choice', f'{label}: decided by the {who}; "where" cites the message or the reference\'s '
                              'convention that settles it')
+        elif who == 'author' and _text(ch.get('no_alternative')) and 'alternatives' in ch:
+            f.fail('choice', f'{label}: gives "no_alternative" and "alternatives"; it is one or the other')
         elif who == 'author' and not _text(ch.get('no_alternative')):
             alts = ch.get('alternatives')
             if not _text(ch.get('headline')) or not isinstance(alts, list) or not alts or not all(
