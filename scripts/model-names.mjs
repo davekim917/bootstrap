@@ -8,9 +8,12 @@ import path from 'node:path';
 
 const LEVEL = '(?:low|medium|high|xhigh|max|ultra)';
 const MARK = '[*_`"\']{0,3}';
-const LEVEL_EFFORT = `(?<![\\w-])${LEVEL}(?![\\w-])${MARK}\\s+${MARK}(?:reasoning${MARK}\\s+${MARK})?effort\\b`;
+// A wrapped line is one phrase; a blank line ends it, so a level closing one paragraph never pairs with the next.
+const GAP = '(?:[ \\t]+(?:\\n[ \\t]*)?|\\n[ \\t]*)';
+const OPT_GAP = '[ \\t]*(?:\\n[ \\t]*)?';
+const LEVEL_EFFORT = `(?<![\\w-])${LEVEL}(?![\\w-])${MARK}${GAP}${MARK}(?:reasoning${MARK}${GAP}${MARK})?effort\\b`;
 const EFFORT_FIELD =
-  `(?:--effort${MARK}(?:\\s*=\\s*|\\s+)|(?:\\b(?:model_)?reasoning_effort|\\beffort(?:\\s+level)?)${MARK}\\s*[:=]\\s*)${MARK}(?:minimal|${LEVEL})(?![\\w-])`;
+  `(?:--effort${MARK}(?:${OPT_GAP}=${OPT_GAP}|${GAP})|(?:\\b(?:model_)?reasoning_effort|\\beffort(?:${GAP}level)?)${MARK}${OPT_GAP}[:=]${OPT_GAP})${MARK}(?:minimal|${LEVEL})(?![\\w-])`;
 
 const PATTERNS = [
   { kind: 'model', re: /\b(?:opus|sonnet|haiku|fable|gemini|astra|sol|terra|luna)\b/gi },

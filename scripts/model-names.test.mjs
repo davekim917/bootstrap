@@ -75,7 +75,8 @@ test('placeholders, plain-English effort prose, frontmatter config keys and non-
       + 'Pass --effort <effort_level>, or set reasoning_effort to {effort_level}. Compile with -O3.\n'
       + 'Use a low-effort workaround; this should require minimal effort and an effort of high-quality review.\n'
       + 'Keep implementation effort low. Dedicate effort to high priority tasks. Use a high-effort worker.\n'
-      + 'Set effort to high. The reasoning effort is high. Use minimal reasoning effort.\n',
+      + 'Set effort to high. The reasoning effort is high. Use minimal reasoning effort.\n'
+      + '## Risk: high\n\nEffort should scale with uncertainty. Ship at max\n\n**Effort:** none.\n',
     'plugins/crlf/skills/crlf/SKILL.md': '---\r\nname: crlf\r\nmodel: opus\r\neffort: high\r\n---\r\nBody.\r\n',
     'plugins/sample/skills/sample/scripts/rubric.json': '{"claude": "opus", "effort": "high"}\n',
     'plugins/sample/README.md': 'Runs on Opus at high effort.\n',
