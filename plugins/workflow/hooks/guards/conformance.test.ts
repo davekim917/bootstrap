@@ -150,6 +150,8 @@ const BASH_GATE = [
   // A subcommand git doesn't ship runs an alias, however it was defined.
   "git -c alias.wipe='clean -fd' wipe",
   "git config alias.p 'push --force' && git p origin main",
+  'git -p wipe',
+  'git --bare --no-pager wipe',
   'git push -f',
   'git -C /workspace/worktrees/APP push -f origin develop',
   // Spellings that once slipped through: a clustered short flag, AWS global
@@ -337,17 +339,18 @@ const BASH_ALLOW = [
   // Bare xargs runs echo, and a wrapper that names its own command passes.
   "printf '%s\\n' a b | xargs",
   "printf '%s\\n' a b | xargs -n1 env FOO=1 echo",
-  // A dry run whose words are all literal, and git's global help or version before clean or an alias, run nothing.
+  // A dry run whose words are all literal, and a git global option that prints and exits, run nothing.
   'git clean -n -d -x -- build/',
   'git --help clean',
   'git --version clean -fd',
   'git --help wipe',
   'git -v wipe',
-  // Defining an alias runs nothing; options held in a variable, and installed extensions, are not aliases.
+  'git --html-path wipe',
+  'git --exec-path clean -fd',
+  'git --list-cmds=main wipe',
+  // Defining an alias runs nothing, and options held in a variable are not an alias.
   "git config alias.p 'push --force'",
   'C="-c user.name=t"; git $C commit -m x',
-  'git filter-repo --path src',
-  'git lfs pull',
   "git clean -n -- 'dir with spaces'",
   "git clean -n 'dir with spaces'",
   "git submodule foreach --recursive 'git status --short'",

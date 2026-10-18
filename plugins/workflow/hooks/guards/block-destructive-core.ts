@@ -2815,11 +2815,8 @@ function currentWorkingDir(): string {
 // ── git target resolution ────────────────────────────────────────────────────
 
 const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--attr-source', '--super-prefix', '--shallow-file']);
-// `git --list-cmds=main,nohelpers`, plus the common extensions filter-repo and lfs. git ignores an alias named like
-// one of its commands or an installed `git-<name>` program, so any other subcommand name runs an alias, whatever
-// config defined it.
+// `git --list-cmds=main,nohelpers`: the commands git runs ahead of an alias of the same name.
 const GIT_COMMANDS = new Set([
-    'filter-repo', 'lfs',
     'add', 'am', 'annotate', 'apply', 'archive', 'bisect', 'blame', 'branch', 'bugreport', 'bundle', 'cat-file',
     'check-attr', 'check-ignore', 'check-mailmap', 'check-ref-format', 'checkout', 'checkout-index', 'cherry',
     'cherry-pick', 'clean', 'clone', 'column', 'commit', 'commit-graph', 'commit-tree', 'config', 'count-objects',
@@ -2866,9 +2863,32 @@ function gitGlobalOptions(args: string[]): string[] {
     return options;
 }
 
-/** git --help, -h, --version or -v before the subcommand prints and exits without running it. */
+// A bare --exec-path prints the path and exits; with `=` it sets the path instead.
+const GIT_PRINT_OPTIONS = new Set(['--help', '-h', '--version', '-v', '--html-path', '--man-path', '--info-path', '--exec-path']);
+
+/** A global option before the subcommand that prints and exits without running it. */
 function gitOnlyPrints(args: string[]): boolean {
-    return gitGlobalOptions(args).some(a => ['--help', '-h', '--version', '-v'].includes(a));
+    return gitGlobalOptions(args).some(a => GIT_PRINT_OPTIONS.has(a) || a.startsWith('--list-cmds='));
+}
+
+/**
+ * The alias git runs, or null. git looks a subcommand up among its own commands, then as a `git-<name>` program on
+ * PATH, and only then as an alias, whatever config defined it.
+ */
+function gitAlias(cmd: ResolvedCommand): string | null {
+    const sub = cmd.args[gitSubcommandIndex(cmd.args)];
+    if (sub === undefined || sub.includes('$') || GIT_COMMANDS.has(sub) || gitOnlyPrints(cmd.args)) return null;
+    const path = cmd.env?.findLast(e => e.startsWith('PATH='))?.slice('PATH='.length) ?? process.env.PATH ?? '';
+    const installed = /^[\w.-]+$/.test(sub) && path.split(':').some(dir => {
+        if (!dir.startsWith('/') || dir.includes('$')) return false;
+        try {
+            const st = statSync(join(dir, `git-${sub}`));
+            return st.isFile() && (st.mode & 0o111) !== 0;
+        } catch {
+            return false;
+        }
+    });
+    return installed ? null : sub;
 }
 
 /** Value of `git -C <path>` / `--work-tree <path>`, which relocates the
@@ -3721,8 +3741,9 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (name === 'git') {
         // Skip git's global options so `git -C /x push -f` classifies like `git push -f`.
         const i = gitSubcommandIndex(args);
-        if (args[i] !== undefined && !args[i].includes('$') && !GIT_COMMANDS.has(args[i]) && !gitOnlyPrints(args)) {
-            return `git ${args[i]} is not a git command, so git runs it as an alias, which can stand for any command (push --force, clean -fdx). Write out the command the alias stands for.`;
+        const alias = gitAlias(cmd);
+        if (alias) {
+            return `git ${alias} is not a git command or an installed git-${alias} program, so git runs it as an alias, which can stand for any command (push --force, clean -fdx). Write out the command the alias stands for.`;
         }
         if (args[i] === 'push') {
             const pushArgs = pushArgsWithoutValues(args.slice(i + 1));
