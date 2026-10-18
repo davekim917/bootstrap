@@ -83,15 +83,20 @@ If you're unsure, use the full loop.
    `rerun.csv` comes from running the saved SQL file again, not from memory. If live
    data moved, rerun with `--rel-tol` and report the drift it lists.
 5. **Get an independent verifier.** Use the first of these you have:
-   1. a fresh headless session of another model family that can reach the same data
-      (`codex exec -c model_reasoning_effort=<effort>`, `claude -p --effort <effort>`),
-      with stdin closed (`</dev/null`) or it waits forever;
-   2. a peer agent on another model family in this conversation (mention it);
-   3. a fresh-context subagent of your own model. Call it a same-family check in the
-      stamp.
+   1. a fresh session of a different model family from the author's, that can reach
+      the same data. From a Claude agent, that's `codex exec -c
+      model_reasoning_effort=<effort>` with stdin closed (`</dev/null`) or it waits
+      forever. Reviewing work another family wrote (a Codex peer's draft), it's a
+      fresh-context subagent of your own model, at `<effort>`. Don't use `claude -p`:
+      inside an agent container it fails with "Not logged in";
+   2. a peer agent in this conversation on a different family from the author's
+      (mention it);
+   3. a fresh-context subagent of the author's own family. Call it a same-family check
+      in the stamp.
 
    `<effort>` is the `effort` in `<skill-dir>/verifier.json`. Pass it explicitly
-   wherever the verifier takes one: left unset, a CLI can fall back to no reasoning.
+   wherever the verifier takes one; left unset, a CLI runs at the model's own default,
+   not the one this file sets.
 
    Give it the deliverable, the ledger, the original request with its source material
    (the thread or transcript itself, not your summary of it), and
@@ -102,9 +107,9 @@ If you're unsure, use the full loop.
 
    Run a headless verifier in the foreground with a 60-minute (`3600000` ms) timeout;
    30 minutes in is still healthy. Save its output, because the stamp names the model
-   and effort from it. `codex exec` prints both in its first lines. For `claude -p`, add
-   `--output-format json`: the model is the key under `modelUsage`, and the effort is
-   the one you passed.
+   and effort from it. `codex exec` prints both in its first lines. A subagent's
+   settings can override what you asked for, so take its model and effort from the
+   `verifier:` line of its own report, not from your request.
 
    A same-family round can't clear a Frame that a cross-family round left open (the
    receipt refuses it). If the other family isn't reachable again, stop and deliver with
@@ -153,8 +158,8 @@ If you're unsure, use the full loop.
    > shelf stock.
 
    Name the verifier's actual model and reasoning effort, from its output header or the
-   peer's own report, never from memory. If you asked for another model family and got
-   your own (quota fallback, no CLI), say "same-family check".
+   peer's own report, never from memory. If the verifier turned out to be the author's
+   own family (quota fallback, no CLI), say "same-family check".
 
    The message carries the verified file and the stamp, nothing new. Caveats, open
    questions and next steps that state a figure, date or fact go in a file before the
