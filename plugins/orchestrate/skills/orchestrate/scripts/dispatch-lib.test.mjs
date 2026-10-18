@@ -208,7 +208,7 @@ test('humanTurns keeps only the turns people wrote', () => {
   assert.deepEqual(humanTurns(undefined, container), []);
 });
 
-test('humanPins: an invocation pins model and effort; plain words pin only a sole, unnegated model', () => {
+test('humanPins: an invocation pins model and effort; outside one, a sole named family pins that model', () => {
   const spawn = { model: 'opus', subagent_type: 'bootstrap-orchestrate:worker-high' };
   const cases = [
     ['/orchestrate opus high fix the login bug', { model: true, effort: true }],
@@ -244,28 +244,14 @@ test('humanPins: an invocation pins model and effort; plain words pin only a sol
     ['use a claude-opus-5 subagent at high to do it', { model: true, effort: true }],
     ["Did we do our own sub agent review of the PR? I'd like opus to take a look as well.", { model: true, effort: false }],
     ["get claude-opus-5's take on this", { model: true, effort: false }],
+    ['get claude-opus-5\u2019s take on this', { model: true, effort: false }],
     ['have Opus review it at high effort', { model: true, effort: false }],
     ["I'd like fable to take a look", { model: false, effort: false }],
     ['opus is overkill; ask fable', { model: false, effort: false }],
-    ["opus did well last time. Don't use opus for this one", { model: false, effort: false }],
-    ['write a haiku about the release', { model: false, effort: false }],
-    ['no opus for this one', { model: false, effort: false }],
-    ['avoid opus here', { model: false, effort: false }],
-    ['anything except opus', { model: false, effort: false }],
-    ['run the review without opus', { model: false, effort: false }],
-    ['No problem, have Opus review it', { model: true, effort: false }],
-    ["Don't change the files, have Opus review them", { model: true, effort: false }],
-    ['Have Opus review it instead', { model: true, effort: false }],
-    ["I don't want opus on this", { model: false, effort: false }],
-    ["opus shouldn't review this one", { model: false, effort: false }],
-    ["I don't think we should use Opus", { model: false, effort: false }],
-    ['I don\u2019t want Opus', { model: false, effort: false }],
-    ['use the opus model for the review', { model: true, effort: false }],
+    ["don't use opus here", { model: true, effort: false }],
   ];
   for (const [text, expected] of cases) assert.deepEqual(humanPins(spawn, text), expected, text);
   assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, '/orchestrate opus high go'), { model: false, effort: false });
-  assert.deepEqual(humanPins({ model: 'haiku' }, 'write a haiku about the release'), { model: false, effort: false });
-  assert.deepEqual(humanPins({ model: 'fable' }, 'tell me the fable of the tortoise'), { model: false, effort: false });
 });
 test('the installed hook replaces an agent-named model and effort unless a human named them', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));

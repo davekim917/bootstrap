@@ -392,40 +392,18 @@ const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\
 const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+${MODEL_TOKEN}\\s+sub-?agent(?:\\s+at\\s+${EFFORT_TOKEN})?`, 'g');
 const NEGATED = /\b(?:not|never|cannot)\b|n't\b/;
 const CLAUSE_BREAK = /[.!?;:\n\u2014]|,\s*(?:but|and|so|then|yet)\b/;
-const EXCLUDED_BEFORE = /\b(?:not|never|cannot|no|avoid|except|without|skip|exclude|excluding|besides|other than|rather than|instead of|\w+n't)\s+(?:[\w'-]+\s+)*$/;
-const ARTICLE_BEFORE = /\b(?:a|an|the|this|that|my|your|his|her|our|their|magnum)\s+$/;
-const MODEL_NOUN_AFTER = /^\s+(?:model|sub-?agent|agent|reviewer)\b/;
-const NEGATED_AFTER = /^\s+(?:[\w-]+\s+)?(?:not|never|cannot|\w+n't)\b/;
-const MODEL_MENTION = new RegExp(`\\b(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*(?:['\u2019]s)?${TOKEN_END}`, 'g');
-
-/**
- * The one model family a turn names, or undefined when it names none or several, or negates or excludes one it names.
- * A family word after an article ("write a haiku") is a noun, not a model, unless a model noun follows ("the opus model").
- * Unlike an invocation, a bare mention also yields to exclusion words ("no opus", "anything except opus").
- */
-function soleNamedFamily(t) {
-  const named = new Set();
-  for (const clause of t.split(CLAUSE_BREAK)) {
-    for (const m of clause.matchAll(MODEL_MENTION)) {
-      const before = clause.slice(0, m.index);
-      const after = clause.slice(m.index + m[0].length);
-      if (ARTICLE_BEFORE.test(before) && !MODEL_NOUN_AFTER.test(after)) continue;
-      if (EXCLUDED_BEFORE.test(before) || NEGATED_AFTER.test(after)) return undefined;
-      named.add(m[1]);
-    }
-  }
-  return named.size === 1 ? [...named][0] : undefined;
-}
+const MODEL_MENTION = new RegExp(`\\b(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*(?:'s)?${TOKEN_END}`, 'g');
 
 /**
  * Which of a spawn's explicit fields (model, shim effort) a human chose in
  * `text`, the human's latest turn, so an earlier turn's choice does not carry
  * over. When the turn holds one of the skill's invocations, the latest one
  * alone decides both fields. Otherwise the model is pinned when the turn names
- * exactly one family, neither negated nor excluded, and the spawn asks for
- * that family ("I'd like fable to take a look"); several families ("compare
- * Opus and Sonnet") or a negation leave it to the router. Effort is never read from
- * plain wording ("failed at high effort").
+ * exactly one family and the spawn asks for that family ("I'd like fable to
+ * take a look"); several families ("compare Opus and Sonnet") leave it to the
+ * router. Whether a mention is a request at all ("not opus", "a haiku") is the
+ * coordinator's reading: the hook parses no wording beyond the invocations.
+ * Effort is never read from plain wording ("failed at high effort").
  */
 export function humanPins(input, text) {
   const t = text.toLowerCase().replace(/\u2019/g, "'").replace(/<command-name>\s*(\/\S+?)\s*<\/command-name>[\s\S]*?<command-args>/g, '\n$1 ');
@@ -434,7 +412,10 @@ export function humanPins(input, text) {
   const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
   const prose = [...t.matchAll(PROSE_INVOCATION)];
   const latest = [...t.matchAll(SLASH_INVOCATION), ...prose].sort((a, b) => b.index - a.index)[0];
-  if (!latest) return { model: Boolean(family) && soleNamedFamily(t) === family, effort: false };
+  if (!latest) {
+    const named = new Set([...t.matchAll(MODEL_MENTION)].map((m) => m[1]));
+    return { model: Boolean(family) && named.size === 1 && named.has(family), effort: false };
+  }
   const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(CLAUSE_BREAK).at(-1));
   if (negated) return { model: false, effort: false };
   return {
