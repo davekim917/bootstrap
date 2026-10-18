@@ -84,10 +84,14 @@ If you're unsure, use the full loop.
    data moved, rerun with `--rel-tol` and report the drift it lists.
 5. **Get an independent verifier.** Use the first of these you have:
    1. a fresh headless session of another model family that can reach the same data
-      (`codex exec`, `claude -p`), with stdin closed (`</dev/null`) or it waits forever;
+      (`codex exec -c model_reasoning_effort=<effort>`, `claude -p --effort <effort>`),
+      with stdin closed (`</dev/null`) or it waits forever;
    2. a peer agent on another model family in this conversation (mention it);
    3. a fresh-context subagent of your own model. Call it a same-family check in the
       stamp.
+
+   `<effort>` is the `effort` in `<skill-dir>/verifier.json`. Pass it explicitly
+   wherever the verifier takes one: left unset, a CLI can fall back to no reasoning.
 
    Give it the deliverable, the ledger, the original request with its source material
    (the thread or transcript itself, not your summary of it), and
@@ -112,11 +116,11 @@ If you're unsure, use the full loop.
    changed file. Three rounds is the usual budget, not a cap. Run another while the open
    findings include one you can fix yourself: a Wrong, an open Frame line, or a number
    your own error moved (live data refreshing is drift to report, not a finding). Past
-   three rounds, also stop when a round leaves as many open findings as the one before.
-   Stop and deliver with the open findings listed for the requester to decide when
-   none is yours to fix: each needs the requester's answer (a measure or period only
-   they can settle), is wording, or is a disagreement the verifier still holds after
-   seeing your answer. Past three rounds, the stamp says what each extra round caught. If the last verdict is still CHANGES when you
+   three rounds, also stop unless each round leaves fewer open findings than the one
+   before. Stop and deliver with the open findings listed for the requester to decide
+   when none is yours to fix: each needs the requester's answer (a measure or period
+   only they can settle), is cosmetic wording that changes no number, unit, measure or
+   claim, or is a disagreement the verifier still holds after seeing your answer. Past three rounds, the stamp says what each extra round caught. If the last verdict is still CHANGES when you
    stop, the stamp says so and names what wasn't re-checked: "checked in 3 rounds"
    alone reads as a pass.
 7. **Deliver with a receipt and a one-line stamp.** Run
