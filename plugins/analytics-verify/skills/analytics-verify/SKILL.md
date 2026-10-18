@@ -101,8 +101,10 @@ If you're unsure, use the full loop.
    your research files or conclusions: those are the blind spots it is there to avoid.
 
    Run a headless verifier in the foreground with a 60-minute (`3600000` ms) timeout;
-   30 minutes in is still healthy. Save its output: a CLI prints its model and reasoning
-   effort in the first lines, and the stamp names both from there.
+   30 minutes in is still healthy. Save its output, because the stamp names the model
+   and effort from it. `codex exec` prints both in its first lines. For `claude -p`, add
+   `--output-format json`: the model is the key under `modelUsage`, and the effort is
+   the one you passed.
 
    A same-family round can't clear a Frame that a cross-family round left open (the
    receipt refuses it). If the other family isn't reachable again, stop and deliver with
