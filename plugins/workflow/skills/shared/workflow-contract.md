@@ -25,10 +25,10 @@ The retained owner implements, runs the checks and repairs failures. The coordin
 acceptance evidence without duplicating substantive owner work. Owner testing is not independent
 review. Honor an explicit user override naming the check or its verification owner.
 For a new bounded Codex worker, explicitly select fresh context using its exposed native schema:
-`fork_turns: "none"` (v2) or `fork_context: false` (v1). Never omit the control. Inherit history
-only when the current user explicitly requests it, with that schema's full/partial control; v1
-silently ignores `fork_turns`, while v2 rejects `fork_context`. Native full-fork role/model/effort
-restrictions still apply. Supply a self-contained brief with
+`fork_turns: "none"` (v2) or `fork_context: false` (v1). Never omit the control, and never inherit
+history: a worker that shares this conversation cannot check its work, and the orchestrate spawn
+hook denies any inheriting control. v1 silently ignores `fork_turns`, while v2 rejects
+`fork_context`. Supply a self-contained brief with
 scope, authority, paths, acceptance criteria and relevant evidence. Resume the same agent id for
 build, test and repair; a stage boundary does not justify a replacement.
 
