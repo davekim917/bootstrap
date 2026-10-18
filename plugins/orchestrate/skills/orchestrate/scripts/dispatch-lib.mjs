@@ -391,13 +391,30 @@ const EFFORT_TOKEN = `(${LEVEL})${TOKEN_END}`;
 const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\\s+(?:${MODEL_TOKEN}\\s*)?(?:${EFFORT_TOKEN})?`, 'g');
 const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+${MODEL_TOKEN}\\s+sub-?agent(?:\\s+at\\s+${EFFORT_TOKEN})?`, 'g');
 const NEGATED = /\b(?:not|never|cannot)\b|n't\b/;
+const CLAUSE_BREAK = /[.!?;:\n\u2014]|,\s*(?:but|and|so|then|yet)\b/;
+const MODEL_MENTION = new RegExp(`\\b(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*(?:['\u2019]s)?${TOKEN_END}`, 'g');
+
+/** The one model family a turn names outside a negated clause, or undefined when it names none or several. */
+function soleNamedFamily(t) {
+  const named = new Set();
+  for (const clause of t.split(CLAUSE_BREAK)) {
+    const families = [...clause.matchAll(MODEL_MENTION)].map((m) => m[1]);
+    if (families.length === 0) continue;
+    if (NEGATED.test(clause)) return undefined;
+    for (const f of families) named.add(f);
+  }
+  return named.size === 1 ? [...named][0] : undefined;
+}
 
 /**
- * Which of a spawn's explicit fields (model, shim effort) a human chose through
- * the latest of the skill's invocations in `text`, the human's latest turn, so
- * an earlier turn's choice does not carry over. Any other
- * wording is the router's call, so a stray mention ("compare Opus and Sonnet",
- * "failed at high effort") never pins.
+ * Which of a spawn's explicit fields (model, shim effort) a human chose in
+ * `text`, the human's latest turn, so an earlier turn's choice does not carry
+ * over. When the turn holds one of the skill's invocations, the latest one
+ * alone decides both fields. Otherwise the model is pinned when the turn names
+ * exactly one family, in no negated clause, and the spawn asks for that family
+ * ("I'd like fable to take a look"); several families ("compare Opus and
+ * Sonnet") or a negation leave it to the router. Effort is never read from
+ * plain wording ("failed at high effort").
  */
 export function humanPins(input, text) {
   const t = text.toLowerCase().replace(/<command-name>\s*(\/\S+?)\s*<\/command-name>[\s\S]*?<command-args>/g, '\n$1 ');
@@ -406,7 +423,8 @@ export function humanPins(input, text) {
   const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
   const prose = [...t.matchAll(PROSE_INVOCATION)];
   const latest = [...t.matchAll(SLASH_INVOCATION), ...prose].sort((a, b) => b.index - a.index)[0];
-  const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(/[.!?;:\n\u2014]|,\s*(?:but|and|so|then|yet)\b/).at(-1));
+  if (!latest) return { model: Boolean(family) && soleNamedFamily(t) === family, effort: false };
+  const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(CLAUSE_BREAK).at(-1));
   if (negated) return { model: false, effort: false };
   return {
     model: Boolean(family) && latest?.[1] === family,

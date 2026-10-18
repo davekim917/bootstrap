@@ -208,7 +208,7 @@ test('humanTurns keeps only the turns people wrote', () => {
   assert.deepEqual(humanTurns(undefined, container), []);
 });
 
-test('humanPins: only the skill invocations pin a model or effort', () => {
+test('humanPins: an invocation pins model and effort; plain words pin only a sole, unnegated model', () => {
   const spawn = { model: 'opus', subagent_type: 'bootstrap-orchestrate:worker-high' };
   const cases = [
     ['/orchestrate opus high fix the login bug', { model: true, effort: true }],
@@ -242,6 +242,13 @@ test('humanPins: only the skill invocations pin a model or effort', () => {
     ['/orchestrate opus high!) now', { model: true, effort: true }],
     ['/orchestrate opus high', { model: true, effort: true }],
     ['use a claude-opus-5 subagent at high to do it', { model: true, effort: true }],
+    ["Did we do our own sub agent review of the PR? I'd like opus to take a look as well.", { model: true, effort: false }],
+    ["get claude-opus-5's take on this", { model: true, effort: false }],
+    ['have Opus review it at high effort', { model: true, effort: false }],
+    ["I'd like fable to take a look", { model: false, effort: false }],
+    ['opus is overkill; ask fable', { model: false, effort: false }],
+    ["opus did well last time. Don't use opus for this one", { model: false, effort: false }],
+    ['write a haiku about the release', { model: false, effort: false }],
   ];
   for (const [text, expected] of cases) assert.deepEqual(humanPins(spawn, text), expected, text);
   assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, '/orchestrate opus high go'), { model: false, effort: false });
