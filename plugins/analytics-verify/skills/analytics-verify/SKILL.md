@@ -109,14 +109,14 @@ If you're unsure, use the full loop.
    python3 <skill-dir>/scripts/check_claims.py changed old.md new.md --old-ledger old.json --new-ledger claims.json
    ```
    It re-checks those lines and claims, then the whole final file; run it once per
-   changed file. Three rounds is the usual budget, not a cap. Run another only when the
-   last round found something new you can fix yourself: a Wrong, an open Frame line, or
-   a number your own error moved (live data refreshing is drift to report, not a
-   finding). Stop and deliver with the open findings listed for the requester to decide
-   when what's left needs the requester's answer (a measure or period only they can
-   settle), when a round repeats a finding you already fixed or answered, or when a fix
-   undoes an earlier one, or when only wording remains. Past three rounds, the stamp
-   says what each extra round caught. If the last verdict is still CHANGES when you
+   changed file. Three rounds is the usual budget, not a cap. Run another while the open
+   findings include one you can fix yourself: a Wrong, an open Frame line, or a number
+   your own error moved (live data refreshing is drift to report, not a finding). Past
+   three rounds, also stop when a round leaves as many open findings as the one before.
+   Stop and deliver with the open findings listed for the requester to decide when
+   none is yours to fix: each needs the requester's answer (a measure or period only
+   they can settle), is wording, or is a disagreement the verifier still holds after
+   seeing your answer. Past three rounds, the stamp says what each extra round caught. If the last verdict is still CHANGES when you
    stop, the stamp says so and names what wasn't re-checked: "checked in 3 rounds"
    alone reads as a pass.
 7. **Deliver with a receipt and a one-line stamp.** Run
