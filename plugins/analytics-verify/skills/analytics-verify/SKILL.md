@@ -107,8 +107,9 @@ If you're unsure, use the full loop.
 
    Run a headless verifier in the foreground with a 60-minute (`3600000` ms) timeout;
    30 minutes in is still healthy. Save its output, because the stamp names the model
-   and effort from it. `codex exec` prints both in its first lines. For a subagent, the
-   model and effort are the ones you set when you started it.
+   and effort from it. `codex exec` prints both in its first lines. A subagent's
+   settings can override what you asked for, so take its model and effort from the
+   `verifier:` line of its own report, not from your request.
 
    A same-family round can't clear a Frame that a cross-family round left open (the
    receipt refuses it). If the other family isn't reachable again, stop and deliver with
