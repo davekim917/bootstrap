@@ -3,20 +3,17 @@
 Use the spawn tool schema exposed in the current turn. History controls are tool arguments,
 not TOML settings. Backend selection can vary with model metadata and feature overrides.
 
-| Native schema | Fresh bounded worker | Explicit user-requested inheritance |
-| --- | --- | --- |
-| v1 | `fork_context: false` | `fork_context: true` |
-| v2 | `fork_turns: "none"` | `fork_turns: "all"` or canonical positive integer string |
+| Native schema | The only accepted control |
+| --- | --- |
+| v1 | `fork_context: false` |
+| v2 | `fork_turns: "none"` |
 
 Do not mix fields. v1 silently ignores `fork_turns` and defaults fresh; v2 rejects
 `fork_context` and defaults to all history when `fork_turns` is omitted. The guard blocks
-omitted, null, blank, malformed and mixed controls before spawn. It accepts case/whitespace
-around none/all, but deliberately rejects noncanonical numbers such as +3, 007 and 0.
-Explicit valid controls pass unchanged. The guard cannot establish human intent from a tool
-event, so the instruction requiring a current user request for inheritance remains policy.
-It neither changes nor guarantees native model/effort/role behavior. Tagged rust-v0.154.0
-source supports numeric partial inheritance and forbids v1 full history with an agent_type
-override; those two semantics have not been separately probed on 0.155.1. Keep the same child for later rounds.
+every spawn that inherits history (`fork_context: true`, `fork_turns: "all"` or a turn count)
+as well as omitted, null, blank, malformed and mixed controls. It accepts case and whitespace
+around `none`. The fresh control passes unchanged. It neither changes nor guarantees native
+model/effort/role behavior. Keep the same child for later rounds.
 
 ## Coverage and activation
 

@@ -21,18 +21,18 @@ function run(input) {
   });
 }
 for (const name of ['spawn_agent', 'collaborationspawn_agent']) {
-  for (const control of [{fork_context:false}, {fork_context:true}, {fork_turns:'none'}, {fork_turns:'all'}, {fork_turns:'3'}, {fork_turns:' NONE '}, {fork_turns:' All '}, {fork_turns:'18446744073709551615'}]) {
-    test(`${name} passes explicit ${JSON.stringify(control)} without rewriting any arguments or granting permission`, async () => {
+  for (const control of [{fork_context:false}, {fork_turns:'none'}, {fork_turns:' NONE '}]) {
+    test(`${name} passes fresh ${JSON.stringify(control)} without rewriting any arguments or granting permission`, async () => {
       const event = {tool_name:name, tool_input:{...base,...control}};
       const before=JSON.stringify(event);const r=await run(event);
       assert.equal(r.status,0);assert.equal(r.stdout,'');assert.equal(r.stderr,'');assert.equal(JSON.stringify(event),before);
     });
   }
-  for (const control of [{}, {fork_context:null}, {fork_context:'false'}, {fork_turns:null}, {fork_turns:false}, {fork_turns:3}, {fork_turns:''}, {fork_turns:' '}, {fork_turns:'0'}, {fork_turns:'007'}, {fork_turns:'+3'}, {fork_turns:'-3'}, {fork_turns:'3.0'}, {fork_turns:'18446744073709551616'}, {fork_turns:'all',fork_context:false}, {fork_turns:'none',fork_context:null}]) {
+  for (const control of [{fork_context:true}, {fork_turns:'all'}, {fork_turns:' All '}, {fork_turns:'3'}, {fork_turns:'18446744073709551615'}, {}, {fork_context:null}, {fork_context:'false'}, {fork_turns:null}, {fork_turns:false}, {fork_turns:3}, {fork_turns:''}, {fork_turns:' '}, {fork_turns:'0'}, {fork_turns:'007'}, {fork_turns:'+3'}, {fork_turns:'-3'}, {fork_turns:'3.0'}, {fork_turns:'18446744073709551616'}, {fork_turns:'all',fork_context:false}, {fork_turns:'none',fork_context:null}]) {
     test(`${name} denies ${JSON.stringify(control)}`, async () => {
       const r=await run({tool_name:name,tool_input:{...base,...control}});
       assert.equal(r.status,0);assert.equal(r.stderr,'');const out=JSON.parse(r.stdout).hookSpecificOutput;
-      assert.equal(out.permissionDecision,'deny');assert.equal(out.hookEventName,'PreToolUse');assert.match(out.permissionDecisionReason,/exposed spawn_agent schema/);assert.equal(out.updatedInput,undefined);assert.match(out.permissionDecisionReason,/canonical positive decimal string/);
+      assert.equal(out.permissionDecision,'deny');assert.equal(out.hookEventName,'PreToolUse');assert.match(out.permissionDecisionReason,/exposed spawn_agent schema/);assert.equal(out.updatedInput,undefined);assert.match(out.permissionDecisionReason,/never inherit/);
     });
   }
   for (const input of [null,[],false,'invalid']) test(`${name} malformed tool input ${JSON.stringify(input)} denies`,async()=>assert.equal(JSON.parse((await run({tool_name:name,tool_input:input})).stdout).hookSpecificOutput.permissionDecision,'deny'));
