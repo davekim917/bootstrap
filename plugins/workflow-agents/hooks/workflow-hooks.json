@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "bun \"${PLUGIN_ROOT}/hooks/codex-guard.ts\" PreToolUse",
-            "timeout": 3600
+            "timeout": 3660
           }
         ]
       }
