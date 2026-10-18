@@ -424,5 +424,15 @@ describe('a git subcommand that is an installed program', () => {
         expect(evaluateBashCommand(`PATH=${bin} git extra`, { cwd: '/tmp' }).action).toBe('allow');
         expect(evaluateBashCommand(`PATH=${bin} git plain`, { cwd: '/tmp' }).action).toBe('gate');
         expect(evaluateBashCommand(`PATH=${bin} git wipe`, { cwd: '/tmp' }).action).toBe('gate');
+        // git's exec path, set by the option or the environment, is searched too.
+        expect(evaluateBashCommand(`git --exec-path=${bin} extra`, { cwd: '/tmp' }).action).toBe('allow');
+        expect(evaluateBashCommand(`GIT_EXEC_PATH=${bin} git extra`, { cwd: '/tmp' }).action).toBe('allow');
+        expect(evaluateBashCommand(`git --exec-path=${bin} wipe`, { cwd: '/tmp' }).action).toBe('gate');
+    });
+
+    test('a global option left without its value does not crash the guard', () => {
+        for (const cmd of ['git --exec-path', 'git -C', 'git --namespace']) {
+            expect(evaluateBashCommand(cmd, { cwd: '/tmp' }).action).toBe('allow');
+        }
     });
 });

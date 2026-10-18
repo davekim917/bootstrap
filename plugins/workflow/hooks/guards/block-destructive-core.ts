@@ -29,6 +29,7 @@
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
 import { homedir } from 'os';
 import { dirname, join, resolve as pathResolve } from 'path';
@@ -2850,7 +2851,7 @@ function gitSubcommandIndex(args: string[]): number {
         if (args[i].startsWith('-')) { i += 1; continue; }
         break;
     }
-    return i;
+    return Math.min(i, args.length);
 }
 
 /** git's global options before the subcommand, without the values of those that take one. */
@@ -2871,15 +2872,33 @@ function gitOnlyPrints(args: string[]): boolean {
     return gitGlobalOptions(args).some(a => GIT_PRINT_OPTIONS.has(a) || a.startsWith('--list-cmds='));
 }
 
+let installedGitExecPath: string | null | undefined;
+
+/** Where git looks for a `git-<name>` program: its exec path (`--exec-path=`, else GIT_EXEC_PATH, else the installed one), then PATH. */
+function gitProgramDirs(cmd: ResolvedCommand): string[] {
+    const fromEnv = (name: string) => cmd.env?.findLast(e => e.startsWith(`${name}=`))?.slice(name.length + 1) ?? process.env[name];
+    let execPath = gitGlobalOptions(cmd.args).findLast(a => a.startsWith('--exec-path='))?.slice('--exec-path='.length) ?? fromEnv('GIT_EXEC_PATH');
+    if (execPath === undefined) {
+        if (installedGitExecPath === undefined) {
+            try {
+                installedGitExecPath = execFileSync('git', ['--exec-path'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+            } catch {
+                installedGitExecPath = null;
+            }
+        }
+        execPath = installedGitExecPath ?? '';
+    }
+    return [execPath, ...(fromEnv('PATH') ?? '').split(':')];
+}
+
 /**
- * The alias git runs, or null. git looks a subcommand up among its own commands, then as a `git-<name>` program on
- * PATH, and only then as an alias, whatever config defined it.
+ * The alias git runs, or null. git looks a subcommand up among its own commands, then as a `git-<name>` program, and
+ * only then as an alias, whatever config defined it.
  */
 function gitAlias(cmd: ResolvedCommand): string | null {
     const sub = cmd.args[gitSubcommandIndex(cmd.args)];
     if (sub === undefined || sub.includes('$') || GIT_COMMANDS.has(sub) || gitOnlyPrints(cmd.args)) return null;
-    const path = cmd.env?.findLast(e => e.startsWith('PATH='))?.slice('PATH='.length) ?? process.env.PATH ?? '';
-    const installed = /^[\w.-]+$/.test(sub) && path.split(':').some(dir => {
+    const installed = /^[\w.-]+$/.test(sub) && gitProgramDirs(cmd).some(dir => {
         if (!dir.startsWith('/') || dir.includes('$')) return false;
         try {
             const st = statSync(join(dir, `git-${sub}`));
