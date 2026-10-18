@@ -97,7 +97,8 @@ If you're unsure, use the full loop.
    your research files or conclusions: those are the blind spots it is there to avoid.
 
    Run a headless verifier in the foreground with a 60-minute (`3600000` ms) timeout;
-   30 minutes in is still healthy.
+   30 minutes in is still healthy. Save its output: a CLI prints its model and reasoning
+   effort in the first lines, and the stamp names both from there.
 
    A same-family round can't clear a Frame that a cross-family round left open (the
    receipt refuses it). If the other family isn't reachable again, stop and deliver with
@@ -107,10 +108,14 @@ If you're unsure, use the full loop.
    ```
    python3 <skill-dir>/scripts/check_claims.py changed old.md new.md --old-ledger old.json --new-ledger claims.json
    ```
-   It re-checks those lines and claims, then the whole final file. Stop after three
-   rounds and deliver with the open disagreements listed for the requester to decide.
-   If the last verdict is still CHANGES when you stop, the stamp says so and names what
-   wasn't re-checked: "checked in 3 rounds" alone reads as a pass.
+   It re-checks those lines and claims, then the whole final file. Three rounds is the
+   usual budget, not a cap. Run another while the last one found something material: a
+   Wrong, an open Frame line, or a number that moved. Stop when a round only repeats a
+   disagreement you've already answered, or what's left is wording, and deliver with the
+   open disagreements listed for the requester to decide. Past three rounds, the stamp
+   says what each extra round caught. If the last verdict is still CHANGES when you
+   stop, the stamp says so and names what wasn't re-checked: "checked in 3 rounds"
+   alone reads as a pass.
 7. **Deliver with a receipt and a one-line stamp.** Run
    `check_claims.py receipt verify-r<N>.md claims.json <deliverable>` first. PASS means
    the verifier's report covers these exact bytes with a clean verdict; any later edit
@@ -121,15 +126,21 @@ If you're unsure, use the full loop.
    > by gpt-6.1-sol in a fresh Codex session, CLEAR after 2 rounds. Not checked: store
    > shelf stock.
 
-   Name the verifier's actual model. If you asked for another model family and got
+   Name the verifier's actual model and reasoning effort, from its output header or the
+   peer's own report, never from memory. If you asked for another model family and got
    your own (quota fallback, no CLI), say "same-family check".
 
    The message carries the verified file and the stamp, nothing new. Caveats, open
-   questions and next steps that state a figure, date or fact go in the file before the
-   check, in their own section if they aren't meant for the final document ("Before
-   this goes in the deck"), and so does any headline or summary you want in the
-   message. After the receipt, your own words may only point at the file or ask for a
-   decision it already raises, and state no figures; the stamp is the one exception.
+   questions and next steps that state a figure, date or fact go in a file before the
+   check, and so does any headline or summary you want in the message. When the
+   deliverable is for someone other than the requester (a reply they'll post, a deck),
+   it holds only what that person receives, so the bytes posted are the bytes verified.
+   Notes for the requester alone go in a second file, checked alongside it (one
+   `artifact-sha256` line per file), and you paste that file's text into your message
+   to the requester. A note left only in a file never reaches them: they read the
+   conversation, not this machine. After the receipt, your own words may only paste a
+   verified file, point at one, or ask for a decision it already raises, and state no
+   other figures; the stamp is the one exception.
    A restated figure can be retyped wrong, and the receipt can't see it. Anything that
    states a figure, comparison or claim, in this message or a later status post, goes
    back to step 6.
