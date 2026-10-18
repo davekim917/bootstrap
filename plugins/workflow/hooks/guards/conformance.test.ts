@@ -340,10 +340,11 @@ const BASH_ALLOW = [
   // A dry run whose words are all literal, and git's global help for clean, delete nothing.
   'git clean -n -d -x -- build/',
   'git --help clean',
-  // Defining an alias runs nothing; options held in a variable, and git-filter-repo, are not aliases.
+  // Defining an alias runs nothing; options held in a variable, and installed extensions, are not aliases.
   "git config alias.p 'push --force'",
   'C="-c user.name=t"; git $C commit -m x',
   'git filter-repo --path src',
+  'git lfs pull',
   "git clean -n -- 'dir with spaces'",
   "git clean -n 'dir with spaces'",
   "git submodule foreach --recursive 'git status --short'",

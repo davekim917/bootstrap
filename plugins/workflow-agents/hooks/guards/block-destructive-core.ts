@@ -2819,10 +2819,11 @@ function currentWorkingDir(): string {
 // ── git target resolution ────────────────────────────────────────────────────
 
 const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--attr-source', '--super-prefix', '--shallow-file']);
-// `git --list-cmds=main,nohelpers`, plus filter-repo. git ignores an alias named like one of its commands or an
-// installed `git-<name>` program, so any other subcommand name runs an alias, whatever config defined it.
+// `git --list-cmds=main,nohelpers`, plus the common extensions filter-repo and lfs. git ignores an alias named like
+// one of its commands or an installed `git-<name>` program, so any other subcommand name runs an alias, whatever
+// config defined it.
 const GIT_COMMANDS = new Set([
-    'filter-repo',
+    'filter-repo', 'lfs',
     'add', 'am', 'annotate', 'apply', 'archive', 'bisect', 'blame', 'branch', 'bugreport', 'bundle', 'cat-file',
     'check-attr', 'check-ignore', 'check-mailmap', 'check-ref-format', 'checkout', 'checkout-index', 'cherry',
     'cherry-pick', 'clean', 'clone', 'column', 'commit', 'commit-graph', 'commit-tree', 'config', 'count-objects',
