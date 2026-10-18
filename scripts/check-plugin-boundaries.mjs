@@ -814,18 +814,18 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.13.6') {
-  fail(`bootstrap-workflow release must be version 5.13.6 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.13.7') {
+  fail(`bootstrap-workflow release must be version 5.13.7 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.13.6') {
-  fail(`bootstrap-workflow-agents release must be version 2.13.6 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.13.7') {
+  fail(`bootstrap-workflow-agents release must be version 2.13.7 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
-if (orchestrateClaudeManifest?.version !== '3.2.1') {
-  fail(`bootstrap-orchestrate release must be version 3.2.1 (found ${orchestrateClaudeManifest?.version})`);
+if (orchestrateClaudeManifest?.version !== '3.3.0') {
+  fail(`bootstrap-orchestrate release must be version 3.3.0 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '3.2.1') {
-  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.2.1 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '3.3.0') {
+  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.3.0 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {

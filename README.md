@@ -15,9 +15,9 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.13.6 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.13.6 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.2.1 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
+| Claude Code | `bootstrap-workflow` | 5.13.7 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.13.7 | The same, runtime-neutral |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.3.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.3.2 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
@@ -82,8 +82,9 @@ selects the deliverable's check before dispatch and verifies the reported artifa
 command, result and limitations. An explicit user choice of check or verification
 owner takes precedence. Independent review, when required, uses a separate reviewer
 with fresh context; owner testing does not establish independence. New bounded
-Codex workers use `fork_turns: "none"` with a self-contained brief; followups resume
-the same worker through build, test and repair.
+Codex workers use `fork_turns: "none"` with a self-contained brief, and the spawn hook
+denies any control that inherits the conversation; followups resume the same worker
+through build, test and repair.
 
 There is no role behind it, no approved model floor, no helper CLI, and no
 cross-provider hop: a Claude session dispatches Anthropic models and a Codex session
