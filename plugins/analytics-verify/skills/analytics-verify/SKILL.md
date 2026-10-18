@@ -89,7 +89,8 @@ If you're unsure, use the full loop.
       forever. Reviewing work another family wrote (a Codex peer's draft), it's a
       fresh-context subagent of your own model, at `<effort>`. Don't use `claude -p`:
       inside an agent container it fails with "Not logged in";
-   2. a peer agent on another model family in this conversation (mention it);
+   2. a peer agent in this conversation on a different family from the author's
+      (mention it);
    3. a fresh-context subagent of the author's own family. Call it a same-family check
       in the stamp.
 
@@ -156,8 +157,8 @@ If you're unsure, use the full loop.
    > shelf stock.
 
    Name the verifier's actual model and reasoning effort, from its output header or the
-   peer's own report, never from memory. If you asked for another model family and got
-   your own (quota fallback, no CLI), say "same-family check".
+   peer's own report, never from memory. If the verifier turned out to be the author's
+   own family (quota fallback, no CLI), say "same-family check".
 
    The message carries the verified file and the stamp, nothing new. Caveats, open
    questions and next steps that state a figure, date or fact go in a file before the
