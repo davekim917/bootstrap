@@ -2878,21 +2878,22 @@ function gitOnlyPrints(args: string[]): boolean {
 
 let installedGitExecPath: string | null | undefined;
 
-/** Where git looks for a `git-<name>` program: its exec path (`--exec-path=`, else GIT_EXEC_PATH, else the installed one), then PATH. */
+/** Where git looks for a `git-<name>` program: its installed exec path, then PATH. */
 function gitProgramDirs(cmd: ResolvedCommand): string[] {
-    const fromEnv = (name: string) => cmd.env?.findLast(e => e.startsWith(`${name}=`))?.slice(name.length + 1) ?? process.env[name];
-    let execPath = gitGlobalOptions(cmd.args).findLast(a => a.startsWith('--exec-path='))?.slice('--exec-path='.length) ?? fromEnv('GIT_EXEC_PATH');
-    if (execPath === undefined) {
-        if (installedGitExecPath === undefined) {
-            try {
-                installedGitExecPath = execFileSync('git', ['--exec-path'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-            } catch {
-                installedGitExecPath = null;
-            }
+    if (installedGitExecPath === undefined) {
+        try {
+            installedGitExecPath = execFileSync('git', ['--exec-path'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        } catch {
+            installedGitExecPath = null;
         }
-        execPath = installedGitExecPath ?? '';
     }
-    return [execPath, ...(fromEnv('PATH') ?? '').split(':')];
+    const path = cmd.env?.findLast(e => e.startsWith('PATH='))?.slice('PATH='.length) ?? process.env.PATH ?? '';
+    return [installedGitExecPath ?? '', ...path.split(':')];
+}
+
+/** The command moves git's exec path, where git finds its own script commands and `git-<name>` programs. */
+function gitMovesExecPath(cmd: ResolvedCommand): boolean {
+    return gitGlobalOptions(cmd.args).some(a => a.startsWith('--exec-path=')) || !!cmd.env?.some(e => e.startsWith('GIT_EXEC_PATH='));
 }
 
 /**
@@ -3764,6 +3765,9 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (name === 'git') {
         // Skip git's global options so `git -C /x push -f` classifies like `git push -f`.
         const i = gitSubcommandIndex(args);
+        if (gitMovesExecPath(cmd)) {
+            return 'git with its exec path moved runs whatever that directory holds in place of its own commands, or an alias where one is missing. Run git with its installed exec path.';
+        }
         const alias = gitAlias(cmd);
         if (alias) {
             return `git ${alias} is not a git command or an installed git-${alias} program, so git runs it as an alias, which can stand for any command (push --force, clean -fdx). Write out the command the alias stands for.`;
