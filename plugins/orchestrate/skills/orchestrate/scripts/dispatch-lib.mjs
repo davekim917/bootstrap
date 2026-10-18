@@ -392,15 +392,19 @@ const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\
 const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+${MODEL_TOKEN}\\s+sub-?agent(?:\\s+at\\s+${EFFORT_TOKEN})?`, 'g');
 const NEGATED = /\b(?:not|never|cannot)\b|n't\b/;
 const CLAUSE_BREAK = /[.!?;:\n\u2014]|,\s*(?:but|and|so|then|yet)\b/;
+const EXCLUDED = /\b(?:no|avoid|except|without|instead|skip|exclude|excluding|besides|other than|rather than)\b/;
 const MODEL_MENTION = new RegExp(`\\b(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*(?:['\u2019]s)?${TOKEN_END}`, 'g');
 
-/** The one model family a turn names outside a negated clause, or undefined when it names none or several. */
+/**
+ * The one model family a turn names outside a negated clause, or undefined when it names none or several. Unlike an
+ * invocation, a bare mention also yields to exclusion words ("no opus", "anything except opus").
+ */
 function soleNamedFamily(t) {
   const named = new Set();
   for (const clause of t.split(CLAUSE_BREAK)) {
     const families = [...clause.matchAll(MODEL_MENTION)].map((m) => m[1]);
     if (families.length === 0) continue;
-    if (NEGATED.test(clause)) return undefined;
+    if (NEGATED.test(clause) || EXCLUDED.test(clause)) return undefined;
     for (const f of families) named.add(f);
   }
   return named.size === 1 ? [...named][0] : undefined;

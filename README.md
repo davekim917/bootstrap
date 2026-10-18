@@ -116,7 +116,7 @@ human chose it in their latest turn of the session transcript (user turns, minus
 notices and, in a NanoClaw container, system- or agent-sent `<message>` envelopes). When that turn holds
 one of the skill's invocations — `/orchestrate <model> <effort> …` (an `@mention` may precede it) or
 "use a <model> subagent at <effort> …" — the latest one decides both fields. Otherwise a turn that
-names exactly one model family outside a negated clause ("I'd like fable to take a look") keeps an
+names exactly one model family outside a negated or excluding clause ("I'd like fable to take a look") keeps an
 explicit model of that family; several families ("compare Opus and Sonnet") keep none, and plain
 wording never keeps an effort. The rest take the route. Fields it leaves omitted follow the client's native inheritance and configuration rather
 than a workflow-owned fallback.

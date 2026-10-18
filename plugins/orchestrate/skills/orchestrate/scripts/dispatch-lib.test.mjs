@@ -249,6 +249,10 @@ test('humanPins: an invocation pins model and effort; plain words pin only a sol
     ['opus is overkill; ask fable', { model: false, effort: false }],
     ["opus did well last time. Don't use opus for this one", { model: false, effort: false }],
     ['write a haiku about the release', { model: false, effort: false }],
+    ['no opus for this one', { model: false, effort: false }],
+    ['avoid opus here', { model: false, effort: false }],
+    ['anything except opus', { model: false, effort: false }],
+    ['run the review without opus', { model: false, effort: false }],
   ];
   for (const [text, expected] of cases) assert.deepEqual(humanPins(spawn, text), expected, text);
   assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, '/orchestrate opus high go'), { model: false, effort: false });
