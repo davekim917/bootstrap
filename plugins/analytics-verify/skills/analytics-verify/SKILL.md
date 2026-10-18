@@ -108,11 +108,14 @@ If you're unsure, use the full loop.
    ```
    python3 <skill-dir>/scripts/check_claims.py changed old.md new.md --old-ledger old.json --new-ledger claims.json
    ```
-   It re-checks those lines and claims, then the whole final file. Three rounds is the
-   usual budget, not a cap. Run another while the last one found something material: a
-   Wrong, an open Frame line, or a number that moved. Stop when a round only repeats a
-   disagreement you've already answered, or what's left is wording, and deliver with the
-   open disagreements listed for the requester to decide. Past three rounds, the stamp
+   It re-checks those lines and claims, then the whole final file; run it once per
+   changed file. Three rounds is the usual budget, not a cap. Run another only when the
+   last round found something new you can fix yourself: a Wrong, an open Frame line, or
+   a number your own error moved (live data refreshing is drift to report, not a
+   finding). Stop and deliver with the open findings listed for the requester to decide
+   when what's left needs the requester's answer (a measure or period only they can
+   settle), when a round repeats a finding you already fixed or answered, or when a fix
+   undoes an earlier one, or when only wording remains. Past three rounds, the stamp
    says what each extra round caught. If the last verdict is still CHANGES when you
    stop, the stamp says so and names what wasn't re-checked: "checked in 3 rounds"
    alone reads as a pass.
