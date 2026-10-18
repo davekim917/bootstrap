@@ -136,9 +136,11 @@ If you're unsure, use the full loop.
    A claim with any open finding other than cosmetic wording (Wrong, Stale or
    overstated, Unsupported, or an open Frame line) never goes out, flagged or not.
    Before you deliver, cut it and everything that rests on it, or hold the whole
-   deliverable if the rest doesn't stand without it. Tell the requester what you cut
-   and why; the wrong figure itself appears only as the verifier's finding, never as a
-   result.
+   deliverable if the rest doesn't stand without it. A cut changes the file, so re-run
+   step 4 and one more verifier round on the cut version, which checks only that what
+   remains is still true and not misleading. If that round isn't CLEAR, hold the whole
+   deliverable. Tell the requester what you cut and why; the wrong figure itself
+   appears only as the verifier's finding, never as a result.
 7. **Deliver with a receipt and a one-line stamp.** Run
    `check_claims.py receipt verify-r<N>.md claims.json <deliverable> [<notes>]` first,
    naming every verified file. PASS means
