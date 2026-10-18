@@ -83,12 +83,15 @@ If you're unsure, use the full loop.
    `rerun.csv` comes from running the saved SQL file again, not from memory. If live
    data moved, rerun with `--rel-tol` and report the drift it lists.
 5. **Get an independent verifier.** Use the first of these you have:
-   1. a fresh headless session of another model family that can reach the same data
-      (`codex exec -c model_reasoning_effort=<effort>`, `claude -p --effort <effort>`),
-      with stdin closed (`</dev/null`) or it waits forever;
+   1. a fresh session of a different model family from the author's, that can reach
+      the same data. From a Claude agent, that's `codex exec -c
+      model_reasoning_effort=<effort>` with stdin closed (`</dev/null`) or it waits
+      forever. Reviewing work another family wrote (a Codex peer's draft), it's a
+      fresh-context subagent of your own model, at `<effort>`. Don't use `claude -p`:
+      inside an agent container it fails with "Not logged in";
    2. a peer agent on another model family in this conversation (mention it);
-   3. a fresh-context subagent of your own model. Call it a same-family check in the
-      stamp.
+   3. a fresh-context subagent of the author's own family. Call it a same-family check
+      in the stamp.
 
    `<effort>` is the `effort` in `<skill-dir>/verifier.json`. Pass it explicitly
    wherever the verifier takes one; left unset, a CLI runs at the model's own default,
@@ -103,9 +106,8 @@ If you're unsure, use the full loop.
 
    Run a headless verifier in the foreground with a 60-minute (`3600000` ms) timeout;
    30 minutes in is still healthy. Save its output, because the stamp names the model
-   and effort from it. `codex exec` prints both in its first lines. For `claude -p`, add
-   `--output-format json`: the model is the key under `modelUsage`, and the effort is
-   the one you passed.
+   and effort from it. `codex exec` prints both in its first lines. For a subagent, the
+   model and effort are the ones you set when you started it.
 
    A same-family round can't clear a Frame that a cross-family round left open (the
    receipt refuses it). If the other family isn't reachable again, stop and deliver with
