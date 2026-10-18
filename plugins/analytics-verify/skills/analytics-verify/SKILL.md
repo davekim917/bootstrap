@@ -132,6 +132,12 @@ If you're unsure, use the full loop.
    no receipt, and the stamp names each open finding and what wasn't re-checked:
    "checked in 3 rounds" alone reads as a pass. Past three rounds, the stamp also says
    what each extra round caught.
+
+   A claim with an open Wrong or an open Frame line never goes out, flagged or not.
+   Before you deliver, cut it and everything that rests on it, or hold the whole
+   deliverable if the rest doesn't stand without it. Tell the requester what you cut
+   and why; the wrong figure itself appears only as the verifier's finding, never as a
+   result.
 7. **Deliver with a receipt and a one-line stamp.** Run
    `check_claims.py receipt verify-r<N>.md claims.json <deliverable> [<notes>]` first,
    naming every verified file. PASS means
