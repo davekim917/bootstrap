@@ -253,6 +253,11 @@ test('humanPins: an invocation pins model and effort; plain words pin only a sol
     ['avoid opus here', { model: false, effort: false }],
     ['anything except opus', { model: false, effort: false }],
     ['run the review without opus', { model: false, effort: false }],
+    ['No problem, have Opus review it', { model: true, effort: false }],
+    ["Don't change the files, have Opus review them", { model: true, effort: false }],
+    ['Have Opus review it instead', { model: true, effort: false }],
+    ["I don't want opus on this", { model: false, effort: false }],
+    ["opus shouldn't review this one", { model: false, effort: false }],
   ];
   for (const [text, expected] of cases) assert.deepEqual(humanPins(spawn, text), expected, text);
   assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, '/orchestrate opus high go'), { model: false, effort: false });
