@@ -392,12 +392,15 @@ const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\
 const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+${MODEL_TOKEN}\\s+sub-?agent(?:\\s+at\\s+${EFFORT_TOKEN})?`, 'g');
 const NEGATED = /\b(?:not|never|cannot)\b|n't\b/;
 const CLAUSE_BREAK = /[.!?;:\n\u2014]|,\s*(?:but|and|so|then|yet)\b/;
-const EXCLUDED_BEFORE = /\b(?:not|never|cannot|no|avoid|except|without|skip|exclude|excluding|besides|other than|rather than|instead of|\w+n't)\s+(?:[\w'-]+\s+){0,3}$/;
+const EXCLUDED_BEFORE = /\b(?:not|never|cannot|no|avoid|except|without|skip|exclude|excluding|besides|other than|rather than|instead of|\w+n't)\s+(?:[\w'-]+\s+)*$/;
+const ARTICLE_BEFORE = /\b(?:a|an|the|this|that|my|your|his|her|our|their|magnum)\s+$/;
+const MODEL_NOUN_AFTER = /^\s+(?:model|sub-?agent|agent|reviewer)\b/;
 const NEGATED_AFTER = /^\s+(?:[\w-]+\s+)?(?:not|never|cannot|\w+n't)\b/;
 const MODEL_MENTION = new RegExp(`\\b(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*(?:['\u2019]s)?${TOKEN_END}`, 'g');
 
 /**
  * The one model family a turn names, or undefined when it names none or several, or negates or excludes one it names.
+ * A family word after an article ("write a haiku") is a noun, not a model, unless a model noun follows ("the opus model").
  * Unlike an invocation, a bare mention also yields to exclusion words ("no opus", "anything except opus").
  */
 function soleNamedFamily(t) {
@@ -406,6 +409,7 @@ function soleNamedFamily(t) {
     for (const m of clause.matchAll(MODEL_MENTION)) {
       const before = clause.slice(0, m.index);
       const after = clause.slice(m.index + m[0].length);
+      if (ARTICLE_BEFORE.test(before) && !MODEL_NOUN_AFTER.test(after)) continue;
       if (EXCLUDED_BEFORE.test(before) || NEGATED_AFTER.test(after)) return undefined;
       named.add(m[1]);
     }
@@ -424,7 +428,7 @@ function soleNamedFamily(t) {
  * plain wording ("failed at high effort").
  */
 export function humanPins(input, text) {
-  const t = text.toLowerCase().replace(/<command-name>\s*(\/\S+?)\s*<\/command-name>[\s\S]*?<command-args>/g, '\n$1 ');
+  const t = text.toLowerCase().replace(/\u2019/g, "'").replace(/<command-name>\s*(\/\S+?)\s*<\/command-name>[\s\S]*?<command-args>/g, '\n$1 ');
   const model = typeof input.model === 'string' ? input.model.toLowerCase() : '';
   const family = MODEL_FAMILIES.find((f) => model.includes(f));
   const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;

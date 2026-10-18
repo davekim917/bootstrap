@@ -258,9 +258,14 @@ test('humanPins: an invocation pins model and effort; plain words pin only a sol
     ['Have Opus review it instead', { model: true, effort: false }],
     ["I don't want opus on this", { model: false, effort: false }],
     ["opus shouldn't review this one", { model: false, effort: false }],
+    ["I don't think we should use Opus", { model: false, effort: false }],
+    ['I don\u2019t want Opus', { model: false, effort: false }],
+    ['use the opus model for the review', { model: true, effort: false }],
   ];
   for (const [text, expected] of cases) assert.deepEqual(humanPins(spawn, text), expected, text);
   assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, '/orchestrate opus high go'), { model: false, effort: false });
+  assert.deepEqual(humanPins({ model: 'haiku' }, 'write a haiku about the release'), { model: false, effort: false });
+  assert.deepEqual(humanPins({ model: 'fable' }, 'tell me the fable of the tortoise'), { model: false, effort: false });
 });
 test('the installed hook replaces an agent-named model and effort unless a human named them', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));
