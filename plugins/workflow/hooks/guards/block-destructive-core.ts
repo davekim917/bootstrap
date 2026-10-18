@@ -29,6 +29,7 @@
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
 import { homedir } from 'os';
 import { dirname, join, resolve as pathResolve } from 'path';
@@ -2012,7 +2013,8 @@ const EACH_MATCH_DIR = 'the directory of each match';
 
 /**
  * What xargs, or each find -exec/-execdir/-ok/-okdir, runs: the option that runs it and the command it runs, with
- * FILLED where its input or a match goes. `tail`: xargs appends what it reads, so more words may follow the last.
+ * FILLED where its input or a match goes. `tail`: xargs appends what it reads, or find's `{} +` the matches, so a
+ * FILLED word may be several and more may follow the last; otherwise each FILLED word is exactly one.
  */
 function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCommand | null; tail?: boolean }> {
     if (cmd.name === 'xargs') {
@@ -2023,14 +2025,14 @@ function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCom
     }
     if (cmd.name === 'git') return submoduleForeach(cmd);
     if (cmd.name !== 'find') return [];
-    const runs: Array<{ via: string; inner: ResolvedCommand | null }> = [];
+    const runs: Array<{ via: string; inner: ResolvedCommand | null; tail: boolean }> = [];
     for (let i = 0; i < cmd.args.length; i++) {
         if (!['-exec', '-execdir', '-ok', '-okdir'].includes(cmd.args[i])) continue;
         // The command runs up to its `;`, or a `+` right after `{}`; what follows is find's own expression.
         const end = cmd.args.findIndex((a, j) => j > i && (a === ';' || (a === '+' && cmd.args[j - 1] === '{}')));
         const inner = innerCommand(cmd.args.slice(i + 1, end < 0 ? undefined : end), cmd);
         if (inner && cmd.args[i].endsWith('dir') && inner.chdir === undefined) inner.chdir = EACH_MATCH_DIR;
-        runs.push({ via: `find ${cmd.args[i]}`, inner });
+        runs.push({ via: `find ${cmd.args[i]}`, inner, tail: cmd.args[end] === '+' });
         if (end > i) i = end;
     }
     return runs;
@@ -2085,11 +2087,13 @@ const RUNTIME_FILLS = [...new Map(RUNTIME_PROBES.flatMap(probe => probe.flatMap(
     .map(words => [words.join('\0'), words])).values()];
 const RUNTIME_PROBE_WORDS = [...new Set(RUNTIME_PROBES.flat())];
 
-/** Each way to fill `args`' FILLED words from RUNTIME_PROBES, with the words it put there. */
-function* runtimeFills(args: string[]): Generator<{ args: string[]; words: string }> {
+/** Each way to fill `args`' FILLED words from RUNTIME_PROBES, with the words it put there; `several` as execRuns' `tail`. */
+function* runtimeFills(args: string[], several: boolean): Generator<{ args: string[]; words: string }> {
     for (let i = 0; i < args.length; i++) {
         if (args[i] === FILLED) {
-            for (const fill of RUNTIME_FILLS) yield { args: [...args.slice(0, i), ...fill, ...args.slice(i + 1)], words: fill.join(' ') };
+            for (const fill of several ? RUNTIME_FILLS : RUNTIME_PROBE_WORDS.map(word => [word])) {
+                yield { args: [...args.slice(0, i), ...fill, ...args.slice(i + 1)], words: fill.join(' ') };
+            }
         } else if (args[i].includes(FILLED)) {
             // Part of a word (`FLUSH{}`, `select … {}`) can complete a probe word around the written text, or hold one.
             const [before, after] = [args[i].slice(0, args[i].indexOf(FILLED)), args[i].slice(args[i].lastIndexOf(FILLED) + FILLED.length)];
@@ -2122,9 +2126,9 @@ function shellFileWords(shell: ResolvedCommand): string[] {
 /**
  * What a word filled in at run time decides in `step` that makes what it runs unknowable, or null: the command it
  * runs (its name, its environment, or find's expression), the script a shell runs, or arguments that make it need
- * approval when it doesn't otherwise.
+ * approval when it doesn't otherwise. `several` as execRuns' `tail`.
  */
-function runtimeReach(step: ResolvedCommand): string | null {
+function runtimeReach(step: ResolvedCommand, several: boolean): string | null {
     if (!holdsFilled(step)) return null;
     if (step.name.includes(FILLED) || step.env?.some(e => e.includes(FILLED))) return 'takes the command it runs';
     if (step.name === 'find' && step.args.some(a => a.includes(FILLED))) return "takes find's expression";
@@ -2132,7 +2136,7 @@ function runtimeReach(step: ResolvedCommand): string | null {
         return `supplies ${step.name}'s script`;
     }
     if (checkGatedCommand(step)) return null;
-    for (const fill of runtimeFills(step.args)) {
+    for (const fill of runtimeFills(step.args, several)) {
         if (checkGatedCommand({ ...step, args: fill.args })) return `can fill in "${fill.words}" for ${step.name}`;
     }
     return null;
@@ -2158,7 +2162,7 @@ function innerGatedSteps(cmd: ResolvedCommand, depth = 0): InnerGate[] {
                 continue;
             }
             const at = moves.length ? [...moves] : undefined;
-            const reach = via === 'git submodule foreach' ? null : runtimeReach(step);
+            const reach = via === 'git submodule foreach' ? null : runtimeReach(step, tail ?? false);
             if (reach) {
                 gated.push({ step: { ...step, pos: undefined }, reason: `${via} ${reach} from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Write it in the command.`, runtime: true });
                 continue;
@@ -2812,6 +2816,27 @@ function currentWorkingDir(): string {
 // ── git target resolution ────────────────────────────────────────────────────
 
 const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--attr-source', '--super-prefix', '--shallow-file']);
+// `git --list-cmds=main,nohelpers`: the commands git runs ahead of an alias of the same name.
+const GIT_COMMANDS = new Set([
+    'add', 'am', 'annotate', 'apply', 'archive', 'bisect', 'blame', 'branch', 'bugreport', 'bundle', 'cat-file',
+    'check-attr', 'check-ignore', 'check-mailmap', 'check-ref-format', 'checkout', 'checkout-index', 'cherry',
+    'cherry-pick', 'clean', 'clone', 'column', 'commit', 'commit-graph', 'commit-tree', 'config', 'count-objects',
+    'credential', 'credential-cache', 'credential-store', 'daemon', 'describe', 'diagnose', 'diff', 'diff-files',
+    'diff-index', 'diff-tree', 'difftool', 'fast-export', 'fast-import', 'fetch', 'fetch-pack', 'filter-branch',
+    'fmt-merge-msg', 'for-each-ref', 'for-each-repo', 'format-patch', 'fsck', 'fsck-objects', 'gc', 'get-tar-commit-id',
+    'grep', 'hash-object', 'help', 'hook', 'http-backend', 'http-fetch', 'http-push', 'imap-send', 'index-pack', 'init',
+    'init-db', 'instaweb', 'interpret-trailers', 'log', 'ls-files', 'ls-remote', 'ls-tree', 'mailinfo', 'mailsplit',
+    'maintenance', 'merge', 'merge-base', 'merge-file', 'merge-index', 'merge-octopus', 'merge-one-file', 'merge-ours',
+    'merge-recursive', 'merge-recursive-ours', 'merge-recursive-theirs', 'merge-resolve', 'merge-subtree', 'merge-tree',
+    'mergetool', 'mktag', 'mktree', 'multi-pack-index', 'mv', 'name-rev', 'notes', 'pack-objects', 'pack-redundant',
+    'pack-refs', 'patch-id', 'pickaxe', 'prune', 'prune-packed', 'pull', 'push', 'quiltimport', 'range-diff', 'read-tree',
+    'rebase', 'receive-pack', 'reflog', 'remote', 'remote-ext', 'remote-fd', 'remote-ftp', 'remote-ftps', 'remote-http',
+    'remote-https', 'repack', 'replace', 'request-pull', 'rerere', 'reset', 'restore', 'rev-list', 'rev-parse', 'revert',
+    'rm', 'send-pack', 'shell', 'shortlog', 'show', 'show-branch', 'show-index', 'show-ref', 'sparse-checkout', 'stage',
+    'stash', 'status', 'stripspace', 'submodule', 'subtree', 'switch', 'symbolic-ref', 'tag', 'unpack-file',
+    'unpack-objects', 'update-index', 'update-ref', 'update-server-info', 'upload-archive', 'upload-pack', 'var',
+    'verify-commit', 'verify-pack', 'verify-tag', 'version', 'whatchanged', 'worktree', 'write-tree',
+]);
 // URL and scp-style (`git@github.com:org/repo`) remotes.
 const REPO_URL_RE = /^(?:(?:https?|ssh|git|git\+ssh|file):\/\/|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:)/;
 // A bare `org/repo` positional. Only consulted in the REMOTE position, so a
@@ -2826,7 +2851,63 @@ function gitSubcommandIndex(args: string[]): number {
         if (args[i].startsWith('-')) { i += 1; continue; }
         break;
     }
-    return i;
+    return Math.min(i, args.length);
+}
+
+/** git's global options before the subcommand, without the values of those that take one. */
+function gitGlobalOptions(args: string[]): string[] {
+    const options: string[] = [];
+    for (let i = 0; i < gitSubcommandIndex(args); i++) {
+        options.push(args[i]);
+        if (GIT_GLOBAL_VALUE_OPTS.has(args[i])) i++;
+    }
+    return options;
+}
+
+// A bare --exec-path prints the path and exits; with `=` it sets the path instead.
+const GIT_PRINT_OPTIONS = new Set(['--help', '-h', '--version', '-v', '--html-path', '--man-path', '--info-path', '--exec-path']);
+
+/** A global option before the subcommand that prints and exits without running it. */
+function gitOnlyPrints(args: string[]): boolean {
+    return gitGlobalOptions(args).some(a => GIT_PRINT_OPTIONS.has(a) || a.startsWith('--list-cmds='));
+}
+
+let installedGitExecPath: string | null | undefined;
+
+/** Where git looks for a `git-<name>` program: its exec path (`--exec-path=`, else GIT_EXEC_PATH, else the installed one), then PATH. */
+function gitProgramDirs(cmd: ResolvedCommand): string[] {
+    const fromEnv = (name: string) => cmd.env?.findLast(e => e.startsWith(`${name}=`))?.slice(name.length + 1) ?? process.env[name];
+    let execPath = gitGlobalOptions(cmd.args).findLast(a => a.startsWith('--exec-path='))?.slice('--exec-path='.length) ?? fromEnv('GIT_EXEC_PATH');
+    if (execPath === undefined) {
+        if (installedGitExecPath === undefined) {
+            try {
+                installedGitExecPath = execFileSync('git', ['--exec-path'], { encoding: 'utf8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+            } catch {
+                installedGitExecPath = null;
+            }
+        }
+        execPath = installedGitExecPath ?? '';
+    }
+    return [execPath, ...(fromEnv('PATH') ?? '').split(':')];
+}
+
+/**
+ * The alias git runs, or null. git looks a subcommand up among its own commands, then as a `git-<name>` program, and
+ * only then as an alias, whatever config defined it.
+ */
+function gitAlias(cmd: ResolvedCommand): string | null {
+    const sub = cmd.args[gitSubcommandIndex(cmd.args)];
+    if (sub === undefined || sub.includes('$') || GIT_COMMANDS.has(sub) || gitOnlyPrints(cmd.args)) return null;
+    const installed = /^[\w.-]+$/.test(sub) && gitProgramDirs(cmd).some(dir => {
+        if (!dir.startsWith('/') || dir.includes('$')) return false;
+        try {
+            const st = statSync(join(dir, `git-${sub}`));
+            return st.isFile() && (st.mode & 0o111) !== 0;
+        } catch {
+            return false;
+        }
+    });
+    return installed ? null : sub;
 }
 
 /** Value of `git -C <path>` / `--work-tree <path>`, which relocates the
@@ -3679,6 +3760,10 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (name === 'git') {
         // Skip git's global options so `git -C /x push -f` classifies like `git push -f`.
         const i = gitSubcommandIndex(args);
+        const alias = gitAlias(cmd);
+        if (alias) {
+            return `git ${alias} is not a git command or an installed git-${alias} program, so git runs it as an alias, which can stand for any command (push --force, clean -fdx). Write out the command the alias stands for.`;
+        }
         if (args[i] === 'push') {
             const pushArgs = pushArgsWithoutValues(args.slice(i + 1));
             const end = pushArgs.indexOf('--');
@@ -3710,8 +3795,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         // `--no-dry-run` (an untracked file of that name matches `*`).
         const end = cleanArgs.indexOf('--');
         const literal = cleanArgs.slice(0, end < 0 ? undefined : end).every(a => /^[\w@%+=:,./ -]*$/.test(a));
-        const globalHelp = name === 'git' && args.slice(0, gitSubcommandIndex(args)).some(a => a === '--help' || a === '-h');
-        if (!globalHelp && ((!clean.dryRun && !clean.help) || !literal)) {
+        const onlyPrints = name === 'git' && gitOnlyPrints(args);
+        if (!onlyPrints && ((!clean.dryRun && !clean.help) || !literal)) {
             return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
         }
     }

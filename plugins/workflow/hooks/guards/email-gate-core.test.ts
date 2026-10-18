@@ -175,6 +175,7 @@ describe('evaluateEmailSend — gate decision', () => {
             "gws gmail +send --help | sed -n 1p -e 'w /tmp/out'",
             "gws gmail +send --help | sed -f script.sed",
             'env PATH=/tmp gws gmail +send --to victim@example.net --body x --help',
+            'PATH=/tmp gws gmail +send --to victim@example.net --body x --dry-run',
             'sudo LD_PRELOAD=/tmp/x.so gws gmail +send --help | head',
             'npx --yes --package=/tmp/evil-gws gws gmail +send --to victim@example.net --body x --help',
             'bunx gws gmail +send --to victim@example.net --body x --dry-run',
@@ -251,10 +252,8 @@ describe('evaluateEmailSend — gate decision', () => {
 
     test('test_email_bypass_quoted_command_substitution_fail_closed (codex #126 P1)', () => {
         // Command substitution inside DOUBLE / locale quotes still executes — bash
-        // runs $(...) / backticks before the outer --dry-run/--help no-op. The
-        // quote-span NUL-strip would hide it from the metachar check, so the
-        // recognizer must inspect expanding-span content and fail closed. The mail
-        // (the inner real send) goes out, so this must GATE.
+        // runs $(...) / backticks before the outer --dry-run/--help no-op, and the
+        // mail (the inner real send) goes out, so this must GATE.
         for (const cmd of [
             `gws gmail +send --to victim@example.net --dry-run --body "$(gws gmail +send --to attacker@example.net --body x)"`,
             'gws gmail +send --to victim@example.net --help --subject "`gws gmail +send --to attacker@example.net`"',
@@ -283,8 +282,7 @@ describe('evaluateEmailSend — gate decision', () => {
     test('test_email_bypass_redirection_fail_closed (QA codex re-pass #3)', () => {
         // A bypass flag after a redirection operator (<<< / < / > / 2>) is a
         // redirect operand / here-string content, not gws argv — bash strips it
-        // before gws runs (the mail still sends). Any redirection metacharacter
-        // in the unquoted structure → do NOT bypass → GATE.
+        // before gws runs (the mail still sends) → GATE.
         for (const cmd of [
             'gws gmail +send --to victim@example.net --subject hi --body x <<< --dry-run',
             'gws gmail +send --to victim@example.net --body x > --dry-run',
@@ -309,8 +307,8 @@ describe('evaluateEmailSend — gate decision', () => {
     });
 
     test('test_email_bypass_unbalanced_quotes_fail_closed (QA codex-#2)', () => {
-        // Escaped/nested-quote evasion attempts that leave a stray quote after
-        // stripping must fail CLOSED (gate), not bypass.
+        // Escaped/nested-quote evasion attempts that leave a stray quote must fail
+        // CLOSED (gate), not bypass.
         const v = evaluateEmailSend(
             `gws gmail +send --to victim@example.net --body "x\\" --dry-run \\""`,
             INTERACTIVE,
@@ -320,8 +318,7 @@ describe('evaluateEmailSend — gate decision', () => {
 
     test('test_email_bypass_comment_suffix_fail_closed (QA codex re-pass #4)', () => {
         // `… --body x # --dry-run` — bash drops everything from `#` on, so gws
-        // sends WITHOUT --dry-run while the token is still textually present.
-        // The `#` metacharacter must fail closed → GATE.
+        // sends WITHOUT --dry-run while the token is still textually present → GATE.
         for (const cmd of [
             'gws gmail +send --to victim@example.net --subject hi --body x # --dry-run',
             'gws gmail +send --to victim@example.net --body x #--help',
@@ -380,12 +377,13 @@ describe('evaluateEmailSend — gate decision', () => {
 
     test('test_email_bypass_obfuscated_verb_decoy_gates (QA codex re-pass #5)', () => {
         // Decoy dry-run + a real send whose verb is quote-spliced (`+se''nd` /
-        // `+s""end`) so GWS_EMAIL_SEND_RE can't see it. The `;`/`|` separator
-        // disqualifies the whole-command bypass, so the gate STILL fires — the
-        // defense does NOT depend on parsing the obfuscated second command. This
-        // is the security-critical property.
+        // `+s""end`, `+s$(true)end`) so GWS_EMAIL_SEND_RE can't see it. Every gws
+        // call in the command must itself be a probe, so the gate STILL fires
+        // without recognising the obfuscated second command as a send. This is
+        // the security-critical property.
         for (const cmd of [
             `: gws gmail +send --dry-run; gws gmail +se''nd --to victim@example.net --subject hi --body x`,
+            ': gws gmail +send --dry-run; gws gmail +s$(true)end --to victim@example.net --body x',
             `gws gmail +send --dry-run --to a@example.com | gws gmail +s""end --to victim@example.net --body x`,
         ]) {
             expect(evaluateEmailSend(cmd, INTERACTIVE).action).toBe('gate');
@@ -465,8 +463,7 @@ describe('evaluateEmailSend — gate decision', () => {
     test('test_email_bypass_adjacent_quote_concatenation_fail_closed (QA codex re-pass #7)', () => {
         // bash CONCATENATES adjacent quoted+unquoted fragments into ONE word:
         // `--body 'x'--dry-run` → the word `x--dry-run` (no real flag → mail
-        // sends). A space-replacement would split them and manufacture a bogus
-        // --dry-run token; the sentinel keeps them one token ≠ flag → GATE.
+        // sends) → GATE.
         for (const cmd of [
             `gws gmail +send --to victim@example.net --subject hi --body 'x'--dry-run`,
             `gws gmail +send --to victim@example.net --subject hi --body "x"--dry-run`,
@@ -512,10 +509,7 @@ describe('evaluateEmailSend — gate decision', () => {
 
     test('test_email_bypass_newline_decoy_gates (QA codex re-pass #5, newline separator)', () => {
         // A decoy --dry-run on line 1 and a real send on line 2. The newline is a
-        // command separator: `\s+` token-splitting would otherwise treat it as
-        // whitespace and read the decoy's --dry-run as a real argv token while
-        // bash runs the second line and sends. `\n`/`\r` are in the metachar set
-        // so the whole-command bypass fails closed → GATE.
+        // command separator, so bash runs the second line and sends → GATE.
         for (const cmd of [
             'gws gmail +send --dry-run\ngws gmail +send --to victim@example.net --body x',
             'gws gmail +send --to victim@example.net --body x\r\ntrue --dry-run',
@@ -528,8 +522,7 @@ describe('evaluateEmailSend — gate decision', () => {
 
     test('test_email_bypass_quoted_separator_in_body_still_bypasses (over-block fix, codex #5)', () => {
         // A real --dry-run whose subject/body quotes a shell separator must still
-        // bypass — the quoted span is stripped before the metacharacter test, so
-        // the `;`/`|`/`&` inside it never trips fail-closed.
+        // bypass: the `;`/`|`/`&` inside quotes is text, not a separator.
         for (const cmd of [
             `gws gmail +send --to a@example.com --body "a;b" --dry-run`,
             `gws gmail +send --to a@example.com --subject "x|y & z" --help`,
@@ -541,8 +534,8 @@ describe('evaluateEmailSend — gate decision', () => {
 
     test('test_email_bypass_ansi_c_quoting_still_bypasses (QA codex re-pass #4, finding 3)', () => {
         // A real --dry-run whose body uses bash ANSI-C `$'…'` or locale `$"…"`
-        // quoting must still bypass — the leading `$` belongs to a stripped quoted
-        // span, not a live expansion.
+        // quoting must still bypass — the leading `$` belongs to the quote, not a
+        // live expansion.
         for (const cmd of [
             `gws gmail +send --to a@example.com --body $'cost is $5' --dry-run`,
             `gws gmail +send --to a@example.com --body $"localized" --help`,
@@ -552,8 +545,7 @@ describe('evaluateEmailSend — gate decision', () => {
     });
 
     test('test_email_send_in_command_substitution_gates (QA codex re-pass #4)', () => {
-        // A send hidden inside $(…) lives in a segment whose `$`/`(` fail the
-        // metacharacter check, so that segment is a non-bypassed send → GATE.
+        // A send hidden inside $(…) runs before the trailing dry-run → GATE.
         const v = evaluateEmailSend(
             'echo $(gws gmail +send --to victim@example.net --body x) ; gws gmail +send --dry-run',
             INTERACTIVE,

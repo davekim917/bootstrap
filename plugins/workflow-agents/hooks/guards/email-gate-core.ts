@@ -46,7 +46,7 @@ import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inl
 export const GWS_EMAIL_SEND_RE =
     /\bgws\s+gmail\s+(?:\+(?:send|reply|reply-all|forward)|users\s+(?:messages|drafts)\s+send)\b/;
 
-// The bypass flags, matched as WHOLE argv tokens (see bypassFlagIsRealArgvToken
+// The bypass flags, matched as WHOLE argv tokens (see probeOnlyCommand
 // below). Matching whole tokens — not a regex over the raw segment — is what
 // (a) keeps `--dry-run=false` from bypassing (it's a single token `--dry-run=false`
 // ≠ `--dry-run`), and (b) stops a flag-shaped substring inside quoted email
@@ -55,112 +55,6 @@ export const GWS_EMAIL_SEND_RE =
 // never send — without this, every `gws gmail +send --help` exploration would
 // light up an approval card.
 export const EMAIL_BYPASS_FLAGS = new Set(['--dry-run', '--draft', '--help', '-h']);
-
-// Shell metacharacters / separators that can divert a token away from the gws
-// argv OR introduce a second command — redirections (< > >> << <<< 2> >& <& all
-// contain < or >), pipes (|), control operators (; &), command/parameter
-// expansion ($ ` ${), grouping (( ) { }), the comment introducer (#), and the
-// NEWLINE command separator (\n \r). Newline is load-bearing here: the bypass
-// check runs on the WHOLE command, so a `--dry-run\n<real send>` decoy must be
-// caught by this set — `\s+` token-splitting would otherwise treat the newline
-// as plain whitespace and see the decoy's --dry-run as a real argv token while
-// bash runs the second line and sends. A bypass-flag token appearing alongside
-// any of these may be a redirect operand, expansion, comment, or a different
-// command entirely, so its mere textual presence can't be trusted. QA codex
-// re-pass #1 (subshell) + #3 (redirection) + #4 (comment) + #5 (newline decoy).
-const SHELL_METACHAR_RE = /[<>|;&$`(){}#\n\r]/;
-
-/**
- * True only when a bypass flag (--dry-run/--draft/--help/-h) is a real OPTION of
- * a DIRECT gws invocation — not text inside quoted email content, not alongside
- * shell metacharacters, not consumed by a wrapper, and not the value of a prior
- * option.
- *
- * Step 1 — quote handling (fail-closed by construction): replace each quoted span
- * (subject/body values) in all four bash quote forms — ANSI-C `$'…'` and locale
- * `$"…"` first (so their leading `$` doesn't read as an expansion metachar), then
- * plain `'…'` and `"…"` (escape-aware for the double-quote forms) — with a single
- * NON-IFS SENTINEL char (NUL), NOT a space. Using a sentinel (not a space) keeps
- * the check faithful to bash WORD-CONCATENATION: bash joins adjacent
- * quoted+unquoted fragments into one word (`--body 'x'--dry-run` → the word
- * `x--dry-run`, no real flag, mail sends), so the replacement must keep them in
- * one token too — a space would manufacture a bogus `--dry-run` token (codex #7).
- * The sentinel survives into the token, so a token that touched quoted content can
- * never equal a bare flag.
- *
- * Step 2 — reject anything we don't model: a surviving quote (unbalanced) → no
- * bypass; an unquoted BACKSLASH (`--body \ --dry-run` joins `\ ` into the body,
- * gws gets no real flag — codex #6) → no bypass; any shell metacharacter
- * (separators / redirects / expansions / `#` / `\n`) → no bypass.
- *
- * Step 3 — bind to a DIRECT gws invocation and OPTION position. Split on bash IFS
- * (space/tab/newline — NOT JS \s, which splits form-feed/NBSP that bash keeps in
- * a word). Skip leading `VAR=value` assignments (the real form leads with
- * `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=…`). The next word MUST be exactly `gws`
- * — otherwise a wrapper builtin (`exec -a --dry-run gws …`, `env`, `command`,
- * `nice`, `time`, …) could swallow the flag as argv0/its own option while gws
- * still sends (codex #8). Finally honor a bypass flag only if the token
- * immediately before it is NOT a bare value-consuming option (`-x` / `--opt`
- * without `=`) — `gws gmail +send --subject --dry-run …` would otherwise feed
- * `--dry-run` to `--subject` as its value while gws sends (codex #8). `--opt=val`
- * is self-contained, so a flag after it is honored.
- *
- * Fail-closed invariant: every step can only make the recognizer MORE reluctant
- * to bypass — it reports a bypass flag iff bash passes that exact flag to gws as a
- * standalone option. Anything outside the modeled simple-direct-gws subset gates.
- * QA codex re-pass #6 (backslash) + #7 (adjacent-quote) + #8 (wrapper / value-of-
- * option) + #9 (approve). NOTE accepted false-positives (fail-closed, gate):
- * quote-spliced flags like `--dry'-'run`, fully-quoted `'--dry-run'`, a bypass
- * flag right after a boolean option, a non-gws wrapper that doesn't actually
- * consume the flag (`command gws … --dry-run`), and an ABSOLUTE-PATH gws
- * (`/usr/bin/gws … --dry-run`) — all rare and deliberately not "fixed": matching
- * the bare `gws` word avoids a path-spoofing vector (any file named `gws`), and
- * reconstructing quoted flags would need a heavier lexer that could fail OPEN.
- */
-// Non-IFS, non-flag, non-metachar placeholder for a stripped quoted span. Keeps
-// bash's word-concatenation: a token that touched quoted content carries this
-// char and so can never equal a bare bypass flag.
-const QUOTED_SPAN_SENTINEL = '\x00';
-// A leading `NAME=value` shell assignment (skipped before the command word).
-const LEADING_ASSIGNMENT_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
-export function bypassFlagIsRealArgvToken(gwsSegment: string): boolean {
-    // Strip the NON-expanding quote forms first — single-quoted (literal) and
-    // ANSI-C $'…' (C escapes, no expansion). Bash runs NO command/parameter
-    // expansion inside these, so their contents are inert.
-    const safeStripped = gwsSegment
-        .replace(/\$'(?:[^'\\]|\\.)*'/g, QUOTED_SPAN_SENTINEL) // ANSI-C $'…' (escapes, incl. \') — no expansion
-        .replace(/'[^']*'/g, QUOTED_SPAN_SENTINEL); // single-quoted (literal, no escapes)
-    // EXPANDING quotes — "…" and locale $"…" — still run COMMAND SUBSTITUTION
-    // ($(…) and backticks) inside them. A bypass command whose double-quoted value
-    // carries one (e.g. `gws … --dry-run --body "$(gws … +send --to victim)"`)
-    // would shell out a REAL send before the --dry-run/--help no-op takes effect;
-    // the NUL-strip below would otherwise hide it from the metachar check. Inspect
-    // each expanding span's CONTENT (capture group, so the locale `$` prefix itself
-    // isn't counted) and fail closed on a `$(` or backtick. NOTE: only command
-    // substitution executes — bare `$VAR`/`${VAR}`/`$5` is parameter expansion (no
-    // command run), so it must NOT block a legit `--body "cost is $5"`. (codex #126 P1)
-    const expandingQuoteRe = /\$?"((?:[^"\\]|\\.)*)"/g;
-    for (let m = expandingQuoteRe.exec(safeStripped); m !== null; m = expandingQuoteRe.exec(safeStripped)) {
-        if (m[1].includes('$(') || m[1].includes('`')) return false; // command substitution in expanding quotes → don't bypass
-    }
-    const unquoted = safeStripped
-        .replace(/\$"(?:[^"\\]|\\.)*"/g, QUOTED_SPAN_SENTINEL) // locale $"…"
-        .replace(/"(?:[^"\\]|\\.)*"/g, QUOTED_SPAN_SENTINEL); // double-quoted (escape-aware)
-    if (unquoted.includes("'") || unquoted.includes('"')) return false; // unbalanced/escaped quoting → don't bypass
-    if (unquoted.includes('\\')) return false; // unquoted backslash escape → don't bypass (codex #6)
-    if (SHELL_METACHAR_RE.test(unquoted)) return false; // non-simple command → don't bypass
-    const tokens = unquoted.split(/[ \t\n]+/).filter((t) => t.length > 0); // bash IFS, not JS \s
-    let i = 0;
-    while (i < tokens.length && LEADING_ASSIGNMENT_RE.test(tokens[i])) i++; // skip VAR=value
-    if (tokens[i] !== 'gws') return false; // must be a DIRECT gws invocation, no wrapper (codex #8)
-    for (let j = i + 1; j < tokens.length; j++) {
-        if (!EMAIL_BYPASS_FLAGS.has(tokens[j])) continue;
-        const prev = tokens[j - 1];
-        const prevConsumesValue = prev.startsWith('-') && !prev.includes('='); // bare -x/--opt eats next word
-        if (!prevConsumesValue) return true; // a real, standalone gws option
-    }
-    return false;
-}
 
 // gws gmail options that take no value, so a bypass flag after one is still an option.
 const GWS_BOOLEAN_OPTIONS = new Set(['--html', '--dry-run', '--draft', '--help', '-h', '--no-original-attachments']);
@@ -539,20 +433,7 @@ export function envelopeFromJsonRaw(segment: string): {
 export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateVerdict {
     if (!command || !GWS_EMAIL_SEND_RE.test(command)) return { action: 'allow' };
 
-    // Bypass ONLY when the WHOLE command is a single, simple send carrying a real
-    // bypass flag — no shell separators, no metacharacters, no second command.
-    // bypassFlagIsRealArgvToken strips quoted spans first, then fails closed on
-    // any surviving quote OR any shell metacharacter (which INCLUDES the
-    // separators ; & |). Checking the whole command — not a per-segment slice —
-    // is what collapses the decoy class (QA codex #4/#5): a prefixed
-    // `: gws gmail +send --dry-run; <real send>` contains a `;`, so the bypass is
-    // refused and the gate fires — and this holds whether the real send is
-    // regex-visible OR obfuscated (`+se''nd`, `+s$(true)end`), because the
-    // disqualifier is the separator, not our ability to parse the second command.
-    // It also fixes the over-block where a quoted separator in a dry-run body
-    // (`--body "a;b" --dry-run`) used to split mid-quote: the quoted span is
-    // stripped before the metacharacter test, so the real --dry-run still bypasses.
-    if (probeOnlyCommand(command) || bypassFlagIsRealArgvToken(command)) return { action: 'allow' };
+    if (probeOnlyCommand(command)) return { action: 'allow' };
 
     // Scheduled tasks intentionally bypass — v1 also did this so
     // automated email reports aren't prompted every run.
