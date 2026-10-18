@@ -91,7 +91,8 @@ If you're unsure, use the full loop.
       stamp.
 
    `<effort>` is the `effort` in `<skill-dir>/verifier.json`. Pass it explicitly
-   wherever the verifier takes one: left unset, a CLI can fall back to no reasoning.
+   wherever the verifier takes one; left unset, a CLI runs at the model's own default,
+   not the one this file sets.
 
    Give it the deliverable, the ledger, the original request with its source material
    (the thread or transcript itself, not your summary of it), and
