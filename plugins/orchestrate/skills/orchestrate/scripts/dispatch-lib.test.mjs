@@ -194,6 +194,11 @@ test('humanTurns keeps only the turns people wrote', () => {
     ...noise,
   ]);
   assert.deepEqual(humanTurns(batched, container), ['words-b', 'words-j', 'words-n']);
+  const quoted = write('quoted.jsonl', [user([{ type: 'text', text: envelope(
+    'id="8" from="chat-team-1" sender="Avery Lane" sender_id="U0TEST1" reply_to="7"',
+    '\n  <quoted_message from="helper">words-p &amp; words-q</quoted_message>\nask &quot;words-r&quot; &lt;now&gt; &amp;amp;',
+  ) }])]);
+  assert.deepEqual(humanTurns(quoted, container), ['ask "words-r" <now> &amp;']);
   const saved = process.env.NANOCLAW_ASSISTANT_NAME;
   try {
     delete process.env.NANOCLAW_ASSISTANT_NAME;
@@ -249,10 +254,21 @@ test('humanPins: an invocation pins model and effort; outside one, a sole named 
     ["I'd like fable to take a look", { model: false, effort: false }],
     ['opus is overkill; ask fable', { model: false, effort: false }],
     ["don't use opus here", { model: true, effort: false }],
+    ['/orchestrate have opus review it', { model: true, effort: false }],
+    ['/orchestrate high have opus review it', { model: true, effort: true }],
+    ['/orchestrate high compare opus and sonnet', { model: false, effort: true }],
+    ['ask `opus` to review it', { model: true, effort: false }],
+    ['ask "opus" to review it', { model: true, effort: false }],
+    ['*opus* please', { model: true, effort: false }],
+    ['_opus_ please', { model: true, effort: false }],
+    ['opus\u2026 when you can', { model: true, effort: false }],
+    ['opus\u2014now', { model: true, effort: false }],
+    ['opus.js is broken', { model: false, effort: false }],
+    ['don\u2019t use an opus subagent at high', { model: false, effort: false }],
   ];
   for (const [text, expected] of cases) assert.deepEqual(humanPins(spawn, text), expected, text);
   assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, '/orchestrate opus high go'), { model: false, effort: false });
-  for (const text of ['compare Opus/Sonnet', 'compare Opus,Sonnet']) {
+  for (const text of ['compare Opus/Sonnet', 'compare Opus,Sonnet', 'compare _opus_ and sonnet']) {
     assert.deepEqual(humanPins({ model: 'sonnet' }, text), { model: false, effort: false }, text);
   }
 });

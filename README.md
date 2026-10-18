@@ -17,7 +17,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 |---|---|---:|---|
 | Claude Code | `bootstrap-workflow` | 5.13.5 | The seven `team-*` skills and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.13.5 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.2.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.2.1 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.3.2 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
@@ -113,10 +113,13 @@ an effective route. Existing explicit choices stay intact subject to the existin
 caps; a coordinator may still deliberately select a normal model, role, or effort shim from the
 task. On a confident route, the Claude Code hook keeps an explicit model or effort shim only when a
 human chose it in their latest turn of the session transcript (user turns, minus tool results, skill loads, harness
-notices and, in a NanoClaw container, system- or agent-sent `<message>` envelopes). When that turn holds
+notices and, in a NanoClaw container, system- or agent-sent `<message>` envelopes and the quoted
+original of a reply). When that turn holds
 one of the skill's invocations — `/orchestrate <model> <effort> …` (an `@mention` may precede it) or
-"use a <model> subagent at <effort> …" — the latest one decides both fields. Otherwise a turn that
-names exactly one model family ("I'd like fable to take a look") keeps an explicit model of that
+"use a <model> subagent at <effort> …" — the latest one decides both fields; one that names no model
+(`/orchestrate have fable review it`) takes the model from its task text by the rule below. Otherwise a turn that
+names exactly one model family ("I'd like fable to take a look", also in quotes, backticks or
+Slack markup) keeps an explicit model of that
 family; several families ("compare Opus and Sonnet") keep none, and plain wording never keeps an
 effort. The hook parses no other wording: whether a mention is a request ("not opus", "write a
 haiku") is the coordinator's reading. The rest take the route. Fields it leaves omitted follow the client's native inheritance and configuration rather
