@@ -115,9 +115,10 @@ If you're unsure, use the full loop.
    python3 <skill-dir>/scripts/check_claims.py changed old.md new.md --old-ledger old.json --new-ledger claims.json
    ```
    It re-checks those lines and claims, then the whole final file; run it once per
-   changed file. Three rounds is the usual budget, not a cap. Run another while the open
-   findings include one you can fix yourself: a Wrong, an open Frame line, or a number
-   your own error moved (live data refreshing is drift to report, not a finding).
+   changed file. Three rounds is the usual budget, not a cap. Run another while any open
+   finding is yours to fix (Wrong, Stale or overstated, Unsupported, or an open Frame
+   line), unless a stop below applies. A number that moved only because live data
+   refreshed is drift to report, not a finding.
 
    Stop in either of these cases, and deliver with the open findings listed for the
    requester to decide:
