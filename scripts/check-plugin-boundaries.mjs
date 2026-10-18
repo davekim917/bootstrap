@@ -755,6 +755,21 @@ if (!codexHookManifest?.hooks?.PreToolUse) {
   fail('plugins/workflow-agents/hooks/workflow-hooks.json must wire PreToolUse');
 }
 
+// The approval gates wait up to an hour for a decision. Claude Code lets a command hook that times out run the
+// tool unless it sets onFailure: block, so a hook timeout at or below the wait lets a rejected command run.
+const GATE_WAIT_SECONDS = 60 * 60;
+const claudeGateHook = readJson('plugins/workflow/hooks/workflow-hooks.json')?.hooks?.PreToolUse
+  ?.flatMap((entry) => entry.hooks ?? [])
+  .find((hook) => hook.command?.includes('guards/block-destructive.ts'));
+if (!(claudeGateHook?.timeout > GATE_WAIT_SECONDS) || claudeGateHook?.onFailure !== 'block') {
+  fail(`the Claude block-destructive hook needs a timeout above ${GATE_WAIT_SECONDS}s and onFailure: block`);
+}
+const codexGateHook = codexHookManifest?.hooks?.PreToolUse?.flatMap((entry) => entry.hooks ?? [])
+  .find((hook) => hook.command?.includes('codex-guard.ts'));
+if (!(codexGateHook?.timeout > GATE_WAIT_SECONDS)) {
+  fail(`the Codex guard hook needs a timeout above ${GATE_WAIT_SECONDS}s`);
+}
+
 // SessionStart is GONE, and the allowlist is now a single event. It existed to
 // copy a generated `worker-frontier` role TOML into `<CODEX_HOME>/agents/`,
 // because Codex reads named roles only from there and a plugin cannot ship one.
@@ -799,11 +814,11 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.13.6') {
-  fail(`bootstrap-workflow release must be version 5.13.6 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.13.7') {
+  fail(`bootstrap-workflow release must be version 5.13.7 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.13.6') {
-  fail(`bootstrap-workflow-agents release must be version 2.13.6 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.13.7') {
+  fail(`bootstrap-workflow-agents release must be version 2.13.7 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
 if (orchestrateClaudeManifest?.version !== '3.3.0') {
