@@ -332,12 +332,18 @@ const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
 const HARNESS_BLOCK = /<(task-notification|system|system-reminder|local-command-stdout|local-command-caveat)>[\s\S]*?<\/\1>/g;
 const ENVELOPE = /<message\b([^>]*)>([\s\S]*?)<\/message>/g;
 const THREAD_CONTEXT = /<thread_context\b[^>]*>[\s\S]*?<\/thread_context>/g;
+const QUOTED_MESSAGE = /<quoted_message\b[^>]*>[\s\S]*?<\/quoted_message>/g;
+const XML_ENTITIES = { '&lt;': '<', '&gt;': '>', '&quot;': '"', '&amp;': '&' };
 
-/** Bodies of the runner envelopes in `text` that people sent to the agent, outside thread context it was not addressed in. */
+/**
+ * Bodies of the runner envelopes in `text` that people sent to the agent, outside thread context it was not addressed
+ * in, as the person wrote them: a quoted reply's original (often the agent's own text) is dropped and the runner's XML
+ * escaping is undone.
+ */
 function addressedEnvelopes(text) {
   return [...text.replace(THREAD_CONTEXT, '').matchAll(ENVELOPE)]
     .filter(([, attrs]) => !/\bsender_id="system"/.test(attrs) && !/\bfrom="unknown:agent:/.test(attrs))
-    .map(([, , body]) => body);
+    .map(([, , body]) => body.replace(QUOTED_MESSAGE, '').replace(/&(?:lt|gt|quot|amp);/g, (e) => XML_ENTITIES[e]));
 }
 
 /**
@@ -392,16 +398,30 @@ const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\
 const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+${MODEL_TOKEN}\\s+sub-?agent(?:\\s+at\\s+${EFFORT_TOKEN})?`, 'g');
 const NEGATED = /\b(?:not|never|cannot)\b|n't\b/;
 const CLAUSE_BREAK = /[.!?;:\n\u2014]|,\s*(?:but|and|so|then|yet)\b/;
-const ANY_FAMILY = new RegExp(`\\b(${FAMILY})\\b`, 'g');
-const MODEL_MENTION = new RegExp(`\\b(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*(?:'s)?${TOKEN_END}`, 'g');
+const ANY_FAMILY = new RegExp(`(?<![a-z0-9])(${FAMILY})(?![a-z])`, 'g');
+// Chat markup may wrap a mention: quotes, backticks, Slack bold/italic/strike, an ellipsis or a dash.
+const MARKUP = `\\s"'\`*_~\u2026\u2014`;
+const MODEL_MENTION = new RegExp(
+  `(?<![a-z0-9-])(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*(?:'s)?(?=[${MARKUP}]|$|[.,;:!?)\\]]+(?:[${MARKUP}]|$))`,
+  'g',
+);
+
+/** The one model family `t` names, or undefined when it names none or several. */
+function soleNamedFamily(t) {
+  const any = new Set([...t.matchAll(ANY_FAMILY)].map((m) => m[1]));
+  const named = new Set([...t.matchAll(MODEL_MENTION)].map((m) => m[1]));
+  return any.size === 1 && named.size === 1 ? [...named][0] : undefined;
+}
 
 /**
  * Which of a spawn's explicit fields (model, shim effort) a human chose in
  * `text`, the human's latest turn, so an earlier turn's choice does not carry
  * over. When the turn holds one of the skill's invocations, the latest one
- * alone decides both fields. Otherwise the model is pinned when the turn names
- * exactly one family and the spawn asks for that family ("I'd like fable to
- * take a look"); several families ("compare Opus and Sonnet") leave it to the
+ * alone decides both fields, except that one naming no model ("/orchestrate
+ * have fable review it") takes the model from its task text by the plain-words
+ * rule. Outside an invocation the model is pinned when the turn names exactly
+ * one family and the spawn asks for that family ("I'd like fable to take a
+ * look"); several families ("compare Opus and Sonnet") leave it to the
  * router. Whether a mention is a request at all ("not opus", "a haiku") is the
  * coordinator's reading: the hook parses no wording beyond the invocations.
  * Effort is never read from plain wording ("failed at high effort").
@@ -413,15 +433,12 @@ export function humanPins(input, text) {
   const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
   const prose = [...t.matchAll(PROSE_INVOCATION)];
   const latest = [...t.matchAll(SLASH_INVOCATION), ...prose].sort((a, b) => b.index - a.index)[0];
-  if (!latest) {
-    const named = new Set([...t.matchAll(MODEL_MENTION)].map((m) => m[1]));
-    const any = new Set([...t.matchAll(ANY_FAMILY)].map((m) => m[1]));
-    return { model: Boolean(family) && any.size === 1 && named.has(family), effort: false };
-  }
+  if (!latest) return { model: Boolean(family) && soleNamedFamily(t) === family, effort: false };
   const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(CLAUSE_BREAK).at(-1));
   if (negated) return { model: false, effort: false };
+  const chosen = latest[1] ?? soleNamedFamily(t.slice(latest.index + latest[0].length));
   return {
-    model: Boolean(family) && latest?.[1] === family,
+    model: Boolean(family) && chosen === family,
     effort: Boolean(effort) && latest?.[2] === effort,
   };
 }

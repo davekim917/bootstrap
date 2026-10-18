@@ -806,11 +806,11 @@ if (codexManifest?.version !== '2.13.5') {
   fail(`bootstrap-workflow-agents release must be version 2.13.5 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
-if (orchestrateClaudeManifest?.version !== '3.2.0') {
-  fail(`bootstrap-orchestrate release must be version 3.2.0 (found ${orchestrateClaudeManifest?.version})`);
+if (orchestrateClaudeManifest?.version !== '3.2.1') {
+  fail(`bootstrap-orchestrate release must be version 3.2.1 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '3.2.0') {
-  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.2.0 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '3.2.1') {
+  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.2.1 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
