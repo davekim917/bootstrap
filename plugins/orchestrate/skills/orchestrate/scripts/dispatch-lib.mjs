@@ -392,6 +392,7 @@ const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\
 const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+${MODEL_TOKEN}\\s+sub-?agent(?:\\s+at\\s+${EFFORT_TOKEN})?`, 'g');
 const NEGATED = /\b(?:not|never|cannot)\b|n't\b/;
 const CLAUSE_BREAK = /[.!?;:\n\u2014]|,\s*(?:but|and|so|then|yet)\b/;
+const ANY_FAMILY = new RegExp(`\\b(${FAMILY})\\b`, 'g');
 const MODEL_MENTION = new RegExp(`\\b(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*(?:'s)?${TOKEN_END}`, 'g');
 
 /**
@@ -414,7 +415,8 @@ export function humanPins(input, text) {
   const latest = [...t.matchAll(SLASH_INVOCATION), ...prose].sort((a, b) => b.index - a.index)[0];
   if (!latest) {
     const named = new Set([...t.matchAll(MODEL_MENTION)].map((m) => m[1]));
-    return { model: Boolean(family) && named.size === 1 && named.has(family), effort: false };
+    const any = new Set([...t.matchAll(ANY_FAMILY)].map((m) => m[1]));
+    return { model: Boolean(family) && any.size === 1 && named.has(family), effort: false };
   }
   const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(CLAUSE_BREAK).at(-1));
   if (negated) return { model: false, effort: false };

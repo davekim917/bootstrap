@@ -252,6 +252,9 @@ test('humanPins: an invocation pins model and effort; outside one, a sole named 
   ];
   for (const [text, expected] of cases) assert.deepEqual(humanPins(spawn, text), expected, text);
   assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, '/orchestrate opus high go'), { model: false, effort: false });
+  for (const text of ['compare Opus/Sonnet', 'compare Opus,Sonnet']) {
+    assert.deepEqual(humanPins({ model: 'sonnet' }, text), { model: false, effort: false }, text);
+  }
 });
 test('the installed hook replaces an agent-named model and effort unless a human named them', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));
