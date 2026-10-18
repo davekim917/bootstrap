@@ -337,9 +337,12 @@ const BASH_ALLOW = [
   // Bare xargs runs echo, and a wrapper that names its own command passes.
   "printf '%s\\n' a b | xargs",
   "printf '%s\\n' a b | xargs -n1 env FOO=1 echo",
-  // A dry run whose words are all literal, and git's global help for clean, delete nothing.
+  // A dry run whose words are all literal, and git's global help or version before clean or an alias, run nothing.
   'git clean -n -d -x -- build/',
   'git --help clean',
+  'git --version clean -fd',
+  'git --help wipe',
+  'git -v wipe',
   // Defining an alias runs nothing; options held in a variable, and installed extensions, are not aliases.
   "git config alias.p 'push --force'",
   'C="-c user.name=t"; git $C commit -m x',

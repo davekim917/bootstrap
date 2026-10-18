@@ -2866,6 +2866,11 @@ function gitGlobalOptions(args: string[]): string[] {
     return options;
 }
 
+/** git --help, -h, --version or -v before the subcommand prints and exits without running it. */
+function gitOnlyPrints(args: string[]): boolean {
+    return gitGlobalOptions(args).some(a => ['--help', '-h', '--version', '-v'].includes(a));
+}
+
 /** Value of `git -C <path>` / `--work-tree <path>`, which relocates the
  *  effective working directory. */
 function gitRelocatedDir(args: string[]): string | null {
@@ -3716,7 +3721,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (name === 'git') {
         // Skip git's global options so `git -C /x push -f` classifies like `git push -f`.
         const i = gitSubcommandIndex(args);
-        if (args[i] !== undefined && !args[i].includes('$') && !GIT_COMMANDS.has(args[i])) {
+        if (args[i] !== undefined && !args[i].includes('$') && !GIT_COMMANDS.has(args[i]) && !gitOnlyPrints(args)) {
             return `git ${args[i]} is not a git command, so git runs it as an alias, which can stand for any command (push --force, clean -fdx). Write out the command the alias stands for.`;
         }
         if (args[i] === 'push') {
@@ -3750,8 +3755,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         // `--no-dry-run` (an untracked file of that name matches `*`).
         const end = cleanArgs.indexOf('--');
         const literal = cleanArgs.slice(0, end < 0 ? undefined : end).every(a => /^[\w@%+=:,./ -]*$/.test(a));
-        const globalHelp = name === 'git' && gitGlobalOptions(args).some(a => a === '--help' || a === '-h');
-        if (!globalHelp && ((!clean.dryRun && !clean.help) || !literal)) {
+        const onlyPrints = name === 'git' && gitOnlyPrints(args);
+        if (!onlyPrints && ((!clean.dryRun && !clean.help) || !literal)) {
             return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
         }
     }
