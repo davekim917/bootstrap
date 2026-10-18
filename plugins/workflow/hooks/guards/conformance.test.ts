@@ -145,6 +145,11 @@ const BASH_GATE = [
   'git clean -f -e -npattern',
   'git clean -fe -n',
   'ENV=false git --config-env clean.requireForce=ENV clean',
+  // A global option's value is not git's own -h.
+  'git --namespace -h clean -fd',
+  // A subcommand git doesn't ship runs an alias, however it was defined.
+  "git -c alias.wipe='clean -fd' wipe",
+  "git config alias.p 'push --force' && git p origin main",
   'git push -f',
   'git -C /workspace/worktrees/APP push -f origin develop',
   // Spellings that once slipped through: a clustered short flag, AWS global
@@ -335,6 +340,10 @@ const BASH_ALLOW = [
   // A dry run whose words are all literal, and git's global help for clean, delete nothing.
   'git clean -n -d -x -- build/',
   'git --help clean',
+  // Defining an alias runs nothing; options held in a variable, and git-filter-repo, are not aliases.
+  "git config alias.p 'push --force'",
+  'C="-c user.name=t"; git $C commit -m x',
+  'git filter-repo --path src',
   "git clean -n -- 'dir with spaces'",
   "git clean -n 'dir with spaces'",
   "git submodule foreach --recursive 'git status --short'",

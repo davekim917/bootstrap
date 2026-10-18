@@ -38,6 +38,7 @@ const GATED_BY_RULE: string[][] = [
     ['git', 'push', 'origin', ':main'],
     ['git', 'clean', '-fd'],
     ['git-clean', '-fd'],
+    ['git', 'wipe'],
     ['dbt', 'run', '--full-refresh'],
     ['dd', 'if=/dev/zero', 'of=/dev/sda'],
 ];

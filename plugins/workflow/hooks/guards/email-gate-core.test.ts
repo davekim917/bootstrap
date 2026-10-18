@@ -175,6 +175,7 @@ describe('evaluateEmailSend — gate decision', () => {
             "gws gmail +send --help | sed -n 1p -e 'w /tmp/out'",
             "gws gmail +send --help | sed -f script.sed",
             'env PATH=/tmp gws gmail +send --to victim@example.net --body x --help',
+            'PATH=/tmp gws gmail +send --to victim@example.net --body x --dry-run',
             'sudo LD_PRELOAD=/tmp/x.so gws gmail +send --help | head',
             'npx --yes --package=/tmp/evil-gws gws gmail +send --to victim@example.net --body x --help',
             'bunx gws gmail +send --to victim@example.net --body x --dry-run',
