@@ -115,22 +115,29 @@ If you're unsure, use the full loop.
    It re-checks those lines and claims, then the whole final file; run it once per
    changed file. Three rounds is the usual budget, not a cap. Run another while the open
    findings include one you can fix yourself: a Wrong, an open Frame line, or a number
-   your own error moved (live data refreshing is drift to report, not a finding). Past
-   three rounds, also stop unless each round leaves fewer open findings than the one
-   before. Stop and deliver with the open findings listed for the requester to decide
-   when none is yours to fix: each needs the requester's answer (a measure or period
-   only they can settle), is cosmetic wording that changes no number, unit, measure or
-   claim, or is a disagreement the verifier still holds after seeing your answer. Past three rounds, the stamp says what each extra round caught. If the last verdict is still CHANGES when you
-   stop, the stamp says so and names what wasn't re-checked: "checked in 3 rounds"
-   alone reads as a pass.
+   your own error moved (live data refreshing is drift to report, not a finding).
+
+   Stop in either of these cases, and deliver with the open findings listed for the
+   requester to decide:
+   - None is yours to fix: each needs the requester's answer (a measure or period only
+     they can settle), is cosmetic wording that changes no number, unit, measure or
+     claim, or is a disagreement the verifier still holds after seeing your answer.
+   - Past three rounds, a round leaves no fewer open findings than the one before. You
+     aren't converging, even if what's left is yours to fix.
+
+   Stopping with a finding open is not a pass. The last verdict stays CHANGES, there is
+   no receipt, and the stamp names each open finding and what wasn't re-checked:
+   "checked in 3 rounds" alone reads as a pass. Past three rounds, the stamp also says
+   what each extra round caught.
 7. **Deliver with a receipt and a one-line stamp.** Run
-   `check_claims.py receipt verify-r<N>.md claims.json <deliverable>` first. PASS means
+   `check_claims.py receipt verify-r<N>.md claims.json <deliverable> [<notes>]` first,
+   naming every verified file. PASS means
    the verifier's report covers these exact bytes with a clean verdict; any later edit
    sends you back to step 6. Put the stamp in your message to the requester, not inside
    the verified file (that would change its bytes). The stamp says what ran, who
    checked, and what wasn't checked:
    > Verified: ledger PASS (41 numbers, 3 relations), CSV reproduces exactly; checked
-   > by gpt-6.1-sol in a fresh Codex session, CLEAR after 2 rounds. Not checked: store
+   > by gpt-6.1-sol at high effort in a fresh Codex session, CLEAR after 2 rounds. Not checked: store
    > shelf stock.
 
    Name the verifier's actual model and reasoning effort, from its output header or the
