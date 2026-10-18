@@ -20,7 +20,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.1.1 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
-| Claude Code / Codex | `analytics-verify` | 1.3.0 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
+| Claude Code / Codex | `analytics-verify` | 1.3.1 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex | `test-audit` | 1.1.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
 | Claude Code / Codex / OpenCode | `verification-skills` | 1.1.1 | Invoke-only skills that generate and maintain a private `verify-<project>` skill (launch, doctor, drive, evidence, cleanup, feature map) for web apps, CLIs, services and dbt/Snowflake projects; adapted from pstack (MIT) |
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |

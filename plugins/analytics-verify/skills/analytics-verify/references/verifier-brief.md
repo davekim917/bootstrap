@@ -101,7 +101,7 @@ nowhere else in it. `## Frame` comes right after them, before any other heading.
 ```
 artifact-sha256: <check_claims.py hash <deliverable>; one line per file>
 ledger-sha256: <check_claims.py hash claims.json>
-verifier: <your actual model and how you ran, e.g. "gpt-6.1-sol, fresh codex exec session">
+verifier: <your actual model, reasoning effort and how you ran, e.g. "gpt-6.1-sol, high, fresh codex exec session">
 family: other | same
 verdict: CLEAR | CHANGES
 
@@ -128,8 +128,8 @@ Answers it: <yes, partly or no, and why>
   "reconciled", "bridged" or "none", and `Answers it:` with "yes". A deliverable that
   answers only part of the question has an open finding. Stale items get reworded or
   qualified first.
-- In `verifier:`, name the model you're actually running on. Write "unknown" if you can't
-  tell. `family:` is `other` when you are a different model family from the author,
+- In `verifier:`, name the model and reasoning effort you're actually running on. Write
+  "unknown" for either you can't tell. `family:` is `other` when you are a different model family from the author,
   `same` otherwise (and when you can't tell). A same-family round can't clear a Frame an
   earlier cross-family round left open.
 

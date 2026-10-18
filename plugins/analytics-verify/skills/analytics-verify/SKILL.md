@@ -84,10 +84,14 @@ If you're unsure, use the full loop.
    data moved, rerun with `--rel-tol` and report the drift it lists.
 5. **Get an independent verifier.** Use the first of these you have:
    1. a fresh headless session of another model family that can reach the same data
-      (`codex exec`, `claude -p`), with stdin closed (`</dev/null`) or it waits forever;
+      (`codex exec -c model_reasoning_effort=<effort>`, `claude -p --effort <effort>`),
+      with stdin closed (`</dev/null`) or it waits forever;
    2. a peer agent on another model family in this conversation (mention it);
    3. a fresh-context subagent of your own model. Call it a same-family check in the
       stamp.
+
+   `<effort>` is the `effort` in `<skill-dir>/verifier.json`. Pass it explicitly
+   wherever the verifier takes one: left unset, a CLI can fall back to no reasoning.
 
    Give it the deliverable, the ledger, the original request with its source material
    (the thread or transcript itself, not your summary of it), and
@@ -97,7 +101,10 @@ If you're unsure, use the full loop.
    your research files or conclusions: those are the blind spots it is there to avoid.
 
    Run a headless verifier in the foreground with a 60-minute (`3600000` ms) timeout;
-   30 minutes in is still healthy.
+   30 minutes in is still healthy. Save its output, because the stamp names the model
+   and effort from it. `codex exec` prints both in its first lines. For `claude -p`, add
+   `--output-format json`: the model is the key under `modelUsage`, and the effort is
+   the one you passed.
 
    A same-family round can't clear a Frame that a cross-family round left open (the
    receipt refuses it). If the other family isn't reachable again, stop and deliver with
@@ -107,29 +114,59 @@ If you're unsure, use the full loop.
    ```
    python3 <skill-dir>/scripts/check_claims.py changed old.md new.md --old-ledger old.json --new-ledger claims.json
    ```
-   It re-checks those lines and claims, then the whole final file. Stop after three
-   rounds and deliver with the open disagreements listed for the requester to decide.
-   If the last verdict is still CHANGES when you stop, the stamp says so and names what
-   wasn't re-checked: "checked in 3 rounds" alone reads as a pass.
+   It re-checks those lines and claims, then the whole final file; run it once per
+   changed file. Three rounds is the usual budget, not a cap. Run another while any open
+   finding is yours to fix (Wrong, Stale or overstated, Unsupported, or an open Frame
+   line), unless a stop below applies. A number that moved only because live data
+   refreshed is drift to report, not a finding.
+
+   Stop in either of these cases, and deliver with the open findings listed for the
+   requester to decide:
+   - None is yours to fix: each needs the requester's answer (a measure or period only
+     they can settle), is cosmetic wording that changes no number, unit, measure or
+     claim, or is a disagreement the verifier still holds after seeing your answer.
+   - Past three rounds, a round leaves no fewer open findings than the one before. You
+     aren't converging, even if what's left is yours to fix.
+
+   Stopping with a finding open is not a pass. The last verdict stays CHANGES, there is
+   no receipt, and the stamp names each open finding and what wasn't re-checked:
+   "checked in 3 rounds" alone reads as a pass. Past three rounds, the stamp also says
+   what each extra round caught.
+
+   A claim with any open finding other than cosmetic wording (Wrong, Stale or
+   overstated, Unsupported, or an open Frame line) never goes out, flagged or not.
+   Before you deliver, cut it and everything that rests on it, or hold the whole
+   deliverable if the rest doesn't stand without it. A cut changes the file, so re-run
+   step 4 and one more verifier round on the cut version, which checks only that what
+   remains is still true and not misleading. If that round isn't CLEAR, hold the whole
+   deliverable. Tell the requester what you cut and why; the wrong figure itself
+   appears only as the verifier's finding, never as a result.
 7. **Deliver with a receipt and a one-line stamp.** Run
-   `check_claims.py receipt verify-r<N>.md claims.json <deliverable>` first. PASS means
+   `check_claims.py receipt verify-r<N>.md claims.json <deliverable> [<notes>]` first,
+   naming every verified file. PASS means
    the verifier's report covers these exact bytes with a clean verdict; any later edit
    sends you back to step 6. Put the stamp in your message to the requester, not inside
    the verified file (that would change its bytes). The stamp says what ran, who
    checked, and what wasn't checked:
    > Verified: ledger PASS (41 numbers, 3 relations), CSV reproduces exactly; checked
-   > by gpt-6.1-sol in a fresh Codex session, CLEAR after 2 rounds. Not checked: store
+   > by gpt-6.1-sol at high effort in a fresh Codex session, CLEAR after 2 rounds. Not checked: store
    > shelf stock.
 
-   Name the verifier's actual model. If you asked for another model family and got
+   Name the verifier's actual model and reasoning effort, from its output header or the
+   peer's own report, never from memory. If you asked for another model family and got
    your own (quota fallback, no CLI), say "same-family check".
 
    The message carries the verified file and the stamp, nothing new. Caveats, open
-   questions and next steps that state a figure, date or fact go in the file before the
-   check, in their own section if they aren't meant for the final document ("Before
-   this goes in the deck"), and so does any headline or summary you want in the
-   message. After the receipt, your own words may only point at the file or ask for a
-   decision it already raises, and state no figures; the stamp is the one exception.
+   questions and next steps that state a figure, date or fact go in a file before the
+   check, and so does any headline or summary you want in the message. When the
+   deliverable is for someone other than the requester (a reply they'll post, a deck),
+   it holds only what that person receives, so the bytes posted are the bytes verified.
+   Notes for the requester alone go in a second file, checked alongside it (one
+   `artifact-sha256` line per file), and you paste that file's text into your message
+   to the requester. A note left only in a file never reaches them: they read the
+   conversation, not this machine. After the receipt, your own words may only paste a
+   verified file, point at one, or ask for a decision it already raises, and state no
+   other figures; the stamp is the one exception.
    A restated figure can be retyped wrong, and the receipt can't see it. Anything that
    states a figure, comparison or claim, in this message or a later status post, goes
    back to step 6.
