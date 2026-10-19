@@ -137,8 +137,8 @@ def normalize(text: str) -> str:
     t = _CHAT_TOKEN.sub(' ', t)
     t = _MD_LINK.sub(r'\1', t)
     t = _URL.sub(' ', t)
-    t = re.sub(r'\n[ \t]*\n', f'\n{BOUNDARY} ', t)
     t = _LIST_MARKER.sub(f'{BOUNDARY} ', t)
+    t = re.sub(r'\n[ \t]*\n', f'\n{BOUNDARY} ', t)
     t = _FOOTNOTE.sub(' ', t)
     for mark in ('**', '__', '`', '*'):
         t = t.replace(mark, '')

@@ -504,6 +504,16 @@ class ReviewRegressions(Tmp):
         self.assertEqual(code, 1)
         self.assertIn('"999" sits in the anchor for x but no claim accounts for it', out)
 
+    def test_a_list_marker_after_a_blank_line_is_not_a_number(self):
+        led = self.led([self.cell('x', 'a', '7 stores sold out'), self.cell('y', 'b', '12 stores restocked')])
+        for marker in ('1.', '1)', '-', '*'):
+            text = f'Weekly summary.\n\n{marker} 7 stores sold out.\n{marker} 12 stores restocked.\n'
+            code, out = self.check(led, text)
+            self.assertEqual(code, 0, f'{marker!r}: {out}')
+        code, out = self.check(led, 'Weekly summary.\n\n1. 7 stores sold out.\n\n999 units shipped.\n')
+        self.assertEqual(code, 1)
+        self.assertIn('"999" is not bound', out)
+
     def test_a_range_is_two_claims(self):
         one = self.led([self.cell('lo', 'b', 'Range: 12-15 days')])
         self.assertEqual(self.check(one, 'Range: 12-15 days.')[0], 1)
