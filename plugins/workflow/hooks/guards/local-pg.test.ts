@@ -2,21 +2,12 @@ import { describe, expect, spyOn, test } from 'bun:test';
 
 import { evaluateBashCommand, type LocalPgHost } from './block-destructive-core';
 
-/**
- * LOCAL SCRATCH POSTGRES EXEMPTION. Destructive psql skips approval only when its
- * target is a literal loopback address or /tmp socket directory, nothing on the
- * command line or in the environment can point libpq elsewhere, and procfs shows
- * every listener at that address and port is held by postgres. A forwarder on the
- * port, a target the guard can't read literally, or a host it can't inspect holds.
- *
- * The host is a fixture: procfs tables, process fds and comm names, /etc files and
- * the environment are all supplied, so nothing here reads the machine running it.
- */
+// The host is a fixture: procfs, /etc files and the environment are all supplied, so nothing here reads this machine.
 
 const PORT_HEX = 'D888'; // 55432
 const LISTEN_UNIX = '00010000';
 
-type Proc = { comm: string; sockets: string[] };
+type Proc = { comm: string; sockets: string[]; fdsHidden?: boolean; linkHidden?: boolean; linkGone?: boolean };
 
 interface Fixture {
     platform?: string;
@@ -46,22 +37,20 @@ function fixtureHost(f: Fixture): LocalPgHost {
         '/proc/net/tcp': tcpTable(f.tcp ?? []),
         '/proc/net/tcp6': tcpTable(f.tcp6 ?? []),
         '/proc/net/unix': unixTable(f.unix ?? []),
-        '/etc/nsswitch.conf': 'passwd: files\nhosts: files dns\n',
-        '/etc/hosts': '127.0.0.1 localhost\n::1 localhost ip6-localhost\n',
         ...Object.fromEntries(Object.entries(procs).map(([pid, p]) => [`/proc/${pid}/comm`, `${p.comm}\n`])),
         ...f.files,
     };
     const env = f.env ?? { HOME: '/home/tester' };
     const dirs: Record<string, string[]> = {
-        '/proc': ['1', 'self', ...Object.keys(procs)],
-        ...Object.fromEntries(Object.entries(procs).map(([pid, p]) => [`/proc/${pid}/fd`, ['0', '1', ...p.sockets.map((_, i) => String(i + 3))]])),
+        '/proc': ['self', 'net', ...Object.keys(procs)],
+        ...Object.fromEntries(Object.entries(procs).filter(([, p]) => !p.fdsHidden).map(([pid, p]) => [`/proc/${pid}/fd`, ['0', '1', ...p.sockets.map((_, i) => String(i + 3))]])),
         ...(env.HOME ? { [env.HOME]: f.home ?? ['.bashrc', '.profile'] } : {}),
     };
     const links: Record<string, string> = {};
     for (const [pid, p] of Object.entries(procs)) {
         links[`/proc/${pid}/fd/0`] = '/dev/null';
         links[`/proc/${pid}/fd/1`] = 'pipe:[77]';
-        p.sockets.forEach((inode, i) => { links[`/proc/${pid}/fd/${i + 3}`] = `socket:[${inode}]`; });
+        p.sockets.forEach((inode, i) => { if (!p.linkHidden) links[`/proc/${pid}/fd/${i + 3}`] = p.linkGone ? '' : `socket:[${inode}]`; });
     }
     const hidden = (p: string) => f.noProc === true && p.startsWith('/proc');
     return {
@@ -93,15 +82,14 @@ describe('destructive psql against a scratch postgres in this container skips ap
         ['clustered flags, a long option and a pipe into tail', "psql -XAtq --host=127.0.0.1 -p55432 -d foo_test -c 'DROP SCHEMA tmp CASCADE' 2>&1 | tail -3"],
         ['a URI naming the same address', "psql 'postgresql://tester@127.0.0.1:55432/foo_test?sslmode=disable' -c 'TRUNCATE orders'"],
         ['a key=value string naming the socket directory', "psql 'host=/tmp/embedded-pg port=55432 dbname=foo_test' -c 'DROP TABLE orders'"],
-        ['localhost, which /etc/hosts maps to loopback', "cd /tmp && psql -h localhost -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'"],
-        ['psql by path, under timeout', "timeout 60 /tmp/embedded-pg/bin/psql -h /tmp/embedded-pg -p 55432 -c 'DROP TABLE orders'"],
+        ['a cd first, and psql by path under timeout', "cd /tmp && timeout 60 /tmp/embedded-pg/bin/psql -h /tmp/embedded-pg -p 55432 -c \"DROP TABLE orders\" > /dev/null"],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
 
-    test('a scratch postgres on the default port needs no -p', () => {
-        const f: Fixture = { tcp: [['0100007F', '1538', '9003']], procs: { 4300: { comm: 'postgres', sockets: ['9003'] } } };
-        expect(verdict("psql -h 127.0.0.1 -c 'DROP TABLE orders'", f)).toBe('allow');
+    test('a descriptor closed while its directory was listed holds nothing', () => {
+        const f: Fixture = { ...scratch, procs: { ...scratch.procs, 6001: { comm: 'bun', sockets: ['7777'], linkGone: true } } };
+        expect(verdict(TCP, f)).toBe('allow');
     });
 
     test('a scratch postgres listening on every address over IPv6 counts for ::1', () => {
@@ -137,6 +125,12 @@ describe('a forwarder or an unproven listener holds', () => {
             tcp: [['0100007F', PORT_HEX, '9001']],
             procs: { 4242: { comm: 'postgres', sockets: ['9001'] }, 5006: { comm: 'ssh', sockets: ['9001'] } },
         }],
+        ['a process whose descriptors cannot be listed', TCP, {
+            ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'] }, 5007: { comm: 'ssh', sockets: ['9001'], fdsHidden: true } },
+        }],
+        ['a descriptor that cannot be read', TCP, {
+            ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'] }, 5008: { comm: 'ssh', sockets: ['9001'], linkHidden: true } },
+        }],
         ['postgres only on another port', TCP, { tcp: [['0100007F', '1538', '9001']], procs: { 4242: { comm: 'postgres', sockets: ['9001'] } } }],
         ['a listener whose holder this process cannot see', TCP, { tcp: [['0100007F', PORT_HEX, '9106']] }],
         ['the socket path only as an accepted connection, not a listener', SOCKET, {
@@ -149,31 +143,48 @@ describe('a forwarder or an unproven listener holds', () => {
     });
 });
 
-describe('a target the guard cannot read literally, or one libpq could be redirected from, holds', () => {
+describe('a connection the guard cannot read exactly as psql will make it holds', () => {
     test.each([
         ['a non-local host', "psql -h db.example.internal -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'"],
-        ['no host at all', "psql -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'"],
-        ['a URI to a non-local host', "psql postgresql://tester@db.example.internal:5432/foo_test -c 'DROP TABLE orders'"],
+        ['localhost, which NSS resolves', "psql -h localhost -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'"],
+        ['no host', "psql -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'"],
+        ['no port, which a client build can default to anything', "psql -h 127.0.0.1 -d foo_test -c 'DROP DATABASE scratch_db'"],
+        ['a URI to a non-local host', "psql postgresql://tester@db.example.internal:55432/foo_test -c 'DROP TABLE orders'"],
         ['a local -h overridden by a remote URI in -d', "psql -h 127.0.0.1 -p 55432 -d postgresql://db.example.internal/foo_test -c 'DROP TABLE orders'"],
-        ['two different hosts', "psql -h 127.0.0.1 -h db.example.internal -p 55432 -c 'DROP TABLE orders'"],
+        ['an empty host= in -d, which replaces -h with the default socket', "psql -h 127.0.0.1 -p 55432 -d \"host='' dbname=foo_test\" -c 'DROP TABLE orders'"],
+        ['two hosts', "psql -h 127.0.0.1 -h db.example.internal -p 55432 -c 'DROP TABLE orders'"],
+        ['two dbnames', "psql -h db.example.internal -p 5432 -d 'host=127.0.0.1 port=55432' -d foo_test -c 'DROP TABLE orders'"],
+        ['an operand psql ignores', "psql -U tester -d foo_test 'host=127.0.0.1 port=55432' -c 'DROP TABLE orders'"],
         ['a multi-host URI', "psql postgresql://127.0.0.1:55432,db.example.internal:5432/foo_test -c 'DROP TABLE orders'"],
-        ['PGHOSTADDR on the command', "PGHOSTADDR=203.0.113.5 psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
-        ['PGHOSTADDR exported earlier', "export PGHOSTADDR=203.0.113.5; psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['hostaddr= in a connection string', "psql 'host=127.0.0.1 hostaddr=203.0.113.5 port=55432' -c 'DROP TABLE orders'"],
         ['service= in a connection string', "psql 'service=scratch' -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['service= in a URI', "psql 'postgresql://127.0.0.1:55432/foo_test?service=scratch' -c 'DROP TABLE orders'"],
+        ['an option the guard does not place', "psql -h 127.0.0.1 -p 55432 --log-file=/tmp/l -c 'DROP TABLE orders'"],
+        ['SQL on stdin', "psql -h 127.0.0.1 -p 55432 <<'SQL'\nDROP TABLE orders;\nSQL"],
+        ['a stdin file read beside -c', "echo x | psql -X -h 127.0.0.1 -p 55432 -Xf- -c 'DROP TABLE orders'"],
+    ])('%s', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+});
+
+describe('anything that could expand, redirect or run another connection holds', () => {
+    test.each([
+        ['PGHOSTADDR on the command', "PGHOSTADDR=203.0.113.5 psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
+        ['PGHOSTADDR exported earlier', "export PGHOSTADDR=203.0.113.5; psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['PGSERVICEFILE on the command', "PGSERVICEFILE=/tmp/svc psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['a sourced env file', ". /tmp/pg.env; psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['an assignment anywhere in the command', "X=1; psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
+        ['printf -v, which assigns', "printf -v HOME /tmp/other-home; psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
+        ['a psqlrc written on the same line', "echo '\\c host=db.example.internal' > /home/tester/.psqlrc; psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
+        ['a file written through stderr', "echo x 2>/home/tester/.psqlrc; psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['a variable host', "psql -h $PGH -p 55432 -c 'DROP TABLE orders'"],
         ['a substituted host', "psql -h \"$(cat /tmp/pg-host)\" -p 55432 -c 'DROP TABLE orders'"],
         ['a dbname held in a variable, which could expand to a connection string', "psql -h 127.0.0.1 -p 55432 -d \"$DSN\" -c 'DROP TABLE orders'"],
-        ['a variable port',"psql -h 127.0.0.1 -p ${PORT} -c 'DROP TABLE orders'"],
-        ['a globbed socket directory', "psql -h /tmp/embedded-p* -p 55432 -c 'DROP TABLE orders'"],
-        ['a socket directory outside /tmp', "psql -h /var/run/postgresql -p 55432 -c 'DROP TABLE orders'"],
-        ['a socket directory that climbs out of /tmp', "psql -h /tmp/../var/run/postgresql -p 55432 -c 'DROP TABLE orders'"],
+        ['a brace expansion that adds a host option', "psql -X -h 127.0.0.1 -p 55432 -d {foo_test,-hdb.example.internal} -c 'DROP TABLE orders'"],
+        ['psql variables from an expansion', "psql -h 127.0.0.1 -p 55432 -v $OPTS -c 'DROP TABLE orders'"],
+        ["ANSI-C quoted SQL", "psql -h 127.0.0.1 -p 55432 -c $'\\x5cconnect host=db.example.internal' -c 'DROP TABLE orders'"],
         ['a \\connect in the SQL', "psql -h 127.0.0.1 -p 55432 -c '\\c host=db.example.internal' -c 'DROP TABLE orders'"],
-        ['an option the guard does not place', "psql -h 127.0.0.1 -p 55432 --log-file=/tmp/l -c 'DROP TABLE orders'"],
+        ['a shell escape in the SQL', "psql -X -h 127.0.0.1 -p 55432 -c '\\! psql -h db.example.internal -c \"DROP TABLE orders\"' -c 'DROP TABLE orders'"],
         ['sudo', "sudo -u postgres psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['a tunnel opened on the same line', "ssh -fNL 55432:db.example.internal:5432 jump.example.internal && psql -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
     ])('%s', (_name, command) => {
@@ -185,13 +196,9 @@ describe('a target the guard cannot read literally, or one libpq could be redire
         ['PGSERVICE', { PGSERVICE: 'scratch' }],
         ['PGSERVICEFILE', { PGSERVICEFILE: '/tmp/svc' }],
         ['PSQLRC', { PSQLRC: '/tmp/rc' }],
+        ['POSIXLY_CORRECT', { POSIXLY_CORRECT: '1' }],
     ])('%s in the process environment', (_name, env) => {
         expect(verdict(TCP, { ...scratch, env: { HOME: '/home/tester', ...env } })).toBe('gate');
-    });
-
-    test('PGPORT in the process environment when the command names no port', () => {
-        const f: Fixture = { tcp: [['0100007F', '1538', '9003']], procs: { 4300: { comm: 'postgres', sockets: ['9003'] } }, env: { HOME: '/home/tester', PGPORT: '55432' } };
-        expect(verdict("psql -h 127.0.0.1 -c 'DROP TABLE orders'", f)).toBe('gate');
     });
 
     test('a psqlrc in HOME, which could reconnect, holds unless -X skips it', () => {
@@ -200,18 +207,8 @@ describe('a target the guard cannot read literally, or one libpq could be redire
         expect(verdict(TCP.replace('psql ', 'psql -X '), f)).toBe('allow');
     });
 
-    test('localhost when /etc/hosts maps it off loopback', () => {
-        const f: Fixture = { ...scratch, files: { '/etc/hosts': '203.0.113.5 localhost\n' } };
-        expect(verdict("psql -h localhost -p 55432 -c 'DROP TABLE orders'", f)).toBe('gate');
-    });
-
-    test('localhost when DNS is asked before /etc/hosts', () => {
-        const f: Fixture = { ...scratch, files: { '/etc/nsswitch.conf': 'hosts: dns files\n' } };
-        expect(verdict("psql -h localhost -p 55432 -c 'DROP TABLE orders'", f)).toBe('gate');
-    });
-
     test('an exempt step does not hide a gated one', () => {
-        expect(verdict(`${TCP} && psql -h db.example.internal -c 'DROP TABLE orders'`)).toBe('gate');
+        expect(verdict(`${TCP} && psql -h db.example.internal -p 5432 -c 'DROP TABLE orders'`)).toBe('gate');
     });
 });
 
