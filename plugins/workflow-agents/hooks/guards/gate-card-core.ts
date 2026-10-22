@@ -188,26 +188,36 @@ function misreadHeredoc(script: unknown, src: string): { start: number; bash: Re
         if (!bash || bash.delimiter !== String(r.target?.text ?? '') || bash.quoted !== Boolean(r.heredocQuoted) || bash.end !== r.end) {
             return { start, bash };
         }
-        if (!bash.quoted && continuedLineEnds(String(r.content ?? ''), bash.delimiter, r.operator === '<<-')) return { start, bash: null };
+        if (!bash.quoted && continuationMisread(String(r.content ?? ''), bash.delimiter, r.operator === '<<-')) return { start, bash: null };
     }
     return null;
 }
 
 /**
- * Whether bash ends an unquoted heredoc inside what unbash read as its body: bash joins a line ending in an unescaped
- * backslash to the next before comparing it with the delimiter, and unbash compares physical lines.
+ * Whether bash ends an unquoted heredoc somewhere other than where unbash did. Bash joins a line ending in an unescaped
+ * backslash to the next before comparing it with the delimiter; unbash compares physical lines. So a joined line can
+ * end the body early, and a body whose last line is continued runs on past unbash's delimiter line.
  */
-function continuedLineEnds(body: string, delimiter: string, stripTabs: boolean): boolean {
+function continuationMisread(body: string, delimiter: string, stripTabs: boolean): boolean {
     const lines = body.split('\n');
-    for (let i = 0; i < lines.length - 1; i++) {
-        if (!/(?:^|[^\\])(?:\\\\)*\\$/.test(lines[i])) continue;
-        let joined = lines[i];
-        for (let j = i + 1; j < lines.length && /(?:^|[^\\])(?:\\\\)*\\$/.test(joined); j++) {
-            joined = joined.slice(0, -1) + lines[j];
-            if (joined === delimiter || (stripTabs && joined.replace(/^\t+/, '') === delimiter)) return true;
+    if (lines.at(-1) === '') lines.pop();
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+        let joined = false;
+        while (endsInContinuation(line)) {
+            if (i + 1 >= lines.length) return true;
+            line = line.slice(0, -1) + lines[++i];
+            joined = true;
         }
+        if (joined && (line === delimiter || (stripTabs && line.replace(/^\t+/, '') === delimiter))) return true;
     }
     return false;
+}
+
+function endsInContinuation(line: string): boolean {
+    let n = 0;
+    while (n < line.length && line[line.length - 1 - n] === '\\') n++;
+    return n % 2 === 1;
 }
 
 /** The delimiter written so unbash reads it as bash does, in exactly `length` characters, or null when it can't be. */

@@ -25,6 +25,18 @@ describe('a partly quoted delimiter ends the body where bash ends it', () => {
     });
 });
 
+describe('a line held as unreadable keeps its tier-1 blocks even on the approval replay', () => {
+    // When parseShell can't read the line, the gate holds it; approving the hold re-runs with the gate skipped, so the
+    // hard-block pass must still see the commands unbash did parse. These are blocked at the top, before any hold.
+    test.each([
+        ['a backtick heredoc body with a backslash, which forces the fallback parse', 'x=`cat <<EOF\na\\tb\nEOF\n`\nif true; then shred /tmp/report.txt; fi'],
+        ['a compound command on such a line', '( shred /tmp/report.txt ) <<E"O"F\nx\nEOF'],
+    ])('%s', (_name, command) => {
+        expect(evaluateBashCommand(command, { cwd: '/tmp', skipGate: true }).action).toBe('block');
+        expect(verdict(command)).toBe('block');
+    });
+});
+
 describe('the guard reads the delimiter as bash does, not just more strictly', () => {
     test.each([
         // In double quotes bash keeps a backslash before O, so a line reading EOF does not end the body.

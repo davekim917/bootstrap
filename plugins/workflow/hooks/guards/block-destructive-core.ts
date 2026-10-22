@@ -32,6 +32,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync
 import { createHash, randomBytes } from 'crypto';
 import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
+import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
 import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, readConfigFile, ShellParseError, shellUnquote, viewShell } from './gate-card-core';
 
@@ -1242,18 +1243,25 @@ const PSQL_BACKSLASH_COMMAND = /\\[^\s\\]/;
 // mysql reads a long-form client command only at the start of a line; `\!`, `\P` and `\e` anywhere.
 const MYSQL_SYSTEM = /(?:^|;)[ \t]*system\b[ \t]*([^\n]*)/gim;
 const MYSQL_PROGRAM_COMMAND = /\\[Pe](?=\s|$)|(?:^|;)[ \t]*(?:pager|edit)\b/im;
-const MYSQL_SHELL_ESCAPE = /\\!(?=\s|$)/g;
+// mysql dispatches on the one character after a backslash, and its shell escape runs what follows the first space.
+const MYSQL_SHELL_ESCAPE = /\\![^\n]*/g;
 // sqlite3 (and the duckdb shell built from it) takes a dot-command's name by prefix: `.sh` is `.shell`.
 const SQLITE_DOT_COMMAND = /^[ \t]*\.([A-Za-z_]+)([^\n]*)$/gm;
 const SQLITE_EDIT_FUNCTION = /\bedit\s*\(/i;
-const COPY_PROGRAM = /\b(?:TO|FROM)\s+PROGRAM\b(?:\s+'((?:[^']|'')*)')?/gi;
+const SQL_GAP = String.raw`(?:\s|/\*[\s\S]*?\*/|--[^\n]*\n)+`;
+const COPY_PROGRAM = new RegExp(String.raw`\b(?:TO|FROM)${SQL_GAP}PROGRAM\b(?:${SQL_GAP}'((?:[^']|'')*)')?`, 'gi');
+// psql substitutes a :variable, :'variable' or :"variable" in a backslash command's arguments and in backquotes.
+const PSQL_VARIABLE = /:['"]?[\w\u0080-\uffff]/;
 
 const isPrefixOf = (name: string, full: string) => name.length > 0 && full.startsWith(name);
 
-function sqliteDotPrograms(text: string): ClientProgram[] {
+function sqliteDotPrograms(text: string, argument: boolean): ClientProgram[] {
     const out: ClientProgram[] = [];
-    for (const m of text.matchAll(SQLITE_DOT_COMMAND)) {
-        const [name, rest] = [m[1], m[2]];
+    // An argument that is a dot-command is one command over the whole argument: sqlite splits its words on any
+    // whitespace, newlines included (shell.c.in, parseDotCmdArgs). Input it reads line by line.
+    const whole = argument ? /^\s*\.([A-Za-z_]+)([\s\S]*)$/.exec(text) : null;
+    for (const m of whole ? [whole] : text.matchAll(SQLITE_DOT_COMMAND)) {
+        const [name, rest] = [m[1], m[2].replace(/\s+/g, ' ')];
         const via = `.${name}`;
         if (name.startsWith('s') && (isPrefixOf(name, 'shell') || isPrefixOf(name, 'system'))) {
             // The shell rebuilds the command from its own tokenizing of the line, which only matches it unquoted.
@@ -1270,6 +1278,8 @@ function sqliteDotPrograms(text: string): ClientProgram[] {
 
 function psqlPrograms(text: string, argument: boolean): ClientProgram[] {
     const out: ClientProgram[] = [];
+    // A -c value that doesn't start with a backslash goes to the server unread (startup.c, ACT_SINGLE_QUERY).
+    if (argument && !text.startsWith('\\')) return out;
     // psql runs a -c value that starts with a backslash as one backslash command reading the whole value
     // (startup.c, ACT_SINGLE_SLASH); files and stdin it reads line by line.
     for (const unit of argument && text.startsWith('\\') ? [text] : text.split('\n')) {
@@ -1278,7 +1288,7 @@ function psqlPrograms(text: string, argument: boolean): ClientProgram[] {
             const rest = unit.slice((m.index ?? 0) + m[0].length);
             if (name === '!') out.push({ via: '\\!', shells: rest.trim() ? [rest.trim()] : [] });
             else if (!PSQL_PIPING_COMMANDS.has(name)) out.push({ via: `\\${name}`, shells: [] });
-            else if (rest.includes('|')) out.push({ via: `\\${name} |`, shells: [] });
+            else if (rest.includes('|') || PSQL_VARIABLE.test(rest)) out.push({ via: `\\${name} |`, shells: [] });
         }
         // A backslash command's arguments run what backquotes enclose (psqlscanslash.l, xslashbackquote).
         const slash = unit.search(PSQL_BACKSLASH_COMMAND);
@@ -1286,7 +1296,7 @@ function psqlPrograms(text: string, argument: boolean): ClientProgram[] {
         const spans = unit.slice(slash).split('`');
         // psql substitutes :variables inside backquotes, so a span naming one runs a value the line doesn't show.
         for (let i = 1; i < spans.length; i += 2) {
-            out.push({ via: 'backquote', shells: i === spans.length - 1 || /:[\w\u0080-\uffff]/.test(spans[i]) ? [] : [spans[i]] });
+            out.push({ via: 'backquote', shells: i === spans.length - 1 || PSQL_VARIABLE.test(spans[i]) ? [] : [spans[i]] });
         }
     }
     return out;
@@ -1295,8 +1305,9 @@ function psqlPrograms(text: string, argument: boolean): ClientProgram[] {
 function mysqlPrograms(text: string, args: string[]): ClientProgram[] {
     const out: ClientProgram[] = [];
     for (const m of text.matchAll(MYSQL_SHELL_ESCAPE)) {
-        const line = text.slice((m.index ?? 0) + m[0].length).split('\n')[0].trim();
-        out.push({ via: '\\!', shells: line ? [line] : [] });
+        const space = m[0].search(/[ \t]/);
+        const shell = space < 0 ? '' : m[0].slice(space).trim();
+        out.push({ via: '\\!', shells: shell ? [shell] : [] });
     }
     for (const m of text.matchAll(MYSQL_SYSTEM)) out.push({ via: 'system', shells: m[1].trim() ? [m[1].trim()] : [] });
     if (MYSQL_PROGRAM_COMMAND.test(text) || args.some(a => /^--pager(?:=|$)/.test(a))) out.push({ via: 'pager or editor', shells: [] });
@@ -1315,7 +1326,7 @@ function clientProgramsOf(cmd: ResolvedCommand): ClientProgram[] {
         for (const text of new Set(input.texts)) {
             if (cmd.name === 'psql') programs.push(...psqlPrograms(text, input.argTexts?.has(text) ?? false));
             else if (cmd.name === 'mysql') programs.push(...mysqlPrograms(text, cmd.args));
-            else programs.push(...sqliteDotPrograms(text));
+            else programs.push(...sqliteDotPrograms(text, input.argTexts?.has(text) ?? false));
             if (/\bCOPY\b/i.test(text)) {
                 for (const m of text.matchAll(COPY_PROGRAM)) {
                     programs.push({ via: 'COPY … PROGRAM', shells: m[1] === undefined ? [] : [m[1].replace(/''/g, "'")], server: true });
@@ -1361,8 +1372,10 @@ function clientDirectories(cmd: ResolvedCommand): string[] | null {
 function clientProgramBlock(cmd: ResolvedCommand): string | null {
     for (const { via, shells, server } of clientProgramsOf(cmd)) {
         for (const shell of shells) {
-            const { block } = clientShellVerdict(shell, server ? undefined : clientDirectories(cmd)?.[0]);
-            if (block) return `${cmd.name} ${via} runs a blocked command. ${block}`;
+            for (const dir of (server ? null : clientDirectories(cmd)) ?? [undefined]) {
+                const { block } = clientShellVerdict(shell, dir);
+                if (block) return `${cmd.name} ${via} runs a blocked command. ${block}`;
+            }
         }
     }
     return null;
@@ -1374,7 +1387,7 @@ function clientProgramBlock(cmd: ResolvedCommand): string | null {
  */
 function clientProgramGate(cmd: ResolvedCommand): string | null {
     for (const { via, shells, server } of clientProgramsOf(cmd)) {
-        if (server) return `${cmd.name}: COPY … PROGRAM runs a shell command on the database server, which the guard can't check.`;
+        if (server) return `${cmd.name}: COPY … PROGRAM runs a shell command the guard can't check, on the database server (or, for \\copy, on this host).`;
         if (!shells.length) return `${cmd.name} ${via} runs a program the guard can't check.`;
         const dirs = clientDirectories(cmd);
         if (dirs === null) return `${cmd.name} ${via} runs a shell command from a directory the guard can't determine.`;
@@ -2443,25 +2456,39 @@ function innerCommand(words: string[], outer: ResolvedCommand): ResolvedCommand 
     return { name, args, raw: outer.raw, env, ...(chdir !== undefined ? { chdir } : {}), hasInputRedirect: false };
 }
 
-/** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */
+/**
+ * Parse command string into resolved commands. Falls back to regex splitting if parser fails. A line parseShell can't
+ * read as bash will gets unbash's own reading as well as the regex split: the gate tier holds such a line, but an
+ * approval skips that hold, and the hard blocks it still runs must see at least what they saw before.
+ */
 export function extractCommands(command: string): ResolvedCommand[] {
     try {
-        const ast = parseShell(command);
-        const nodes = walkCommandNodes(ast);
-        const nested: Array<[any, ResolvedCommand]> = [];
-        const commands = nodes.map(node => {
-            if (node.__resolved) return node.__resolved as ResolvedCommand;
-            const cmd = resolveCommand(node);
-            if (cmd && NESTED_COMMAND_NODES.has(node)) nested.push([node, cmd]);
-            return cmd;
-        }).filter((c): c is ResolvedCommand => c !== null);
-        traceSubstitutionPipes(nested, command);
-        const script = scriptContextOf(ast, commands, command);
-        for (const cmd of commands) cmd.script = script;
-        return commands;
-    } catch {
-        return fallbackExtract(command);
+        return commandsOf(parseShell(command), command);
+    } catch (e) {
+        if (!(e instanceof ShellParseError)) return fallbackExtract(command);
+        let unchecked: ResolvedCommand[] = [];
+        try {
+            unchecked = commandsOf(parse(command), command);
+        } catch {
+            // unbash can't parse it either; the regex split below is all there is.
+        }
+        return [...unchecked, ...fallbackExtract(command)];
     }
+}
+
+function commandsOf(ast: any, command: string): ResolvedCommand[] {
+    const nodes = walkCommandNodes(ast);
+    const nested: Array<[any, ResolvedCommand]> = [];
+    const commands = nodes.map(node => {
+        if (node.__resolved) return node.__resolved as ResolvedCommand;
+        const cmd = resolveCommand(node);
+        if (cmd && NESTED_COMMAND_NODES.has(node)) nested.push([node, cmd]);
+        return cmd;
+    }).filter((c): c is ResolvedCommand => c !== null);
+    traceSubstitutionPipes(nested, command);
+    const script = scriptContextOf(ast, commands, command);
+    for (const cmd of commands) cmd.script = script;
+    return commands;
 }
 
 const TEXT_EMITTERS = new Set(['echo', 'printf', 'cat', 'tee']);
@@ -4052,7 +4079,9 @@ const PSQL_BACKSLASH_TO_LINE_END = /\\[^\s\\][^\n]*/g;
 
 function psqlStatementTexts(text: string): string[] {
     if (!text.includes('\\')) return [text];
-    return [text, text.replace(PSQL_BACKSLASH_TO_LINE_END, ''), text.replace(PSQL_BACKSLASH_TO_LINE_END, ';')];
+    // `\\` ends a backslash command's arguments, and SQL may follow it on the same line.
+    const separated = text.replace(/\\\\/g, '\n');
+    return [text, separated.replace(PSQL_BACKSLASH_TO_LINE_END, ''), separated.replace(PSQL_BACKSLASH_TO_LINE_END, ';')];
 }
 
 /** Returns gate reason if the command requires approval, null otherwise */
