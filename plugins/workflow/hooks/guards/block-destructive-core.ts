@@ -28,10 +28,10 @@
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
-import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
-import { homedir } from 'os';
-import { dirname, join, resolve as pathResolve } from 'path';
+import { endianness, homedir } from 'os';
+import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
 import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, readConfigFile, shellUnquote, viewShell } from './gate-card-core';
@@ -3046,11 +3046,22 @@ function currentDevScope(): DevScope | null {
 // the account, user, role, credentials, config or the SQL that runs.
 const SNOW_SQL_VALUE_FLAGS = new Set(['-c', '--connection', '-q', '--query', '--format', '--warehouse', '--enable-templating']);
 const SNOW_SQL_BARE_FLAGS = new Set(['--silent', '--verbose', '--debug', '--enhanced-exit-codes']);
-// `snow` run directly or under wrappers that leave its user and environment alone
-// (`sudo` and `env` do not, so they never qualify).
-const SNOW_UNDER_SAFE_WRAPPERS_RE = /^(?:(?:g?timeout\s+\d+(?:\.\d+)?[smhd]?|nohup|time)\s+)*snow\s/;
+// Wrappers that leave the command's user and environment alone (`sudo` and `env` do not, so they never qualify).
+const SAFE_WRAPPERS_PREFIX = String.raw`^(?:(?:g?timeout\s+\d+(?:\.\d+)?[smhd]?|nohup|time)\s+)*`;
+const SNOW_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}snow\\s`);
 // Commands that change what a later command sees: its environment, or code it sources.
 const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare', 'typeset', 'env', 'eval', 'readonly', 'local', 'alias', 'unset']);
+
+/** True when the command line assigns a shell variable anywhere, or can't be parsed to tell. */
+function mayAssign(command: string): boolean {
+    try {
+        const assignments: any[] = [];
+        collectAssignmentNodes(parse(command), assignments);
+        return assignments.length > 0;
+    } catch {
+        return true;
+    }
+}
 
 /** Snowflake folds an unquoted identifier to upper case and keeps a quoted one as written. */
 function snowflakeIdentifier(part: string): string | null {
@@ -3090,14 +3101,7 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
-    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name))) return null;
-    try {
-        const assignments: any[] = [];
-        collectAssignmentNodes(parse(command), assignments);
-        if (assignments.length) return null;
-    } catch {
-        return null;
-    }
+    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name)) || mayAssign(command)) return null;
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {
@@ -3130,6 +3134,320 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
         }
     }
     return matched ? `snowflake connection ${entry.connection}, database ${entry.databases.join('/')}` : null;
+}
+
+// ── Local scratch Postgres exemption ─────────────────────────────────────────
+// Destructive psql against a throwaway Postgres the session started in its own
+// container runs without approval: tearing down a test database is not what the
+// approval card protects, and a card on it blocks a review proof for an hour.
+//
+// "localhost" alone proves nothing. An `ssh -L`, socat, `render psql`, kubectl
+// port-forward or a forwarded unix socket each put a remote database behind
+// 127.0.0.1 or a /tmp socket. So three things must hold, and anything the guard
+// cannot read holds the command:
+//   • the target is literal: one host, exactly 127.0.0.1, ::1, localhost or an
+//     absolute directory under /tmp, and a literal port (5432 when absent);
+//   • nothing can redirect libpq: no assignment, export or source anywhere in the
+//     command and no command beside psql that is not a plain text filter; no
+//     service/hostaddr setting or PGSERVICE/PGHOSTADDR/… in the command or in this
+//     process's environment; no `\connect` in the SQL; no psqlrc that could
+//     reconnect; no expansion or glob in a connection argument;
+//   • procfs shows that every listener the address and port reach is held only by
+//     a process named postgres in this pid namespace. An ssh, socat, cloudflared or
+//     kubectl listener, no listener, an unreadable /proc, or not Linux holds.
+// `localhost` additionally needs nsswitch to consult /etc/hosts first and every
+// /etc/hosts line naming it to be loopback, since libpq resolves it through both.
+// Tier-1 hard blocks are never exempted, exactly as for lab scope.
+
+/** What the local-Postgres exemption reads from the host it runs on; tests supply fixtures. */
+export interface LocalPgHost {
+    platform: string;
+    env: Record<string, string | undefined>;
+    readFile(path: string): string | null;
+    readDir(path: string): string[] | null;
+    readLink(path: string): string | null;
+}
+
+function orNull<T>(read: () => T): T | null {
+    try {
+        return read();
+    } catch {
+        return null;
+    }
+}
+
+const LIVE_LOCAL_PG_HOST: LocalPgHost = {
+    platform: process.platform,
+    env: process.env,
+    readFile: (p) => orNull(() => readFileSync(p, 'utf-8')),
+    readDir: (p) => orNull(() => readdirSync(p)),
+    readLink: (p) => orNull(() => readlinkSync(p)),
+};
+
+// psql run directly or by path, under the same wrappers as snow.
+const PSQL_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}(?:/[^\\s'"$\`\\\\]*/)?psql\\s`);
+// What else an exempt command line may run: nothing that can start, stop or forward a listener.
+const LOCAL_PG_LINE_COMMANDS = new Set(['psql', 'cd', 'pushd', 'popd', 'echo', 'printf', 'cat', 'head', 'tail', 'grep', 'wc', 'sort', 'true', 'test', '[']);
+const LIBPQ_REDIRECT_RE = /\b(?:service|hostaddr)\s*=|\bPG(?:SERVICE|SERVICEFILE|HOSTADDR|SYSCONFDIR)\b/i;
+// PSQLRC and PGSYSCONFDIR choose a startup file that can `\connect` elsewhere.
+const LIBPQ_REDIRECT_ENV = ['PGHOSTADDR', 'PGSERVICE', 'PGSERVICEFILE', 'PGSYSCONFDIR', 'PSQLRC'];
+const PSQL_CONNECT_META_RE = /\\c(?:onnect)?(?![A-Za-z_])/;
+const EXPANDING_WORD_RE = /[$`\\]/;
+// A host the shell could glob or brace-expand into another directory.
+const EXPANDING_HOST_RE = /[*?[{~]/;
+
+// The psql options an exempt command may carry; every other option holds it.
+const PSQL_SHORT_FLAGS = 'XqtA1eabEnwWx';
+const PSQL_SHORT_VALUES: Record<string, string> = { c: '--command', d: '--dbname', f: '--file', h: '--host', p: '--port', U: '--username', v: '--set' };
+const PSQL_LONG_FLAGS = new Set(['--no-psqlrc', '--quiet', '--tuples-only', '--no-align', '--single-transaction', '--echo-queries', '--echo-all', '--echo-errors', '--echo-hidden', '--no-readline', '--no-password', '--password', '--expanded', '--csv']);
+const PSQL_LONG_VALUES = new Set(['--command', '--dbname', '--file', '--host', '--port', '--username', '--set', '--variable']);
+// Connection-string keywords that cannot move the connection off the host it names.
+const LOCAL_PG_CONNINFO_KEYS = new Set(['host', 'port', 'dbname', 'user', 'password', 'application_name', 'connect_timeout', 'sslmode']);
+const PG_URI_RE = /^postgres(?:ql)?:\/\/(?:[^@/?#]*@)?(\[[^\]/?#]*\]|[^:/?#[\]@,]*)(?::([^/?#]*))?(?:\/([^?#]*))?(?:\?([^#]*))?$/;
+
+interface PsqlConnection {
+    hosts: string[];
+    ports: string[];
+    words: string[];            // every connection argument as the shell left it
+    noPsqlrc: boolean;
+}
+
+function conninfoKeyword(key: string, value: string, into: PsqlConnection): boolean {
+    if (!LOCAL_PG_CONNINFO_KEYS.has(key)) return false;
+    if (key === 'host') into.hosts.push(value);
+    if (key === 'port') into.ports.push(value);
+    return true;
+}
+
+/** Folds a dbname argument libpq would expand (a URI or `key=value` string) into `into`; false when it can't be read. */
+function psqlDbname(value: string, into: PsqlConnection): boolean {
+    if (/^postgres(?:ql)?:\/\//.test(value)) {
+        const m = PG_URI_RE.exec(value);
+        if (!m) return false;
+        const host = m[1].startsWith('[') ? m[1].slice(1, -1) : m[1];
+        if (host.includes('%')) return false;
+        if (host) into.hosts.push(host);
+        if (m[2] !== undefined) into.ports.push(m[2]);
+        for (const pair of (m[4] ?? '').split('&').filter(Boolean)) {
+            const eq = pair.indexOf('=');
+            if (eq < 0 || pair.includes('%') || !conninfoKeyword(pair.slice(0, eq), pair.slice(eq + 1), into)) return false;
+        }
+        return true;
+    }
+    if (!value.includes('=')) return true;
+    const pair = /\s*([A-Za-z_]+)\s*=\s*('(?:[^'\\]|\\.)*'|[^\s'\\]*)\s*/y;
+    for (let at = 0; at < value.length;) {
+        pair.lastIndex = at;
+        const m = pair.exec(value);
+        if (!m || pair.lastIndex === at) return false;
+        at = pair.lastIndex;
+        const v = m[2].startsWith("'") ? m[2].slice(1, -1).replace(/\\(.)/g, '$1') : m[2];
+        if (!conninfoKeyword(m[1], v, into)) return false;
+    }
+    return true;
+}
+
+/** Where a psql command line connects, as written; null when it carries an option or argument the guard can't place. */
+function psqlConnection(args: string[]): PsqlConnection | null {
+    const conn: PsqlConnection = { hosts: [], ports: [], words: [], noPsqlrc: false };
+    const dbnames: string[] = [];
+    const positionals: string[] = [];
+    const take = (option: string, value: string) => {
+        if (option === '--host') conn.hosts.push(value);
+        if (option === '--port') conn.ports.push(value);
+        if (option === '--dbname') dbnames.push(value);
+        if (['--host', '--port', '--dbname', '--username'].includes(option)) conn.words.push(value);
+    };
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') {
+            positionals.push(...args.slice(i + 1));
+            break;
+        }
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const option = eq < 0 ? a : a.slice(0, eq);
+            if (eq < 0 && PSQL_LONG_FLAGS.has(option)) {
+                if (option === '--no-psqlrc') conn.noPsqlrc = true;
+                continue;
+            }
+            if (!PSQL_LONG_VALUES.has(option)) return null;
+            const value = eq < 0 ? args[++i] : a.slice(eq + 1);
+            if (value === undefined) return null;
+            take(option, value);
+            continue;
+        }
+        if (a.length > 1 && a.startsWith('-')) {
+            for (let j = 1; j < a.length; j++) {
+                if (PSQL_SHORT_FLAGS.includes(a[j])) {
+                    if (a[j] === 'X') conn.noPsqlrc = true;
+                    continue;
+                }
+                const option = PSQL_SHORT_VALUES[a[j]];
+                if (!option) return null;
+                const value = j + 1 < a.length ? a.slice(j + 1) : args[++i];
+                if (value === undefined) return null;
+                take(option, value);
+                break;
+            }
+            continue;
+        }
+        positionals.push(a);
+    }
+    // `psql [dbname [username]]`; a third operand is ignored by psql, and unexpected here.
+    if (positionals.length > 2) return null;
+    conn.words.push(...positionals);
+    // Reading every operand as a possible dbname is stricter than psql, which takes the first as the username once -d is given.
+    for (const d of [...dbnames, ...positionals]) {
+        if (!psqlDbname(d, conn)) return null;
+    }
+    return conn;
+}
+
+/** The addresses `localhost` can resolve to, or null when anything but /etc/hosts could answer or a line maps it off loopback. */
+function localhostAddresses(host: LocalPgHost): string[] | null {
+    const nss = host.readFile('/etc/nsswitch.conf');
+    const hostsLine = nss?.split('\n').map(l => l.replace(/#.*/, '').trim()).find(l => l.startsWith('hosts:'));
+    if (!hostsLine || hostsLine.slice('hosts:'.length).trim().split(/\s+/)[0] !== 'files') return null;
+    const hosts = host.readFile('/etc/hosts');
+    if (hosts === null) return null;
+    const addresses = new Set<string>();
+    for (const line of hosts.split('\n')) {
+        const [address, ...names] = line.replace(/#.*/, '').trim().split(/\s+/);
+        if (!names.some(n => n.toLowerCase() === 'localhost' || n.toLowerCase() === 'localhost.')) continue;
+        if (address !== '127.0.0.1' && address !== '::1') return null;
+        addresses.add(address);
+    }
+    return addresses.size ? [...addresses] : null;
+}
+
+/** A /proc/net/tcp{,6} address in network byte order as hex; the kernel prints each 32-bit word in host order. */
+function procNetAddress(hex: string): string {
+    if (endianness() === 'BE') return hex.toLowerCase();
+    return (hex.match(/.{8}/g) ?? []).map(w => w.match(/../g)!.reverse().join('')).join('').toLowerCase();
+}
+
+// Listening addresses a connection to each loopback address can reach, per /proc/net file, in network byte order.
+const LOOPBACK_LISTENERS: Record<string, Array<[string, Set<string>]>> = {
+    '127.0.0.1': [
+        ['/proc/net/tcp', new Set(['7f000001', '00000000'])],
+        ['/proc/net/tcp6', new Set(['0'.repeat(32), '00000000000000000000ffff7f000001'])],
+    ],
+    '::1': [['/proc/net/tcp6', new Set(['0'.repeat(31) + '1', '0'.repeat(32)])]],
+};
+
+/** Inodes of the TCP sockets listening where `address`:`port` connects; null when a table can't be read. */
+function tcpListenerInodes(host: LocalPgHost, address: string, port: number): string[] | null {
+    const inodes: string[] = [];
+    for (const [file, accepts] of LOOPBACK_LISTENERS[address]) {
+        const table = host.readFile(file);
+        if (table === null) return null;
+        for (const line of table.split('\n').slice(1)) {
+            const f = line.trim().split(/\s+/);
+            const local = f[1]?.match(/^([0-9A-Fa-f]+):([0-9A-Fa-f]{4})$/);
+            if (!local || f[3] !== '0A' || parseInt(local[2], 16) !== port) continue;
+            if (accepts.has(procNetAddress(local[1]))) inodes.push(f[9]);
+        }
+    }
+    return inodes;
+}
+
+/** Inodes of the unix sockets listening at `path`; null when the table can't be read. */
+function unixListenerInodes(host: LocalPgHost, path: string): string[] | null {
+    const table = host.readFile('/proc/net/unix');
+    if (table === null) return null;
+    const inodes: string[] = [];
+    for (const line of table.split('\n').slice(1)) {
+        const m = line.match(/^\s*[0-9A-Fa-f]+:\s+\S+\s+\S+\s+([0-9A-Fa-f]+)\s+\S+\s+\S+\s+(\d+)\s(.*)$/);
+        // __SO_ACCEPTCON: a listening socket, not a connection accepted from it, which shows the same path.
+        if (m && m[3] === path && (parseInt(m[1], 16) & 0x10000) !== 0) inodes.push(m[2]);
+    }
+    return inodes;
+}
+
+/** The pids holding each socket inode, from every /proc/<pid>/fd this process can read. */
+function socketHolders(host: LocalPgHost, inodes: Set<string>): Map<string, string[]> | null {
+    const pids = host.readDir('/proc');
+    if (pids === null) return null;
+    const holders = new Map<string, string[]>();
+    for (const pid of pids.filter(p => /^\d+$/.test(p))) {
+        for (const fd of host.readDir(`/proc/${pid}/fd`) ?? []) {
+            const inode = host.readLink(`/proc/${pid}/fd/${fd}`)?.match(/^socket:\[(\d+)\]$/)?.[1];
+            if (inode && inodes.has(inode)) holders.set(inode, [...(holders.get(inode) ?? []), pid]);
+        }
+    }
+    return holders;
+}
+
+function isPostgresProcess(host: LocalPgHost, pid: string): boolean {
+    if (host.readFile(`/proc/${pid}/comm`)?.trim() === 'postgres') return true;
+    const exe = host.readLink(`/proc/${pid}/exe`);
+    return exe !== null && basename(exe.replace(/ \(deleted\)$/, '')) === 'postgres';
+}
+
+/** "<endpoint> (postgres pid N)" when every listener in `inodes` is held only by postgres, else null. */
+function postgresListening(host: LocalPgHost, endpoint: string, inodes: string[] | null): string | null {
+    if (!inodes?.length || inodes.some(i => !/^[1-9]\d*$/.test(i))) return null;
+    const holders = socketHolders(host, new Set(inodes));
+    if (!holders) return null;
+    const pids: string[] = [];
+    for (const inode of inodes) {
+        const held = holders.get(inode);
+        if (!held?.length || !held.every(pid => isPostgresProcess(host, pid))) return null;
+        pids.push(...held);
+    }
+    return `${endpoint} (postgres pid ${[...new Set(pids)].join(', ')})`;
+}
+
+/**
+ * The local scratch Postgres a top-level psql command is exempt against, or null. `commands` and `command` are the
+ * whole command line, so anything set up around the call counts.
+ */
+export function localPgTargetOf(
+    cmd: ResolvedCommand,
+    commands: ResolvedCommand[],
+    command: string,
+    host: LocalPgHost = LIVE_LOCAL_PG_HOST,
+): string | null {
+    if (cmd.name !== 'psql' || host.platform !== 'linux') return null;
+    if ((cmd.env ?? []).length || cmd.chdir !== undefined || !PSQL_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
+    if (commands.some(c => !LOCAL_PG_LINE_COMMANDS.has(c.name)) || LIBPQ_REDIRECT_RE.test(command)) return null;
+    if (LIBPQ_REDIRECT_ENV.some(k => host.env[k] !== undefined) || mayAssign(command)) return null;
+
+    const conn = psqlConnection(cmd.args);
+    if (!conn || conn.words.some(w => EXPANDING_WORD_RE.test(w))) return null;
+    const hostName = conn.hosts[0];
+    if (!hostName || EXPANDING_HOST_RE.test(hostName) || conn.hosts.some(h => h !== hostName)) return null;
+    if (conn.ports.some(p => !/^\d{1,5}$/.test(p))) return null;
+    const ports = new Set(conn.ports.map(Number));
+    if (ports.size > 1 || (ports.size === 0 && host.env.PGPORT !== undefined)) return null;
+    const port = ports.size ? [...ports][0] : 5432;
+    if (port < 1 || port > 65535) return null;
+
+    const input = sqlInputOf(cmd);
+    if (input.unreadable || input.texts.some(t => PSQL_CONNECT_META_RE.test(t))) return null;
+    if (!conn.noPsqlrc) {
+        const home = host.env.HOME;
+        const entries = home ? host.readDir(home) : null;
+        if (!entries || entries.some(e => e.startsWith('.psqlrc'))) return null;
+    }
+
+    if (hostName.startsWith('/')) {
+        const dir = hostName.replace(/(.)\/+$/, '$1');
+        if (dir !== '/tmp' && !dir.startsWith('/tmp/')) return null;
+        if (pathNormalize(dir) !== dir) return null;
+        const socket = `${dir}/.s.PGSQL.${port}`;
+        return postgresListening(host, socket, unixListenerInodes(host, socket));
+    }
+    const addresses = hostName === 'localhost' ? localhostAddresses(host) : ['127.0.0.1', '::1'].includes(hostName) ? [hostName] : null;
+    if (!addresses) return null;
+    const inodes: string[] = [];
+    for (const address of addresses) {
+        const found = tcpListenerInodes(host, address, port);
+        if (found === null) return null;
+        inodes.push(...found);
+    }
+    return postgresListening(host, `${hostName}:${port}`, inodes);
 }
 
 // ── Git hook bypass ──────────────────────────────────────────────────────────
@@ -4135,7 +4453,7 @@ function directoriesAfter(dirs: string[] | null, change: ResolvedCommand): strin
 }
 /**
  * Yield each command the gate decides on, with its reason, in order: gated by
- * checkGatedCommand and not exempted as a dev-scope or lab target. evaluateBashCommand
+ * checkGatedCommand and not exempted as a dev-scope, local scratch Postgres or lab target. evaluateBashCommand
  * gates on the first; the description describes the same ones.
  */
 function* gatedSteps(
@@ -4144,6 +4462,7 @@ function* gatedSteps(
     cwd: string,
     lab: boolean,
     log: boolean,
+    localPg: LocalPgHost = LIVE_LOCAL_PG_HOST,
 ): Generator<{ cmd: ResolvedCommand; reason: string; outer: ResolvedCommand; moves?: ResolvedCommand[] }> {
     let dirs: string[] | null = [cwd];
     for (const outer of commands) {
@@ -4157,6 +4476,12 @@ function* gatedSteps(
             const dev = devScopeTargetOf(cmd, commands, command);
             if (dev !== null) {
                 if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
+                continue;
+            }
+            // Only a top-level psql: one xargs or find runs is not the command line the target was read from.
+            const local = cmd === outer ? localPgTargetOf(cmd, commands, command, localPg) : null;
+            if (local !== null) {
+                if (log) console.error(`local-pg: allowed ${cmd.name} against ${local}`);
                 continue;
             }
             if (lab) {
@@ -4362,10 +4687,13 @@ export function checkRmDecision(
  * lab target allows instead of holding, and a lab worktree path joins the rm
  * ephemeral allowlist. Tier 1 is never exempted. Both predicates must hold and
  * both fail closed — see "Lab-scoped exemption" above.
+ *
+ * `opts.localPg` is the host the local scratch Postgres exemption reads procfs
+ * and the environment from; adapters leave it unset for the real one.
  */
 export function evaluateBashCommand(
     command: string,
-    opts: { skipGate?: boolean; cwd?: string } = {},
+    opts: { skipGate?: boolean; cwd?: string; localPg?: LocalPgHost } = {},
 ): GateEvaluation {
     const commands = extractCommands(command);
     const ephemeralMktempVariables = findEphemeralMktempVariables(command);
@@ -4385,7 +4713,7 @@ export function evaluateBashCommand(
 
     // --- Gated checks ---
     if (!opts.skipGate) {
-        const first = gatedSteps(commands, command, cwd, lab, true).next();
+        const first = gatedSteps(commands, command, cwd, lab, true, opts.localPg).next();
         if (!first.done) return { action: 'gate', reason: first.value.reason };
     }
 
