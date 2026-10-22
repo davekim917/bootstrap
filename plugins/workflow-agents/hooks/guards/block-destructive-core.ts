@@ -1506,11 +1506,15 @@ function clientShellVerdict(text: string, dir: string | undefined): GateEvaluati
 }
 
 /**
- * Every directory a SQL client's shell escape may start from, or null when the line's own `cd`s don't prove it (the
- * escape then blocks). A server-side program, or a client that moved its own directory with `\cd`/`.cd`, has no
- * knowable directory and is handled before this.
+ * Every directory a SQL client's shell escape may start from, or null when the line doesn't prove it (the escape then
+ * blocks). A server-side program, or a client that moved its own directory with `\cd`/`.cd`, has no knowable
+ * directory and is handled before this.
  */
 function shellDirectories(cmd: ResolvedCommand): string[] | null {
+    // A step find, xargs or git builds has no place on the parsed line, and `-execdir`/`submodule foreach` run it
+    // elsewhere again; a step inside $(…) may follow a cd in the same substitution, which the line's cds don't place.
+    if (!cmd.script || cmd.chdir === EACH_MATCH_DIR || cmd.chdir === EACH_SUBMODULE_DIR) return null;
+    if (cmd.pos === undefined && cmd.script.cds.some(step => step.pos < 0)) return null;
     return sqlPathCandidates('.', cmd);
 }
 
@@ -2129,6 +2133,8 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
             // Skip flags. A short option (or cluster such as `-nu`) ending in a value-taking letter consumes the next
             // word; `--opt=value` forms are one word.
             while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                const dir = sudoChdir(args[skip], args[skip + 1]);
+                if (dir !== undefined) chdir = chdir === undefined || dir.startsWith('/') ? dir : `${chdir}/${dir}`;
                 skip += optionWords(args[skip], 'aCcDghpRrTtUu', SUDO_LONG_VALUE_OPTIONS, SUDO_LONG_FLAGS);
             }
             if (args[skip] === '--') skip += 1;
@@ -2267,6 +2273,17 @@ export function commandName(word: string): string {
     return unescapeCommandWord(word).replace(/^.*\//, '');
 }
 
+/** The directory a sudo option word sets with `-D DIR`, `-DDIR`, a cluster ending in D, or `--chdir[=DIR]`. */
+function sudoChdir(arg: string, next: string | undefined): string | undefined {
+    if (arg.startsWith('--')) {
+        const [name, value] = arg.includes('=') ? [arg.slice(0, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)] : [arg, next];
+        return name.length > 4 && '--chdir'.startsWith(name) ? value : undefined;
+    }
+    const at = [...arg.slice(1)].findIndex(c => 'aCcDghpRrTtUu'.includes(c)) + 1;
+    if (at === 0 || arg[at] !== 'D') return undefined;
+    return at === arg.length - 1 ? next : arg.slice(at + 1);
+}
+
 const SUDO_LONG_FLAGS = new Set(['--login', '--preserve-env', '--non-interactive', '--background', '--shell', '--stdin',
     '--set-home', '--edit', '--list', '--validate', '--remove-timestamp', '--reset-timestamp', '--askpass', '--bell',
     '--help', '--version']);
@@ -2354,6 +2371,7 @@ const FILLED = '{}';
 const FILLED_TAIL = [FILLED, FILLED, FILLED, FILLED];
 // Where -execdir and -okdir run the command: only the matches decide it.
 const EACH_MATCH_DIR = 'the directory of each match';
+const EACH_SUBMODULE_DIR = 'each submodule';
 
 /**
  * What xargs, or each find -exec/-execdir/-ok/-okdir, runs: the option that runs it and the command it runs, with
@@ -2390,7 +2408,7 @@ function submoduleForeach(cmd: ResolvedCommand): Array<{ via: string; inner: Res
     for (i++; ['--recursive', '--quiet', '-q', '--'].includes(cmd.args[i]); i++);
     const words = cmd.args.slice(i);
     if (!words.length) return [];
-    return [{ via: 'git submodule foreach', inner: { name: 'sh', args: ['-c', words.join(' ')], raw: cmd.raw, env: [], chdir: 'each submodule', hasInputRedirect: false } }];
+    return [{ via: 'git submodule foreach', inner: { name: 'sh', args: ['-c', words.join(' ')], raw: cmd.raw, env: [], chdir: EACH_SUBMODULE_DIR, hasInputRedirect: false } }];
 }
 
 /** The string xargs replaces with its input (`-I R`, `-J R`, `-i`/`--replace` → `{}`), or null when it appends instead. */
