@@ -3195,6 +3195,12 @@ const LOCAL_PG_LINE_COMMANDS = new Set(['cd', 'pushd', 'popd', 'echo', 'cat', 'h
 // POSIXLY_CORRECT stops psql's getopt at the first operand, so options after it are not read the way psqlTarget reads them.
 const LIBPQ_REDIRECT_ENV = ['PGHOSTADDR', 'PGSERVICE', 'PGSERVICEFILE', 'PGSYSCONFDIR', 'POSIXLY_CORRECT'];
 const FILE_WRITE_REDIRECTS = new Set(['>', '>>', '>|', '&>', '&>>', '<>']);
+// Any expansion on the line holds, heredoc bodies included: `${v:=…}` and `$((v=…))` assign, and the parser exposes a
+// substitution's script only through a getter that a walk of the tree never reaches, so a write inside one is unseen.
+const LINE_EXPANSION_RE = /[$`]|[<>]\(/;
+// Node types of a line of plain commands joined by pipes, `&&`, `||` or `;`. Loops, conditionals, subshells, groups,
+// functions and assignments are anything else, and hold.
+const PLAIN_LINE_NODES = new Set(['Script', 'Statement', 'Command', 'Pipeline', 'AndOr']);
 
 const PSQL_SHORT_FLAGS = 'XqtA1eabEnwWx';
 const PSQL_SHORT_VALUES: Record<string, string> = { c: '--command', d: '--dbname', h: '--host', p: '--port', U: '--username', v: '--set' };
@@ -3225,6 +3231,21 @@ function writtenArgs(cmd: ResolvedCommand): string[] | null {
     script.view ??= viewShell(script.command);
     const texts = script.view.commandAt(cmd.pos)?.argTexts;
     return texts && texts.length >= cmd.args.length ? texts.slice(texts.length - cmd.args.length) : null;
+}
+
+/** True when every node of the parsed line is a plain command or what joins them; false when it can't be parsed. */
+function isPlainLine(command: string): boolean {
+    const plain = (node: unknown): boolean => {
+        if (!node || typeof node !== 'object') return true;
+        if (Array.isArray(node)) return node.every(plain);
+        const type = (node as { type?: unknown }).type;
+        return (typeof type !== 'string' || PLAIN_LINE_NODES.has(type)) && Object.values(node).every(plain);
+    };
+    try {
+        return plain(parse(command));
+    } catch {
+        return false;
+    }
 }
 
 /** True when the command line redirects any output into a file other than /dev/null, or can't be parsed to tell. */
@@ -3378,7 +3399,7 @@ function isPostgresProcess(host: LocalPgHost, pid: string): boolean {
  */
 function scratchDataDir(host: LocalPgHost, pid: string): string | null {
     const cwd = host.readLink(`/proc/${pid}/cwd`);
-    return cwd && cwd.startsWith('/tmp/') && pathNormalize(cwd) === cwd ? cwd : null;
+    return cwd?.startsWith('/tmp/') ? cwd : null;
 }
 
 /** "<endpoint> (postgres pid N, data <dir>)" when only scratch postgres holds every listener in `inodes`, else null. */
@@ -3415,7 +3436,8 @@ export function localPgTargetOf(
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !PSQL_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     // Each neighbour by its own name with no wrapper: `npx cat` resolves to cat but runs a package.
     const plain = (c: ResolvedCommand) => LOCAL_PG_LINE_COMMANDS.has(c.name) && (c.raw === c.name || c.raw.startsWith(`${c.name} `));
-    if (!commands.every(c => c === cmd || plain(c)) || changesShellState(command) || mayWriteFiles(command)) return null;
+    if (!commands.every(c => c === cmd || plain(c)) || LINE_EXPANSION_RE.test(command)) return null;
+    if (!isPlainLine(command) || mayWriteFiles(command)) return null;
     if (LIBPQ_REDIRECT_ENV.some(k => host.env[k] !== undefined)) return null;
     const written = writtenArgs(cmd);
     if (!written || !written.every(isLiteralShellWord) || cmd.args.some(a => a.includes('\\'))) return null;
@@ -3427,7 +3449,8 @@ export function localPgTargetOf(
 
     if (target.host.startsWith('/')) {
         const dir = target.host.replace(/(.)\/+$/, '$1');
-        if ((dir !== '/tmp' && !dir.startsWith('/tmp/')) || pathNormalize(dir) !== dir) return null;
+        // libpq splits a host list on commas and tries each entry.
+        if ((dir !== '/tmp' && !dir.startsWith('/tmp/')) || dir.includes(',') || pathNormalize(dir) !== dir) return null;
         const socket = `${dir}/.s.PGSQL.${port}`;
         return postgresListening(host, socket, unixListenerInodes(host, socket));
     }

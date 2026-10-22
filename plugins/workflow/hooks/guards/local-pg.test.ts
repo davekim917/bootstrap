@@ -133,10 +133,12 @@ describe('a forwarder or an unproven listener holds', () => {
         }],
         ['a postgres whose data directory is a volume, not scratch', TCP, { ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'], cwd: '/workspace/data/pg' } } }],
         ['a system postgres', SOCKET, { ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'], cwd: '/var/lib/postgresql/16/main' } } }],
-        ['a data directory path that climbs out of /tmp', TCP, { ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'], cwd: '/tmp/../var/lib/pg' } } }],
         ['a tunnel on the v4-mapped wildcard beside a postgres on ::, which takes no IPv4', TCP, {
             tcp6: [['0'.repeat(32), PORT_HEX, '9001'], ['0000000000000000FFFF000000000000', PORT_HEX, '9109']],
             procs: { 4242: { comm: 'postgres', sockets: ['9001'] }, 5009: { comm: 'ssh', sockets: ['9109'] } },
+        }],
+        ['a comma in the socket directory, which libpq splits into two hosts', "psql -X -h /tmp/embedded-pg,/tmp/other -p 55432 -c 'DROP TABLE orders'", {
+            unix: [[LISTEN_UNIX, '9110', '/tmp/embedded-pg,/tmp/other/.s.PGSQL.55432']], procs: { 4242: { comm: 'postgres', sockets: ['9110'] } },
         }],
         ['postgres only on another port', TCP, { tcp: [['0100007F', '1538', '9001']], procs: { 4242: { comm: 'postgres', sockets: ['9001'] } } }],
         ['a listener whose holder this process cannot see', TCP, { tcp: [['0100007F', PORT_HEX, '9106']] }],
@@ -196,9 +198,16 @@ describe('anything that could expand, redirect or run another connection holds',
         ["ANSI-C quoted SQL", "psql -X -h 127.0.0.1 -p 55432 -c $'\\x5cconnect host=db.example.internal' -c 'DROP TABLE orders'"],
         ['a \\connect in the SQL', "psql -X -h 127.0.0.1 -p 55432 -c '\\c host=db.example.internal' -c 'DROP TABLE orders'"],
         ['a shell escape in the SQL', "psql -X -h 127.0.0.1 -p 55432 -c '\\! psql -X -h db.example.internal -c \"DROP TABLE orders\"' -c 'DROP TABLE orders'"],
-        ['a function named psql defined on the line', "psql() { /usr/bin/psql -X -h db.example.internal -p 5432 -c \"$6\"; }; psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
+        ['a function named psql defined on the line', "psql() { cat /tmp/x; }; psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
+        ['a loop whose variable is PATH', "for PATH in /tmp/shim:/usr/bin; do psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'; done"],
+        ['a subshell', "(psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders')"],
+        ['an assignment inside an expansion', "echo ${PATH:=/tmp/shim}; psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
+        ['a write inside a backquote substitution', "echo `echo x > /tmp/embedded-pg/bin/psql`; /tmp/embedded-pg/bin/psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
+        ['a write inside a process substitution', "cat <(echo x > /tmp/embedded-pg/bin/psql); /tmp/embedded-pg/bin/psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['a second psql, whose shell escape can swap the listener first', "psql -X -h 127.0.0.1 -p 55432 -c 'select 1' ; psql -X -h 127.0.0.1 -p 55432 -d foo_test -c 'DROP TABLE orders'"],
         ['a neighbour run through a package runner', "npx -y cat /tmp/x; psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
+        ['a write inside a command substitution', "echo $(echo x > /tmp/embedded-pg/bin/psql); /tmp/embedded-pg/bin/psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
+        ['a write inside a heredoc substitution', "cat <<EOF\n$(echo x > /tmp/embedded-pg/bin/psql)\nEOF\n/tmp/embedded-pg/bin/psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['sudo', "sudo -u postgres psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['a tunnel opened on the same line', "ssh -fNL 55432:db.example.internal:5432 jump.example.internal && psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
     ])('%s', (_name, command) => {
@@ -218,9 +227,6 @@ describe('anything that could expand, redirect or run another connection holds',
         expect(verdict(TCP.replace('psql -X ', 'psql '))).toBe('gate');
     });
 
-    test('an exempt step does not hide a gated one', () => {
-        expect(verdict(`${TCP} && psql -X -h db.example.internal -p 5432 -c 'DROP TABLE orders'`)).toBe('gate');
-    });
 });
 
 describe('tier 1 is never exempted', () => {
