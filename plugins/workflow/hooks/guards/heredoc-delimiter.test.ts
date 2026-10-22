@@ -48,16 +48,23 @@ describe('the guard reads the delimiter as bash does, not just more strictly', (
         // Any quoting turns expansion off in the body, so the substitution is text.
         ['a partly quoted delimiter leaves the body unexpanded', 'cat <<E"O"F\n$(shred /tmp/report.txt)\nEOF'],
         ['a plain command after the body passes', 'cat <<E"O"F\nnotes\nEOF\necho done'],
+        // A bare redirect or coproc only forces a hold when a heredoc is actually on it; next to an unrelated
+        // heredoc, here-string or left-shift it must stay readable (round-4 B2).
+        ['a truncate-then-append-heredoc idiom', '> /tmp/notes.md\nfor f in a b; do cat >> /tmp/notes.md <<EOF\nhi\nEOF\ndone'],
+        ['a bare redirect beside a here-string, not a heredoc', '> /tmp/out.txt\ngrep -q foo <<< "$x"'],
+        ['a bare redirect beside an arithmetic left-shift', '> /tmp/out.txt\necho $(( 1 << 4 ))'],
+        ['a coproc beside an unrelated heredoc', 'coproc sleep 1\ncat <<EOF\nx\nEOF'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
 });
 
-describe('a delimiter the guard cannot read the way bash does holds', () => {
+describe('a delimiter the guard cannot read the way bash does blocks, so approval cannot clear it', () => {
     test.each([
         ["ANSI-C quoting, which bash versions read differently", "cat <<$'E'\nnotes\nE\necho done"],
         ['a partly quoted delimiter inside a command substitution', 'echo "$(cat <<E"O"F\nnotes\nEOF\necho done\n)"'],
     ])('%s', (_name, command) => {
-        expect(verdict(command)).toBe('gate');
+        expect(verdict(command)).toBe('block');
+        expect(evaluateBashCommand(command, { cwd: '/tmp', skipGate: true }).action).toBe('block');
     });
 });

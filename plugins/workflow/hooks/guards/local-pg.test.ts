@@ -236,7 +236,7 @@ describe('tier 1 is never exempted', () => {
 });
 
 describe('a program the server runs is never exempted', () => {
-    test('COPY … PROGRAM against the scratch postgres holds', () => {
-        expect(verdict(`psql -X -h 127.0.0.1 -p 55432 -d foo_test -c "COPY orders FROM PROGRAM 'true'"`)).toBe('gate');
+    test('COPY … PROGRAM against the scratch postgres is blocked, not exempted', () => {
+        expect(verdict(`psql -X -h 127.0.0.1 -p 55432 -d foo_test -c "COPY orders FROM PROGRAM 'true'"`)).toBe('block');
     });
 });
