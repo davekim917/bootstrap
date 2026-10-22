@@ -1,6 +1,6 @@
 {
   "name": "verification-skills",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Generate and maintain a private verify-<project> skill that drives a web app, CLI, service or dbt/Snowflake project the way a user does and records evidence a reviewer can check. Invoke-only. Adapted from pstack (MIT).",
   "author": {
     "name": "David Kim"

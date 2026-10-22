@@ -29,6 +29,10 @@ Each skill's `Project` section records: the repository's remote URL with any cre
 
 `<private directory>/.inuse`. One holder at a time: every run, and every pass that creates, edits or promotes the skill, holds it for its whole duration, so no recipe changes under a drive. Take it with a create that fails if the file exists, writing a holder id (your session name and the UTC time); if it exists, wait. Release it only if it still holds your id. A lock more than two hours old may be replaced only once its holder is confirmed gone; otherwise ask. Runs a holder starts itself run under its hold and leave the lock to that holder.
 
+## Merging a skill pull request
+
+A pull request that changes only a promoted skill (its `.claude/skills/verify-<project>/` directory and the `.agents/skills` link) merges under the project repo's own rules, like any other change there. An agent may merge it where agents already merge changes in that repo, through every gate the repo applies (its review, CI, required checks). Where the repo requires a human to merge, the pull request waits for one. Check the repo's rules instead of assuming either. One exception: the first promotion into a repository the user does not own outright (a client's, an employer's) waits for the user's own merge, unless the user said otherwise for that repo.
+
 ## Publishing rule
 
 For the promotion pull request and every later pull request to the project repo: the files, commit messages and PR text carry no absolute host paths, hostnames, credentials, session names, fleet-only notes or evidence artifacts.
