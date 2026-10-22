@@ -234,3 +234,9 @@ describe('tier 1 is never exempted', () => {
         expect(verdict(`${SOCKET} && shred -u /tmp/embedded-pg/dump.sql`)).toBe('block');
     });
 });
+
+describe('a program the server runs is never exempted', () => {
+    test('COPY … PROGRAM against the scratch postgres is blocked, not exempted', () => {
+        expect(verdict(`psql -X -h 127.0.0.1 -p 55432 -d foo_test -c "COPY orders FROM PROGRAM 'true'"`)).toBe('block');
+    });
+});

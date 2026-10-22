@@ -201,6 +201,12 @@ describe('lab session + lab target → allow', () => {
     expect(evaluateBashCommand(command, { cwd: LAB_WORKTREE }).action).toBe('allow');
   });
 
+  test('a shell command a lab psql runs is not exempt with it', () => {
+    inLab();
+    const command = `psql -d lab_app -c 'DROP TABLE scratch' -c '\\! psql -d app_prod -c "DROP TABLE users"'`;
+    expect(evaluateBashCommand(command, { cwd: LAB_WORKTREE }).action).toBe('gate');
+  });
+
   test('a non-lab gate alongside a lab gate still holds', () => {
     inLab();
     const command = 'psql -d lab_app -c "DROP TABLE users" && psql -d app_prod -c "DROP TABLE users"';

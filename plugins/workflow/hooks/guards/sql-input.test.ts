@@ -27,6 +27,7 @@ beforeAll(() => {
     writeFileSync(join(dir, 'include-template.sql'), '!source <% path %>\n');
     mkdirSync(join(dir, 'source'));
     writeFileSync(join(dir, 'source', 'only-here.sql'), 'drop table users;\n');
+    writeFileSync(join(dir, 'meta-header.sql'), '\\set ON_ERROR_STOP on\ndrop table users;\n');
     writeFileSync(join(dir, 'quoted.sql'), `\\i '${join(dir, 'drop schema.sql')}'\n`);
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -46,6 +47,8 @@ describe('a destructive SQL file is gated however it reaches the client', () => 
         (d: string) => `psql -f ${d}/outer.sql`,
         (d: string) => `psql -f ${d}/job/outer.sql`,
         (d: string) => `psql -f ${d}/quoted.sql`,
+        (d: string) => `psql -f ${d}/meta-header.sql`,
+        () => "psql <<'SQL'\nselect 1 \\g\ndrop table users;\nSQL",
     ])('%#', (make) => {
         expect(verdict(make(dir))).toBe('gate');
     });

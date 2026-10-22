@@ -375,6 +375,16 @@ describe('staging everything during a conflicted operation', () => {
         }
     });
 
+    test('a SQL client shell escape gets the conflict-staging block too, from the escape\'s directory', () => {
+        const root = repoWith('MERGE_HEAD');
+        // The escape runs git add -A in a conflicted repo; typing it directly is blocked, so the escape is too.
+        const v = evaluateBashCommand(`cd ${root} && psql -d app -c '\\! git add -A'`, { skipGate: true, cwd: '/' });
+        expect(v.action).toBe('block');
+        expect(v.reason ?? '').toContain('by name');
+        // A plain path stage during the same conflict stays allowed through the escape.
+        expect(evaluateBashCommand(`cd ${root} && psql -d app -c '\\! git add src/a.ts'`, { skipGate: true, cwd: '/' }).action).toBe('allow');
+    });
+
     test('follows a worktree .git file and git -C', () => {
         const root = repoWith('MERGE_HEAD', true);
         expect(evaluateBashCommand('git add -A', { skipGate: true, cwd: root }).action).toBe('block');
