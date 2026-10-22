@@ -20,6 +20,10 @@ describe('a partly quoted delimiter ends the body where bash ends it', () => {
         ['inside an if body', 'if true; then cat <<E"O"F\nnotes\nEOF\nshred /tmp/report.txt\nfi'],
         // In an unquoted body bash joins a line ending in a backslash to the next before comparing it with the delimiter.
         ['a body line continued into the delimiter', 'cat <<EOF\nE\\\nOF\nshred /tmp/report.txt\nEOF'],
+        // unbash drops the redirects of a command with no name, or of a coproc, so these heredocs are not in its tree.
+        ['a heredoc on a command with no name', '<<E"O"F\nnotes\nEOF\nshred /tmp/report.txt'],
+        ['a nameless heredoc after a pipe', 'true | <<E"O"F\nnotes\nEOF\nshred /tmp/report.txt'],
+        ['a heredoc on a coproc', 'coproc cat <<E"O"F\nnotes\nEOF\nshred /tmp/report.txt'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('block');
     });

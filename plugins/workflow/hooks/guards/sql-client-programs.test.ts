@@ -19,6 +19,7 @@ beforeAll(() => {
     mkdirSync(join(dir, 'b'));
     // Only under b/, so a check of the base directory alone would miss it.
     writeFileSync(join(dir, 'b', 'only-in-b.sql'), '\\! shred /tmp/report.txt\n');
+    writeFileSync(join(dir, 'cd-then-escape.sql'), '\\cd b\n\\! psql -f only-in-b.sql\n');
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -42,6 +43,7 @@ describe('a blocked command a SQL client runs is blocked', () => {
         ['mysql \\! with the first token glued, which mysql drops', "mysql -e '\\!x shred /tmp/report.txt'"],
         ['COPY … PROGRAM split by a SQL comment', `psql -d app_db -c "COPY orders FROM /*c*/ PROGRAM 'shred /tmp/report.txt'"`],
         ['a blocked command in the second of two candidate directories', () => `if true; then cd ${dir}/b; fi; psql -d app_db -c '\\! psql -f only-in-b.sql'`],
+        ['psql \\copy … PROGRAM checked from the client\'s directory', () => `cd ${dir}/b && psql -d app_db -c "\\copy orders from program 'psql -f only-in-b.sql'"`],
         ['duckdb .system', "duckdb -c '.system shred /tmp/report.txt'"],
     ])('%s', (_name, command) => {
         expect(verdict(typeof command === 'function' ? command() : command)).toBe('block');
@@ -56,6 +58,8 @@ describe('a program a SQL client runs that needs approval, or that the guard can
         ['psql backquotes naming a psql variable, whose value the line does not show', "psql -d app_db -v cmd=x -c '\\echo `:cmd`'"],
         ['psql backquotes naming a :\'quoted\' psql variable', `psql -d app_db -v a=-delete -c "\\echo \`find /tmp/x :'a'\`"`],
         ['psql \\o into a :variable, which may hold a pipe', "psql -d app_db -c '\\o :out'"],
+        ['a psql \\cd before a shell escape, which moves where it starts', () => `psql -d app_db -f ${dir}/cd-then-escape.sql`],
+        ['a sqlite3 .cd before a shell escape', "sqlite3 -cmd '.cd b' app.db '.shell psql -f only-in-b.sql'"],
         ['SQL after a psql \\\\ ends the backslash command on the same line', "printf '%s' '\\x \\\\ drop table orders;' | psql -d app_db"],
         // A file runs line by line, so the SQL after a \! line is SQL, gated as SQL, not part of the shell command.
         ['psql \\! in a file followed by destructive SQL', () => `psql -d app_db -f ${dir}/escape-then-sql.sql`],

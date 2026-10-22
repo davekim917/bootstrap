@@ -1237,7 +1237,14 @@ function sqlInputFor(cmd: ResolvedCommand): SqlInput {
  * that line can't be read. `server`: the database
  * server runs it, wherever that is.
  */
-interface ClientProgram { via: string; shells: string[]; server?: boolean }
+interface ClientProgram { via: string; shells: string[]; server?: boolean; alwaysGate?: boolean }
+
+/** A SQL client step's programs, and whether its input moves the client's own directory before running them. */
+interface ClientRuns { programs: ClientProgram[]; movesDir: boolean }
+
+// psql `\cd` and sqlite `.cd` move the client's own directory, which every later shell escape starts from.
+const PSQL_CD = /\\cd(?=[\s\\]|$)/;
+const SQLITE_CD = /^[ \t]*\.cd\b/m;
 
 // A psql backslash command's name runs to whitespace or the next backslash (psqlscanslash.l). Plain file writes
 // (`\o FILE`, `\copy … TO 'FILE'`) are not here: the guard does not gate a shell `>` either.
@@ -1318,28 +1325,33 @@ function mysqlPrograms(text: string, args: string[]): ClientProgram[] {
     return out;
 }
 
-const clientPrograms = new WeakMap<ResolvedCommand, ClientProgram[]>();
+const clientRuns = new WeakMap<ResolvedCommand, ClientRuns>();
 
 /** Every program a SQL client step runs from what it reads: shell escapes, pipes, editors and COPY … PROGRAM. */
-function clientProgramsOf(cmd: ResolvedCommand): ClientProgram[] {
-    const cached = clientPrograms.get(cmd);
+function clientRunsOf(cmd: ResolvedCommand): ClientRuns {
+    const cached = clientRuns.get(cmd);
     if (cached) return cached;
-    const programs: ClientProgram[] = [];
+    const runs: ClientRuns = { programs: [], movesDir: false };
     if (SQL_CLIS[cmd.name]) {
         const input = sqlInputFor(cmd);
         for (const text of new Set(input.texts)) {
-            if (cmd.name === 'psql') programs.push(...psqlPrograms(text, input.argTexts?.has(text) ?? false));
-            else if (cmd.name === 'mysql') programs.push(...mysqlPrograms(text, cmd.args));
-            else programs.push(...sqliteDotPrograms(text, input.argTexts?.has(text) ?? false));
+            const argument = input.argTexts?.has(text) ?? false;
+            if (cmd.name === 'psql') runs.programs.push(...psqlPrograms(text, argument));
+            else if (cmd.name === 'mysql') runs.programs.push(...mysqlPrograms(text, cmd.args));
+            else runs.programs.push(...sqliteDotPrograms(text, argument));
+            if ((cmd.name === 'psql' && PSQL_CD.test(text)) || (cmd.name !== 'psql' && cmd.name !== 'mysql' && SQLITE_CD.test(text))) runs.movesDir = true;
             if (/\bCOPY\b/i.test(text)) {
                 for (const m of text.matchAll(COPY_PROGRAM)) {
-                    programs.push({ via: 'COPY … PROGRAM', shells: m[1] === undefined ? [] : [m[1].replace(/''/g, "'")], server: true });
+                    // psql's \copy runs its program on this host; plain COPY runs it on the server.
+                    const lineStart = text.lastIndexOf('\n', m.index ?? 0) + 1;
+                    const client = /\\copy\b/i.test(text.slice(lineStart, m.index));
+                    runs.programs.push({ via: client ? '\\copy … PROGRAM' : 'COPY … PROGRAM', shells: m[1] === undefined ? [] : [m[1].replace(/''/g, "'")], server: !client, alwaysGate: true });
                 }
             }
         }
     }
-    clientPrograms.set(cmd, programs);
-    return programs;
+    clientRuns.set(cmd, runs);
+    return runs;
 }
 
 const CLIENT_SHELL_DEPTH_MAX = 4;
@@ -1367,18 +1379,24 @@ function clientShellVerdict(text: string, dir: string | undefined): { block: str
     }
 }
 
-/** Every directory a SQL client step may run in, which its shell escapes start from; null when the line doesn't prove it. */
-function clientDirectories(cmd: ResolvedCommand): string[] | null {
+/**
+ * Every directory a SQL client's shell escapes may start from; null when the line doesn't prove it, or the client
+ * moves its own directory first. A server-side program starts on another host, so it has none here.
+ */
+function shellDirectories(cmd: ResolvedCommand, program: ClientProgram): string[] | null {
+    if (program.server || clientRunsOf(cmd).movesDir) return null;
     return sqlPathCandidates('.', cmd);
 }
 
 /** Why a SQL client step is blocked for a shell command it runs that is blocked on its own, or null. */
 function clientProgramBlock(cmd: ResolvedCommand): string | null {
-    for (const { via, shells, server } of clientProgramsOf(cmd)) {
-        for (const shell of shells) {
-            for (const dir of (server ? null : clientDirectories(cmd)) ?? [undefined]) {
+    for (const program of clientRunsOf(cmd).programs) {
+        // Where the directory is unknown, the line's own candidates are still checked: the gate holds it besides.
+        const dirs = shellDirectories(cmd, program) ?? (program.server ? null : sqlPathCandidates('.', cmd)) ?? [undefined];
+        for (const shell of program.shells) {
+            for (const dir of dirs) {
                 const { block } = clientShellVerdict(shell, dir);
-                if (block) return `${cmd.name} ${via} runs a blocked command. ${block}`;
+                if (block) return `${cmd.name} ${program.via} runs a blocked command. ${block}`;
             }
         }
     }
@@ -1390,10 +1408,12 @@ function clientProgramBlock(cmd: ResolvedCommand): string | null {
  * does is not scoped to the database the step connects to.
  */
 function clientProgramGate(cmd: ResolvedCommand): string | null {
-    for (const { via, shells, server } of clientProgramsOf(cmd)) {
-        if (server) return `${cmd.name}: COPY … PROGRAM runs a shell command the guard can't check, on the database server (or, for \\copy, on this host).`;
+    for (const program of clientRunsOf(cmd).programs) {
+        const { via, shells } = program;
+        if (program.server) return `${cmd.name}: ${via} runs a shell command on the database server, which the guard can't check.`;
+        if (program.alwaysGate) return `${cmd.name}: ${via} runs a shell command on this host as the client, which the guard holds for approval.`;
         if (!shells.length) return `${cmd.name} ${via} runs a program the guard can't check.`;
-        const dirs = clientDirectories(cmd);
+        const dirs = shellDirectories(cmd, program);
         if (dirs === null) return `${cmd.name} ${via} runs a shell command from a directory the guard can't determine.`;
         for (const shell of shells) {
             for (const dir of dirs) {
@@ -4902,7 +4922,7 @@ function shellParseProblem(command: string): string | null {
         return null;
     } catch (e) {
         if (!(e instanceof ShellParseError)) return null;
-        return `The guard can't read this command the way bash will run it (${e.message}), so it can't check what runs after that point. Quote a heredoc delimiter whole ('EOF') or not at all (EOF).`;
+        return `The guard can't read this command the way bash will run it (${e.message}), so it can't check what runs after that point. Put a heredoc on a named command, with its delimiter quoted whole ('EOF') or not at all (EOF).`;
     }
 }
 

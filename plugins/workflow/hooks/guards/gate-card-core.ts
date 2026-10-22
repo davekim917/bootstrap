@@ -175,6 +175,21 @@ function heredocRedirects(node: unknown, out: any[] = [], seen = new WeakSet<obj
     return out;
 }
 
+/**
+ * Whether unbash left a command's redirects out of the tree: it drops them for a command with no name and no
+ * assignment (`<<EOF`, `>f <<EOF`) and for a coproc, so a heredoc there is never checked.
+ */
+function dropsRedirects(node: unknown, seen = new WeakSet<object>(), depth = 0): boolean {
+    if (!node || typeof node !== 'object' || seen.has(node as object)) return false;
+    if (depth > WALK_MAX_DEPTH) throw new ShellParseError('command nests too deeply to read');
+    seen.add(node as object);
+    const r = node as Record<string, any>;
+    if (depth > 0 && (r.type === 'CommandExpansion' || r.type === 'ProcessSubstitution')) return false;
+    if (r.type === 'Coproc') return true;
+    if (r.type === 'Command' && !r.name && !r.prefix?.length && !r.suffix?.length && !r.redirects?.length) return true;
+    return Object.values(r).some(child => dropsRedirects(child, seen, depth + 1));
+}
+
 /** The first heredoc in `script` (parsed from `src`) whose delimiter unbash read differently from bash, or null. */
 function misreadHeredoc(script: unknown, src: string): { start: number; bash: ReturnType<typeof bashHeredocDelimiter> } | null {
     for (const r of heredocRedirects(script).sort((a, b) => a.pos - b.pos)) {
@@ -238,6 +253,7 @@ export function parseShell(command: string): any {
         const ast: any = parse(src);
         const misread = misreadHeredoc(ast, src);
         if (!misread) {
+            if (dropsRedirects(ast)) throw new ShellParseError('a heredoc on a command the parser drops redirects from');
             checkNestedHeredocs(ast);
             return ast;
         }
@@ -264,6 +280,9 @@ function visitSubstitution(n: any): void {
     const text = String(n.text ?? '');
     const backtick = text.startsWith('`');
     const inner = backtick ? text.slice(1, -1) : text.slice(2, -1);
+    if (inner.includes('<<') && dropsRedirects(n.script)) {
+        throw new ShellParseError('a heredoc on a command the parser drops redirects from');
+    }
     if (!heredocRedirects(n.script).length) return;
     // bash removes backslashes inside backticks before parsing, so their offsets don't index the written text.
     if ((backtick && inner.includes('\\')) || misreadHeredoc(n.script, inner)) {
