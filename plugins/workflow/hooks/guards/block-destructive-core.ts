@@ -3053,7 +3053,7 @@ const SNOW_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}snow\\s`)
 const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare', 'typeset', 'env', 'eval', 'readonly', 'local', 'alias', 'unset']);
 
 /**
- * True when the command line assigns a shell variable or defines a function anywhere, or can't be parsed to tell. A
+ * True when the command line has an assignment word or a function definition anywhere, or can't be parsed to tell. A
  * function can take the name of the command an exemption reads, and run something else under it.
  */
 function changesShellState(command: string): boolean {
@@ -3150,9 +3150,9 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
 // forwarded unix socket each put a remote database behind one, and libpq, psql and
 // the shell each have ways to connect somewhere other than the -h a command shows.
 // So the exemption accepts only a command whose connection needs no emulation of
-// them: literal -h and -p, a plain dbname, -X, SQL only through -c, nothing else
-// on the line that can change state; and procfs must show every listener at that
-// address held only by postgres. Anything else, or anything unreadable, holds.
+// them, and procfs must show every listener it reaches held only by postgres
+// running from a data directory under /tmp: a postgres on loopback can as well be a
+// volume-backed database with real data. Anything else, or anything unreadable, holds.
 // `localhost`, an omitted port, connection strings and psqlrc files are refused
 // rather than resolved: NSS, the client build, libpq's own parser and psql's
 // binary-relative startup files decide them, not anything the guard can read.
@@ -3189,8 +3189,9 @@ const LIVE_LOCAL_PG_HOST: LocalPgHost = {
 };
 
 const PSQL_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}(?:/[^\\s'"$\`\\\\]*/)?psql\\s`);
-// `printf -v` assigns and `sort -o`/`tee` write files, so none of them is here.
-const LOCAL_PG_LINE_COMMANDS = new Set(['psql', 'cd', 'pushd', 'popd', 'echo', 'cat', 'head', 'tail', 'grep', 'wc', 'true']);
+// What else the line may run. Not printf (`-v` assigns), sort (`-o`) or tee, which write; and not a second psql, whose
+// `\!` could stop the checked postgres and start a forwarder before this one connects.
+const LOCAL_PG_LINE_COMMANDS = new Set(['cd', 'pushd', 'popd', 'echo', 'cat', 'head', 'tail', 'grep', 'wc', 'true']);
 // POSIXLY_CORRECT stops psql's getopt at the first operand, so options after it are not read the way psqlTarget reads them.
 const LIBPQ_REDIRECT_ENV = ['PGHOSTADDR', 'PGSERVICE', 'PGSERVICEFILE', 'PGSYSCONFDIR', 'POSIXLY_CORRECT'];
 const FILE_WRITE_REDIRECTS = new Set(['>', '>>', '>|', '&>', '&>>', '<>']);
@@ -3312,7 +3313,7 @@ function procNetAddress(hex: string): string {
 const LOOPBACK_LISTENERS: Record<string, Array<[string, Set<string>]>> = {
     '127.0.0.1': [
         ['/proc/net/tcp', new Set(['7f000001', '00000000'])],
-        ['/proc/net/tcp6', new Set(['0'.repeat(32), '00000000000000000000ffff7f000001'])],
+        ['/proc/net/tcp6', new Set(['0'.repeat(32), '00000000000000000000ffff00000000', '00000000000000000000ffff7f000001'])],
     ],
     '::1': [['/proc/net/tcp6', new Set(['0'.repeat(31) + '1', '0'.repeat(32)])]],
 };
@@ -3370,18 +3371,34 @@ function isPostgresProcess(host: LocalPgHost, pid: string): boolean {
     return exe !== null && basename(exe.replace(/ \(deleted\)$/, '')) === 'postgres';
 }
 
-/** "<endpoint> (postgres pid N)" when every listener in `inodes` is held only by postgres, else null. */
+/**
+ * The data directory of a postgres process when it is under /tmp, else null. The postmaster changes into its data
+ * directory at start and its children inherit that, so the cwd names it; under /tmp it is scratch that goes with the
+ * container, where a volume-backed or system database lives anywhere else.
+ */
+function scratchDataDir(host: LocalPgHost, pid: string): string | null {
+    const cwd = host.readLink(`/proc/${pid}/cwd`);
+    return cwd && cwd.startsWith('/tmp/') && pathNormalize(cwd) === cwd ? cwd : null;
+}
+
+/** "<endpoint> (postgres pid N, data <dir>)" when only scratch postgres holds every listener in `inodes`, else null. */
 function postgresListening(host: LocalPgHost, endpoint: string, inodes: string[] | null): string | null {
     if (!inodes?.length || inodes.some(i => !/^[1-9]\d*$/.test(i))) return null;
     const holders = socketHolders(host, new Set(inodes));
     if (!holders) return null;
-    const pids: string[] = [];
+    const pids = new Set<string>();
+    const dataDirs = new Set<string>();
     for (const inode of inodes) {
         const held = holders.get(inode);
-        if (!held?.length || !held.every(pid => isPostgresProcess(host, pid))) return null;
-        pids.push(...held);
+        if (!held?.length) return null;
+        for (const pid of held) {
+            const dataDir = isPostgresProcess(host, pid) ? scratchDataDir(host, pid) : null;
+            if (!dataDir) return null;
+            pids.add(pid);
+            dataDirs.add(dataDir);
+        }
     }
-    return `${endpoint} (postgres pid ${[...new Set(pids)].join(', ')})`;
+    return `${endpoint} (postgres pid ${[...pids].join(', ')}, data ${[...dataDirs].join(', ')})`;
 }
 
 /**
@@ -3396,7 +3413,9 @@ export function localPgTargetOf(
 ): string | null {
     if (cmd.name !== 'psql' || host.platform !== 'linux') return null;
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !PSQL_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
-    if (commands.some(c => !LOCAL_PG_LINE_COMMANDS.has(c.name)) || changesShellState(command) || mayWriteFiles(command)) return null;
+    // Each neighbour by its own name with no wrapper: `npx cat` resolves to cat but runs a package.
+    const plain = (c: ResolvedCommand) => LOCAL_PG_LINE_COMMANDS.has(c.name) && (c.raw === c.name || c.raw.startsWith(`${c.name} `));
+    if (!commands.every(c => c === cmd || plain(c)) || changesShellState(command) || mayWriteFiles(command)) return null;
     if (LIBPQ_REDIRECT_ENV.some(k => host.env[k] !== undefined)) return null;
     const written = writtenArgs(cmd);
     if (!written || !written.every(isLiteralShellWord) || cmd.args.some(a => a.includes('\\'))) return null;

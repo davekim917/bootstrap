@@ -7,7 +7,7 @@ import { evaluateBashCommand, type LocalPgHost } from './block-destructive-core'
 const PORT_HEX = 'D888'; // 55432
 const LISTEN_UNIX = '00010000';
 
-type Proc = { comm: string; sockets: string[]; fdsHidden?: boolean; linkHidden?: boolean; linkGone?: boolean };
+type Proc = { comm: string; sockets: string[]; cwd?: string; fdsHidden?: boolean; linkHidden?: boolean; linkGone?: boolean };
 
 interface Fixture {
     platform?: string;
@@ -48,6 +48,7 @@ function fixtureHost(f: Fixture): LocalPgHost {
     };
     const links: Record<string, string> = {};
     for (const [pid, p] of Object.entries(procs)) {
+        links[`/proc/${pid}/cwd`] = p.cwd ?? '/tmp/embedded-pg/data';
         links[`/proc/${pid}/fd/0`] = '/dev/null';
         links[`/proc/${pid}/fd/1`] = 'pipe:[77]';
         p.sockets.forEach((inode, i) => { if (!p.linkHidden) links[`/proc/${pid}/fd/${i + 3}`] = p.linkGone ? '' : `socket:[${inode}]`; });
@@ -80,7 +81,8 @@ describe('destructive psql against a scratch postgres in this container skips ap
         ['TCP on 127.0.0.1', TCP],
         ['the unix socket under /tmp', SOCKET],
         ['clustered flags, a long option and a pipe into tail', "psql -XAtq --host=127.0.0.1 -p55432 -d foo_test -c 'DROP SCHEMA tmp CASCADE' 2>&1 | tail -3"],
-        ['a cd first, and psql -X by path under timeout', "cd /tmp && timeout 60 /tmp/embedded-pg/bin/psql -X -h /tmp/embedded-pg -p 55432 -c \"DROP TABLE orders\" > /dev/null"],
+        ['an operand psql ignores, since -d and -U are given', "psql -X -h 127.0.0.1 -p 55432 -U tester -d foo_test 'host=203.0.113.9' -c 'DROP TABLE orders'"],
+        ['a cd first, and psql by path under timeout', "cd /tmp && timeout 60 /tmp/embedded-pg/bin/psql -X -h /tmp/embedded-pg -p 55432 -c \"DROP TABLE orders\" > /dev/null"],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -99,7 +101,7 @@ describe('destructive psql against a scratch postgres in this container skips ap
         const err = spyOn(console, 'error').mockImplementation(() => {});
         try {
             expect(verdict(TCP)).toBe('allow');
-            expect(err.mock.calls.map(c => String(c[0]))).toContain('local-pg: allowed psql against 127.0.0.1:55432 (postgres pid 4242)');
+            expect(err.mock.calls.map(c => String(c[0]))).toContain('local-pg: allowed psql against 127.0.0.1:55432 (postgres pid 4242, data /tmp/embedded-pg/data)');
         } finally {
             err.mockRestore();
         }
@@ -129,6 +131,13 @@ describe('a forwarder or an unproven listener holds', () => {
         ['a descriptor that cannot be read', TCP, {
             ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'] }, 5008: { comm: 'ssh', sockets: ['9001'], linkHidden: true } },
         }],
+        ['a postgres whose data directory is a volume, not scratch', TCP, { ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'], cwd: '/workspace/data/pg' } } }],
+        ['a system postgres', SOCKET, { ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'], cwd: '/var/lib/postgresql/16/main' } } }],
+        ['a data directory path that climbs out of /tmp', TCP, { ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'], cwd: '/tmp/../var/lib/pg' } } }],
+        ['a tunnel on the v4-mapped wildcard beside a postgres on ::, which takes no IPv4', TCP, {
+            tcp6: [['0'.repeat(32), PORT_HEX, '9001'], ['0000000000000000FFFF000000000000', PORT_HEX, '9109']],
+            procs: { 4242: { comm: 'postgres', sockets: ['9001'] }, 5009: { comm: 'ssh', sockets: ['9109'] } },
+        }],
         ['postgres only on another port', TCP, { tcp: [['0100007F', '1538', '9001']], procs: { 4242: { comm: 'postgres', sockets: ['9001'] } } }],
         ['a listener whose holder this process cannot see', TCP, { tcp: [['0100007F', PORT_HEX, '9106']] }],
         ['the socket path only as an accepted connection, not a listener', SOCKET, {
@@ -147,20 +156,20 @@ describe('a connection the guard cannot read exactly as psql will make it holds'
         ['localhost, which NSS resolves', "psql -X -h localhost -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'"],
         ['no host', "psql -X -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'"],
         ['no port, which a client build can default to anything', "psql -X -h 127.0.0.1 -d foo_test -c 'DROP DATABASE scratch_db'"],
-        ['a URI naming the same address, which libpq parses, not the guard', "psql -X 'postgresql://tester@127.0.0.1:55432/foo_test' -c 'TRUNCATE orders'"],
-        ['a URI whose userinfo hides the real host', "psql -X 'postgresql://127.0.0.1:55432?sslmode=disable@203.0.113.9:5432/foo_test' -c 'DROP TABLE orders'"],
-        ['a key=value string naming the socket directory', "psql -X 'host=/tmp/embedded-pg port=55432 dbname=foo_test' -c 'DROP TABLE orders'"],
-        ['a key=value string split by a non-ASCII space', "psql -X -h db.example.internal -p 5432 'application_name=x\u00a0host=127.0.0.1\u00a0port=55432' -c 'DROP TABLE orders'"],
-        ['a URI to a non-local host', "psql -X postgresql://tester@db.example.internal:55432/foo_test -c 'DROP TABLE orders'"],
+        ['a URI naming the same address, which libpq parses, not the guard', "psql -X -h 127.0.0.1 -p 55432 'postgresql://tester@127.0.0.1:55432/foo_test' -c 'TRUNCATE orders'"],
+        ['a URI whose userinfo hides the real host', "psql -X -h 127.0.0.1 -p 55432 'postgresql://127.0.0.1:55432?sslmode=disable@203.0.113.9:5432/foo_test' -c 'DROP TABLE orders'"],
+        ['a key=value string naming the socket directory', "psql -X -h 127.0.0.1 -p 55432 'host=/tmp/embedded-pg port=55432 dbname=foo_test' -c 'DROP TABLE orders'"],
+        ['a key=value string split by a non-ASCII space', "psql -X -h 127.0.0.1 -p 55432 'application_name=x\u00a0port=55432' -c 'DROP TABLE orders'"],
+        ['a URI to a non-local host', "psql -X -h 127.0.0.1 -p 55432 postgresql://tester@db.example.internal:55432/foo_test -c 'DROP TABLE orders'"],
         ['a local -h overridden by a remote URI in -d', "psql -X -h 127.0.0.1 -p 55432 -d postgresql://db.example.internal/foo_test -c 'DROP TABLE orders'"],
         ['an empty host= in -d, which replaces -h with the default socket', "psql -X -h 127.0.0.1 -p 55432 -d \"host='' dbname=foo_test\" -c 'DROP TABLE orders'"],
         ['two hosts', "psql -X -h 127.0.0.1 -h db.example.internal -p 55432 -c 'DROP TABLE orders'"],
-        ['two dbnames', "psql -X -h db.example.internal -p 5432 -d 'host=127.0.0.1 port=55432' -d foo_test -c 'DROP TABLE orders'"],
-        ['an operand psql -X ignores', "psql -X -U tester -d foo_test 'host=127.0.0.1 port=55432' -c 'DROP TABLE orders'"],
-        ['a multi-host URI', "psql -X postgresql://127.0.0.1:55432,db.example.internal:5432/foo_test -c 'DROP TABLE orders'"],
-        ['hostaddr= in a connection string', "psql -X 'host=127.0.0.1 hostaddr=203.0.113.5 port=55432' -c 'DROP TABLE orders'"],
+        ['two dbnames', "psql -X -h 127.0.0.1 -p 55432 -d foo_test -d 'host=203.0.113.9' -c 'DROP TABLE orders'"],
+        ['a connection string as the first operand, which psql makes the dbname', "psql -X -h 127.0.0.1 -p 55432 'host=203.0.113.9' -c 'DROP TABLE orders'"],
+        ['a multi-host URI', "psql -X -h 127.0.0.1 -p 55432 postgresql://127.0.0.1:55432,db.example.internal:5432/foo_test -c 'DROP TABLE orders'"],
+        ['hostaddr= in a connection string', "psql -X -h 127.0.0.1 -p 55432 'host=127.0.0.1 hostaddr=203.0.113.5 port=55432' -c 'DROP TABLE orders'"],
         ['service= in a connection string', "psql -X 'service=scratch' -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
-        ['service= in a URI', "psql -X 'postgresql://127.0.0.1:55432/foo_test?service=scratch' -c 'DROP TABLE orders'"],
+        ['service= in a URI', "psql -X -h 127.0.0.1 -p 55432 'postgresql://127.0.0.1:55432/foo_test?service=scratch' -c 'DROP TABLE orders'"],
         ['an option the guard does not place', "psql -X -h 127.0.0.1 -p 55432 --log-file=/tmp/l -c 'DROP TABLE orders'"],
         ['SQL on stdin', "psql -X -h 127.0.0.1 -p 55432 <<'SQL'\nDROP TABLE orders;\nSQL"],
         ['a stdin file read beside -c', "echo x | psql -X -h 127.0.0.1 -p 55432 -Xf- -c 'DROP TABLE orders'"],
@@ -188,6 +197,8 @@ describe('anything that could expand, redirect or run another connection holds',
         ['a \\connect in the SQL', "psql -X -h 127.0.0.1 -p 55432 -c '\\c host=db.example.internal' -c 'DROP TABLE orders'"],
         ['a shell escape in the SQL', "psql -X -h 127.0.0.1 -p 55432 -c '\\! psql -X -h db.example.internal -c \"DROP TABLE orders\"' -c 'DROP TABLE orders'"],
         ['a function named psql defined on the line', "psql() { /usr/bin/psql -X -h db.example.internal -p 5432 -c \"$6\"; }; psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
+        ['a second psql, whose shell escape can swap the listener first', "psql -X -h 127.0.0.1 -p 55432 -c 'select 1' ; psql -X -h 127.0.0.1 -p 55432 -d foo_test -c 'DROP TABLE orders'"],
+        ['a neighbour run through a package runner', "npx -y cat /tmp/x; psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['sudo', "sudo -u postgres psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['a tunnel opened on the same line', "ssh -fNL 55432:db.example.internal:5432 jump.example.internal && psql -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
     ])('%s', (_name, command) => {
