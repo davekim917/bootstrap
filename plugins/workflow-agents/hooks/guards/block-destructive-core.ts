@@ -1398,7 +1398,8 @@ function psqlVariableProgram(input: SqlInput, args: string[]): boolean {
     }
     for (const unit of input.texts.flatMap(t => readingsOf(input, t).flatMap(argument => psqlSlashUnits(t, argument)))) {
         for (const m of unit.matchAll(/\\set[ \t]+(['"]?)([^\s'"\\]+)\1([^\n]*)/g)) define(m[2], m[3]);
-        for (const m of unit.matchAll(/\\gset(?:[ \t]+(['"]?)([^\s'"\\]+)\1)?/g)) prefixes.push(m[2] ?? '');
+        // psql substitutes variables and runs backquotes in the prefix (psqlscanslash.l), so only a plain word is known.
+        for (const m of unit.matchAll(/\\gset(?:[ \t]+([^\s\\]+))?/g)) prefixes.push(/^(['"]?)([A-Za-z0-9_\u0080-\uffff]*)\1$/.exec(m[1] ?? '')?.[2] ?? '');
         for (const m of unit.matchAll(/\\getenv[ \t]+(['"]?)([^\s'"\\]+)/g)) unknown.add(m[2]);
         for (const m of unit.matchAll(/\\prompt\b([^\n]*)/g)) for (const w of m[1].match(/[^\s'"\\]+/g) ?? []) unknown.add(w);
     }
@@ -1506,8 +1507,8 @@ function clientShellVerdict(text: string, dir: string | undefined): GateEvaluati
 
 /**
  * Every directory a SQL client's shell escape may start from, or null when the line's own `cd`s don't prove it (the
- * escape is then checked from an undefined directory). A server-side program, or a client that moved its own
- * directory with `\cd`/`.cd`, has no knowable directory and is handled before this.
+ * escape then blocks). A server-side program, or a client that moved its own directory with `\cd`/`.cd`, has no
+ * knowable directory and is handled before this.
  */
 function shellDirectories(cmd: ResolvedCommand): string[] | null {
     return sqlPathCandidates('.', cmd);
@@ -1532,7 +1533,8 @@ function clientProgramVerdict(cmd: ResolvedCommand): { block?: string; gate?: st
         // A client that moved its own directory leaves the escape's directory unknowable, so a relative path in it
         // can't be located: the program is unreadable and blocks.
         if (runs.movesDir) return { block: `${cmd.name} ${program.via} runs after the client changed its own directory (\cd/.cd), so the guard can't tell where it runs. Run the command from a shell instead.` };
-        const dirs = shellDirectories(cmd) ?? [undefined];
+        const dirs = shellDirectories(cmd);
+        if (dirs === null) return { block: `${cmd.name} ${program.via} runs after a directory change the guard can't resolve, so it can't tell where the command runs. Run the command from a shell instead.` };
         for (const shell of program.shells) {
             for (const dir of dirs) {
                 const v = clientShellVerdict(shell, dir);
