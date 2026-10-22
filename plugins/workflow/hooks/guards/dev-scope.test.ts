@@ -94,6 +94,7 @@ describe('everything else stays gated', () => {
         ['an exported SNOWFLAKE_ variable', 'export SNOWFLAKE_CONNECTIONS_ACME_DEV_ACCOUNT=prod; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['two connection flags', 'snow sql -c acme_dev -c acme_other -q "drop table dev_db.a.b"'],
         ['a connection held in a variable', 'C=acme_dev; snow sql -c $C -q "drop table dev_db.a.b"'],
+        ['a function named snow defined on the line', 'snow() { command snow sql -c acme_other -q "$5"; }; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('gate');
     });

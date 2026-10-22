@@ -3056,12 +3056,19 @@ const SNOW_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}snow\\s`)
 // Commands that change what a later command sees: its environment, or code it sources.
 const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare', 'typeset', 'env', 'eval', 'readonly', 'local', 'alias', 'unset']);
 
-/** True when the command line assigns a shell variable anywhere, or can't be parsed to tell. */
-function mayAssign(command: string): boolean {
+/**
+ * True when the command line assigns a shell variable or defines a function anywhere, or can't be parsed to tell. A
+ * function can take the name of the command an exemption reads, and run something else under it.
+ */
+function changesShellState(command: string): boolean {
+    const found = (node: unknown): boolean => {
+        if (!node || typeof node !== 'object') return false;
+        if (Array.isArray(node)) return node.some(found);
+        const type = (node as { type?: unknown }).type;
+        return type === 'Assignment' || type === 'Function' || Object.values(node).some(found);
+    };
     try {
-        const assignments: any[] = [];
-        collectAssignmentNodes(parse(command), assignments);
-        return assignments.length > 0;
+        return found(parse(command));
     } catch {
         return true;
     }
@@ -3105,7 +3112,7 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
-    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name)) || mayAssign(command)) return null;
+    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name)) || changesShellState(command)) return null;
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {
@@ -3144,21 +3151,17 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
 // Destructive psql against a throwaway Postgres the session started in its own
 // container runs without approval. A loopback address or a /tmp socket proves
 // nothing on its own: an `ssh -L`, socat, `render psql`, kubectl port-forward or a
-// forwarded unix socket each put a remote database behind one. So the exemption
-// needs all of the following, and anything the guard cannot read holds:
-//   • the connection psql will actually make is written literally: one host,
-//     exactly 127.0.0.1, ::1 or a normalized directory under /tmp, and one explicit
-//     port. `localhost` and an omitted port are refused because NSS resolution and
-//     a client built `--with-pgport` decide them, not anything the guard can read;
-//   • nothing can change that connection or run another one: every argument is a
-//     literal shell word, SQL arrives only through -c and holds no backslash (so no
-//     \connect, \!, \i or backquote), no service/hostaddr/PG* override is in the
-//     command or this process's environment, no user psqlrc exists, and the rest of
-//     the line only reads text: no assignment, no file written, no other program;
-//   • procfs shows every listener the address and port reach is held only by
-//     processes named postgres, with every process's descriptors readable.
-// What a pre-execution check cannot rule out is a change between this check and
-// psql connecting, made by another process. Tier-1 hard blocks are never exempted.
+// forwarded unix socket each put a remote database behind one, and libpq, psql and
+// the shell each have ways to connect somewhere other than the -h a command shows.
+// So the exemption accepts only a command whose connection needs no emulation of
+// them: literal -h and -p, a plain dbname, -X, SQL only through -c, nothing else
+// on the line that can change state; and procfs must show every listener at that
+// address held only by postgres. Anything else, or anything unreadable, holds.
+// `localhost`, an omitted port, connection strings and psqlrc files are refused
+// rather than resolved: NSS, the client build, libpq's own parser and psql's
+// binary-relative startup files decide them, not anything the guard can read.
+// A change made by another process between this check and psql connecting is not
+// ruled out. Tier-1 hard blocks are never exempted.
 
 /**
  * What the local-Postgres exemption reads from the host it runs on; tests supply fixtures. Each read is null when
@@ -3190,21 +3193,16 @@ const LIVE_LOCAL_PG_HOST: LocalPgHost = {
 };
 
 const PSQL_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}(?:/[^\\s'"$\`\\\\]*/)?psql\\s`);
-// `printf -v` assigns and `sort -o`/`tee` write files, so neither is here.
+// `printf -v` assigns and `sort -o`/`tee` write files, so none of them is here.
 const LOCAL_PG_LINE_COMMANDS = new Set(['psql', 'cd', 'pushd', 'popd', 'echo', 'cat', 'head', 'tail', 'grep', 'wc', 'true']);
-const LIBPQ_REDIRECT_RE = /\b(?:service|hostaddr)\s*=|\bPG(?:SERVICE|SERVICEFILE|HOSTADDR|SYSCONFDIR)\b/i;
-// PSQLRC and PGSYSCONFDIR choose a startup file, which can `\connect` elsewhere. POSIXLY_CORRECT stops psql's getopt
-// at the first operand, so options after it are ignored rather than read the way psqlTarget reads them.
-const LIBPQ_REDIRECT_ENV = ['PGHOSTADDR', 'PGSERVICE', 'PGSERVICEFILE', 'PGSYSCONFDIR', 'PSQLRC', 'POSIXLY_CORRECT'];
+// POSIXLY_CORRECT stops psql's getopt at the first operand, so options after it are not read the way psqlTarget reads them.
+const LIBPQ_REDIRECT_ENV = ['PGHOSTADDR', 'PGSERVICE', 'PGSERVICEFILE', 'PGSYSCONFDIR', 'POSIXLY_CORRECT'];
 const FILE_WRITE_REDIRECTS = new Set(['>', '>>', '>|', '&>', '&>>', '<>']);
 
 const PSQL_SHORT_FLAGS = 'XqtA1eabEnwWx';
 const PSQL_SHORT_VALUES: Record<string, string> = { c: '--command', d: '--dbname', h: '--host', p: '--port', U: '--username', v: '--set' };
 const PSQL_LONG_FLAGS = new Set(['--no-psqlrc', '--quiet', '--tuples-only', '--no-align', '--single-transaction', '--echo-queries', '--echo-all', '--echo-errors', '--echo-hidden', '--no-readline', '--no-password', '--password', '--expanded', '--csv']);
 const PSQL_LONG_VALUES = new Set(['--command', '--dbname', '--host', '--port', '--username', '--set', '--variable']);
-// Connection-string keywords that cannot move the connection off the host it names.
-const LOCAL_PG_CONNINFO_KEYS = new Set(['host', 'port', 'dbname', 'user', 'password', 'application_name', 'connect_timeout', 'sslmode']);
-const PG_URI_RE = /^postgres(?:ql)?:\/\/(?:[^@/?#]*@)?(\[[^\]/?#]*\]|[^:/?#[\]@,]*)(?::([^/?#]*))?(?:\/([^?#]*))?(?:\?([^#]*))?$/;
 
 /** True when the shell passes `text` (one argument as written) through unchanged: no expansion, glob or escape. */
 function isLiteralShellWord(text: string): boolean {
@@ -3252,44 +3250,12 @@ function mayWriteFiles(command: string): boolean {
     }
 }
 
-/** The host and port a dbname that libpq expands (a URI or `key=value` string) sets; null when it can't be read. */
-function connectionStringTarget(value: string): { host?: string; port?: string } | null {
-    const keys = new Map<string, string>();
-    // libpq skips an empty host or port in a URI's authority, but stores an empty value given anywhere else, and an
-    // empty host then means its compiled-in socket directory rather than the -h it replaced.
-    const set = (key: string, v: string, authority = false) => {
-        if (!LOCAL_PG_CONNINFO_KEYS.has(key) || keys.has(key) || (v === '' && !authority)) return false;
-        if (v !== '') keys.set(key, v);
-        return true;
-    };
-    if (/^postgres(?:ql)?:\/\//.test(value)) {
-        const m = PG_URI_RE.exec(value);
-        if (!m) return null;
-        const host = m[1].startsWith('[') ? m[1].slice(1, -1) : m[1];
-        if (host.includes('%') || !set('host', host, true) || (m[2] !== undefined && !set('port', m[2], true))) return null;
-        for (const pair of (m[4] ?? '').split('&').filter(Boolean)) {
-            const eq = pair.indexOf('=');
-            if (eq < 0 || pair.includes('%') || !set(pair.slice(0, eq), pair.slice(eq + 1))) return null;
-        }
-    } else {
-        const pair = /\s*([A-Za-z_]+)\s*=\s*('(?:[^'\\]|\\.)*'|[^\s'\\]*)\s*/y;
-        for (let at = 0; at < value.length;) {
-            pair.lastIndex = at;
-            const m = pair.exec(value);
-            if (!m || pair.lastIndex === at) return null;
-            at = pair.lastIndex;
-            if (!set(m[1], m[2].startsWith("'") ? m[2].slice(1, -1).replace(/\\(.)/g, '$1') : m[2])) return null;
-        }
-    }
-    return { host: keys.get('host'), port: keys.get('port') };
-}
-
 /**
- * The host and port psql connects to, read the way psql reads its options: the last of a repeated option wins, and
- * operands fill the dbname, then the username, not already given. Null when an option is one the guard doesn't
- * place or no -c gives the SQL.
+ * The host and port psql connects to, read the way psql reads its options: the last of a repeated option wins. Null
+ * when an option is one the guard doesn't place, no -c gives the SQL, -X is missing, or the dbname is a connection
+ * string libpq would expand.
  */
-function psqlTarget(args: string[]): { host?: string; port?: string; noPsqlrc: boolean } | null {
+function psqlTarget(args: string[]): { host?: string; port?: string } | null {
     const last = new Map<string, string>();
     const positionals: string[] = [];
     let commands = 0;
@@ -3332,23 +3298,12 @@ function psqlTarget(args: string[]): { host?: string; port?: string; noPsqlrc: b
         }
         positionals.push(a);
     }
-    let dbname = last.get('--dbname');
-    let username = last.get('--username');
-    for (const p of positionals) {
-        if (dbname === undefined) dbname = p;
-        else if (username === undefined) username = p;
-    }
-    if (commands === 0) return null;
-    let host = last.get('--host');
-    let port = last.get('--port');
-    // A dbname libpq expands overrides -h and -p, since psql passes it after them.
-    if (dbname !== undefined && (dbname.includes('=') || /^postgres(?:ql)?:\/\//.test(dbname))) {
-        const expanded = connectionStringTarget(dbname);
-        if (!expanded) return null;
-        host = expanded.host ?? host;
-        port = expanded.port ?? port;
-    }
-    return { host, port, noPsqlrc };
+    if (commands === 0 || !noPsqlrc) return null;
+    // Without -d, psql takes the first operand as the dbname (later ones as the username, or ignored). libpq expands a
+    // dbname holding `=` or a URI prefix, and what that holds overrides -h and -p.
+    const dbname = last.get('--dbname') ?? positionals[0];
+    if (dbname !== undefined && (dbname.includes('=') || /^postgres(?:ql)?:\/\//.test(dbname))) return null;
+    return { host: last.get('--host'), port: last.get('--port') };
 }
 
 /** A /proc/net/tcp{,6} address in network byte order as hex; the kernel prints each 32-bit word in host order. */
@@ -3445,8 +3400,8 @@ export function localPgTargetOf(
 ): string | null {
     if (cmd.name !== 'psql' || host.platform !== 'linux') return null;
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !PSQL_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
-    if (commands.some(c => !LOCAL_PG_LINE_COMMANDS.has(c.name)) || LIBPQ_REDIRECT_RE.test(command)) return null;
-    if (LIBPQ_REDIRECT_ENV.some(k => host.env[k] !== undefined) || mayAssign(command) || mayWriteFiles(command)) return null;
+    if (commands.some(c => !LOCAL_PG_LINE_COMMANDS.has(c.name)) || changesShellState(command) || mayWriteFiles(command)) return null;
+    if (LIBPQ_REDIRECT_ENV.some(k => host.env[k] !== undefined)) return null;
     const written = writtenArgs(cmd);
     if (!written || !written.every(isLiteralShellWord) || cmd.args.some(a => a.includes('\\'))) return null;
 
@@ -3454,11 +3409,6 @@ export function localPgTargetOf(
     if (!target?.host || !target.port || !/^\d{1,5}$/.test(target.port)) return null;
     const port = Number(target.port);
     if (port < 1 || port > 65535) return null;
-    if (!target.noPsqlrc) {
-        const home = host.env.HOME;
-        const entries = home ? host.readDir(home) : null;
-        if (!entries || entries.some(e => e.startsWith('.psqlrc'))) return null;
-    }
 
     if (target.host.startsWith('/')) {
         const dir = target.host.replace(/(.)\/+$/, '$1');
