@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -13,6 +13,9 @@ beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), 'sql-client-programs-test-'));
     writeFileSync(join(dir, 'escape.sql'), 'select 1;\n\\! shred /tmp/report.txt\n');
     writeFileSync(join(dir, 'pipe.sql'), 'select 1 \\g | sh\n');
+    writeFileSync(join(dir, 'escape-then-sql.sql'), '\\! echo start\ntruncate staging_orders;\n');
+    mkdirSync(join(dir, 'db'));
+    writeFileSync(join(dir, 'db', 'drop.sql'), 'drop table orders;\n');
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -42,6 +45,10 @@ describe('a program a SQL client runs that needs approval, or that the guard can
     test.each([
         ['psql \\! running destructive SQL elsewhere', `psql -d app_db -c '\\! psql -h db.example.internal -c "DROP TABLE orders"'`],
         ['psql \\! with no command, which reads a shell from stdin', "psql -d app_db -c '\\!'"],
+        ['psql \\! running a relative SQL file from the directory the line moved to', () => `cd ${dir}/db && psql -d app_db -c '\\! psql -f drop.sql'`],
+        ['psql backquotes naming a psql variable, whose value the line does not show', "psql -d app_db -v cmd=x -c '\\echo `:cmd`'"],
+        // A file runs line by line, so the SQL after a \! line is SQL, gated as SQL, not part of the shell command.
+        ['psql \\! in a file followed by destructive SQL', () => `psql -d app_db -f ${dir}/escape-then-sql.sql`],
         ['psql \\o into a pipe', "psql -d app_db -c '\\o | tee /tmp/out.txt'"],
         ['psql \\g into a pipe, from a -f file', () => `psql -d app_db -f ${dir}/pipe.sql`],
         ['psql \\w into a pipe', "psql -d app_db -c '\\w | sh'"],

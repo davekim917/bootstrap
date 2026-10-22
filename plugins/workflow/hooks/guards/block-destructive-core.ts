@@ -1027,6 +1027,7 @@ const SNOW_TEMPLATE = /&\{\s*([\w.]+)\s*\}|<%\s*([\w.]+)\s*%>|&([A-Za-z_]\w*)/g;
 export interface SqlInput {
     texts: string[];            // every SQL text the client could run, as far as the command line shows
     unreadable: string | null;  // a SQL file too large to check, past the include limit, or input past the trace budget
+    argTexts?: Set<string>;     // the texts that are the client's own arguments, not file or stdin input
 }
 
 /** The value `option` gives in `args[i]`: `-q X`, `--query=X`, or glued `-qX`. */
@@ -1099,13 +1100,16 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     // A file option's value names a file (read below), not SQL.
     const fileValue = (i: number) => fileOptions.includes(cmd.args[i - 1] ?? '') || fileOptions.some(o => cmd.args[i].startsWith(o) && cmd.args[i] !== o);
     let expanded: string[] | null = [];
+    const argTexts = new Set<string>();
     for (const view of cmd.expandAs === undefined ? [cmd] : cmd.expandAs ?? []) {
-        const e = expandWords([...(view.stdinExpanded ?? []).map(heredocWord), ...argumentWords(view).filter((_, i) => !fileValue(i))], view);
-        if (e === null) {
+        const stdin = expandWords((view.stdinExpanded ?? []).map(heredocWord), view);
+        const words = expandWords(argumentWords(view).filter((_, i) => !fileValue(i)), view);
+        if (stdin === null || words === null) {
             expanded = null;
             break;
         }
-        expanded.push(...e);
+        expanded.push(...stdin, ...words);
+        for (const w of words) for (const t of withOptionValue(w)) argTexts.add(t);
     }
     if (cmd.expandAs === null) expanded = null;
     let traceOver = expanded === null;
@@ -1120,7 +1124,10 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const attaches = !SINGLE_DASH_CLIENTS.has(client);
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        texts.push(...withOptionValue(a));
+        for (const t of withOptionValue(a)) {
+            texts.push(t);
+            argTexts.add(t);
+        }
         for (const o of fileOptions) {
             const v = optionValueAt(args, i, o, attaches);
             if (v !== undefined) files.push(v);
@@ -1208,7 +1215,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         }
     }
     if (pending.length) unreadable ??= pending[0];
-    return { texts, unreadable };
+    return { texts, unreadable, argTexts };
 }
 
 const sqlInputs = new WeakMap<ResolvedCommand, SqlInput>();
@@ -1221,8 +1228,8 @@ function sqlInputFor(cmd: ResolvedCommand): SqlInput {
 }
 
 /**
- * A program a SQL client's input makes it run. `shells` are the readings of the command line it hands to the shell
- * (more than one when where the line ends is uncertain); empty when that line can't be read. `server`: the database
+ * A program a SQL client's input makes it run. `shells` holds the command line it hands to the shell; empty when
+ * that line can't be read. `server`: the database
  * server runs it, wherever that is.
  */
 interface ClientProgram { via: string; shells: string[]; server?: boolean }
@@ -1240,12 +1247,6 @@ const MYSQL_SHELL_ESCAPE = /\\!(?=\s|$)/g;
 const SQLITE_DOT_COMMAND = /^[ \t]*\.([A-Za-z_]+)([^\n]*)$/gm;
 const SQLITE_EDIT_FUNCTION = /\bedit\s*\(/i;
 const COPY_PROGRAM = /\b(?:TO|FROM)\s+PROGRAM\b(?:\s+'((?:[^']|'')*)')?/gi;
-
-/** What a shell escape runs: the rest of its line, and the rest of the text in case the client reads past the line. */
-function restOfCommand(text: string, from: number): string[] {
-    const line = text.slice(from).split('\n')[0].trim();
-    return [...new Set([line, text.slice(from).trim()].filter(Boolean))];
-}
 
 const isPrefixOf = (name: string, full: string) => name.length > 0 && full.startsWith(name);
 
@@ -1267,27 +1268,36 @@ function sqliteDotPrograms(text: string): ClientProgram[] {
     return out;
 }
 
-function psqlPrograms(text: string): ClientProgram[] {
+function psqlPrograms(text: string, argument: boolean): ClientProgram[] {
     const out: ClientProgram[] = [];
-    for (const m of text.matchAll(PSQL_PROGRAM_COMMAND)) {
-        const name = m[1];
-        const after = (m.index ?? 0) + m[0].length;
-        if (name === '!') out.push({ via: '\\!', shells: restOfCommand(text, after) });
-        else if (!PSQL_PIPING_COMMANDS.has(name)) out.push({ via: `\\${name}`, shells: [] });
-        else if (text.slice(after).split('\n')[0].includes('|') || /^\s*\|/.test(text.slice(after))) out.push({ via: `\\${name} |`, shells: [] });
-    }
-    // A backslash command's arguments run what backquotes enclose (psqlscanslash.l, xslashbackquote).
-    const slash = text.search(PSQL_BACKSLASH_COMMAND);
-    if (slash >= 0) {
-        const spans = text.slice(slash).split('`');
-        for (let i = 1; i < spans.length; i += 2) out.push({ via: 'backquote', shells: i === spans.length - 1 ? [] : [spans[i]] });
+    // psql runs a -c value that starts with a backslash as one backslash command reading the whole value
+    // (startup.c, ACT_SINGLE_SLASH); files and stdin it reads line by line.
+    for (const unit of argument && text.startsWith('\\') ? [text] : text.split('\n')) {
+        for (const m of unit.matchAll(PSQL_PROGRAM_COMMAND)) {
+            const name = m[1];
+            const rest = unit.slice((m.index ?? 0) + m[0].length);
+            if (name === '!') out.push({ via: '\\!', shells: rest.trim() ? [rest.trim()] : [] });
+            else if (!PSQL_PIPING_COMMANDS.has(name)) out.push({ via: `\\${name}`, shells: [] });
+            else if (rest.includes('|')) out.push({ via: `\\${name} |`, shells: [] });
+        }
+        // A backslash command's arguments run what backquotes enclose (psqlscanslash.l, xslashbackquote).
+        const slash = unit.search(PSQL_BACKSLASH_COMMAND);
+        if (slash < 0) continue;
+        const spans = unit.slice(slash).split('`');
+        // psql substitutes :variables inside backquotes, so a span naming one runs a value the line doesn't show.
+        for (let i = 1; i < spans.length; i += 2) {
+            out.push({ via: 'backquote', shells: i === spans.length - 1 || /:[\w\u0080-\uffff]/.test(spans[i]) ? [] : [spans[i]] });
+        }
     }
     return out;
 }
 
 function mysqlPrograms(text: string, args: string[]): ClientProgram[] {
     const out: ClientProgram[] = [];
-    for (const m of text.matchAll(MYSQL_SHELL_ESCAPE)) out.push({ via: '\\!', shells: restOfCommand(text, (m.index ?? 0) + m[0].length) });
+    for (const m of text.matchAll(MYSQL_SHELL_ESCAPE)) {
+        const line = text.slice((m.index ?? 0) + m[0].length).split('\n')[0].trim();
+        out.push({ via: '\\!', shells: line ? [line] : [] });
+    }
     for (const m of text.matchAll(MYSQL_SYSTEM)) out.push({ via: 'system', shells: m[1].trim() ? [m[1].trim()] : [] });
     if (MYSQL_PROGRAM_COMMAND.test(text) || args.some(a => /^--pager(?:=|$)/.test(a))) out.push({ via: 'pager or editor', shells: [] });
     return out;
@@ -1301,8 +1311,9 @@ function clientProgramsOf(cmd: ResolvedCommand): ClientProgram[] {
     if (cached) return cached;
     const programs: ClientProgram[] = [];
     if (SQL_CLIS[cmd.name]) {
-        for (const text of new Set(sqlInputFor(cmd).texts)) {
-            if (cmd.name === 'psql') programs.push(...psqlPrograms(text));
+        const input = sqlInputFor(cmd);
+        for (const text of new Set(input.texts)) {
+            if (cmd.name === 'psql') programs.push(...psqlPrograms(text, input.argTexts?.has(text) ?? false));
             else if (cmd.name === 'mysql') programs.push(...mysqlPrograms(text, cmd.args));
             else programs.push(...sqliteDotPrograms(text));
             if (/\bCOPY\b/i.test(text)) {
@@ -1319,13 +1330,18 @@ function clientProgramsOf(cmd: ResolvedCommand): ClientProgram[] {
 const CLIENT_SHELL_DEPTH_MAX = 4;
 let clientShellDepth = 0;
 
-/** A shell command line a SQL client runs, judged as if typed at the top: why it is blocked, or why it needs approval. */
-function clientShellVerdict(text: string): { block: string | null; gate: string | null } {
+/**
+ * A shell command line a SQL client runs from `dir`, judged as if typed there: why it is blocked, or why it needs
+ * approval.
+ */
+function clientShellVerdict(text: string, dir: string | undefined): { block: string | null; gate: string | null } {
     if (clientShellDepth >= CLIENT_SHELL_DEPTH_MAX) return { block: null, gate: 'It nests SQL clients running shell commands too deeply to check.' };
     clientShellDepth++;
     try {
         let gate = shellParseProblem(text);
-        for (const c of extractCommands(text)) {
+        const commands = extractCommands(text);
+        if (dir !== undefined && commands[0]?.script) commands[0].script.cwd = dir;
+        for (const c of commands) {
             const block = checkHardBlock(c) ?? (c.name === 'rm' ? checkRmDecision(c)?.replace(/^BLOCKED:\s*/, '') ?? null : null);
             if (block) return { block, gate: null };
             gate ??= checkGatedCommand(c) ?? innerGatedSteps(c)[0]?.reason ?? null;
@@ -1336,11 +1352,16 @@ function clientShellVerdict(text: string): { block: string | null; gate: string 
     }
 }
 
+/** Every directory a SQL client step may run in, which its shell escapes start from; null when the line doesn't prove it. */
+function clientDirectories(cmd: ResolvedCommand): string[] | null {
+    return sqlPathCandidates('.', cmd);
+}
+
 /** Why a SQL client step is blocked for a shell command it runs that is blocked on its own, or null. */
 function clientProgramBlock(cmd: ResolvedCommand): string | null {
-    for (const { via, shells } of clientProgramsOf(cmd)) {
+    for (const { via, shells, server } of clientProgramsOf(cmd)) {
         for (const shell of shells) {
-            const { block } = clientShellVerdict(shell);
+            const { block } = clientShellVerdict(shell, server ? undefined : clientDirectories(cmd)?.[0]);
             if (block) return `${cmd.name} ${via} runs a blocked command. ${block}`;
         }
     }
@@ -1355,9 +1376,13 @@ function clientProgramGate(cmd: ResolvedCommand): string | null {
     for (const { via, shells, server } of clientProgramsOf(cmd)) {
         if (server) return `${cmd.name}: COPY … PROGRAM runs a shell command on the database server, which the guard can't check.`;
         if (!shells.length) return `${cmd.name} ${via} runs a program the guard can't check.`;
+        const dirs = clientDirectories(cmd);
+        if (dirs === null) return `${cmd.name} ${via} runs a shell command from a directory the guard can't determine.`;
         for (const shell of shells) {
-            const { gate } = clientShellVerdict(shell);
-            if (gate) return `${cmd.name} ${via} runs a shell command that needs approval. ${gate}`;
+            for (const dir of dirs) {
+                const { gate } = clientShellVerdict(shell, dir);
+                if (gate) return `${cmd.name} ${via} runs a shell command that needs approval. ${gate}`;
+            }
         }
     }
     return null;
@@ -4021,6 +4046,15 @@ export function awsServiceAndOperation(args: string[]): [string, string, number]
     return [positional[0] ?? '', positional[1] ?? '', opIndex];
 }
 
+// A psql backslash command runs to the end of its line. The statement before it may continue past it (`\set` between
+// two SQL lines) or end at it (`\g`), so the SQL is also read with each one removed and with each one ending a statement.
+const PSQL_BACKSLASH_TO_LINE_END = /\\[^\s\\][^\n]*/g;
+
+function psqlStatementTexts(text: string): string[] {
+    if (!text.includes('\\')) return [text];
+    return [text, text.replace(PSQL_BACKSLASH_TO_LINE_END, ''), text.replace(PSQL_BACKSLASH_TO_LINE_END, ';')];
+}
+
 /** Returns gate reason if the command requires approval, null otherwise */
 const CF_DESTRUCTIVE_VERB = /^(?:[a-z]+-)*(?:delete|purge|destroy|remove|reset|revoke|roll|rollback|terminate|clear|rotate|invalidate|replace)(?:[-A-Z][-A-Za-z]*)?$/;
 
@@ -4038,9 +4072,11 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         const program = clientProgramGate(cmd);
         if (program) return program;
         for (const text of input.texts) {
-            const matched = findDestructiveSqlStatement(text);
-            if (matched) {
-                return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
+            for (const statements of name === 'psql' ? psqlStatementTexts(text) : [text]) {
+                const matched = findDestructiveSqlStatement(statements);
+                if (matched) {
+                    return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
+                }
             }
         }
     }

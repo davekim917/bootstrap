@@ -184,8 +184,26 @@ function misreadHeredoc(script: unknown, src: string): { start: number; bash: Re
         if (!bash || bash.delimiter !== String(r.target?.text ?? '') || bash.quoted !== Boolean(r.heredocQuoted) || bash.end !== r.end) {
             return { start, bash };
         }
+        if (!bash.quoted && continuedLineEnds(String(r.content ?? ''), bash.delimiter, r.operator === '<<-')) return { start, bash: null };
     }
     return null;
+}
+
+/**
+ * Whether bash ends an unquoted heredoc inside what unbash read as its body: bash joins a line ending in an unescaped
+ * backslash to the next before comparing it with the delimiter, and unbash compares physical lines.
+ */
+function continuedLineEnds(body: string, delimiter: string, stripTabs: boolean): boolean {
+    const lines = body.split('\n');
+    for (let i = 0; i < lines.length - 1; i++) {
+        if (!/(?:^|[^\\])(?:\\\\)*\\$/.test(lines[i])) continue;
+        let joined = lines[i];
+        for (let j = i + 1; j < lines.length && /(?:^|[^\\])(?:\\\\)*\\$/.test(joined); j++) {
+            joined = joined.slice(0, -1) + lines[j];
+            if (joined === delimiter || (stripTabs && joined.replace(/^\t+/, '') === delimiter)) return true;
+        }
+    }
+    return false;
 }
 
 /** The delimiter written so unbash reads it as bash does, in exactly `length` characters, or null when it can't be. */

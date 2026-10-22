@@ -18,6 +18,8 @@ describe('a partly quoted delimiter ends the body where bash ends it', () => {
         ['a quoted space in the word', 'cat <<E"O F"\nnotes\nEO F\nshred /tmp/report.txt'],
         ['a backslash kept inside double quotes', 'cat <<"E\\OF"\nnotes\nE\\OF\nshred /tmp/report.txt'],
         ['inside an if body', 'if true; then cat <<E"O"F\nnotes\nEOF\nshred /tmp/report.txt\nfi'],
+        // In an unquoted body bash joins a line ending in a backslash to the next before comparing it with the delimiter.
+        ['a body line continued into the delimiter', 'cat <<EOF\nE\\\nOF\nshred /tmp/report.txt\nEOF'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('block');
     });
