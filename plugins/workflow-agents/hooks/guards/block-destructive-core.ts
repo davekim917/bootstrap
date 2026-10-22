@@ -1032,7 +1032,7 @@ const SNOW_TEMPLATE = /&\{\s*([\w.]+)\s*\}|<%\s*([\w.]+)\s*%>|&([A-Za-z_]\w*)/g;
 export interface SqlInput {
     texts: string[];            // every SQL text the client could run, as far as the command line shows
     unreadable: string | null;  // a SQL file too large to check, past the include limit, or input past the trace budget
-    argTexts?: Set<string>;     // the texts that are the client's own arguments, not file or stdin input
+    argCounts?: Map<string, number>; // how many entries of `texts` arrived as the client's own arguments
 }
 
 /** The value `option` gives in `args[i]`: `-q X`, `--query=X`, or glued `-qX`. */
@@ -1105,7 +1105,8 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     // A file option's value names a file (read below), not SQL.
     const fileValue = (i: number) => fileOptions.includes(cmd.args[i - 1] ?? '') || fileOptions.some(o => cmd.args[i].startsWith(o) && cmd.args[i] !== o);
     let expanded: string[] | null = [];
-    const argTexts = new Set<string>();
+    const argCounts = new Map<string, number>();
+    const asArgument = (t: string) => argCounts.set(t, (argCounts.get(t) ?? 0) + 1);
     for (const view of cmd.expandAs === undefined ? [cmd] : cmd.expandAs ?? []) {
         const stdin = expandWords((view.stdinExpanded ?? []).map(heredocWord), view);
         const words = expandWords(argumentWords(view).filter((_, i) => !fileValue(i)), view);
@@ -1114,7 +1115,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
             break;
         }
         expanded.push(...stdin, ...words);
-        for (const w of words) for (const t of withOptionValue(w)) argTexts.add(t);
+        for (const w of words) for (const t of withOptionValue(w)) asArgument(t);
     }
     if (cmd.expandAs === null) expanded = null;
     let traceOver = expanded === null;
@@ -1131,7 +1132,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const a = args[i];
         for (const t of withOptionValue(a)) {
             texts.push(t);
-            argTexts.add(t);
+            asArgument(t);
         }
         for (const o of fileOptions) {
             const v = optionValueAt(args, i, o, attaches);
@@ -1227,7 +1228,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         unreadable ??= 'a relative include after the client changed its own directory';
     }
     if (pending.length) unreadable ??= pending[0];
-    return { texts, unreadable, argTexts };
+    return { texts, unreadable, argCounts };
 }
 
 const sqlInputs = new WeakMap<ResolvedCommand, SqlInput>();
@@ -1343,79 +1344,17 @@ function mysqlPrograms(text: string, args: string[]): ClientProgram[] {
     return out;
 }
 
-const PSQL_VAR_CHAR = /[A-Za-z0-9_\u0080-\uffff]/;
-const PSQL_IDENT_CHAR = /[A-Za-z0-9_$\u0080-\uffff]/;
-const PSQL_DOLLAR_QUOTE = /\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/y;
-
-/** The end of a quoted run starting after its opening `quote`: a doubled quote stays inside, as may an escaped one. */
-function psqlQuoteEnd(text: string, from: number, quote: string, escapes: boolean): number {
-    for (let j = from; j < text.length; j++) {
-        if (escapes && text[j] === '\\') j++;
-        else if (text[j] === quote) {
-            if (text[j + 1] !== quote) return j + 1;
-            j++;
-        }
-    }
-    return text.length;
-}
+// A bare :name psql substitutes and lexes again (psqlscan.l, variable_char); `::` is a cast, not a variable.
+const PSQL_BARE_VAR = /(?<!:):([A-Za-z0-9_\u0080-\uffff]+)/g;
 
 /**
- * Input psql reads line by line, split the way its lexer splits it (psqlscan.l): a backslash starts a backslash
- * command only outside literals, quoted identifiers and comments, and the command runs to the end of its line.
- * `refs` are the bare :name references in SQL, the one place psql lexes a variable's value again. Whether a plain
- * '…' takes backslash escapes depends on the server's standard_conforming_strings, so both readings are joined.
+ * The units psql reads backslash commands from: a -c value that starts with a backslash is one command over the whole
+ * value (startup.c, ACT_SINGLE_SLASH), another -c value goes to the server unread, and files and stdin go line by line.
+ * Lines are scanned whole, literals and comments included: a guard that mis-lexes psql's quoting would hide a real
+ * command, so a backslash command spelled inside a SQL string blocks as well.
  */
-function psqlLex(text: string): { slashes: string[]; refs: string[] } {
-    const slashes = new Set<string>();
-    const refs = new Set<string>();
-    const identBefore = (k: number) => k > 0 && PSQL_IDENT_CHAR.test(text[k - 1]);
-    for (const standardStrings of [true, false]) {
-        let i = 0;
-        while (i < text.length) {
-            const c = text[i];
-            const next = text[i + 1];
-            if (c === '\\') {
-                if (next === ';' || next === ':') { i += 2; continue; }
-                const eol = text.indexOf('\n', i);
-                const stop = eol < 0 ? text.length : eol;
-                slashes.add(text.slice(i, stop));
-                i = stop;
-            } else if (c === '-' && next === '-') {
-                const eol = text.indexOf('\n', i);
-                i = eol < 0 ? text.length : eol;
-            } else if (c === '/' && next === '*') {
-                let depth = 1;
-                for (i += 2; i < text.length && depth > 0; i++) {
-                    if (text.startsWith('/*', i)) { depth++; i++; } else if (text.startsWith('*/', i)) { depth--; i++; }
-                }
-            } else if (c === "'") {
-                const escapeString = /[eE]/.test(text[i - 1] ?? '') && !identBefore(i - 1);
-                i = psqlQuoteEnd(text, i + 1, "'", escapeString || !standardStrings);
-            } else if (c === '"') {
-                i = psqlQuoteEnd(text, i + 1, '"', false);
-            } else if (c === '$' && !identBefore(i)) {
-                PSQL_DOLLAR_QUOTE.lastIndex = i;
-                const tag = PSQL_DOLLAR_QUOTE.exec(text)?.[0];
-                if (tag) {
-                    const close = text.indexOf(tag, i + tag.length);
-                    i = close < 0 ? text.length : close + tag.length;
-                } else i++;
-            } else if (c === ':' && next === ':') {
-                i += 2;
-            } else if (c === ':' && next !== undefined && PSQL_VAR_CHAR.test(next)) {
-                let j = i + 1;
-                while (j < text.length && PSQL_VAR_CHAR.test(text[j])) j++;
-                refs.add(text.slice(i + 1, j));
-                i = j;
-            } else i++;
-        }
-    }
-    return { slashes: [...slashes], refs: [...refs] };
-}
-
-/** The backslash-command runs psql reads from `text`: a backslash -c value whole, other input by psqlLex. */
 function psqlSlashUnits(text: string, argument: boolean): string[] {
-    return argument ? (text.startsWith('\\') ? [text] : []) : psqlLex(text).slashes;
+    return argument ? (text.startsWith('\\') ? [text] : []) : text.split('\n');
 }
 
 // Variables psql fills from the server or the connection, whose text the line doesn't show.
@@ -1441,14 +1380,13 @@ function psqlArgAssignments(args: string[]): string[] {
 }
 
 /**
- * Whether psql input could run a backslash command through a variable: a bare :name in SQL whose value can carry a
+ * Whether psql input could run a backslash command through a variable: a bare :name whose value can carry a
  * backslash, or whose value the line doesn't show (\gset, \getenv, \prompt, backquotes, server text), directly or
- * through another variable it names. psql doesn't lex a variable again inside a backslash command's arguments, and
- * sends a plain -c value to the server unsubstituted, so neither place counts.
+ * through another variable it names. A plain -c value goes to the server unsubstituted, so it doesn't count; file and
+ * stdin text is scanned whole, so a :name inside a literal or a backslash command's arguments counts too.
  */
 function psqlVariableProgram(input: SqlInput, args: string[]): boolean {
-    const lines = input.texts.filter(t => !input.argTexts?.has(t));
-    const refs = new Set(lines.flatMap(t => psqlLex(t).refs));
+    const refs = new Set([...input.texts].filter(t => readsAsInput(input, t)).flatMap(t => [...t.matchAll(PSQL_BARE_VAR)].map(m => m[1])));
     if (!refs.size) return false;
     const values = new Map<string, string[]>();
     const unknown = new Set<string>(PSQL_SERVER_VARIABLES);
@@ -1458,7 +1396,7 @@ function psqlVariableProgram(input: SqlInput, args: string[]): boolean {
         const eq = value.indexOf('=');
         if (eq > 0) define(value.slice(0, eq), value.slice(eq + 1));
     }
-    for (const unit of input.texts.flatMap(t => psqlSlashUnits(t, input.argTexts?.has(t) ?? false))) {
+    for (const unit of input.texts.flatMap(t => readingsOf(input, t).flatMap(argument => psqlSlashUnits(t, argument)))) {
         for (const m of unit.matchAll(/\\set[ \t]+(['"]?)([^\s'"\\]+)\1([^\n]*)/g)) define(m[2], m[3]);
         for (const m of unit.matchAll(/\\gset(?:[ \t]+(['"]?)([^\s'"\\]+)\1)?/g)) prefixes.push(m[2] ?? '');
         for (const m of unit.matchAll(/\\getenv[ \t]+(['"]?)([^\s'"\\]+)/g)) unknown.add(m[2]);
@@ -1479,6 +1417,15 @@ function psqlVariableProgram(input: SqlInput, args: string[]): boolean {
     return [...refs].some(carriesBackslash);
 }
 
+/** How the client reads `text`: as its own argument, as file or stdin input, or both when it arrived both ways. */
+function readingsOf(input: SqlInput, text: string): boolean[] {
+    const asArgument = input.argCounts?.get(text) ?? 0;
+    if (asArgument === 0) return [false];
+    return input.texts.filter(t => t === text).length > asArgument ? [true, false] : [true];
+}
+
+const readsAsInput = (input: SqlInput, text: string) => readingsOf(input, text).includes(false);
+
 const clientRuns = new WeakMap<ResolvedCommand, ClientRuns>();
 
 /** Every program a SQL client step runs from what it reads: shell escapes, pipes, editors and COPY … PROGRAM. */
@@ -1492,10 +1439,11 @@ function clientRunsOf(cmd: ResolvedCommand): ClientRuns {
             runs.programs.push(blockProg(':variable'));
         }
         for (const text of new Set(input.texts)) {
-            const argument = input.argTexts?.has(text) ?? false;
-            if (cmd.name === 'psql') runs.programs.push(...psqlPrograms(text, argument));
-            else if (cmd.name === 'mysql') runs.programs.push(...mysqlPrograms(text, cmd.args));
-            else runs.programs.push(...sqliteDotPrograms(text, argument));
+            for (const argument of readingsOf(input, text)) {
+                if (cmd.name === 'psql') runs.programs.push(...psqlPrograms(text, argument));
+                else if (cmd.name === 'mysql') runs.programs.push(...mysqlPrograms(text, cmd.args));
+                else runs.programs.push(...sqliteDotPrograms(text, argument));
+            }
             if ((cmd.name === 'psql' && PSQL_CD.test(text)) || (cmd.name !== 'psql' && cmd.name !== 'mysql' && SQLITE_CD.test(text))) runs.movesDir = true;
             if (/\bCOPY\b/i.test(text)) {
                 for (const m of text.matchAll(COPY_PROGRAM)) {
@@ -1517,16 +1465,11 @@ function clientRunsOf(cmd: ResolvedCommand): ClientRuns {
 }
 
 /**
- * Whether the COPY that owns a `TO/FROM PROGRAM` is psql's `\copy`: the last `copy` word before it, outside SQL
- * literals and comments, carries a backslash. A `\copy` appearing only inside a literal or comment doesn't count.
+ * Whether a `TO/FROM PROGRAM` belongs to psql's `\copy`, which runs it on this host: its line starts with `\copy`
+ * and names COPY nowhere else before it. Any other shape is read as a server-side COPY, which blocks.
  */
 function copyIsClientSide(before: string): boolean {
-    const bare = before
-        .replace(/'(?:[^']|'')*'?/g, "''")
-        .replace(/\/\*[\s\S]*?(?:\*\/|$)/g, ' ')
-        .replace(/--[^\n]*/g, ' ');
-    const words = [...bare.matchAll(/(\\?)\bcopy\b/gi)];
-    return words.length > 0 && words[words.length - 1][1] === '\\';
+    return /^\s*\\copy\b/i.test(before) && (before.match(/copy/gi)?.length ?? 0) === 1;
 }
 
 const CLIENT_SHELL_DEPTH_MAX = 4;

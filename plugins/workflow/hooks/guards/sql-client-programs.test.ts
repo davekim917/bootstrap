@@ -48,6 +48,10 @@ describe('a blocked command a SQL client runs is blocked', () => {
         ['a blocked command in the second of two candidate directories', () => `if true; then cd ${dir}/b; fi; psql -d app_db -c '\\! psql -f only-in-b.sql'`],
         ['psql \\copy … PROGRAM checked from the client\'s directory', () => `cd ${dir}/b && psql -d app_db -c "\\copy orders from program 'psql -f only-in-b.sql'"`],
         ['duckdb .system', "duckdb -c '.system shred /tmp/report.txt'"],
+        ['psql \\! in a -f file whose text equals a -c value, read both ways', () => `psql -d app_db -f ${dir}/escape.sql -c $'select 1;\\n\\\\! shred /tmp/report.txt\\n'`],
+        ['psql \\! after a SQL line whose quoting the guard does not lex', "psql -d app_db <<'SQL'\nselect 1.e'\\';\n\\! shred /tmp/report.txt\nSQL"],
+        ['psql \\! after a literal opened past a \\\\ separator', "psql -d app_db <<'SQL'\n\\echo hi \\\\ select '\n'; \\! shred /tmp/report.txt\nSQL"],
+        ['psql \\! in stdin assembled from fragments', `{ echo "select '"; echo "'; \\\\! shred /tmp/report.txt"; } | psql -d app_db`],
     ])('%s', (_name, command) => {
         expect(verdict(typeof command === 'function' ? command() : command)).toBe('block');
     });
@@ -129,10 +133,7 @@ describe('client work that runs no program, or a harmless one, passes', () => {
         ['a :variable with a -v value that has no backslash', "psql -d app_db -v name=orders -c 'select count(*) from :\"name\"'"],
         ['a -c value that does not start with a backslash goes to the server unread', `psql -d app_db -c "select '\\o | sh'"`],
         ['a plain -c value is sent to the server without :variable substitution', "psql -d app_db -v 'x=\\! shred /tmp/report.txt' -c ':x'"],
-        ['a regex escape in a SQL string read from a heredoc', "psql -d app_db <<'SQL'\nselect regexp_replace(name, '[^\\w\\s]|_', '', 'g') from users;\nSQL"],
-        ['a regex escape in a SQL string beside a plain :variable', "psql -d app_db -v id=5 <<'SQL'\nselect * from users where name ~ '[^\\w\\s-]' and id = :id;\nSQL"],
         ['a -v value with a backslash used only as a quoted :\'variable\'', "psql -d app_db -v 'pat=^\\d+$' -v id=5 <<'SQL'\nselect * from orders where code ~ :'pat' and id = :id;\nSQL"],
-        ['a \\gset variable read back in a backslash command, which psql does not lex again', "psql -d app_db <<'SQL'\nselect max(id) as max_id from orders \\gset\n\\echo :max_id\nSQL"],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
