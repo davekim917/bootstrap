@@ -29,9 +29,7 @@ describe('a partly quoted delimiter ends the body where bash ends it', () => {
     });
 });
 
-describe('a line held as unreadable keeps its tier-1 blocks even on the approval replay', () => {
-    // When parseShell can't read the line, the gate holds it; approving the hold re-runs with the gate skipped, so the
-    // hard-block pass must still see the commands unbash did parse. These are blocked at the top, before any hold.
+describe('a line the guard cannot read blocks on both tiers', () => {
     test.each([
         ['a backtick heredoc body with a backslash, which forces the fallback parse', 'x=`cat <<EOF\na\\tb\nEOF\n`\nif true; then shred /tmp/report.txt; fi'],
         ['a compound command on such a line', '( shred /tmp/report.txt ) <<E"O"F\nx\nEOF'],
@@ -48,10 +46,12 @@ describe('the guard reads the delimiter as bash does, not just more strictly', (
         // Any quoting turns expansion off in the body, so the substitution is text.
         ['a partly quoted delimiter leaves the body unexpanded', 'cat <<E"O"F\n$(shred /tmp/report.txt)\nEOF'],
         ['a plain command after the body passes', 'cat <<E"O"F\nnotes\nEOF\necho done'],
-        // A bare redirect or coproc only forces a hold when a heredoc is actually on it; next to an unrelated
-        // heredoc, here-string or left-shift it must stay readable (round-4 B2).
+        // A bare redirect or coproc is unreadable only when a heredoc is actually on it; next to an unrelated
+        // heredoc, here-string or left-shift it must stay readable.
         ['a truncate-then-append-heredoc idiom', '> /tmp/notes.md\nfor f in a b; do cat >> /tmp/notes.md <<EOF\nhi\nEOF\ndone'],
         ['a bare redirect beside a here-string, not a heredoc', '> /tmp/out.txt\ngrep -q foo <<< "$x"'],
+        ['a bare redirect carrying a here-string', '> /tmp/out.txt <<< "$x"'],
+        ['a here-string before a bare redirect', '<<< "$x" > /tmp/out.txt'],
         ['a bare redirect beside an arithmetic left-shift', '> /tmp/out.txt\necho $(( 1 << 4 ))'],
         ['a coproc beside an unrelated heredoc', 'coproc sleep 1\ncat <<EOF\nx\nEOF'],
     ])('%s', (_name, command) => {

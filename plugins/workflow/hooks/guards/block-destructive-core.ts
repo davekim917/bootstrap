@@ -1236,11 +1236,6 @@ function sqlInputFor(cmd: ResolvedCommand): SqlInput {
 }
 
 /**
- * A program a SQL client's input makes it run. `shells` holds the command line it hands to the shell; empty when
- * that line can't be read. `server`: the database
- * server runs it, wherever that is.
- */
-/**
  * A program a SQL client's input makes it run.
  * - mode 'check': `shells` holds the exact command line(s) it hands to a shell; each is judged as a command typed
  *   at the top level, from `server` false, so a tier-1 command there blocks and a gated one gates.
@@ -1255,7 +1250,7 @@ const checkProg = (via: string, shell: string): ClientProgram => ({ via, mode: '
 const blockProg = (via: string, server = false): ClientProgram => ({ via, mode: 'block', shells: [], server });
 
 /** A SQL client step's programs, and whether its input moves the client's own directory before running them. */
-interface ClientRuns { programs: ClientProgram[]; movesDir: boolean }
+interface ClientRuns { programs: ClientProgram[]; movesDir: boolean; relativeInclude: boolean }
 
 // psql `\cd` and sqlite `.cd` move the client's own directory, which every later shell escape starts from.
 const PSQL_CD = /\\cd(?=[\s\\]|$)/;
@@ -1273,7 +1268,8 @@ const MYSQL_SHELL_ESCAPE = /\\![^\n]*/g;
 // mysql reads a long-form client command (`system`) at a statement start, so after a newline or `;`; `\P`/`\e` anywhere.
 const MYSQL_SYSTEM = /(?:^|;)[ \t]*system\b[ \t]*([^\n]*)/gim;
 const MYSQL_PROGRAM_COMMAND = /\\[Pe](?=\s|$)|(?:^|;)[ \t]*(?:pager|edit)\b/im;
-// sqlite3 (and the duckdb shell built from it) takes a dot-command's name by prefix: `.sh` is `.shell`.
+// sqlite3 (and the duckdb shell built from it) takes a dot-command's name by prefix: `.sh` is `.shell`. Its
+// `.output`/`.once` strip quotes and skip options before a `|` (shell.c.in, dotCmdOutput), so any `|` is a pipe.
 const SQLITE_DOT_COMMAND = /^[ \t]*\.([A-Za-z_]+)([^\n]*)$/gm;
 const SQLITE_EDIT_FUNCTION = /\bedit\s*\(/i;
 const SQL_GAP = String.raw`(?:\s|/\*[\s\S]*?\*/|--[^\n]*\n)+`;
@@ -1295,7 +1291,7 @@ function sqliteDotPrograms(text: string, argument: boolean): ClientProgram[] {
             // sqlite joins the dot-command's own tokens into the shell string, resolving quotes and backslashes itself
             // (shell.c.in, parseDotCmdArgs); only an unquoted argument reaches the shell as written.
             out.push(/['"\\]/.test(rest) || !rest.trim() ? blockProg(via) : checkProg(via, rest.trim()));
-        } else if (((isPrefixOf(name, 'output') || isPrefixOf(name, 'once')) && rest.trim().startsWith('|'))
+        } else if (((isPrefixOf(name, 'output') || isPrefixOf(name, 'once')) && rest.includes('|'))
             || name === 'excel' || name === 'www' || isPrefixOf(name, 'load')
             || ((isPrefixOf(name, 'import') || (name.length >= 3 && isPrefixOf(name, 'read'))) && rest.includes('|'))) {
             out.push(blockProg(via));
@@ -1311,7 +1307,7 @@ function psqlPrograms(text: string, argument: boolean): ClientProgram[] {
     if (argument && !text.startsWith('\\')) return out;
     // psql runs a -c value that starts with a backslash as one backslash command reading the whole value
     // (startup.c, ACT_SINGLE_SLASH); files and stdin it reads line by line.
-    for (const unit of argument && text.startsWith('\\') ? [text] : text.split('\n')) {
+    for (const unit of psqlSlashUnits(text, argument)) {
         for (const m of unit.matchAll(PSQL_PROGRAM_COMMAND)) {
             const name = m[1];
             const rest = unit.slice((m.index ?? 0) + m[0].length);
@@ -1343,19 +1339,140 @@ function mysqlPrograms(text: string, args: string[]): ClientProgram[] {
     return out;
 }
 
-// A bare :name reference, which psql pushes back through its lexer so a leading backslash in the value runs as a
-// backslash command (psqlscan.l). :'name'/:"name" quote the value instead, so they can't.
-const PSQL_BARE_VAR = /(?:^|[^:\w]):[A-Za-z_]\w*/;
+const PSQL_VAR_CHAR = /[A-Za-z0-9_\u0080-\uffff]/;
+const PSQL_IDENT_CHAR = /[A-Za-z0-9_$\u0080-\uffff]/;
+const PSQL_DOLLAR_QUOTE = /\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/y;
 
-/** Whether psql input could run a backslash command through a :variable whose value the line doesn't show. */
-function psqlVariableProgram(texts: string[], args: string[]): boolean {
-    const refsBareVar = texts.some(t => PSQL_BARE_VAR.test(t));
-    if (!refsBareVar) return false;
-    // A -v/--set value, or a \set, that carries a backslash can hold a \! ; \gset/\gdesc take a value from the DB.
-    const setValueHasBackslash = args.some((a, i) => (a === '-v' || a === '--set' || /^(?:-v|--set=)/.test(a))
-        && (a.includes('\\') || (args[i + 1]?.includes('\\') ?? false)));
-    const textSetsVar = texts.some(t => /\\set\b[^\n]*\\/.test(t) || /\\g(?:set|desc)\b/.test(t));
-    return setValueHasBackslash || textSetsVar;
+/** The end of a quoted run starting after its opening `quote`: a doubled quote stays inside, as may an escaped one. */
+function psqlQuoteEnd(text: string, from: number, quote: string, escapes: boolean): number {
+    for (let j = from; j < text.length; j++) {
+        if (escapes && text[j] === '\\') j++;
+        else if (text[j] === quote) {
+            if (text[j + 1] !== quote) return j + 1;
+            j++;
+        }
+    }
+    return text.length;
+}
+
+/**
+ * Input psql reads line by line, split the way its lexer splits it (psqlscan.l): a backslash starts a backslash
+ * command only outside literals, quoted identifiers and comments, and the command runs to the end of its line.
+ * `refs` are the bare :name references in SQL, the one place psql lexes a variable's value again. Whether a plain
+ * '…' takes backslash escapes depends on the server's standard_conforming_strings, so both readings are joined.
+ */
+function psqlLex(text: string): { slashes: string[]; refs: string[] } {
+    const slashes = new Set<string>();
+    const refs = new Set<string>();
+    const identBefore = (k: number) => k > 0 && PSQL_IDENT_CHAR.test(text[k - 1]);
+    for (const standardStrings of [true, false]) {
+        let i = 0;
+        while (i < text.length) {
+            const c = text[i];
+            const next = text[i + 1];
+            if (c === '\\') {
+                if (next === ';' || next === ':') { i += 2; continue; }
+                const eol = text.indexOf('\n', i);
+                const stop = eol < 0 ? text.length : eol;
+                slashes.add(text.slice(i, stop));
+                i = stop;
+            } else if (c === '-' && next === '-') {
+                const eol = text.indexOf('\n', i);
+                i = eol < 0 ? text.length : eol;
+            } else if (c === '/' && next === '*') {
+                let depth = 1;
+                for (i += 2; i < text.length && depth > 0; i++) {
+                    if (text.startsWith('/*', i)) { depth++; i++; } else if (text.startsWith('*/', i)) { depth--; i++; }
+                }
+            } else if (c === "'") {
+                const escapeString = /[eE]/.test(text[i - 1] ?? '') && !identBefore(i - 1);
+                i = psqlQuoteEnd(text, i + 1, "'", escapeString || !standardStrings);
+            } else if (c === '"') {
+                i = psqlQuoteEnd(text, i + 1, '"', false);
+            } else if (c === '$' && !identBefore(i)) {
+                PSQL_DOLLAR_QUOTE.lastIndex = i;
+                const tag = PSQL_DOLLAR_QUOTE.exec(text)?.[0];
+                if (tag) {
+                    const close = text.indexOf(tag, i + tag.length);
+                    i = close < 0 ? text.length : close + tag.length;
+                } else i++;
+            } else if (c === ':' && next === ':') {
+                i += 2;
+            } else if (c === ':' && next !== undefined && PSQL_VAR_CHAR.test(next)) {
+                let j = i + 1;
+                while (j < text.length && PSQL_VAR_CHAR.test(text[j])) j++;
+                refs.add(text.slice(i + 1, j));
+                i = j;
+            } else i++;
+        }
+    }
+    return { slashes: [...slashes], refs: [...refs] };
+}
+
+/** The backslash-command runs psql reads from `text`: a backslash -c value whole, other input by psqlLex. */
+function psqlSlashUnits(text: string, argument: boolean): string[] {
+    return argument ? (text.startsWith('\\') ? [text] : []) : psqlLex(text).slashes;
+}
+
+// Variables psql fills from the server or the connection, whose text the line doesn't show.
+const PSQL_SERVER_VARIABLES = new Set(['LAST_ERROR_MESSAGE', 'LAST_ERROR_SQLSTATE', 'SQLSTATE', 'SERVER_VERSION_NAME', 'DBNAME', 'USER', 'HOST', 'PORT', 'ENCODING']);
+const PSQL_VALUE_REF = /:['"]?([A-Za-z0-9_\u0080-\uffff]+)/g;
+// psql's short options that take no value (startup.c getopt string) may precede -v in one cluster.
+const PSQL_SET_CLUSTER = /^-[aAbeEHlnqsSwWxXz?01]*v([\s\S]*)$/;
+
+/** Every `name=value` psql's arguments set: -v, --set, --variable and their unambiguous long prefixes. */
+function psqlArgAssignments(args: string[]): string[] {
+    const out: string[] = [];
+    args.forEach((a, i) => {
+        const long = /^--([a-z-]+)(=([\s\S]*))?$/.exec(a);
+        if (long) {
+            const name = long[1];
+            if (name.length >= 2 && ('set'.startsWith(name) || 'variable'.startsWith(name))) out.push(long[2] ? long[3] : args[i + 1] ?? '');
+            return;
+        }
+        const short = PSQL_SET_CLUSTER.exec(a);
+        if (short) out.push(short[1] || (args[i + 1] ?? ''));
+    });
+    return out;
+}
+
+/**
+ * Whether psql input could run a backslash command through a variable: a bare :name in SQL whose value can carry a
+ * backslash, or whose value the line doesn't show (\gset, \getenv, \prompt, backquotes, server text), directly or
+ * through another variable it names. psql doesn't lex a variable again inside a backslash command's arguments, and
+ * sends a plain -c value to the server unsubstituted, so neither place counts.
+ */
+function psqlVariableProgram(input: SqlInput, args: string[]): boolean {
+    const lines = input.texts.filter(t => !input.argTexts?.has(t));
+    const refs = new Set(lines.flatMap(t => psqlLex(t).refs));
+    if (!refs.size) return false;
+    const values = new Map<string, string[]>();
+    const unknown = new Set<string>(PSQL_SERVER_VARIABLES);
+    const prefixes: string[] = [];
+    const define = (name: string, value: string) => values.set(name, [...(values.get(name) ?? []), value]);
+    for (const value of psqlArgAssignments(args)) {
+        const eq = value.indexOf('=');
+        if (eq > 0) define(value.slice(0, eq), value.slice(eq + 1));
+    }
+    for (const unit of input.texts.flatMap(t => psqlSlashUnits(t, input.argTexts?.has(t) ?? false))) {
+        for (const m of unit.matchAll(/\\set[ \t]+(['"]?)([^\s'"\\]+)\1([^\n]*)/g)) define(m[2], m[3]);
+        for (const m of unit.matchAll(/\\gset(?:[ \t]+(['"]?)([^\s'"\\]+)\1)?/g)) prefixes.push(m[2] ?? '');
+        for (const m of unit.matchAll(/\\getenv[ \t]+(['"]?)([^\s'"\\]+)/g)) unknown.add(m[2]);
+        for (const m of unit.matchAll(/\\prompt\b([^\n]*)/g)) for (const w of m[1].match(/[^\s'"\\]+/g) ?? []) unknown.add(w);
+    }
+    const carries = new Set<string>();
+    const carriesBackslash = (name: string) => unknown.has(name) || carries.has(name) || prefixes.some(p => name.startsWith(p));
+    for (let grew = true; grew;) {
+        grew = false;
+        for (const [name, vs] of values) {
+            if (carries.has(name)) continue;
+            if (vs.some(v => /[\\`]/.test(v) || [...v.matchAll(PSQL_VALUE_REF)].some(r => carriesBackslash(r[1])))) {
+                carries.add(name);
+                grew = true;
+            }
+        }
+    }
+    return [...refs].some(carriesBackslash);
 }
 
 const clientRuns = new WeakMap<ResolvedCommand, ClientRuns>();
@@ -1364,10 +1481,10 @@ const clientRuns = new WeakMap<ResolvedCommand, ClientRuns>();
 function clientRunsOf(cmd: ResolvedCommand): ClientRuns {
     const cached = clientRuns.get(cmd);
     if (cached) return cached;
-    const runs: ClientRuns = { programs: [], movesDir: false };
+    const runs: ClientRuns = { programs: [], movesDir: false, relativeInclude: false };
     if (SQL_CLIS[cmd.name]) {
         const input = sqlInputFor(cmd);
-        if (cmd.name === 'psql' && psqlVariableProgram([...input.texts], cmd.args)) {
+        if (cmd.name === 'psql' && psqlVariableProgram(input, cmd.args)) {
             runs.programs.push(blockProg(':variable'));
         }
         for (const text of new Set(input.texts)) {
@@ -1380,7 +1497,7 @@ function clientRunsOf(cmd: ResolvedCommand): ClientRuns {
                 for (const m of text.matchAll(COPY_PROGRAM)) {
                     // psql's \copy runs its program on this host; plain COPY runs it on the server.
                     const lineStart = text.lastIndexOf('\n', m.index ?? 0) + 1;
-                    const client = /\\copy\b/i.test(text.slice(lineStart, m.index));
+                    const client = copyIsClientSide(text.slice(lineStart, m.index));
                     const via = client ? '\\copy … PROGRAM' : 'COPY … PROGRAM';
                     // A server-side program runs on another host; a non-plain literal (E'…', dollar-quoted) is a form
                     // the guard can't read. Either way it can't be checked, so it blocks.
@@ -1390,12 +1507,29 @@ function clientRunsOf(cmd: ResolvedCommand): ClientRuns {
             }
         }
     }
+    if (SQL_CLIS[cmd.name]) runs.relativeInclude = sqlInputFor(cmd).texts.some(t => sqlIncludes(t, null).some(f => !f.startsWith('/')));
     clientRuns.set(cmd, runs);
     return runs;
 }
 
+/**
+ * Whether the COPY that owns a `TO/FROM PROGRAM` is psql's `\copy`: the last `copy` word before it, outside SQL
+ * literals and comments, carries a backslash. A `\copy` appearing only inside a literal or comment doesn't count.
+ */
+function copyIsClientSide(before: string): boolean {
+    const bare = before
+        .replace(/'(?:[^']|'')*'?/g, "''")
+        .replace(/\/\*[\s\S]*?(?:\*\/|$)/g, ' ')
+        .replace(/--[^\n]*/g, ' ');
+    const words = [...bare.matchAll(/(\\?)\bcopy\b/gi)];
+    return words.length > 0 && words[words.length - 1][1] === '\\';
+}
+
 const CLIENT_SHELL_DEPTH_MAX = 4;
 let clientShellDepth = 0;
+// One top-level evaluation judges the same nested line many times (each tier visits each step); this keeps the cost
+// linear in the distinct lines rather than exponential in the nesting depth.
+let clientShellVerdicts: Map<string, GateEvaluation> | null = null;
 
 /**
  * The verdict for a shell command line a SQL client runs from `dir`: exactly the verdict that command would get typed
@@ -1406,9 +1540,18 @@ function clientShellVerdict(text: string, dir: string | undefined): GateEvaluati
     if (clientShellDepth >= CLIENT_SHELL_DEPTH_MAX) {
         return { action: 'block', reason: 'It nests SQL clients running shell commands too deeply for the guard to read. Run the command directly.' };
     }
+    const key = `${clientShellDepth}\0${dir ?? ''}\0${text}`;
+    const cached = clientShellVerdicts?.get(key);
+    if (cached) return cached;
     clientShellDepth++;
     try {
-        return evaluateBashCommand(text, dir === undefined ? {} : { cwd: dir });
+        const at = dir === undefined ? {} : { cwd: dir };
+        // The gated tier returns before the rm tier, and the caller's approval replay can't reach this nested line,
+        // so read the block tiers on their own first: a later blocked rm must not hide behind an earlier gate.
+        const blocked = evaluateBashCommand(text, { ...at, skipGate: true });
+        const verdict = blocked.action === 'block' ? blocked : evaluateBashCommand(text, at);
+        clientShellVerdicts?.set(key, verdict);
+        return verdict;
     } finally {
         clientShellDepth--;
     }
@@ -1430,14 +1573,18 @@ function shellDirectories(cmd: ResolvedCommand): string[] | null {
  */
 function clientProgramVerdict(cmd: ResolvedCommand): { block?: string; gate?: string } {
     let gate: string | undefined;
-    for (const program of clientRunsOf(cmd).programs) {
+    const runs = clientRunsOf(cmd);
+    if (runs.movesDir && runs.relativeInclude) {
+        return { block: `${cmd.name} reads a file by a relative path after the client changed its own directory (\cd/.cd), so the guard can't tell what that file runs. Run the command from a shell instead.` };
+    }
+    for (const program of runs.programs) {
         if (program.mode === 'block') {
             if (program.server) return { block: `${cmd.name}: ${program.via} runs a shell command on the database server, which the guard can't read. Run it from a shell instead.` };
             return { block: `${cmd.name}: ${program.via} runs a program the guard can't read (its command comes from a variable, piped input, an editor, or a form the client rebuilds). Run the command from a shell instead.` };
         }
         // A client that moved its own directory leaves the escape's directory unknowable, so a relative path in it
         // can't be located: the program is unreadable and blocks.
-        if (clientRunsOf(cmd).movesDir) return { block: `${cmd.name} ${program.via} runs after the client changed its own directory (\cd/.cd), so the guard can't tell where it runs. Run the command from a shell instead.` };
+        if (runs.movesDir) return { block: `${cmd.name} ${program.via} runs after the client changed its own directory (\cd/.cd), so the guard can't tell where it runs. Run the command from a shell instead.` };
         const dirs = shellDirectories(cmd) ?? [undefined];
         for (const shell of program.shells) {
             for (const dir of dirs) {
@@ -2518,8 +2665,8 @@ function innerCommand(words: string[], outer: ResolvedCommand): ResolvedCommand 
 
 /**
  * Parse command string into resolved commands. Falls back to regex splitting if parser fails. A line parseShell can't
- * read as bash will gets unbash's own reading as well as the regex split: the gate tier holds such a line, but an
- * approval skips that hold, and the hard blocks it still runs must see at least what they saw before.
+ * read as bash will gets unbash's own reading as well as the regex split, so the hard blocks that name a command
+ * on it keep their own reason rather than the generic unreadable-line one.
  */
 export function extractCommands(command: string): ResolvedCommand[] {
     try {
@@ -4997,6 +5144,19 @@ function shellParseProblem(command: string): string | null {
 export function evaluateBashCommand(
     command: string,
     opts: { skipGate?: boolean; cwd?: string; localPg?: LocalPgHost } = {},
+): GateEvaluation {
+    if (clientShellVerdicts) return evaluateBashLine(command, opts);
+    clientShellVerdicts = new Map();
+    try {
+        return evaluateBashLine(command, opts);
+    } finally {
+        clientShellVerdicts = null;
+    }
+}
+
+function evaluateBashLine(
+    command: string,
+    opts: { skipGate?: boolean; cwd?: string; localPg?: LocalPgHost },
 ): GateEvaluation {
     const commands = extractCommands(command);
     const ephemeralMktempVariables = findEphemeralMktempVariables(command);

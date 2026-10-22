@@ -99,7 +99,7 @@ function walk(node: unknown, visit: (n: any, nested: boolean) => void, nested = 
     if ('text' in record && !Object.prototype.hasOwnProperty.call(record, 'parts')) walk(record.parts, visit, inner, seen, depth + 1);
 }
 
-/** A command line the guard can't parse the way bash will run it; callers treat it as unreadable and hold. */
+/** A command line the guard can't parse the way bash will run it; callers treat it as unreadable and block. */
 export class ShellParseError extends Error {}
 
 // unbash reads a heredoc delimiter by its first character, so `E"O"F`, `'E'OF` or `"E\OF"` give it a different
@@ -180,7 +180,7 @@ function heredocRedirects(node: unknown, out: any[] = [], seen = new WeakSet<obj
 }
 
 // A heredoc operator (`<<`, `<<-`), not a here-string (`<<<`).
-const HEREDOC_OPERATOR = /<<(?!<)/;
+const HEREDOC_OPERATOR = /(?<!<)<<(?!<)/;
 
 /**
  * Whether unbash left a heredoc's redirect out of the tree: it drops the redirects of a command with no name and no
@@ -254,7 +254,7 @@ function canonicalDelimiter(delimiter: string, quoted: boolean, length: number):
  * Parse a command line as bash reads it. A heredoc delimiter unbash misreads is rewritten in place, at the same
  * length so every offset still indexes the caller's text, and the line parsed again. Throws ShellParseError when
  * the delimiter can't be determined or rewritten (inside a command substitution, unbash parses it lazily from its
- * own text), so the caller holds instead of trusting a parse that hides commands.
+ * own text), so the caller blocks instead of trusting a parse that hides commands.
  */
 export function parseShell(command: string): any {
     if (!command.includes('<<')) return parse(command);

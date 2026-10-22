@@ -6,7 +6,7 @@ import { join } from 'path';
 import { evaluateBashCommand } from './block-destructive-core';
 
 // A SQL client can run programs on this host: psql's \! and backquotes, mysql's system, sqlite3's .shell. The shell
-// command each one runs is checked as if typed at the top; a program the guard can't read holds.
+// command each one runs is checked as if typed at the top; a program the guard can't read blocks.
 
 let dir = '';
 beforeAll(() => {
@@ -53,6 +53,12 @@ describe('a blocked command a SQL client runs is blocked', () => {
     });
 });
 
+test('a blocked rm after a gated command in one shell escape stays blocked on the approval replay', () => {
+    const command = "psql -d app_db -c '\\! aws s3 rb s3://scratch-bucket; rm -rf ~/projects'";
+    expect(evaluateBashCommand(command, { cwd: dir }).action).toBe('block');
+    expect(evaluateBashCommand(command, { cwd: dir, skipGate: true }).action).toBe('block');
+});
+
 describe('a program a SQL client runs that the guard cannot read is blocked, not held for approval', () => {
     test.each([
         ['psql \\! with no command, which reads a shell from stdin', "psql -d app_db -c '\\!'"],
@@ -61,7 +67,18 @@ describe('a program a SQL client runs that the guard cannot read is blocked, not
         ['psql \\o into a :variable, which may hold a pipe', "psql -d app_db -c '\\o :out'"],
         ['a psql \\cd before a shell escape, which moves where it starts', () => `psql -d app_db -f ${dir}/cd-then-escape.sql`],
         ['a sqlite3 .cd before a shell escape', "sqlite3 -cmd '.cd b' app.db '.shell psql -f only-in-b.sql'"],
-        ['a psql :variable whose -v value carries a backslash command', "psql -d app_db -v 'x=\\! shred /tmp/report.txt' -c ':x'"],
+        ['a relative \\i include after a psql \\cd, which the guard cannot locate', () => `psql -d app_db -f ${dir}/cd-then-include.sql`],
+        ['a relative \\i include in a later -c after a psql \\cd', "psql -d app_db -c '\\cd b' -c '\\i only-in-b.sql'"],
+        ['a relative .read include after a sqlite3 .cd', "sqlite3 -cmd '.cd sub' app.db '.read dot-bad.sql'"],
+        ['a psql :variable whose -v value carries a backslash command', "psql -d app_db -v 'x=\\! shred /tmp/report.txt' <<'SQL'\n:x\nSQL"],
+        ['a psql :variable set by --variable', "psql -d app_db --variable='x=\\! shred /tmp/report.txt' <<'SQL'\n:x\nSQL"],
+        ['a psql :variable set by a --va prefix of --variable', "psql -d app_db --va='x=\\! shred /tmp/report.txt' <<'SQL'\n:x\nSQL"],
+        ['a psql :variable whose name starts with a digit', "psql -d app_db -v '1=\\! shred /tmp/report.txt' <<'SQL'\nselect 1;\n:1\nSQL"],
+        ['a psql :variable glued to the token before it', "psql -d app_db -v 'x=\\! shred /tmp/report.txt' <<'SQL'\nselect 1:x\nSQL"],
+        ['a psql :variable that names another carrying a backslash command', "psql -d app_db -v 'y=\\! shred /tmp/report.txt' -v 'x=:y' <<'SQL'\n:x\nSQL"],
+        ['a psql :variable set from backquote output', "psql -d app_db <<'SQL'\n\\set x `printf '%c! shred /tmp/report.txt' 92`\n:x\nSQL"],
+        ['a psql :variable set by \\getenv', "X='\\! shred /tmp/report.txt' psql -d app_db <<'SQL'\n\\getenv v X\n:v\nSQL"],
+        ['a psql :variable holding server error text', "psql -d app_db <<'SQL'\ndo $$ begin raise exception '%', chr(92) || '! shred /tmp/report.txt'; end $$;\n:LAST_ERROR_MESSAGE\nSQL"],
         ['a psql :variable set from a \\gset result, which the line does not show', 'psql -d app_db <<SQL\nselect 1 \\gset\n:c\nSQL'],
         ['psql \\o into a pipe', "psql -d app_db -c '\\o | tee /tmp/out.txt'"],
         ['psql \\g into a pipe, from a -f file', () => `psql -d app_db -f ${dir}/pipe.sql`],
@@ -69,6 +86,12 @@ describe('a program a SQL client runs that the guard cannot read is blocked, not
         ['psql \\setenv', "psql -d app_db -c '\\setenv PAGER less'"],
         ['psql \\e, which runs an editor', "psql -d app_db -c '\\e'"],
         ['COPY … PROGRAM, which the server runs', `psql -d app_db -c "COPY orders TO PROGRAM 'gzip > /tmp/orders.gz'"`],
+        ['COPY … PROGRAM after a \\copy that is only a SQL literal, which the server runs', `psql -d app_db -c "SELECT '\\copy'; COPY orders TO PROGRAM 'gzip'"`],
+        ['COPY … PROGRAM after a \\copy that is only a SQL comment', `psql -d app_db -c "SELECT 1 /* \\copy */; COPY orders TO PROGRAM 'gzip'"`],
+        ['sqlite3 .output into a quoted pipe', "sqlite3 app.db \".output '|shred /tmp/report.txt'\""],
+        ['sqlite3 .output into a double-quoted pipe', `sqlite3 app.db '.output "|shred /tmp/report.txt"'`],
+        ['sqlite3 .once into a pipe after an option', "sqlite3 app.db \".once --bom '|shred /tmp/report.txt'\""],
+        ['sqlite3 .once into a bare pipe after an option', "sqlite3 app.db '.once -bom |shred /tmp/report.txt'"],
         ['COPY … PROGRAM with a PostgreSQL E-string the guard can\'t read', `psql -d app_db -c "COPY orders TO PROGRAM E'gzip > /tmp/orders.gz'"`],
         ['mysql pager', "mysql -e '\\P less'"],
         ['mysql --pager', "mysql --pager=less -e 'select 1'"],
@@ -88,8 +111,6 @@ describe('a readable program a SQL client runs that is destructive gates as that
         ['SQL after a psql \\\\ ends the backslash command on the same line', "printf '%s' '\\x \\\\ drop table orders;' | psql -d app_db"],
         // A file runs line by line, so the SQL after a \! line is SQL, gated as SQL, not part of the shell command.
         ['psql \\! in a file followed by destructive SQL', () => `psql -d app_db -f ${dir}/escape-then-sql.sql`],
-        ['a relative \\i include after a psql \\cd, which the guard cannot locate', () => `psql -d app_db -f ${dir}/cd-then-include.sql`],
-        ['a relative .read include after a sqlite3 .cd', "sqlite3 -cmd '.cd sub' app.db '.read dot-bad.sql'"],
     ])('%s', (_name, command) => {
         expect(verdict(typeof command === 'function' ? command() : command)).toBe('gate');
     });
@@ -107,6 +128,11 @@ describe('client work that runs no program, or a harmless one, passes', () => {
         ['an ordinary :variable with a plain -v value', "psql -d app_db -v id=5 -c 'select * from orders where id = :id'"],
         ['a :variable with a -v value that has no backslash', "psql -d app_db -v name=orders -c 'select count(*) from :\"name\"'"],
         ['a -c value that does not start with a backslash goes to the server unread', `psql -d app_db -c "select '\\o | sh'"`],
+        ['a plain -c value is sent to the server without :variable substitution', "psql -d app_db -v 'x=\\! shred /tmp/report.txt' -c ':x'"],
+        ['a regex escape in a SQL string read from a heredoc', "psql -d app_db <<'SQL'\nselect regexp_replace(name, '[^\\w\\s]|_', '', 'g') from users;\nSQL"],
+        ['a regex escape in a SQL string beside a plain :variable', "psql -d app_db -v id=5 <<'SQL'\nselect * from users where name ~ '[^\\w\\s-]' and id = :id;\nSQL"],
+        ['a -v value with a backslash used only as a quoted :\'variable\'', "psql -d app_db -v 'pat=^\\d+$' -v id=5 <<'SQL'\nselect * from orders where code ~ :'pat' and id = :id;\nSQL"],
+        ['a \\gset variable read back in a backslash command, which psql does not lex again', "psql -d app_db <<'SQL'\nselect max(id) as max_id from orders \\gset\n\\echo :max_id\nSQL"],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
