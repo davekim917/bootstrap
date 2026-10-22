@@ -95,6 +95,154 @@ function walk(node: unknown, visit: (n: any, nested: boolean) => void, nested = 
     if ('text' in record && !Object.prototype.hasOwnProperty.call(record, 'parts')) walk(record.parts, visit, inner, seen, depth + 1);
 }
 
+/** A command line the guard can't parse the way bash will run it; callers treat it as unreadable and hold. */
+export class ShellParseError extends Error {}
+
+// unbash reads a heredoc delimiter by its first character, so `E"O"F`, `'E'OF` or `"E\OF"` give it a different
+// delimiter from bash's and it reads the commands after the body as more body.
+const SHELL_METACHARS = ' \t\n;&|<>()';
+const HEREDOC_REWRITES_MAX = 32;
+
+/**
+ * The delimiter bash takes from the heredoc word starting at `i`: the word with its quotes removed and nothing
+ * expanded, quoted when any part of it is. Null for a word whose expansion or continuation this does not model.
+ */
+function bashHeredocDelimiter(src: string, i: number): { delimiter: string; quoted: boolean; end: number } | null {
+    if (src[i] === '#') return null;
+    let delimiter = '';
+    let quoted = false;
+    let j = i;
+    while (j < src.length && !SHELL_METACHARS.includes(src[j])) {
+        const c = src[j];
+        if (c === "'") {
+            const close = src.indexOf("'", j + 1);
+            if (close < 0) return null;
+            delimiter += src.slice(j + 1, close);
+            quoted = true;
+            j = close + 1;
+        } else if (c === '"') {
+            let k = j + 1;
+            for (; k < src.length && src[k] !== '"'; k++) {
+                if (src[k] === '$' || src[k] === '`') return null;
+                if (src[k] === '\\') {
+                    const next = src[k + 1];
+                    if (next === undefined || next === '\n') return null;
+                    if ('"\\$`'.includes(next)) {
+                        delimiter += next;
+                        k++;
+                        continue;
+                    }
+                }
+                delimiter += src[k];
+            }
+            if (k >= src.length) return null;
+            quoted = true;
+            j = k + 1;
+        } else if (c === '\\') {
+            const next = src[j + 1];
+            if (next === undefined || next === '\n') return null;
+            delimiter += next;
+            quoted = true;
+            j += 2;
+        } else if (c === '`' || (c === '$' && /^[('"{[]/.test(src[j + 1] ?? ''))) {
+            return null;
+        } else {
+            delimiter += c;
+            j++;
+        }
+    }
+    return j === i || delimiter.includes('\n') ? null : { delimiter, quoted, end: j };
+}
+
+/** Where the heredoc word of redirect `r` starts in `src`, past its operator and any blanks. */
+function heredocWordStart(src: string, r: any): number | null {
+    const op = src.indexOf('<<', r.pos);
+    if (op < 0 || op >= r.end) return null;
+    let i = op + (r.operator === '<<-' ? 3 : 2);
+    while (src[i] === ' ' || src[i] === '\t') i++;
+    return i;
+}
+
+/** The heredoc redirects of a script outside its command substitutions, whose offsets index the script's own text. */
+function heredocRedirects(node: unknown, out: any[] = [], seen = new WeakSet<object>(), depth = 0): any[] {
+    if (!node || typeof node !== 'object' || seen.has(node as object)) return out;
+    if (depth > WALK_MAX_DEPTH) throw new ShellParseError('command nests too deeply to read');
+    seen.add(node as object);
+    const record = node as Record<string, any>;
+    if (depth > 0 && (record.type === 'CommandExpansion' || record.type === 'ProcessSubstitution')) return out;
+    if ((record.operator === '<<' || record.operator === '<<-') && typeof record.pos === 'number') out.push(record);
+    for (const child of Object.values(record)) heredocRedirects(child, out, seen, depth + 1);
+    return out;
+}
+
+/** The first heredoc in `script` (parsed from `src`) whose delimiter unbash read differently from bash, or null. */
+function misreadHeredoc(script: unknown, src: string): { start: number; bash: ReturnType<typeof bashHeredocDelimiter> } | null {
+    for (const r of heredocRedirects(script).sort((a, b) => a.pos - b.pos)) {
+        const start = heredocWordStart(src, r);
+        if (start === null) throw new ShellParseError('a heredoc operator the guard cannot locate');
+        const bash = bashHeredocDelimiter(src, start);
+        if (!bash || bash.delimiter !== String(r.target?.text ?? '') || bash.quoted !== Boolean(r.heredocQuoted) || bash.end !== r.end) {
+            return { start, bash };
+        }
+    }
+    return null;
+}
+
+/** The delimiter written so unbash reads it as bash does, in exactly `length` characters, or null when it can't be. */
+function canonicalDelimiter(delimiter: string, quoted: boolean, length: number): string | null {
+    const forms = quoted
+        ? [`'${delimiter}'`, ...(delimiter && ![...SHELL_METACHARS, "'", '"'].some(c => delimiter.includes(c)) ? [`\\${delimiter.replace(/\\/g, '\\\\')}`] : [])]
+        : [];
+    const form = forms.filter(f => f.length <= length && !(f.startsWith("'") && delimiter.includes("'"))).sort((a, b) => a.length - b.length)[0];
+    return form === undefined ? null : ' '.repeat(length - form.length) + form;
+}
+
+/**
+ * Parse a command line as bash reads it. A heredoc delimiter unbash misreads is rewritten in place, at the same
+ * length so every offset still indexes the caller's text, and the line parsed again. Throws ShellParseError when
+ * the delimiter can't be determined or rewritten (inside a command substitution, unbash parses it lazily from its
+ * own text), so the caller holds instead of trusting a parse that hides commands.
+ */
+export function parseShell(command: string): any {
+    if (!command.includes('<<')) return parse(command);
+    let src = command;
+    for (let round = 0; round <= HEREDOC_REWRITES_MAX; round++) {
+        const ast: any = parse(src);
+        const misread = misreadHeredoc(ast, src);
+        if (!misread) {
+            checkNestedHeredocs(ast);
+            return ast;
+        }
+        const { start, bash } = misread;
+        if (!bash) throw new ShellParseError('a heredoc delimiter the guard cannot read the way bash does');
+        const form = canonicalDelimiter(bash.delimiter, bash.quoted, bash.end - start);
+        if (form === null) throw new ShellParseError('a heredoc delimiter the guard cannot read the way bash does');
+        src = src.slice(0, start) + form + src.slice(bash.end);
+    }
+    throw new ShellParseError('too many heredocs to read');
+}
+
+/** Throws when a heredoc inside a command substitution has a delimiter unbash misread; those can't be rewritten. */
+function checkNestedHeredocs(ast: unknown): void {
+    try {
+        walk(ast, visitSubstitution);
+    } catch (e) {
+        throw e instanceof RangeError ? new ShellParseError(e.message) : e;
+    }
+}
+
+function visitSubstitution(n: any): void {
+    if (n.type !== 'CommandExpansion' && n.type !== 'ProcessSubstitution') return;
+    const text = String(n.text ?? '');
+    const backtick = text.startsWith('`');
+    const inner = backtick ? text.slice(1, -1) : text.slice(2, -1);
+    if (!heredocRedirects(n.script).length) return;
+    // bash removes backslashes inside backticks before parsing, so their offsets don't index the written text.
+    if ((backtick && inner.includes('\\')) || misreadHeredoc(n.script, inner)) {
+        throw new ShellParseError('a heredoc inside a command substitution whose delimiter the guard cannot read the way bash does');
+    }
+}
+
 function catFileOf(script: any): string | null {
     const commands: any[] = [];
     walk(script, n => { if (n.type === 'Command') commands.push(n); });
@@ -260,7 +408,7 @@ export function viewShell(command: string): ShellView {
     const empty: ShellView = { commands, valueAt: () => undefined, commandAt: () => undefined };
     let ast: any;
     try {
-        ast = parse(command);
+        ast = parseShell(command);
     } catch {
         return empty;
     }

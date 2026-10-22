@@ -37,9 +37,8 @@
  * Python/Node SDK calls, SMTP CLIs, and eval/alias/base64-decoded subshells. The
  * only sound place to catch all of those is the egress proxy.
  */
-import { parse } from 'unbash';
 import { resolveCommand, walkCommandNodes } from './block-destructive-core';
-import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView } from './gate-card-core';
+import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, parseShell, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
 // `gws gmail users (messages|drafts) send` (raw API form).
@@ -300,7 +299,7 @@ export function probeOnlyCommand(command: string): boolean {
     if (/\{[A-Za-z_]\w*\}\s*[<>]/.test(command)) return false;
     let script: any;
     try {
-        script = parse(command);
+        script = parseShell(command);
     } catch {
         return false;
     }

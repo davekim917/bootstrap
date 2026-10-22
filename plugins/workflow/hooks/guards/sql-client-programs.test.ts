@@ -1,0 +1,74 @@
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+import { evaluateBashCommand } from './block-destructive-core';
+
+// A SQL client can run programs on this host: psql's \! and backquotes, mysql's system, sqlite3's .shell. The shell
+// command each one runs is checked as if typed at the top; a program the guard can't read holds.
+
+let dir = '';
+beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'sql-client-programs-test-'));
+    writeFileSync(join(dir, 'escape.sql'), 'select 1;\n\\! shred /tmp/report.txt\n');
+    writeFileSync(join(dir, 'pipe.sql'), 'select 1 \\g | sh\n');
+});
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+const verdict = (command: string) => evaluateBashCommand(command, { cwd: dir }).action;
+
+describe('a blocked command a SQL client runs is blocked', () => {
+    test.each([
+        ['psql \\! in -c', "psql -d app_db -c '\\! shred /tmp/report.txt'"],
+        ['psql \\! in a -f file', () => `psql -d app_db -f ${dir}/escape.sql`],
+        ['psql \\! on piped stdin', "printf '%s\\n' '\\! shred /tmp/report.txt' | psql -d app_db"],
+        ['psql \\! in a heredoc', "psql -d app_db <<'SQL'\nselect 1;\n\\! shred /tmp/report.txt\nSQL"],
+        ['psql \\! past the first line of -c, which it reads whole', "psql -d app_db -c $'\\\\! echo start\\nshred /tmp/report.txt'"],
+        ['psql backquotes in a backslash command', "psql -d app_db -c '\\echo `shred /tmp/report.txt`'"],
+        ['psql \\! running rm on a kept path', "psql -d app_db -c '\\! rm -rf ~/projects'"],
+        ['COPY … PROGRAM', `psql -d app_db -c "COPY orders FROM PROGRAM 'shred /tmp/report.txt'"`],
+        ['mysql system', "mysql -e 'system shred /tmp/report.txt'"],
+        ['mysql \\!', "mysql -e '\\! shred /tmp/report.txt'"],
+        ['sqlite3 .shell', "sqlite3 app.db '.shell shred /tmp/report.txt'"],
+        ['sqlite3 .system by a prefix of its name', "sqlite3 app.db '.sys shred /tmp/report.txt'"],
+        ['duckdb .system', "duckdb -c '.system shred /tmp/report.txt'"],
+    ])('%s', (_name, command) => {
+        expect(verdict(typeof command === 'function' ? command() : command)).toBe('block');
+    });
+});
+
+describe('a program a SQL client runs that needs approval, or that the guard cannot read, holds', () => {
+    test.each([
+        ['psql \\! running destructive SQL elsewhere', `psql -d app_db -c '\\! psql -h db.example.internal -c "DROP TABLE orders"'`],
+        ['psql \\! with no command, which reads a shell from stdin', "psql -d app_db -c '\\!'"],
+        ['psql \\o into a pipe', "psql -d app_db -c '\\o | tee /tmp/out.txt'"],
+        ['psql \\g into a pipe, from a -f file', () => `psql -d app_db -f ${dir}/pipe.sql`],
+        ['psql \\w into a pipe', "psql -d app_db -c '\\w | sh'"],
+        ['psql \\setenv', "psql -d app_db -c '\\setenv PAGER less'"],
+        ['psql \\e, which runs an editor', "psql -d app_db -c '\\e'"],
+        ['COPY … PROGRAM, which the server runs', `psql -d app_db -c "COPY orders TO PROGRAM 'gzip > /tmp/orders.gz'"`],
+        ['psql \\copy … PROGRAM', `psql -d app_db -c "\\copy orders to program 'gzip > /tmp/orders.gz'"`],
+        ['mysql pager', "mysql -e '\\P less'"],
+        ['mysql --pager', "mysql --pager=less -e 'select 1'"],
+        ['sqlite3 .once into a pipe', "sqlite3 app.db '.once |cat'"],
+        ['sqlite3 .read from a pipe', `sqlite3 app.db ".read '|cat setup.sql'"`],
+        ['sqlite3 .load', "sqlite3 app.db '.load ./ext'"],
+        ['sqlite3 edit()', `sqlite3 app.db "select edit('x', 'vi')"`],
+    ])('%s', (_name, command) => {
+        expect(verdict(typeof command === 'function' ? command() : command)).toBe('gate');
+    });
+});
+
+describe('client work that runs no program, or a harmless one, passes', () => {
+    test.each([
+        ['psql \\! running a harmless command', "psql -d app_db -c '\\! ls'"],
+        ['a regex escape inside a SQL string', `psql -d app_db -c "select * from orders where code ~ '\\w+'"`],
+        ['psql \\copy to a file', `psql -d app_db -c "\\copy orders to '/tmp/orders.csv' csv"`],
+        ['psql \\o to a file', "psql -d app_db -c '\\o /tmp/out.txt'"],
+        ['sqlite3 .output to a file', "sqlite3 app.db '.output /tmp/out.csv'"],
+        ['sqlite3 .shell running a harmless command', "sqlite3 app.db '.shell ls'"],
+    ])('%s', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+});

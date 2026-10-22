@@ -32,9 +32,8 @@ import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync
 import { createHash, randomBytes } from 'crypto';
 import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
-import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, readConfigFile, shellUnquote, viewShell } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, readConfigFile, ShellParseError, shellUnquote, viewShell } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -571,7 +570,7 @@ export function evaluateSnapshotGitMutation(command: string): { action: 'allow' 
     if (!command) return { action: 'allow' };
     let blocked: boolean;
     try {
-        blocked = walkSnapshotNode(parse(command), freshShellState());
+        blocked = walkSnapshotNode(parseShell(command), freshShellState());
     } catch {
         const state = freshShellState();
         blocked = fallbackExtract(command).some(cmd => snapshotMutationIn(cmd, state));
@@ -1212,6 +1211,158 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     return { texts, unreadable };
 }
 
+const sqlInputs = new WeakMap<ResolvedCommand, SqlInput>();
+
+/** sqlInputOf, once per step: a second read would spend the line's trace budget again. */
+function sqlInputFor(cmd: ResolvedCommand): SqlInput {
+    let input = sqlInputs.get(cmd);
+    if (!input) sqlInputs.set(cmd, (input = sqlInputOf(cmd)));
+    return input;
+}
+
+/**
+ * A program a SQL client's input makes it run. `shells` are the readings of the command line it hands to the shell
+ * (more than one when where the line ends is uncertain); empty when that line can't be read. `server`: the database
+ * server runs it, wherever that is.
+ */
+interface ClientProgram { via: string; shells: string[]; server?: boolean }
+
+// A psql backslash command's name runs to whitespace or the next backslash (psqlscanslash.l). Plain file writes
+// (`\o FILE`, `\copy … TO 'FILE'`) are not here: the guard does not gate a shell `>` either.
+const PSQL_PROGRAM_COMMAND = /\\(!|o|out|g|gx|w|write|setenv|e|edit|ef|ev)(?=[\s\\]|$)/g;
+const PSQL_PIPING_COMMANDS = new Set(['o', 'out', 'g', 'gx', 'w', 'write']);
+const PSQL_BACKSLASH_COMMAND = /\\[^\s\\]/;
+// mysql reads a long-form client command only at the start of a line; `\!`, `\P` and `\e` anywhere.
+const MYSQL_SYSTEM = /(?:^|;)[ \t]*system\b[ \t]*([^\n]*)/gim;
+const MYSQL_PROGRAM_COMMAND = /\\[Pe](?=\s|$)|(?:^|;)[ \t]*(?:pager|edit)\b/im;
+const MYSQL_SHELL_ESCAPE = /\\!(?=\s|$)/g;
+// sqlite3 (and the duckdb shell built from it) takes a dot-command's name by prefix: `.sh` is `.shell`.
+const SQLITE_DOT_COMMAND = /^[ \t]*\.([A-Za-z_]+)([^\n]*)$/gm;
+const SQLITE_EDIT_FUNCTION = /\bedit\s*\(/i;
+const COPY_PROGRAM = /\b(?:TO|FROM)\s+PROGRAM\b(?:\s+'((?:[^']|'')*)')?/gi;
+
+/** What a shell escape runs: the rest of its line, and the rest of the text in case the client reads past the line. */
+function restOfCommand(text: string, from: number): string[] {
+    const line = text.slice(from).split('\n')[0].trim();
+    return [...new Set([line, text.slice(from).trim()].filter(Boolean))];
+}
+
+const isPrefixOf = (name: string, full: string) => name.length > 0 && full.startsWith(name);
+
+function sqliteDotPrograms(text: string): ClientProgram[] {
+    const out: ClientProgram[] = [];
+    for (const m of text.matchAll(SQLITE_DOT_COMMAND)) {
+        const [name, rest] = [m[1], m[2]];
+        const via = `.${name}`;
+        if (name.startsWith('s') && (isPrefixOf(name, 'shell') || isPrefixOf(name, 'system'))) {
+            // The shell rebuilds the command from its own tokenizing of the line, which only matches it unquoted.
+            out.push({ via, shells: /['"\\]/.test(rest) || !rest.trim() ? [] : [rest.trim()] });
+        } else if (((isPrefixOf(name, 'output') || isPrefixOf(name, 'once')) && /\||(?:^|\s)-/.test(rest))
+            || name === 'excel' || name === 'www' || isPrefixOf(name, 'load')
+            || ((isPrefixOf(name, 'import') || (name.length >= 3 && isPrefixOf(name, 'read'))) && rest.includes('|'))) {
+            out.push({ via, shells: [] });
+        }
+    }
+    if (SQLITE_EDIT_FUNCTION.test(text)) out.push({ via: 'edit()', shells: [] });
+    return out;
+}
+
+function psqlPrograms(text: string): ClientProgram[] {
+    const out: ClientProgram[] = [];
+    for (const m of text.matchAll(PSQL_PROGRAM_COMMAND)) {
+        const name = m[1];
+        const after = (m.index ?? 0) + m[0].length;
+        if (name === '!') out.push({ via: '\\!', shells: restOfCommand(text, after) });
+        else if (!PSQL_PIPING_COMMANDS.has(name)) out.push({ via: `\\${name}`, shells: [] });
+        else if (text.slice(after).split('\n')[0].includes('|') || /^\s*\|/.test(text.slice(after))) out.push({ via: `\\${name} |`, shells: [] });
+    }
+    // A backslash command's arguments run what backquotes enclose (psqlscanslash.l, xslashbackquote).
+    const slash = text.search(PSQL_BACKSLASH_COMMAND);
+    if (slash >= 0) {
+        const spans = text.slice(slash).split('`');
+        for (let i = 1; i < spans.length; i += 2) out.push({ via: 'backquote', shells: i === spans.length - 1 ? [] : [spans[i]] });
+    }
+    return out;
+}
+
+function mysqlPrograms(text: string, args: string[]): ClientProgram[] {
+    const out: ClientProgram[] = [];
+    for (const m of text.matchAll(MYSQL_SHELL_ESCAPE)) out.push({ via: '\\!', shells: restOfCommand(text, (m.index ?? 0) + m[0].length) });
+    for (const m of text.matchAll(MYSQL_SYSTEM)) out.push({ via: 'system', shells: m[1].trim() ? [m[1].trim()] : [] });
+    if (MYSQL_PROGRAM_COMMAND.test(text) || args.some(a => /^--pager(?:=|$)/.test(a))) out.push({ via: 'pager or editor', shells: [] });
+    return out;
+}
+
+const clientPrograms = new WeakMap<ResolvedCommand, ClientProgram[]>();
+
+/** Every program a SQL client step runs from what it reads: shell escapes, pipes, editors and COPY … PROGRAM. */
+function clientProgramsOf(cmd: ResolvedCommand): ClientProgram[] {
+    const cached = clientPrograms.get(cmd);
+    if (cached) return cached;
+    const programs: ClientProgram[] = [];
+    if (SQL_CLIS[cmd.name]) {
+        for (const text of new Set(sqlInputFor(cmd).texts)) {
+            if (cmd.name === 'psql') programs.push(...psqlPrograms(text));
+            else if (cmd.name === 'mysql') programs.push(...mysqlPrograms(text, cmd.args));
+            else programs.push(...sqliteDotPrograms(text));
+            if (/\bCOPY\b/i.test(text)) {
+                for (const m of text.matchAll(COPY_PROGRAM)) {
+                    programs.push({ via: 'COPY … PROGRAM', shells: m[1] === undefined ? [] : [m[1].replace(/''/g, "'")], server: true });
+                }
+            }
+        }
+    }
+    clientPrograms.set(cmd, programs);
+    return programs;
+}
+
+const CLIENT_SHELL_DEPTH_MAX = 4;
+let clientShellDepth = 0;
+
+/** A shell command line a SQL client runs, judged as if typed at the top: why it is blocked, or why it needs approval. */
+function clientShellVerdict(text: string): { block: string | null; gate: string | null } {
+    if (clientShellDepth >= CLIENT_SHELL_DEPTH_MAX) return { block: null, gate: 'It nests SQL clients running shell commands too deeply to check.' };
+    clientShellDepth++;
+    try {
+        let gate = shellParseProblem(text);
+        for (const c of extractCommands(text)) {
+            const block = checkHardBlock(c) ?? (c.name === 'rm' ? checkRmDecision(c)?.replace(/^BLOCKED:\s*/, '') ?? null : null);
+            if (block) return { block, gate: null };
+            gate ??= checkGatedCommand(c) ?? innerGatedSteps(c)[0]?.reason ?? null;
+        }
+        return { block: null, gate };
+    } finally {
+        clientShellDepth--;
+    }
+}
+
+/** Why a SQL client step is blocked for a shell command it runs that is blocked on its own, or null. */
+function clientProgramBlock(cmd: ResolvedCommand): string | null {
+    for (const { via, shells } of clientProgramsOf(cmd)) {
+        for (const shell of shells) {
+            const { block } = clientShellVerdict(shell);
+            if (block) return `${cmd.name} ${via} runs a blocked command. ${block}`;
+        }
+    }
+    return null;
+}
+
+/**
+ * Why a SQL client step needs approval for a program it runs, or null. No exemption applies to it: what the program
+ * does is not scoped to the database the step connects to.
+ */
+function clientProgramGate(cmd: ResolvedCommand): string | null {
+    for (const { via, shells, server } of clientProgramsOf(cmd)) {
+        if (server) return `${cmd.name}: COPY … PROGRAM runs a shell command on the database server, which the guard can't check.`;
+        if (!shells.length) return `${cmd.name} ${via} runs a program the guard can't check.`;
+        for (const shell of shells) {
+            const { gate } = clientShellVerdict(shell);
+            if (gate) return `${cmd.name} ${via} runs a shell command that needs approval. ${gate}`;
+        }
+    }
+    return null;
+}
+
 const SQL_PATH_CANDIDATES_MAX = 8;
 // Past this many directory changes or file writes before a reader, a path is treated as unprovable: matching every
 // write against every cd is quadratic, and no real command comes near it.
@@ -1671,7 +1822,7 @@ function collectCommandsInText(text: string, commands: any[]): void {
     if (!text.includes('$(') && !text.includes('`')) return;
     for (const inner of substitutionSpans(text)) {
         try {
-            addNestedCommands(parse(inner), commands);
+            addNestedCommands(parseShell(inner), commands);
         } catch {
             // An unparsable span cannot be inspected; its text still reaches the regex fallback below.
             commands.push(...fallbackExtract(inner).map(c => ({ __resolved: c })));
@@ -2270,7 +2421,7 @@ function innerCommand(words: string[], outer: ResolvedCommand): ResolvedCommand 
 /** Parse command string into resolved commands. Falls back to regex splitting if parser fails. */
 export function extractCommands(command: string): ResolvedCommand[] {
     try {
-        const ast = parse(command);
+        const ast = parseShell(command);
         const nodes = walkCommandNodes(ast);
         const nested: Array<[any, ResolvedCommand]> = [];
         const commands = nodes.map(node => {
@@ -2536,7 +2687,7 @@ function findEphemeralMktempVariables(command: string): Map<number, Set<string>>
     const result = new Map<number, Set<string>>();
 
     try {
-        const ast: any = parse(command);
+        const ast: any = parseShell(command);
         const tmpDir = process.env.TMPDIR || '/tmp';
         if (!isSafePath(tmpDir)) return result;
 
@@ -3064,7 +3215,7 @@ function changesShellState(command: string): boolean {
         return type === 'Assignment' || type === 'Function' || Object.values(node).some(found);
     };
     try {
-        return found(parse(command));
+        return found(parseShell(command));
     } catch {
         return true;
     }
@@ -3242,7 +3393,7 @@ function isPlainLine(command: string): boolean {
         return (typeof type !== 'string' || PLAIN_LINE_NODES.has(type)) && Object.values(node).every(plain);
     };
     try {
-        return plain(parse(command));
+        return plain(parseShell(command));
     } catch {
         return false;
     }
@@ -3262,7 +3413,7 @@ function mayWriteFiles(command: string): boolean {
         return Object.values(node).some(writes);
     };
     try {
-        return writes(parse(command));
+        return writes(parseShell(command));
     } catch {
         return true;
     }
@@ -3596,6 +3747,8 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
         if (reason === RUNS_RM) return `${via === 'xargs' ? 'xargs' : 'find -exec'} rm is not allowed. Use trash for file deletion.`;
         if (reason) return `${via} runs a blocked command. ${reason}`;
     }
+    const client = clientProgramBlock(cmd);
+    if (client) return client;
     if (cmd.name === 'find' && cmd.args.includes('-delete')) {
         return 'find -delete permanently deletes files. Use trash instead.';
     }
@@ -3880,8 +4033,10 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     // emit. Coverage and false-positive guards live in findDestructiveSqlStatement.
     const sqlDialect = SQL_CLIS[name] ?? (name === 'snow' && args[0] === 'sql' ? 'Snowflake' : null);
     if (sqlDialect) {
-        const input = sqlInputOf(cmd);
+        const input = sqlInputFor(cmd);
         if (input.unreadable) return `${sqlDialect} SQL input (${input.unreadable}) can't be checked: too large, too many included files, or more text than the guard traces.`;
+        const program = clientProgramGate(cmd);
+        if (program) return program;
         for (const text of input.texts) {
             const matched = findDestructiveSqlStatement(text);
             if (matched) {
@@ -4481,6 +4636,10 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves };
                 continue;
             }
+            if (clientProgramGate(cmd) !== null) {
+                yield { cmd, reason, outer, moves };
+                continue;
+            }
             const dev = devScopeTargetOf(cmd, commands, command);
             if (dev !== null) {
                 if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
@@ -4667,6 +4826,17 @@ export function checkRmDecision(
     return null;
 }
 
+/** Why the guard can't read `command` the way bash will run it, so commands it hides go unchecked; null when it can. */
+function shellParseProblem(command: string): string | null {
+    try {
+        parseShell(command);
+        return null;
+    } catch (e) {
+        if (!(e instanceof ShellParseError)) return null;
+        return `The guard can't read this command the way bash will run it (${e.message}), so it can't check what runs after that point. Quote a heredoc delimiter whole ('EOF') or not at all (EOF).`;
+    }
+}
+
 /**
  * Replicate main()'s decision ordering against a raw bash command string,
  * WITHOUT the approval-bypass step (that stays in the caller) and without any
@@ -4721,6 +4891,8 @@ export function evaluateBashCommand(
 
     // --- Gated checks ---
     if (!opts.skipGate) {
+        const unreadable = shellParseProblem(command);
+        if (unreadable) return { action: 'gate', reason: unreadable };
         const first = gatedSteps(commands, command, cwd, lab, true, opts.localPg).next();
         if (!first.done) return { action: 'gate', reason: first.value.reason };
     }
