@@ -185,12 +185,19 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
         `psql -c '\\o /tmp/sql-input-never-written.sql' -c 'select 1'; psql -f /tmp/sql-input-never-written.sql`,
         `psql <<'SQL'\n\\copy (select 'DROP TABLE users;') to '/tmp/sql-input-generated.sql'\n\\i /tmp/sql-input-generated.sql\nSQL`,
         `psql -o /tmp/sql-input-generated.sql -c "select 'DROP TABLE users;'" -c '\\i /tmp/sql-input-generated.sql'`,
+        `snow sql -f /tmp/sql-input-never-written.sql | python3 -c "import json, sys"`,
+        `snow sql -f /tmp/sql-input-never-written.sql | sed -i 's/x/y/' /tmp/sql-input-never-written.sql`,
+        `echo "drop table t" >& /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `echo "drop table t" 1<> /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `tee /tmp/sql-input-never-written.sql < /tmp/other.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `sort -uo /tmp/sql-input-never-written.sql /tmp/other.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `sort --outp=/tmp/sql-input-never-written.sql /tmp/other.sql; snow sql -f /tmp/sql-input-never-written.sql`,
     ]) {
         expect(evaluateBashCommand(command, { cwd: '/tmp' }).reason ?? '').toContain("can't be checked");
     }
-    // A command that only runs after the client has read its files can't change them.
+    // A command that only runs after the client has read its files can't change them; a pipeline's stages run together.
     for (const command of [
-        `snow sql -f /tmp/sql-input-never-written.sql | python3 -c "import json, sys"`,
+        `snow sql -f /tmp/sql-input-never-written.sql | tail -1`,
         `snow sql -f /tmp/sql-input-never-written.sql; python3 gen.py`,
         `snow sql -q "describe table a.b.c" < /dev/null | python3 -c "import json"`,
         `snow sql -q "select 1"; snow sql -f /tmp/sql-input-never-written.sql`,
@@ -348,5 +355,16 @@ test('duckdb reads a one-dash long option as a flag, not -c with a value', () =>
     expect(verdict(`printf 'DROP TABLE users' | duckdb -csv`)).toBe('gate');
     expect(verdict(`printf 'DROP TABLE users' | duckdb -separator , db.duckdb`)).toBe('gate');
     expect(verdict(`printf 'DROP TABLE users' | duckdb -c 'SELECT 1'`)).toBe('allow');
+});
+
+test('a SQL file another command may rewrite is still read as it stands, so what it holds now blocks', () => {
+    writeFileSync(join(dir, 'shell.sql'), '\\! rm -rf ~\n');
+    for (const command of [
+        `sed -i 's/a/b/' other.txt; psql -h db.example -f shell.sql`,
+        `python3 x.py; psql -h db.example -f shell.sql`,
+        `psql -h db.example -f shell.sql -o out.txt`,
+    ]) {
+        expect(verdict(command)).toBe('block');
+    }
 });
 

@@ -89,6 +89,10 @@ describe('everything else stays gated', () => {
         ['HOME set by a parameter default', 'echo ${HOME:=/tmp/h}; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['a variable set by read', 'read -r HOME < /tmp/h; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['a variable set by arithmetic', '(( n = 1 )); snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['PATH set by printf -v', `printf -v PATH '%s' /tmp/bin; snow sql -c acme_dev -q "drop table dev_db.a.b"`],
+        ['PATH set by wait -p', 'sleep 1 & wait -p PATH; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['a DEBUG trap', `trap 'PATH=/tmp/bin' DEBUG; snow sql -c acme_dev -q "drop table dev_db.a.b"`],
+        ['Jinja templating', 'snow sql -c acme_dev --enable-templating JINJA -q "drop table dev_db.a.b"'],
         ['a glued --query= with a prod target beside a dev one', 'snow sql -c acme_dev -q "drop table dev_db.a.b" --query="drop table prod_db.a.b"'],
         ['SQL also arriving on stdin', 'snow sql -c acme_dev -q "drop table dev_db.a.b" <<EOF\ndrop table prod_db.a.b;\nEOF'],
         ['a prod SWAP after a dev drop', 'snow sql -c acme_prod -q "drop table scratch_db.a.b; alter table prod_db.a.b swap with prod_db.a.c"'],
@@ -137,24 +141,14 @@ describe('everything else stays gated', () => {
     });
 });
 
-describe('a USE earlier in the same SQL places names that leave out the database', () => {
+describe('a name that leaves out its database stays gated, whatever USE came before', () => {
+    // A USE is not the only statement that moves the session: CREATE SCHEMA and CREATE DATABASE do too.
     test.each([
         'snow sql -c acme_dev -q "use schema dev_db.scratch; create or replace table orders as select 1"',
         'snow sql -c acme_dev -q "use database dev_db; drop table scratch.orders"',
-        'snow sql -c acme_dev -q "use role analyst; use warehouse w; use schema DEV_DB.scratch; delete from orders"',
-        'snow sql -c acme_dev -q "use dev_db; use schema scratch; drop table orders"',
+        'snow sql -c acme_dev -q "use database dev_db; create schema prod_db.scratch_x; drop table s.t"',
+        'snow sql -c acme_dev -q "use schema prod_db.core; drop table orders"',
     ])('%s', (command) => {
-        expect(verdict(command)).toBe('allow');
-    });
-
-    test.each([
-        ['a USE naming another database', 'snow sql -c acme_dev -q "use schema prod_db.core; drop table orders"'],
-        ['a later USE moving to another database', 'snow sql -c acme_dev -q "use schema dev_db.s; use database prod_db; drop table orders"'],
-        ['the USE coming after the statement', 'snow sql -c acme_dev -q "drop table orders; use schema dev_db.s"'],
-        ['a quoted lower-case database in the USE', `snow sql -c acme_dev -q 'use schema "dev_db".s; drop table orders'`],
-        ['a one-part schema with no database set', 'snow sql -c acme_dev -q "use schema scratch; drop table orders"'],
-        ['a USE the guard cannot place', 'snow sql -c acme_dev -q "use schema dev_db.s; use schema a.b.c; drop table orders"'],
-    ])('%s stays gated', (_name, command) => {
         expect(verdict(command)).toBe('gate');
     });
 });
@@ -206,6 +200,24 @@ describe('Snowflake temporary tables', () => {
         ['another client', `psql -c "create or replace temp table t as select 1"`],
     ])('%s stays gated', (_name, command) => {
         expect(verdict(command)).toBe('gate');
+    });
+});
+
+describe('where Snowflake splits SQL differently from the guard', () => {
+    // Snowflake's connector reads `//` as a comment and `\\` as an escape inside quotes.
+    test.each([
+        ['a temp table hiding a drop behind //', `snow sql -c acme_other -q "create or replace temp table t (a int) // '\n; drop table prod_db.s.t; -- '"`],
+        ['a temp table hiding a drop behind an escaped quote', `snow sql -c acme_other -q "create or replace temp table t as select 'a\\'' as c; drop table prod_db.s.t; select ''"`],
+        ['a drop behind an escaped quote', `snow sql -c acme_other -q "select 'a\\'' ; drop table prod_db.s.t; select ''"`],
+        ['a drop behind //', `snow sql -c acme_other -q "select 1 // '\n; drop table prod_db.s.t -- '"`],
+        ['a dev drop beside a hidden prod drop', `snow sql -c acme_dev -q "drop table dev_db.a.b; select 'a\\'' ; drop table prod_db.s.t; select ''"`],
+    ])('%s stays gated', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test('Jinja templating gates whatever the SQL looks like, since snow renders it first', () => {
+        expect(verdict(`snow sql --enable-templating JINJA -c acme_other -q "{{ 'dr' ~ 'op' }} table prod_db.s.t"`)).toBe('gate');
+        expect(verdict('snow sql -c acme_dev --enable-templating NONE -q "drop table dev_db.a.b"')).toBe('allow');
     });
 });
 

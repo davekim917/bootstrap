@@ -68,6 +68,7 @@ export interface ResolvedCommand {
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
     end?: number;               // source offset just past the command, with the same provenance as `pos`
+    untracedWrite?: boolean;    // a redirect writes a file `stdoutFiles` doesn't name (another fd, `<>`, `>& file`)
     stdinTexts?: string[];      // heredoc and here-string text fed to this command
     stdinExpanded?: string[];   // the part of stdinTexts bash expands variables in (not a quoted heredoc or '…' here-string)
     stdinFiles?: string[];      // files redirected into this command with `<`
@@ -83,6 +84,7 @@ export interface ScriptContext {
     writes: FileWrite[];        // what echo/printf/cat/tee write to files
     fileChangers?: ResolvedCommand[]; // commands that may write a file in a way `writes` doesn't record
     orderUnclear?: boolean;     // a loop, function, coprocess or background job: a later command may run first
+    pipelines?: Array<[number, number]>; // source spans of pipelines, whose stages run at the same time
     pipedInto: Map<number, PipedInput>; // what the previous stage of a pipeline feeds each command, by command offset
     cds: CdStep[];              // every cd/pushd/popd, in source order
     links: Map<number, ChainLink>; // where each top-level command sits in its &&/|| chain, by command offset
@@ -1188,14 +1190,13 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         if (seen.has(f)) continue;
         seen.add(f);
         if (f === '/dev/null') continue;
+        // A file something may write before it is read is still read as it stands: what it holds now can block.
         if (writesOwnOutput(cmd) || texts.some(t => SQL_CLIENT_FILE_WRITE.test(t))) {
             unreadable ??= `${f}, which the client may write itself`;
-            continue;
         }
         const script = cmd.script;
         if (!script?.fileChangers || script.fileChangers.some(c => c !== cmd && mayRunBefore(c, cmd, script))) {
             unreadable ??= `${f}, which another command on the line may write`;
-            continue;
         }
         if (sqlPathCandidates(f, cmd) === null) {
             unreadable ??= `${f}, a path the command line doesn't prove`;
@@ -2235,7 +2236,14 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const stdinExpanded: string[] = [];
     const stdinFiles: string[] = [];
     const stdoutFiles: string[] = [];
+    let untracedWrite = false;
     for (const r of (node.redirects || [])) {
+        const target = wordValue(r?.target);
+        if (target !== '/dev/null' && (
+            (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && r.fileDescriptor !== undefined && r.fileDescriptor !== 1)
+            || r?.operator === '<>' || (r?.operator === '>&' && !/^(?:\d+|-)$/.test(target)))) {
+            untracedWrite = true;
+        }
         if (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && (r.fileDescriptor === undefined || r.fileDescriptor === 1)) {
             stdoutFiles.push(wordValue(r.target));
         }
@@ -2261,6 +2269,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
         ...(typeof node.end === 'number' ? { end: node.end } : {}),
+        ...(untracedWrite ? { untracedWrite } : {}),
         ...(stdinTexts.length ? { stdinTexts } : {}),
         ...(stdinExpanded.length ? { stdinExpanded } : {}),
         ...(stdinFiles.length ? { stdinFiles } : {}),
@@ -2813,7 +2822,19 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             // `pushd DIR` changes directory like `cd DIR`; `pushd +N`/`-N` rotates the stack to a directory unknown here.
             target: (c.name === 'cd' || c.name === 'pushd') && c.args.length === 1 && !/^(?:-|[+-]\d+)$/.test(c.args[0]) ? c.args[0] : undefined,
         }));
-    return { writes, pipedInto, cds, links, command, fileChangers: commands.filter(mayChangeFiles), orderUnclear: hasUnclearOrder(ast) };
+    return { writes, pipedInto, cds, links, command, fileChangers: commands.filter(mayChangeFiles), orderUnclear: hasUnclearOrder(ast), pipelines: pipelineSpans(ast) };
+}
+
+function pipelineSpans(node: unknown, spans: Array<[number, number]> = []): Array<[number, number]> {
+    if (!node || typeof node !== 'object') return spans;
+    if (Array.isArray(node)) {
+        for (const child of node) pipelineSpans(child, spans);
+        return spans;
+    }
+    const n = node as { type?: unknown; pos?: unknown; end?: unknown };
+    if (n.type === 'Pipeline' && typeof n.pos === 'number' && typeof n.end === 'number') spans.push([n.pos, n.end]);
+    for (const child of Object.values(node)) pipelineSpans(child, spans);
+    return spans;
 }
 
 const UNCLEAR_ORDER_NODES = new Set(['For', 'While', 'Select', 'Function', 'Coproc', 'ArithmeticFor']);
@@ -2826,10 +2847,15 @@ function hasUnclearOrder(node: unknown): boolean {
     return Object.values(node).some(hasUnclearOrder);
 }
 
-/** True when `writer` may run before `reader` reads its files: earlier on the line, inside its words, or in any order. */
+/**
+ * True when `writer` may run before `reader` reads its files: earlier on the line, inside its words, in the same
+ * pipeline, or in any order.
+ */
 function mayRunBefore(writer: ResolvedCommand, reader: ResolvedCommand, script: ScriptContext): boolean {
-    if (script.orderUnclear || writer.pos === undefined || reader.end === undefined) return true;
-    return writer.pos < reader.end;
+    if (script.orderUnclear || writer.pos === undefined || reader.pos === undefined || reader.end === undefined) return true;
+    if (writer.pos < reader.end) return true;
+    const [w, r] = [writer.pos, reader.pos];
+    return (script.pipelines ?? []).some(([start, end]) => start <= w && w < end && start <= r && r < end);
 }
 
 // Commands that write no file of their own; a redirect from one still writes one, and only echo, printf, cat and tee
@@ -2847,9 +2873,13 @@ function writesOwnOutput(cmd: ResolvedCommand): boolean {
 }
 
 function mayChangeFiles(cmd: ResolvedCommand): boolean {
+    if (cmd.untracedWrite) return true;
     if (!TEXT_EMITTERS.has(cmd.name) && (cmd.stdoutFiles ?? []).some(t => !DISCARD_TARGETS.has(t))) return true;
+    // An emitter's `<` input is not read into `writes`.
+    if (TEXT_EMITTERS.has(cmd.name) && cmd.stdinFiles?.length && (cmd.stdoutFiles?.length || cmd.name === 'tee')) return true;
     if (FILE_SAFE_COMMANDS.has(cmd.name)) return false;
-    if (cmd.name === 'sort') return cmd.args.some(a => /^(?:-o|--output)/.test(a));
+    // GNU options cluster (`-uo FILE`) and take any unambiguous prefix (`--outp=FILE`).
+    if (cmd.name === 'sort') return cmd.args.some(a => /^-[^-]*o/.test(a) || /^--o/.test(a));
     if (cmd.name === 'uniq') return cmd.args.filter(a => !a.startsWith('-')).length > 1;
     if ((cmd.name === 'snow' && cmd.args[0] === 'sql') || cmd.name === 'psql') {
         // Only what the command line shows: a file it reads, or an option that names a log or output file, could hold more.
@@ -3488,7 +3518,12 @@ const SNOW_SQL_BARE_FLAGS = new Set(['--silent', '--verbose', '--debug', '--enha
 const SAFE_WRAPPERS_PREFIX = String.raw`^(?:(?:g?timeout\s+\d+(?:\.\d+)?[smhd]?|nohup|time)\s+)*`;
 const SNOW_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}snow\\s`);
 // Commands that change what a later command sees: its environment, or code it sources.
-const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare', 'typeset', 'env', 'eval', 'readonly', 'local', 'alias', 'unset', 'read', 'mapfile', 'readarray', 'getopts', 'let']);
+const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare', 'typeset', 'env', 'eval', 'readonly', 'local', 'alias', 'unset', 'read', 'mapfile', 'readarray', 'getopts', 'let', 'trap']);
+
+/** `printf -v NAME` and `wait -p NAME` assign the variable they name. */
+function setsVariableByOption(cmd: ResolvedCommand): boolean {
+    return (cmd.name === 'printf' && cmd.args.some(a => /^-v/.test(a))) || (cmd.name === 'wait' && cmd.args.some(a => /^-[a-z]*p/.test(a)));
+}
 // A variable the shell already exports keeps exporting after a plain assignment, so a name that steers which snow,
 // Python, config, certificate or proxy the client uses, or how the shell splits and finds things, may not be assigned.
 const STEERING_VARIABLE_RE = /^(?:SNOW\w*|PATH|HOME|PWD|OLDPWD|CDPATH|IFS|TMPDIR|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|GLOBIGNORE|PS4|PROMPT_COMMAND|HOSTALIASES|LOCALDOMAIN|RES_OPTIONS|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|NO_PROXY|LD_\w*|PYTHON\w*|XDG_\w*|SSL_\w*|OPENSSL_\w*|\w*_PROXY)$/i;
@@ -3526,6 +3561,16 @@ function snowflakeIdentifier(part: string): string | null {
 
 const SNOWFLAKE_OBJECT_NAME = String.raw`((?:"(?:[^"]|"")+"|[A-Za-z0-9_$]+)(?:\.(?:"(?:[^"]|"")+"|[A-Za-z0-9_$]+))*)`;
 
+/** The values given to every `--enable-templating` option, upper-cased. */
+function snowTemplating(cmd: ResolvedCommand): string[] {
+    const values: string[] = [];
+    for (let i = 0; i < cmd.args.length; i++) {
+        const v = optionValueAt(cmd.args, i, '--enable-templating');
+        if (v !== undefined) values.push(...v.toUpperCase().split(','));
+    }
+    return values;
+}
+
 /** The fully qualified object a destructive statement acts on, as Snowflake identifiers. */
 function statementTarget(pattern: string, statement: string): { kind: string; parts: string[] } | null {
     const s = oneLine(statement.slice(0, STATEMENT_MAX_CHARS));
@@ -3557,7 +3602,7 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
-    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name)) || changesShellState(command)) return null;
+    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c)) || changesShellState(command)) return null;
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {
@@ -3574,6 +3619,7 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     }
     const entry = scope.snowflake.find(e => e.connection === connection);
     if (!entry) return null;
+    if (snowTemplating(cmd).some(t => t !== 'NONE')) return null;
 
     const allowed = new Set(entry.databases.map(d => d.toUpperCase()));
     let matched = false;
@@ -3581,62 +3627,20 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     const input = sqlInputOf(cmd);
     if (input.unreadable) return null;
     for (const arg of input.texts) {
+        if (!splitsLikeSnow(arg)) return null;
         if (!findDestructiveSqlStatement(arg)) continue;
         if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b|^\s*DO\b|[!\\]\w/im.test(arg)) return null;
-        // The database a name without one resolves to: only what a USE earlier in this text set, never the connection's
-        // default. snow stops at the first statement that fails, so a USE naming a database that isn't there ends the run.
-        let current: string | undefined;
-        for (const statement of sqlStatements(arg)) {
-            const use = useStatementDatabase(statement, current);
-            if (use !== undefined) {
-                current = use ?? undefined;
-                continue;
-            }
-            for (const st of destructiveStatements(statement)) {
-                if (isSnowflakeTempReplace(st.statement)) continue;
-                const target = statementTarget(st.pattern, st.statement);
-                if (!target) return null;
-                const needed = target.kind === 'schema' ? 2 : target.kind === 'database' ? 0 : 3;
-                if (needed === 0 || target.parts.length === 0 || target.parts.length > needed) return null;
-                const database = target.parts.length === needed ? target.parts[0] : current;
-                if (!database || !allowed.has(database)) return null;
-                matched = true;
-            }
+        for (const st of destructiveStatements(arg)) {
+            if (isSnowflakeTempReplace(st.statement)) continue;
+            const target = statementTarget(st.pattern, st.statement);
+            if (!target) return null;
+            const needed = target.kind === 'schema' ? 2 : target.kind === 'database' ? 0 : 3;
+            if (needed === 0 || target.parts.length !== needed || !allowed.has(target.parts[0])) return null;
+            matched = true;
         }
     }
     return matched ? `snowflake connection ${entry.connection}, database ${entry.databases.join('/')}` : null;
 }
-
-/** The statements of `sql` in order, each with its own text: split where the literal- and comment-free text has a `;`. */
-function sqlStatements(sql: string): string[] {
-    const statements: string[] = [];
-    let offset = 0;
-    for (const segment of stripSqlLiteralsAndComments(sql).split(';')) {
-        const original = sql.slice(offset, offset + segment.length).trim();
-        offset += segment.length + 1;
-        if (segment.trim()) statements.push(original);
-    }
-    return statements;
-}
-
-const USE_STATEMENT_RE = new RegExp(String.raw`^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*USE\s+(?:(DATABASE|SCHEMA)\s+)?` + SNOWFLAKE_OBJECT_NAME + String.raw`\s*$`, 'i');
-
-/**
- * For a USE statement, the database it leaves current (null when the guard can't tell which); undefined for any other
- * statement. USE ROLE, WAREHOUSE and SECONDARY ROLES leave the database as it was.
- */
-function useStatementDatabase(statement: string, current: string | undefined): string | null | undefined {
-    if (!/^USE\b/i.test(stripSqlLiteralsAndComments(statement).trim())) return undefined;
-    if (/^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*USE\s+(?:ROLE|WAREHOUSE|SECONDARY)\b/i.test(statement)) return current ?? null;
-    const m = statement.match(USE_STATEMENT_RE);
-    if (!m) return null;
-    const parts = m[2].match(/"(?:[^"]|"")+"|[^.]+/g)?.map(snowflakeIdentifier) ?? [];
-    if (parts.some(p => p === null)) return null;
-    const kind = (m[1] ?? 'DATABASE').toUpperCase();
-    if (kind === 'DATABASE') return parts.length === 1 ? parts[0] : null;
-    return parts.length === 2 ? parts[0] : parts.length === 1 ? current ?? null : null;
-}
-
 
 // ── Local scratch Postgres exemption ─────────────────────────────────────────
 // Destructive psql against a throwaway Postgres the session started in its own
@@ -4392,11 +4396,14 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         if (input.unreadable) return `${sqlDialect} SQL input (${input.unreadable}) can't be checked: too large, too many included files, more text than the guard traces, or not readable before the line runs.`;
         const program = clientProgramGate(cmd);
         if (program) return program;
+        if (name === 'snow' && snowTemplating(cmd).some(t => t === 'JINJA' || t === 'ALL')) {
+            return 'Snowflake SQL with Jinja templating can\'t be checked: snow renders it into new SQL before it runs.';
+        }
         for (const text of input.texts) {
             for (const statements of name === 'psql' ? psqlStatementTexts(text) : [text]) {
-                const matched = name === 'snow'
-                    ? destructiveStatements(statements).find(m => !isSnowflakeTempReplace(m.statement)) ?? null
-                    : findDestructiveSqlStatement(statements);
+                const matched = name !== 'snow' ? findDestructiveSqlStatement(statements)
+                    : splitsLikeSnow(statements) ? destructiveStatements(statements).find(m => !isSnowflakeTempReplace(m.statement)) ?? null
+                    : findDestructiveSqlStatement(statements) ?? findDestructiveSqlStatement(snowflakeBlanked(statements));
                 if (matched) {
                     return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
                 }
@@ -4595,6 +4602,58 @@ const STATEMENT_MAX_CHARS = 4000;
  */
 function isSnowflakeTempReplace(statement: string): boolean {
     return /^CREATE\s+OR\s+REPLACE\s+TEMP(?:ORARY)?\s+TABLE\s/i.test(statement);
+}
+
+/**
+ * Snowflake's connector also reads `//` as a comment and `\` as an escape inside quotes, which the guard's statement
+ * split does not, so text holding either can split differently from what runs.
+ */
+function splitsLikeSnow(sql: string): boolean {
+    return !/\/\/|\\/.test(sql);
+}
+
+/**
+ * `sql` with comments and literals blanked the way Snowflake reads them (`//` comments, `\` escapes in quotes),
+ * same length, quote marks kept, so the guard's own scanner finds a statement Snowflake would run.
+ */
+function snowflakeBlanked(sql: string): string {
+    let out = '';
+    let i = 0;
+    while (i < sql.length) {
+        const two = sql.slice(i, i + 2);
+        if (two === '--' || two === '//') {
+            const nl = sql.indexOf('\n', i);
+            const end = nl < 0 ? sql.length : nl;
+            out += ' '.repeat(end - i);
+            i = end;
+        } else if (two === '/*') {
+            const close = sql.indexOf('*/', i + 2);
+            const end = close < 0 ? sql.length : close + 2;
+            out += ' '.repeat(end - i);
+            i = end;
+        } else if (two === '$$') {
+            const close = sql.indexOf('$$', i + 2);
+            const end = close < 0 ? sql.length : close + 2;
+            out += '$$' + ' '.repeat(Math.max(0, end - i - 4)) + (close < 0 ? '' : '$$');
+            i = end;
+        } else if (sql[i] === "'" || sql[i] === '"') {
+            const quote = sql[i];
+            let j = i + 1;
+            while (j < sql.length) {
+                if (sql[j] === '\\') j += 2;
+                else if (sql[j] === quote && sql[j + 1] === quote) j += 2;
+                else if (sql[j] === quote) break;
+                else j += 1;
+            }
+            const end = Math.min(j + 1, sql.length);
+            out += quote + ' '.repeat(Math.max(0, end - i - 2)) + (end - i >= 2 ? quote : '');
+            i = end;
+        } else {
+            out += sql[i];
+            i += 1;
+        }
+    }
+    return out;
 }
 
 function destructiveStatements(sql: string, depth = 0): DestructiveMatch[] {
