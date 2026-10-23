@@ -57,7 +57,7 @@
       "name": "verification-skills",
       "source": "./plugins/verification-skills",
       "description": "Generate and maintain a private verify-<project> skill that drives a web app, CLI, service or dbt/Snowflake project the way a user does and records evidence a reviewer can check. Invoke-only. Adapted from pstack (MIT).",
-      "version": "1.2.1"
+      "version": "1.2.2"
     },
     {
       "name": "comment-rule",
