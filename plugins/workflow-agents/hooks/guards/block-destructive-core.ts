@@ -1199,10 +1199,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         if (!script?.fileChangers || script.compoundWrite || script.fileChangers.some(c => c !== cmd && mayRunBefore(c, cmd, script))) {
             unreadable ??= `${f}, which another command on the line may write`;
         }
-        if (sqlPathCandidates(f, cmd) === null) {
-            unreadable ??= `${f}, a path the command line doesn't prove`;
-            continue;
-        }
+        if (sqlPathCandidates(f, cmd) === null) unreadable ??= `${f}, a path the command line doesn't prove`;
         const writes = writesTo(f, cmd);
         if (writes === null) {
             unreadable ??= f;

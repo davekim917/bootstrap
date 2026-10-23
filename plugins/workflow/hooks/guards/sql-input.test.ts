@@ -366,6 +366,8 @@ test('a SQL file another command may rewrite is still read as it stands, so what
         `sed -i 's/a/b/' other.txt; psql -h db.example -f shell.sql`,
         `python3 x.py; psql -h db.example -f shell.sql`,
         `psql -h db.example -f shell.sql -o out.txt`,
+        `echo '\\! rm -rf ~' > ~/sql-input-x.sql; psql -h db.example -f ~/sql-input-x.sql`,
+        `echo '\\! rm -rf ~' > "$F"; psql -h db.example -f "$F"`,
     ]) {
         expect(verdict(command)).toBe('block');
     }
