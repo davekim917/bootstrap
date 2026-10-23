@@ -183,6 +183,8 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
         `snow sql -f /tmp/sql-input-never-written.sql -q "$(python3 gen.py)"`,
         `snow sql -q "GET @stage/q.sql file:///tmp/"; snow sql -f /tmp/sql-input-never-written.sql`,
         `psql -c '\\o /tmp/sql-input-never-written.sql' -c 'select 1'; psql -f /tmp/sql-input-never-written.sql`,
+        `psql <<'SQL'\n\\copy (select 'DROP TABLE users;') to '/tmp/sql-input-generated.sql'\n\\i /tmp/sql-input-generated.sql\nSQL`,
+        `psql -o /tmp/sql-input-generated.sql -c "select 'DROP TABLE users;'" -c '\\i /tmp/sql-input-generated.sql'`,
     ]) {
         expect(evaluateBashCommand(command, { cwd: '/tmp' }).reason ?? '').toContain("can't be checked");
     }

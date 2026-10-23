@@ -1184,6 +1184,10 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         if (seen.has(f)) continue;
         seen.add(f);
         if (f === '/dev/null') continue;
+        if (writesOwnOutput(cmd) || texts.some(t => SQL_CLIENT_FILE_WRITE.test(t))) {
+            unreadable ??= `${f}, which the client may write itself`;
+            continue;
+        }
         const script = cmd.script;
         if (!script?.fileChangers || script.fileChangers.some(c => c !== cmd && mayRunBefore(c, cmd, script))) {
             unreadable ??= `${f}, which another command on the line may write`;
@@ -2828,8 +2832,15 @@ function mayRunBefore(writer: ResolvedCommand, reader: ResolvedCommand, script: 
 // redirects are read into `writes`.
 const FILE_SAFE_COMMANDS = new Set(['cd', 'pushd', 'popd', 'cat', 'echo', 'printf', 'tee', 'grep', 'egrep', 'fgrep', 'head', 'tail', 'cut', 'tr', 'wc', 'jq', 'date', 'true', 'false', 'sleep', 'test', '[', 'ls', 'pwd', 'column', 'basename', 'dirname', 'export', 'set', 'unset', 'mkdir', 'touch', 'nl', 'sha256sum', 'md5sum']);
 const DISCARD_TARGETS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
-// A SQL client's own ways of writing a local file: psql's \o, \w, \g to a file and \copy … to; snow's GET.
-const SQL_CLIENT_FILE_WRITE = /\\(?:o|out|w|write|g|gx|copy)\b|\bGET\b|\$/i;
+// A SQL client's own ways of writing a file: psql's \o, \w, \g and \copy; snow's GET; COPY … TO and INTO OUTFILE,
+// which a database on this host writes where the client can read; sqlite3's .output, .once, .save and .backup.
+const SQL_CLIENT_FILE_WRITE = /\\(?:o|out|w|write|g|gx|copy)\b|\bGET\b|\bCOPY\b[\s\S]*?\bTO\b|\bINTO\s+(?:OUT|DUMP)FILE\b|^\s*\.(?:output|once|save|backup)\b/im;
+const SQL_CLIENT_OUTPUT_OPTION = /^(?:-o|--output|-L|--log-file|--tee)(?:=|$)/;
+
+/** True when a SQL client's options name a file it writes its output or a log to. */
+function writesOwnOutput(cmd: ResolvedCommand): boolean {
+    return cmd.args.some(a => SQL_CLIENT_OUTPUT_OPTION.test(a) || cmd.name === 'psql' && /^-[a-zA-Z]*[oL]/.test(a));
+}
 
 function mayChangeFiles(cmd: ResolvedCommand): boolean {
     if (!TEXT_EMITTERS.has(cmd.name) && (cmd.stdoutFiles ?? []).some(t => !DISCARD_TARGETS.has(t))) return true;
@@ -2838,8 +2849,8 @@ function mayChangeFiles(cmd: ResolvedCommand): boolean {
     if (cmd.name === 'uniq') return cmd.args.filter(a => !a.startsWith('-')).length > 1;
     if ((cmd.name === 'snow' && cmd.args[0] === 'sql') || cmd.name === 'psql') {
         // Only what the command line shows: a file it reads, or an option that names a log or output file, could hold more.
-        if (cmd.args.some(a => /^(?:-f|--file|--filename|-o|--output|-L|--log-file)(?:=|$)/.test(a) || /^-[a-zA-Z]*[foL]/.test(a) && cmd.name === 'psql')) return true;
-        return [...cmd.args, ...(cmd.stdinTexts ?? [])].some(t => SQL_CLIENT_FILE_WRITE.test(t)) || Boolean(cmd.stdinFiles?.length);
+        if (cmd.args.some(a => /^(?:-f|--file|--filename)(?:=|$)/.test(a) || /^-[a-zA-Z]*f/.test(a) && cmd.name === 'psql') || writesOwnOutput(cmd)) return true;
+        return [...cmd.args, ...(cmd.stdinTexts ?? [])].some(t => SQL_CLIENT_FILE_WRITE.test(t) || t.includes('$')) || Boolean(cmd.stdinFiles?.length);
     }
     return true;
 }
