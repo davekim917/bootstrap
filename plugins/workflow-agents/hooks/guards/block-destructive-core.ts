@@ -3523,9 +3523,9 @@ function currentDevScope(): DevScope | null {
     }
 }
 
-// The only `snow sql` options an exempt command may carry: none of them changes the account, user, credentials or
-// config. A role can't move a statement out of the database it names, and the SQL a file holds is read like `-q`.
-const SNOW_SQL_VALUE_FLAGS = new Set(['-c', '--connection', '-q', '--query', '-f', '--filename', '--format', '--warehouse', '--enable-templating', '--role']);
+// The only `snow sql` options an exempt command may carry: none of them changes
+// the account, user, role, credentials, config or the SQL that runs.
+const SNOW_SQL_VALUE_FLAGS = new Set(['-c', '--connection', '-q', '--query', '--format', '--warehouse', '--enable-templating']);
 const SNOW_SQL_BARE_FLAGS = new Set(['--silent', '--verbose', '--debug', '--enhanced-exit-codes']);
 // Wrappers that leave the command's user and environment alone (`sudo` and `env` do not, so they never qualify).
 const SAFE_WRAPPERS_PREFIX = String.raw`^(?:(?:g?timeout\s+\d+(?:\.\d+)?[smhd]?|nohup|time)\s+)*`;
@@ -3537,23 +3537,18 @@ const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare',
 function setsVariableByOption(cmd: ResolvedCommand): boolean {
     return (cmd.name === 'printf' && cmd.args.some(a => /^-v/.test(a))) || (cmd.name === 'wait' && cmd.args.some(a => /^-[a-z]*p/.test(a)));
 }
-// A variable the shell already exports keeps exporting after a plain assignment, so a name that steers which snow,
-// Python, config, certificate or proxy the client uses, or how the shell splits and finds things, may not be assigned.
-const STEERING_VARIABLE_RE = /^(?:SNOW\w*|PATH|HOME|PWD|OLDPWD|CDPATH|IFS|TMPDIR|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|GLOBIGNORE|PS4|PROMPT_COMMAND|HOSTALIASES|LOCALDOMAIN|RES_OPTIONS|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|NO_PROXY|LD_\w*|PYTHON\w*|XDG_\w*|SSL_\w*|OPENSSL_\w*|\w*_PROXY)$/i;
 
 /**
- * True when the command line assigns a variable that could steer the client, defines a function, assigns through
- * arithmetic or a `${name:=value}` default, or can't be parsed to tell. A function can take the name of the command
- * an exemption reads, and run something else under it.
+ * True when the command line assigns a variable (by assignment word, loop, arithmetic or a `${name:=value}` default),
+ * defines a function, or can't be parsed to tell. A function can take the name of the command an exemption reads, and
+ * run something else under it.
  */
 function changesShellState(command: string): boolean {
     const found = (node: unknown): boolean => {
         if (!node || typeof node !== 'object') return false;
         if (Array.isArray(node)) return node.some(found);
-        const n = node as { type?: unknown; name?: { value?: unknown } | string; text?: unknown };
-        const name = typeof n.name === 'string' ? n.name : typeof n.name?.value === 'string' ? n.name.value : '';
-        if ((n.type === 'Assignment' || n.type === 'For' || n.type === 'Select') && (!name || STEERING_VARIABLE_RE.test(name))) return true;
-        if (n.type === 'Function' || n.type === 'ArithmeticCommand' || n.type === 'ArithmeticFor') return true;
+        const type = (node as { type?: unknown }).type;
+        if (type === 'Assignment' || type === 'For' || type === 'Select' || type === 'Function' || type === 'ArithmeticCommand' || type === 'ArithmeticFor') return true;
         return Object.values(node).some(found);
     };
     // A word's parts are not walked here, so an expansion that assigns is found in the text.
@@ -3572,8 +3567,6 @@ function snowflakeIdentifier(part: string): string | null {
     return /^[A-Za-z_][A-Za-z0-9_$]*$/.test(part) ? part.toUpperCase() : null;
 }
 
-const SNOWFLAKE_OBJECT_NAME = String.raw`((?:"(?:[^"]|"")+"|[A-Za-z0-9_$]+)(?:\.(?:"(?:[^"]|"")+"|[A-Za-z0-9_$]+))*)`;
-
 /** The values given to every `--enable-templating` option, upper-cased. */
 function snowTemplating(cmd: ResolvedCommand): string[] {
     const values: string[] = [];
@@ -3587,7 +3580,7 @@ function snowTemplating(cmd: ResolvedCommand): string[] {
 /** The fully qualified object a destructive statement acts on, as Snowflake identifiers. */
 function statementTarget(pattern: string, statement: string): { kind: string; parts: string[] } | null {
     const s = oneLine(statement.slice(0, STATEMENT_MAX_CHARS));
-    const name = SNOWFLAKE_OBJECT_NAME;
+    const name = String.raw`((?:"(?:[^"]|"")+"|[A-Za-z0-9_$]+)(?:\.(?:"(?:[^"]|"")+"|[A-Za-z0-9_$]+))*)`;
     const m =
         pattern === 'DROP' ? s.match(new RegExp(String.raw`^DROP\s+(MATERIALIZED\s+VIEW|\w+)\s+(?:IF\s+EXISTS\s+)?` + name + String.raw`\s*(?:CASCADE|RESTRICT)?\s*$`, 'i'))
         : pattern === 'TRUNCATE' ? s.match(new RegExp(String.raw`^TRUNCATE\s+(?:(TABLE)\s+)?(?:IF\s+EXISTS\s+)?` + name + String.raw`\s*$`, 'i'))
@@ -3644,7 +3637,6 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
         if (!findDestructiveSqlStatement(arg)) continue;
         if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b|^\s*DO\b|[!\\]\w/im.test(arg)) return null;
         for (const st of destructiveStatements(arg)) {
-            if (isSnowflakeTempReplace(st.statement)) continue;
             const target = statementTarget(st.pattern, st.statement);
             if (!target) return null;
             const needed = target.kind === 'schema' ? 2 : target.kind === 'database' ? 0 : 3;
@@ -4412,11 +4404,13 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         if (name === 'snow' && snowTemplating(cmd).some(t => t === 'JINJA' || t === 'ALL')) {
             return 'Snowflake SQL with Jinja templating can\'t be checked: snow renders it into new SQL before it runs.';
         }
+        if (name === 'snow' && input.texts.some(t => /^\s*!(?:source|load)\s+\w+:\/\//im.test(t))) {
+            return 'Snowflake SQL that snow fetches from a URL (!source/!load) can\'t be checked before it runs.';
+        }
         for (const text of input.texts) {
             for (const statements of name === 'psql' ? psqlStatementTexts(text) : [text]) {
-                const matched = name !== 'snow' ? findDestructiveSqlStatement(statements)
-                    : splitsLikeSnow(statements) ? destructiveStatements(statements).find(m => !isSnowflakeTempReplace(m.statement)) ?? null
-                    : destructiveKeywordAnywhere(statements);
+                const matched = findDestructiveSqlStatement(statements)
+                    ?? (name === 'snow' && !splitsLikeSnow(statements) ? destructiveKeywordAnywhere(statements) : null);
                 if (matched) {
                     return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
                 }
@@ -4610,20 +4604,13 @@ interface StepCard {
 const STATEMENT_MAX_CHARS = 4000;
 
 /**
- * Snowflake gives a temporary table to the session alone: one replacing a permanent table of the same name only hides
- * it until the session ends, and the permanent table is left as it was.
- */
-function isSnowflakeTempReplace(statement: string): boolean {
-    return /^CREATE\s+OR\s+REPLACE\s+TEMP(?:ORARY)?\s+TABLE\s/i.test(statement);
-}
-
-/**
  * True when Snowflake's connector splits `sql` into the statements the guard's scanner sees. The connector treats `//`
- * as a comment (except in a word holding `://`) and `\\` as an escape in quotes, and neither it nor Snowflake treats
- * `$tag$` or a backtick as a quote, so text holding any of them can hide a statement from the scanner.
+ * as a comment (except in a word holding `://`), `\\` as an escape in quotes, a line starting with `!` as a client
+ * command that ends the statement before it, and `;>` as an async statement end; neither it nor Snowflake treats
+ * `$tag$` or a backtick as a quote. Text holding any of them can hide a statement from the scanner.
  */
 function splitsLikeSnow(sql: string): boolean {
-    return !/[$`\\]|\/\/|\/\*/.test(sql);
+    return !/[$`\\]|\/\/|\/\*|;\s*>|^\s*!/m.test(sql);
 }
 
 const UNANCHORED_DESTRUCTIVE_SQL = [
@@ -4631,11 +4618,17 @@ const UNANCHORED_DESTRUCTIVE_SQL = [
     { rx: /\bUPDATE\b[\s\S]*\bSET\b/i, label: 'UPDATE' },
 ];
 
-/** A destructive keyword anywhere in `sql`, inside literals and comments too: for text the scanner can't split. */
+/**
+ * A destructive keyword anywhere in `sql`, inside literals and comments too, and with every comment also read as the
+ * whitespace it may stand for between two keywords: for text the scanner can't split.
+ */
 function destructiveKeywordAnywhere(sql: string): DestructiveMatch | null {
-    for (const { rx, label } of UNANCHORED_DESTRUCTIVE_SQL) {
-        const m = rx.exec(sql);
-        if (m) return { pattern: label, statement: oneLine(sql.slice(m.index, m.index + 200)) };
+    const collapsed = sql.replace(/\/\*[\s\S]*?(?:\*\/|$)|(?:--|\/\/)[^\n]*/g, ' ');
+    for (const text of [sql, collapsed]) {
+        for (const { rx, label } of UNANCHORED_DESTRUCTIVE_SQL) {
+            const m = rx.exec(text);
+            if (m) return { pattern: label, statement: oneLine(text.slice(m.index, m.index + 200)) };
+        }
     }
     return null;
 }
