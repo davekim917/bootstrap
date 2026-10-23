@@ -168,11 +168,39 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
         `B='-v x DROP TABLE users;'; printf $B | psql`,
         `O=-v; SQL='DROP TABLE users;'; printf $O x "$SQL" | psql`,
         `B='-e DROP TABLE users;'; echo 'SELECT 1; --' $B | psql`,
-        `F='DROP TABLE ok.sql'; psql -f "$F"`,
         `B='SELECT 1'; echo 'DROP TABLE users;' | psql -c "$B"`,
-        `F='DROP TABLE ok.sql'; cat "$F" | psql`,
     ]) {
         expect(verdict(command)).toBe('allow');
+    }
+    // The guard reads a SQL file before the line runs, so a command that may write it first makes it unreadable.
+    for (const command of [
+        `python3 gen.py; psql -f /tmp/sql-input-never-written.sql`,
+        `grep -h drop /tmp/a.sql > /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `sed -i 's/x/y/' /tmp/sql-input-never-written.sql && snow sql -f /tmp/sql-input-never-written.sql`,
+        `snow sql -f "$SQL_FILE"`,
+        `snow sql -f /tmp/sql-input-never-written.sql & python3 gen.py`,
+        `for i in 1 2; do snow sql -f /tmp/sql-input-never-written.sql; python3 gen.py; done`,
+        `snow sql -f /tmp/sql-input-never-written.sql -q "$(python3 gen.py)"`,
+        `snow sql -q "GET @stage/q.sql file:///tmp/"; snow sql -f /tmp/sql-input-never-written.sql`,
+        `psql -c '\\o /tmp/sql-input-never-written.sql' -c 'select 1'; psql -f /tmp/sql-input-never-written.sql`,
+    ]) {
+        expect(evaluateBashCommand(command, { cwd: '/tmp' }).reason ?? '').toContain("can't be checked");
+    }
+    // A command that only runs after the client has read its files can't change them.
+    for (const command of [
+        `snow sql -f /tmp/sql-input-never-written.sql | python3 -c "import json, sys"`,
+        `snow sql -f /tmp/sql-input-never-written.sql; python3 gen.py`,
+        `snow sql -q "describe table a.b.c" < /dev/null | python3 -c "import json"`,
+        `snow sql -q "select 1"; snow sql -f /tmp/sql-input-never-written.sql`,
+    ]) {
+        expect(verdict(command)).toBe('allow');
+    }
+    // A variable naming a file is a path, never SQL; this one's spaces keep the guard from proving the path, so it
+    // asks rather than read a file it can't name.
+    for (const command of [`F='DROP TABLE ok.sql'; psql -f "$F"`, `F='DROP TABLE ok.sql'; cat "$F" | psql`]) {
+        const reason = evaluateBashCommand(command, { cwd: '/tmp' }).reason ?? '';
+        expect(reason).toContain("can't be checked");
+        expect(reason).not.toContain('Destructive');
     }
 });
 

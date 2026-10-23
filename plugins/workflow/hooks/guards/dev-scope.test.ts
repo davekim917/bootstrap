@@ -49,6 +49,11 @@ describe('destructive SQL inside a listed dev database skips approval', () => {
         'snow sql -c acme_prod -q \'create or replace table "SCRATCH_DB"."TMP"."T" clone prod_db.core.t\'',
         'snow sql -c acme_prod -q "drop table scratch_db.a.b; drop table scratch_db.a.c"',
         'cd /tmp && timeout 300 snow sql -c acme_prod --warehouse dev_wh -q "drop schema if exists scratch_db.tmp cascade" 2>&1 | tail -3',
+        // A role can't move a statement out of the database it names.
+        'snow sql -c acme_dev --role ACCOUNTADMIN -q "drop table dev_db.a.b"',
+        // An unexported variable the client doesn't read can't reach snow.
+        'S=dev_db.a; N=$(date +%s); snow sql -c acme_dev -q "drop table dev_db.a.b" && echo "$S $N"',
+        'for n in 1 2; do echo $n; done; snow sql -c acme_dev -q "drop table dev_db.a.b"',
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -67,7 +72,6 @@ describe('everything else stays gated', () => {
         ['a comma-separated second target', 'snow sql -c acme_prod -q "drop table scratch_db.a.b, prod_db.a.b"'],
         ['a scripting block', 'snow sql -c acme_prod -q "drop table scratch_db.a.b; begin drop table prod_db.a.b; end"'],
         ['snow templating', 'snow sql -c acme_prod -q "drop table scratch_db.a.b; &{x}" -D "x=drop table prod_db.a.b"'],
-        ['a role override', 'snow sql -c acme_dev --role ACCOUNTADMIN -q "drop table dev_db.a.b"'],
         ['a user override', 'snow sql -c acme_dev --user admin -q "drop table dev_db.a.b"'],
         ['a key-file override', 'snow sql -c acme_dev --private-key-path /tmp/k -q "drop table dev_db.a.b"'],
         ['a database override', 'snow sql -c acme_dev --database prod_db -q "drop table dev_db.a.b"'],
@@ -79,7 +83,12 @@ describe('everything else stays gated', () => {
         ['an export with a quoted name', 'export SNOW"FLAKE_CONNECTIONS_ACME_DEV_ACCOUNT"=prod; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['an export with an escaped name', 'export SNOWFLAKE\\_HOME=/tmp/h; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['a sourced env file', 'set -a; . /tmp/vars; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
-        ['an assignment anywhere in the command', 'X=1; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['PATH pointing at another snow', 'PATH=/tmp/bin:$PATH; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['an unexported SNOWFLAKE_ variable, which keeps an earlier export', 'SNOWFLAKE_HOME=/tmp/h; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['HOME set by a loop', 'for HOME in /tmp/h; do snow sql -c acme_dev -q "drop table dev_db.a.b"; done'],
+        ['HOME set by a parameter default', 'echo ${HOME:=/tmp/h}; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['a variable set by read', 'read -r HOME < /tmp/h; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['a variable set by arithmetic', '(( n = 1 )); snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['a glued --query= with a prod target beside a dev one', 'snow sql -c acme_dev -q "drop table dev_db.a.b" --query="drop table prod_db.a.b"'],
         ['SQL also arriving on stdin', 'snow sql -c acme_dev -q "drop table dev_db.a.b" <<EOF\ndrop table prod_db.a.b;\nEOF'],
         ['a prod SWAP after a dev drop', 'snow sql -c acme_prod -q "drop table scratch_db.a.b; alter table prod_db.a.b swap with prod_db.a.c"'],
@@ -125,6 +134,78 @@ describe('everything else stays gated', () => {
         const v = evaluateBashCommand(command, { cwd: '/tmp' });
         expect(v.action).toBe('gate');
         expect(describeGate(command, v.reason!, '/tmp').label).toBe('Drop Snowflake table prod_db.core.orders');
+    });
+});
+
+describe('a USE earlier in the same SQL places names that leave out the database', () => {
+    test.each([
+        'snow sql -c acme_dev -q "use schema dev_db.scratch; create or replace table orders as select 1"',
+        'snow sql -c acme_dev -q "use database dev_db; drop table scratch.orders"',
+        'snow sql -c acme_dev -q "use role analyst; use warehouse w; use schema DEV_DB.scratch; delete from orders"',
+        'snow sql -c acme_dev -q "use dev_db; use schema scratch; drop table orders"',
+    ])('%s', (command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['a USE naming another database', 'snow sql -c acme_dev -q "use schema prod_db.core; drop table orders"'],
+        ['a later USE moving to another database', 'snow sql -c acme_dev -q "use schema dev_db.s; use database prod_db; drop table orders"'],
+        ['the USE coming after the statement', 'snow sql -c acme_dev -q "drop table orders; use schema dev_db.s"'],
+        ['a quoted lower-case database in the USE', `snow sql -c acme_dev -q 'use schema "dev_db".s; drop table orders'`],
+        ['a one-part schema with no database set', 'snow sql -c acme_dev -q "use schema scratch; drop table orders"'],
+        ['a USE the guard cannot place', 'snow sql -c acme_dev -q "use schema dev_db.s; use schema a.b.c; drop table orders"'],
+    ])('%s stays gated', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+});
+
+describe('SQL read from a file', () => {
+    const file = (name: string, sql: string) => {
+        const path = join(dir, name);
+        writeFileSync(path, sql);
+        return path;
+    };
+
+    test('a file whose every statement targets the dev database skips approval', () => {
+        const f = file('dev.sql', 'drop table if exists dev_db.a.b;\ncreate or replace table dev_db.a.b (x int);\n');
+        expect(verdict(`snow sql -c acme_dev -f ${f} 2>&1 | grep -i error`)).toBe('allow');
+    });
+
+    test('a file the same line writes with a heredoc is read from that heredoc', () => {
+        const f = join(dir, 'fresh.sql');
+        expect(verdict(`cat > ${f} <<'EOF'\ndrop table dev_db.a.b;\nEOF\nsnow sql -c acme_dev -f ${f}`)).toBe('allow');
+        expect(verdict(`cat > ${f} <<'EOF'\ndrop table prod_db.a.b;\nEOF\nsnow sql -c acme_dev -f ${f}`)).toBe('gate');
+    });
+
+    test.each([
+        ['a prod statement in the file', 'drop table dev_db.a.b;\ndrop table prod_db.a.b;', (f: string) => `snow sql -c acme_dev -f ${f}`],
+        ['sed rewriting the file first', 'drop table dev_db.a.b;', (f: string) => `sed -i 's/dev_db/prod_db/' ${f}; snow sql -c acme_dev -f ${f}`],
+        ['a program that could write the file first', 'drop table dev_db.a.b;', (f: string) => `python3 /tmp/gen.py; snow sql -c acme_dev -f ${f}`],
+        ['grep output redirected over the file', 'drop table dev_db.a.b;', (f: string) => `grep -i drop /tmp/other.sql > ${f}; snow sql -c acme_dev -f ${f}`],
+        ['a file path the line does not prove', 'drop table dev_db.a.b;', (_f: string) => 'snow sql -c acme_dev -f "$SQL_FILE"'],
+        ['a file in a variable set from a command', 'drop table dev_db.a.b;', (f: string) => `F=$(ls ${f}); snow sql -c acme_dev -f "$F"`],
+        ['a dev query beside a file the line may rewrite', 'drop table dev_db.a.b;', (f: string) => `python3 /tmp/gen.py; snow sql -c acme_dev -q "drop table dev_db.a.c" -f ${f}`],
+    ])('%s stays gated', (_name, sql, line) => {
+        expect(verdict(line(file('case.sql', sql)))).toBe('gate');
+    });
+});
+
+describe('Snowflake temporary tables', () => {
+    test.each([
+        'snow sql -c acme_other -q "create or replace temporary table t as select 1"',
+        'snow sql -q "create or replace temp table scratch (x int); select * from scratch"',
+        'snow sql -c acme_dev -q "create or replace temporary table t as select 1; drop table dev_db.a.b"',
+    ])('replacing one needs no approval: %s', (command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['a permanent table', 'snow sql -q "create or replace table t as select 1"'],
+        ['a transient table', 'snow sql -q "create or replace transient table t as select 1"'],
+        ['a temporary table beside a prod drop', 'snow sql -q "create or replace temporary table t as select 1; drop table prod_db.a.b"'],
+        ['another client', `psql -c "create or replace temp table t as select 1"`],
+    ])('%s stays gated', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
     });
 });
 
