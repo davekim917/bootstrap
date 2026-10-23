@@ -2872,9 +2872,9 @@ function mayRunBefore(writer: ResolvedCommand, reader: ResolvedCommand, script: 
 // redirects are read into `writes`.
 const FILE_SAFE_COMMANDS = new Set(['cd', 'pushd', 'popd', 'cat', 'echo', 'printf', 'tee', 'grep', 'egrep', 'fgrep', 'head', 'tail', 'cut', 'tr', 'wc', 'jq', 'date', 'true', 'false', 'sleep', 'test', '[', 'ls', 'pwd', 'column', 'basename', 'dirname', 'export', 'set', 'unset', 'mkdir', 'touch', 'nl', 'sha256sum', 'md5sum']);
 const DISCARD_TARGETS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
-// A SQL client's own ways of writing a file: psql's \o, \w, \g and \copy; snow's GET; COPY … TO and INTO OUTFILE,
+// A SQL client's own ways of writing a file: psql's \o, \w, \g, \copy and \lo_export; snow's GET; COPY … TO and INTO OUTFILE,
 // which a database on this host writes where the client can read; sqlite3's .output, .once, .save and .backup.
-const SQL_CLIENT_FILE_WRITE = /\\(?:o|out|w|write|g|gx|copy)\b|\bGET\b|\bCOPY\b[\s\S]*?\bTO\b|\bINTO\s+(?:OUT|DUMP)FILE\b|^\s*\.(?:output|once|save|backup)\b/im;
+const SQL_CLIENT_FILE_WRITE = /\\(?:o|out|w|write|g|gx|copy|lo_export)\b|\bGET\b|\bCOPY\b[\s\S]*?\bTO\b|\bINTO\s+(?:OUT|DUMP)FILE\b|^\s*\.(?:output|once|save|backup)\b/im;
 const SQL_CLIENT_OUTPUT_OPTION = /^(?:-o|--output|-L|--log-file|--tee)(?:=|$)/;
 
 /** True when a SQL client's options name a file it writes its output or a log to. */
@@ -2885,8 +2885,11 @@ function writesOwnOutput(cmd: ResolvedCommand): boolean {
 function mayChangeFiles(cmd: ResolvedCommand): boolean {
     if (cmd.untracedWrite) return true;
     if (!TEXT_EMITTERS.has(cmd.name) && (cmd.stdoutFiles ?? []).some(t => !DISCARD_TARGETS.has(t))) return true;
-    // An emitter's `<` input is not read into `writes`.
+    // An emitter's `<` input is not read into `writes`, and a write to a destination the line doesn't spell out may be
+    // to any file.
     if (TEXT_EMITTERS.has(cmd.name) && cmd.stdinFiles?.length && (cmd.stdoutFiles?.length || cmd.name === 'tee')) return true;
+    if (TEXT_EMITTERS.has(cmd.name) && [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? cmd.args.filter(a => !a.startsWith('-')) : [])]
+        .some(t => /[$`*?[{~]/.test(t))) return true;
     if (FILE_SAFE_COMMANDS.has(cmd.name)) return false;
     // GNU options cluster (`-uo FILE`) and take any unambiguous prefix (`--outp=FILE`).
     if (cmd.name === 'sort') return cmd.args.some(a => /^-[^-]*o/.test(a) || /^--o/.test(a));
