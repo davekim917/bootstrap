@@ -2872,9 +2872,9 @@ function mayRunBefore(writer: ResolvedCommand, reader: ResolvedCommand, script: 
 // redirects are read into `writes`.
 const FILE_SAFE_COMMANDS = new Set(['cd', 'pushd', 'popd', 'cat', 'echo', 'printf', 'tee', 'grep', 'egrep', 'fgrep', 'head', 'tail', 'cut', 'tr', 'wc', 'jq', 'date', 'true', 'false', 'sleep', 'test', '[', 'ls', 'pwd', 'column', 'basename', 'dirname', 'export', 'set', 'unset', 'mkdir', 'touch', 'nl', 'sha256sum', 'md5sum']);
 const DISCARD_TARGETS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
-// A SQL client's own ways of writing a file: psql's \o, \w, \g, \copy and \lo_export; snow's GET; COPY … TO and INTO OUTFILE,
+// A SQL client's own ways of writing a file: psql's \o, \w, \g, \copy, \lo_export and a \! shell command; snow's GET; COPY … TO and INTO OUTFILE,
 // which a database on this host writes where the client can read; sqlite3's .output, .once, .save and .backup.
-const SQL_CLIENT_FILE_WRITE = /\\(?:o|out|w|write|g|gx|copy|lo_export)\b|\bGET\b|\bCOPY\b[\s\S]*?\bTO\b|\bINTO\s+(?:OUT|DUMP)FILE\b|^\s*\.(?:output|once|save|backup)\b/im;
+const SQL_CLIENT_FILE_WRITE = /\\(?:(?:o|out|w|write|g|gx|copy|lo_export)\b|!)|\bGET\b|\bCOPY\b[\s\S]*?\bTO\b|\bINTO\s+(?:OUT|DUMP)FILE\b|^\s*\.(?:output|once|save|backup)\b/im;
 const SQL_CLIENT_OUTPUT_OPTION = /^(?:-o|--output|-L|--log-file|--tee)(?:=|$)/;
 
 /** True when a SQL client's options name a file it writes its output or a log to. */
@@ -2890,6 +2890,8 @@ function mayChangeFiles(cmd: ResolvedCommand): boolean {
     if (TEXT_EMITTERS.has(cmd.name) && cmd.stdinFiles?.length && (cmd.stdoutFiles?.length || cmd.name === 'tee')) return true;
     if (TEXT_EMITTERS.has(cmd.name) && [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? cmd.args.filter(a => !a.startsWith('-')) : [])]
         .some(t => /[$`*?[{~]/.test(t))) return true;
+    // After `--` an operand may start with `-`, and `writes` reads tee's operands as the words that don't.
+    if (cmd.name === 'tee' && cmd.args.includes('--')) return true;
     if (FILE_SAFE_COMMANDS.has(cmd.name)) return false;
     // GNU options cluster (`-uo FILE`) and take any unambiguous prefix (`--outp=FILE`).
     if (cmd.name === 'sort') return cmd.args.some(a => /^-[^-]*o/.test(a) || /^--o/.test(a));
@@ -3565,6 +3567,19 @@ function snowflakeIdentifier(part: string): string | null {
     const quoted = part.match(/^"((?:[^"]|"")+)"$/);
     if (quoted) return quoted[1].replace(/""/g, '"');
     return /^[A-Za-z_][A-Za-z0-9_$]*$/.test(part) ? part.toUpperCase() : null;
+}
+
+/** True when `text` holds a `<% %>` or `&{ }` template that no -D/--variable on the command fills. */
+function unfilledSnowTemplate(text: string, cmd: ResolvedCommand): boolean {
+    const given = new Set<string>();
+    for (let i = 0; i < cmd.args.length; i++) {
+        for (const o of ['-D', '--variable']) {
+            const m = optionValueAt(cmd.args, i, o)?.match(/^([\w.]+)=/);
+            if (m) given.add(m[1]);
+        }
+    }
+    const rest = text.replace(/&\{\s*([\w.]+)\s*\}|<%\s*([\w.]+)\s*%>/g, (m, a, b) => (given.has(a ?? b) ? '' : m));
+    return /<%|&\{/.test(rest);
 }
 
 /** The values given to every `--enable-templating` option, upper-cased. */
@@ -4403,6 +4418,12 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         if (program) return program;
         if (name === 'snow' && snowTemplating(cmd).some(t => t === 'JINJA' || t === 'ALL')) {
             return 'Snowflake SQL with Jinja templating can\'t be checked: snow renders it into new SQL before it runs.';
+        }
+        // STANDARD (`<% %>`) and LEGACY (`&{ }`) templating are on by default, and a value -D doesn't give comes from
+        // --env or project config the line doesn't show.
+        const templating = name === 'snow' ? snowTemplating(cmd) : [];
+        if (name === 'snow' && !(templating.length && templating.every(t => t === 'NONE')) && input.texts.some(t => unfilledSnowTemplate(t, cmd))) {
+            return 'Snowflake SQL with a template can\'t be checked: snow fills it in before it runs.';
         }
         if (name === 'snow' && input.texts.some(t => /^\s*!(?:source|load)\s+\w+:\/\//im.test(t))) {
             return 'Snowflake SQL that snow fetches from a URL (!source/!load) can\'t be checked before it runs.';

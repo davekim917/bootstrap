@@ -155,6 +155,8 @@ describe('where Snowflake splits SQL differently from the guard', () => {
         ['a drop with a comment between its words', `snow sql -c acme_other -q 'select 1 as x$1; drop/**/table prod_db.s.t'`],
         ['a drop with a // comment between its words', `snow sql -c acme_other -q "drop // x\ntable prod_db.s.t"`],
         ['a URL include', `snow sql -c acme_other -q "!source https://example.com/x.sql"`],
+        ['a default template filled from --env', `snow sql -c acme_other -q '<% ctx.env.query %>' --env 'query=drop table prod_db.s.t'`],
+        ['a legacy template', `snow sql -c acme_other -q '&{ query }'`],
         ['Jinja templating', `snow sql --enable-templating JINJA -c acme_other -q "{{ 'dr' ~ 'op' }} table prod_db.s.t"`],
     ])('%s gates', (_name, command) => {
         expect(verdict(command)).toBe('gate');
