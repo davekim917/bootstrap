@@ -85,6 +85,7 @@ export interface ScriptContext {
     fileChangers?: ResolvedCommand[]; // commands that may write a file in a way `writes` doesn't record
     orderUnclear?: boolean;     // a loop, function, coprocess or background job: a later command may run first
     pipelines?: Array<[number, number]>; // source spans of pipelines, whose stages run at the same time
+    compoundWrite?: boolean;    // a `{ … }`, `( … )`, if, case or loop redirects its output into a file
     pipedInto: Map<number, PipedInput>; // what the previous stage of a pipeline feeds each command, by command offset
     cds: CdStep[];              // every cd/pushd/popd, in source order
     links: Map<number, ChainLink>; // where each top-level command sits in its &&/|| chain, by command offset
@@ -1195,7 +1196,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
             unreadable ??= `${f}, which the client may write itself`;
         }
         const script = cmd.script;
-        if (!script?.fileChangers || script.fileChangers.some(c => c !== cmd && mayRunBefore(c, cmd, script))) {
+        if (!script?.fileChangers || script.compoundWrite || script.fileChangers.some(c => c !== cmd && mayRunBefore(c, cmd, script))) {
             unreadable ??= `${f}, which another command on the line may write`;
         }
         if (sqlPathCandidates(f, cmd) === null) {
@@ -2822,7 +2823,19 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             // `pushd DIR` changes directory like `cd DIR`; `pushd +N`/`-N` rotates the stack to a directory unknown here.
             target: (c.name === 'cd' || c.name === 'pushd') && c.args.length === 1 && !/^(?:-|[+-]\d+)$/.test(c.args[0]) ? c.args[0] : undefined,
         }));
-    return { writes, pipedInto, cds, links, command, fileChangers: commands.filter(mayChangeFiles), orderUnclear: hasUnclearOrder(ast), pipelines: pipelineSpans(ast) };
+    return { writes, pipedInto, cds, links, command, fileChangers: commands.filter(mayChangeFiles), orderUnclear: hasUnclearOrder(ast), pipelines: pipelineSpans(ast), compoundWrite: hasCompoundWrite(ast) };
+}
+
+/** True when a statement that is not a simple command redirects output into a file: its writes are not traced. */
+function hasCompoundWrite(node: unknown): boolean {
+    if (!node || typeof node !== 'object') return false;
+    if (Array.isArray(node)) return node.some(hasCompoundWrite);
+    const n = node as { type?: unknown; command?: { type?: unknown }; redirects?: Array<{ operator?: unknown; target?: unknown }> };
+    if (n.type === 'Statement' && n.command?.type !== 'Command' && (n.redirects ?? []).some(r => {
+        const target = wordValue(r.target);
+        return target !== '/dev/null' && (['>', '>>', '>|', '&>', '&>>', '<>'].includes(r.operator as string) || (r.operator === '>&' && !/^(?:\d+|-)$/.test(target)));
+    })) return true;
+    return Object.values(node).some(hasCompoundWrite);
 }
 
 function pipelineSpans(node: unknown, spans: Array<[number, number]> = []): Array<[number, number]> {
@@ -4403,7 +4416,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
             for (const statements of name === 'psql' ? psqlStatementTexts(text) : [text]) {
                 const matched = name !== 'snow' ? findDestructiveSqlStatement(statements)
                     : splitsLikeSnow(statements) ? destructiveStatements(statements).find(m => !isSnowflakeTempReplace(m.statement)) ?? null
-                    : findDestructiveSqlStatement(statements) ?? findDestructiveSqlStatement(snowflakeBlanked(statements));
+                    : destructiveKeywordAnywhere(statements);
                 if (matched) {
                     return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
                 }
@@ -4605,55 +4618,26 @@ function isSnowflakeTempReplace(statement: string): boolean {
 }
 
 /**
- * Snowflake's connector also reads `//` as a comment and `\` as an escape inside quotes, which the guard's statement
- * split does not, so text holding either can split differently from what runs.
+ * True when Snowflake's connector splits `sql` into the statements the guard's scanner sees. The connector treats `//`
+ * as a comment (except in a word holding `://`) and `\\` as an escape in quotes, and neither it nor Snowflake treats
+ * `$tag$` or a backtick as a quote, so text holding any of them can hide a statement from the scanner.
  */
 function splitsLikeSnow(sql: string): boolean {
-    return !/\/\/|\\/.test(sql);
+    return !/[$`\\]|\/\/|\/\*/.test(sql);
 }
 
-/**
- * `sql` with comments and literals blanked the way Snowflake reads them (`//` comments, `\` escapes in quotes),
- * same length, quote marks kept, so the guard's own scanner finds a statement Snowflake would run.
- */
-function snowflakeBlanked(sql: string): string {
-    let out = '';
-    let i = 0;
-    while (i < sql.length) {
-        const two = sql.slice(i, i + 2);
-        if (two === '--' || two === '//') {
-            const nl = sql.indexOf('\n', i);
-            const end = nl < 0 ? sql.length : nl;
-            out += ' '.repeat(end - i);
-            i = end;
-        } else if (two === '/*') {
-            const close = sql.indexOf('*/', i + 2);
-            const end = close < 0 ? sql.length : close + 2;
-            out += ' '.repeat(end - i);
-            i = end;
-        } else if (two === '$$') {
-            const close = sql.indexOf('$$', i + 2);
-            const end = close < 0 ? sql.length : close + 2;
-            out += '$$' + ' '.repeat(Math.max(0, end - i - 4)) + (close < 0 ? '' : '$$');
-            i = end;
-        } else if (sql[i] === "'" || sql[i] === '"') {
-            const quote = sql[i];
-            let j = i + 1;
-            while (j < sql.length) {
-                if (sql[j] === '\\') j += 2;
-                else if (sql[j] === quote && sql[j + 1] === quote) j += 2;
-                else if (sql[j] === quote) break;
-                else j += 1;
-            }
-            const end = Math.min(j + 1, sql.length);
-            out += quote + ' '.repeat(Math.max(0, end - i - 2)) + (end - i >= 2 ? quote : '');
-            i = end;
-        } else {
-            out += sql[i];
-            i += 1;
-        }
+const UNANCHORED_DESTRUCTIVE_SQL = [
+    ...DESTRUCTIVE_SQL_PATTERNS.map(p => ({ rx: new RegExp(p.rx.source.replace(/^\^/, '\\b'), 'i'), label: p.label })),
+    { rx: /\bUPDATE\b[\s\S]*\bSET\b/i, label: 'UPDATE' },
+];
+
+/** A destructive keyword anywhere in `sql`, inside literals and comments too: for text the scanner can't split. */
+function destructiveKeywordAnywhere(sql: string): DestructiveMatch | null {
+    for (const { rx, label } of UNANCHORED_DESTRUCTIVE_SQL) {
+        const m = rx.exec(sql);
+        if (m) return { pattern: label, statement: oneLine(sql.slice(m.index, m.index + 200)) };
     }
-    return out;
+    return null;
 }
 
 function destructiveStatements(sql: string, depth = 0): DestructiveMatch[] {

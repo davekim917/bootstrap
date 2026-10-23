@@ -192,6 +192,9 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
         `tee /tmp/sql-input-never-written.sql < /tmp/other.sql; snow sql -f /tmp/sql-input-never-written.sql`,
         `sort -uo /tmp/sql-input-never-written.sql /tmp/other.sql; snow sql -f /tmp/sql-input-never-written.sql`,
         `sort --outp=/tmp/sql-input-never-written.sql /tmp/other.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `{ echo "use warehouse w;"; echo "drop table t;"; } > /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `( echo "drop table t;" ) >> /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `if true; then echo "drop table t;"; fi > /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
     ]) {
         expect(evaluateBashCommand(command, { cwd: '/tmp' }).reason ?? '').toContain("can't be checked");
     }

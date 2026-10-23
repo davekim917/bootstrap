@@ -210,9 +210,16 @@ describe('where Snowflake splits SQL differently from the guard', () => {
         ['a temp table hiding a drop behind an escaped quote', `snow sql -c acme_other -q "create or replace temp table t as select 'a\\'' as c; drop table prod_db.s.t; select ''"`],
         ['a drop behind an escaped quote', `snow sql -c acme_other -q "select 'a\\'' ; drop table prod_db.s.t; select ''"`],
         ['a drop behind //', `snow sql -c acme_other -q "select 1 // '\n; drop table prod_db.s.t -- '"`],
+        ['a temp table hiding a drop behind a $tag$, which Snowflake does not quote', `snow sql -c acme_other -q 'create or replace temp table t as select 1 as x$a$; drop table prod_db.s.t; -- $a$'`],
+        ['a drop after a url the connector does not read as a comment', `snow sql -c acme_other -q "put file:///tmp/up/* @~; drop table prod_db.s.t; -- */"`],
         ['a dev drop beside a hidden prod drop', `snow sql -c acme_dev -q "drop table dev_db.a.b; select 'a\\'' ; drop table prod_db.s.t; select ''"`],
     ])('%s stays gated', (_name, command) => {
         expect(verdict(command)).toBe('gate');
+    });
+
+    test('text the scanner cannot split still passes when it holds nothing destructive', () => {
+        expect(verdict(`snow sql -c acme_other -q 'select $1, $2 from @stage/f.csv'`)).toBe('allow');
+        expect(verdict(`snow sql -c acme_other -q "select regexp_replace(x, '\\\\s+', ' ') from t"`)).toBe('allow');
     });
 
     test('Jinja templating gates whatever the SQL looks like, since snow renders it first', () => {
