@@ -188,8 +188,8 @@ test('contract gate rejects dropping any capability refusal or degradation', (t)
 });
 
 test('contract gate rejects an effort shim that pins a model', (t) => {
-  // The shim exists ONLY to pin an effort Claude's Agent tool cannot pass
-  // per-call. A `model:` here would silently override what the dispatch asked
+  // The shim only labels an effort level; the dispatch names the model. A
+  // `model:` here would silently override what the dispatch asked
   // for — the caller would name a model and get a different one, with nothing
   // reporting the substitution.
   const roots = copiedContracts(t);

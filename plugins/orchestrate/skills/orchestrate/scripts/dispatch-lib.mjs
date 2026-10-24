@@ -29,7 +29,7 @@ function hasInheritedTransport(env) {
 }
 
 function isContainerRuntime(env, existsSync) {
-  // NanoClaw src/container-runner.ts:6620-6629 injects this on every container spawn.
+  // A NanoClaw container runtime sets this on every container spawn.
   return Boolean(env.NANOCLAW_ASSISTANT_NAME)
     || ['/.dockerenv', '/run/.containerenv'].some((marker) => existsSync(marker));
 }
@@ -307,7 +307,7 @@ function callEffort(input) {
  * A confident route sets `model` and `effort`, replacing whatever the calling
  * agent named itself; a field the human named is kept. Without a route the call
  * keeps its own choices. Effort always leaves as the Agent call's `effort`
- * field: Claude Code does not apply a shim definition's `effort` frontmatter, so
+ * field: current Claude Code does not apply a shim's `effort` frontmatter, so
  * a shim type alone runs at the default level. A named role (Explore, Plan,
  * any custom or plugin agent) is never rewritten: Claude Code gives a per-call
  * `model` precedence over the role's own `model` frontmatter (including

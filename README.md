@@ -141,8 +141,8 @@ The one thing the plugin ships besides the skill is five near-empty agent defini
 `agents/worker-<level>.md`. They do not set effort on their own: Claude Code's docs
 list an `effort` frontmatter field, but measured on Claude Code 2.1.310 a dispatch to
 any shim with no `effort` parameter runs at the default level, while the `Agent`
-tool's per-call `effort` parameter is honored on every type. So every dispatch passes
-`effort` explicitly, and the shim name only labels the level. While the rubric is active,
+tool's per-call `effort` parameter (Claude Code 2.1.292 or later) is honored on every
+type. So every dispatch passes `effort` explicitly, and the shim name only labels the level. While the rubric is active,
 the spawn hook also gives any shim call an `effort` field matching the level it runs
 at (renaming the shim to match), but the hook fails open, so the skill never relies
 on it. Each shim keeps its `effort`

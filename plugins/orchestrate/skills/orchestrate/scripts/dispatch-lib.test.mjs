@@ -302,14 +302,14 @@ test('the installed hook replaces an agent-named model and effort unless a human
   })}) });`);
   const hook = fileURLToPath(new URL('../../../hooks/route-spawn.mjs', import.meta.url));
   let runs = 0;
-  const run = (turns) => {
+  const run = (turns, toolInput = { model: 'opus', subagent_type: 'bootstrap-orchestrate:worker-high' }) => {
     const transcript = path.join(root, `t-${runs++}.jsonl`);
     fs.writeFileSync(transcript, turns.map((content) => JSON.stringify({ type: 'user', message: { role: 'user', content } })).join('\n') + '\n');
     const r = spawnSync(process.execPath, [hook], {
       input: JSON.stringify({
         tool_name: 'Agent',
         transcript_path: transcript,
-        tool_input: { model: 'opus', subagent_type: 'bootstrap-orchestrate:worker-high', description: 'd', prompt: 'rename a variable' },
+        tool_input: { ...toolInput, description: 'd', prompt: 'rename a variable' },
       }),
       encoding: 'utf8',
       timeout: 15000,
@@ -324,6 +324,11 @@ test('the installed hook replaces an agent-named model and effort unless a human
   assert.deepEqual([pinned.model, pinned.effort, pinned.subagent_type], ['opus', 'high', 'bootstrap-orchestrate:worker-high']);
   const later = run(['/orchestrate opus high clean this up', 'now look at a different issue']);
   assert.deepEqual([later.model, later.effort, later.subagent_type], ['opus', 'low', 'bootstrap-orchestrate:worker-low']);
+  const roleless = { subagent_type: 'general-purpose', effort: 'high' };
+  const kept = run(['/orchestrate high clean this up'], roleless);
+  assert.deepEqual([kept.model, kept.effort, kept.subagent_type], ['opus', 'high', 'general-purpose']);
+  const replaced = run(['please clean this up'], roleless);
+  assert.deepEqual([replaced.model, replaced.effort, replaced.subagent_type], ['opus', 'low', 'general-purpose']);
 });
 
 test('an explicit effort above the cap is lowered; within the cap it is kept', () => {
