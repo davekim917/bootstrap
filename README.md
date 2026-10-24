@@ -15,9 +15,9 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.13.9 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.13.9 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.3.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
+| Claude Code | `bootstrap-workflow` | 5.13.10 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.13.10 | The same, runtime-neutral |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.3.1 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.3.3 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
@@ -94,7 +94,7 @@ whatever the runtime already has:
 
 | Runtime | Route | Caveat |
 |---|---|---|
-| Claude Code | `Agent` tool, `bootstrap-orchestrate:worker-<level>`, then `SendMessage` each round | family alias only (`fable`/`opus`/`sonnet`/`haiku`); no specific version |
+| Claude Code | `Agent` tool, `bootstrap-orchestrate:worker-<level>` with `effort: <level>`, then `SendMessage` each round | family alias only (`fable`/`opus`/`sonnet`/`haiku`); no specific version |
 | Codex | `spawn_agent` with `model` + `reasoning_effort` + `fork_turns: "none"`, then the same agent id each round | |
 | OpenCode | `task` tool, agent `worker-<level>` if present, else the default sub-agent | nothing installs the shims on a bare OpenCode host, so effort may not be settable |
 
@@ -111,8 +111,8 @@ effort it cannot pin.
 Picker abstention or failure does not choose a model or effort. Output records `decision: "inherit"`,
 `pick: null`, and `provenance: "native"` so a raw low-confidence suggestion cannot be mistaken for
 an effective route. Existing explicit choices stay intact subject to the existing compatibility
-caps; a coordinator may still deliberately select a normal model, role, or effort shim from the
-task. On a confident route, the Claude Code hook keeps an explicit model or effort shim only when a
+caps; a coordinator may still deliberately select a normal model, role, or effort from the
+task. On a confident route, the Claude Code hook keeps an explicit model or effort only when a
 human chose it in their latest turn of the session transcript (user turns, minus tool results, skill loads, harness
 notices and, in a NanoClaw container, system- or agent-sent `<message>` envelopes and the quoted
 original of a reply). When that turn holds
@@ -138,12 +138,17 @@ codex-rs 0.154.0, `core/src/tools/handlers/multi_agents/spawn.rs:229-230`), expo
 default (`multi_agent_v2.expose_spawn_agent_model_overrides`, `core/src/config/mod.rs:1308`).
 
 The one thing the plugin ships besides the skill is five near-empty agent definitions,
-`agents/worker-<level>.md`. They exist because Claude Code's `Agent` tool takes a
-`model` per call but not an `effort` — effort can only be pinned in an agent
-definition's frontmatter. So each shim pins one level, sets `model: inherit` so the
-dispatch still chooses the model, and carries a single line of body. They are not
-roles, and the drift gates assert exactly that: five files, `model: inherit`, and a
-body too short to hold a contract.
+`agents/worker-<level>.md`. They do not set effort on their own: Claude Code's docs
+list an `effort` frontmatter field, but measured on Claude Code 2.1.310 a dispatch to
+any shim with no `effort` parameter runs at the default level, while the `Agent`
+tool's per-call `effort` parameter (Claude Code 2.1.292 or later) is honored on every
+type. So every dispatch passes `effort` explicitly, and the shim name only labels the level. While the rubric is active,
+the spawn hook also gives any shim call an `effort` field matching the level it runs
+at (renaming the shim to match), but the hook fails open, so the skill never relies
+on it. Each shim keeps its `effort`
+frontmatter, sets `model: inherit` so the dispatch still chooses the model, and
+carries a single line of body. They are not roles, and the drift gates assert exactly
+that: five files, `model: inherit`, and a body too short to hold a contract.
 
 `scripts/plugin-enablement.mjs` prints the composed session for any plugin set, and
 `scripts/plugin-enablement.test.mjs` resolves and RUNS the hooks each state registers,

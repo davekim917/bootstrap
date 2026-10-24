@@ -9,13 +9,13 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
-      "version": "5.13.9"
+      "version": "5.13.10"
     },
     {
       "name": "bootstrap-orchestrate",
       "source": "./plugins/orchestrate",
       "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Invoke-only.",
-      "version": "3.3.0"
+      "version": "3.3.1"
     },
     {
       "name": "wwbd",
