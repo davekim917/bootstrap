@@ -308,14 +308,13 @@ function callEffort(input) {
  * agent named itself; a field the human named is kept. Without a route the call
  * keeps its own choices. Effort always leaves as the Agent call's `effort`
  * field: Claude Code does not apply a shim definition's `effort` frontmatter, so
- * a shim type alone runs at the default level. A shim type is renamed to match
- * the effort it runs at. A named role (Explore, Plan, any custom or plugin
- * agent) is never rewritten: Claude Code gives a per-call `model` precedence
- * over the role's own `model` frontmatter (including `inherit`), and a role's
- * effective definition can live where a hook cannot see it (managed settings,
- * `--agents`), so any filled model could silently replace the role's installed
- * intent (code.claude.com/docs/en/sub-agents, "Choose a model"). The
- * model-effort caps apply either way. Returns null when nothing changes.
+ * a shim type alone runs at the default level. A named role (Explore, Plan,
+ * any custom or plugin agent) is never rewritten: Claude Code gives a per-call
+ * `model` precedence over the role's own `model` frontmatter (including
+ * `inherit`), and a role's effective definition can live where a hook cannot
+ * see it (managed settings, `--agents`), so any filled model could silently
+ * replace the role's installed intent (code.claude.com/docs/en/sub-agents,
+ * "Choose a model"). The model-effort caps apply either way. Returns null when nothing changes.
  */
 export function rewriteClaudeSpawn(input, picked, rubric, pins = {}) {
   const out = { ...input };
