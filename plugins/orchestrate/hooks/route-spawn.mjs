@@ -22,14 +22,14 @@ try {
   // A named role keeps its installed model intent: no pick, no rewrite.
   const named = lib.isNamedRole(input.subagent_type);
   const picked = named ? null : lib.resolveDispatch(await lib.pick(task, 'claude', { timeoutMs: 3000, rubric }), 'claude');
-  const contested = picked?.decision === 'route' && (input.model || !lib.isRoleless(input.subagent_type));
+  const contested = picked?.decision === 'route' && (input.model || input.effort || !lib.isRoleless(input.subagent_type));
   const pins = contested ? lib.humanPins(input, lib.humanTurns(event.transcript_path).at(-1) ?? '') : undefined;
   const updated = lib.rewriteClaudeSpawn(input, picked, rubric, pins);
   lib.logDispatch({
     source: 'spawn-hook',
     task: task.slice(0, 2000),
-    before: { model: input.model ?? null, subagent_type: input.subagent_type ?? null },
-    after: updated ? { model: updated.model ?? null, subagent_type: updated.subagent_type ?? null } : null,
+    before: { model: input.model ?? null, effort: input.effort ?? null, subagent_type: input.subagent_type ?? null },
+    after: updated ? { model: updated.model ?? null, effort: updated.effort ?? null, subagent_type: updated.subagent_type ?? null } : null,
     ...(picked ?? { decision: 'named-role' }),
     ...(pins ? { humanPins: pins } : {}),
   });

@@ -294,37 +294,47 @@ export function isNamedRole(type) {
   return !isRoleless(type) && !(typeof type === 'string' && SHIM.test(type));
 }
 
+/** The effort a Claude Agent call asks for: its `effort` field, else the level its shim type names. */
+function callEffort(input) {
+  if (EFFORTS.includes(input.effort)) return input.effort;
+  return typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
+}
+
 /**
  * Claude Agent-tool input → the input to run, given a pick (or null) and which
  * of the call's explicit fields a human asked for (`pins`, from humanPins).
  *
- * A confident route sets `model` and effort (expressed as a
- * `bootstrap-orchestrate:worker-<effort>` shim type, the only way the Agent
- * tool takes effort), replacing whatever the calling agent named itself; a
- * field the human named is kept. Without a route the call keeps its own
- * choices. A named role (Explore, Plan, any custom or plugin agent) is never
- * rewritten: Claude Code gives a per-call `model` precedence over the role's
- * own `model` frontmatter (including `inherit`), and a role's effective
- * definition can live where a hook cannot see it (managed settings, `--agents`),
- * so any filled model could silently replace the role's installed intent
- * (code.claude.com/docs/en/sub-agents, "Choose a model"). The model-effort caps
- * apply either way. Returns null when nothing changes.
+ * A confident route sets `model` and `effort`, replacing whatever the calling
+ * agent named itself; a field the human named is kept. Without a route the call
+ * keeps its own choices. Effort always leaves as the Agent call's `effort`
+ * field: Claude Code does not apply a shim definition's `effort` frontmatter, so
+ * a shim type alone runs at the default level. A shim type is renamed to match
+ * the effort it runs at. A named role (Explore, Plan, any custom or plugin
+ * agent) is never rewritten: Claude Code gives a per-call `model` precedence
+ * over the role's own `model` frontmatter (including `inherit`), and a role's
+ * effective definition can live where a hook cannot see it (managed settings,
+ * `--agents`), so any filled model could silently replace the role's installed
+ * intent (code.claude.com/docs/en/sub-agents, "Choose a model"). The
+ * model-effort caps apply either way. Returns null when nothing changes.
  */
 export function rewriteClaudeSpawn(input, picked, rubric, pins = {}) {
   const out = { ...input };
   const type = typeof input.subagent_type === 'string' ? input.subagent_type : '';
-  const roleless = isRoleless(type);
-  const shim = type.match(SHIM);
-  if (!roleless && !shim) return null;
+  const shim = SHIM.test(type);
+  if (!isRoleless(type) && !shim) return null;
   const route = picked?.decision === 'route' && picked.pick?.model ? picked.pick : null;
 
   if (route && !(out.model && pins.model)) out.model = route.model;
-  let effort = shim && (pins.effort || !route) ? shim[1] : route?.effort;
+  const asked = callEffort(input);
+  let effort = asked && (pins.effort || !route) ? asked : route?.effort;
   const tier = out.model ? tierOf(rubric, 'claude', out.model) : undefined;
   if (effort && tier) effort = capEffort(effort, tier.maxEffort);
-  if (effort) out.subagent_type = `bootstrap-orchestrate:worker-${effort}`;
+  if (effort) {
+    out.effort = effort;
+    if (shim) out.subagent_type = `bootstrap-orchestrate:worker-${effort}`;
+  }
 
-  const changed = out.model !== input.model || out.subagent_type !== input.subagent_type;
+  const changed = ['model', 'effort', 'subagent_type'].some((k) => out[k] !== input[k]);
   return changed ? out : null;
 }
 
@@ -414,7 +424,7 @@ function soleNamedFamily(t) {
 }
 
 /**
- * Which of a spawn's explicit fields (model, shim effort) a human chose in
+ * Which of a spawn's explicit fields (model, effort) a human chose in
  * `text`, the human's latest turn, so an earlier turn's choice does not carry
  * over. When the turn holds one of the skill's invocations, the latest one
  * alone decides both fields, except that one naming no model ("/orchestrate
@@ -427,10 +437,10 @@ function soleNamedFamily(t) {
  * Effort is never read from plain wording ("failed at high effort").
  */
 export function humanPins(input, text) {
-  const t = text.toLowerCase().replace(/\u2019/g, "'").replace(/<command-name>\s*(\/\S+?)\s*<\/command-name>[\s\S]*?<command-args>/g, '\n$1 ');
+  const t = text.toLowerCase().replace(/\u2019/g, "'").replace(/<command-name>\s*\/(?:bootstrap-orchestrate:)?(\S+?)\s*<\/command-name>[\s\S]*?<command-args>/g, '\n/$1 ');
   const model = typeof input.model === 'string' ? input.model.toLowerCase() : '';
   const family = MODEL_FAMILIES.find((f) => model.includes(f));
-  const effort = typeof input.subagent_type === 'string' ? input.subagent_type.match(SHIM)?.[1] : undefined;
+  const effort = callEffort(input);
   const prose = [...t.matchAll(PROSE_INVOCATION)];
   const latest = [...t.matchAll(SLASH_INVOCATION), ...prose].sort((a, b) => b.index - a.index)[0];
   if (!latest) return { model: Boolean(family) && soleNamedFamily(t) === family, effort: false };
