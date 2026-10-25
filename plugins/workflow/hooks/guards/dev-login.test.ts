@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -83,6 +83,8 @@ describe('a verified dev login runs any SQL without a card', () => {
         ['templating', `snow sql -c acme_dev -q '<% ctx.env.q %>' --env 'q=drop table t'`],
         ['after a cd', 'cd /tmp && snow sql -c acme_dev -q "truncate table s.t"'],
         ['under timeout', 'timeout 60 snow sql -c acme_dev -q "drop schema s"'],
+        ['a steering name inside the SQL itself', `snow sql -c acme_dev -q "select 'PATH', home_dir from s.t"`],
+        ['a file under HOME', 'snow sql -c acme_dev -f $HOME/q.sql'],
         ['a shell variable the environment does not hold', 'S=dev_db.scratch; snow sql -c acme_dev -q "drop table $S.t"'],
         ['a loop over a shell variable', 'for i in 1 2; do snow sql -c acme_dev -q "drop table t$i"; done'],
     ])('%s', (_name, command) => {
@@ -118,6 +120,10 @@ describe('anything that could point the command at another login keeps the card'
         ['an arithmetic expansion', 'n=$((HOME=1)); snow sql -c acme_dev -q "drop table t"'],
         ['the admin connection in a shell variable', 'C=acme_admin; snow sql -c $C -q "drop table t"'],
         ['old-style arithmetic', 'echo $[HOME=1]; snow sql -c acme_dev -q "drop table t"'],
+        ['HOME read on the line', 'cd $HOME/work && snow sql -c acme_dev -q "drop table t"'],
+        ['PATH named on the line', 'echo $PATH; snow sql -c acme_dev -q "drop table t"'],
+        ['PYTHONPATH named on the line', 'PYTHONPATH=/tmp/x; snow sql -c acme_dev -q "drop table t"'],
+        ['a SNOWFLAKE_ name on the line', 'SNOWFLAKE_HOME=/tmp/sf; snow sql -c acme_dev -q "drop table t"'],
         ['a coprocess', 'coproc snow sql -c acme_dev -q "drop table t"'],
         ['a step xargs runs', `echo t | xargs -I{} snow sql -c acme_dev -q "drop table {}"`],
         ['a literal step xargs runs', `echo t | xargs -I{} snow sql -c acme_dev -q "drop table t"`],
@@ -128,6 +134,20 @@ describe('anything that could point the command at another login keeps the card'
         ['a function named snow', 'snow() { command snow sql -c acme_admin -q "$5"; }; snow sql -c acme_dev -q "drop table t"'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('gate');
+    });
+
+    test('a config reached through a symlink is never trusted', () => {
+        const target = join(dir, 'elsewhere.toml');
+        const link = join(home, '.snowflake', 'connections.toml');
+        writeFileSync(target, GOOD_CONNECTIONS);
+        rmSync(link);
+        symlinkSync(target, link);
+        try {
+            expect(verdict('snow sql -c acme_dev -q "drop table prod_db.s.t"')).toBe('gate');
+        } finally {
+            rmSync(link);
+            writeConnections(GOOD_CONNECTIONS);
+        }
     });
 
     test('a config the agent can write is never trusted', () => {

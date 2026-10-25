@@ -28,7 +28,7 @@
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
-import { accessSync, closeSync, constants as fsConstants, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { accessSync, closeSync, lstatSync, constants as fsConstants, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
@@ -3671,10 +3671,12 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
     const until = Date.parse(login.verifiedUntil);
     if (!Number.isFinite(until) || until <= Date.now() || until > Date.now() + DEV_LOGIN_MAX_HORIZON_MS) return false;
     // snow finds its config through HOME, as Python's expanduser does.
-    const file = join(process.env.HOME || homedir(), '.snowflake', 'connections.toml');
+    const dir = join(process.env.HOME || homedir(), '.snowflake');
+    const file = join(dir, 'connections.toml');
     const toml = (globalThis as { Bun?: { TOML?: { parse(text: string): unknown } } }).Bun?.TOML;
     try {
-        if (!toml || !devLoginTestHooks.configLocked(file)) return false;
+        // A link is checked where it points, but could be repointed before snow follows it.
+        if (!toml || lstatSync(dir).isSymbolicLink() || lstatSync(file).isSymbolicLink() || !devLoginTestHooks.configLocked(file)) return false;
         const section = (toml.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>)[name];
         if (!section || typeof section !== 'object' || Array.isArray(section)) return false;
         const entries = Object.entries(section as Record<string, unknown>);
@@ -3687,6 +3689,25 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
     } catch {
         return false;
     }
+}
+
+// Environment names that decide which config, binary or code snow runs with.
+const SNOW_ENVIRONMENT_NAME = /\b(?:HOME|PATH|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)\b/;
+
+/**
+ * True when the command line names an environment variable that steers snow anywhere outside the SQL it passes. Any
+ * shell form that changes such a variable has to name it, so this holds however many ways bash has to assign one.
+ */
+function mentionsSnowEnvironment(command: string, cmd: ResolvedCommand): boolean {
+    let rest = command;
+    for (let i = 1; i < cmd.args.length - 1; i++) {
+        if (['-q', '--query', '-f', '--filename'].includes(cmd.args[i])) rest = rest.replace(cmd.args[i + 1], ' ');
+    }
+    for (const a of cmd.args) {
+        const m = a.match(/^--(?:query|filename)=([\s\S]*)$/);
+        if (m) rest = rest.replace(m[1], ' ');
+    }
+    return SNOW_ENVIRONMENT_NAME.test(rest);
 }
 
 /** The connection a `snow sql` step names, when every option it carries is one a trusted dev login may take. */
@@ -3724,7 +3745,8 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     // An xargs or find step's words are not the ones read here.
     const trusted = topLevel ? trustedLoginConnection(cmd) : null;
     const trustedEntry = trusted === null ? undefined : scope.snowflake.find(e => e.connection === trusted);
-    if (trustedEntry && !changesExportedState(command) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
+    if (trustedEntry && !changesExportedState(command) && !mentionsSnowEnvironment(command, cmd)
+        && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
         return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
     }
     if (changesShellState(command)) return null;
