@@ -3563,34 +3563,6 @@ function changesShellState(command: string): boolean {
     }
 }
 
-/**
- * True when the command line may change what a child process inherits: it assigns a variable already in the
- * environment (by assignment word, loop or a `${name:=value}` default), runs arithmetic, which can assign any name,
- * defines a function, or can't be parsed to tell. A variable the environment doesn't hold stays in the shell.
- */
-function changesExportedState(command: string): boolean {
-    const exported = (name: unknown) => typeof name !== 'string' || name in process.env;
-    const found = (node: unknown): boolean => {
-        if (!node || typeof node !== 'object') return false;
-        if (Array.isArray(node)) return node.some(found);
-        const n = node as { type?: unknown; name?: unknown };
-        if (n.type === 'Function' || n.type === 'ArithmeticCommand' || n.type === 'ArithmeticFor' || n.type === 'Coproc') return true;
-        if (n.type === 'Assignment' && exported(n.name)) return true;
-        if ((n.type === 'For' || n.type === 'Select') && exported((n.name as { value?: unknown } | undefined)?.value)) return true;
-        return Object.values(node).some(found);
-    };
-    if (/\$\(\(|\$\[/.test(command)) return true;
-    for (const m of command.matchAll(/\$\{([^}]*?)=/g)) {
-        const name = m[1].match(/^#?([A-Za-z_]\w*)/)?.[1];
-        if (!name || exported(name)) return true;
-    }
-    try {
-        return found(parseShell(command));
-    } catch {
-        return true;
-    }
-}
-
 /** Snowflake folds an unquoted identifier to upper case and keeps a quoted one as written. */
 function snowflakeIdentifier(part: string): string | null {
     const quoted = part.match(/^"((?:[^"]|"")+)"$/);
@@ -3696,22 +3668,60 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
 }
 
 // Environment names that decide which config, binary or code snow runs with.
-const SNOW_ENVIRONMENT_NAME = /\b(?:HOME|PATH|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)\b/;
+const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
+// Commands that may run before a trusted step in the same shell: none changes the environment snow inherits.
+const ENVIRONMENT_NEUTRAL_COMMANDS = new Set(['cd', 'pushd', 'echo', 'printf', 'cat', 'mkdir', 'date', 'true', 'ls', 'pwd', 'sleep', 'touch']);
 
 /**
- * True when the command line names an environment variable that steers snow anywhere outside the SQL it passes. Any
- * shell form that changes such a variable has to name it, so this holds however many ways bash has to assign one.
+ * True when a word expands nothing that can assign: only `$NAME`, `${NAME}`, command substitutions (a subshell) and
+ * literal text. `$(( ))`, `$[ ]` and any other `${…}` form evaluate arithmetic or assign in the current shell.
  */
-function mentionsSnowEnvironment(command: string, cmd: ResolvedCommand): boolean {
-    let rest = command;
-    for (let i = 1; i < cmd.args.length - 1; i++) {
-        if (['-q', '--query', '-f', '--filename'].includes(cmd.args[i])) rest = rest.replace(cmd.args[i + 1], ' ');
+function assignsNothing(word: string): boolean {
+    return !/\$\(\(|\$\[/.test(word) && ![...word.matchAll(/\$\{/g)].some(m => !/^\$\{[A-Za-z_]\w*\}/.test(word.slice(m.index)));
+}
+
+/**
+ * True when nothing on the line can change the environment `step` (a top-level `snow sql`) inherits. It is decided by
+ * what is allowed rather than by listing bash's ways to assign: before the step, in the same shell, only plain
+ * assignments to names the environment doesn't hold and a few commands that change no environment; the step's own
+ * words expand nothing that assigns. A pipeline's other stages and anything after the step can't reach it.
+ */
+function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean {
+    type Node = { type?: string; name?: unknown; prefix?: Node[]; suffix?: Node[]; commands?: Node[]; command?: Node; text?: string; index?: unknown; pos?: number; end?: number };
+    let script: Node;
+    try {
+        script = parseShell(command) as Node;
+    } catch {
+        return false;
     }
-    for (const a of cmd.args) {
-        const m = a.match(/^--(?:query|filename)=([\s\S]*)$/);
-        if (m) rest = rest.replace(m[1], ' ');
-    }
-    return SNOW_ENVIRONMENT_NAME.test(rest);
+    const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => String(w?.text ?? ''));
+    const assignmentSafe = (a: Node) => a.type === 'Assignment' && typeof a.name === 'string' && a.index === undefined
+        && !(a.name in process.env) && !SNOW_ENVIRONMENT_NAME.test(a.name) && assignsNothing(String(a.text ?? ''));
+    const neutral = (n: Node): boolean => {
+        if (n.type === 'Pipeline') return (n.commands?.length ?? 0) > 1;
+        if (n.type === 'AndOr') return (n.commands ?? []).every(neutral);
+        if (n.type !== 'Command') return false;
+        const name = (n.name as { text?: string } | undefined)?.text;
+        if (!(n.prefix ?? []).every(assignmentSafe)) return false;
+        const args = (n.suffix ?? []).map(w => String(w?.text ?? ''));
+        // `printf -v NAME` assigns NAME.
+        if (name === 'printf' && args.some(a => /^-[a-zA-Z]*v/.test(a))) return false;
+        return (name === undefined || ENVIRONMENT_NEUTRAL_COMMANDS.has(name)) && args.every(assignsNothing);
+    };
+    const holds = (n: Node) => typeof n.pos === 'number' && typeof n.end === 'number' && n.pos <= step.pos! && step.pos! < n.end;
+    // The step itself, or a stage of a pipeline, reached through `&&`/`||` lists whose earlier members are neutral.
+    const reaches = (n: Node): boolean => {
+        if (n.type === 'Command') return n.pos === step.pos && words(n).every(assignsNothing);
+        if (n.type === 'Pipeline') return (n.commands ?? []).some(c => c.type === 'Command' && holds(c) && reaches(c));
+        if (n.type !== 'AndOr') return false;
+        const members = n.commands ?? [];
+        const at = members.findIndex(holds);
+        return at >= 0 && members.slice(0, at).every(neutral) && reaches(members[at]);
+    };
+    if (step.pos === undefined) return false;
+    const statements = (script.commands ?? []).map(st => st.command ?? st);
+    const at = statements.findIndex(holds);
+    return at >= 0 && statements.slice(0, at).every(neutral) && reaches(statements[at]);
 }
 
 /** The connection a `snow sql` step names, when every option it carries is one a trusted dev login may take. */
@@ -3745,12 +3755,10 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
     if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c))) return null;
 
-    // The login does not depend on the SQL, so a shell variable the line sets only matters if snow can see it.
     // An xargs or find step's words are not the ones read here.
     const trusted = topLevel ? trustedLoginConnection(cmd) : null;
     const trustedEntry = trusted === null ? undefined : scope.snowflake.find(e => e.connection === trusted);
-    if (trustedEntry && !changesExportedState(command) && !mentionsSnowEnvironment(command, cmd)
-        && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
+    if (trustedEntry && snowEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
         return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
     }
     if (changesShellState(command)) return null;

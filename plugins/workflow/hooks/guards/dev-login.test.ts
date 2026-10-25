@@ -46,7 +46,8 @@ const GOOD_CONNECTIONS = [
 const verdict = (command: string) => evaluateBashCommand(command, { cwd: '/tmp' }).action;
 
 beforeAll(() => {
-    for (const k of ['HOME', DEV_SCOPE_FILE_ENV]) saved[k] = process.env[k];
+    for (const k of ['HOME', DEV_SCOPE_FILE_ENV, 'DEV_LOGIN_TEST_EXPORTED']) saved[k] = process.env[k];
+    process.env.DEV_LOGIN_TEST_EXPORTED = '1';
     dir = mkdtempSync(join(tmpdir(), 'dev-login-test-'));
     home = join(dir, 'home');
     mkdirSync(join(home, '.snowflake'), { recursive: true });
@@ -83,10 +84,13 @@ describe('a verified dev login runs any SQL without a card', () => {
         ['templating', `snow sql -c acme_dev -q '<% ctx.env.q %>' --env 'q=drop table t'`],
         ['after a cd', 'cd /tmp && snow sql -c acme_dev -q "truncate table s.t"'],
         ['under timeout', 'timeout 60 snow sql -c acme_dev -q "drop schema s"'],
+        ['commands after the step and beside it in a pipeline', 'snow sql -c acme_dev -q "drop table t" 2>&1 | python3 -c "import sys"; HOME=/x; echo done'],
+        ['a pipeline before the step', 'cat a | grep b; snow sql -c acme_dev -q "drop table t"'],
+        ['PATH named on the line', 'echo $PATH; snow sql -c acme_dev -q "drop table t"'],
+        ['HOME read on the line', 'cd $HOME/work && snow sql -c acme_dev -q "drop table t"'],
         ['a steering name inside the SQL itself', `snow sql -c acme_dev -q "select 'PATH', home_dir from s.t"`],
         ['a file under HOME', 'snow sql -c acme_dev -f $HOME/q.sql'],
         ['a shell variable the environment does not hold', 'S=dev_db.scratch; snow sql -c acme_dev -q "drop table $S.t"'],
-        ['a loop over a shell variable', 'for i in 1 2; do snow sql -c acme_dev -q "drop table t$i"; done'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -120,8 +124,16 @@ describe('anything that could point the command at another login keeps the card'
         ['an arithmetic expansion', 'n=$((HOME=1)); snow sql -c acme_dev -q "drop table t"'],
         ['the admin connection in a shell variable', 'C=acme_admin; snow sql -c $C -q "drop table t"'],
         ['old-style arithmetic', 'echo $[HOME=1]; snow sql -c acme_dev -q "drop table t"'],
-        ['HOME read on the line', 'cd $HOME/work && snow sql -c acme_dev -q "drop table t"'],
-        ['PATH named on the line', 'echo $PATH; snow sql -c acme_dev -q "drop table t"'],
+        ['arithmetic in an array subscript', 'echo ${a[HOME=1]}; snow sql -c acme_dev -q "drop table t"'],
+        ['arithmetic in a substring offset', 'echo ${x:HOME=1}; snow sql -c acme_dev -q "drop table t"'],
+        ['a [[ ]] test', '[[ HOME -eq 1 ]]; snow sql -c acme_dev -q "drop table t"'],
+        ['an indexed assignment', 'a[HOME=1]=x; snow sql -c acme_dev -q "drop table t"'],
+        ['arithmetic in the step itself', 'snow sql -c acme_dev -q "drop table t$((HOME=1))"'],
+        ['printf -v', `printf -v X '%s' 1; snow sql -c acme_dev -q "drop table t"`],
+        ['an unlisted command before the step', 'shopt -s lastpipe; snow sql -c acme_dev -q "drop table t"'],
+        ['assigning any name the environment holds', 'DEV_LOGIN_TEST_EXPORTED=x; snow sql -c acme_dev -q "drop table t"'],
+        ['a subshell holding the step', '( snow sql -c acme_dev -q "drop table t" )'],
+        ['a loop over a shell variable', 'for i in 1 2; do snow sql -c acme_dev -q "drop table t$i"; done'],
         ['PYTHONPATH named on the line', 'PYTHONPATH=/tmp/x; snow sql -c acme_dev -q "drop table t"'],
         ['a SNOWFLAKE_ name on the line', 'SNOWFLAKE_HOME=/tmp/sf; snow sql -c acme_dev -q "drop table t"'],
         ['a coprocess', 'coproc snow sql -c acme_dev -q "drop table t"'],
