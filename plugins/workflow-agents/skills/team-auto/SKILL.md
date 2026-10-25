@@ -31,8 +31,8 @@ The sentinel is only a concurrency guard. It is not approval or workflow state.
    no missing product, scope, trust or irreversible decision.
 2. **Build:** invoke `/team-build` against that plan. Refresh the sentinel. Stop on an ungrounded
    scope/trust/irreversibility decision or a safety control.
-3. **Review:** invoke `/team-review --implementation`, handing the reviewer any `verify-<project>` evidence
-   record from the build with the diff. Apply consequential review gates and honor explicit review requests.
+3. **Review:** invoke `/team-review --implementation`, handing the reviewer any end-to-end evidence
+   from the build with the diff. Apply consequential review gates and honor explicit review requests.
 4. **Correct within budget:** return verified MUST-FIX to the retained owner. Use the shared maximum
    of 3 corrective rounds across build/test/review, including one reconsideration on a repeated
    failure signature. Re-run only affected checks; reuse valid exact evidence.

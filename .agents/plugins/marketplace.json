@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "bootstrap-workflow-agents",
-      "version": "2.13.10",
+      "version": "2.13.11",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
       "source": {
         "source": "local",
@@ -109,20 +109,6 @@
       "source": {
         "source": "local",
         "path": "./plugins/test-audit"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Coding"
-    },
-    {
-      "name": "verification-skills",
-      "version": "1.2.2",
-      "description": "Generate and maintain a private verify-<project> skill that drives a web app, CLI, service or dbt/Snowflake project the way a user does and records evidence a reviewer can check. Invoke-only. Adapted from pstack (MIT).",
-      "source": {
-        "source": "local",
-        "path": "./plugins/verification-skills"
       },
       "policy": {
         "installation": "AVAILABLE",
