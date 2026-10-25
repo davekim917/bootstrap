@@ -3565,7 +3565,7 @@ function snowflakeIdentifier(part: string): string | null {
     return /^[A-Za-z_][A-Za-z0-9_$]*$/.test(part) ? part.toUpperCase() : null;
 }
 
-/** True when `text` holds a template (`<% %>`, `&{ }` or bare `&name`; `&&` escapes) that no -D/--variable on the command fills. */
+/** True when `text` holds a template (`<% %>`, `&{ }` or bare `&name`; `&&` escapes, but `&&{` reopens as `&{`) that no -D/--variable on the command fills. */
 function unfilledSnowTemplate(text: string, cmd: ResolvedCommand): boolean {
     const given = new Set<string>();
     for (let i = 0; i < cmd.args.length; i++) {
@@ -3575,7 +3575,7 @@ function unfilledSnowTemplate(text: string, cmd: ResolvedCommand): boolean {
         }
     }
     const rest = text.replace(/&&/g, '').replace(SNOW_TEMPLATE, (m, a, b, c) => (given.has(a ?? b ?? c) ? '' : m));
-    return /<%|&\{|&[A-Za-z_]/.test(rest);
+    return /&&\{/.test(text) || /<%|&\{|&[A-Za-z_]/.test(rest);
 }
 
 /** The values given to every `--enable-templating` option, upper-cased. */

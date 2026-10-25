@@ -161,6 +161,7 @@ describe('where Snowflake splits SQL differently from the guard', () => {
         ['a legacy template', `snow sql -c acme_other -q '&{ query }'`],
         ['a bare legacy template', `snow sql -c acme_other -q '&query'`],
         ['a bare legacy template after a statement', `snow sql -c acme_other -q 'select 1; &query'`],
+        ['an escaped & that reopens a legacy template', `snow sql -c acme_other -q '&&{ query }'`],
         ['Jinja templating', `snow sql --enable-templating JINJA -c acme_other -q "{{ 'dr' ~ 'op' }} table prod_db.s.t"`],
     ])('%s gates', (_name, command) => {
         expect(verdict(command)).toBe('gate');
