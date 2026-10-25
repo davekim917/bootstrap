@@ -32,7 +32,7 @@
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
-import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { accessSync, closeSync, constants as fsConstants, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
@@ -3574,12 +3574,12 @@ function changesExportedState(command: string): boolean {
         if (!node || typeof node !== 'object') return false;
         if (Array.isArray(node)) return node.some(found);
         const n = node as { type?: unknown; name?: unknown };
-        if (n.type === 'Function' || n.type === 'ArithmeticCommand' || n.type === 'ArithmeticFor') return true;
+        if (n.type === 'Function' || n.type === 'ArithmeticCommand' || n.type === 'ArithmeticFor' || n.type === 'Coproc') return true;
         if (n.type === 'Assignment' && exported(n.name)) return true;
         if ((n.type === 'For' || n.type === 'Select') && exported((n.name as { value?: unknown } | undefined)?.value)) return true;
         return Object.values(node).some(found);
     };
-    if (/\$\(\(/.test(command)) return true;
+    if (/\$\(\(|\$\[/.test(command)) return true;
     for (const m of command.matchAll(/\$\{([^}]*?)=/g)) {
         const name = m[1].match(/^#?([A-Za-z_]\w*)/)?.[1];
         if (!name || exported(name)) return true;
@@ -3648,42 +3648,46 @@ const TRUSTED_LOGIN_BARE_FLAGS = new Set(['-i', '--stdin', '--silent', '-v', '--
 // A verification older than this is not trusted, whatever date it names.
 const DEV_LOGIN_MAX_HORIZON_MS = 3 * 24 * 60 * 60 * 1000;
 
-/** The `key = "value"` pairs of `[name]` in a TOML file's text, or null when the section is absent or repeated. */
-function tomlSection(text: string, name: string): Map<string, string> | null {
-    const headers = [...text.matchAll(/^\s*\[\s*("?)([^\]"]+)\1\s*\]\s*$/gm)];
-    const hits = headers.filter(h => h[2].trim() === name);
-    if (hits.length !== 1) return null;
-    const from = hits[0].index! + hits[0][0].length;
-    const next = headers.find(h => h.index! > hits[0].index!);
-    const body = text.slice(from, next ? next.index : undefined);
-    const pairs = new Map<string, string>();
-    for (const m of body.matchAll(/^\s*([A-Za-z_][\w-]*)\s*=\s*"([^"]*)"\s*$/gm)) {
-        if (pairs.has(m[1].toLowerCase())) return null;
-        pairs.set(m[1].toLowerCase(), m[2]);
-    }
-    return pairs;
-}
+const TRUSTED_CONNECTION_KEYS = new Set(['account', 'user', 'role', 'warehouse', 'database', 'schema', 'authenticator', 'private_key_path', 'private_key_file']);
 
 /**
- * True when connection `name` in the Snowflake CLI's own config signs in as `login`, and a check of that login's grants
- * vouched for it recently. Snowflake then refuses any write outside the dev databases, so no SQL needs reading.
+ * True when the file can't change between this check and snow reading it: it sits on a read-only mount, as the
+ * container's staged Snowflake config does. A file the agent's user owns could be rewritten, or made writable, first.
+ */
+function configLocked(file: string): boolean {
+    try {
+        accessSync(file, fsConstants.W_OK);
+        return false;
+    } catch (err) {
+        return (err as { code?: unknown }).code === 'EROFS';
+    }
+}
+
+export const devLoginTestHooks = { configLocked };
+
+/**
+ * True when connection `name` in the Snowflake CLI's locked config signs in as `login` with a key pair, and a check
+ * of that login's grants vouched for it recently. Snowflake then refuses any write outside the dev databases, so no
+ * SQL needs reading.
  */
 function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
-    if (!login?.verifiedUntil) return false;
+    if (!login?.verifiedUntil || name.includes('.')) return false;
     const until = Date.parse(login.verifiedUntil);
     if (!Number.isFinite(until) || until <= Date.now() || until > Date.now() + DEV_LOGIN_MAX_HORIZON_MS) return false;
     // snow finds its config through HOME, as Python's expanduser does.
-    const dir = join(process.env.HOME || homedir(), '.snowflake');
+    const file = join(process.env.HOME || homedir(), '.snowflake', 'connections.toml');
+    const toml = (globalThis as { Bun?: { TOML?: { parse(text: string): unknown } } }).Bun?.TOML;
     try {
-        if (!statSync(dir).isDirectory()) return false;
-        // config.toml can define a connection too; one defined there could shadow the one checked here.
-        const config = join(dir, 'config.toml');
-        if (existsSync(config) && new RegExp(`^\\s*\\[\\s*connections\\.\\s*"?${escapeRegexLiteral(name)}"?\\s*\\]`, 'mi').test(readFileSync(config, 'utf-8'))) return false;
-        const section = tomlSection(readFileSync(join(dir, 'connections.toml'), 'utf-8'), name);
-        if (!section) return false;
-        return section.get('user')?.toUpperCase() === login.user.toUpperCase()
-            && section.get('account')?.toUpperCase() === login.account.toUpperCase()
-            && !section.has('password') && !section.has('token') && !section.has('host');
+        if (!toml || !devLoginTestHooks.configLocked(file)) return false;
+        const section = (toml.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>)[name];
+        if (!section || typeof section !== 'object' || Array.isArray(section)) return false;
+        const entries = Object.entries(section as Record<string, unknown>);
+        if (entries.some(([k, v]) => !TRUSTED_CONNECTION_KEYS.has(k) || typeof v !== 'string')) return false;
+        const get = (k: string) => (section as Record<string, string>)[k];
+        return get('user')?.toUpperCase() === login.user.toUpperCase()
+            && get('account')?.toUpperCase() === login.account.toUpperCase()
+            && get('authenticator')?.toUpperCase() === 'SNOWFLAKE_JWT'
+            && Boolean(get('private_key_path') ?? get('private_key_file'));
     } catch {
         return false;
     }
@@ -3711,7 +3715,7 @@ function trustedLoginConnection(cmd: ResolvedCommand): string | null {
  * The dev database a `snow sql` command is exempt under, or null. `commands` and
  * `command` are the whole command line, so anything set up around the call counts.
  */
-export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string): string | null {
+export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
     const scope = currentDevScope();
     if (!scope) return null;
@@ -3721,7 +3725,8 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c))) return null;
 
     // The login does not depend on the SQL, so a shell variable the line sets only matters if snow can see it.
-    const trusted = trustedLoginConnection(cmd);
+    // An xargs or find step's words are not the ones read here.
+    const trusted = topLevel ? trustedLoginConnection(cmd) : null;
     const trustedEntry = trusted === null ? undefined : scope.snowflake.find(e => e.connection === trusted);
     if (trustedEntry && !changesExportedState(command) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
         return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
@@ -5167,7 +5172,7 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves };
                 continue;
             }
-            const dev = devScopeTargetOf(cmd, commands, command);
+            const dev = devScopeTargetOf(cmd, commands, command, cmd === outer);
             if (dev !== null) {
                 if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
                 continue;

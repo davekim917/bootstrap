@@ -21,7 +21,10 @@ test('writes inside the dev databases and reads anywhere pass', () => {
     g('USE AI FUNCTIONS', 'ACCOUNT', 'ACME'),
     g('USAGE', 'PROCEDURE', 'SNOWFLAKE.CORTEX.CREATE_AI_FUNCTION(VARCHAR)'),
     g('INSTANTIATE', 'CLASS', 'SNOWFLAKE.ML.FORECAST'),
+    g('OWNERSHIP', 'ROLE', 'OWNED_ROLE'),
     g('OWNERSHIP', 'USER', 'HELPER_USER'),
+    g('OPERATE', 'WAREHOUSE', 'PROD_WH'),
+    g('USAGE', 'STAGE', 'DEV_DB.S.EXT'),
   ], ['dev_db']), []);
 });
 
@@ -40,14 +43,18 @@ test('any write outside the dev databases fails', () => {
     g('MODIFY', 'WAREHOUSE', 'PROD_WH'),
     g('OWNERSHIP', 'SHARE', 'ACME_SHARE'),
     g('OWNERSHIP', 'DATABASE', 'SNOWFLAKE'),
+    g('USAGE', 'INTEGRATION', 'S3_INT'),
+    g('USAGE', 'STAGE', 'PROD_DB.S.EXT'),
+    g('USAGE', 'SERVICE', 'PROD_DB.S.SVC'),
   ], ['DEV_DB']);
-  assert.equal(problems.length, 13);
+  assert.equal(problems.length, 16);
 });
 
 test('the walk covers PUBLIC, inherited roles, database roles and users the login owns', () => {
   const grants = {
     'show grants to user "AGENT"': [{ role: 'DEV_ROLE' }],
-    'show grants to role "DEV_ROLE"': [g('USAGE', 'ROLE', 'CHILD'), g('USAGE', 'DATABASE_ROLE', 'PROD_DB.DBR'), g('OWNERSHIP', 'USER', 'OTHER')],
+    'show grants to role "DEV_ROLE"': [g('USAGE', 'ROLE', 'CHILD'), g('USAGE', 'DATABASE_ROLE', 'PROD_DB.DBR'), g('OWNERSHIP', 'USER', 'OTHER'), g('OWNERSHIP', 'ROLE', 'OWNED')],
+    'show grants to role "OWNED"': [g('TRUNCATE', 'TABLE', 'PROD_DB.S.FROM_OWNED_ROLE')],
     'show grants to role "CHILD"': [g('SELECT', 'TABLE', 'PROD_DB.S.T')],
     'show grants to database role "PROD_DB"."DBR"': [g('INSERT', 'TABLE', 'PROD_DB.S.FROM_DB_ROLE')],
     'show grants to user "OTHER"': [{ role: 'OTHER_ROLE' }],
@@ -61,25 +68,33 @@ test('the walk covers PUBLIC, inherited roles, database roles and users the logi
     return grants[sql];
   };
   const names = writeGrantsOutside(collectGrants('AGENT', rows), ['DEV_DB']).join(' ');
-  for (const t of ['FROM_DB_ROLE', 'FROM_OWNED_USER', 'FROM_PUBLIC']) assert.match(names, new RegExp(t));
+  for (const t of ['FROM_DB_ROLE', 'FROM_OWNED_USER', 'FROM_OWNED_ROLE', 'FROM_PUBLIC']) assert.match(names, new RegExp(t));
   assert.ok(seen.includes('show grants to role "CHILD"'));
 });
 
 test('a connection that signs in as another user fails before any grant is read', () => {
   const rows = sql => {
-    if (sql.startsWith('select current_user()')) return [{ U: 'ADMIN_USER' }];
+    if (sql.startsWith('select current_user()')) return [{ U: 'ADMIN_USER', A: 'ORG-A' }];
     throw new Error(`unexpected ${sql}`);
   };
-  assert.match(verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'A' } }, rows), /signs in as ADMIN_USER/);
+  assert.match(verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A' } }, rows), /signs in as ADMIN_USER/);
+});
+
+test('a connection that signs in to another account fails before any grant is read', () => {
+  const rows = sql => {
+    if (sql.startsWith('select current_user()')) return [{ U: 'AGENT', A: 'ORG-PROD' }];
+    throw new Error(`unexpected ${sql}`);
+  };
+  assert.match(verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A' } }, rows), /signs in to ORG-PROD/);
 });
 
 test('a dev-only login passes', () => {
   const rows = sql => {
-    if (sql.startsWith('select current_user()')) return [{ U: 'AGENT' }];
+    if (sql.startsWith('select current_user()')) return [{ U: 'AGENT', A: 'ORG-A' }];
     if (sql === 'show grants to user "AGENT"') return [{ role: 'DEV_ROLE' }];
     if (sql === 'show grants to role "DEV_ROLE"') return [g('OWNERSHIP', 'SCHEMA', 'DEV_DB.S'), g('SELECT', 'VIEW', 'PROD_DB.S.V')];
     if (sql === 'show grants to role "PUBLIC"') return [];
     throw new Error(`unexpected ${sql}`);
   };
-  assert.equal(verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'A' } }, rows), null);
+  assert.equal(verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A' } }, rows), null);
 });

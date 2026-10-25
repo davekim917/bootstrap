@@ -11,9 +11,12 @@ import { fileURLToPath } from 'node:url';
 
 // Privileges that read or describe and never write, on objects outside the dev databases.
 const READ_PRIVILEGES = new Set(['SELECT', 'REFERENCES', 'MONITOR', 'READ', 'REFERENCE_USAGE', 'USAGE', 'IMPORTED PRIVILEGES']);
-// Objects whose USAGE runs code that can write: an owner's-rights procedure writes as its owner.
-const USAGE_RUNS_CODE = new Set(['PROCEDURE']);
-const WAREHOUSE_PRIVILEGES = new Set(['USAGE', 'OPERATE', 'MONITOR']);
+// Objects whose USAGE can write: an owner's-rights procedure or a service runs as its owner, a stage or an
+// integration reaches cloud storage, and an application acts with its own privileges.
+const USAGE_CAN_WRITE = new Set(['PROCEDURE', 'SERVICE', 'STAGE', 'INTEGRATION', 'APPLICATION', 'APPLICATION_ROLE']);
+// The guard asks for approval only for SQL that destroys data, so a privilege whose actions it never gates (suspending
+// a warehouse, aborting its queries, altering or dropping a user) is not widened by trusting the login.
+const WAREHOUSE_PRIVILEGES = new Set(['USAGE', 'MONITOR', 'OPERATE']);
 // Account-level privileges Snowflake grants PUBLIC for its own features (AI functions, lineage, Snowsight artifacts,
 // service endpoints, agent tasks that run as their owning role); none reaches table data. Any other one fails.
 const ACCOUNT_FEATURE_PRIVILEGES = new Set([
@@ -41,18 +44,18 @@ export function writeGrantsOutside(grants, databases) {
   for (const g of grants) {
     const on = String(g.granted_on).toUpperCase();
     const privilege = String(g.privilege).toUpperCase();
-    if (on === 'ROLE' || on === 'DATABASE_ROLE') continue;
+    // A role it holds or owns is walked; owning one lets it grant that role to itself.
+    if ((on === 'ROLE' || on === 'DATABASE_ROLE') && (privilege === 'USAGE' || privilege === 'OWNERSHIP')) continue;
     if (on === 'WAREHOUSE' && WAREHOUSE_PRIVILEGES.has(privilege)) continue;
-    if (on === 'INTEGRATION' && privilege === 'USAGE') continue;
     if (COMPUTE_OBJECTS.has(on) && privilege === 'USAGE') continue;
     if (on === 'ACCOUNT' && ACCOUNT_FEATURE_PRIVILEGES.has(privilege)) continue;
-    // Owning a user lets the role sign in as it; the caller walks that user's roles instead.
+    // Signing in as an owned user is walked like a role it holds.
     if (on === 'USER' && privilege === 'OWNERSHIP') continue;
     const db = databaseOf(on, g.name);
     // Snowflake's own database: its procedures run with the caller's rights or need schema access the role lacks.
     if (db === 'SNOWFLAKE' && on !== 'DATABASE') continue;
     if (db !== null && dev.has(db)) continue;
-    if (db !== null && READ_PRIVILEGES.has(privilege) && !(privilege === 'USAGE' && USAGE_RUNS_CODE.has(on))) continue;
+    if (db !== null && READ_PRIVILEGES.has(privilege) && !(privilege === 'USAGE' && USAGE_CAN_WRITE.has(on))) continue;
     problems.push(`${privilege} on ${on} ${g.name}`);
   }
   return problems;
@@ -87,9 +90,9 @@ export function collectGrants(user, rows) {
     const sql = kind === 'ROLE' ? `show grants to role ${quoteIdent(name)}` : `show grants to database role ${quoteIdent(name)}`;
     for (const g of rows(sql)) {
       const on = String(g.granted_on).toUpperCase();
-      if (on === 'ROLE' && String(g.privilege).toUpperCase() === 'USAGE') queue.push({ kind: 'ROLE', name: g.name });
-      else if (on === 'DATABASE_ROLE' && String(g.privilege).toUpperCase() === 'USAGE') queue.push({ kind: 'DATABASE_ROLE', name: g.name });
-      else if (on === 'USER' && String(g.privilege).toUpperCase() === 'OWNERSHIP') queue.push({ kind: 'USER', name: g.name });
+      const privilege = String(g.privilege).toUpperCase();
+      if ((on === 'ROLE' || on === 'DATABASE_ROLE') && (privilege === 'USAGE' || privilege === 'OWNERSHIP')) queue.push({ kind: on, name: g.name });
+      else if (on === 'USER' && privilege === 'OWNERSHIP') queue.push({ kind: 'USER', name: g.name });
       grants.push(g);
     }
   }
@@ -98,8 +101,9 @@ export function collectGrants(user, rows) {
 
 /** Check one entry's login; returns null when it is dev-only, else the reason it is not. */
 export function verifyEntry(entry, rows) {
-  const who = rows('select current_user() as U')[0]?.U;
-  if (String(who).toUpperCase() !== entry.login.user.toUpperCase()) return `connection signs in as ${who}, not ${entry.login.user}`;
+  const me = rows("select current_user() as U, current_organization_name() || '-' || current_account_name() as A")[0] ?? {};
+  if (String(me.U).toUpperCase() !== entry.login.user.toUpperCase()) return `connection signs in as ${me.U}, not ${entry.login.user}`;
+  if (String(me.A).toUpperCase() !== entry.login.account.toUpperCase()) return `connection signs in to ${me.A}, not ${entry.login.account}`;
   const problems = writeGrantsOutside(collectGrants(entry.login.user, rows), entry.databases);
   if (process.env.VERIFY_DEV_LOGINS_VERBOSE) for (const p of problems) console.error(`  ${entry.connection}: ${p}`);
   return problems.length ? `can write outside ${entry.databases.join('/')}: ${problems.slice(0, 5).join('; ')}${problems.length > 5 ? ` (+${problems.length - 5} more)` : ''}` : null;
@@ -111,6 +115,7 @@ function main() {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const file = arg('--file', process.env.BOOTSTRAP_DEV_SCOPE_FILE || path.join(repoRoot, 'dev-scope.local.json'));
   const hours = Number(arg('--hours', '48'));
+  if (!Number.isFinite(hours) || hours <= 0 || hours > 72) throw new Error(`--hours must be between 0 and 72, not ${arg('--hours')}`);
   const scope = JSON.parse(fs.readFileSync(file, 'utf-8'));
   let failed = 0;
   for (const entry of scope.snowflake ?? []) {

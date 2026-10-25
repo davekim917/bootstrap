@@ -3,19 +3,21 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { DEV_SCOPE_FILE_ENV, evaluateBashCommand } from './block-destructive-core';
+import { DEV_SCOPE_FILE_ENV, devLoginTestHooks, evaluateBashCommand } from './block-destructive-core';
 
 /**
  * TRUSTED DEV LOGIN. A dev-scope entry may name the login its connection signs in as. When the Snowflake CLI's own
  * config shows that connection signing in as that user on that account, and a grants check vouched for the login
  * recently, any SQL on the connection skips approval: Snowflake itself refuses writes outside the dev databases.
- * Anything that could point the command at another login keeps the card.
+ * Anything that could point the command at another login keeps the card. The container mounts that config
+ * read-only; these tests stand in for the mount through `devLoginTestHooks`, except where they test it.
  */
 
 let dir = '';
 let home = '';
 let scopeFile = '';
 const saved: Record<string, string | undefined> = {};
+const realConfigLocked = devLoginTestHooks.configLocked;
 const hours = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
 function writeScope(login: Record<string, unknown> | undefined, connection = 'acme_dev') {
@@ -51,6 +53,7 @@ beforeAll(() => {
     scopeFile = join(dir, 'dev-scope.local.json');
     process.env.HOME = home;
     process.env[DEV_SCOPE_FILE_ENV] = scopeFile;
+    devLoginTestHooks.configLocked = () => true;
 });
 
 afterEach(() => {
@@ -59,6 +62,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
+    devLoginTestHooks.configLocked = realConfigLocked;
     for (const [k, v] of Object.entries(saved)) {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
@@ -113,11 +117,26 @@ describe('anything that could point the command at another login keeps the card'
         ['arithmetic', '(( HOME = 1 )); snow sql -c acme_dev -q "drop table t"'],
         ['an arithmetic expansion', 'n=$((HOME=1)); snow sql -c acme_dev -q "drop table t"'],
         ['the admin connection in a shell variable', 'C=acme_admin; snow sql -c $C -q "drop table t"'],
+        ['old-style arithmetic', 'echo $[HOME=1]; snow sql -c acme_dev -q "drop table t"'],
+        ['a coprocess', 'coproc snow sql -c acme_dev -q "drop table t"'],
+        ['a step xargs runs', `echo t | xargs -I{} snow sql -c acme_dev -q "drop table {}"`],
+        ['a literal step xargs runs', `echo t | xargs -I{} snow sql -c acme_dev -q "drop table t"`],
+        ['a literal step find runs', `find /tmp -maxdepth 0 -exec snow sql -c acme_dev -q "drop table t" \\;`],
+        ['a step find runs', `find /tmp -name q.sql -exec snow sql -c acme_dev -f {} \\;`],
         ['even the dev connection in a shell variable', 'C=acme_dev; snow sql -c $C -q "drop table t"'],
         ['an exported variable', 'export SNOWFLAKE_CONNECTIONS_ACME_DEV_USER=ADMIN_USER; snow sql -c acme_dev -q "drop table t"'],
         ['a function named snow', 'snow() { command snow sql -c acme_admin -q "$5"; }; snow sql -c acme_dev -q "drop table t"'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('gate');
+    });
+
+    test('a config the agent can write is never trusted', () => {
+        devLoginTestHooks.configLocked = realConfigLocked;
+        try {
+            expect(verdict('snow sql -c acme_dev -q "drop table prod_db.s.t"')).toBe('gate');
+        } finally {
+            devLoginTestHooks.configLocked = () => true;
+        }
     });
 
     test.each([
@@ -137,8 +156,11 @@ describe('anything that could point the command at another login keeps the card'
         ['the connection is defined twice', `${GOOD_CONNECTIONS}\n[acme_dev]\nuser = "ADMIN_USER"\naccount = "ACME-DEV1"\n`, ''],
         ['a key is set twice', '[acme_dev]\naccount = "ACME-DEV1"\nuser = "ADMIN_USER"\nuser = "AGENT_DEV_USER"\n', ''],
         ['it signs in with a password', `${GOOD_CONNECTIONS.replace('role = "AGENT_DEV"', 'password = "x"')}`, ''],
-        ['config.toml defines it too', GOOD_CONNECTIONS, '[connections.acme_dev]\nuser = "ADMIN_USER"\n'],
-        ['config.toml defines it quoted', GOOD_CONNECTIONS, '[connections."acme_dev"]\nuser = "ADMIN_USER"\n'],
+        ['it reads a token file', `${GOOD_CONNECTIONS.replace('role = "AGENT_DEV"', 'token_file_path = "/tmp/t"')}`, ''],
+        ['it signs in through OAuth', GOOD_CONNECTIONS.replace('authenticator = "SNOWFLAKE_JWT"', 'authenticator = "OAUTH"'), ''],
+        ['it names no key', GOOD_CONNECTIONS.replace('private_key_path = "/home/node/.snowflake/keys/dev/rsa_key.p8"', ''), ''],
+        ['a header quoted differently', GOOD_CONNECTIONS.replace('[acme_dev]', '["acme_dev"]') + '\n[ acme_dev ]\nuser = "ADMIN_USER"\n', ''],
+        ['a value that is not a string', GOOD_CONNECTIONS.replace('role = "AGENT_DEV"', 'role = 1'), ''],
     ])('%s', (_name, connections, config) => {
         writeConnections(connections, config);
         expect(verdict('snow sql -c acme_dev -q "drop table prod_db.s.t"')).toBe('gate');
