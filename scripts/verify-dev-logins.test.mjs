@@ -137,3 +137,12 @@ test('the grants read are the signed-in user\'s, not those of a configured spell
   };
   assert.match(verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'agent', account: 'ORG-A' } }, rows), /DELETE on TABLE PROD_DB\.S\.T/);
 });
+
+test('a procedure with a quoted name fails the check rather than having its signature rewritten', () => {
+  const grants = {
+    'show grants to user "AGENT"': [{ role: 'DEV_ROLE' }],
+    'show grants to role "DEV_ROLE"': [g('USAGE', 'PROCEDURE', 'DEV_DB.S."DEFAULT P"()')],
+    'show grants to role "PUBLIC"': [],
+  };
+  assert.throws(() => collectGrants('AGENT', sql => grants[sql] ?? assert.fail(`unexpected ${sql}`)), /quoted name/);
+});

@@ -109,7 +109,9 @@ export function collectGrants(user, rows) {
       else if (on === 'PROCEDURE' && privilege === 'USAGE' && !/^"?SNOWFLAKE"?\./i.test(g.name)) {
         // A procedure that runs with its owner's rights lets the caller act as that owner, so its owner is walked too.
         // SHOW GRANTS writes an optional argument as `DEFAULT TYPE`; DESCRIBE and SHOW GRANTS ON take the bare type.
-        const signature = String(g.name).replace(/\bDEFAULT\s+/g, '');
+        const name = String(g.name);
+        if (name.includes('"')) throw new Error(`procedure ${name} has a quoted name; its signature isn't rewritten safely`);
+        const signature = name.replace(/\bDEFAULT\s+/g, '');
         const executeAs = rows(`describe procedure ${signature}`).find(r => String(r.property).toLowerCase() === 'execute as')?.value;
         if (executeAs === 'OWNER') {
           const owner = rows(`show grants on procedure ${signature}`).find(r => String(r.privilege).toUpperCase() === 'OWNERSHIP');
