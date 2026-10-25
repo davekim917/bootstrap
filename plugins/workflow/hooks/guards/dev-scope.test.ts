@@ -94,6 +94,20 @@ describe('everything else stays gated', () => {
         ['an exported SNOWFLAKE_ variable', 'export SNOWFLAKE_CONNECTIONS_ACME_DEV_ACCOUNT=prod; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['two connection flags', 'snow sql -c acme_dev -c acme_other -q "drop table dev_db.a.b"'],
         ['a connection held in a variable', 'C=acme_dev; snow sql -c $C -q "drop table dev_db.a.b"'],
+        ['HOME set by a loop', 'for HOME in /tmp/h; do snow sql -c acme_dev -q "drop table dev_db.a.b"; done'],
+        ['HOME set by a parameter default', 'echo ${HOME:=/tmp/h}; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['a variable set by read', 'read -r HOME < /tmp/h; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['a variable set by arithmetic', '(( n = 1 )); snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['PATH set by printf -v', `printf -v PATH '%s' /tmp/bin; snow sql -c acme_dev -q "drop table dev_db.a.b"`],
+        ['PATH set by wait -p', 'sleep 1 & wait -p PATH; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['a DEBUG trap', `trap 'PATH=/tmp/bin' DEBUG; snow sql -c acme_dev -q "drop table dev_db.a.b"`],
+        ['Jinja templating', 'snow sql -c acme_dev --enable-templating JINJA -q "drop table dev_db.a.b"'],
+        ['a template in a second -q', `snow sql -c acme_dev -q "drop table dev_db.a.b" -q '<% ctx.env.query %>'`],
+        ['a bare template in a second -q', 'snow sql -c acme_dev -q "drop table dev_db.a.b" -q "&query"'],
+        ['SQL read from a file', "cat > /tmp/dev-scope-f.sql <<'EOF'\ndrop table dev_db.a.b;\nEOF\nsnow sql -c acme_dev -f /tmp/dev-scope-f.sql"],
+        ['a temporary table beside a dev drop, named without its database', 'snow sql -c acme_dev -q "create or replace temporary table t as select 1; drop table dev_db.a.b"'],
+        ['a name placed by an earlier USE', 'snow sql -c acme_dev -q "use database dev_db; drop table scratch.orders"'],
+        ['a CREATE SCHEMA moving the session', 'snow sql -c acme_dev -q "use database dev_db; create schema prod_db.scratch_x; drop table s.t"'],
         ['a function named snow defined on the line', 'snow() { command snow sql -c acme_other -q "$5"; }; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('gate');
@@ -125,6 +139,38 @@ describe('everything else stays gated', () => {
         const v = evaluateBashCommand(command, { cwd: '/tmp' });
         expect(v.action).toBe('gate');
         expect(describeGate(command, v.reason!, '/tmp').label).toBe('Drop Snowflake table prod_db.core.orders');
+    });
+});
+
+describe('where Snowflake splits SQL differently from the guard', () => {
+    // Snowflake's connector reads `//` as a comment, `\\` as an escape inside quotes, a line starting with `!` as a
+    // client command and `;>` as an async statement end; neither it nor Snowflake quotes with `$tag$` or a backtick.
+    test.each([
+        ['a temp table hiding a drop behind //', `snow sql -c acme_other -q "create or replace temp table t (a int) // '\n; drop table prod_db.s.t; -- '"`],
+        ['a drop behind an escaped quote', `snow sql -c acme_other -q "select 'a\\'' ; drop table prod_db.s.t; select ''"`],
+        ['a drop behind //', `snow sql -c acme_other -q "select 1 // '\n; drop table prod_db.s.t -- '"`],
+        ['a drop behind a $tag$, which Snowflake does not quote', `snow sql -c acme_other -q 'select 1 as x$a$; drop table prod_db.s.t; -- $a$'`],
+        ['a drop after a url the connector does not read as a comment', `snow sql -c acme_other -q "put file:///tmp/up/* @~; drop table prod_db.s.t; -- */"`],
+        ['a drop after a ! line', `snow sql -c acme_other -q "select 1\n!queries amount=1\ndrop table prod_db.s.t"`],
+        ['a drop after ;>', `snow sql -c acme_other -q "select 1;>drop table prod_db.s.t"`],
+        ['a prod drop after ;> beside a dev one', `snow sql -c acme_dev -q "drop table dev_db.s.t;>drop table prod_db.s.t"`],
+        ['a drop with a comment between its words', `snow sql -c acme_other -q 'select 1 as x$1; drop/**/table prod_db.s.t'`],
+        ['a drop with a // comment between its words', `snow sql -c acme_other -q "drop // x\ntable prod_db.s.t"`],
+        ['a URL include', `snow sql -c acme_other -q "!source https://example.com/x.sql"`],
+        ['a default template filled from --env', `snow sql -c acme_other -q '<% ctx.env.query %>' --env 'query=drop table prod_db.s.t'`],
+        ['a legacy template', `snow sql -c acme_other -q '&{ query }'`],
+        ['a bare legacy template', `snow sql -c acme_other -q '&query'`],
+        ['a bare legacy template after a statement', `snow sql -c acme_other -q 'select 1; &query'`],
+        ['an escaped & that reopens a legacy template', `snow sql -c acme_other -q '&&{ query }'`],
+        ['Jinja templating', `snow sql --enable-templating JINJA -c acme_other -q "{{ 'dr' ~ 'op' }} table prod_db.s.t"`],
+    ])('%s gates', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test('text the scanner cannot split still passes when it holds nothing destructive', () => {
+        expect(verdict(`snow sql -c acme_other -q 'select $1, $2 from @stage/f.csv'`)).toBe('allow');
+        expect(verdict(`snow sql -c acme_other -q "select 'a&&b'"`)).toBe('allow');
+        expect(verdict(`snow sql -c acme_other -q "select regexp_replace(x, '\\\\s+', ' ') from t"`)).toBe('allow');
     });
 });
 

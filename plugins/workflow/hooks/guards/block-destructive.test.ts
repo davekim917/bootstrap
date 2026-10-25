@@ -371,6 +371,14 @@ describe('SQL gate: expanded destructive patterns are gated', () => {
         [`snow sql -q "CREATE OR REPLACE TABLE foo (id INT)"`, 'CREATE OR REPLACE TABLE'],
         [`snow sql -q "CREATE OR REPLACE VIEW v AS SELECT 1"`, 'CREATE OR REPLACE VIEW'],
         [`snow sql -q "CREATE OR REPLACE MATERIALIZED VIEW mv AS SELECT 1"`, 'CREATE OR REPLACE MATERIALIZED VIEW'],
+        // Replacing any other object drops the one there too.
+        [`snow sql -q "create or replace database analytics"`, 'CREATE OR REPLACE DATABASE'],
+        [`snow sql -q "create or replace schema analytics.core"`, 'CREATE OR REPLACE SCHEMA'],
+        [`snow sql -q "create or replace transient table analytics.core.orders as select 1"`, 'CREATE OR REPLACE TRANSIENT TABLE'],
+        [`snow sql -q "create or replace dynamic table a.b.t target_lag='1 minute' warehouse=w as select 1"`, 'CREATE OR REPLACE DYNAMIC TABLE'],
+        [`snow sql -q "create or replace stage a.b.files"`, 'CREATE OR REPLACE STAGE'],
+        [`snow sql -q "create or replace role analyst"`, 'CREATE OR REPLACE ROLE'],
+        [`snow sql -q "create or replace local temporary table t (x int)"`, 'CREATE OR REPLACE LOCAL TEMPORARY TABLE'],
 
         // INSERT OVERWRITE — Snowflake/Spark/Hive bulk overwrite.
         [`snow sql -q "INSERT OVERWRITE INTO foo SELECT 1"`, 'INSERT OVERWRITE INTO'],

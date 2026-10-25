@@ -168,11 +168,55 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
         `B='-v x DROP TABLE users;'; printf $B | psql`,
         `O=-v; SQL='DROP TABLE users;'; printf $O x "$SQL" | psql`,
         `B='-e DROP TABLE users;'; echo 'SELECT 1; --' $B | psql`,
-        `F='DROP TABLE ok.sql'; psql -f "$F"`,
         `B='SELECT 1'; echo 'DROP TABLE users;' | psql -c "$B"`,
-        `F='DROP TABLE ok.sql'; cat "$F" | psql`,
     ]) {
         expect(verdict(command)).toBe('allow');
+    }
+    // The guard reads a SQL file before the line runs, so a command that may write it first makes it unreadable.
+    for (const command of [
+        `python3 gen.py; psql -f /tmp/sql-input-never-written.sql`,
+        `grep -h drop /tmp/a.sql > /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `sed -i 's/x/y/' /tmp/sql-input-never-written.sql && snow sql -f /tmp/sql-input-never-written.sql`,
+        `snow sql -f "$SQL_FILE"`,
+        `snow sql -f /tmp/sql-input-never-written.sql & python3 gen.py`,
+        `for i in 1 2; do snow sql -f /tmp/sql-input-never-written.sql; python3 gen.py; done`,
+        `snow sql -f /tmp/sql-input-never-written.sql -q "$(python3 gen.py)"`,
+        `snow sql -q "GET @stage/q.sql file:///tmp/"; snow sql -f /tmp/sql-input-never-written.sql`,
+        `psql -c '\\o /tmp/sql-input-never-written.sql' -c 'select 1'; psql -f /tmp/sql-input-never-written.sql`,
+        `psql <<'SQL'\n\\copy (select 'DROP TABLE users;') to '/tmp/sql-input-generated.sql'\n\\i /tmp/sql-input-generated.sql\nSQL`,
+        `psql -o /tmp/sql-input-generated.sql -c "select 'DROP TABLE users;'" -c '\\i /tmp/sql-input-generated.sql'`,
+        `snow sql -f /tmp/sql-input-never-written.sql | python3 -c "import json, sys"`,
+        `snow sql -f /tmp/sql-input-never-written.sql | sed -i 's/x/y/' /tmp/sql-input-never-written.sql`,
+        `echo "drop table t" >& /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `echo "drop table t" 1<> /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `tee /tmp/sql-input-never-written.sql < /tmp/other.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `sort -uo /tmp/sql-input-never-written.sql /tmp/other.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `sort --outp=/tmp/sql-input-never-written.sql /tmp/other.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `{ echo "use warehouse w;"; echo "drop table t;"; } > /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `( echo "drop table t;" ) >> /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `if true; then echo "drop table t;"; fi > /tmp/sql-input-never-written.sql; snow sql -f /tmp/sql-input-never-written.sql`,
+        `F=$(printf /tmp/sql-input-never-written.sql); printf 'drop table t' > "$F"; snow sql -f /tmp/sql-input-never-written.sql`,
+        `psql <<'SQL'\n\\lo_export 123 /tmp/sql-input-generated.sql\n\\i /tmp/sql-input-generated.sql\nSQL`,
+        `psql <<'SQL'\n\\! echo DROP TABLE users > /tmp/sql-input-generated.sql\n\\i /tmp/sql-input-generated.sql\nSQL`,
+        `printf 'DROP TABLE users' | tee -- -q.sql; psql --file=-q.sql`,
+    ]) {
+        expect(evaluateBashCommand(command, { cwd: '/tmp' }).reason ?? '').toContain("can't be checked");
+    }
+    // A command that only runs after the client has read its files can't change them; a pipeline's stages run together.
+    for (const command of [
+        `snow sql -f /tmp/sql-input-never-written.sql | tail -1`,
+        `snow sql -f /tmp/sql-input-never-written.sql; python3 gen.py`,
+        `snow sql -q "describe table a.b.c" < /dev/null | python3 -c "import json"`,
+        `snow sql -q "select 1"; snow sql -f /tmp/sql-input-never-written.sql`,
+    ]) {
+        expect(verdict(command)).toBe('allow');
+    }
+    // A variable naming a file is a path, never SQL; this one's spaces keep the guard from proving the path, so it
+    // asks rather than read a file it can't name.
+    for (const command of [`F='DROP TABLE ok.sql'; psql -f "$F"`, `F='DROP TABLE ok.sql'; cat "$F" | psql`]) {
+        const reason = evaluateBashCommand(command, { cwd: '/tmp' }).reason ?? '';
+        expect(reason).toContain("can't be checked");
+        expect(reason).not.toContain('Destructive');
     }
 });
 
@@ -318,5 +362,18 @@ test('duckdb reads a one-dash long option as a flag, not -c with a value', () =>
     expect(verdict(`printf 'DROP TABLE users' | duckdb -csv`)).toBe('gate');
     expect(verdict(`printf 'DROP TABLE users' | duckdb -separator , db.duckdb`)).toBe('gate');
     expect(verdict(`printf 'DROP TABLE users' | duckdb -c 'SELECT 1'`)).toBe('allow');
+});
+
+test('a SQL file another command may rewrite is still read as it stands, so what it holds now blocks', () => {
+    writeFileSync(join(dir, 'shell.sql'), '\\! rm -rf ~\n');
+    for (const command of [
+        `sed -i 's/a/b/' other.txt; psql -h db.example -f shell.sql`,
+        `python3 x.py; psql -h db.example -f shell.sql`,
+        `psql -h db.example -f shell.sql -o out.txt`,
+        `echo '\\! rm -rf ~' > ~/sql-input-x.sql; psql -h db.example -f ~/sql-input-x.sql`,
+        `echo '\\! rm -rf ~' > "$F"; psql -h db.example -f "$F"`,
+    ]) {
+        expect(verdict(command)).toBe('block');
+    }
 });
 

@@ -63,6 +63,8 @@ export interface ResolvedCommand {
     chdir?: string;             // working directory set by an `env -C/--chdir` wrapper
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
+    end?: number;               // source offset just past the command, with the same provenance as `pos`
+    untracedWrite?: boolean;    // a redirect writes a file `stdoutFiles` doesn't name (another fd, `<>`, `>& file`)
     stdinTexts?: string[];      // heredoc and here-string text fed to this command
     stdinExpanded?: string[];   // the part of stdinTexts bash expands variables in (not a quoted heredoc or '…' here-string)
     stdinFiles?: string[];      // files redirected into this command with `<`
@@ -76,6 +78,10 @@ export interface ResolvedCommand {
 /** Facts about the whole command line that a single step's checks need. */
 export interface ScriptContext {
     writes: FileWrite[];        // what echo/printf/cat/tee write to files
+    fileChangers?: ResolvedCommand[]; // commands that may write a file in a way `writes` doesn't record
+    orderUnclear?: boolean;     // a loop, function, coprocess or background job: a later command may run first
+    pipelines?: Array<[number, number]>; // source spans of pipelines, whose stages run at the same time
+    compoundWrite?: boolean;    // a `{ … }`, `( … )`, if, case or loop redirects its output into a file
     pipedInto: Map<number, PipedInput>; // what the previous stage of a pipeline feeds each command, by command offset
     cds: CdStep[];              // every cd/pushd/popd, in source order
     links: Map<number, ChainLink>; // where each top-level command sits in its &&/|| chain, by command offset
@@ -698,14 +704,14 @@ export const SAFE_PATH_PATTERNS = [
 // keyword-like identifiers in `"DROP TABLE archive"` do not match.
 const DDL_DROP_TARGETS =
     '(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION|OWNED|TRIGGER|INDEX|MATERIALIZED\\s+VIEW)';
-const DDL_REPLACE_TARGETS =
-    '(?:TABLE|VIEW|MATERIALIZED\\s+VIEW|TEMP(?:ORARY)?\\s+TABLE|EXTERNAL\\s+TABLE|FUNCTION|PROCEDURE|TRIGGER)';
 
 export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: new RegExp(`^DROP\\s+${DDL_DROP_TARGETS}\\b`, 'i'), label: 'DROP' },
     { rx: /^TRUNCATE\b/i, label: 'TRUNCATE' },
     { rx: /^DELETE\s+FROM\b/i, label: 'DELETE FROM' },
-    { rx: new RegExp(`^CREATE\\s+OR\\s+REPLACE\\s+${DDL_REPLACE_TARGETS}\\b`, 'i'), label: 'CREATE OR REPLACE' },
+    // Replacing any object drops the one there: a database or schema with everything in it, a stage with its files, a
+    // role or share with its grants.
+    { rx: /^CREATE\s+OR\s+REPLACE\b/i, label: 'CREATE OR REPLACE' },
     { rx: /^INSERT\s+OVERWRITE\b/i, label: 'INSERT OVERWRITE' },
     { rx: /^MERGE\s+INTO\b/i, label: 'MERGE' },
     // After string-strip, a DROP keyword inside a string literal cannot reach
@@ -1180,6 +1186,16 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const f = pending.shift()!;
         if (seen.has(f)) continue;
         seen.add(f);
+        if (f === '/dev/null') continue;
+        // A file something may write before it is read is still read as it stands: what it holds now can block.
+        if (writesOwnOutput(cmd) || texts.some(t => SQL_CLIENT_FILE_WRITE.test(t))) {
+            unreadable ??= `${f}, which the client may write itself`;
+        }
+        const script = cmd.script;
+        if (!script?.fileChangers || script.compoundWrite || script.fileChangers.some(c => c !== cmd && mayRunBefore(c, cmd, script))) {
+            unreadable ??= `${f}, which another command on the line may write`;
+        }
+        if (sqlPathCandidates(f, cmd) === null) unreadable ??= `${f}, a path the command line doesn't prove`;
         const writes = writesTo(f, cmd);
         if (writes === null) {
             unreadable ??= f;
@@ -2214,7 +2230,14 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const stdinExpanded: string[] = [];
     const stdinFiles: string[] = [];
     const stdoutFiles: string[] = [];
+    let untracedWrite = false;
     for (const r of (node.redirects || [])) {
+        const target = wordValue(r?.target);
+        if (target !== '/dev/null' && (
+            (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && r.fileDescriptor !== undefined && r.fileDescriptor !== 1)
+            || r?.operator === '<>' || (r?.operator === '>&' && !/^(?:\d+|-)$/.test(target)))) {
+            untracedWrite = true;
+        }
         if (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && (r.fileDescriptor === undefined || r.fileDescriptor === 1)) {
             stdoutFiles.push(wordValue(r.target));
         }
@@ -2239,6 +2262,8 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         ...(chdir !== undefined ? { chdir } : {}),
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
+        ...(typeof node.end === 'number' ? { end: node.end } : {}),
+        ...(untracedWrite ? { untracedWrite } : {}),
         ...(stdinTexts.length ? { stdinTexts } : {}),
         ...(stdinExpanded.length ? { stdinExpanded } : {}),
         ...(stdinFiles.length ? { stdinFiles } : {}),
@@ -2791,7 +2816,88 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             // `pushd DIR` changes directory like `cd DIR`; `pushd +N`/`-N` rotates the stack to a directory unknown here.
             target: (c.name === 'cd' || c.name === 'pushd') && c.args.length === 1 && !/^(?:-|[+-]\d+)$/.test(c.args[0]) ? c.args[0] : undefined,
         }));
-    return { writes, pipedInto, cds, links, command };
+    return { writes, pipedInto, cds, links, command, fileChangers: commands.filter(mayChangeFiles), orderUnclear: hasUnclearOrder(ast), pipelines: pipelineSpans(ast), compoundWrite: hasCompoundWrite(ast) };
+}
+
+/** True when a statement that is not a simple command redirects output into a file: its writes are not traced. */
+function hasCompoundWrite(node: unknown): boolean {
+    if (!node || typeof node !== 'object') return false;
+    if (Array.isArray(node)) return node.some(hasCompoundWrite);
+    const n = node as { type?: unknown; command?: { type?: unknown }; redirects?: Array<{ operator?: unknown; target?: unknown }> };
+    if (n.type === 'Statement' && n.command?.type !== 'Command' && (n.redirects ?? []).some(r => {
+        const target = wordValue(r.target);
+        return target !== '/dev/null' && (['>', '>>', '>|', '&>', '&>>', '<>'].includes(r.operator as string) || (r.operator === '>&' && !/^(?:\d+|-)$/.test(target)));
+    })) return true;
+    return Object.values(node).some(hasCompoundWrite);
+}
+
+function pipelineSpans(node: unknown, spans: Array<[number, number]> = []): Array<[number, number]> {
+    if (!node || typeof node !== 'object') return spans;
+    if (Array.isArray(node)) {
+        for (const child of node) pipelineSpans(child, spans);
+        return spans;
+    }
+    const n = node as { type?: unknown; pos?: unknown; end?: unknown };
+    if (n.type === 'Pipeline' && typeof n.pos === 'number' && typeof n.end === 'number') spans.push([n.pos, n.end]);
+    for (const child of Object.values(node)) pipelineSpans(child, spans);
+    return spans;
+}
+
+const UNCLEAR_ORDER_NODES = new Set(['For', 'While', 'Select', 'Function', 'Coproc', 'ArithmeticFor']);
+
+function hasUnclearOrder(node: unknown): boolean {
+    if (!node || typeof node !== 'object') return false;
+    if (Array.isArray(node)) return node.some(hasUnclearOrder);
+    const n = node as { type?: unknown; background?: unknown };
+    if (n.background === true || (typeof n.type === 'string' && UNCLEAR_ORDER_NODES.has(n.type))) return true;
+    return Object.values(node).some(hasUnclearOrder);
+}
+
+/**
+ * True when `writer` may run before `reader` reads its files: earlier on the line, inside its words, in the same
+ * pipeline, or in any order.
+ */
+function mayRunBefore(writer: ResolvedCommand, reader: ResolvedCommand, script: ScriptContext): boolean {
+    if (script.orderUnclear || writer.pos === undefined || reader.pos === undefined || reader.end === undefined) return true;
+    if (writer.pos < reader.end) return true;
+    const [w, r] = [writer.pos, reader.pos];
+    return (script.pipelines ?? []).some(([start, end]) => start <= w && w < end && start <= r && r < end);
+}
+
+// Commands that write no file of their own; a redirect from one still writes one, and only echo, printf, cat and tee
+// redirects are read into `writes`.
+const FILE_SAFE_COMMANDS = new Set(['cd', 'pushd', 'popd', 'cat', 'echo', 'printf', 'tee', 'grep', 'egrep', 'fgrep', 'head', 'tail', 'cut', 'tr', 'wc', 'jq', 'date', 'true', 'false', 'sleep', 'test', '[', 'ls', 'pwd', 'column', 'basename', 'dirname', 'export', 'set', 'unset', 'mkdir', 'touch', 'nl', 'sha256sum', 'md5sum']);
+const DISCARD_TARGETS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
+// A SQL client's own ways of writing a file: psql's \o, \w, \g, \copy, \lo_export and a \! shell command; snow's GET; COPY … TO and INTO OUTFILE,
+// which a database on this host writes where the client can read; sqlite3's .output, .once, .save and .backup.
+const SQL_CLIENT_FILE_WRITE = /\\(?:(?:o|out|w|write|g|gx|copy|lo_export)\b|!)|\bGET\b|\bCOPY\b[\s\S]*?\bTO\b|\bINTO\s+(?:OUT|DUMP)FILE\b|^\s*\.(?:output|once|save|backup)\b/im;
+const SQL_CLIENT_OUTPUT_OPTION = /^(?:-o|--output|-L|--log-file|--tee)(?:=|$)/;
+
+/** True when a SQL client's options name a file it writes its output or a log to. */
+function writesOwnOutput(cmd: ResolvedCommand): boolean {
+    return cmd.args.some(a => SQL_CLIENT_OUTPUT_OPTION.test(a) || cmd.name === 'psql' && /^-[a-zA-Z]*[oL]/.test(a));
+}
+
+function mayChangeFiles(cmd: ResolvedCommand): boolean {
+    if (cmd.untracedWrite) return true;
+    if (!TEXT_EMITTERS.has(cmd.name) && (cmd.stdoutFiles ?? []).some(t => !DISCARD_TARGETS.has(t))) return true;
+    // An emitter's `<` input is not read into `writes`, and a write to a destination the line doesn't spell out may be
+    // to any file.
+    if (TEXT_EMITTERS.has(cmd.name) && cmd.stdinFiles?.length && (cmd.stdoutFiles?.length || cmd.name === 'tee')) return true;
+    if (TEXT_EMITTERS.has(cmd.name) && [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? cmd.args.filter(a => !a.startsWith('-')) : [])]
+        .some(t => /[$`*?[{~]/.test(t))) return true;
+    // After `--` an operand may start with `-`, and `writes` reads tee's operands as the words that don't.
+    if (cmd.name === 'tee' && cmd.args.includes('--')) return true;
+    if (FILE_SAFE_COMMANDS.has(cmd.name)) return false;
+    // GNU options cluster (`-uo FILE`) and take any unambiguous prefix (`--outp=FILE`).
+    if (cmd.name === 'sort') return cmd.args.some(a => /^-[^-]*o/.test(a) || /^--o/.test(a));
+    if (cmd.name === 'uniq') return cmd.args.filter(a => !a.startsWith('-')).length > 1;
+    if ((cmd.name === 'snow' && cmd.args[0] === 'sql') || cmd.name === 'psql') {
+        // Only what the command line shows: a file it reads, or an option that names a log or output file, could hold more.
+        if (cmd.args.some(a => /^(?:-f|--file|--filename)(?:=|$)/.test(a) || /^-[a-zA-Z]*f/.test(a) && cmd.name === 'psql') || writesOwnOutput(cmd)) return true;
+        return [...cmd.args, ...(cmd.stdinTexts ?? [])].some(t => SQL_CLIENT_FILE_WRITE.test(t) || t.includes('$')) || Boolean(cmd.stdinFiles?.length);
+    }
+    return true;
 }
 
 /** Regex-based fallback for when the AST parser fails */
@@ -3423,19 +3529,28 @@ const SNOW_SQL_BARE_FLAGS = new Set(['--silent', '--verbose', '--debug', '--enha
 const SAFE_WRAPPERS_PREFIX = String.raw`^(?:(?:g?timeout\s+\d+(?:\.\d+)?[smhd]?|nohup|time)\s+)*`;
 const SNOW_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}snow\\s`);
 // Commands that change what a later command sees: its environment, or code it sources.
-const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare', 'typeset', 'env', 'eval', 'readonly', 'local', 'alias', 'unset']);
+const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare', 'typeset', 'env', 'eval', 'readonly', 'local', 'alias', 'unset', 'read', 'mapfile', 'readarray', 'getopts', 'let', 'trap']);
+
+/** `printf -v NAME` and `wait -p NAME` assign the variable they name. */
+function setsVariableByOption(cmd: ResolvedCommand): boolean {
+    return (cmd.name === 'printf' && cmd.args.some(a => /^-v/.test(a))) || (cmd.name === 'wait' && cmd.args.some(a => /^-[a-z]*p/.test(a)));
+}
 
 /**
- * True when the command line has an assignment word or a function definition anywhere, or can't be parsed to tell. A
- * function can take the name of the command an exemption reads, and run something else under it.
+ * True when the command line assigns a variable (by assignment word, loop, arithmetic or a `${name:=value}` default),
+ * defines a function, or can't be parsed to tell. A function can take the name of the command an exemption reads, and
+ * run something else under it.
  */
 function changesShellState(command: string): boolean {
     const found = (node: unknown): boolean => {
         if (!node || typeof node !== 'object') return false;
         if (Array.isArray(node)) return node.some(found);
         const type = (node as { type?: unknown }).type;
-        return type === 'Assignment' || type === 'Function' || Object.values(node).some(found);
+        if (type === 'Assignment' || type === 'For' || type === 'Select' || type === 'Function' || type === 'ArithmeticCommand' || type === 'ArithmeticFor') return true;
+        return Object.values(node).some(found);
     };
+    // A word's parts are not walked here, so an expansion that assigns is found in the text.
+    if (/\$\{[^}]*?=|\$\(\(/.test(command)) return true;
     try {
         return found(parseShell(command));
     } catch {
@@ -3448,6 +3563,29 @@ function snowflakeIdentifier(part: string): string | null {
     const quoted = part.match(/^"((?:[^"]|"")+)"$/);
     if (quoted) return quoted[1].replace(/""/g, '"');
     return /^[A-Za-z_][A-Za-z0-9_$]*$/.test(part) ? part.toUpperCase() : null;
+}
+
+/** True when `text` holds a template (`<% %>`, `&{ }` or bare `&name`; `&&` escapes, but `&&{` reopens as `&{`) that no -D/--variable on the command fills. */
+function unfilledSnowTemplate(text: string, cmd: ResolvedCommand): boolean {
+    const given = new Set<string>();
+    for (let i = 0; i < cmd.args.length; i++) {
+        for (const o of ['-D', '--variable']) {
+            const m = optionValueAt(cmd.args, i, o)?.match(/^([\w.]+)=/);
+            if (m) given.add(m[1]);
+        }
+    }
+    const rest = text.replace(/&&/g, '').replace(SNOW_TEMPLATE, (m, a, b, c) => (given.has(a ?? b ?? c) ? '' : m));
+    return /&&\{/.test(text) || /<%|&\{|&[A-Za-z_]/.test(rest);
+}
+
+/** The values given to every `--enable-templating` option, upper-cased. */
+function snowTemplating(cmd: ResolvedCommand): string[] {
+    const values: string[] = [];
+    for (let i = 0; i < cmd.args.length; i++) {
+        const v = optionValueAt(cmd.args, i, '--enable-templating');
+        if (v !== undefined) values.push(...v.toUpperCase().split(','));
+    }
+    return values;
 }
 
 /** The fully qualified object a destructive statement acts on, as Snowflake identifiers. */
@@ -3481,7 +3619,7 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
-    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name)) || changesShellState(command)) return null;
+    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c)) || changesShellState(command)) return null;
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {
@@ -3498,13 +3636,17 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     }
     const entry = scope.snowflake.find(e => e.connection === connection);
     if (!entry) return null;
+    if (snowTemplating(cmd).some(t => t !== 'NONE')) return null;
 
     const allowed = new Set(entry.databases.map(d => d.toUpperCase()));
     let matched = false;
     if (cmd.stdinTexts?.length || cmd.stdinFiles?.length) return null;
-    for (const arg of sqlInputOf(cmd).texts) {
-        if (!findDestructiveSqlStatement(arg)) continue;
+    const input = sqlInputOf(cmd);
+    if (input.unreadable) return null;
+    for (const arg of input.texts) {
+        if (!splitsLikeSnow(arg)) return null;
         if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b|^\s*DO\b|[!\\]\w/im.test(arg)) return null;
+        if (!findDestructiveSqlStatement(arg)) continue;
         for (const st of destructiveStatements(arg)) {
             const target = statementTarget(st.pattern, st.statement);
             if (!target) return null;
@@ -4267,12 +4409,25 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     const sqlDialect = SQL_CLIS[name] ?? (name === 'snow' && args[0] === 'sql' ? 'Snowflake' : null);
     if (sqlDialect) {
         const input = sqlInputFor(cmd);
-        if (input.unreadable) return `${sqlDialect} SQL input (${input.unreadable}) can't be checked: too large, too many included files, or more text than the guard traces.`;
+        if (input.unreadable) return `${sqlDialect} SQL input (${input.unreadable}) can't be checked: too large, too many included files, more text than the guard traces, or not readable before the line runs.`;
         const program = clientProgramGate(cmd);
         if (program) return program;
+        if (name === 'snow' && snowTemplating(cmd).some(t => t === 'JINJA' || t === 'ALL')) {
+            return 'Snowflake SQL with Jinja templating can\'t be checked: snow renders it into new SQL before it runs.';
+        }
+        // STANDARD (`<% %>`) and LEGACY (`&{ }`) templating are on by default, and a value -D doesn't give comes from
+        // --env or project config the line doesn't show.
+        const templating = name === 'snow' ? snowTemplating(cmd) : [];
+        if (name === 'snow' && !(templating.length && templating.every(t => t === 'NONE')) && input.texts.some(t => unfilledSnowTemplate(t, cmd))) {
+            return 'Snowflake SQL with a template can\'t be checked: snow fills it in before it runs.';
+        }
+        if (name === 'snow' && input.texts.some(t => /^\s*!(?:source|load)\s+\w+:\/\//im.test(t))) {
+            return 'Snowflake SQL that snow fetches from a URL (!source/!load) can\'t be checked before it runs.';
+        }
         for (const text of input.texts) {
             for (const statements of name === 'psql' ? psqlStatementTexts(text) : [text]) {
-                const matched = findDestructiveSqlStatement(statements);
+                const matched = findDestructiveSqlStatement(statements)
+                    ?? (name === 'snow' && !splitsLikeSnow(statements) ? destructiveKeywordAnywhere(statements) : null);
                 if (matched) {
                     return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
                 }
@@ -4464,6 +4619,36 @@ interface StepCard {
 }
 
 const STATEMENT_MAX_CHARS = 4000;
+
+/**
+ * True when Snowflake's connector splits `sql` into the statements the guard's scanner sees. The connector treats `//`
+ * as a comment (except in a word holding `://`), `\\` as an escape in quotes, a line starting with `!` as a client
+ * command that ends the statement before it, and `;>` as an async statement end; neither it nor Snowflake treats
+ * `$tag$` or a backtick as a quote. Text holding any of them can hide a statement from the scanner.
+ */
+function splitsLikeSnow(sql: string): boolean {
+    return !/[$`\\]|\/\/|\/\*|;\s*>|^\s*!/m.test(sql);
+}
+
+const UNANCHORED_DESTRUCTIVE_SQL = [
+    ...DESTRUCTIVE_SQL_PATTERNS.map(p => ({ rx: new RegExp(p.rx.source.replace(/^\^/, '\\b'), 'i'), label: p.label })),
+    { rx: /\bUPDATE\b[\s\S]*\bSET\b/i, label: 'UPDATE' },
+];
+
+/**
+ * A destructive keyword anywhere in `sql`, inside literals and comments too, and with every comment also read as the
+ * whitespace it may stand for between two keywords: for text the scanner can't split.
+ */
+function destructiveKeywordAnywhere(sql: string): DestructiveMatch | null {
+    const collapsed = sql.replace(/\/\*[\s\S]*?(?:\*\/|$)|(?:--|\/\/)[^\n]*/g, ' ');
+    for (const text of [sql, collapsed]) {
+        for (const { rx, label } of UNANCHORED_DESTRUCTIVE_SQL) {
+            const m = rx.exec(text);
+            if (m) return { pattern: label, statement: oneLine(text.slice(m.index, m.index + 200)) };
+        }
+    }
+    return null;
+}
 
 function destructiveStatements(sql: string, depth = 0): DestructiveMatch[] {
     if (depth > SQL_RECURSION_LIMIT || !SQL_PREFILTER.test(sql)) return [];
