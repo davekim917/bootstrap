@@ -15,7 +15,7 @@
       "name": "bootstrap-orchestrate",
       "source": "./plugins/orchestrate",
       "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Invoke-only.",
-      "version": "3.3.0"
+      "version": "3.3.1"
     },
     {
       "name": "wwbd",
@@ -52,12 +52,6 @@
       "source": "./plugins/test-audit",
       "description": "Authoring gate and evidence-first audit workflow for tests, with an always-on nudge to run the gate and never weaken an existing test. Adapted from OpenClaw (MIT).",
       "version": "1.1.0"
-    },
-    {
-      "name": "verification-skills",
-      "source": "./plugins/verification-skills",
-      "description": "Generate and maintain a private verify-<project> skill that drives a web app, CLI, service or dbt/Snowflake project the way a user does and records evidence a reviewer can check. Invoke-only. Adapted from pstack (MIT).",
-      "version": "1.2.2"
     },
     {
       "name": "comment-rule",

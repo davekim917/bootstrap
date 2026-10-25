@@ -16,8 +16,9 @@ Use a plain native sub-agent, or `/orchestrate` when the request names a model a
 When a model or effort is missing, preserve any confident usable picker route. Picker abstention,
 failure, or an unusable route means no workflow override: preserve explicit choices subject to the
 existing model-effort compatibility caps, otherwise use normal native model, role and effort
-judgment and leave fields omitted when the runtime should resolve them. Select an effort shim only
-when that effort was deliberately chosen. Never replace a custom role or retained worker handle,
+judgment and leave fields omitted when the runtime should resolve them. Set an effort only when it
+was deliberately chosen, and pass it as the spawn's own effort field (`effort` on Claude Code's
+Agent tool): a `worker-<level>` shim name alone does not set it. Never replace a custom role or retained worker handle,
 and never create a retry ladder or capacity bypass.
 Record the actual model, effort, selection reason and checks. Independent review still uses its own
 fresh context.

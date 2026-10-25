@@ -20,7 +20,7 @@
     },
     {
       "name": "bootstrap-orchestrate",
-      "version": "3.3.0",
+      "version": "3.3.1",
       "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Invoke-only.",
       "source": {
         "source": "local",
@@ -109,20 +109,6 @@
       "source": {
         "source": "local",
         "path": "./plugins/test-audit"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Coding"
-    },
-    {
-      "name": "verification-skills",
-      "version": "1.2.2",
-      "description": "Generate and maintain a private verify-<project> skill that drives a web app, CLI, service or dbt/Snowflake project the way a user does and records evidence a reviewer can check. Invoke-only. Adapted from pstack (MIT).",
-      "source": {
-        "source": "local",
-        "path": "./plugins/verification-skills"
       },
       "policy": {
         "installation": "AVAILABLE",

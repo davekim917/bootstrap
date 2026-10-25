@@ -309,6 +309,8 @@ export function evaluateContracts({
       // tool rejects a model it cannot run, and that error is the report.
       'Claude Code:', 'Codex:', 'OpenCode:',
       'bootstrap-orchestrate:worker-{effort_level}',
+      'with `effort: "{effort_level}"`',
+      'Always pass `effort` when an effort was chosen',
       'every later round is SendMessage to that name',
       'spawn_agent', 'reasoning_effort',
       'every later round goes to that agent id',
@@ -361,10 +363,10 @@ export function evaluateContracts({
 /**
  * The five effort shims `/orchestrate` dispatches to.
  *
- * They exist for one runtime limitation: Claude Code's Agent tool takes a `model`
- * per call but not an `effort`, so effort can only be pinned in an agent
- * definition's frontmatter. Five near-identical files is the smallest thing that
- * lets a caller ask for any level.
+ * They label a level; they do not set it. Claude Code does not apply an agent
+ * definition's `effort` frontmatter to these shims, so the skill must pass the
+ * Agent call's `effort` parameter on every dispatch, and the skill tokens below
+ * hold that line in place.
  *
  * The risk they carry is becoming roles again — someone adds a model, or a
  * paragraph of instructions, and the "pick a model per dispatch" property is gone
@@ -401,7 +403,7 @@ function checkEffortShims(failures, checks, agentsRoot) {
       allClean = false;
     }
     if (fields?.get('effort') !== level) {
-      failures.push(`orchestrate/agents/worker-${level}.md: effort must be \`${level}\`; the filename is the level it pins`);
+      failures.push(`orchestrate/agents/worker-${level}.md: effort must be \`${level}\`; the filename is the level it names`);
       allClean = false;
     }
     const body = text.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();

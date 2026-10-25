@@ -296,7 +296,6 @@ const codexRoster = new Map([
   ['wwed', './plugins/wwed'],
   ['analytics-verify', './plugins/analytics-verify'],
   ['test-audit', './plugins/test-audit'],
-  ['verification-skills', './plugins/verification-skills'],
   ['comment-rule', './plugins/comment-rule'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
@@ -388,7 +387,6 @@ const claudeRoster = new Map([
   ['wwed', './plugins/wwed'],
   ['analytics-verify', './plugins/analytics-verify'],
   ['test-audit', './plugins/test-audit'],
-  ['verification-skills', './plugins/verification-skills'],
   ['comment-rule', './plugins/comment-rule'],
   ['concise', './plugins/concise'],
   ['instruction-audit', './plugins/instruction-audit'],
@@ -569,71 +567,12 @@ requireTextTokens(
 );
 // SHA-256 of pstack/LICENSE at the commit each NOTICE.md pins; the copies must be verbatim.
 const PSTACK_LICENSE_SHA256 = 'bc957ca6bee02792566a1a028d105e02e247c6e77cf057061674273da77b200e';
-for (const plugin of ['test-audit', 'wwbd', 'workflow', 'workflow-agents', 'verification-skills']) {
+for (const plugin of ['test-audit', 'wwbd', 'workflow', 'workflow-agents']) {
   if (!exists(`plugins/${plugin}/NOTICE.md`)) fail(`plugins/${plugin} must ship NOTICE.md for its pstack-derived text`);
   const license = readText(`plugins/${plugin}/LICENSE-PSTACK`);
   if (license !== undefined && createHash('sha256').update(license).digest('hex') !== PSTACK_LICENSE_SHA256) {
     fail(`plugins/${plugin}/LICENSE-PSTACK must be upstream pstack/LICENSE verbatim`);
   }
-}
-
-const verificationClaudeManifest = readJson('plugins/verification-skills/.claude-plugin/plugin.json');
-const verificationCodexManifest = readJson('plugins/verification-skills/.codex-plugin/plugin.json');
-for (const [label, manifest, entries] of [
-  ['.claude-plugin', verificationClaudeManifest, claudeEntries],
-  ['.agents', verificationCodexManifest, codexEntries],
-]) {
-  if (manifest?.name !== 'verification-skills') fail(`plugins/verification-skills ${label} manifest name must be verification-skills`);
-  if (manifest?.hooks !== undefined) fail(`plugins/verification-skills ${label} manifest must not declare hooks; its skills are invoke-only`);
-  if (normalizeSource(manifest?.skills) !== './skills') fail(`plugins/verification-skills ${label} manifest skills must point at ./skills/`);
-  const entry = entries.find((candidate) => candidate.name === 'verification-skills');
-  if (!entry) fail(`${label} marketplace must register verification-skills`);
-  else if (entry.version !== manifest?.version) {
-    fail(`verification-skills version must match between the ${label} marketplace and its manifest (${entry.version} !== ${manifest?.version})`);
-  }
-}
-if (verificationClaudeManifest?.version !== verificationCodexManifest?.version) {
-  fail(
-    `verification-skills Claude and Codex manifests must share one version (${verificationClaudeManifest?.version} !== ${verificationCodexManifest?.version})`,
-  );
-}
-for (const file of [
-  'skills/create-verification-skill/references/stacks.md',
-  'skills/create-verification-skill/references/binding.md',
-  'skills/create-verification-skill/references/feature-map-example/README.md',
-]) {
-  if (!exists(`plugins/verification-skills/${file}`)) fail(`plugins/verification-skills must ship ${file}`);
-}
-const VERIFY_BINDING = 'plugins/verification-skills/skills/create-verification-skill/references/binding.md';
-const VERIFY_BINDING_RULE_MARKERS = [
-  '/workspace/workgroup',
-  '~/.agents/skills',
-  'user:token@',
-  'fails if the',
-  'two hours',
-  'fleet-only',
-  'PROMOTED',
-  'mkdir -p',
-];
-requireTextTokens(VERIFY_BINDING, VERIFY_BINDING_RULE_MARKERS, 'the one statement of the verify-skill placement, binding, evidence, lock and publishing rules');
-for (const skill of ['create-verification-skill', 'maintain-verification-skill']) {
-  const skillMd = readText(`plugins/verification-skills/skills/${skill}/SKILL.md`);
-  if (skillMd === undefined) continue;
-  if (!skillMd.includes('references/binding.md')) fail(`plugins/verification-skills/skills/${skill}/SKILL.md must cite references/binding.md`);
-  for (const marker of VERIFY_BINDING_RULE_MARKERS) {
-    if (skillMd.includes(marker)) {
-      fail(`plugins/verification-skills/skills/${skill}/SKILL.md restates a binding.md rule (${JSON.stringify(marker)}); cite references/binding.md instead`);
-    }
-  }
-}
-for (const skill of ['create-verification-skill', 'maintain-verification-skill']) {
-  const skillMd = readText(`plugins/verification-skills/skills/${skill}/SKILL.md`);
-  if (skillMd !== undefined && !new RegExp(`^---\\n(?:(?!---)[^\\n]*\\n)*?name: ${skill}\\n`).test(skillMd)) {
-    fail(`plugins/verification-skills/skills/${skill}/SKILL.md must open with frontmatter naming ${skill}`);
-  }
-}
-for (const activationPath of ['plugins/verification-skills/hooks', 'plugins/verification-skills/always-on.md']) {
-  if (exists(activationPath)) fail(`${activationPath} must not exist; verification-skills is invoke-only`);
 }
 
 // Codex does not expand ${CLAUDE_PLUGIN_ROOT}, so comment-rule ships a separate Codex hook file.
@@ -821,11 +760,11 @@ if (codexManifest?.version !== '2.14.0') {
   fail(`bootstrap-workflow-agents release must be version 2.14.0 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
-if (orchestrateClaudeManifest?.version !== '3.3.0') {
-  fail(`bootstrap-orchestrate release must be version 3.3.0 (found ${orchestrateClaudeManifest?.version})`);
+if (orchestrateClaudeManifest?.version !== '3.3.1') {
+  fail(`bootstrap-orchestrate release must be version 3.3.1 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '3.3.0') {
-  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.3.0 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '3.3.1') {
+  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.3.1 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -852,9 +791,10 @@ for (const unexpectedDir of ['commands']) {
 // twin an install hook copied into the user's home.
 //
 // What ships instead is five EFFORT SHIMS. They carry no instructions and name
-// no model: `model: inherit` means the dispatch picks the model and the shim
-// only pins the effort, which is the one thing a Claude Agent call cannot pass
-// per-call. So the assertion is the absence of a role: exactly five files, one
+// no model: `model: inherit` means the dispatch picks the model. Claude Code
+// does not apply their `effort` frontmatter, so a dispatch sets the level with
+// the Agent call's `effort` parameter and the shim name only labels it. So the
+// assertion is the absence of a role: exactly five files, one
 // per level, each with `model: inherit`. A shim that pinned a model, or a sixth
 // file with a behavioural body, would be a role wearing a shim's name.
 {
@@ -884,7 +824,7 @@ for (const unexpectedDir of ['commands']) {
       }
       const level = path.parse(name).name.replace(/^worker-/, '');
       if (!new RegExp(`^effort:\\s*${level}\\s*$`, 'm').test(text)) {
-        fail(`${dir}/${name} must declare \`effort: ${level}\`; the filename is the level it pins`);
+        fail(`${dir}/${name} must declare \`effort: ${level}\`; the filename is the level it names`);
       }
     }
   }
@@ -1366,7 +1306,6 @@ checkSkillMarkdownLinks(orchestrateSkillsRoot);
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/wwbd/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/concise/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/test-audit/skills'));
-checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/verification-skills/skills'));
 checkSkillMarkdownLinks(path.join(repoRoot, 'plugins/slack-humanizer/skills'));
 checkSkillMarkdownLinks(claudeSkillsRoot);
 
