@@ -63,7 +63,6 @@ export interface ResolvedCommand {
     chdir?: string;             // working directory set by an `env -C/--chdir` wrapper
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
-    end?: number;               // source offset just past the command, with the same provenance as `pos`
     stdinTexts?: string[];      // heredoc and here-string text fed to this command
     stdinExpanded?: string[];   // the part of stdinTexts bash expands variables in (not a quoted heredoc or '…' here-string)
     stdinFiles?: string[];      // files redirected into this command with `<`
@@ -2246,7 +2245,6 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         ...(chdir !== undefined ? { chdir } : {}),
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
-        ...(typeof node.end === 'number' ? { end: node.end } : {}),
         ...(stdinTexts.length ? { stdinTexts } : {}),
         ...(stdinExpanded.length ? { stdinExpanded } : {}),
         ...(stdinFiles.length ? { stdinFiles } : {}),
