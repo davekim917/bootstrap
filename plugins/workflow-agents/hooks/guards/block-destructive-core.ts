@@ -3707,8 +3707,8 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
         const name = (n.name as { text?: string } | undefined)?.text;
         if (!(n.prefix ?? []).every(assignmentSafe)) return false;
         const args = (n.suffix ?? []).map(w => String(w?.text ?? ''));
-        // `printf -v NAME` assigns NAME.
-        if (name === 'printf' && args.some(a => /^-[a-zA-Z]*v/.test(a))) return false;
+        // printf assigns with `-v`, so its first word must be plain text that can't become an option.
+        if (name === 'printf' && (/[$`{*?[]/.test(args[0] ?? '') || /^-/.test((args[0] ?? '').replace(/['"\\]/g, '')))) return false;
         const neutralName = name === undefined
             || (/^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || NEUTRAL_BUILTINS.has(name)));
         return neutralName && args.every(assignsNothing);

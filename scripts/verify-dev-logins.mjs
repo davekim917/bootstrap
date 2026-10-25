@@ -54,8 +54,13 @@ export function writeGrantsOutside(grants, databases) {
     const db = databaseOf(on, g.name);
     // Snowflake's own database: its procedures run with the caller's rights or need schema access the role lacks.
     if (db === 'SNOWFLAKE' && on !== 'DATABASE') continue;
+    // These run with their owner's rights or reach storage outside the account, so a database name proves nothing.
+    if (privilege === 'USAGE' && USAGE_CAN_WRITE.has(on) && !g.ownerWalked) {
+      problems.push(`${privilege} on ${on} ${g.name}`);
+      continue;
+    }
     if (db !== null && dev.has(db)) continue;
-    if (db !== null && READ_PRIVILEGES.has(privilege) && !(privilege === 'USAGE' && USAGE_CAN_WRITE.has(on))) continue;
+    if (db !== null && READ_PRIVILEGES.has(privilege)) continue;
     problems.push(`${privilege} on ${on} ${g.name}`);
   }
   return problems;
@@ -77,14 +82,22 @@ function snowRows(connection, sql) {
 export function collectGrants(user, rows) {
   const seen = new Set();
   const grants = [];
-  const queue = [...rows(`show grants to user ${quoteIdent(user)}`).map(r => ({ kind: 'ROLE', name: r.role })), { kind: 'ROLE', name: 'PUBLIC' }];
+  const queue = [{ kind: 'ROLE', name: 'PUBLIC' }];
+  // A user holds roles and may also hold privileges granted to it directly, which carry no role.
+  const userGrants = name => {
+    for (const r of rows(`show grants to user ${quoteIdent(name)}`)) {
+      if (r.role) queue.push({ kind: 'ROLE', name: r.role });
+      else grants.push(r);
+    }
+  };
+  userGrants(user);
   while (queue.length) {
     const { kind, name } = queue.shift();
-    const key = `${kind}:${String(name).toUpperCase()}`;
+    const key = `${kind}:${name}`;
     if (seen.has(key)) continue;
     seen.add(key);
     if (kind === 'USER') {
-      for (const r of rows(`show grants to user ${quoteIdent(name)}`)) queue.push({ kind: 'ROLE', name: r.role });
+      userGrants(name);
       continue;
     }
     const sql = kind === 'ROLE' ? `show grants to role ${quoteIdent(name)}` : `show grants to database role ${quoteIdent(name)}`;
@@ -93,6 +106,22 @@ export function collectGrants(user, rows) {
       const privilege = String(g.privilege).toUpperCase();
       if ((on === 'ROLE' || on === 'DATABASE_ROLE') && (privilege === 'USAGE' || privilege === 'OWNERSHIP')) queue.push({ kind: on, name: g.name });
       else if (on === 'USER' && privilege === 'OWNERSHIP') queue.push({ kind: 'USER', name: g.name });
+      else if (on === 'PROCEDURE' && privilege === 'USAGE' && !/^"?SNOWFLAKE"?\./i.test(g.name)) {
+        // A procedure that runs with its owner's rights lets the caller act as that owner, so its owner is walked too.
+        // SHOW GRANTS writes an optional argument as `DEFAULT TYPE`; DESCRIBE and SHOW GRANTS ON take the bare type.
+        const signature = String(g.name).replace(/\bDEFAULT\s+/g, '');
+        const executeAs = rows(`describe procedure ${signature}`).find(r => String(r.property).toLowerCase() === 'execute as')?.value;
+        if (executeAs === 'OWNER') {
+          const owner = rows(`show grants on procedure ${signature}`).find(r => String(r.privilege).toUpperCase() === 'OWNERSHIP');
+          if (!owner) throw new Error(`no owner found for procedure ${g.name}`);
+          queue.push({ kind: owner.granted_to === 'DATABASE_ROLE' ? 'DATABASE_ROLE' : 'ROLE', name: owner.grantee_name });
+          grants.push({ ...g, ownerWalked: true });
+          continue;
+        }
+        if (executeAs !== 'CALLER' && executeAs !== 'RESTRICTED CALLER') throw new Error(`unknown execute-as for procedure ${g.name}: ${executeAs}`);
+        grants.push({ ...g, ownerWalked: true });
+        continue;
+      }
       grants.push(g);
     }
   }

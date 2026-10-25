@@ -24,7 +24,6 @@ test('writes inside the dev databases and reads anywhere pass', () => {
     g('OWNERSHIP', 'ROLE', 'OWNED_ROLE'),
     g('OWNERSHIP', 'USER', 'HELPER_USER'),
     g('OPERATE', 'WAREHOUSE', 'PROD_WH'),
-    g('USAGE', 'STAGE', 'DEV_DB.S.EXT'),
   ], ['dev_db']), []);
 });
 
@@ -46,8 +45,10 @@ test('any write outside the dev databases fails', () => {
     g('USAGE', 'INTEGRATION', 'S3_INT'),
     g('USAGE', 'STAGE', 'PROD_DB.S.EXT'),
     g('USAGE', 'SERVICE', 'PROD_DB.S.SVC'),
+    g('USAGE', 'PROCEDURE', 'DEV_DB.S.RUNS_AS_OWNER()'),
+    g('USAGE', 'STAGE', 'DEV_DB.S.EXT'),
   ], ['DEV_DB']);
-  assert.equal(problems.length, 16);
+  assert.equal(problems.length, 18);
 });
 
 test('the walk covers PUBLIC, inherited roles, database roles and users the login owns', () => {
@@ -97,4 +98,29 @@ test('a dev-only login passes', () => {
     throw new Error(`unexpected ${sql}`);
   };
   assert.equal(verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A' } }, rows), null);
+});
+
+test('roles differing only in case are both walked, and privileges granted to the user directly are kept', () => {
+  const grants = {
+    'show grants to user "AGENT"': [{ role: 'READER' }, { role: 'reader' }, g('INSERT', 'TABLE', 'PROD_DB.S.DIRECT')],
+    'show grants to role "READER"': [g('SELECT', 'TABLE', 'PROD_DB.S.T')],
+    'show grants to role "reader"': [g('DELETE', 'TABLE', 'PROD_DB.S.FROM_QUOTED')],
+    'show grants to role "PUBLIC"': [],
+  };
+  const all = collectGrants('AGENT', sql => grants[sql] ?? assert.fail(`unexpected ${sql}`));
+  assert.deepEqual(writeGrantsOutside(all, ['DEV_DB']).sort(), ['DELETE on TABLE PROD_DB.S.FROM_QUOTED', 'INSERT on TABLE PROD_DB.S.DIRECT']);
+});
+
+test('a procedure that runs with its owner\'s rights walks its owner; one that runs as the caller passes', () => {
+  const grants = {
+    'show grants to user "AGENT"': [{ role: 'DEV_ROLE' }],
+    'show grants to role "DEV_ROLE"': [g('USAGE', 'PROCEDURE', 'DEV_DB.S.AS_OWNER(VARCHAR)'), g('USAGE', 'PROCEDURE', 'DEV_DB.S.AS_CALLER(VARCHAR, DEFAULT BOOLEAN)')],
+    'describe procedure DEV_DB.S.AS_OWNER(VARCHAR)': [{ property: 'execute as', value: 'OWNER' }],
+    'show grants on procedure DEV_DB.S.AS_OWNER(VARCHAR)': [{ privilege: 'OWNERSHIP', granted_to: 'ROLE', grantee_name: 'PROD_WRITER' }],
+    'show grants to role "PROD_WRITER"': [g('DELETE', 'TABLE', 'PROD_DB.S.T')],
+    'describe procedure DEV_DB.S.AS_CALLER(VARCHAR, BOOLEAN)': [{ property: 'execute as', value: 'CALLER' }],
+    'show grants to role "PUBLIC"': [],
+  };
+  const all = collectGrants('AGENT', sql => grants[sql] ?? assert.fail(`unexpected ${sql}`));
+  assert.deepEqual(writeGrantsOutside(all, ['DEV_DB']), ['DELETE on TABLE PROD_DB.S.T']);
 });
