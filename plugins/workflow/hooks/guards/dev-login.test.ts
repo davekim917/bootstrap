@@ -79,6 +79,8 @@ describe('a verified dev login runs any SQL without a card', () => {
         ['templating', `snow sql -c acme_dev -q '<% ctx.env.q %>' --env 'q=drop table t'`],
         ['after a cd', 'cd /tmp && snow sql -c acme_dev -q "truncate table s.t"'],
         ['under timeout', 'timeout 60 snow sql -c acme_dev -q "drop schema s"'],
+        ['a shell variable the environment does not hold', 'S=dev_db.scratch; snow sql -c acme_dev -q "drop table $S.t"'],
+        ['a loop over a shell variable', 'for i in 1 2; do snow sql -c acme_dev -q "drop table t$i"; done'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -105,6 +107,13 @@ describe('anything that could point the command at another login keeps the card'
         ['the admin connection', 'snow sql -c acme_admin -q "drop table t"'],
         ['SNOWFLAKE_HOME on the command', 'SNOWFLAKE_HOME=/tmp/sf snow sql -c acme_dev -q "drop table t"'],
         ['HOME set on the line', 'HOME=/tmp/h; snow sql -c acme_dev -q "drop table t"'],
+        ['PATH set on the line', 'PATH=/tmp/bin; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop over PATH', 'for PATH in /tmp/bin; do snow sql -c acme_dev -q "drop table t"; done'],
+        ['a HOME default', 'echo ${HOME:=/tmp/h}; snow sql -c acme_dev -q "drop table t"'],
+        ['arithmetic', '(( HOME = 1 )); snow sql -c acme_dev -q "drop table t"'],
+        ['an arithmetic expansion', 'n=$((HOME=1)); snow sql -c acme_dev -q "drop table t"'],
+        ['the admin connection in a shell variable', 'C=acme_admin; snow sql -c $C -q "drop table t"'],
+        ['even the dev connection in a shell variable', 'C=acme_dev; snow sql -c $C -q "drop table t"'],
         ['an exported variable', 'export SNOWFLAKE_CONNECTIONS_ACME_DEV_USER=ADMIN_USER; snow sql -c acme_dev -q "drop table t"'],
         ['a function named snow', 'snow() { command snow sql -c acme_admin -q "$5"; }; snow sql -c acme_dev -q "drop table t"'],
     ])('%s', (_name, command) => {

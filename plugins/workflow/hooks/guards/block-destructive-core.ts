@@ -3559,6 +3559,34 @@ function changesShellState(command: string): boolean {
     }
 }
 
+/**
+ * True when the command line may change what a child process inherits: it assigns a variable already in the
+ * environment (by assignment word, loop or a `${name:=value}` default), runs arithmetic, which can assign any name,
+ * defines a function, or can't be parsed to tell. A variable the environment doesn't hold stays in the shell.
+ */
+function changesExportedState(command: string): boolean {
+    const exported = (name: unknown) => typeof name !== 'string' || name in process.env;
+    const found = (node: unknown): boolean => {
+        if (!node || typeof node !== 'object') return false;
+        if (Array.isArray(node)) return node.some(found);
+        const n = node as { type?: unknown; name?: unknown };
+        if (n.type === 'Function' || n.type === 'ArithmeticCommand' || n.type === 'ArithmeticFor') return true;
+        if (n.type === 'Assignment' && exported(n.name)) return true;
+        if ((n.type === 'For' || n.type === 'Select') && exported((n.name as { value?: unknown } | undefined)?.value)) return true;
+        return Object.values(node).some(found);
+    };
+    if (/\$\(\(/.test(command)) return true;
+    for (const m of command.matchAll(/\$\{([^}]*?)=/g)) {
+        const name = m[1].match(/^#?([A-Za-z_]\w*)/)?.[1];
+        if (!name || exported(name)) return true;
+    }
+    try {
+        return found(parseShell(command));
+    } catch {
+        return true;
+    }
+}
+
 /** Snowflake folds an unquoted identifier to upper case and keeps a quoted one as written. */
 function snowflakeIdentifier(part: string): string | null {
     const quoted = part.match(/^"((?:[^"]|"")+)"$/);
@@ -3686,13 +3714,15 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
-    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c)) || changesShellState(command)) return null;
+    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c))) return null;
 
+    // The login does not depend on the SQL, so a shell variable the line sets only matters if snow can see it.
     const trusted = trustedLoginConnection(cmd);
     const trustedEntry = trusted === null ? undefined : scope.snowflake.find(e => e.connection === trusted);
-    if (trustedEntry && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
+    if (trustedEntry && !changesExportedState(command) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
         return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
     }
+    if (changesShellState(command)) return null;
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {
