@@ -174,7 +174,9 @@ function argumentWords(cmd: ResolvedCommand, joinSplit = false): ExpandableWord[
     if (cmd.pos === undefined || !script || !cmd.args.some(a => /[$`]/.test(a))) return [];
     if (cmd.argsAreValues) return cmd.args.map(a => ({ ...heredocWord(a), joinSplit }));
     script.view ??= viewShell(script.command);
-    const texts = script.view.commandAt(cmd.pos)?.argTexts;
+    // Brace expansion turns one written word into several arguments, so the written words are expanded the same way.
+    const texts = script.view.commandAt(cmd.pos)?.argTexts
+        ?.flatMap(t => (t.includes('{') ? braceExpand(t)?.filter(w => w !== '') ?? [t] : [t]));
     if (!texts || texts.length < cmd.args.length) return [];
     return texts.slice(texts.length - cmd.args.length).map((word, i) => ({ word, plain: cmd.args[i], joinSplit }));
 }
@@ -2243,6 +2245,7 @@ function braceExpand(text: string): string[] | null {
                 const numeric = m && /\d/.test(m[1]) && /\d/.test(m[2]);
                 if (m && (numeric || (/^[A-Za-z]$/.test(m[1]) && /^[A-Za-z]$/.test(m[2])))) {
                     const a = numeric ? Number(m[1]) : m[1].charCodeAt(0), b = numeric ? Number(m[2]) : m[2].charCodeAt(0);
+                    if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b) || !Number.isSafeInteger(Number(m[3] ?? 1))) return false;
                     const step = Math.abs(Number(m[3] ?? 1)) || 1;
                     if (Math.abs(b - a) / step >= BRACE_EXPANSION_MAX) return false;
                     const width = numeric && /^-?0\d/.test(m[1] + ' ' + m[2]) ? Math.max(m[1].length, m[2].length) : 0;

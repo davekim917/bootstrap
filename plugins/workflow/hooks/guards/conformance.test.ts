@@ -37,6 +37,7 @@ const BASH_BLOCK = [
   'rm -rf /{e,}tc',
   // Past the expansion cap the guard can't follow it, so it is refused.
   'rm -rf x{1..2000}{,/etc}',
+  'echo {9007199254740992..9007199254740993}',
   // A backslash in the command name is removed by bash before lookup (`\\rm` skips an alias).
   '\\rm -rf ~',
   'r\\m -rf ~',
@@ -114,6 +115,7 @@ const BASH_GATE = [
   'git push origin {main,--force}',
   "psql -h db.example -c {'drop table t',x}",
   "snow sql -c prod -q {'drop table t',x}",
+  `sql='DROP TABLE t'; psql -h db.example -c "$sql" -v x{1,2}=1`,
   '\\git push --force origin main',
   'sudo --login git push --force origin main',
   '\\psql -c "DROP TABLE x"',
