@@ -3669,7 +3669,7 @@ const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
 // any other command is a child process.
 const BASH_BUILTINS = new Set(['.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait']);
 // The builtins that assign no variable and change no lookup (`hash -p` repoints a command, so it is not here).
-const NEUTRAL_BUILTINS = new Set(['cd', 'pushd', 'popd', 'dirs', 'echo', 'printf', 'pwd', 'test', '[', 'true', 'false', ':', 'umask', 'type', 'times', 'jobs', 'help']);
+const NEUTRAL_BUILTINS = new Set(['cd', 'true', ':']);
 
 /**
  * True when a word expands nothing that can assign: only `$NAME`, `${NAME}`, command substitutions (a subshell) and
@@ -3693,8 +3693,11 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
     } catch {
         return false;
     }
-    const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => String(w?.text ?? ''));
-    const assignmentSafe = (a: Node) => a.type === 'Assignment' && typeof a.name === 'string' && a.index === undefined
+    type Redirect = { target?: { text?: string }; content?: string };
+    // Redirect targets and here-document bodies are expanded by this shell too.
+    const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => String(w?.text ?? ''))
+        .concat(((n as { redirects?: Redirect[] }).redirects ?? []).flatMap(r => [String(r.target?.text ?? ''), String(r.content ?? '')]));
+    const assignmentSafe = (a: Node) => a.type === 'Assignment' && typeof a.name === 'string' && a.index === undefined && (a as { array?: unknown }).array === undefined
         && !(a.name in process.env) && !SNOW_ENVIRONMENT_NAME.test(a.name) && assignsNothing(String(a.text ?? ''));
     const neutral = (n: Node): boolean => {
         if (n.type === 'Pipeline') return (n.commands?.length ?? 0) > 1;
@@ -3702,12 +3705,9 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
         if (n.type !== 'Command') return false;
         const name = (n.name as { text?: string } | undefined)?.text;
         if (!(n.prefix ?? []).every(assignmentSafe)) return false;
-        const args = (n.suffix ?? []).map(w => String(w?.text ?? ''));
-        // printf assigns with `-v`, so its first word must be plain text that can't become an option.
-        if (name === 'printf' && (/[$`{*?[]/.test(args[0] ?? '') || /^-/.test((args[0] ?? '').replace(/['"\\]/g, '')))) return false;
         const neutralName = name === undefined
             || (/^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || NEUTRAL_BUILTINS.has(name)));
-        return neutralName && args.every(assignsNothing);
+        return neutralName && words(n).every(assignsNothing);
     };
     const holds = (n: Node) => typeof n.pos === 'number' && typeof n.end === 'number' && n.pos <= step.pos! && step.pos! < n.end;
     // The step itself, or a stage of a pipeline, reached through `&&`/`||` lists whose earlier members are neutral.

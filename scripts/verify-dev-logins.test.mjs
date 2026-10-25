@@ -124,3 +124,16 @@ test('a procedure that runs with its owner\'s rights walks its owner; one that r
   const all = collectGrants('AGENT', sql => grants[sql] ?? assert.fail(`unexpected ${sql}`));
   assert.deepEqual(writeGrantsOutside(all, ['DEV_DB']), ['DELETE on TABLE PROD_DB.S.T']);
 });
+
+test('the grants read are the signed-in user\'s, not those of a configured spelling that names another user', () => {
+  const rows = sql => {
+    if (sql.startsWith('select current_user()')) return [{ U: 'AGENT', A: 'ORG-A' }];
+    if (sql === 'show grants to user "AGENT"') return [{ role: 'PROD_ROLE' }];
+    if (sql === 'show grants to user "agent"') return [{ role: 'DEV_ROLE' }];
+    if (sql === 'show grants to role "PROD_ROLE"') return [g('DELETE', 'TABLE', 'PROD_DB.S.T')];
+    if (sql === 'show grants to role "DEV_ROLE"') return [];
+    if (sql === 'show grants to role "PUBLIC"') return [];
+    throw new Error(`unexpected ${sql}`);
+  };
+  assert.match(verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'agent', account: 'ORG-A' } }, rows), /DELETE on TABLE PROD_DB\.S\.T/);
+});

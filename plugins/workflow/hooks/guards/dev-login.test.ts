@@ -79,7 +79,7 @@ describe('a verified dev login runs any SQL without a card', () => {
     test.each([
         ['a prod drop, which the login cannot do', 'snow sql -c acme_dev -q "drop table prod_db.s.t"'],
         ['a file it reads', 'snow sql -c acme_dev -f /tmp/dev-login-never-written.sql'],
-        ['a file written on the line', `printf 'drop table t;' > /tmp/q.sql; snow sql -c acme_dev -f /tmp/q.sql`],
+        ['a file written on the line', `python3 gen.py > /tmp/q.sql; snow sql -c acme_dev -f /tmp/q.sql`],
         ['a role and database of its own choosing', 'snow sql --connection=acme_dev --role OTHER --database prod_db -q "delete from s.t"'],
         ['templating', `snow sql -c acme_dev -q '<% ctx.env.q %>' --env 'q=drop table t'`],
         ['after a cd', 'cd /tmp && snow sql -c acme_dev -q "truncate table s.t"'],
@@ -87,10 +87,10 @@ describe('a verified dev login runs any SQL without a card', () => {
         ['commands after the step and beside it in a pipeline', 'snow sql -c acme_dev -q "drop table t" 2>&1 | python3 -c "import sys"; HOME=/x; echo done'],
         ['a pipeline before the step', 'cat a | grep b; snow sql -c acme_dev -q "drop table t"'],
         ['external programs before the step', `sed -i 's/a/b/' /tmp/q.sql && python3 gen.py; timeout 60 snow sql -c acme_dev -f /tmp/q.sql`],
-        ['PATH named on the line', 'echo $PATH; snow sql -c acme_dev -q "drop table t"'],
+        ['PATH named on the line', 'ls $PATH; snow sql -c acme_dev -q "drop table t"'],
         ['HOME read on the line', 'cd $HOME/work && snow sql -c acme_dev -q "drop table t"'],
         ['a steering name inside the SQL itself', `snow sql -c acme_dev -q "select 'PATH', home_dir from s.t"`],
-        ['a file under HOME', 'snow sql -c acme_dev -f $HOME/q.sql'],
+        ['a file under HOME', 'snow sql -c acme_dev -f "$HOME/q.sql"'],
         ['a shell variable the environment does not hold', 'S=dev_db.scratch; snow sql -c acme_dev -q "drop table $S.t"'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
@@ -131,6 +131,11 @@ describe('anything that could point the command at another login keeps the card'
         ['an indexed assignment', 'a[HOME=1]=x; snow sql -c acme_dev -q "drop table t"'],
         ['arithmetic in the step itself', 'snow sql -c acme_dev -q "drop table t$((HOME=1))"'],
         ['printf -v', `printf -v X '%s' 1; snow sql -c acme_dev -q "drop table t"`],
+        ['a builtin other than cd before the step', `echo hi; snow sql -c acme_dev -q "drop table t"`],
+        ['test -v with an array subscript', `test -v 'a[HOME=1]'; snow sql -c acme_dev -q "drop table t"`],
+        ['jobs -x running a command', `jobs -x export HOME=/tmp/other; snow sql -c acme_dev -q "drop table t"`],
+        ['arithmetic in a redirect', `ls > $((HOME=1)); snow sql -c acme_dev -q "drop table t"`],
+        ['arithmetic in an array assignment', `a=( $((HOME=1)) ); snow sql -c acme_dev -q "drop table t"`],
         ['printf with an option held in a variable', `OPT=-v; printf "$OPT" HOME /tmp/other; snow sql -c acme_dev -q "drop table t"`],
         ['printf with a quoted option', `printf '-v' HOME /tmp/other; snow sql -c acme_dev -q "drop table t"`],
         ['printf with an escaped option', `printf \\-v HOME /tmp/other; snow sql -c acme_dev -q "drop table t"`],

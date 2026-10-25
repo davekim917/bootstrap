@@ -133,7 +133,8 @@ export function verifyEntry(entry, rows) {
   const me = rows("select current_user() as U, current_organization_name() || '-' || current_account_name() as A")[0] ?? {};
   if (String(me.U).toUpperCase() !== entry.login.user.toUpperCase()) return `connection signs in as ${me.U}, not ${entry.login.user}`;
   if (String(me.A).toUpperCase() !== entry.login.account.toUpperCase()) return `connection signs in to ${me.A}, not ${entry.login.account}`;
-  const problems = writeGrantsOutside(collectGrants(entry.login.user, rows), entry.databases);
+  // The grants walked are the signed-in user's, as Snowflake names it, never the configured spelling.
+  const problems = writeGrantsOutside(collectGrants(String(me.U), rows), entry.databases);
   if (process.env.VERIFY_DEV_LOGINS_VERBOSE) for (const p of problems) console.error(`  ${entry.connection}: ${p}`);
   return problems.length ? `can write outside ${entry.databases.join('/')}: ${problems.slice(0, 5).join('; ')}${problems.length > 5 ? ` (+${problems.length - 5} more)` : ''}` : null;
 }
