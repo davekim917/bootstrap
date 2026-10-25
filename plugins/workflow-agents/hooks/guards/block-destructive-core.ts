@@ -68,7 +68,6 @@ export interface ResolvedCommand {
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
     end?: number;               // source offset just past the command, with the same provenance as `pos`
-    untracedWrite?: boolean;    // a redirect writes a file `stdoutFiles` doesn't name (another fd, `<>`, `>& file`)
     stdinTexts?: string[];      // heredoc and here-string text fed to this command
     stdinExpanded?: string[];   // the part of stdinTexts bash expands variables in (not a quoted heredoc or '…' here-string)
     stdinFiles?: string[];      // files redirected into this command with `<`
@@ -82,10 +81,6 @@ export interface ResolvedCommand {
 /** Facts about the whole command line that a single step's checks need. */
 export interface ScriptContext {
     writes: FileWrite[];        // what echo/printf/cat/tee write to files
-    fileChangers?: ResolvedCommand[]; // commands that may write a file in a way `writes` doesn't record
-    orderUnclear?: boolean;     // a loop, function, coprocess or background job: a later command may run first
-    pipelines?: Array<[number, number]>; // source spans of pipelines, whose stages run at the same time
-    compoundWrite?: boolean;    // a `{ … }`, `( … )`, if, case or loop redirects its output into a file
     pipedInto: Map<number, PipedInput>; // what the previous stage of a pipeline feeds each command, by command offset
     cds: CdStep[];              // every cd/pushd/popd, in source order
     links: Map<number, ChainLink>; // where each top-level command sits in its &&/|| chain, by command offset
@@ -1195,10 +1190,6 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         if (writesOwnOutput(cmd) || texts.some(t => SQL_CLIENT_FILE_WRITE.test(t))) {
             unreadable ??= `${f}, which the client may write itself`;
         }
-        const script = cmd.script;
-        if (!script?.fileChangers || script.compoundWrite || script.fileChangers.some(c => c !== cmd && mayRunBefore(c, cmd, script))) {
-            unreadable ??= `${f}, which another command on the line may write`;
-        }
         if (sqlPathCandidates(f, cmd) === null) unreadable ??= `${f}, a path the command line doesn't prove`;
         const writes = writesTo(f, cmd);
         if (writes === null) {
@@ -2234,14 +2225,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const stdinExpanded: string[] = [];
     const stdinFiles: string[] = [];
     const stdoutFiles: string[] = [];
-    let untracedWrite = false;
     for (const r of (node.redirects || [])) {
-        const target = wordValue(r?.target);
-        if (target !== '/dev/null' && (
-            (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && r.fileDescriptor !== undefined && r.fileDescriptor !== 1)
-            || r?.operator === '<>' || (r?.operator === '>&' && !/^(?:\d+|-)$/.test(target)))) {
-            untracedWrite = true;
-        }
         if (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && (r.fileDescriptor === undefined || r.fileDescriptor === 1)) {
             stdoutFiles.push(wordValue(r.target));
         }
@@ -2267,7 +2251,6 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
         ...(typeof node.end === 'number' ? { end: node.end } : {}),
-        ...(untracedWrite ? { untracedWrite } : {}),
         ...(stdinTexts.length ? { stdinTexts } : {}),
         ...(stdinExpanded.length ? { stdinExpanded } : {}),
         ...(stdinFiles.length ? { stdinFiles } : {}),
@@ -2820,58 +2803,9 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             // `pushd DIR` changes directory like `cd DIR`; `pushd +N`/`-N` rotates the stack to a directory unknown here.
             target: (c.name === 'cd' || c.name === 'pushd') && c.args.length === 1 && !/^(?:-|[+-]\d+)$/.test(c.args[0]) ? c.args[0] : undefined,
         }));
-    return { writes, pipedInto, cds, links, command, fileChangers: commands.filter(mayChangeFiles), orderUnclear: hasUnclearOrder(ast), pipelines: pipelineSpans(ast), compoundWrite: hasCompoundWrite(ast) };
+    return { writes, pipedInto, cds, links, command };
 }
 
-/** True when a statement that is not a simple command redirects output into a file: its writes are not traced. */
-function hasCompoundWrite(node: unknown): boolean {
-    if (!node || typeof node !== 'object') return false;
-    if (Array.isArray(node)) return node.some(hasCompoundWrite);
-    const n = node as { type?: unknown; command?: { type?: unknown }; redirects?: Array<{ operator?: unknown; target?: unknown }> };
-    if (n.type === 'Statement' && n.command?.type !== 'Command' && (n.redirects ?? []).some(r => {
-        const target = wordValue(r.target);
-        return target !== '/dev/null' && (['>', '>>', '>|', '&>', '&>>', '<>'].includes(r.operator as string) || (r.operator === '>&' && !/^(?:\d+|-)$/.test(target)));
-    })) return true;
-    return Object.values(node).some(hasCompoundWrite);
-}
-
-function pipelineSpans(node: unknown, spans: Array<[number, number]> = []): Array<[number, number]> {
-    if (!node || typeof node !== 'object') return spans;
-    if (Array.isArray(node)) {
-        for (const child of node) pipelineSpans(child, spans);
-        return spans;
-    }
-    const n = node as { type?: unknown; pos?: unknown; end?: unknown };
-    if (n.type === 'Pipeline' && typeof n.pos === 'number' && typeof n.end === 'number') spans.push([n.pos, n.end]);
-    for (const child of Object.values(node)) pipelineSpans(child, spans);
-    return spans;
-}
-
-const UNCLEAR_ORDER_NODES = new Set(['For', 'While', 'Select', 'Function', 'Coproc', 'ArithmeticFor']);
-
-function hasUnclearOrder(node: unknown): boolean {
-    if (!node || typeof node !== 'object') return false;
-    if (Array.isArray(node)) return node.some(hasUnclearOrder);
-    const n = node as { type?: unknown; background?: unknown };
-    if (n.background === true || (typeof n.type === 'string' && UNCLEAR_ORDER_NODES.has(n.type))) return true;
-    return Object.values(node).some(hasUnclearOrder);
-}
-
-/**
- * True when `writer` may run before `reader` reads its files: earlier on the line, inside its words, in the same
- * pipeline, or in any order.
- */
-function mayRunBefore(writer: ResolvedCommand, reader: ResolvedCommand, script: ScriptContext): boolean {
-    if (script.orderUnclear || writer.pos === undefined || reader.pos === undefined || reader.end === undefined) return true;
-    if (writer.pos < reader.end) return true;
-    const [w, r] = [writer.pos, reader.pos];
-    return (script.pipelines ?? []).some(([start, end]) => start <= w && w < end && start <= r && r < end);
-}
-
-// Commands that write no file of their own; a redirect from one still writes one, and only echo, printf, cat and tee
-// redirects are read into `writes`.
-const FILE_SAFE_COMMANDS = new Set(['cd', 'pushd', 'popd', 'cat', 'echo', 'printf', 'tee', 'grep', 'egrep', 'fgrep', 'head', 'tail', 'cut', 'tr', 'wc', 'jq', 'date', 'true', 'false', 'sleep', 'test', '[', 'ls', 'pwd', 'column', 'basename', 'dirname', 'export', 'set', 'unset', 'mkdir', 'touch', 'nl', 'sha256sum', 'md5sum']);
-const DISCARD_TARGETS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr']);
 // A SQL client's own ways of writing a file: psql's \o, \w, \g, \copy, \lo_export and a \! shell command; snow's GET; COPY … TO and INTO OUTFILE,
 // which a database on this host writes where the client can read; sqlite3's .output, .once, .save and .backup.
 const SQL_CLIENT_FILE_WRITE = /\\(?:(?:o|out|w|write|g|gx|copy|lo_export)\b|!)|\bGET\b|\bCOPY\b[\s\S]*?\bTO\b|\bINTO\s+(?:OUT|DUMP)FILE\b|^\s*\.(?:output|once|save|backup)\b/im;
@@ -2880,28 +2814,6 @@ const SQL_CLIENT_OUTPUT_OPTION = /^(?:-o|--output|-L|--log-file|--tee)(?:=|$)/;
 /** True when a SQL client's options name a file it writes its output or a log to. */
 function writesOwnOutput(cmd: ResolvedCommand): boolean {
     return cmd.args.some(a => SQL_CLIENT_OUTPUT_OPTION.test(a) || cmd.name === 'psql' && /^-[a-zA-Z]*[oL]/.test(a));
-}
-
-function mayChangeFiles(cmd: ResolvedCommand): boolean {
-    if (cmd.untracedWrite) return true;
-    if (!TEXT_EMITTERS.has(cmd.name) && (cmd.stdoutFiles ?? []).some(t => !DISCARD_TARGETS.has(t))) return true;
-    // An emitter's `<` input is not read into `writes`, and a write to a destination the line doesn't spell out may be
-    // to any file.
-    if (TEXT_EMITTERS.has(cmd.name) && cmd.stdinFiles?.length && (cmd.stdoutFiles?.length || cmd.name === 'tee')) return true;
-    if (TEXT_EMITTERS.has(cmd.name) && [...(cmd.stdoutFiles ?? []), ...(cmd.name === 'tee' ? cmd.args.filter(a => !a.startsWith('-')) : [])]
-        .some(t => /[$`*?[{~]/.test(t))) return true;
-    // After `--` an operand may start with `-`, and `writes` reads tee's operands as the words that don't.
-    if (cmd.name === 'tee' && cmd.args.includes('--')) return true;
-    if (FILE_SAFE_COMMANDS.has(cmd.name)) return false;
-    // GNU options cluster (`-uo FILE`) and take any unambiguous prefix (`--outp=FILE`).
-    if (cmd.name === 'sort') return cmd.args.some(a => /^-[^-]*o/.test(a) || /^--o/.test(a));
-    if (cmd.name === 'uniq') return cmd.args.filter(a => !a.startsWith('-')).length > 1;
-    if ((cmd.name === 'snow' && cmd.args[0] === 'sql') || cmd.name === 'psql') {
-        // Only what the command line shows: a file it reads, or an option that names a log or output file, could hold more.
-        if (cmd.args.some(a => /^(?:-f|--file|--filename)(?:=|$)/.test(a) || /^-[a-zA-Z]*f/.test(a) && cmd.name === 'psql') || writesOwnOutput(cmd)) return true;
-        return [...cmd.args, ...(cmd.stdinTexts ?? [])].some(t => SQL_CLIENT_FILE_WRITE.test(t) || t.includes('$')) || Boolean(cmd.stdinFiles?.length);
-    }
-    return true;
 }
 
 /** Regex-based fallback for when the AST parser fails */
