@@ -31,6 +31,12 @@ import { checkEditProtection } from './file-protection-core';
 // Hard-block (never allowed): file-deletion primitives, shell-wrapper bypass,
 // protected-path rm.
 const BASH_BLOCK = [
+  // Bash brace-expands a word before running it, the command name included.
+  'rm -rf {/etc,x}',
+  '{rm,-rf,/etc}',
+  'rm -rf /{e,}tc',
+  // Past the expansion cap the guard can't follow it, so it is refused.
+  'rm -rf x{1..2000}{,/etc}',
   // A backslash in the command name is removed by bash before lookup (`\\rm` skips an alias).
   '\\rm -rf ~',
   'r\\m -rf ~',
@@ -104,6 +110,10 @@ const BASH_BLOCK = [
 
 // Gated (require approval): destructive infra/DB/cloud/IaC/containers/dbt.
 const BASH_GATE = [
+  'git push --force{,}',
+  'git push origin {main,--force}',
+  "psql -h db.example -c {'drop table t',x}",
+  "snow sql -c prod -q {'drop table t',x}",
   '\\git push --force origin main',
   'sudo --login git push --force origin main',
   '\\psql -c "DROP TABLE x"',
@@ -140,7 +150,7 @@ const BASH_GATE = [
   'git submodule foreach git clean -fdx',
   "git submodule --quiet foreach 'git push --force origin main'",
   'git clean -n * -f',
-  'git clean -n {a,b} -f',
+  'git clean -n {--no-dry-run,a} -f',
   'git clean -n ./--no-dry-r[u]n -f',
   'git clean -f -e -npattern',
   'git clean -fe -n',
@@ -264,6 +274,8 @@ const BASH_GATE = [
 // lease-protected force pushes (the sanctioned recovery the MCP git_push tool
 // uses), plain pushes, local branch ops, and `git stash push -f` (not a push).
 const BASH_ALLOW = [
+  'mkdir -p src/{a,b}',
+  'git clean -n {a,b} -f',
   'ls -la',
   'xargs echo < list',
   'xargs -r git add < list',

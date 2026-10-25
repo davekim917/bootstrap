@@ -2201,6 +2201,75 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
     return { name, args, env, ...(chdir !== undefined ? { chdir } : {}) };
 }
 
+const BRACE_EXPANSION_MAX = 1024;
+
+/**
+ * The words bash makes of `text` by brace expansion (`{a,b}`, `{1..3}`, `x{a,b}y`, nested), still quoted; null when
+ * it would make more than BRACE_EXPANSION_MAX. Quoted, escaped and `${` braces are left alone, as bash leaves them.
+ */
+function braceExpand(text: string): string[] | null {
+    const out: string[] = [];
+    const walk = (s: string): boolean => {
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (c === '\\') { i++; continue; }
+            if (c === "'") { i = s.indexOf("'", i + 1); if (i < 0) break; continue; }
+            if (c === '"') { for (i++; i < s.length && s[i] !== '"'; i++) if (s[i] === '\\') i++; continue; }
+            if (c !== '{' || s[i - 1] === '$') continue;
+            const commas: number[] = [];
+            let depth = 0, end = -1;
+            for (let j = i + 1; j < s.length && end < 0; j++) {
+                const d = s[j];
+                if (d === '\\') { j++; continue; }
+                if (d === "'") { j = s.indexOf("'", j + 1); if (j < 0) break; continue; }
+                if (d === '"') { for (j++; j < s.length && s[j] !== '"'; j++) if (s[j] === '\\') j++; continue; }
+                if (d === '{' && s[j - 1] !== '$') depth++;
+                else if (d === '}') { if (depth === 0) end = j; else depth--; }
+                else if (d === ',' && depth === 0) commas.push(j);
+            }
+            if (end < 0) break;
+            const inner = s.slice(i + 1, end);
+            let alts: string[] | null = null;
+            if (commas.length) {
+                alts = [];
+                let from = i + 1;
+                for (const k of [...commas, end]) { alts.push(s.slice(from, k)); from = k + 1; }
+            } else {
+                const m = inner.match(/^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$/);
+                const numeric = m && /\d/.test(m[1]) && /\d/.test(m[2]);
+                if (m && (numeric || (/^[A-Za-z]$/.test(m[1]) && /^[A-Za-z]$/.test(m[2])))) {
+                    const a = numeric ? Number(m[1]) : m[1].charCodeAt(0), b = numeric ? Number(m[2]) : m[2].charCodeAt(0);
+                    const step = Math.abs(Number(m[3] ?? 1)) || 1;
+                    if (Math.abs(b - a) / step >= BRACE_EXPANSION_MAX) return false;
+                    const width = numeric && /^-?0\d/.test(m[1] + ' ' + m[2]) ? Math.max(m[1].length, m[2].length) : 0;
+                    alts = [];
+                    for (let v = a; a <= b ? v <= b : v >= b; v += a <= b ? step : -step) {
+                        alts.push(numeric ? (v < 0 ? '-' + String(-v).padStart(width - 1, '0') : String(v).padStart(width, '0')) : String.fromCharCode(v));
+                    }
+                }
+            }
+            if (!alts) continue;
+            const pre = s.slice(0, i), post = s.slice(end + 1);
+            for (const alt of alts) if (!walk(pre + alt + post)) return false;
+            return true;
+        }
+        out.push(s);
+        return out.length <= BRACE_EXPANSION_MAX;
+    };
+    return walk(text) ? out : null;
+}
+
+/** A word as the arguments bash passes for it: brace-expanded, then unquoted. Null when expansion is too large to follow. */
+function wordArgs(word: any): string[] | null {
+    // The parser marks only some brace expansions (not one holding quotes), so every word with a `{` is tried.
+    const text = String(word?.text ?? '');
+    if (!text.includes('{')) return [wordValue(word)];
+    const words = braceExpand(text);
+    if (words && words.length === 1 && words[0] === text) return [wordValue(word)];
+    // An unquoted empty alternative makes no word, as in bash; a quoted one (`''`) still does.
+    return words && words.filter(w => w !== '').map(w => shellUnquote(w));
+}
+
 /** Resolve a Command AST node: strip wrapper commands, extract name + args */
 export function resolveCommand(node: any): ResolvedCommand | null {
     if (!node.name) return null;
@@ -2208,7 +2277,12 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const env: string[] = (node.prefix || [])
         .filter((p: any) => p?.type === 'Assignment' && typeof p.name === 'string')
         .map((p: any) => `${p.name}=${p.value?.value ?? p.value?.text ?? ''}`);
-    const stripped = stripWrappers(node.name.value || '', (node.suffix || []).map(wordValue));
+    const expanded = [node.name, ...(node.suffix || [])].map(wordArgs);
+    // Bash runs what brace expansion makes, the command name included; past the cap it is refused the way eval is.
+    const blocked = expanded.some(w => w === null);
+    const words = blocked ? ['eval'] : (expanded as string[][]).flat();
+    const first = blocked || expanded[0]!.length !== 1 || expanded[0]![0] !== wordValue(node.name) ? words[0] ?? '' : node.name.value || '';
+    const stripped = stripWrappers(first, words.slice(1));
     const { name, args, chdir } = stripped;
     env.push(...stripped.env);
 
