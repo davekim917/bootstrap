@@ -3478,8 +3478,14 @@ export const DEV_SCOPE_FILE_ENV = 'BOOTSTRAP_DEV_SCOPE_FILE';
 const DEV_SCOPE_FILE = 'dev-scope.local.json';
 const SNOWFLAKE_NAME_RE = /^[A-Za-z0-9_.-]{1,128}$/;
 
+export interface DevLogin {
+    user: string;
+    account: string;
+    verifiedUntil?: string;
+}
+
 export interface DevScope {
-    snowflake: Array<{ connection: string; databases: string[] }>;
+    snowflake: Array<{ connection: string; databases: string[]; login?: DevLogin }>;
 }
 
 /** Parse a dev-scope file's text. Null when anything about it is unusable. */
@@ -3497,6 +3503,14 @@ export function parseDevScope(text: string): DevScope | null {
         if (!Array.isArray(e.databases) || e.databases.length === 0
             || !e.databases.every((d: unknown) => typeof d === 'string' && /^[A-Za-z_][A-Za-z0-9_$]{0,254}$/.test(d))) {
             return null;
+        }
+        if (e.login !== undefined) {
+            const l = e.login;
+            if (!l || typeof l !== 'object' || typeof l.user !== 'string' || !SNOWFLAKE_NAME_RE.test(l.user)
+                || typeof l.account !== 'string' || !SNOWFLAKE_NAME_RE.test(l.account)
+                || (l.verifiedUntil !== undefined && typeof l.verifiedUntil !== 'string')) {
+                return null;
+            }
         }
     }
     return { snowflake: entries as DevScope['snowflake'] };
@@ -3599,6 +3613,72 @@ function statementTarget(pattern: string, statement: string): { kind: string; pa
     return { kind: (m[1] || 'table').toLowerCase().replace(/\s+/g, ' '), parts: parts as string[] };
 }
 
+// Options a trusted dev login may carry: they choose the SQL, its defaults and output, never the account, user,
+// credentials or config.
+const TRUSTED_LOGIN_VALUE_FLAGS = new Set(['-c', '--connection', '-q', '--query', '-f', '--filename', '-D', '--variable', '--env', '--enable-templating', '--database', '--dbname', '--schema', '--schemaname', '--role', '--rolename', '--warehouse', '--format']);
+const TRUSTED_LOGIN_BARE_FLAGS = new Set(['-i', '--stdin', '--silent', '-v', '--verbose', '--debug', '--enhanced-exit-codes', '--retain-comments', '--single-transaction']);
+// A verification older than this is not trusted, whatever date it names.
+const DEV_LOGIN_MAX_HORIZON_MS = 3 * 24 * 60 * 60 * 1000;
+
+/** The `key = "value"` pairs of `[name]` in a TOML file's text, or null when the section is absent or repeated. */
+function tomlSection(text: string, name: string): Map<string, string> | null {
+    const headers = [...text.matchAll(/^\s*\[\s*("?)([^\]"]+)\1\s*\]\s*$/gm)];
+    const hits = headers.filter(h => h[2].trim() === name);
+    if (hits.length !== 1) return null;
+    const from = hits[0].index! + hits[0][0].length;
+    const next = headers.find(h => h.index! > hits[0].index!);
+    const body = text.slice(from, next ? next.index : undefined);
+    const pairs = new Map<string, string>();
+    for (const m of body.matchAll(/^\s*([A-Za-z_][\w-]*)\s*=\s*"([^"]*)"\s*$/gm)) {
+        if (pairs.has(m[1].toLowerCase())) return null;
+        pairs.set(m[1].toLowerCase(), m[2]);
+    }
+    return pairs;
+}
+
+/**
+ * True when connection `name` in the Snowflake CLI's own config signs in as `login`, and a check of that login's grants
+ * vouched for it recently. Snowflake then refuses any write outside the dev databases, so no SQL needs reading.
+ */
+function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
+    if (!login?.verifiedUntil) return false;
+    const until = Date.parse(login.verifiedUntil);
+    if (!Number.isFinite(until) || until <= Date.now() || until > Date.now() + DEV_LOGIN_MAX_HORIZON_MS) return false;
+    // snow finds its config through HOME, as Python's expanduser does.
+    const dir = join(process.env.HOME || homedir(), '.snowflake');
+    try {
+        if (!statSync(dir).isDirectory()) return false;
+        // config.toml can define a connection too; one defined there could shadow the one checked here.
+        const config = join(dir, 'config.toml');
+        if (existsSync(config) && new RegExp(`^\\s*\\[\\s*connections\\.\\s*"?${escapeRegexLiteral(name)}"?\\s*\\]`, 'mi').test(readFileSync(config, 'utf-8'))) return false;
+        const section = tomlSection(readFileSync(join(dir, 'connections.toml'), 'utf-8'), name);
+        if (!section) return false;
+        return section.get('user')?.toUpperCase() === login.user.toUpperCase()
+            && section.get('account')?.toUpperCase() === login.account.toUpperCase()
+            && !section.has('password') && !section.has('token') && !section.has('host');
+    } catch {
+        return false;
+    }
+}
+
+/** The connection a `snow sql` step names, when every option it carries is one a trusted dev login may take. */
+function trustedLoginConnection(cmd: ResolvedCommand): string | null {
+    let connection: string | null = null;
+    for (let i = 1; i < cmd.args.length; i++) {
+        const a = cmd.args[i];
+        const [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, undefined];
+        if (TRUSTED_LOGIN_BARE_FLAGS.has(flag) && inline === undefined) continue;
+        if (!TRUSTED_LOGIN_VALUE_FLAGS.has(flag)) return null;
+        const value = inline ?? cmd.args[++i];
+        if (value === undefined) return null;
+        if (flag === '-c' || flag === '--connection') {
+            if (connection !== null || !SNOWFLAKE_NAME_RE.test(value)) return null;
+            connection = value;
+        }
+    }
+    return connection;
+}
+
 /**
  * The dev database a `snow sql` command is exempt under, or null. `commands` and
  * `command` are the whole command line, so anything set up around the call counts.
@@ -3611,6 +3691,12 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
     if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c)) || changesShellState(command)) return null;
+
+    const trusted = trustedLoginConnection(cmd);
+    const trustedEntry = trusted === null ? undefined : scope.snowflake.find(e => e.connection === trusted);
+    if (trustedEntry && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
+        return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
+    }
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {
