@@ -3669,8 +3669,11 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
 
 // Environment names that decide which config, binary or code snow runs with.
 const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
-// Commands that may run before a trusted step in the same shell: none changes the environment snow inherits.
-const ENVIRONMENT_NEUTRAL_COMMANDS = new Set(['cd', 'pushd', 'echo', 'printf', 'cat', 'mkdir', 'date', 'true', 'ls', 'pwd', 'sleep', 'touch']);
+// bash 5.2's builtins (`compgen -b`). Only a builtin runs inside the shell and can change what a later command inherits;
+// any other command is a child process.
+const BASH_BUILTINS = new Set(['.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait']);
+// The builtins that assign no variable and change no lookup (`hash -p` repoints a command, so it is not here).
+const NEUTRAL_BUILTINS = new Set(['cd', 'pushd', 'popd', 'dirs', 'echo', 'printf', 'pwd', 'test', '[', 'true', 'false', ':', 'umask', 'type', 'times', 'jobs', 'help']);
 
 /**
  * True when a word expands nothing that can assign: only `$NAME`, `${NAME}`, command substitutions (a subshell) and
@@ -3706,7 +3709,9 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
         const args = (n.suffix ?? []).map(w => String(w?.text ?? ''));
         // `printf -v NAME` assigns NAME.
         if (name === 'printf' && args.some(a => /^-[a-zA-Z]*v/.test(a))) return false;
-        return (name === undefined || ENVIRONMENT_NEUTRAL_COMMANDS.has(name)) && args.every(assignsNothing);
+        const neutralName = name === undefined
+            || (/^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || NEUTRAL_BUILTINS.has(name)));
+        return neutralName && args.every(assignsNothing);
     };
     const holds = (n: Node) => typeof n.pos === 'number' && typeof n.end === 'number' && n.pos <= step.pos! && step.pos! < n.end;
     // The step itself, or a stage of a pipeline, reached through `&&`/`||` lists whose earlier members are neutral.
