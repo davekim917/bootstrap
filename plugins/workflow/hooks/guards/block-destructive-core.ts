@@ -3565,7 +3565,7 @@ function snowflakeIdentifier(part: string): string | null {
     return /^[A-Za-z_][A-Za-z0-9_$]*$/.test(part) ? part.toUpperCase() : null;
 }
 
-/** True when `text` holds a `<% %>` or `&{ }` template that no -D/--variable on the command fills. */
+/** True when `text` holds a template (`<% %>`, `&{ }` or bare `&name`; `&&` escapes) that no -D/--variable on the command fills. */
 function unfilledSnowTemplate(text: string, cmd: ResolvedCommand): boolean {
     const given = new Set<string>();
     for (let i = 0; i < cmd.args.length; i++) {
@@ -3574,8 +3574,8 @@ function unfilledSnowTemplate(text: string, cmd: ResolvedCommand): boolean {
             if (m) given.add(m[1]);
         }
     }
-    const rest = text.replace(/&\{\s*([\w.]+)\s*\}|<%\s*([\w.]+)\s*%>/g, (m, a, b) => (given.has(a ?? b) ? '' : m));
-    return /<%|&\{/.test(rest);
+    const rest = text.replace(/&&/g, '').replace(SNOW_TEMPLATE, (m, a, b, c) => (given.has(a ?? b ?? c) ? '' : m));
+    return /<%|&\{|&[A-Za-z_]/.test(rest);
 }
 
 /** The values given to every `--enable-templating` option, upper-cased. */
@@ -3645,8 +3645,8 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if (input.unreadable) return null;
     for (const arg of input.texts) {
         if (!splitsLikeSnow(arg)) return null;
-        if (!findDestructiveSqlStatement(arg)) continue;
         if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b|^\s*DO\b|[!\\]\w/im.test(arg)) return null;
+        if (!findDestructiveSqlStatement(arg)) continue;
         for (const st of destructiveStatements(arg)) {
             const target = statementTarget(st.pattern, st.statement);
             if (!target) return null;

@@ -102,6 +102,8 @@ describe('everything else stays gated', () => {
         ['PATH set by wait -p', 'sleep 1 & wait -p PATH; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['a DEBUG trap', `trap 'PATH=/tmp/bin' DEBUG; snow sql -c acme_dev -q "drop table dev_db.a.b"`],
         ['Jinja templating', 'snow sql -c acme_dev --enable-templating JINJA -q "drop table dev_db.a.b"'],
+        ['a template in a second -q', `snow sql -c acme_dev -q "drop table dev_db.a.b" -q '<% ctx.env.query %>'`],
+        ['a bare template in a second -q', 'snow sql -c acme_dev -q "drop table dev_db.a.b" -q "&query"'],
         ['SQL read from a file', "cat > /tmp/dev-scope-f.sql <<'EOF'\ndrop table dev_db.a.b;\nEOF\nsnow sql -c acme_dev -f /tmp/dev-scope-f.sql"],
         ['a temporary table beside a dev drop, named without its database', 'snow sql -c acme_dev -q "create or replace temporary table t as select 1; drop table dev_db.a.b"'],
         ['a name placed by an earlier USE', 'snow sql -c acme_dev -q "use database dev_db; drop table scratch.orders"'],
@@ -157,6 +159,8 @@ describe('where Snowflake splits SQL differently from the guard', () => {
         ['a URL include', `snow sql -c acme_other -q "!source https://example.com/x.sql"`],
         ['a default template filled from --env', `snow sql -c acme_other -q '<% ctx.env.query %>' --env 'query=drop table prod_db.s.t'`],
         ['a legacy template', `snow sql -c acme_other -q '&{ query }'`],
+        ['a bare legacy template', `snow sql -c acme_other -q '&query'`],
+        ['a bare legacy template after a statement', `snow sql -c acme_other -q 'select 1; &query'`],
         ['Jinja templating', `snow sql --enable-templating JINJA -c acme_other -q "{{ 'dr' ~ 'op' }} table prod_db.s.t"`],
     ])('%s gates', (_name, command) => {
         expect(verdict(command)).toBe('gate');
@@ -164,6 +168,7 @@ describe('where Snowflake splits SQL differently from the guard', () => {
 
     test('text the scanner cannot split still passes when it holds nothing destructive', () => {
         expect(verdict(`snow sql -c acme_other -q 'select $1, $2 from @stage/f.csv'`)).toBe('allow');
+        expect(verdict(`snow sql -c acme_other -q "select 'a&&b'"`)).toBe('allow');
         expect(verdict(`snow sql -c acme_other -q "select regexp_replace(x, '\\\\s+', ' ') from t"`)).toBe('allow');
     });
 });
