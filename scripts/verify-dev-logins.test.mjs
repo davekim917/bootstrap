@@ -17,6 +17,9 @@ test('writes inside the dev databases and reads anywhere pass', () => {
     g('USAGE', 'DATABASE', 'PROD_DB'),
     g('USAGE', 'FILE_FORMAT', 'PROD_DB.S.CSV'),
     g('USAGE', 'SEQUENCE', 'DEV_DB.S.SEQ'),
+    g('USAGE', 'STAGE', 'PROD_DB.S.EXT'),
+    g('WRITE', 'STAGE', 'PROD_DB.S.INT'),
+    g('USAGE', 'STAGE', 'DEV_DB.<STAGE>'),
     g('REFERENCE_USAGE', 'DATABASE', 'PROD_DB'),
     g('IMPORTED PRIVILEGES', 'DATABASE', 'SNOWFLAKE'),
     g('USAGE', 'WAREHOUSE', 'DEV_WH'),
@@ -47,10 +50,9 @@ test('any write outside the dev databases fails', () => {
     g('OWNERSHIP', 'SHARE', 'ACME_SHARE'),
     g('OWNERSHIP', 'DATABASE', 'SNOWFLAKE'),
     g('USAGE', 'INTEGRATION', 'S3_INT'),
-    g('USAGE', 'STAGE', 'PROD_DB.S.EXT'),
+    g('OWNERSHIP', 'STAGE', 'PROD_DB.S.EXT'),
     g('USAGE', 'SERVICE', 'PROD_DB.S.SVC'),
     g('USAGE', 'PROCEDURE', 'DEV_DB.S.RUNS_AS_OWNER()'),
-    g('USAGE', 'STAGE', 'DEV_DB.S.EXT'),
     g('OPERATE', 'TASK', 'DEV_DB.S.OWNED_BY_PROD_WRITER'),
     g('OPERATE', 'ALERT', 'DEV_DB.S.A'),
     g('USAGE', 'NOTEBOOK', 'DEV_DB.S.NB'),
@@ -58,7 +60,7 @@ test('any write outside the dev databases fails', () => {
     g('USAGE', 'FUNCTION', 'DEV_DB.S.CALLS_A_SERVICE(VARCHAR)'),
     g('USAGE', 'A_KIND_ADDED_LATER', 'DEV_DB.S.X'),
   ], ['DEV_DB']);
-  assert.equal(problems.length, 24);
+  assert.equal(problems.length, 23);
 });
 
 test('the walk covers PUBLIC, inherited roles, database roles and users the login owns', () => {
@@ -193,4 +195,26 @@ test('an account role whose quoted name holds a period is queried as one name', 
     'show grants to role "PUBLIC"': [],
   };
   assert.deepEqual(writeGrantsOutside(collectGrants('AGENT', fixture(grants), 'TEAM.DEV'), ['DEV_DB']), []);
+});
+
+test('a SQL function passes; a function in any other language, or one whose name is quoted, fails', () => {
+  const grants = {
+    'show grants to user "AGENT"': [{ role: 'DEV_ROLE' }],
+    'show grants to role "DEV_ROLE"': [
+      g('USAGE', 'FUNCTION', 'UTIL_DB.S.WHO()'),
+      g('USAGE', 'FUNCTION', 'UTIL_DB.S.FETCH(VARCHAR, DEFAULT NUMBER)'),
+      g('USAGE', 'FUNCTION', 'DEV_DB.S.CALLS_A_SERVICE(VARCHAR)'),
+      g('USAGE', 'FUNCTION', 'UTIL_DB.S."Quoted"()'),
+      g('USAGE', 'FUNCTION', 'SNOWFLAKE.CORTEX.COMPLETE(VARCHAR, VARCHAR)'),
+    ],
+    'describe function UTIL_DB.S.WHO()': [{ property: 'language', value: 'SQL' }],
+    'describe function UTIL_DB.S.FETCH(VARCHAR, NUMBER)': [{ property: 'language', value: 'PYTHON' }],
+    'describe function DEV_DB.S.CALLS_A_SERVICE(VARCHAR)': [{ property: 'language', value: 'EXTERNAL' }],
+    'show grants to role "PUBLIC"': [],
+  };
+  assert.deepEqual(writeGrantsOutside(collectGrants('AGENT', fixture(grants), 'DEV_ROLE'), ['DEV_DB']), [
+    'USAGE on FUNCTION UTIL_DB.S.FETCH(VARCHAR, DEFAULT NUMBER)',
+    'USAGE on FUNCTION DEV_DB.S.CALLS_A_SERVICE(VARCHAR)',
+    'USAGE on FUNCTION UTIL_DB.S."Quoted"()',
+  ]);
 });
