@@ -3635,8 +3635,8 @@ export const devLoginTestHooks = { configLocked };
 
 /**
  * True when connection `name` in the Snowflake CLI's locked config signs in as `login` with a key pair, and a check
- * of that login's grants vouched for it recently. Snowflake then refuses any write outside the dev databases, so no
- * SQL needs reading.
+ * of that login's grants vouched for it recently. Snowflake then refuses every statement this guard gates outside the
+ * dev databases, so no SQL needs reading.
  */
 function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
     if (!login?.verifiedUntil || name.includes('.')) return false;
