@@ -15,6 +15,8 @@ test('writes inside the dev databases and reads anywhere pass', () => {
     g('SELECT', 'TABLE', 'PROD_DB.S.T'),
     g('USAGE', 'SCHEMA', 'PROD_DB.S'),
     g('USAGE', 'DATABASE', 'PROD_DB'),
+    g('USAGE', 'FILE_FORMAT', 'PROD_DB.S.CSV'),
+    g('USAGE', 'SEQUENCE', 'DEV_DB.S.SEQ'),
     g('REFERENCE_USAGE', 'DATABASE', 'PROD_DB'),
     g('IMPORTED PRIVILEGES', 'DATABASE', 'SNOWFLAKE'),
     g('USAGE', 'WAREHOUSE', 'DEV_WH'),
@@ -53,8 +55,10 @@ test('any write outside the dev databases fails', () => {
     g('OPERATE', 'ALERT', 'DEV_DB.S.A'),
     g('USAGE', 'NOTEBOOK', 'DEV_DB.S.NB'),
     g('USAGE', 'STREAMLIT', 'DEV_DB.S.APP'),
+    g('USAGE', 'FUNCTION', 'DEV_DB.S.CALLS_A_SERVICE(VARCHAR)'),
+    g('USAGE', 'A_KIND_ADDED_LATER', 'DEV_DB.S.X'),
   ], ['DEV_DB']);
-  assert.equal(problems.length, 22);
+  assert.equal(problems.length, 24);
 });
 
 test('the walk covers PUBLIC, inherited roles, database roles and users the login owns', () => {

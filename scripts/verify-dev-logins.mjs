@@ -11,11 +11,14 @@ import { fileURLToPath } from 'node:url';
 
 // Privileges that read or describe and never write, on objects outside the dev databases.
 const READ_PRIVILEGES = new Set(['SELECT', 'REFERENCES', 'MONITOR', 'READ', 'REFERENCE_USAGE', 'USAGE', 'IMPORTED PRIVILEGES']);
-// Objects whose USAGE can write: an owner's-rights procedure or a service runs as its owner, a stage or an
-// integration reaches cloud storage, and an application acts with its own privileges.
-const USAGE_CAN_WRITE = new Set(['PROCEDURE', 'SERVICE', 'STAGE', 'INTEGRATION', 'APPLICATION', 'APPLICATION_ROLE', 'NOTEBOOK', 'STREAMLIT']);
-// A task or alert someone else owns runs as that owner when this login triggers it.
-const OPERATE_RUNS_AS_OWNER = new Set(['TASK', 'ALERT']);
+// Objects that run nothing when used. Using or operating anything else (a procedure, function, service, task, alert,
+// notebook, app, stage, integration, or a kind added later) can act as its owner or reach outside the account, so it
+// fails wherever it lives unless its owner was walked.
+const INERT_OBJECTS = new Set(['DATABASE', 'SCHEMA', 'FILE_FORMAT', 'SEQUENCE']);
+
+function invokesAnotherRole(on, privilege) {
+  return (privilege === 'USAGE' || privilege === 'OPERATE') && !INERT_OBJECTS.has(on);
+}
 // The guard asks for approval only for SQL that destroys data, so a privilege whose actions it never gates (suspending
 // a warehouse, aborting its queries, altering or dropping a user) is not widened by trusting the login.
 const WAREHOUSE_PRIVILEGES = new Set(['USAGE', 'MONITOR', 'OPERATE']);
@@ -60,12 +63,7 @@ export function writeGrantsOutside(grants, databases) {
     const db = databaseOf(on, g.name);
     // Snowflake's own database: its procedures run with the caller's rights or need schema access the role lacks.
     if (db === 'SNOWFLAKE' && on !== 'DATABASE') continue;
-    // These run with their owner's rights or reach storage outside the account, so a database name proves nothing.
-    if (privilege === 'USAGE' && USAGE_CAN_WRITE.has(on) && !g.ownerWalked) {
-      problems.push(`${privilege} on ${on} ${g.name}`);
-      continue;
-    }
-    if (privilege === 'OPERATE' && OPERATE_RUNS_AS_OWNER.has(on)) {
+    if (invokesAnotherRole(on, privilege) && !g.ownerWalked) {
       problems.push(`${privilege} on ${on} ${g.name}`);
       continue;
     }
