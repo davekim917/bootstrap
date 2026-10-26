@@ -66,12 +66,6 @@
       "version": "1.0.1"
     },
     {
-      "name": "claim-check",
-      "source": "./plugins/claim-check",
-      "description": "Stop hook that checks the commit SHAs and merged/closed PR claims in an agent's final message against GitHub, and logs each claim proven false to a local JSONL file (advisory: it never blocks). Unverifiable claims pass.",
-      "version": "1.0.1"
-    },
-    {
       "name": "anderton",
       "source": {
         "source": "url",
