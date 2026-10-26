@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Vouch for each dev-scope login: walk every role its user holds (and PUBLIC) and confirm none can write outside
-// the entry's dev databases. A pass sets `login.verifiedUntil`, which the destructive guard requires before it lets
+// Vouch for each dev-scope login: walk every role its user holds (and PUBLIC) and confirm none can run SQL the
+// destructive guard would gate against anything outside the entry's dev databases. A pass sets `login.verifiedUntil`, which the destructive guard requires before it lets
 // that connection's SQL run without a card; a failure or an error removes it, so a lapsed check brings cards back.
 //
 // Usage: node scripts/verify-dev-logins.mjs [--file <dev-scope.local.json>] [--hours 48]
@@ -12,9 +12,12 @@ import { fileURLToPath } from 'node:url';
 // Privileges that read or describe and never write, on objects outside the dev databases.
 const READ_PRIVILEGES = new Set(['SELECT', 'REFERENCES', 'MONITOR', 'READ', 'REFERENCE_USAGE', 'USAGE', 'IMPORTED PRIVILEGES']);
 // Objects that run nothing when used. Using or operating anything else (a procedure, function, service, task, alert,
-// notebook, app, stage, integration, or a kind added later) can act as its owner or reach outside the account, so it
-// fails wherever it lives unless its owner was walked.
+// notebook, app, integration, or a kind added later) can act as its owner or reach outside the account, so it fails
+// wherever it lives unless its owner was walked or it was shown to run nothing.
 const INERT_OBJECTS = new Set(['DATABASE', 'SCHEMA', 'FILE_FORMAT', 'SEQUENCE']);
+// A stage only moves files, and the guard gates no file command (PUT, GET, REMOVE, COPY INTO a stage) on any login,
+// so using one is not widened by trusting the login. Owning one outside the dev databases still fails: it can be dropped.
+const STAGE_FILE_PRIVILEGES = new Set(['USAGE', 'READ', 'WRITE']);
 
 function invokesAnotherRole(on, privilege) {
   return (privilege === 'USAGE' || privilege === 'OPERATE') && !INERT_OBJECTS.has(on);
@@ -63,7 +66,8 @@ export function writeGrantsOutside(grants, databases) {
     const db = databaseOf(on, g.name);
     // Snowflake's own database: its procedures run with the caller's rights or need schema access the role lacks.
     if (db === 'SNOWFLAKE' && on !== 'DATABASE') continue;
-    if (invokesAnotherRole(on, privilege) && !g.ownerWalked) {
+    if (on === 'STAGE' && STAGE_FILE_PRIVILEGES.has(privilege)) continue;
+    if (invokesAnotherRole(on, privilege) && !g.ownerWalked && !g.runsNothing) {
       problems.push(`${privilege} on ${on} ${g.name}`);
       continue;
     }
@@ -89,6 +93,15 @@ function snowRows(connection, sql) {
   });
   const data = JSON.parse(out);
   return Array.isArray(data) && data.length && Array.isArray(data[0]) ? data.at(-1) : data;
+}
+
+function inSnowflakeDatabase(name) {
+  return /^"?SNOWFLAKE"?\./i.test(name);
+}
+
+/** SHOW GRANTS writes an optional argument as `DEFAULT TYPE`; DESCRIBE and SHOW GRANTS ON take the bare type. */
+function describableSignature(name) {
+  return String(name).replace(/\bDEFAULT\s+/g, '');
 }
 
 /**
@@ -130,12 +143,11 @@ export function collectGrants(user, rows, sessionRole) {
         if (privilege === 'USAGE') edges.set(key, [...(edges.get(key) ?? []), `${on}:${g.name}`]);
       }
       else if (on === 'USER' && privilege === 'OWNERSHIP') queue.push({ kind: 'USER', name: g.name });
-      else if (on === 'PROCEDURE' && privilege === 'USAGE' && !/^"?SNOWFLAKE"?\./i.test(g.name)) {
+      else if (on === 'PROCEDURE' && privilege === 'USAGE' && !inSnowflakeDatabase(g.name)) {
         // A procedure that runs with its owner's rights lets the caller act as that owner, so its owner is walked too.
-        // SHOW GRANTS writes an optional argument as `DEFAULT TYPE`; DESCRIBE and SHOW GRANTS ON take the bare type.
         const name = String(g.name);
         if (name.includes('"')) throw new Error(`procedure ${name} has a quoted name; its signature isn't rewritten safely`);
-        const signature = name.replace(/\bDEFAULT\s+/g, '');
+        const signature = describableSignature(name);
         const executeAs = rows(`describe procedure ${signature}`).find(r => String(r.property).toLowerCase() === 'execute as')?.value;
         if (executeAs === 'OWNER') {
           const owner = rows(`show grants on procedure ${signature}`).find(r => String(r.privilege).toUpperCase() === 'OWNERSHIP');
@@ -146,6 +158,12 @@ export function collectGrants(user, rows, sessionRole) {
         }
         if (executeAs !== 'CALLER' && executeAs !== 'RESTRICTED CALLER') throw new Error(`unknown execute-as for procedure ${g.name}: ${executeAs}`);
         grants.push({ ...g, ownerWalked: true });
+        continue;
+      }
+      else if (on === 'FUNCTION' && privilege === 'USAGE' && !inSnowflakeDatabase(g.name) && !String(g.name).includes('"')) {
+        // A SQL function can run no DML or DDL; a service, external, Python, Java or JavaScript one can reach further.
+        const language = rows(`describe function ${describableSignature(g.name)}`).find(r => String(r.property).toLowerCase() === 'language')?.value;
+        grants.push(language === 'SQL' ? { ...g, runsNothing: true } : g);
         continue;
       }
       grants.push(g);
