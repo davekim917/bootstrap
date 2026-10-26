@@ -13,7 +13,9 @@ import { fileURLToPath } from 'node:url';
 const READ_PRIVILEGES = new Set(['SELECT', 'REFERENCES', 'MONITOR', 'READ', 'REFERENCE_USAGE', 'USAGE', 'IMPORTED PRIVILEGES']);
 // Objects whose USAGE can write: an owner's-rights procedure or a service runs as its owner, a stage or an
 // integration reaches cloud storage, and an application acts with its own privileges.
-const USAGE_CAN_WRITE = new Set(['PROCEDURE', 'SERVICE', 'STAGE', 'INTEGRATION', 'APPLICATION', 'APPLICATION_ROLE']);
+const USAGE_CAN_WRITE = new Set(['PROCEDURE', 'SERVICE', 'STAGE', 'INTEGRATION', 'APPLICATION', 'APPLICATION_ROLE', 'NOTEBOOK', 'STREAMLIT']);
+// A task or alert someone else owns runs as that owner when this login triggers it.
+const OPERATE_RUNS_AS_OWNER = new Set(['TASK', 'ALERT']);
 // The guard asks for approval only for SQL that destroys data, so a privilege whose actions it never gates (suspending
 // a warehouse, aborting its queries, altering or dropping a user) is not widened by trusting the login.
 const WAREHOUSE_PRIVILEGES = new Set(['USAGE', 'MONITOR', 'OPERATE']);
@@ -42,6 +44,10 @@ export function writeGrantsOutside(grants, databases) {
   const dev = new Set(databases.map(d => d.toUpperCase()));
   const problems = [];
   for (const g of grants) {
+    if (g.hidden) {
+      problems.push(`${g.privilege} on ${g.granted_on} ${g.name}`);
+      continue;
+    }
     const on = String(g.granted_on).toUpperCase();
     const privilege = String(g.privilege).toUpperCase();
     // A role it holds or owns is walked; owning one lets it grant that role to itself.
@@ -59,6 +65,10 @@ export function writeGrantsOutside(grants, databases) {
       problems.push(`${privilege} on ${on} ${g.name}`);
       continue;
     }
+    if (privilege === 'OPERATE' && OPERATE_RUNS_AS_OWNER.has(on)) {
+      problems.push(`${privilege} on ${on} ${g.name}`);
+      continue;
+    }
     if (db !== null && dev.has(db)) continue;
     if (db !== null && READ_PRIVILEGES.has(privilege)) continue;
     problems.push(`${privilege} on ${on} ${g.name}`);
@@ -67,7 +77,12 @@ export function writeGrantsOutside(grants, databases) {
 }
 
 function quoteIdent(name) {
-  return String(name).split('.').map(p => (p.startsWith('"') ? p : `"${p.replace(/"/g, '""')}"`)).join('.');
+  return `"${String(name).replace(/"/g, '""')}"`;
+}
+
+/** A database role's `DB.ROLE` name, each part quoted. */
+function quoteDatabaseRole(name) {
+  return String(name).split('.').map(p => (p.startsWith('"') ? p : quoteIdent(p))).join('.');
 }
 
 function snowRows(connection, sql) {
@@ -78,8 +93,12 @@ function snowRows(connection, sql) {
   return Array.isArray(data) && data.length && Array.isArray(data[0]) ? data.at(-1) : data;
 }
 
-/** The grants of every role `user` can use, PUBLIC included, walking role and database-role grants. */
-export function collectGrants(user, rows) {
+/**
+ * The grants, current and future, of every role `user` can use, PUBLIC included, walking role and database-role
+ * grants. SHOW GRANTS lists only objects the session's role can see, so a role outside `sessionRole`'s hierarchy is
+ * reported as a grant that can't be vouched for rather than read.
+ */
+export function collectGrants(user, rows, sessionRole) {
   const seen = new Set();
   const grants = [];
   const queue = [{ kind: 'ROLE', name: 'PUBLIC' }];
@@ -91,6 +110,9 @@ export function collectGrants(user, rows) {
     }
   };
   userGrants(user);
+  const inSession = new Set();
+  const sessionQueue = [`ROLE:${sessionRole}`, 'ROLE:PUBLIC'];
+  const edges = new Map();
   while (queue.length) {
     const { kind, name } = queue.shift();
     const key = `${kind}:${name}`;
@@ -100,11 +122,15 @@ export function collectGrants(user, rows) {
       userGrants(name);
       continue;
     }
-    const sql = kind === 'ROLE' ? `show grants to role ${quoteIdent(name)}` : `show grants to database role ${quoteIdent(name)}`;
-    for (const g of rows(sql)) {
+    const grantee = kind === 'ROLE' ? `role ${quoteIdent(name)}` : `database role ${quoteDatabaseRole(name)}`;
+    for (const f of rows(`show future grants to ${grantee}`)) grants.push({ privilege: f.privilege, granted_on: f.grant_on, name: f.name });
+    for (const g of rows(`show grants to ${grantee}`)) {
       const on = String(g.granted_on).toUpperCase();
       const privilege = String(g.privilege).toUpperCase();
-      if ((on === 'ROLE' || on === 'DATABASE_ROLE') && (privilege === 'USAGE' || privilege === 'OWNERSHIP')) queue.push({ kind: on, name: g.name });
+      if ((on === 'ROLE' || on === 'DATABASE_ROLE') && (privilege === 'USAGE' || privilege === 'OWNERSHIP')) {
+        queue.push({ kind: on, name: g.name });
+        if (privilege === 'USAGE') edges.set(key, [...(edges.get(key) ?? []), `${on}:${g.name}`]);
+      }
       else if (on === 'USER' && privilege === 'OWNERSHIP') queue.push({ kind: 'USER', name: g.name });
       else if (on === 'PROCEDURE' && privilege === 'USAGE' && !/^"?SNOWFLAKE"?\./i.test(g.name)) {
         // A procedure that runs with its owner's rights lets the caller act as that owner, so its owner is walked too.
@@ -127,16 +153,28 @@ export function collectGrants(user, rows) {
       grants.push(g);
     }
   }
+  while (sessionQueue.length) {
+    const key = sessionQueue.shift();
+    if (inSession.has(key)) continue;
+    inSession.add(key);
+    sessionQueue.push(...(edges.get(key) ?? []));
+  }
+  for (const key of seen) {
+    if (key.startsWith('USER:') || inSession.has(key)) continue;
+    const [kind, ...name] = key.split(':');
+    grants.push({ privilege: `GRANTS HIDDEN FROM ${sessionRole}`, granted_on: kind, name: name.join(':'), hidden: true });
+  }
   return grants;
 }
 
 /** Check one entry's login; returns null when it is dev-only, else the reason it is not. */
 export function verifyEntry(entry, rows) {
-  const me = rows("select current_user() as U, current_organization_name() || '-' || current_account_name() as A")[0] ?? {};
+  const me = rows("select current_user() as U, current_organization_name() || '-' || current_account_name() as A, current_role() as R")[0] ?? {};
   if (String(me.U).toUpperCase() !== entry.login.user.toUpperCase()) return `connection signs in as ${me.U}, not ${entry.login.user}`;
   if (String(me.A).toUpperCase() !== entry.login.account.toUpperCase()) return `connection signs in to ${me.A}, not ${entry.login.account}`;
   // The grants walked are the signed-in user's, as Snowflake names it, never the configured spelling.
-  const problems = writeGrantsOutside(collectGrants(String(me.U), rows), entry.databases);
+  if (!me.R) return 'connection has no current role';
+  const problems = writeGrantsOutside(collectGrants(String(me.U), rows, String(me.R)), entry.databases);
   if (process.env.VERIFY_DEV_LOGINS_VERBOSE) for (const p of problems) console.error(`  ${entry.connection}: ${p}`);
   return problems.length ? `can write outside ${entry.databases.join('/')}: ${problems.slice(0, 5).join('; ')}${problems.length > 5 ? ` (+${problems.length - 5} more)` : ''}` : null;
 }

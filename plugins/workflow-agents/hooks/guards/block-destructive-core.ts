@@ -3684,6 +3684,30 @@ function assignsNothing(word: string): boolean {
 }
 
 /**
+ * True when a word stays one argument: nothing outside quotes word-splits or globs, so a value can't smuggle in an
+ * option of its own. `"$@"` splits even inside double quotes.
+ */
+function staysOneWord(word: string): boolean {
+    let quote: string | null = null;
+    for (let i = 0; i < word.length; i++) {
+        const c = word[i];
+        if (quote === "'") {
+            if (c === "'") quote = null;
+        } else if (c === '\\') {
+            i++;
+        } else if (quote === '"') {
+            if (c === '"') quote = null;
+            else if (c === '$' && word[i + 1] === '@') return false;
+        } else if (c === "'" || c === '"') {
+            quote = c;
+        } else if ('$`*?['.includes(c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
  * True when nothing on the line can change the environment `step` (a top-level `snow sql`) inherits. It is decided by
  * what is allowed rather than by listing bash's ways to assign: before the step, in the same shell, only plain
  * assignments to names the environment doesn't hold and a few commands that change no environment; the step's own
@@ -3716,7 +3740,10 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
     const holds = (n: Node) => typeof n.pos === 'number' && typeof n.end === 'number' && n.pos <= step.pos! && step.pos! < n.end;
     // The step itself, or a stage of a pipeline, reached through `&&`/`||` lists whose earlier members are neutral.
     const reaches = (n: Node): boolean => {
-        if (n.type === 'Command') return n.pos === step.pos && words(n).every(assignsNothing);
+        if (n.type === 'Command') {
+            return n.pos === step.pos && words(n).every(assignsNothing)
+                && (n.suffix ?? []).every(w => staysOneWord(String(w?.text ?? '')));
+        }
         if (n.type === 'Pipeline') return (n.commands ?? []).some(c => c.type === 'Command' && holds(c) && reaches(c));
         if (n.type !== 'AndOr') return false;
         const members = n.commands ?? [];

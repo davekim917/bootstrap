@@ -92,6 +92,7 @@ describe('a verified dev login runs any SQL without a card', () => {
         ['a steering name inside the SQL itself', `snow sql -c acme_dev -q "select 'PATH', home_dir from s.t"`],
         ['a file under HOME', 'snow sql -c acme_dev -f "$HOME/q.sql"'],
         ['a shell variable the environment does not hold', 'S=dev_db.scratch; snow sql -c acme_dev -q "drop table $S.t"'],
+        ['a quoted variable as an option value', 'R=DEV_RW; snow sql -c acme_dev --role "$R" -q "drop table t"'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -157,6 +158,10 @@ describe('anything that could point the command at another login keeps the card'
         ['a step find runs', `find /tmp -name q.sql -exec snow sql -c acme_dev -f {} \\;`],
         ['even the dev connection in a shell variable', 'C=acme_dev; snow sql -c $C -q "drop table t"'],
         ['an exported variable', 'export SNOWFLAKE_CONNECTIONS_ACME_DEV_USER=ADMIN_USER; snow sql -c acme_dev -q "drop table t"'],
+        ['an unquoted variable that splits into more options', `R='DEV_RW --user ADMIN_USER'; snow sql -c acme_dev --role $R -q "drop table t"`],
+        ['an unquoted command substitution', 'snow sql -c acme_dev --role $(cat /tmp/r) -q "drop table t"'],
+        ['an unquoted glob', 'snow sql -c acme_dev --role DEV* -q "drop table t"'],
+        ['"$@" in the step', 'snow sql -c acme_dev --role "$@" -q "drop table t"'],
         ['a function named snow', 'snow() { command snow sql -c acme_admin -q "$5"; }; snow sql -c acme_dev -q "drop table t"'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('gate');
