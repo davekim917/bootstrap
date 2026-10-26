@@ -32,7 +32,7 @@
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
-import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { accessSync, closeSync, lstatSync, constants as fsConstants, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
@@ -3478,8 +3478,14 @@ export const DEV_SCOPE_FILE_ENV = 'BOOTSTRAP_DEV_SCOPE_FILE';
 const DEV_SCOPE_FILE = 'dev-scope.local.json';
 const SNOWFLAKE_NAME_RE = /^[A-Za-z0-9_.-]{1,128}$/;
 
+export interface DevLogin {
+    user: string;
+    account: string;
+    verifiedUntil?: string;
+}
+
 export interface DevScope {
-    snowflake: Array<{ connection: string; databases: string[] }>;
+    snowflake: Array<{ connection: string; databases: string[]; login?: DevLogin }>;
 }
 
 /** Parse a dev-scope file's text. Null when anything about it is unusable. */
@@ -3497,6 +3503,14 @@ export function parseDevScope(text: string): DevScope | null {
         if (!Array.isArray(e.databases) || e.databases.length === 0
             || !e.databases.every((d: unknown) => typeof d === 'string' && /^[A-Za-z_][A-Za-z0-9_$]{0,254}$/.test(d))) {
             return null;
+        }
+        if (e.login !== undefined) {
+            const l = e.login;
+            if (!l || typeof l !== 'object' || typeof l.user !== 'string' || !SNOWFLAKE_NAME_RE.test(l.user)
+                || typeof l.account !== 'string' || !SNOWFLAKE_NAME_RE.test(l.account)
+                || (l.verifiedUntil !== undefined && typeof l.verifiedUntil !== 'string')) {
+                return null;
+            }
         }
     }
     return { snowflake: entries as DevScope['snowflake'] };
@@ -3599,18 +3613,187 @@ function statementTarget(pattern: string, statement: string): { kind: string; pa
     return { kind: (m[1] || 'table').toLowerCase().replace(/\s+/g, ' '), parts: parts as string[] };
 }
 
+// Options a trusted dev login may carry: they choose the SQL, its defaults and output, never the account, user,
+// credentials or config.
+const TRUSTED_LOGIN_VALUE_FLAGS = new Set(['-c', '--connection', '-q', '--query', '-f', '--filename', '-D', '--variable', '--env', '--enable-templating', '--database', '--dbname', '--schema', '--schemaname', '--role', '--rolename', '--warehouse', '--format']);
+const TRUSTED_LOGIN_BARE_FLAGS = new Set(['-i', '--stdin', '--silent', '-v', '--verbose', '--debug', '--enhanced-exit-codes', '--retain-comments', '--single-transaction']);
+// A verification older than this is not trusted, whatever date it names.
+const DEV_LOGIN_MAX_HORIZON_MS = 3 * 24 * 60 * 60 * 1000;
+
+const TRUSTED_CONNECTION_KEYS = new Set(['account', 'user', 'role', 'warehouse', 'database', 'schema', 'authenticator', 'private_key_path', 'private_key_file']);
+
+/**
+ * True when the file can't change between this check and snow reading it: it sits on a read-only mount, as the
+ * container's staged Snowflake config does. A file the agent's user owns could be rewritten, or made writable, first.
+ */
+function configLocked(file: string): boolean {
+    try {
+        accessSync(file, fsConstants.W_OK);
+        return false;
+    } catch (err) {
+        return (err as { code?: unknown }).code === 'EROFS';
+    }
+}
+
+export const devLoginTestHooks = { configLocked };
+
+/**
+ * True when connection `name` in the Snowflake CLI's locked config signs in as `login` with a key pair, and a check
+ * of that login's grants vouched for it recently. Snowflake then refuses any write outside the dev databases, so no
+ * SQL needs reading.
+ */
+function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
+    if (!login?.verifiedUntil || name.includes('.')) return false;
+    const until = Date.parse(login.verifiedUntil);
+    if (!Number.isFinite(until) || until <= Date.now() || until > Date.now() + DEV_LOGIN_MAX_HORIZON_MS) return false;
+    // snow finds its config through HOME, as Python's expanduser does.
+    const dir = join(process.env.HOME || homedir(), '.snowflake');
+    const file = join(dir, 'connections.toml');
+    const toml = (globalThis as { Bun?: { TOML?: { parse(text: string): unknown } } }).Bun?.TOML;
+    try {
+        // A link is checked where it points, but could be repointed before snow follows it.
+        if (!toml || lstatSync(dir).isSymbolicLink() || lstatSync(file).isSymbolicLink() || !devLoginTestHooks.configLocked(file)) return false;
+        const section = (toml.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>)[name];
+        if (!section || typeof section !== 'object' || Array.isArray(section)) return false;
+        const entries = Object.entries(section as Record<string, unknown>);
+        if (entries.some(([k, v]) => !TRUSTED_CONNECTION_KEYS.has(k) || typeof v !== 'string')) return false;
+        const get = (k: string) => (section as Record<string, string>)[k];
+        return get('user')?.toUpperCase() === login.user.toUpperCase()
+            && get('account')?.toUpperCase() === login.account.toUpperCase()
+            && get('authenticator')?.toUpperCase() === 'SNOWFLAKE_JWT'
+            && Boolean(get('private_key_path') ?? get('private_key_file'));
+    } catch {
+        return false;
+    }
+}
+
+// Environment names that decide which config, binary or code snow runs with.
+const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
+// bash 5.2's builtins (`compgen -b`). Only a builtin runs inside the shell and can change what a later command inherits;
+// any other command is a child process.
+const BASH_BUILTINS = new Set(['.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait']);
+// The builtins that assign no variable and change no lookup (`hash -p` repoints a command, so it is not here).
+const NEUTRAL_BUILTINS = new Set(['cd', 'true', ':']);
+
+/**
+ * True when a word expands nothing that can assign: only `$NAME`, `${NAME}`, command substitutions (a subshell) and
+ * literal text. `$(( ))`, `$[ ]` and any other `${…}` form evaluate arithmetic or assign in the current shell.
+ */
+function assignsNothing(word: string): boolean {
+    return !/\$\(\(|\$\[/.test(word) && ![...word.matchAll(/\$\{/g)].some(m => !/^\$\{[A-Za-z_]\w*\}/.test(word.slice(m.index)));
+}
+
+/**
+ * True when a word stays one argument: nothing outside quotes word-splits or globs, so a value can't smuggle in an
+ * option of its own. `"$@"` splits even inside double quotes.
+ */
+function staysOneWord(word: string): boolean {
+    let quote: string | null = null;
+    for (let i = 0; i < word.length; i++) {
+        const c = word[i];
+        if (quote === "'") {
+            if (c === "'") quote = null;
+        } else if (c === '\\') {
+            i++;
+        } else if (quote === '"') {
+            if (c === '"') quote = null;
+            else if (c === '$' && word[i + 1] === '@') return false;
+        } else if (c === "'" || c === '"') {
+            quote = c;
+        } else if ('$`*?['.includes(c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * True when nothing on the line can change the environment `step` (a top-level `snow sql`) inherits. It is decided by
+ * what is allowed rather than by listing bash's ways to assign: before the step, in the same shell, only plain
+ * assignments to names the environment doesn't hold and a few commands that change no environment; the step's own
+ * words expand nothing that assigns. A pipeline's other stages and anything after the step can't reach it.
+ */
+function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean {
+    type Node = { type?: string; name?: unknown; prefix?: Node[]; suffix?: Node[]; commands?: Node[]; command?: Node; text?: string; index?: unknown; pos?: number; end?: number };
+    let script: Node;
+    try {
+        script = parseShell(command) as Node;
+    } catch {
+        return false;
+    }
+    type Redirect = { target?: { text?: string }; content?: string };
+    // Redirect targets and here-document bodies are expanded by this shell too.
+    const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => String(w?.text ?? ''))
+        .concat(((n as { redirects?: Redirect[] }).redirects ?? []).flatMap(r => [String(r.target?.text ?? ''), String(r.content ?? '')]));
+    const assignmentSafe = (a: Node) => a.type === 'Assignment' && typeof a.name === 'string' && a.index === undefined && (a as { array?: unknown }).array === undefined
+        && !(a.name in process.env) && !SNOW_ENVIRONMENT_NAME.test(a.name) && assignsNothing(String(a.text ?? ''));
+    const neutral = (n: Node): boolean => {
+        if (n.type === 'Pipeline') return (n.commands?.length ?? 0) > 1;
+        if (n.type === 'AndOr') return (n.commands ?? []).every(neutral);
+        if (n.type !== 'Command') return false;
+        const name = (n.name as { text?: string } | undefined)?.text;
+        if (!(n.prefix ?? []).every(assignmentSafe)) return false;
+        const neutralName = name === undefined
+            || (/^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || NEUTRAL_BUILTINS.has(name)));
+        return neutralName && words(n).every(assignsNothing);
+    };
+    const holds = (n: Node) => typeof n.pos === 'number' && typeof n.end === 'number' && n.pos <= step.pos! && step.pos! < n.end;
+    // The step itself, or a stage of a pipeline, reached through `&&`/`||` lists whose earlier members are neutral.
+    const reaches = (n: Node): boolean => {
+        if (n.type === 'Command') {
+            return n.pos === step.pos && words(n).every(assignsNothing)
+                && (n.suffix ?? []).every(w => staysOneWord(String(w?.text ?? '')));
+        }
+        if (n.type === 'Pipeline') return (n.commands ?? []).some(c => c.type === 'Command' && holds(c) && reaches(c));
+        if (n.type !== 'AndOr') return false;
+        const members = n.commands ?? [];
+        const at = members.findIndex(holds);
+        return at >= 0 && members.slice(0, at).every(neutral) && reaches(members[at]);
+    };
+    if (step.pos === undefined) return false;
+    const statements = (script.commands ?? []).map(st => st.command ?? st);
+    const at = statements.findIndex(holds);
+    return at >= 0 && statements.slice(0, at).every(neutral) && reaches(statements[at]);
+}
+
+/** The connection a `snow sql` step names, when every option it carries is one a trusted dev login may take. */
+function trustedLoginConnection(cmd: ResolvedCommand): string | null {
+    let connection: string | null = null;
+    for (let i = 1; i < cmd.args.length; i++) {
+        const a = cmd.args[i];
+        const [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, undefined];
+        if (TRUSTED_LOGIN_BARE_FLAGS.has(flag) && inline === undefined) continue;
+        if (!TRUSTED_LOGIN_VALUE_FLAGS.has(flag)) return null;
+        const value = inline ?? cmd.args[++i];
+        if (value === undefined) return null;
+        if (flag === '-c' || flag === '--connection') {
+            if (connection !== null || !SNOWFLAKE_NAME_RE.test(value)) return null;
+            connection = value;
+        }
+    }
+    return connection;
+}
+
 /**
  * The dev database a `snow sql` command is exempt under, or null. `commands` and
  * `command` are the whole command line, so anything set up around the call counts.
  */
-export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string): string | null {
+export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
     const scope = currentDevScope();
     if (!scope) return null;
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
-    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c)) || changesShellState(command)) return null;
+    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c))) return null;
+
+    // An xargs or find step's words are not the ones read here.
+    const trusted = topLevel ? trustedLoginConnection(cmd) : null;
+    const trustedEntry = trusted === null ? undefined : scope.snowflake.find(e => e.connection === trusted);
+    if (trustedEntry && snowEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
+        return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
+    }
+    if (changesShellState(command)) return null;
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {
@@ -5051,7 +5234,7 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves };
                 continue;
             }
-            const dev = devScopeTargetOf(cmd, commands, command);
+            const dev = devScopeTargetOf(cmd, commands, command, cmd === outer);
             if (dev !== null) {
                 if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
                 continue;

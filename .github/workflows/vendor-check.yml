@@ -43,6 +43,9 @@ jobs:
       - name: Run the version-bump gate tests
         run: node --test scripts/check-version-bump.test.mjs
 
+      - name: Run the dev-login verifier tests
+        run: node --test scripts/verify-dev-logins.test.mjs
+
       - name: Install workflow hook dependencies
         working-directory: plugins/workflow/hooks
         run: bun install --production
