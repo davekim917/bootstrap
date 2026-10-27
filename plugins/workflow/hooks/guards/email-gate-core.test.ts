@@ -238,6 +238,9 @@ describe('evaluateEmailSend — gate decision', () => {
             "grep -rh 'x gws gmail +send' .",
             'rg --pre ./run "gws gmail +send" .',
             'find . -exec grep "gws gmail +send" {} +',
+            "OPTS='-e e'; printf '%s\\n' 'gws gmail +send --to someone@example.org --body x' | sed -n -e p $OPTS",
+            "sed -n -e p * ; grep 'gws gmail +send' notes.md",
+            "X='-v PATH /tmp/x'; printf $X; gws gmail +send --to someone@example.org --body x --help | head",
         ]) {
             expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
         }

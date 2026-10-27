@@ -322,6 +322,9 @@ export function probeOnlyCommand(command: string): boolean {
         // Anything but gws runs as a plain bare word: a path or a wrapper could run a different program than the name says.
         if (cmd.name !== 'gws' && (String(node.name.text ?? '') !== cmd.name || cmd.name.includes('/'))) return false;
         if (!(cmd.env ?? []).every(a => probeMaySet(a.split('=')[0]))) return false;
+        // A word the shell splits or globs can become an option the checks below never saw: with OPTS='-e e',
+        // `sed -n -e p $OPTS` runs its input as commands.
+        if (cmd.name !== 'gws' && !(node.suffix || []).every(wordIsFixed)) return false;
         if (cmd.name === 'gws') {
             if (!gwsReachedDirectly(node)) return false;
             const flag = gwsProbeFlag(node, cmd.args);
