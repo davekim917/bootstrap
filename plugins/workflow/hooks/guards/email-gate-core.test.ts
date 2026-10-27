@@ -246,6 +246,52 @@ describe('evaluateEmailSend — gate decision', () => {
         }
     });
 
+    test('a word bash rewrites, an unlisted filter option, a file write or an evaluating expansion is not a probe', () => {
+        for (const command of [
+            // ANSI-C or expanded words that become sed or printf options when bash runs them.
+            "sed -n p $'\\055e' payload; grep 'gws gmail +send' /dev/null",
+            "sed -n p $'\\x2de' payload; grep 'gws gmail +send' /dev/null",
+            "sed -n p $'\\055f' payload; grep 'gws gmail +send' /dev/null",
+            "sed -n p $'\\x2df' payload; grep 'gws gmail +send' /dev/null",
+            "OPTS=-ee; printf '%s\\n' 'gws gmail +send --to someone@example.org --body x' | sed -n -e p \"$OPTS\"",
+            "printf $'\\x2dv' PATH /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'\\055v' BASH_ENV /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'\\U0000002dv' IFS /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'\\u002dv' PATH /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'-\\x76' PATH /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'\\x2dvPATH' /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $\"-v\" PATH /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'\\x2dv' PATH /tmp/x; sed -n p /dev/null; gws gmail +send --help",
+            'printf -v PATH /tmp/x; grep "gws gmail +send" /dev/null',
+            // Expansions that evaluate a value as code.
+            "A=1; cat <<EOF\n${A@P}\nEOF\ngrep 'gws gmail +send' /dev/null",
+            "printf '%s' \"${a@P}\"; grep 'gws gmail +send' /dev/null",
+            "printf '%s' \"${a[$(/tmp/x/run)]}\"; grep 'gws gmail +send' /dev/null",
+            "echo \"${!ref}\"; grep 'gws gmail +send' /dev/null",
+            'X=$((a)); gws gmail +send --help',
+            // Filter options that read a script or pattern file, or are not listed.
+            "grep -f /tmp/patterns; grep 'gws gmail +send' /dev/null",
+            "grep --file=/tmp/patterns; grep 'gws gmail +send' /dev/null",
+            "jq -f /tmp/x.jq; grep 'gws gmail +send' /dev/null",
+            "jq --from-file /tmp/x.jq; grep 'gws gmail +send' /dev/null",
+            "jq --rawfile s /tmp/x '.'; grep 'gws gmail +send' /dev/null",
+            "jq --run-tests /tmp/tests; grep 'gws gmail +send' /dev/null",
+            "cd -@ /tmp/x; grep 'gws gmail +send' /dev/null",
+            "GREP_OPTIONS='-f /tmp/patterns' grep 'gws gmail +send' /dev/null",
+            // A write that could plant a program a later command runs.
+            "printf '%s\\n' 'gws gmail +send --to someone@example.org --body x' > /tmp/x/gws; sed -n p /dev/null; gws gmail +send --help",
+            'cat /tmp/p > /tmp/bin/gws; gws gmail +send --help',
+            "grep -rh 'gws gmail +send' . >> ~/.profile",
+            // A word that is `--` when bash runs it, so gws reads the flag after it as text.
+            'gws gmail +send --to someone@example.org --body x "--" --help',
+            "gws gmail +send --to someone@example.org --body x $'\\055\\055' --help",
+            "gws gmail +send --to someone@example.org --body x $'\\055\\055' --dry-run | head",
+            'B=--; gws gmail +send --to someone@example.org --body x "$B" --dry-run | head',
+        ]) {
+            expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
+        }
+    });
+
     test('bypass is scoped to the gws SEGMENT, not the whole command', () => {
         // Verbatim source (claude.ts:613-615) only honors a bypass flag in the
         // segment that contains the gws send. A --dry-run in a later piped
