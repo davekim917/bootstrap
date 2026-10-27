@@ -198,6 +198,51 @@ describe('evaluateEmailSend — gate decision', () => {
         }
     });
 
+    test('send text that only a filter reads, or a send run only for its help, sends nothing', () => {
+        for (const command of [
+            "sed -n '1,40p' notes.md; gws gmail +send --help 2>&1 | head -40",
+            'cd artifacts; grep -rl "gws gmail" .; grep -rh "gws gmail +send" . | head -5',
+            "grep -rn 'gws gmail +reply-all' docs/",
+            'cat notes.md | grep -c "gws gmail users messages send"',
+            "sed -n '/^Usage/,$p' guide.md; gws gmail +reply -h | head",
+        ]) {
+            expect(evaluateEmailSend(command, INTERACTIVE)).toEqual({ action: 'allow' });
+        }
+    });
+
+    test('beside send text in a filter, a real send or anything that could run one still gates', () => {
+        for (const command of [
+            'cd artifacts; grep -rh "gws gmail +send" . | head -5; gws gmail +send --to someone@example.org --body x',
+            'grep -rh "gws gmail +send" .; gws gmail +send --to someone@example.org --body x',
+            'grep -rh "gws gmail +send" . && gws gmail +reply --message-id 1a0 --body x',
+            'grep -rh "gws gmail +send" . | gws gmail +s""end --to someone@example.org --body x',
+            "sed -n '1,40p' notes.md; gws gmail +send --to someone@example.org --body x",
+            "sed -n '1,40p' notes.md; gws gmail +send --to someone@example.org --body x --dry-run",
+            'cd artifacts; gws gmail +send --help | head',
+            'cd /tmp/x && gws gmail +send --to someone@example.org --body x',
+            'eval "gws gmail +send --to someone@example.org --body x"',
+            'cd artifacts; eval "$(grep -h "gws gmail +send" run.txt)"',
+            'bash -c "gws gmail +send --to someone@example.org --body x"',
+            "sh -c 'gws gmail +send --to someone@example.org --body x'",
+            'echo "gws gmail +send --to someone@example.org --body x" | bash',
+            'grep -h "gws gmail +send" run.txt | sh',
+            'grep -h "gws gmail +send" run.txt | xargs -I{} sh -c {}',
+            'C=gws; $C gmail +send --to someone@example.org --body x; grep "gws gmail +send" .',
+            '$SEND; grep -rh "gws gmail +send" .',
+            'send() { gws gmail +send --to someone@example.org --body x; }; send; grep "gws gmail +send" .',
+            'grep() { gws gmail +send --to someone@example.org --body x; }; grep -rh "gws gmail +send" .',
+            'cd artifacts; grep -rh "gws gmail +send" . | head -5 )',
+            'cd artifacts; grep "gws gmail +send" "$(gws gmail +send --to someone@example.org --body x)"',
+            'grep "gws gmail +send" <(gws gmail +send --to someone@example.org --body x)',
+            'echo gws gmail +send --to someone@example.org',
+            "grep -rh 'x gws gmail +send' .",
+            'rg --pre ./run "gws gmail +send" .',
+            'find . -exec grep "gws gmail +send" {} +',
+        ]) {
+            expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
+        }
+    });
+
     test('bypass is scoped to the gws SEGMENT, not the whole command', () => {
         // Verbatim source (claude.ts:613-615) only honors a bypass flag in the
         // segment that contains the gws send. A --dry-run in a later piped
