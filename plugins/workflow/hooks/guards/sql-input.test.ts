@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { evaluateBashCommand } from './block-destructive-core';
+import { evaluateBashCommand, extractCommands, sqlInputOf, sqlSkeleton } from './block-destructive-core';
 
 /**
  * SQL FROM FILES. A SQL client's file input is read and scanned like an
@@ -357,3 +357,40 @@ test('a SQL file another command may rewrite is still read as it stands, so what
     }
 });
 
+
+describe('an unquoted heredoc is also read the way bash passes it', () => {
+    const texts = (command: string) => sqlInputOf(extractCommands(command).find(c => c.name === 'psql')!).texts;
+
+    test('a backslash before $ is removed, so a dollar-quoted literal reads as one; the text as written is still read', () => {
+        const body = String.raw`UPDATE t SET a = '\"q"', b = \$t\$v\$t\$, c = 'x\\y' WHERE id = 1;`;
+        const read = texts(`psql <<SQL\n${body}\nSQL`);
+        expect(read).toContain(`${body}\n`);
+        expect(read).toContain(String.raw`UPDATE t SET a = '\"q"', b = $t$v$t$, c = 'x\y' WHERE id = 1;` + '\n');
+    });
+
+    test('a quoted heredoc is read only as written', () => {
+        const body = String.raw`UPDATE t SET b = \$t\$v\$t\$ WHERE id = 1;`;
+        expect(texts(`psql <<'SQL'\n${body}\nSQL`)).toEqual([`${body}\n`]);
+    });
+});
+
+describe('the SQL lexer says where a literal or comment never closes', () => {
+    test.each([
+        ["UPDATE t SET a = 'x WHERE id = 1", 17],
+        ['UPDATE t SET a = $$x WHERE id = 1', 17],
+        ['UPDATE t SET a = $q$x$$ WHERE id = 1', 17],
+        ['UPDATE t SET a = 1 /* WHERE id = 1', 19],
+        ['UPDATE t SET a = "x WHERE id = 1', 17],
+    ])('%s', (sql, at) => {
+        expect(sqlSkeleton(sql).openAt).toBe(at);
+    });
+
+    test.each([
+        "UPDATE t SET a = 'it''s', b = $q$a$b$q$ WHERE id = 1 -- trailing",
+        'UPDATE t SET a = $$x$$ /* c */ WHERE id = 1',
+    ])('%s closes everything', (sql) => {
+        const { skeleton, openAt } = sqlSkeleton(sql);
+        expect(openAt).toBe(-1);
+        expect(skeleton).toContain('WHERE id = 1');
+    });
+});
