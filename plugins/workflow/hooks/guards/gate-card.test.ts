@@ -228,8 +228,11 @@ describe('destructive approval description', () => {
         expect(c.summary).toContain("`dev` (the profile's default");
     });
 
-    test('a non-gated command falls back to the reason', () => {
-        expect(describeGate('ls -la', 'some reason')).toEqual({ label: 'some reason', summary: 'some reason' });
+    test('a non-gated command falls back to the reason, under a plain line saying the guard could not tell what it does', () => {
+        expect(describeGate('ls -la', 'some reason')).toEqual({
+            label: 'some reason',
+            summary: "The guard flagged this command as able to delete or overwrite something but couldn't work out what; check the full command before approving.",
+        });
     });
 
     test('a description that would overflow is cut to the budget', () => {
@@ -239,6 +242,129 @@ describe('destructive approval description', () => {
         expect(c.summary.length).toBeGreaterThan(CARD_SUMMARY_MAX_CHARS - 60);
         expect(c.label.length).toBeLessThanOrEqual(CARD_LABEL_MAX_CHARS);
         expect(c.label.endsWith('…')).toBe(true);
+    });
+});
+
+describe('SQL descriptions claim no WHERE only for a statement the guard parsed whole', () => {
+    // A psql heredoc writes a dollar-quoted literal as `\$tag\$` so the shell passes `$tag$` through.
+    const heredocUpdate = String.raw`psql "$DB_URL" <<SQL
+BEGIN;
+UPDATE app.users SET role='X', access=\$ua\$[{"scope":"reports","level":"read"}]\$ua\$::jsonb, updated_at=now() WHERE id = 1 AND tenant_id='t' RETURNING id;
+COMMIT;
+SQL`;
+    // The literal's content comes from a variable, so the raw heredoc text holds `$$`.
+    const runtimeLiteral = String.raw`V=$(cat ./grant.json); cat > grant.sql <<EOF
+UPDATE app.users
+   SET role = 'Viewer', access = \$ua\$${'$'}{V}\$ua\$::jsonb
+ WHERE id = 7 AND access = '{"admin": false}'::jsonb
+RETURNING id, access->'admin' AS admin;
+EOF
+psql "$DB_URL" -f grant.sql`;
+
+    test.each([
+        ['a dollar-quoted literal written for an unquoted heredoc', heredocUpdate, "`id = 1 AND tenant_id='t'`"],
+        ['a dollar-quoted literal filled from a variable', runtimeLiteral, "`id = 7 AND access = '{\"admin\": false}'::jsonb`"],
+    ])('%s: still gated, and described as not parsed with the WHERE another reading finds', (_name, command, where) => {
+        const c = card(command);
+        expect(c.label).toBe('Update rows in PostgreSQL table app.users');
+        expect(c.summary).not.toContain('every row');
+        expect(c.summary).not.toContain('no WHERE');
+        expect(c.summary).toContain("The guard couldn't fully parse this statement");
+        expect(c.summary).toContain(`Read another way, it is limited to rows where ${where}.`);
+        expect(c.summary.split('\n')[0]).toBe(
+            "Changes rows in the table `app.users` in a PostgreSQL database (the guard couldn't tell which rows); only a backup can bring back what it deletes or overwrites.",
+        );
+    });
+
+    test('a literal that never closes is described as not parsed, and gates as before', () => {
+        const c = card(`psql -c "UPDATE app.users SET note = 'unterminated WHERE id = 1"`);
+        expect(c.summary).not.toContain('every row');
+        expect(c.summary).toContain("The guard couldn't fully parse this statement");
+    });
+
+    test('a DELETE whose WHERE sits after a literal that never closes names no rows', () => {
+        const c = card(`psql -c "DELETE FROM app.sessions WHERE note = 'open"`);
+        expect(c.summary).not.toContain('every row');
+        expect(c.summary).not.toContain('where `');
+        expect(c.summary).toContain("The guard couldn't fully parse this statement");
+    });
+
+    test('a parsed UPDATE with no WHERE still says every row', () => {
+        const c = card(`psql -h db.example.test -d app -c "UPDATE app.users SET role = 'X'"`);
+        expect(c.label).toBe('Update every row in PostgreSQL table app.users');
+        expect(c.summary).toContain('Rewrites every row in `app.users` (no WHERE clause).');
+    });
+
+    test("a DELETE's condition is its own WHERE, not one inside a literal or a subquery", () => {
+        expect(card(`psql -c "DELETE FROM app.t RETURNING 'WHERE x'"`).summary).toContain('every row in `app.t` (no WHERE clause)');
+        expect(card(`psql -c "DELETE FROM app.t USING (SELECT id FROM app.u WHERE gone) g RETURNING 1"`).summary)
+            .toContain('chosen by a condition inside a subquery');
+    });
+
+    test('a statement after block words is described by its verb', () => {
+        const c = card(`psql -c "DO \\$\\$ BEGIN DELETE FROM app.t WHERE id = 3; END \\$\\$"`);
+        expect(c.label).toBe('Delete rows from PostgreSQL table app.t');
+        expect(c.summary).toContain('where `id = 3`');
+    });
+});
+
+describe('every card opens with one plain sentence', () => {
+    test.each([
+        [
+            'git clean -x',
+            'cd /work/app && git clean -fdx',
+            "Permanently deletes every file not saved in Git in `/work/app`, including ignored files, which often hold secrets and local data; they skip the trash and can't be recovered.",
+        ],
+        [
+            'force push',
+            'git push -f origin main',
+            "Overwrites the history of the branch `main` on the shared copy `origin` with this copy's; work others saved there that this copy doesn't have is lost for everyone.",
+        ],
+        [
+            'remote branch delete',
+            'git push origin --delete feature-x',
+            'Deletes the branch `feature-x` from the shared copy `origin`; work saved only on it is lost unless someone has a copy, and its pull requests close.',
+        ],
+        [
+            'DROP TABLE',
+            'psql -h db.example.test -d app -c "DROP TABLE app.orders"',
+            'Deletes the table `app.orders` and all its data in the PostgreSQL database `app` on `db.example.test`; only a backup can bring back what it deletes or overwrites.',
+        ],
+        [
+            'Snowflake DELETE with a WHERE',
+            `snow sql -c dev -q "delete from analytics.scratch.events where day < '2026-01-01'"`,
+            'Deletes some rows from the table `analytics.scratch.events` in Snowflake (connection `dev`); only Snowflake Time Travel can bring back what it deletes or overwrites, and only for a limited time.',
+        ],
+        [
+            'dbt full refresh',
+            'dbt run --full-refresh --select orders --target prod',
+            'Deletes and rebuilds the dbt model `orders` from scratch in the dbt target `prod`; rows that only earlier runs kept are lost for good.',
+        ],
+        [
+            'S3 delete',
+            'aws s3 rm --recursive s3://example-bucket/exports/',
+            "Deletes every file under `s3://example-bucket/exports/` from Amazon S3 cloud storage; it can't be recovered unless the bucket keeps old versions.",
+        ],
+        [
+            'terraform destroy',
+            'terraform destroy',
+            "Runs `terraform destroy`, which destroys every resource this Terraform state manages; the resources and the data in them can't be brought back.",
+        ],
+        [
+            'a command with no plain description of its own',
+            'gcloud compute instances delete web-1',
+            'Runs `gcloud compute instances`, which the guard flags as able to delete or overwrite something; it may not be possible to undo.',
+        ],
+    ])('%s', (_name, command, headline) => {
+        const c = card(command);
+        const [first, blank] = c.summary.split('\n');
+        expect(first).toBe(headline);
+        expect(blank).toBe('');
+    });
+
+    test('says how many more gated steps the card describes', () => {
+        const c = card('git push -f origin main && git clean -fd');
+        expect(c.summary.split('\n')[0]).toEndWith(' The command has 1 more step like this, described below.');
     });
 });
 

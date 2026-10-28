@@ -34,7 +34,7 @@ import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, readConfigFile, ShellParseError, shellUnquote, viewShell } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -64,7 +64,7 @@ export interface ResolvedCommand {
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
     stdinTexts?: string[];      // heredoc and here-string text fed to this command
-    stdinExpanded?: string[];   // the part of stdinTexts bash expands variables in (not a quoted heredoc or '…' here-string)
+    stdinExpanded?: ExpandableWord[]; // the part of stdinTexts bash expands (not a quoted heredoc or '…' here-string)
     stdinFiles?: string[];      // files redirected into this command with `<`
     stdoutFiles?: string[];     // files this command's output is redirected into
     pipedInput?: PipedInput;    // what its pipeline feeds a command inside `$(…)`, whose offset can't key pipedInto
@@ -164,6 +164,15 @@ type ExpandableWord = { word: string; plain: string; joinSplit?: boolean };
 
 const heredocWord = (t: string): ExpandableWord => ({ word: `"${t.replace(/(["\\])/g, '\\$1')}"`, plain: t });
 
+/**
+ * An unquoted heredoc body as a double-quoted word: in both, a backslash quotes only `$`, a backtick, a backslash and a
+ * newline. A `"` is literal in the body, and so is a backslash before one, so both are escaped for the word.
+ */
+const heredocBodyWord = (t: string): ExpandableWord => ({
+    word: `"${t.replace(/\\[\s\S]|"/g, m => (m === '"' ? '\\"' : m === '\\"' ? '\\\\\\"' : m))}"`,
+    plain: t,
+});
+
 /** Each of `cmd`'s arguments as written (quotes included), when the parsed command line has it. */
 function argumentWords(cmd: ResolvedCommand, joinSplit = false): ExpandableWord[] {
     const script = cmd.script;
@@ -222,7 +231,7 @@ function expandedEmitter(cmd: ResolvedCommand): ResolvedCommand | null {
     }
     // A leading `printf -v NAME` (from one word or several) assigns the output instead of printing it.
     if (cmd.name === 'printf' && /^-v/.test(argv[0] ?? '')) return { ...cmd, args: [], stdinTexts: [] };
-    const stdin = expandWords((cmd.stdinExpanded ?? []).map(heredocWord), cmd);
+    const stdin = expandWords(cmd.stdinExpanded ?? [], cmd);
     // Each value is scanned whole and without leading option words too: an unquoted `-e DROP …` splits into an option
     // and the SQL echo prints, while emittedText would drop the joined word as an option.
     return stdin === null ? null : { ...cmd, args, stdinTexts: [...(cmd.stdinTexts ?? []), ...stdin, ...values] };
@@ -775,7 +784,16 @@ export const SQL_CLIS: Record<string, string> = {
  * findDestructiveSqlStatement.
  */
 export function stripSqlLiteralsAndComments(sql: string): string {
+    return sqlSkeleton(sql).skeleton;
+}
+
+/**
+ * stripSqlLiteralsAndComments, plus where the first literal or comment that never closes starts (-1 when every one
+ * closes). From there to the end the skeleton is blank, so no statement there was read.
+ */
+export function sqlSkeleton(sql: string): { skeleton: string; openAt: number } {
     const out: string[] = [];
+    let openAt = -1;
     let i = 0;
     while (i < sql.length) {
         const c = sql[i];
@@ -790,6 +808,7 @@ export function stripSqlLiteralsAndComments(sql: string): string {
         }
         if (c2 === '/*') {
             const close = sql.indexOf('*/', i + 2);
+            if (close < 0) openAt = i;
             const end = close < 0 ? sql.length : close + 2;
             out.push(' '.repeat(end - i));
             i = end;
@@ -798,6 +817,7 @@ export function stripSqlLiteralsAndComments(sql: string): string {
         if (c === "'" || c === '"' || c === '`') {
             const quote = c;
             const start = i;
+            let closed = false;
             i += 1;
             while (i < sql.length) {
                 if (sql[i] === quote && sql[i + 1] === quote) {
@@ -806,10 +826,12 @@ export function stripSqlLiteralsAndComments(sql: string): string {
                 }
                 if (sql[i] === quote) {
                     i += 1;
+                    closed = true;
                     break;
                 }
                 i += 1;
             }
+            if (!closed) openAt = start;
             // Replace whole literal (quotes included) with spaces, length-preserving
             out.push(quote + ' '.repeat(Math.max(0, i - start - 2)) + quote);
             continue;
@@ -827,6 +849,7 @@ export function stripSqlLiteralsAndComments(sql: string): string {
                     continue;
                 }
                 // Unclosed dollar-quote — stop parsing as code from here, replace rest with spaces
+                openAt = i;
                 out.push(' '.repeat(sql.length - i));
                 i = sql.length;
                 continue;
@@ -835,7 +858,7 @@ export function stripSqlLiteralsAndComments(sql: string): string {
         out.push(c);
         i += 1;
     }
-    return out.join('');
+    return { skeleton: out.join(''), openAt };
 }
 
 /**
@@ -1106,7 +1129,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const argCounts = new Map<string, number>();
     const asArgument = (t: string) => argCounts.set(t, (argCounts.get(t) ?? 0) + 1);
     for (const view of cmd.expandAs === undefined ? [cmd] : cmd.expandAs ?? []) {
-        const stdin = expandWords((view.stdinExpanded ?? []).map(heredocWord), view);
+        const stdin = expandWords(view.stdinExpanded ?? [], view);
         const words = expandWords(argumentWords(view).filter((_, i) => !fileValue(i)), view);
         if (stdin === null || words === null) {
             expanded = null;
@@ -1931,7 +1954,7 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>, command: 
 /** The substitution text before `cmd` assigns a variable its words reference. */
 function assignsInside(text: string | undefined, cmd: ResolvedCommand): boolean {
     if (!text) return false;
-    const names = [...cmd.args, ...(cmd.stdinExpanded ?? [])].flatMap(t => [...t.matchAll(/\$\{?([A-Za-z_]\w*)/g)].map(m => m[1]));
+    const names = [...cmd.args, ...(cmd.stdinExpanded ?? []).map(w => w.plain)].flatMap(t => [...t.matchAll(/\$\{?([A-Za-z_]\w*)/g)].map(m => m[1]));
     return names.some(name => new RegExp(`(?:^|[\\s;&|(])(?:export\\s+|local\\s+|declare\\s+)?${name}=`).test(text));
 }
 
@@ -2294,7 +2317,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         ['<<', '<<<', '<<-'].includes(r.operator)
     );
     const stdinTexts: string[] = [];
-    const stdinExpanded: string[] = [];
+    const stdinExpanded: ExpandableWord[] = [];
     const stdinFiles: string[] = [];
     const stdoutFiles: string[] = [];
     for (const r of (node.redirects || [])) {
@@ -2303,10 +2326,10 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         }
         if (r?.operator === '<<' || r?.operator === '<<-') {
             stdinTexts.push(String(r.content ?? ''));
-            if (!r.heredocQuoted) stdinExpanded.push(String(r.content ?? ''));
+            if (!r.heredocQuoted) stdinExpanded.push(heredocBodyWord(String(r.content ?? '')));
         } else if (r?.operator === '<<<') {
             stdinTexts.push(wordValue(r.target));
-            if (!String(r.target?.text ?? '').startsWith("'")) stdinExpanded.push(wordValue(r.target));
+            if (!String(r.target?.text ?? '').startsWith("'")) stdinExpanded.push(heredocWord(wordValue(r.target)));
         }
         else if (r?.operator === '<' || r?.operator === '<>') stdinFiles.push(wordValue(r.target));
     }
@@ -2758,7 +2781,7 @@ function samePath(path: string): string {
 
 /** An emitter's words or heredoc input hold a variable or command substitution, so its text may change when expanded. */
 function holdsVariable(cmd: ResolvedCommand): boolean {
-    return [...cmd.args, ...(cmd.stdinExpanded ?? [])].some(t => /[$`]/.test(t));
+    return [...cmd.args, ...(cmd.stdinExpanded ?? []).map(w => w.plain)].some(t => /[$`]/.test(t));
 }
 
 /** The text an emitter writes to stdout or its files (not counting what a pipe feeds it). */
@@ -4786,6 +4809,8 @@ interface StepCard {
     label: string;
     lines: string[];
     dir?: string;
+    /** `inDir`: the step acts on files in the directory it runs in, so the plain sentence names it before `note`. */
+    plain: PlainEffect & { inDir?: boolean; note?: string };
 }
 
 const STATEMENT_MAX_CHARS = 4000;
@@ -4820,73 +4845,185 @@ function destructiveKeywordAnywhere(sql: string): DestructiveMatch | null {
     return null;
 }
 
-function destructiveStatements(sql: string, depth = 0): DestructiveMatch[] {
-    if (depth > SQL_RECURSION_LIMIT || !SQL_PREFILTER.test(sql)) return [];
-    const skeleton = stripSqlLiteralsAndComments(sql);
-    const found: DestructiveMatch[] = [];
+/** A destructive statement as the description reads it. `statement` is what the gate saw, for decisions keyed on it. */
+interface FoundStatement extends DestructiveMatch {
+    /** The statement from its verb on, past leading whitespace, comments and block words such as BEGIN. */
+    text: string;
+    /** `text` with literals and comments blanked, offsets matching. */
+    skeleton: string;
+    /** False when a literal or comment in it never closes, or it comes from a guessed reading of the input. */
+    parsed: boolean;
+}
+
+/** Where a statement's verb starts in its skeleton segment, past whitespace and block words such as BEGIN or IF … THEN. */
+function statementStart(segment: string): number {
+    const skip = (at: number) => at + segment.slice(at).length - segment.slice(at).trimStart().length;
+    let at = skip(0);
+    for (let i = 0; i < BLOCK_LEAD_MAX_STRIPS; i++) {
+        const m = BLOCK_LEAD.exec(segment.slice(at));
+        if (!m?.[0]) break;
+        at = skip(at + m[0].length);
+    }
+    return at;
+}
+
+function sqlStatements(
+    sql: string,
+    outerParsed = true,
+    { skeleton, openAt } = sqlSkeleton(sql),
+): Array<{ segment: string; original: string; text: string; skeleton: string; parsed: boolean }> {
+    const out = [];
     let offset = 0;
     for (const segment of skeleton.split(';')) {
-        const original = sql.slice(offset, offset + segment.length).trim();
-        offset += segment.length + 1;
+        const end = offset + segment.length;
+        const start = offset + statementStart(segment);
+        out.push({
+            segment,
+            original: sql.slice(offset, end).trim(),
+            text: sql.slice(start, end).trimEnd(),
+            skeleton: skeleton.slice(start, end).trimEnd(),
+            parsed: outerParsed && (openAt < 0 || end <= openAt),
+        });
+        offset = end + 1;
+    }
+    return out;
+}
+
+function destructiveStatements(sql: string, depth = 0, outerParsed = true): FoundStatement[] {
+    if (depth > SQL_RECURSION_LIMIT || !SQL_PREFILTER.test(sql)) return [];
+    const found: FoundStatement[] = [];
+    const lexed = sqlSkeleton(sql);
+    for (const { segment, original, text, skeleton, parsed } of sqlStatements(sql, outerParsed, lexed)) {
         for (const { body, isCTE } of decomposeSqlSegment(segment)) {
             const match = checkSqlBody(body, isCTE);
             if (match) {
-                found.push({ pattern: match.pattern, statement: original });
+                found.push({ pattern: match.pattern, statement: original, text, skeleton, parsed });
                 break;
             }
         }
     }
-    for (const literal of findExecuteImmediateLiterals(sql, skeleton)) {
-        found.push(...destructiveStatements(literal, depth + 1));
+    for (const literal of findExecuteImmediateLiterals(sql, lexed.skeleton)) {
+        found.push(...destructiveStatements(literal, depth + 1, outerParsed && lexed.openAt < 0));
     }
     return found;
 }
 
+/** The condition after a statement's own WHERE (not one inside parentheses), as written, up to RETURNING. */
+function topLevelWhere(text: string, skeleton: string): string | null {
+    let depth = 0;
+    let flat = '';
+    for (let i = 0; i < skeleton.length; i++) {
+        const c = skeleton[i];
+        if (c === '(') depth++;
+        flat += depth > 0 ? ' ' : c;
+        if (c === ')' && depth > 0) depth--;
+    }
+    const where = /\bWHERE\b/i.exec(flat);
+    if (!where) return null;
+    const returning = /\bRETURNING\b/i.exec(flat.slice(where.index));
+    const condition = oneLine(text.slice(where.index + where[0].length, returning ? where.index + returning.index : text.length));
+    return condition || null;
+}
+
 const SQL_OBJECT = String.raw`([^\s;(]+)`;
 
-function sqlEffect(pattern: string, statement: string, dialect: string): { title: string; effect: string } {
-    const s = oneLine(statement.slice(0, STATEMENT_MAX_CHARS));
+/** A WHERE condition another reading of the same input gives an UPDATE or DELETE on `table`, when one parses. */
+type WhereElsewhere = (verb: 'UPDATE' | 'DELETE', table: string) => string | null;
+
+interface SqlEffect {
+    title: string;
+    effect: string;
+    plain: string;
+    /** Follows the database in the plain sentence. */
+    note?: string;
+    /** Overrides the dialect's usual answer to what could be lost. */
+    loss?: string;
+}
+
+function sqlEffect(st: FoundStatement, dialect: string, whereElsewhere: WhereElsewhere): SqlEffect {
+    const { pattern } = st;
+    const s = oneLine(st.text.slice(0, STATEMENT_MAX_CHARS));
+    const unsure = (verb: 'UPDATE' | 'DELETE', table: string, rows: string) => {
+        const elsewhere = whereElsewhere(verb, table);
+        return `${rows} The guard couldn't fully parse this statement, so it can't tell which rows, and the guard rule below may be misreading it.`
+            + (elsewhere ? ` Read another way, it is limited to rows where ${code(clip(elsewhere, 160))}.` : '');
+    };
     let m: RegExpMatchArray | null;
     if (pattern === 'DROP' && (m = s.match(new RegExp(String.raw`^DROP\s+(MATERIALIZED\s+VIEW|\w+)\s+(?:IF\s+EXISTS\s+)?` + SQL_OBJECT, 'i')))) {
         const kind = m[1].toLowerCase().replace(/\s+/g, ' ');
         const contents = kind === 'schema' || kind === 'database' ? ' and every table and view in it' : '';
-        return { title: `Drop ${dialect} ${kind} ${m[2]}`, effect: `Deletes the ${kind} ${code(m[2])}${contents}, with all data.` };
+        return {
+            title: `Drop ${dialect} ${kind} ${m[2]}`,
+            effect: `Deletes the ${kind} ${code(m[2])}${contents}, with all data.`,
+            plain: `Deletes the ${kind} ${code(m[2])}${contents} and all its data`,
+        };
     }
     if (pattern === 'TRUNCATE' && (m = s.match(new RegExp(String.raw`^TRUNCATE\s+(?:TABLE\s+)?(?:IF\s+EXISTS\s+)?` + SQL_OBJECT, 'i')))) {
-        return { title: `Empty ${dialect} table ${m[1]}`, effect: `Deletes every row in ${code(m[1])}.` };
+        return { title: `Empty ${dialect} table ${m[1]}`, effect: `Deletes every row in ${code(m[1])}.`, plain: `Deletes every row of the table ${code(m[1])}` };
     }
-    if (pattern === 'DELETE FROM' && (m = s.match(new RegExp(String.raw`^DELETE\s+FROM\s+` + SQL_OBJECT + String.raw`([\s\S]*)$`, 'i')))) {
-        const where = m[2].match(/\bWHERE\b([\s\S]*)$/i)?.[1].replace(/\bRETURNING\b[\s\S]*$/i, '').trim();
-        return {
-            title: `Delete rows from ${dialect} table ${m[1]}`,
-            effect: where
-                ? `Deletes the rows in ${code(m[1])} where ${code(clip(where, 200))}.`
-                : `Deletes every row in ${code(m[1])} (no WHERE clause).`,
-        };
+    if (pattern === 'DELETE FROM' && (m = s.match(new RegExp(String.raw`^DELETE\s+FROM\s+` + SQL_OBJECT, 'i')))) {
+        const title = `Delete rows from ${dialect} table ${m[1]}`;
+        if (!st.parsed) {
+            return { title, effect: unsure('DELETE', m[1], `Deletes rows in ${code(m[1])}.`), plain: `Deletes rows from the table ${code(m[1])}`, note: "(the guard couldn't tell which rows)" };
+        }
+        const where = topLevelWhere(st.text, st.skeleton);
+        if (where) return { title, effect: `Deletes the rows in ${code(m[1])} where ${code(clip(where, 200))}.`, plain: `Deletes some rows from the table ${code(m[1])}` };
+        return HAS_WHERE.test(st.skeleton)
+            ? { title, effect: `Deletes rows in ${code(m[1])} chosen by a condition inside a subquery.`, plain: `Deletes rows from the table ${code(m[1])}` }
+            : { title, effect: `Deletes every row in ${code(m[1])} (no WHERE clause).`, plain: `Deletes every row of the table ${code(m[1])}` };
     }
     if (pattern === 'CREATE OR REPLACE' && (m = s.match(new RegExp(String.raw`^CREATE\s+OR\s+REPLACE\s+((?:(?:TEMP|TEMPORARY|EXTERNAL|MATERIALIZED|TRANSIENT|SECURE)\s+)*\w+)\s+(?:IF\s+NOT\s+EXISTS\s+)?` + SQL_OBJECT, 'i')))) {
         const kind = m[1].toLowerCase().replace(/\s+/g, ' ');
-        return {
-            title: `Replace ${dialect} ${kind} ${m[2]}`,
-            effect: /table/.test(kind)
-                ? `If ${code(m[2])} already exists, it is dropped with all its rows and recreated from this statement.`
-                : `Overwrites the existing definition of ${kind} ${code(m[2])}.`,
-        };
+        return /table/.test(kind)
+            ? {
+                title: `Replace ${dialect} ${kind} ${m[2]}`,
+                effect: `If ${code(m[2])} already exists, it is dropped with all its rows and recreated from this statement.`,
+                plain: `Replaces the table ${code(m[2])}, deleting every row it holds now`,
+            }
+            : {
+                title: `Replace ${dialect} ${kind} ${m[2]}`,
+                effect: `Overwrites the existing definition of ${kind} ${code(m[2])}.`,
+                plain: `Replaces the ${kind} ${code(m[2])}`,
+                loss: 'its old definition is lost unless it is saved somewhere else',
+            };
     }
     if (pattern === 'INSERT OVERWRITE' && (m = s.match(new RegExp(String.raw`^INSERT\s+OVERWRITE\s+(?:INTO\s+)?(?:TABLE\s+)?` + SQL_OBJECT, 'i')))) {
-        return { title: `Overwrite ${dialect} table ${m[1]}`, effect: `Deletes every row in ${code(m[1])} and replaces them with the query result.` };
+        return {
+            title: `Overwrite ${dialect} table ${m[1]}`,
+            effect: `Deletes every row in ${code(m[1])} and replaces them with the query result.`,
+            plain: `Replaces every row of the table ${code(m[1])}`,
+        };
     }
     if (pattern === 'MERGE' && (m = s.match(new RegExp(String.raw`^MERGE\s+INTO\s+` + SQL_OBJECT, 'i')))) {
-        return { title: `Merge into ${dialect} table ${m[1]}`, effect: `Inserts, updates or deletes rows in ${code(m[1])} as the MERGE rules say.` };
+        return {
+            title: `Merge into ${dialect} table ${m[1]}`,
+            effect: `Inserts, updates or deletes rows in ${code(m[1])} as the MERGE rules say.`,
+            plain: `Adds, changes or deletes rows in the table ${code(m[1])}`,
+        };
     }
     if (pattern === 'ALTER ... DROP' && (m = s.match(new RegExp(String.raw`^ALTER\s+(\w+)\s+(?:IF\s+EXISTS\s+)?` + SQL_OBJECT + String.raw`[\s\S]*?\bDROP\s+((?:COLUMN|CONSTRAINT|PARTITION)\s+)?(?:IF\s+EXISTS\s+)?([^\s,;]+)`, 'i')))) {
         const what = `${(m[3] ?? '').toLowerCase()}${m[4]}`;
-        return { title: `Drop ${what} from ${dialect} ${m[1].toLowerCase()} ${m[2]}`, effect: `Removes ${code(what)} from ${code(m[2])}; any data it held is deleted.` };
+        return {
+            title: `Drop ${what} from ${dialect} ${m[1].toLowerCase()} ${m[2]}`,
+            effect: `Removes ${code(what)} from ${code(m[2])}; any data it held is deleted.`,
+            plain: `Removes ${code(what)} and the data it holds from ${code(m[2])}`,
+        };
     }
     if (pattern === 'UPDATE without WHERE' && (m = s.match(new RegExp(String.raw`^UPDATE\s+` + SQL_OBJECT, 'i')))) {
-        return { title: `Update every row in ${dialect} table ${m[1]}`, effect: `Rewrites every row in ${code(m[1])} (no WHERE clause).` };
+        return st.parsed
+            ? {
+                title: `Update every row in ${dialect} table ${m[1]}`,
+                effect: `Rewrites every row in ${code(m[1])} (no WHERE clause).`,
+                plain: `Changes every row of the table ${code(m[1])}`,
+            }
+            : {
+                title: `Update rows in ${dialect} table ${m[1]}`,
+                effect: unsure('UPDATE', m[1], `Changes rows in ${code(m[1])}.`),
+                plain: `Changes rows in the table ${code(m[1])}`,
+                note: "(the guard couldn't tell which rows)",
+            };
     }
-    return { title: `Run destructive ${dialect} SQL (${pattern})`, effect: `Runs a ${pattern} statement.` };
+    return { title: `Run destructive ${dialect} SQL (${pattern})`, effect: `Runs a ${pattern} statement.`, plain: `Runs a ${pattern} statement that can delete or overwrite data` };
 }
 
 /** Every value of a flag, in `--flag value` and `--flag=value` forms. */
@@ -4918,15 +5055,15 @@ function flagList(args: string[], names: string[]): string[] {
     return out.flatMap(v => v.split(/[\s,]+/)).filter(Boolean);
 }
 
-function databaseLine(cmd: ResolvedCommand): string | null {
-    const parts: string[] = [];
+function databaseParts(cmd: ResolvedCommand): Array<[string, string]> {
+    const parts: Array<[string, string]> = [];
     if (cmd.name === 'snow') {
         const conn = flagValue(cmd.args, ['-c', '--connection']);
         const role = flagValue(cmd.args, ['--role']);
         const db = flagValue(cmd.args, ['--database', '--dbname']);
-        parts.push(conn ? `connection ${code(conn)}` : 'default connection');
-        if (role) parts.push(`role ${code(role)}`);
-        if (db) parts.push(`database ${code(db)}`);
+        if (conn) parts.push(['connection', conn]);
+        if (role) parts.push(['role', role]);
+        if (db) parts.push(['database', db]);
     } else if (cmd.name === 'psql') {
         const conninfo = cmd.args.find(a => /^postgres(?:ql)?:\/\/|\bhost=/.test(a)) ?? '';
         const host = flagValue(cmd.args, ['-h', '--host'])
@@ -4935,28 +5072,85 @@ function databaseLine(cmd: ResolvedCommand): string | null {
         const db = flagValue(cmd.args, ['-d', '--dbname'])
             ?? conninfo.match(/\bdbname=(\S+)/)?.[1]
             ?? conninfo.match(/^postgres(?:ql)?:\/\/[^/]*\/([^?]+)/)?.[1];
-        if (host) parts.push(`host ${code(host)}`);
-        if (db) parts.push(`database ${code(db)}`);
+        if (host) parts.push(['host', host]);
+        if (db) parts.push(['database', db]);
     }
+    return parts;
+}
+
+function databaseLine(cmd: ResolvedCommand): string | null {
+    const parts = databaseParts(cmd).map(([k, v]) => `${k} ${code(v)}`);
+    if (cmd.name === 'snow' && !databaseParts(cmd).some(([k]) => k === 'connection')) parts.unshift('default connection');
     return parts.length ? `Database: ${parts.join(' · ')}` : null;
 }
 
+/** Where a SQL client step runs, in words: "in the PostgreSQL database `app` on `db.example.test`". */
+function databasePlace(cmd: ResolvedCommand, dialect: string): string {
+    const parts = new Map(databaseParts(cmd));
+    if (cmd.name === 'snow') return `in Snowflake (${parts.has('connection') ? `connection ${code(parts.get('connection')!)}` : 'the default connection'})`;
+    const db = parts.get('database');
+    const host = parts.get('host');
+    return db || host ? `in the ${dialect} database${db ? ` ${code(db)}` : ''}${host ? ` on ${code(host)}` : ''}` : `in a ${dialect} database`;
+}
+
 function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
-    const statements = sqlInputOf(cmd).texts.flatMap(t => destructiveStatements(t)).slice(0, 3);
-    const lines: string[] = [];
-    let label = `Run destructive ${dialect} SQL`;
-    statements.forEach((st, i) => {
-        const { title, effect } = sqlEffect(st.pattern, st.statement, dialect);
-        if (i === 0) label = title;
-        lines.push(`${i === 0 ? 'If you approve:' : 'And:'} ${effect}`);
-    });
-    if (statements.length > 1) label += ` (+${statements.length - 1} more)`;
+    // psql may read a backslash command as running to the end of its line, which the gate also checks; a statement
+    // only that reading finds was guessed at, not parsed.
+    const readings = sqlInputOf(cmd).texts.flatMap(t => (cmd.name === 'psql' ? psqlStatementTexts(t) : [t]).map((text, i) => ({ text, guessed: i > 0 })));
+    const wheres = new Map<string, string | null>();
+    const whereElsewhere: WhereElsewhere = (verb, table) => {
+        const key = `${verb} ${table}`;
+        if (!wheres.has(key)) wheres.set(key, findWhere(verb, table));
+        return wheres.get(key)!;
+    };
+    let parsedStatements: ReturnType<typeof sqlStatements> | undefined;
+    const findWhere: WhereElsewhere = (verb, table) => {
+        const head = new RegExp(String.raw`^${verb === 'UPDATE' ? 'UPDATE' : String.raw`DELETE\s+FROM`}\s+${table.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[\s(]|$)`, 'i');
+        parsedStatements ??= readings.filter(r => !r.guessed && SQL_PREFILTER.test(r.text)).flatMap(r => sqlStatements(r.text)).filter(st => st.parsed);
+        for (const st of parsedStatements) {
+            if (!head.test(st.skeleton)) continue;
+            const where = topLevelWhere(st.text, st.skeleton);
+            if (where) return where;
+        }
+        return null;
+    };
+    // One statement read several ways is described once. The text of one the guard couldn't parse is unreliable past
+    // its verb and object, so it repeats any other unparsed statement with the same title.
+    const statements: Array<FoundStatement & { effect: SqlEffect }> = [];
+    const seen = new Set<string>();
+    for (const { text, guessed } of readings) {
+        for (const st of destructiveStatements(text)) {
+            const found = { ...st, parsed: st.parsed && !guessed };
+            const effect = sqlEffect(found, dialect, whereElsewhere);
+            const key = found.parsed ? `parsed\u0000${found.pattern}\u0000${oneLine(found.text)}` : `unparsed\u0000${effect.title}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            statements.push({ ...found, effect });
+        }
+    }
+    const lines = statements.slice(0, 3).map((st, i) => `${i === 0 ? 'If you approve:' : 'And:'} ${st.effect.effect}`);
+    const first = statements[0]?.effect;
+    let label = first?.title ?? `Run destructive ${dialect} SQL`;
+    if (statements.length > 1) label += ` (+${Math.min(statements.length, 3) - 1} more)`;
+    const more = statements.length > 1 ? `, plus ${statements.length - 1} more statement${statements.length > 2 ? 's' : ''} that can delete or overwrite data` : '';
+    const plain = first
+        ? `${first.plain} ${databasePlace(cmd, dialect)}${first.note ? ` ${first.note}` : ''}${more}`
+        : `Runs ${dialect} commands the guard couldn't fully check ${databasePlace(cmd, dialect)}, so it can't say what they change`;
     lines.push(dialect === 'Snowflake'
         ? 'Undo: only through Snowflake Time Travel or UNDROP, and only within the retention window.'
         : 'Undo: only from a backup.');
     const db = databaseLine(cmd);
     if (db) lines.push(db);
-    return { label, lines };
+    return {
+        label,
+        lines,
+        plain: {
+            what: plain,
+            loss: first?.loss ?? (dialect === 'Snowflake'
+                ? 'only Snowflake Time Travel can bring back what it deletes or overwrites, and only for a limited time'
+                : 'only a backup can bring back what it deletes or overwrites'),
+        },
+    };
 }
 
 function defaultDbtTarget(dir: string | undefined, cmd: ResolvedCommand): string | null {
@@ -4994,10 +5188,24 @@ function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
     lines.push(`dbt target: ${target ? code(target)
         : fallback ? `${code(fallback)} (the profile's default; no \`--target\` given)`
         : "the profile's default (no `--target` given)"}`);
-    if (cmd.args.includes('--empty')) {
+    const empty = cmd.args.includes('--empty');
+    if (empty) {
         lines.push('⚠️ `--empty` is set: every model this run builds will have zero rows afterwards.');
     }
-    return { label: `Rebuild ${what} from scratch (--full-refresh)`, lines };
+    const plainWhat = selector ? `the dbt models chosen by selector ${code(selector)}`
+        : runtime ? 'dbt models chosen when the command runs'
+        : models.length === 1 ? `the dbt model ${code(models[0])}`
+        : models.length > 1 ? `${models.length} dbt models`
+        : 'every dbt model in the project';
+    const where = target ? `the dbt target ${code(target)}` : fallback ? `the dbt target ${code(fallback)}` : "the profile's default dbt target";
+    return {
+        label: `Rebuild ${what} from scratch (--full-refresh)`,
+        lines,
+        plain: {
+            what: `Deletes and rebuilds ${plainWhat} from scratch in ${where}${empty ? ', leaving them empty' : ''}`,
+            loss: 'rows that only earlier runs kept are lost for good',
+        },
+    };
 }
 
 function gitPushStep(cmd: ResolvedCommand): StepCard {
@@ -5029,28 +5237,43 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
     if (flags.has('--mirror')) {
         return { dir, label: `Mirror-push every branch and tag to ${remote}`, lines: [
             `If you approve: every branch and tag on ${code(remote)} is made to match this clone. Remote branches and tags that don't exist here are deleted.`,
-        ] };
+        ], plain: {
+            what: `Makes the shared copy ${code(remote)} match this one exactly, deleting branches and tags that exist only there`,
+            loss: 'work that exists only on those is lost for everyone',
+        } };
     }
     if (flags.has('--prune')) {
         const scope = refs.length ? `matching ${code(refs.join(' '))}` : 'covered by the push (branches, by default)';
         return { dir, label: `Delete remote refs on ${remote} that don't exist locally (--prune)`, lines: [
             `If you approve: every ref on ${code(remote)} ${scope} with no local counterpart is deleted. That can include tags when the refspec names them; pull requests from deleted branches close.`,
-        ] };
+        ], plain: {
+            what: `Deletes the branches on the shared copy ${code(remote)} that this copy doesn't have`,
+            loss: 'work that exists only on them is lost for everyone, and their pull requests close',
+        } };
     }
     const deleted = flags.has('--delete') || flags.has('-d') ? refs : refs.filter(r => r.startsWith(':'));
     if (deleted.length) {
         return { dir, label: `Delete remote branch ${refList(deleted)} on ${remote}`, lines: [
             `If you approve: ${code(refList(deleted))} is deleted on ${code(remote)}. Pull requests from it close, and commits pushed only there are lost unless someone has a copy.`,
-        ] };
+        ], plain: {
+            what: `Deletes the branch ${code(refList(deleted))} from the shared copy ${code(remote)}`,
+            loss: 'work saved only on it is lost unless someone has a copy, and its pull requests close',
+        } };
     }
     const forceAll = flags.has('--force') || flags.has('-f');
     const forced = forceAll ? refs : refs.filter(r => r.startsWith('+'));
     const which = flags.has('--all') || flags.has('--branches') ? 'every local branch'
         : flags.has('--tags') ? 'every tag'
         : forced.length ? code(refList(forced)) : 'the current branch';
+    const plainWhich = flags.has('--all') || flags.has('--branches') ? 'every branch'
+        : flags.has('--tags') ? 'every tag'
+        : forced.length ? `the branch ${code(refList(forced))}` : 'the current branch';
     return { dir, label: `Force-push ${which.replace(/`/g, '')} to ${remote}`, lines: [
         `If you approve: ${which} on ${code(remote)} is overwritten with this local history. Commits on the remote that aren't in this copy are discarded for everyone.`,
-    ] };
+    ], plain: {
+        what: `Overwrites the history of ${plainWhich} on the shared copy ${code(remote)} with this copy's`,
+        loss: "work others saved there that this copy doesn't have is lost for everyone",
+    } };
 }
 
 interface GitCleanArgs { dryRun: boolean; help: boolean; ignored: boolean; onlyIgnored: boolean; dirs: boolean; excluded: string[]; paths: string[] }
@@ -5132,7 +5355,15 @@ function gitCleanStep(cmd: ResolvedCommand): StepCard {
     const added = onlyIgnored ? plain : negated;
     if (kept.length) lines.push(`Kept: files matching ${kept.map(code).join(', ')}.`);
     if (added.length) lines.push(`Also deleted: files matching ${added.map(code).join(', ')}, which -e ${onlyIgnored ? 'marks as ignored' : 'un-ignores'}.`);
-    return { dir: gitEffectiveDir(cmd.args, cmd.env), label: `Permanently delete ${what}${where.replace(/`/g, '')} (git clean)`, lines };
+    const plainWhat = onlyIgnored ? 'the files Git is set to ignore' : 'every file not saved in Git';
+    const plainNote = onlyIgnored ? ', which often hold secrets, local data and build output'
+        : ignored ? ', including ignored files, which often hold secrets and local data' : '';
+    return {
+        dir: gitEffectiveDir(cmd.args, cmd.env),
+        label: `Permanently delete ${what}${where.replace(/`/g, '')} (git clean)`,
+        lines,
+        plain: { what: `Permanently deletes ${plainWhat}${where}`, note: plainNote, loss: "they skip the trash and can't be recovered", inDir: true },
+    };
 }
 
 function awsStep(cmd: ResolvedCommand): StepCard {
@@ -5140,13 +5371,20 @@ function awsStep(cmd: ResolvedCommand): StepCard {
     const operands = cmd.args.slice(opIndex + 1).filter(a => !a.startsWith('-'));
     const lines: string[] = [];
     let label = `AWS ${service} ${op}`;
+    let plain: PlainEffect;
     if (service === 's3' && op === 'rm') {
         const recursive = cmd.args.includes('--recursive');
         label = `Delete S3 ${recursive ? 'objects under' : 'object'} ${operands[0] ?? ''}`.trim();
         lines.push(`If you approve: deletes ${recursive ? 'everything under ' : ''}${code(operands[0] ?? '?')}. S3 has no undo unless the bucket has versioning.`);
+        plain = {
+            what: `Deletes ${recursive ? 'every file under' : 'the file'} ${code(operands[0] ?? '?')} from Amazon S3 cloud storage`,
+            loss: "it can't be recovered unless the bucket keeps old versions",
+        };
     } else if (service === 's3' && op === 'rb') {
         label = `Delete S3 bucket ${operands[0] ?? ''}`.trim();
-        lines.push(`If you approve: deletes the bucket ${code(operands[0] ?? '?')}${cmd.args.includes('--force') ? ' and every object in it' : ''}.`);
+        const force = cmd.args.includes('--force');
+        lines.push(`If you approve: deletes the bucket ${code(operands[0] ?? '?')}${force ? ' and every object in it' : ''}.`);
+        plain = { what: `Deletes the Amazon S3 storage bucket ${code(operands[0] ?? '?')}${force ? ' and every file in it' : ''}`, loss: "this can't be undone" };
     } else {
         const ids: string[] = [];
         cmd.args.forEach((a, k) => {
@@ -5156,38 +5394,46 @@ function awsStep(cmd: ResolvedCommand): StepCard {
             if (values.length) ids.push(`${a} ${values.join(' ')}`);
         });
         lines.push(`If you approve: runs ${code(op)} against AWS ${service}${ids.length ? ` for ${code(clip(ids.join(' '), 300))}` : ''}. AWS has no undo for delete and terminate calls.`);
+        plain = { what: `Deletes or shuts down AWS ${service} resources (${code(op)})`, loss: "AWS can't undo a delete or terminate" };
     }
     const profile = flagValue(cmd.args, ['--profile']);
-    if (profile) lines.push(`AWS profile: ${code(profile)}`);
-    return { label, lines };
+    if (profile) {
+        lines.push(`AWS profile: ${code(profile)}`);
+        plain = { ...plain, what: `${plain.what} in the AWS account of profile ${code(profile)}` };
+    }
+    return { label, lines, plain };
 }
 
-const GENERIC_EFFECTS: Record<string, string> = {
-    'terraform destroy': 'Destroys every resource this Terraform state manages.',
-    'terraform apply': 'Applies changes without showing the plan first; it can create, change or destroy infrastructure.',
-    'pulumi destroy': 'Destroys every resource in the stack.',
-    'cdk destroy': 'Destroys every resource in the stack.',
-    'kubectl delete': 'Deletes the named Kubernetes resources.',
-    'kubectl drain': 'Evicts every pod from the node and stops new ones landing there.',
-    'kubectl cordon': 'Stops new pods being scheduled on the node.',
-    'docker rm': 'Deletes the containers, with any data not stored in a volume.',
-    'docker rmi': 'Deletes the images.',
-    'docker system': 'Deletes stopped containers, unused networks and dangling images.',
-    'docker volume': 'Deletes the volumes and the data in them.',
-    'helm uninstall': 'Removes the release and every Kubernetes resource it created.',
-    'helm delete': 'Removes the release and every Kubernetes resource it created.',
-    'gh repo': 'Permanently deletes the GitHub repository.',
-    dd: 'Writes raw bytes to the output target; pointed at a disk, it overwrites it.',
+const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
+    'terraform destroy': ['Destroys every resource this Terraform state manages.', "the resources and the data in them can't be brought back"],
+    'terraform apply': ['Applies changes without showing the plan first; it can create, change or destroy infrastructure.', "anything it destroys can't be brought back"],
+    'pulumi destroy': ['Destroys every resource in the stack.', "the resources and the data in them can't be brought back"],
+    'cdk destroy': ['Destroys every resource in the stack.', "the resources and the data in them can't be brought back"],
+    'kubectl delete': ['Deletes the named Kubernetes resources.', 'data kept only inside them is lost'],
+    'kubectl drain': ['Evicts every pod from the node and stops new ones landing there.', 'running work is interrupted, though nothing is deleted and it can be reversed'],
+    'kubectl cordon': ['Stops new pods being scheduled on the node.', 'nothing is deleted, and it can be reversed'],
+    'docker rm': ['Deletes the containers, with any data not stored in a volume.', 'data not stored in a volume is lost'],
+    'docker rmi': ['Deletes the images.', 'they can usually be rebuilt or downloaded again'],
+    'docker system': ['Deletes stopped containers, unused networks and dangling images.', "what it removes can't be recovered"],
+    'docker volume': ['Deletes the volumes and the data in them.', "the data in them can't be recovered"],
+    'helm uninstall': ['Removes the release and every Kubernetes resource it created.', 'data kept only in those resources is lost'],
+    'helm delete': ['Removes the release and every Kubernetes resource it created.', 'data kept only in those resources is lost'],
+    'gh repo': ['Permanently deletes the GitHub repository.', "its code, issues and pull requests can't be recovered"],
+    dd: ['Writes raw bytes to the output target; pointed at a disk, it overwrites it.', "whatever it overwrites can't be recovered"],
 };
 
 function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
     const verbs = cmd.args.filter(a => /^[a-z][\w:-]*$/i.test(a)).slice(0, 2);
+    const run = code([cmd.name, ...verbs].join(' '));
     const targets = flagValues(cmd.args, ['-target']);
-    const effect = cmd.name === 'terraform' && targets.length
-        ? `Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`
+    const described: [effect: string, loss: string] | undefined = cmd.name === 'terraform' && targets.length
+        ? [`Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`, "anything it destroys can't be brought back"]
         : GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
-            ?? (PLATFORM_DESTRUCTIVE[cmd.name] ? `Deletes or shuts down the ${cmd.name} resource named in the step below.` : reason);
-    return { label: `Run ${[cmd.name, ...verbs].join(' ')}`, lines: [`If you approve: ${effect}`] };
+            ?? (PLATFORM_DESTRUCTIVE[cmd.name] ? [`Deletes or shuts down the ${cmd.name} resource named in the step below.`, "this can't be undone"] : undefined);
+    const plain: PlainEffect = described
+        ? { what: `Runs ${run}, which ${described[0].charAt(0).toLowerCase()}${described[0].slice(1)}`, loss: described[1] }
+        : { what: `Runs ${run}, which the guard flags as able to delete or overwrite something`, loss: 'it may not be possible to undo' };
+    return { label: `Run ${[cmd.name, ...verbs].join(' ')}`, lines: [`If you approve: ${described?.[0] ?? reason}`], plain };
 }
 
 const DIRECTORY_CHANGERS = new Set(['cd', 'pushd', 'popd']);
@@ -5263,7 +5509,10 @@ function* gatedSteps(
  * the variables the command provably sets filled in.
  */
 export function describeGate(command: string, reason: string, cwd: string = currentWorkingDir()): GateCard {
-    const fallback = { label: reason, summary: reason };
+    const fallback = {
+        label: reason,
+        summary: plainSentence({ what: "The guard flagged this command as able to delete or overwrite something but couldn't work out what", loss: 'check the full command before approving' }),
+    };
     try {
         const commands = extractCommands(command);
         if (commands[0]?.script) commands[0].script.cwd = cwd;
@@ -5324,12 +5573,13 @@ export function describeGate(command: string, reason: string, cwd: string = curr
                 lines.push(`⚠️ ${list.map(code).join(', ')} ${list.length === 1 ? 'is' : 'are'} only known when the command runs, so the value${list.length === 1 ? '' : 's'} above may differ.`);
             }
             if ([raw.name, ...raw.args].some(w => w.includes(FILLED))) lines.push(`⚠️ Part of this step is ${outer.name === 'xargs' ? 'what xargs reads' : 'each file find matches'}, only known when the command runs.`);
-            return { label: step.label, lines };
+            const plain = { what: `${step.plain.what}${step.plain.inDir && dir ? ` in ${code(dir)}` : ''}${step.plain.note ?? ''}`, loss: step.plain.loss };
+            return { label: step.label, lines, plain };
         });
 
         let label = steps[0].label;
         if (gated.length > 1) label += ` + ${gated.length - 1} more destructive step${gated.length > 2 ? 's' : ''}`;
-        const lines = steps.flatMap((s, i) => (i === 0 ? s.lines : ['', `Also: ${s.label}`, ...s.lines]));
+        const lines = [plainSentence(steps[0].plain, gated.length - 1), '', ...steps.flatMap((s, i) => (i === 0 ? s.lines : ['', `Also: ${s.label}`, ...s.lines]))];
         if (gated.length > steps.length) lines.push('', `…and ${gated.length - steps.length} more destructive steps; see the full command.`);
         if (commands.length > gated.length) {
             lines.push('', `Approving runs the whole command (${commands.length} steps), not only the step${gated.length > 1 ? 's' : ''} described here.`);

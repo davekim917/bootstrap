@@ -681,6 +681,21 @@ export function htmlToText(html: string): string {
         .trim() + (html.length > HTML_MAX_CHARS ? '\n…' : '');
 }
 
+/** What one gated step does, in words for an approver who doesn't read commands. */
+export interface PlainEffect {
+    what: string;
+    loss: string;
+}
+
+/**
+ * The first line of every card: one plain sentence naming what changes, where, and what could be lost for good,
+ * above the technical detail. `others` counts the further gated steps the card describes after the first.
+ */
+export function plainSentence(effect: PlainEffect, others = 0): string {
+    const more = others > 0 ? ` The command has ${others} more step${others > 1 ? 's' : ''} like this, described below.` : '';
+    return `${effect.what.replace(/[.\s]+$/, '')}; ${effect.loss.replace(/[.\s]+$/, '')}.${more}`;
+}
+
 /** Join lines, dropping trailing lines (not cutting mid-line) once over budget. */
 export function fitLines(lines: string[], max = CARD_SUMMARY_MAX_CHARS): string {
     const out: string[] = [];
