@@ -198,6 +198,100 @@ describe('evaluateEmailSend — gate decision', () => {
         }
     });
 
+    test('send text that only a filter reads, or a send run only for its help, sends nothing', () => {
+        for (const command of [
+            "sed -n '1,40p' notes.md; gws gmail +send --help 2>&1 | head -40",
+            'cd artifacts; grep -rl "gws gmail" .; grep -rh "gws gmail +send" . | head -5',
+            "grep -rn 'gws gmail +reply-all' docs/",
+            'cat notes.md | grep -c "gws gmail users messages send"',
+            "sed -n '/^Usage/,$p' guide.md; gws gmail +reply -h | head",
+        ]) {
+            expect(evaluateEmailSend(command, INTERACTIVE)).toEqual({ action: 'allow' });
+        }
+    });
+
+    test('beside send text in a filter, a real send or anything that could run one still gates', () => {
+        for (const command of [
+            'cd artifacts; grep -rh "gws gmail +send" . | head -5; gws gmail +send --to someone@example.org --body x',
+            'grep -rh "gws gmail +send" .; gws gmail +send --to someone@example.org --body x',
+            'grep -rh "gws gmail +send" . && gws gmail +reply --message-id 1a0 --body x',
+            'grep -rh "gws gmail +send" . | gws gmail +s""end --to someone@example.org --body x',
+            "sed -n '1,40p' notes.md; gws gmail +send --to someone@example.org --body x",
+            "sed -n '1,40p' notes.md; gws gmail +send --to someone@example.org --body x --dry-run",
+            'cd artifacts; gws gmail +send --help | head',
+            'cd /tmp/x && gws gmail +send --to someone@example.org --body x',
+            'eval "gws gmail +send --to someone@example.org --body x"',
+            'cd artifacts; eval "$(grep -h "gws gmail +send" run.txt)"',
+            'bash -c "gws gmail +send --to someone@example.org --body x"',
+            "sh -c 'gws gmail +send --to someone@example.org --body x'",
+            'echo "gws gmail +send --to someone@example.org --body x" | bash',
+            'grep -h "gws gmail +send" run.txt | sh',
+            'grep -h "gws gmail +send" run.txt | xargs -I{} sh -c {}',
+            'C=gws; $C gmail +send --to someone@example.org --body x; grep "gws gmail +send" .',
+            '$SEND; grep -rh "gws gmail +send" .',
+            'send() { gws gmail +send --to someone@example.org --body x; }; send; grep "gws gmail +send" .',
+            'grep() { gws gmail +send --to someone@example.org --body x; }; grep -rh "gws gmail +send" .',
+            'cd artifacts; grep -rh "gws gmail +send" . | head -5 )',
+            'cd artifacts; grep "gws gmail +send" "$(gws gmail +send --to someone@example.org --body x)"',
+            'grep "gws gmail +send" <(gws gmail +send --to someone@example.org --body x)',
+            'echo gws gmail +send --to someone@example.org',
+            "grep -rh 'x gws gmail +send' .",
+            'rg --pre ./run "gws gmail +send" .',
+            'find . -exec grep "gws gmail +send" {} +',
+            "OPTS='-e e'; printf '%s\\n' 'gws gmail +send --to someone@example.org --body x' | sed -n -e p $OPTS",
+            "sed -n -e p * ; grep 'gws gmail +send' notes.md",
+            "X='-v PATH /tmp/x'; printf $X; gws gmail +send --to someone@example.org --body x --help | head",
+        ]) {
+            expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
+        }
+    });
+
+    test('a word bash rewrites, an unlisted filter option, a file write or an evaluating expansion is not a probe', () => {
+        for (const command of [
+            // ANSI-C or expanded words that become sed or printf options when bash runs them.
+            "sed -n p $'\\055e' payload; grep 'gws gmail +send' /dev/null",
+            "sed -n p $'\\x2de' payload; grep 'gws gmail +send' /dev/null",
+            "sed -n p $'\\055f' payload; grep 'gws gmail +send' /dev/null",
+            "sed -n p $'\\x2df' payload; grep 'gws gmail +send' /dev/null",
+            "OPTS=-ee; printf '%s\\n' 'gws gmail +send --to someone@example.org --body x' | sed -n -e p \"$OPTS\"",
+            "printf $'\\x2dv' PATH /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'\\055v' BASH_ENV /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'\\U0000002dv' IFS /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'\\u002dv' PATH /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'-\\x76' PATH /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'\\x2dvPATH' /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $\"-v\" PATH /tmp/x; grep 'gws gmail +send' /dev/null",
+            "printf $'\\x2dv' PATH /tmp/x; sed -n p /dev/null; gws gmail +send --help",
+            'printf -v PATH /tmp/x; grep "gws gmail +send" /dev/null',
+            // Expansions that evaluate a value as code.
+            "A=1; cat <<EOF\n${A@P}\nEOF\ngrep 'gws gmail +send' /dev/null",
+            "printf '%s' \"${a@P}\"; grep 'gws gmail +send' /dev/null",
+            "printf '%s' \"${a[$(/tmp/x/run)]}\"; grep 'gws gmail +send' /dev/null",
+            "echo \"${!ref}\"; grep 'gws gmail +send' /dev/null",
+            'X=$((a)); gws gmail +send --help',
+            // Filter options that read a script or pattern file, or are not listed.
+            "grep -f /tmp/patterns; grep 'gws gmail +send' /dev/null",
+            "grep --file=/tmp/patterns; grep 'gws gmail +send' /dev/null",
+            "jq -f /tmp/x.jq; grep 'gws gmail +send' /dev/null",
+            "jq --from-file /tmp/x.jq; grep 'gws gmail +send' /dev/null",
+            "jq --rawfile s /tmp/x '.'; grep 'gws gmail +send' /dev/null",
+            "jq --run-tests /tmp/tests; grep 'gws gmail +send' /dev/null",
+            "cd -@ /tmp/x; grep 'gws gmail +send' /dev/null",
+            "GREP_OPTIONS='-f /tmp/patterns' grep 'gws gmail +send' /dev/null",
+            // A write that could plant a program a later command runs.
+            "printf '%s\\n' 'gws gmail +send --to someone@example.org --body x' > /tmp/x/gws; sed -n p /dev/null; gws gmail +send --help",
+            'cat /tmp/p > /tmp/bin/gws; gws gmail +send --help',
+            "grep -rh 'gws gmail +send' . >> ~/.profile",
+            // A word that is `--` when bash runs it, so gws reads the flag after it as text.
+            'gws gmail +send --to someone@example.org --body x "--" --help',
+            "gws gmail +send --to someone@example.org --body x $'\\055\\055' --help",
+            "gws gmail +send --to someone@example.org --body x $'\\055\\055' --dry-run | head",
+            'B=--; gws gmail +send --to someone@example.org --body x "$B" --dry-run | head',
+        ]) {
+            expect(evaluateEmailSend(command, INTERACTIVE).action).toBe('gate');
+        }
+    });
+
     test('bypass is scoped to the gws SEGMENT, not the whole command', () => {
         // Verbatim source (claude.ts:613-615) only honors a bypass flag in the
         // segment that contains the gws send. A --dry-run in a later piped
