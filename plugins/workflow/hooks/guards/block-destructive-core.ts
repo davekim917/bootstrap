@@ -5114,17 +5114,21 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
         }
         return null;
     };
-    // One statement read several ways is described once. The text of one the guard couldn't parse is unreliable past
-    // its verb and object, so it repeats any other unparsed statement with the same title.
+    // One statement read several ways is described once, but one that runs twice in a reading is listed twice. The text
+    // of one the guard couldn't parse is unreliable past its verb and object, so it repeats any other unparsed statement
+    // with the same title.
     const statements: Array<FoundStatement & { effect: SqlEffect }> = [];
-    const seen = new Set<string>();
+    const listed = new Map<string, number>();
     for (const { text, guessed } of readings) {
+        const inReading = new Map<string, number>();
         for (const st of destructiveStatements(text)) {
             const found = { ...st, parsed: st.parsed && !guessed };
             const effect = sqlEffect(found, dialect, whereElsewhere);
             const key = found.parsed ? `parsed\u0000${found.pattern}\u0000${oneLine(found.text)}` : `unparsed\u0000${effect.title}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
+            const n = (inReading.get(key) ?? 0) + 1;
+            inReading.set(key, n);
+            if (n <= (listed.get(key) ?? 0)) continue;
+            listed.set(key, n);
             statements.push({ ...found, effect });
         }
     }

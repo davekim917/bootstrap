@@ -301,6 +301,14 @@ psql "$DB_URL" -f grant.sql`;
             .toContain('chosen by a condition inside a subquery');
     });
 
+    test('a statement that runs twice is listed twice, though each reading of the input finds it', () => {
+        const c = card(`psql -c 'UPDATE app.balances SET amount = amount / 2; UPDATE app.balances SET amount = amount / 2;'`);
+        expect(c.label).toBe('Update every row in PostgreSQL table app.balances (+1 more)');
+        expect(c.summary.split('\n')[0]).toContain('plus 1 more statement that can delete or overwrite data');
+        const heredoc = card('psql <<SQL\nUPDATE app.balances SET amount = 0;\nSQL');
+        expect(heredoc.label).toBe('Update every row in PostgreSQL table app.balances');
+    });
+
     test('a statement after block words is described by its verb', () => {
         const c = card(`psql -c "DO \\$\\$ BEGIN DELETE FROM app.t WHERE id = 3; END \\$\\$"`);
         expect(c.label).toBe('Delete rows from PostgreSQL table app.t');
