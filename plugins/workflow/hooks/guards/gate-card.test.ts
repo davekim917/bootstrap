@@ -276,6 +276,15 @@ psql "$DB_URL" -f grant.sql`;
         );
     });
 
+    test("another statement's WHERE on the same table is never borrowed", () => {
+        const c = card(String.raw`V=$(cat ./v.txt); psql "$DB_URL" <<SQL
+UPDATE app.t SET v = \$q\$${'$'}{V}\$q\$;
+UPDATE app.t SET v = 1 WHERE id = 7;
+SQL`);
+        expect(c.summary).not.toContain('Read another way');
+        expect(c.summary).toContain('Rewrites every row in `app.t` (no WHERE clause).');
+    });
+
     test('a literal that never closes is described as not parsed, and gates as before', () => {
         const c = card(`psql -c "UPDATE app.users SET note = 'unterminated WHERE id = 1"`);
         expect(c.summary).not.toContain('every row');

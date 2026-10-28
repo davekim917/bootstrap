@@ -4931,7 +4931,7 @@ function topLevelWhere(text: string, skeleton: string): string | null {
 
 const SQL_OBJECT = String.raw`([^\s;(]+)`;
 
-/** A WHERE condition another reading of the same input gives an UPDATE or DELETE on `table`, when one parses. */
+/** The WHERE condition the other readings of the input give this same UPDATE or DELETE on `table`, when they agree. */
 type WhereElsewhere = (verb: 'UPDATE' | 'DELETE', table: string) => string | null;
 
 interface SqlEffect {
@@ -5101,32 +5101,64 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     // psql may read a backslash command as running to the end of its line, which the gate also checks; a statement
     // only that reading finds was guessed at, not parsed.
     const readings = sqlInputOf(cmd).texts.flatMap(t => (cmd.name === 'psql' ? psqlStatementTexts(t) : [t]).map((text, i) => ({ text, guessed: i > 0 })));
-    const wheres = new Map<string, string | null>();
-    const whereElsewhere: WhereElsewhere = (verb, table) => {
-        const key = `${verb} ${table}`;
-        if (!wheres.has(key)) wheres.set(key, findWhere(verb, table));
-        return wheres.get(key)!;
-    };
-    let parsedStatements: ReturnType<typeof sqlStatements> | undefined;
-    const findWhere: WhereElsewhere = (verb, table) => {
-        const head = new RegExp(String.raw`^${verb === 'UPDATE' ? 'UPDATE' : String.raw`DELETE\s+FROM`}\s+${table.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[\s(]|$)`, 'i');
-        parsedStatements ??= readings.filter(r => !r.guessed && SQL_PREFILTER.test(r.text)).flatMap(r => sqlStatements(r.text)).filter(st => st.parsed);
-        for (const st of parsedStatements) {
-            if (!head.test(st.skeleton)) continue;
-            const where = topLevelWhere(st.text, st.skeleton);
-            if (where) return where;
+    const segments = readings.map(r => (SQL_PREFILTER.test(r.text) ? sqlStatements(r.text) : []));
+    // Per reading and target: the statements on that target, and how many of them come before each segment.
+    const onTarget = new Map<string, { list: ReturnType<typeof sqlStatements>; before: number[] }>();
+    const targetIn = (reading: number, verb: 'UPDATE' | 'DELETE', table: string) => {
+        const key = `${reading} ${verb} ${table}`;
+        let entry = onTarget.get(key);
+        if (!entry) {
+            const head = new RegExp(String.raw`^${verb === 'UPDATE' ? 'UPDATE' : String.raw`DELETE\s+FROM`}\s+${table.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[\s(]|$)`, 'i');
+            const list: ReturnType<typeof sqlStatements> = [];
+            const before: number[] = [];
+            for (const seg of segments[reading]) {
+                before.push(list.length);
+                if (head.test(seg.skeleton)) list.push(seg);
+            }
+            onTarget.set(key, (entry = { list, before }));
         }
-        return null;
+        return entry;
+    };
+    // The WHERE every other reading gives the `nth` UPDATE or DELETE on `table`, when each that reads it there parsed it
+    // with one and they agree; a reading that parsed it without one means no WHERE is borrowed.
+    const wheres = new Map<string, string | null>();
+    const whereAt = (verb: 'UPDATE' | 'DELETE', table: string, nth: number): string | null => {
+        const key = `${verb} ${table} ${nth}`;
+        if (wheres.has(key)) return wheres.get(key)!;
+        const found = new Set<string>();
+        let vetoed = false;
+        readings.forEach(({ guessed }, r) => {
+            const st = guessed ? undefined : targetIn(r, verb, table).list[nth];
+            if (!st?.parsed) return;
+            const where = topLevelWhere(st.text, st.skeleton);
+            if (where) found.add(where);
+            else vetoed = true;
+        });
+        const where = !vetoed && found.size === 1 ? [...found][0] : null;
+        wheres.set(key, where);
+        return where;
     };
     // One statement read several ways is described once, but one that runs twice in a reading is listed twice. The text
     // of one the guard couldn't parse is unreliable past its verb and object, so it repeats any other unparsed statement
     // with the same title.
     const statements: Array<FoundStatement & { effect: SqlEffect }> = [];
     const listed = new Map<string, number>();
-    for (const { text, guessed } of readings) {
+    readings.forEach(({ text, guessed }, r) => {
         const inReading = new Map<string, number>();
+        const segs = segments[r];
+        // Statements come in the order of their segments; one run from an EXECUTE IMMEDIATE literal matches none.
+        let next = 0;
         for (const st of destructiveStatements(text)) {
             const found = { ...st, parsed: st.parsed && !guessed };
+            let at = -1;
+            for (let i = next; i < segs.length; i++) {
+                if (segs[i].text === st.text && segs[i].skeleton === st.skeleton) {
+                    at = i;
+                    next = i + 1;
+                    break;
+                }
+            }
+            const whereElsewhere: WhereElsewhere = (verb, table) => (at < 0 ? null : whereAt(verb, table, targetIn(r, verb, table).before[at]));
             const effect = sqlEffect(found, dialect, whereElsewhere);
             const key = found.parsed ? `parsed\u0000${found.pattern}\u0000${oneLine(found.text)}` : `unparsed\u0000${effect.title}`;
             const n = (inReading.get(key) ?? 0) + 1;
@@ -5135,7 +5167,7 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
             listed.set(key, n);
             statements.push({ ...found, effect });
         }
-    }
+    });
     const lines = statements.slice(0, 3).map((st, i) => `${i === 0 ? 'If you approve:' : 'And:'} ${st.effect.effect}`);
     const first = statements[0]?.effect;
     let label = first?.title ?? `Run destructive ${dialect} SQL`;
