@@ -153,6 +153,8 @@ export function bypassFlagIsRealArgvToken(gwsSegment: string): boolean {
     while (i < tokens.length && LEADING_ASSIGNMENT_RE.test(tokens[i])) i++; // skip VAR=value
     if (tokens[i] !== 'gws') return false; // must be a DIRECT gws invocation, no wrapper (codex #8)
     for (let j = i + 1; j < tokens.length; j++) {
+        // A quoted span that is no option's value can be `--` ("--", $'\055\055'), after which gws reads the flag as text.
+        if (tokens[j].includes(QUOTED_SPAN_SENTINEL) && !(tokens[j - 1].startsWith('-') && !tokens[j - 1].includes('='))) return false;
         if (!EMAIL_BYPASS_FLAGS.has(tokens[j])) continue;
         const prev = tokens[j - 1];
         const prevConsumesValue = prev.startsWith('-') && !prev.includes('='); // bare -x/--opt eats next word
@@ -169,7 +171,7 @@ const PROBE_COMPANIONS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq'
 // Variables a probe may set. Anything that changes how a later command is found
 // or started (PATH, BASH_ENV, LD_PRELOAD, IFS, …) or how gws behaves (its own
 // GOOGLE_*/GWS_* settings other than the credentials file) is refused.
-const PROBE_VARIABLE_DENY = /^(?:PATH|EXECIGNORE|GLOBIGNORE|POSIXLY_CORRECT|CDPATH|IFS|ENV|BASH_ENV|BASH\w*|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|LD_\w+|DYLD_\w+|GCONV_PATH|HOSTALIASES|NODE_\w+|HOME|XDG_\w+|TMPDIR|LANG|LC_\w+|GWS_\w+|GOOGLE_\w+)$/;
+const PROBE_VARIABLE_DENY = /^(?:PATH|EXECIGNORE|GLOBIGNORE|POSIXLY_CORRECT|CDPATH|IFS|ENV|BASH_ENV|BASH\w*|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|LD_\w+|DYLD_\w+|GCONV_PATH|HOSTALIASES|NODE_\w+|HOME|XDG_\w+|TMPDIR|LANG|LC_\w+|GREP_\w+|GWS_\w+|GOOGLE_\w+)$/;
 const PROBE_VARIABLE_ALLOW = new Set(['GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE']);
 
 /**
@@ -227,11 +229,11 @@ const SED_PRINT_ONLY = /^(?:(?:\d+|\$|\/[^/\n]*\/)(?:,(?:\d+|\$|\/[^/\n]*\/))?)?
 const SED_QUIET_OPTIONS = /^(?:-[nEr]+|--quiet|--silent|--regexp-extended|--posix)$/;
 
 /**
- * True when every script sed is given (`-e S`, `-eS`, `-neS`, `--expression[=]S`, or the first
- * operand when there is no -e) only prints or deletes lines, and no option or operand is anything
- * else: no -i, -f, -s, -z, `--`, and no input files beside an -e script.
+ * The number of files sed reads when every script it is given (`-e S`, `-eS`, `-neS`, `--expression[=]S`, or the
+ * first operand when there is no -e) only prints or deletes lines and no option is anything else (no -i, -f, -s, -z,
+ * `--`); null otherwise. The remaining operands are the files it reads.
  */
-function sedOnlyPrints(args: string[]): boolean {
+function sedPrintOnlyFiles(args: string[]): number | null {
     const scripts: string[] = [];
     const operands: string[] = [];
     for (let i = 0; i < args.length; i++) {
@@ -240,13 +242,13 @@ function sedOnlyPrints(args: string[]): boolean {
         const attached = a.match(/^-[nEr]*e(.*)$/s) ?? a.match(/^--expression=(.*)$/s);
         if (attached && attached[1] !== '') scripts.push(attached[1]);
         else if (attached || a === '--expression') {
-            if (i + 1 >= args.length) return false;
+            if (i + 1 >= args.length) return null;
             scripts.push(args[++i]);
-        } else if (a.startsWith('-')) return false;
+        } else if (a.startsWith('-')) return null;
         else operands.push(a);
     }
     if (scripts.length === 0) scripts.push(...operands.splice(0, 1));
-    return scripts.length > 0 && operands.length === 0 && scripts.every(sc => SED_PRINT_ONLY.test(sc));
+    return scripts.length > 0 && scripts.every(sc => SED_PRINT_ONLY.test(sc)) ? operands.length : null;
 }
 
 // Word parts whose value the shell splits or globs, so one word can become
@@ -258,6 +260,121 @@ function wordIsFixed(word: any): boolean {
     if (!Array.isArray(parts)) return typeof word?.value === 'string' && !/[$`*?[{]/.test(word.value);
     return parts.every((p: any) => !SPLITTING_PARTS.has(p?.type) && !(p?.type === 'Literal' && /[*?[{]/.test(p.value ?? '')));
 }
+
+/**
+ * True when the word is the same text however the shell runs: plain characters and single- or double-quoted text, with
+ * no expansion, and outside quotes no escape, glob or brace. ANSI-C `$'\055e'` and locale `$"…"` quoting are refused,
+ * since the parser keeps their escapes while bash turns them into other characters (`$'\055e'` is `-e`).
+ */
+function wordIsLiteral(word: any): boolean {
+    const plain = (text: unknown) => typeof text === 'string' && !/[$`\\*?[{]/.test(text);
+    const quoted = (text: unknown) => typeof text === 'string' && !/[$`]/.test(text);
+    const parts = word?.parts;
+    if (!Array.isArray(parts)) return word?.text === word?.value && plain(word?.text);
+    return parts.every((p: any) => p?.type === 'SingleQuoted'
+        || (p?.type === 'Literal' && plain(p.text))
+        || (p?.type === 'DoubleQuoted' && (p.parts || []).every((q: any) => q?.type === 'Literal' && quoted(q.text))));
+}
+
+/** Short options a companion takes: `flags` stand alone or cluster, `valued` take the rest of the word or the next one. */
+interface CompanionOptions {
+    flags: string;
+    valued: string;
+    /** Long options and how many following words each takes when not written `--name=value`. */
+    long?: Record<string, number>;
+    /** Accepts `-NUM`, as head, tail and grep do. */
+    numeric?: boolean;
+}
+
+const GREP_OPTIONS: CompanionOptions = {
+    flags: 'EFGPiyvwxcLlnhHoqsrRabTUzZ',
+    valued: 'eABCm',
+    numeric: true,
+    long: {
+        '--extended-regexp': 0, '--fixed-strings': 0, '--basic-regexp': 0, '--perl-regexp': 0, '--ignore-case': 0,
+        '--invert-match': 0, '--word-regexp': 0, '--line-regexp': 0, '--count': 0, '--files-with-matches': 0,
+        '--files-without-match': 0, '--line-number': 0, '--no-filename': 0, '--with-filename': 0, '--only-matching': 0,
+        '--quiet': 0, '--silent': 0, '--no-messages': 0, '--recursive': 0, '--dereference-recursive': 0, '--text': 0,
+        '--color': 0, '--colour': 0, '--regexp': 1, '--max-count': 1, '--after-context': 1, '--before-context': 1,
+        '--context': 1, '--include': 1, '--exclude': 1, '--exclude-dir': 1,
+    },
+};
+const HEAD_TAIL_OPTIONS: CompanionOptions = {
+    flags: 'qvz',
+    valued: 'nc',
+    numeric: true,
+    long: { '--quiet': 0, '--silent': 0, '--verbose': 0, '--zero-terminated': 0, '--lines': 1, '--bytes': 1 },
+};
+
+/**
+ * Every option each companion may be given. None of these reads a script or pattern file, runs a program, or writes
+ * anywhere, so anything else (grep -f, jq --from-file, printf -v, cd -@, …) is not a probe.
+ */
+const COMPANION_OPTIONS: Record<string, CompanionOptions> = {
+    grep: GREP_OPTIONS,
+    egrep: GREP_OPTIONS,
+    fgrep: GREP_OPTIONS,
+    head: HEAD_TAIL_OPTIONS,
+    tail: HEAD_TAIL_OPTIONS,
+    cat: { flags: 'AbeEnsStTuv', valued: '' },
+    wc: { flags: 'clmwL', valued: '' },
+    uniq: { flags: 'cdDiuz', valued: 'fsw' },
+    cut: { flags: 'sz', valued: 'bcdf', long: { '--complement': 0, '--only-delimited': 0, '--bytes': 1, '--characters': 1, '--delimiter': 1, '--fields': 1 } },
+    tr: { flags: 'cdsCt', valued: '' },
+    jq: {
+        flags: 'rcnsejaRCMS',
+        valued: '',
+        long: {
+            '--raw-output': 0, '--compact-output': 0, '--null-input': 0, '--slurp': 0, '--exit-status': 0, '--join-output': 0,
+            '--ascii-output': 0, '--raw-input': 0, '--color-output': 0, '--monochrome-output': 0, '--sort-keys': 0,
+            '--tab': 0, '--indent': 1, '--arg': 2, '--argjson': 2,
+        },
+    },
+    echo: { flags: 'neE', valued: '' },
+    cd: { flags: 'LP', valued: '' },
+};
+
+function optionsAllowed(name: string, args: string[]): boolean {
+    const spec = COMPANION_OPTIONS[name] ?? { flags: '', valued: '' };
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') return true;
+        if (!a.startsWith('-') || a === '-') continue;
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const takes = spec.long?.[eq === -1 ? a : a.slice(0, eq)];
+            if (takes === undefined || (eq !== -1 && takes !== 1)) return false;
+            if (eq === -1) i += takes;
+            continue;
+        }
+        if (spec.numeric && /^-\d+$/.test(a)) continue;
+        for (let j = 1; j < a.length; j++) {
+            if (spec.flags.includes(a[j])) continue;
+            if (!spec.valued.includes(a[j])) return false;
+            if (j === a.length - 1) i++;
+            break;
+        }
+    }
+    return true;
+}
+
+// Redirect operators that only read, or that point one descriptor at another (`2>&1`, `>&-`).
+const READ_REDIRECTS = new Set(['<', '<<', '<<-', '<<<']);
+const WRITE_REDIRECTS = new Set(['>', '>>', '>|', '&>', '&>>']);
+
+/** Every redirect only reads, duplicates a descriptor, or writes to /dev/null: a probe writes no file a later command could run. */
+function redirectsWriteNothing(node: any): boolean {
+    return (node.redirects || []).every((r: any) => {
+        const target = String(r?.target?.text ?? '');
+        if (READ_REDIRECTS.has(r?.operator)) return true;
+        if (r?.operator === '>&' || r?.operator === '<&') return /^(?:\d+|-)$/.test(target);
+        return WRITE_REDIRECTS.has(r?.operator) && target === '/dev/null';
+    });
+}
+
+// Expansions that run code from a variable's value: `${v@P}` prompt expansion, an array subscript or `${!v}` indirection
+// (both evaluate a subscript the value names), and arithmetic (`$((v))`, `$[v]`), which does the same.
+const VALUE_EVALUATING_EXPANSION = /\$\{(?![A-Za-z_]\w*\})|\$\(\(|\$\[/;
 
 // `gws gmail users <resource> list|get`: reads mail, never sends it.
 const GWS_GMAIL_READ_RE = /^gmail users (?:messages|threads|labels|drafts|history|settings(?: \w+)?) (?:list|get)$/;
@@ -271,32 +388,43 @@ function gwsCallOnlyReads(node: any, args: string[]): boolean {
     return GWS_GMAIL_READ_RE.test(args.slice(0, end === -1 ? args.length : end).join(' '));
 }
 
-/** A gws call whose argv holds a real --help/-h/--dry-run/--draft option before any `--`. */
-function gwsCallIsProbe(node: any, args: string[]): boolean {
-    if (!(node.suffix || []).every(wordIsFixed)) return false;
+/** The real --help, -h, --dry-run or --draft option a gws call holds before any `--`, or null. */
+function gwsProbeFlag(node: any, args: string[]): string | null {
+    const suffix = node.suffix || [];
+    if (!suffix.every(wordIsFixed)) return null;
+    const offset = suffix.length - args.length;
+    if (offset < 0) return null;
+    const takesValue = (arg: string) => arg.startsWith('-') && !arg.includes('=') && !GWS_BOOLEAN_OPTIONS.has(arg);
     for (let i = 0; i < args.length; i++) {
-        if (args[i] === '--') return false;
+        if (args[i] === '--') return null;
+        // A quoted or expanded word may be `--` when the shell runs it ("$B" with B=--, $'\055\055'), unless it is an option's value.
+        if (!wordIsLiteral(suffix[i + offset]) && !takesValue(args[i - 1] ?? '')) return null;
         if (!EMAIL_BYPASS_FLAGS.has(args[i])) continue;
-        const prev = args[i - 1] ?? '';
-        const prevTakesValue = prev.startsWith('-') && !prev.includes('=') && !GWS_BOOLEAN_OPTIONS.has(prev);
-        if (!prevTakesValue) return true;
+        if (!takesValue(args[i - 1] ?? '')) return args[i];
     }
-    return false;
+    return null;
 }
 
+const GWS_HELP_FLAGS = new Set(['--help', '-h']);
+
 /**
- * True when a command only probes gws: every command bash would run in it
+ * True when a command sends no mail: every command bash would run in it
  * (conditions, pipelines, substitutions and function bodies included) is a gws
- * call holding a real --help, -h, --dry-run or --draft option, or a read-only
- * filter such as head, grep, jq or a print-only sed. Plain variable
- * assignments are allowed; their substitutions are commands checked the same
- * way. Anything else (an unknown command, a name built at run time, a word the
- * shell could split into extra options, a parse error) is not a probe.
+ * call holding a real --help, -h, --dry-run or --draft option, a gws gmail read,
+ * or a read-only filter such as head, grep, jq or a print-only sed. Plain
+ * variable assignments are allowed; their substitutions are commands checked
+ * the same way. With no gws call at all, the send text is only inside the
+ * arguments of those filters, never a command bash runs. A sed that reads files
+ * may sit only beside gws help, and `cd` only where no gws runs, since a relative
+ * PATH entry would make it pick another gws. Anything else (an unknown command,
+ * a name built at run time, a word the shell could split into extra options, a
+ * parse error) is not a probe.
  */
 export function probeOnlyCommand(command: string): boolean {
     if ((command.match(/\(/g) ?? []).length > PROBE_PARENS_MAX) return false;
     // A `{VAR}>file` redirect assigns VAR (PATH included) outside any assignment word; a probe never needs one.
     if (/\{[A-Za-z_]\w*\}\s*[<>]/.test(command)) return false;
+    if (VALUE_EVALUATING_EXPANSION.test(command)) return false;
     let script: any;
     try {
         script = parseShell(command);
@@ -304,10 +432,16 @@ export function probeOnlyCommand(command: string): boolean {
         return false;
     }
     if (script?.errors?.length || !onlyPlainCommands(script)) return false;
+    // unbash stops at a stray `)` or `}` without reporting an error, leaving the rest of the line unread.
+    if (!/^[\s;&]*(?:#[^\n]*)?\s*$/.test(command.slice(script?.commands?.at(-1)?.end ?? 0))) return false;
     let gwsCalls = 0;
+    let gwsCallsBesideHelp = 0;
+    let changesDirectory = false;
+    let readsFiles = false;
     for (const node of walkCommandNodes(script)) {
         if (node.__resolved) return false;
         if (!(node.prefix || []).every((p: any) => typeof p?.name === 'string' && probeMaySet(p.name))) return false;
+        if (!redirectsWriteNothing(node)) return false;
         if (!node.name) continue;
         if (!wordIsFixed(node.name)) return false;
         const cmd = resolveCommand(node);
@@ -315,26 +449,37 @@ export function probeOnlyCommand(command: string): boolean {
         // Anything but gws runs as a plain bare word: a path or a wrapper could run a different program than the name says.
         if (cmd.name !== 'gws' && (String(node.name.text ?? '') !== cmd.name || cmd.name.includes('/'))) return false;
         if (!(cmd.env ?? []).every(a => probeMaySet(a.split('=')[0]))) return false;
+        // A word whose value is only known when the shell runs can be an option the checks below never saw: with
+        // OPTS=-ee, `sed -n -e p "$OPTS"` runs its input as commands.
+        if (cmd.name !== 'gws' && !(node.suffix || []).every(wordIsLiteral)) return false;
         if (cmd.name === 'gws') {
             if (!gwsReachedDirectly(node)) return false;
-            if (!gwsCallIsProbe(node, cmd.args) && !gwsCallOnlyReads(node, cmd.args)) return false;
+            const flag = gwsProbeFlag(node, cmd.args);
+            if (!flag && !gwsCallOnlyReads(node, cmd.args)) return false;
+            if (!flag || !GWS_HELP_FLAGS.has(flag)) gwsCallsBesideHelp++;
             gwsCalls++;
         } else if (cmd.name === 'set') {
             if (!cmd.args.every(a => PROBE_SET_OPTIONS.test(a))) return false;
         } else if (cmd.name === 'export') {
             if (!cmd.args.every(a => probeMaySet(a.split('=')[0]))) return false;
-        } else if (cmd.name === 'printf' && cmd.args.some(a => a.startsWith('-v'))) {
-            return false;
         } else if (cmd.name === 'sed') {
-            if (!sedOnlyPrints(cmd.args)) return false;
-        } else if (!PROBE_COMPANIONS.has(cmd.name)) {
+            const files = sedPrintOnlyFiles(cmd.args);
+            if (files === null) return false;
+            if (files > 0) readsFiles = true;
+        } else if (cmd.name === 'cd') {
+            if (!optionsAllowed(cmd.name, cmd.args)) return false;
+            changesDirectory = true;
+        } else if (!PROBE_COMPANIONS.has(cmd.name) || !optionsAllowed(cmd.name, cmd.args)) {
             return false;
         }
     }
+    if (changesDirectory && gwsCalls > 0) return false;
+    if (readsFiles && gwsCallsBesideHelp > 0) return false;
     // Each gws call must be spelled as the bare word `gws`: the parser resolves
     // `/any/dir/gws` by basename, and a binary at another path need not honour --dry-run.
+    // With no gws call it refuses any bare `gws` word, so `echo gws gmail +send` still gates.
     const gwsInText = (command.match(/(?:^|[\s;&|(`{!])gws(?=\s)/g) ?? []).length;
-    return gwsCalls > 0 && gwsInText === gwsCalls && GWS_EMAIL_SEND_RE.test(command);
+    return gwsInText === gwsCalls && GWS_EMAIL_SEND_RE.test(command);
 }
 
 /** Snapshot of the only env input the email gate decision depends on. */
@@ -513,7 +658,8 @@ export function envelopeFromJsonRaw(segment: string): {
  *
  * Decision ordering:
  *   1. Not an email send (GWS_EMAIL_SEND_RE miss) → allow.
- *   2. Exact bounded read-only `gws … --help 2>&1 | head -N` probe → allow.
+ *   2. Every command bash runs is gws help, dry-run, draft or read, or a read-only
+ *      filter whose quoted arguments merely hold the send text (probeOnlyCommand) → allow.
  *   3. WHOLE command is a single, simple send carrying a real bypass flag
  *      (--dry-run / --draft / --help / -h) → allow.
  *   4. Scheduled task (env.isScheduledTask) → allow (v1 parity bypass).
