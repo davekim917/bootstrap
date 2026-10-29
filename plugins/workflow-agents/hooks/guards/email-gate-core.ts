@@ -37,7 +37,7 @@
  * Python/Node SDK calls, SMTP CLIs, and eval/alias/base64-decoded subshells. The
  * only sound place to catch all of those is the egress proxy.
  */
-import { resolveCommand, walkCommandNodes } from './block-destructive-core';
+import { gatedSlackPosts, resolveCommand, walkCommandNodes } from './block-destructive-core';
 import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, parseShell, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
@@ -682,6 +682,17 @@ export function envelopeFromJsonRaw(segment: string): {
  * (GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=…/accounts/<slug>.json), NOT from env.
  */
 export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateVerdict {
+    const slack = command ? gatedSlackPosts(command) : [];
+    if (slack.length > 0) {
+        const text = slack[0].text;
+        return {
+            action: 'gate',
+            label: `Slack post in your name (${slack[0].method})`,
+            summary: text === null
+                ? "The agent wants to post to Slack as you. The guard couldn't read the exact text; check the full command before approving."
+                : `The agent wants to post this to Slack as you:\n\n${quoteBlock(clip(text, CARD_SUMMARY_MAX_CHARS))}`,
+        };
+    }
     if (!command || !GWS_EMAIL_SEND_RE.test(command)) return { action: 'allow' };
 
     // Bypass ONLY when the WHOLE command is a single, simple send carrying a real

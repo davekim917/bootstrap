@@ -1,0 +1,136 @@
+import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
+import { SEND_SCOPE_FILE_ENV, parseSendScope, slackPostsOf } from './block-destructive-core';
+import { evaluateEmailSend } from './email-gate-core';
+
+/**
+ * SLACK POSTS IN A PERSON'S NAME. In a workgroup or OneCLI identity the send
+ * scope lists, a Slack post stops for that person's OK, and its gate request
+ * carries the exact text so the host can accept a "send" they already gave.
+ */
+
+const MODULE = './block-destructive-core';
+let dir = '';
+let scopeFile = '';
+let saved: string | undefined;
+let savedWorkgroup: string | undefined;
+
+const POST = `curl -sS https://slack.com/api/chat.postMessage -H 'Content-Type: application/json' --data '{"channel":"C1","text":"Numbers are in."}'`;
+
+beforeAll(() => {
+    saved = process.env[SEND_SCOPE_FILE_ENV];
+    savedWorkgroup = process.env.NANOCLAW_WORKGROUP_ID;
+    dir = mkdtempSync(join(tmpdir(), 'send-scope-test-'));
+    scopeFile = join(dir, 'send-scope.local.json');
+    writeFileSync(scopeFile, JSON.stringify({ slack: { workgroups: ['acme'], onecliAgents: ['ag-acme'] } }));
+});
+
+afterEach(() => {
+    process.env[SEND_SCOPE_FILE_ENV] = scopeFile;
+    if (savedWorkgroup === undefined) delete process.env.NANOCLAW_WORKGROUP_ID;
+    else process.env.NANOCLAW_WORKGROUP_ID = savedWorkgroup;
+    mock.restore();
+});
+
+afterAll(() => {
+    if (saved === undefined) delete process.env[SEND_SCOPE_FILE_ENV];
+    else process.env[SEND_SCOPE_FILE_ENV] = saved;
+    rmSync(dir, { recursive: true, force: true });
+});
+
+const verdict = (command: string) => evaluateEmailSend(command, { isScheduledTask: false }).action;
+
+describe('which Slack calls stop for approval', () => {
+    test.each([
+        ['a post from a listed workgroup', 'acme', POST, 'gate'],
+        ['the same post from another workgroup', 'other', POST, 'allow'],
+        ['an edit', 'acme', `curl https://slack.com/api/chat.update -d channel=C1 -d ts=1 -d text=x`, 'gate'],
+        ['a delete', 'acme', `curl https://slack.com/api/chat.delete -d channel=C1 -d ts=1`, 'gate'],
+        ['a file share', 'acme', `curl -F file=@a.png https://slack.com/api/files.upload`, 'gate'],
+        ['a read', 'acme', `curl -G https://slack.com/api/conversations.replies --data-urlencode channel=C1`, 'allow'],
+        ['a listed OneCLI identity outside any workgroup', undefined, `onecli run --agent ag-acme -- ${POST}`, 'gate'],
+        ['another OneCLI identity', 'acme', `onecli run --agent ag-other -- ${POST}`, 'allow'],
+        ['a post after another command', 'acme', `cd /tmp && ${POST}`, 'gate'],
+        ['a post on a workspace subdomain', 'acme', `curl https://acme.slack.com/api/chat.postMessage -d text=x`, 'gate'],
+    ] as Array<[string, string | undefined, string, 'allow' | 'gate']>)('%s', (_label, workgroup, command, expected) => {
+        process.env[SEND_SCOPE_FILE_ENV] = scopeFile;
+        if (workgroup === undefined) delete process.env.NANOCLAW_WORKGROUP_ID;
+        else process.env.NANOCLAW_WORKGROUP_ID = workgroup;
+        expect(verdict(command)).toBe(expected);
+    });
+
+    test('no send-scope file gates no Slack post', () => {
+        process.env[SEND_SCOPE_FILE_ENV] = join(dir, 'missing.json');
+        process.env.NANOCLAW_WORKGROUP_ID = 'acme';
+        expect(verdict(POST)).toBe('allow');
+    });
+
+    test('an unreadable send-scope file gates every Slack post', () => {
+        const broken = join(dir, 'broken.json');
+        writeFileSync(broken, '{"slack": ');
+        process.env[SEND_SCOPE_FILE_ENV] = broken;
+        process.env.NANOCLAW_WORKGROUP_ID = 'other';
+        expect(verdict(POST)).toBe('gate');
+    });
+});
+
+describe('the message text a post carries', () => {
+    test.each([
+        ['a JSON body', POST, 'Numbers are in.'],
+        ['a --json body', `curl https://slack.com/api/chat.postMessage --json '{"channel":"C1","text":"a\\nb"}'`, 'a\nb'],
+        ['a form field', `curl https://slack.com/api/chat.postMessage -d channel=C1 -d 'text=hello%20there'`, 'hello there'],
+        ['a urlencoded field', `curl https://slack.com/api/chat.postMessage --data-urlencode 'text=50% done'`, '50% done'],
+        ['a variable', `curl https://slack.com/api/chat.postMessage --data "{\\"text\\":\\"$T\\"}"`, null],
+        ['a body file', `curl https://slack.com/api/chat.postMessage --data @msg.json`, null],
+        ['two texts', `curl https://slack.com/api/chat.postMessage -d text=a -d text=b`, null],
+    ])('%s', (_label, command, text) => {
+        expect(slackPostsOf(command)[0]?.text).toBe(text);
+    });
+});
+
+describe('the gate request a post stages', () => {
+    async function staged(command: string) {
+        process.env[SEND_SCOPE_FILE_ENV] = scopeFile;
+        process.env.NANOCLAW_WORKGROUP_ID = 'acme';
+        const real = await import(MODULE);
+        const calls: Array<{ action?: string; sendText?: string }> = [];
+        mock.module(MODULE, () => ({
+            ...real,
+            writeGateRequest: (_l: string, _s: string, _c: string, action?: string, sendText?: string) => {
+                calls.push({ action, sendText });
+                return 'gate-test-id';
+            },
+            pollDeliveredTable: () => 'approved',
+        }));
+        const mod = await import(MODULE);
+        mod.runEmailGate(command, 'Slack post');
+        return calls[0];
+    }
+
+    test('a lone post asks the send gate and carries its text', async () => {
+        expect(await staged(POST)).toEqual({ action: 'request_send_gate', sendText: 'Numbers are in.' });
+    });
+
+    test('a post beside another command asks the send gate without its text', async () => {
+        expect(await staged(`gws gmail +send --to a@example.com; ${POST}`)).toEqual({ action: 'request_send_gate', sendText: undefined });
+    });
+
+    test('an email send keeps the bash gate', async () => {
+        expect((await staged('gws gmail +send --to a@example.com')).action).toBe('request_bash_gate');
+    });
+});
+
+describe('send-scope files', () => {
+    test.each([
+        [{ slack: { workgroups: ['acme'] } }, true],
+        [{ slack: { onecliAgents: ['ag-1'] } }, true],
+        [{ slack: { workgroups: 'acme' } }, false],
+        [{ slack: { workgroups: ['has space'] } }, false],
+        [{}, false],
+    ])('%j parses: %p', (scope, ok) => {
+        expect(parseSendScope(JSON.stringify(scope)) !== null).toBe(ok);
+    });
+});
