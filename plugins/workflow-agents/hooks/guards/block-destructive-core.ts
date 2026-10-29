@@ -6467,7 +6467,7 @@ const SLACK_POST_METHODS = new Set([
     'chat.postMessage', 'chat.update', 'chat.scheduleMessage', 'chat.meMessage', 'chat.delete',
     'files.completeUploadExternal', 'files.upload', 'files.share',
 ]);
-const SLACK_API_URL_RE = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*slack\.com\/api\/([A-Za-z.]+)/;
+const SLACK_API_METHOD_RE = /slack\.com\/api\/([A-Za-z.]+)/g;
 const HTTP_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs']);
 const CURL_BODY_FLAGS = new Set(['--data', '--data-raw', '--data-binary', '--data-ascii', '--data-urlencode', '--json', '--form', '--form-string']);
 /** Every curl option a readable post may use, short spellings mapped to their long names; true when it takes a value. */
@@ -6623,7 +6623,7 @@ function curlOptions(args: string[]): { options: CurlOption[]; urls: string[] } 
 
 function slackPostIn(name: string, args: string[], onecliAgent: string | null): SlackPost | null {
     if (!HTTP_CLIENTS.has(name)) return null;
-    const methods = args.map(a => SLACK_API_URL_RE.exec(a)?.[1]).filter((m): m is string => m !== undefined);
+    const methods = args.flatMap(a => [...a.matchAll(SLACK_API_METHOD_RE)].map(m => m[1]));
     const method = methods.find(m => SLACK_POST_METHODS.has(m));
     if (!method) return null;
     const line = name === 'curl' ? curlOptions(args) : null;

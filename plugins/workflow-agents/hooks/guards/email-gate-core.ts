@@ -683,11 +683,19 @@ export function envelopeFromJsonRaw(segment: string): {
  * The GWS creds account is parsed from the COMMAND string
  * (GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=…/accounts/<slug>.json), NOT from env.
  */
+// The only sends a person's own "send" can stand in for: ones that deliver exactly the text they read and nothing
+// else. A reply quotes the original and may inherit its recipients; a forward carries it.
+const SEND_WORD_SHAPES = new Set(['slack chat.postMessage', 'slack chat.update', 'email send']);
+
+function approvableSendParts(shape: string, parts: string[] | undefined): string[] | undefined {
+    return SEND_WORD_SHAPES.has(shape) ? parts : undefined;
+}
+
 export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateVerdict {
     const slack = command ? gatedSlackPosts(command) : [];
     if (slack.length > 0) {
         const text = slack[0].text;
-        const sendParts = slack.length === 1 && text !== null && soleCommand(command) ? [text] : undefined;
+        const sendParts = approvableSendParts(`slack ${slack[0].method}`, slack.length === 1 && text !== null && soleCommand(command) ? [text] : undefined);
         noteSendParts(command, sendParts ?? null);
         return {
             action: 'gate',
@@ -831,9 +839,9 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // What a person must have seen for their own "send" to stand in for the card: a single literal send only.
     const literalParts = [flagTo, cc, bcc, subject || undefined].filter((v): v is string => v !== undefined && v !== '');
     const readable = gwsWords === 1 && !generatedWord && !probeFlag && !isHtml && !isRawApi && unresolved.size === 0
-        && attachments.length === 0 && action !== 'forward'
+        && attachments.length === 0
         && body.text !== null && body.text.trim() !== '' && literalParts.every(v => !/[$`]/.test(v));
-    const sendParts = readable && view.commands.length === 1 ? [body.text!.trim(), ...literalParts.flatMap(v => v.split(/\s*,\s*/))] : undefined;
+    const sendParts = approvableSendParts(`email ${action}`, readable && view.commands.length === 1 ? [body.text!.trim(), ...literalParts.flatMap(v => v.split(/\s*,\s*/))] : undefined);
     noteSendParts(command, sendParts ?? null);
     return { action: 'gate', label, summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS), ...(sendParts ? { sendParts } : {}) };
 }

@@ -57,6 +57,7 @@ describe('which Slack calls stop for approval', () => {
         ['a post on a workspace subdomain', 'acme', `curl https://acme.slack.com/api/chat.postMessage -d text=x`, 'gate'],
         ['a post after a read in the same curl', 'acme', `curl https://slack.com/api/conversations.list --next https://slack.com/api/chat.postMessage -d text=x`, 'gate'],
         ['a wrapped curl named by its path', undefined, `onecli run --agent ag-acme -- /usr/bin/curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
+        ['a post whose URL is given with --url=', 'acme', `curl --url=https://slack.com/api/chat.postMessage -d channel=C1 -d text=hello`, 'gate'],
     ] as Array<[string, string | undefined, string, 'allow' | 'gate']>)('%s', (_label, workgroup, command, expected) => {
         process.env[SEND_SCOPE_FILE_ENV] = scopeFile;
         if (workgroup === undefined) delete process.env.NANOCLAW_WORKGROUP_ID;
@@ -101,6 +102,7 @@ describe('the message text a post carries', () => {
         ['a cluster ending in a data flag', `curl -sSd text=hi https://slack.com/api/chat.postMessage`, 'hi'],
         ['a curl option outside the known set', `curl https://slack.com/api/chat.postMessage --variable t@file --expand-data 'text={{t}}'`, null],
         ['a client other than curl', `http POST https://slack.com/api/chat.postMessage text=hi`, null],
+        ['a URL given with --url=', `curl --url=https://slack.com/api/chat.postMessage -d channel=C1 -d text=hello`, 'hello'],
     ])('%s', (_label, command, text) => {
         expect(slackPostsOf(command)[0]?.text).toBe(text);
     });
@@ -135,6 +137,9 @@ describe('the gate request a send stages', () => {
         ['an email whose body runs a command carries nothing', `gws gmail +send --to a@example.com --body "$(cat notes.txt)"`, undefined],
         ['an email with an attachment carries nothing', `gws gmail +send --to a@example.com --subject Q3 --body 'Numbers are in.' --attach confidential.pdf`, undefined],
         ['a forward carries nothing', `gws gmail +forward --message-id m1 --to a@example.com --body 'FYI'`, undefined],
+        ['a reply carries nothing', `gws gmail +reply --message-id m1 --body 'Approved text'`, undefined],
+        ['a reply-all carries nothing', `gws gmail +reply-all --message-id m1 --body 'Approved text'`, undefined],
+        ['a Slack delete carries nothing', `curl https://slack.com/api/chat.delete -d channel=C1 -d ts=1`, undefined],
     ] as Array<[string, string, string[] | undefined]>)('%s', async (_label, command, parts) => {
         expect(await staged(command)).toEqual({ action: 'request_send_gate', sendParts: parts });
     });
