@@ -6512,7 +6512,7 @@ export function noteSendParts(command: string, parts: string[] | null): void {
 export const MERGE_SCOPE_FILE_ENV = 'BOOTSTRAP_MERGE_SCOPE_FILE';
 const MERGE_SCOPE_FILE = 'merge-scope.local.json';
 const GITHUB_REPO_IN_TEXT_RE = /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/?#\s]|$)/;
-const API_MERGE_RE = /(?:^|[\s/])repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pulls\/\d+\/merge\b/;
+const API_MERGE_RE = /(?:^|[\s/])repos\/([A-Za-z0-9_.-]+|\{owner\})\/([A-Za-z0-9_.-]+|\{repo\})\/pulls\/\d+\/merge\b/;
 const GRAPHQL_MERGE_RE = /\b(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\b/;
 
 export type MergeScope = Map<string, Set<string>>;
@@ -6681,7 +6681,9 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string): string | null 
         }
         const apiMerge = (cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name) ? API_MERGE_RE.exec(text) : null;
         if (apiMerge) {
-            const reason = refused(`${apiMerge[1]}/${apiMerge[2]}`.toLowerCase(), 'Merging a pull request through the API');
+            // gh fills {owner}/{repo} from the checkout it runs in.
+            const named = apiMerge[1] === '{owner}' || apiMerge[2] === '{repo}' ? (dir ? checkoutRemoteRepo(dir) : null) : `${apiMerge[1]}/${apiMerge[2]}`.toLowerCase();
+            const reason = refused(named, 'Merging a pull request through the API');
             if (reason) return reason;
         }
         if (((cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name)) && GRAPHQL_MERGE_RE.test(text)) {

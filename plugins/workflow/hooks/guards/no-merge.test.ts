@@ -59,6 +59,7 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['gh pr merge after GH_REPO is exported', 'export GH_REPO=Acme/core && gh pr merge 12 --squash', () => other],
         ['auto-merge', 'gh pr merge 12 --auto --squash', () => theirs],
         ['the REST merge endpoint', 'gh api -X PUT repos/Acme/core/pulls/12/merge', () => other],
+        ['the REST merge endpoint with gh placeholders', 'gh api -X PUT repos/{owner}/{repo}/pulls/12/merge', () => theirs],
         ['the REST merge endpoint by curl', 'curl -X PUT https://api.github.com/repos/Acme/core/pulls/12/merge', () => other],
         ['a GraphQL merge from its checkout', `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }'`, () => theirs],
         ['the review-loop merge', 'PR=12 REPO=Acme/core codex-review.sh merge --head abc', () => other],
