@@ -131,7 +131,7 @@ describe('the gate request a send stages', () => {
 
     test.each([
         ['a lone Slack post carries its text', POST, ['Numbers are in.']],
-        ['a lone email carries its body, recipients and subject', `gws gmail +send --to a@example.com,b@example.com --subject 'Q3' --body 'Numbers are in.'`, ['Numbers are in.', 'a@example.com', 'b@example.com', 'Q3']],
+        ['a lone email carries its body, recipients and subject', `gws gmail +send --to a@example.com,b@example.com --subject 'Q3' --body 'Numbers are in.'`, ['Numbers are in.', 'to:a@example.com', 'to:b@example.com', 'subject:Q3']],
         ['a Slack post beside another command carries nothing', `gws gmail +send --to a@example.com; ${POST}`, undefined],
         ['an email beside another command carries nothing', `cd /tmp && gws gmail +send --to a@example.com --body 'hi'`, undefined],
         ['an email whose body runs a command carries nothing', `gws gmail +send --to a@example.com --body "$(cat notes.txt)"`, undefined],
