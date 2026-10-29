@@ -6930,6 +6930,12 @@ function slackPostIn(name: string, args: string[], onecliAgent: string | null): 
     return { method, text: readable ? texts[0].value : null, onecliAgent };
 }
 
+/** A posting URL in the words of a command the guard doesn't read as a client (a wrapper, a shell): a post it can't read. */
+function carriedPost(words: string[], onecliAgent: string | null): SlackPost | null {
+    const method = words.flatMap(w => [...w.matchAll(SLACK_API_METHOD_RE)].map(m => m[1])).find(m => SLACK_POST_METHODS.has(m));
+    return method ? { method, text: null, onecliAgent } : null;
+}
+
 /** Every Slack post a command makes, inside an `onecli run … --` wrapper too. */
 export function slackPostsOf(command: string): SlackPost[] {
     let commands: ResolvedCommand[];
@@ -6945,11 +6951,11 @@ export function slackPostsOf(command: string): SlackPost[] {
             const agentAt = cmd.args.indexOf('--agent');
             const agent = agentAt >= 0 && agentAt < (split < 0 ? Infinity : split) ? cmd.args[agentAt + 1] ?? null : null;
             const inner = split >= 0 ? cmd.args.slice(split + 1) : [];
-            const post = inner.length ? slackPostIn(commandName(inner[0]), inner.slice(1), agent) : null;
+            const post = (inner.length ? slackPostIn(commandName(inner[0]), inner.slice(1), agent) : null) ?? carriedPost(inner, agent);
             if (post) posts.push(post);
             continue;
         }
-        const post = slackPostIn(cmd.name, cmd.args, null);
+        const post = slackPostIn(cmd.name, cmd.args, null) ?? carriedPost(cmd.args, null);
         if (post) posts.push(post);
     }
     return posts;
