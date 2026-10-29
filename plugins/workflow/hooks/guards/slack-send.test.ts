@@ -108,6 +108,9 @@ describe('the message text a post carries', () => {
         ['a curl option outside the known set', `curl https://slack.com/api/chat.postMessage --variable t@file --expand-data 'text={{t}}'`, null],
         ['a client other than curl', `http POST https://slack.com/api/chat.postMessage text=hi`, null],
         ['a URL given with --url=', `curl --url=https://slack.com/api/chat.postMessage -d channel=C1 -d text=hello`, 'hello'],
+        ['a quoted multipart value, which curl ends at its closing quote', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text="Approved" do not deploy yet.'`, null],
+        ['a query text before a fragment, which curl never sends', `curl 'https://slack.com/api/chat.postMessage?channel=C1&text=Ship%20it%20#after-review'`, 'Ship it '],
+        ['a query text holding a question mark', `curl 'https://slack.com/api/chat.postMessage?channel=C1&text=Deploy?%20Not%20yet'`, 'Deploy? Not yet'],
     ])('%s', (_label, command, text) => {
         expect(slackPostsOf(command)[0]?.text).toBe(text);
     });

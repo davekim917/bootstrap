@@ -2358,8 +2358,10 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
             while (skip < args.length && args[skip].startsWith('-')) {
                 skip += args[skip] === '-p' || args[skip] === '--package' ? 2 : 1;
             }
+        } else if (name === 'nohup' || name === 'time') {
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') skip += 1;
+            if (args[skip] === '--') skip += 1;
         }
-        // nohup, time, command, builtin: just skip the wrapper word
 
         if (skip >= args.length) break;
 
@@ -6871,8 +6873,9 @@ function bodyFields(flag: string, value: string): BodyField[] | null {
         const at = value.indexOf('=');
         if (at < 0) return null;
         const v = value.slice(at + 1);
-        // curl reads `;type=`, `;filename=` and the like after a --form value, so a ';' may cut the text short.
-        return [{ key: value.slice(0, at), value: flag !== '--form-string' && (/^[<@]/.test(v) || v.includes(';')) ? null : v }];
+        // curl reads `;type=`, `;filename=` and the like after a --form value, so a ';' may cut the text short, and a
+        // value opening with '"' is read as a quoted string that ends at its closing quote.
+        return [{ key: value.slice(0, at), value: flag !== '--form-string' && (/^[<@"]/.test(v) || v.includes(';')) ? null : v }];
     }
     if (flag === '--data-urlencode') {
         const at = value.indexOf('=');
@@ -6951,7 +6954,8 @@ function slackPostIn(name: string, args: string[], onecliAgent: string | null): 
         if (parsed) fields.push(...parsed);
         else readable = false;
     }
-    const query = readable ? line!.urls[0].split('?')[1] : undefined;
+    const url = readable ? line!.urls[0].split('#')[0] : '';
+    const query = url.includes('?') ? url.slice(url.indexOf('?') + 1) : undefined;
     if (readable && query) {
         const parsed = bodyFields('--data', query);
         if (parsed) fields.push(...parsed);
