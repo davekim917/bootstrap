@@ -827,6 +827,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // What a person must have seen for their own "send" to stand in for the card: a single literal send only.
     const literalParts = [flagTo, cc, bcc, subject || undefined].filter((v): v is string => v !== undefined && v !== '');
     const readable = gwsWords === 1 && !generatedWord && !probeFlag && !isHtml && !isRawApi && unresolved.size === 0
+        && attachments.length === 0 && action !== 'forward'
         && body.text !== null && body.text.trim() !== '' && literalParts.every(v => !/[$`]/.test(v));
     const sendParts = readable && view.commands.length === 1 ? [body.text!.trim(), ...literalParts.flatMap(v => v.split(/\s*,\s*/))] : undefined;
     noteSendParts(command, sendParts ?? null);

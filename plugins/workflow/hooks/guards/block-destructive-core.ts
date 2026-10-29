@@ -6469,43 +6469,77 @@ function literal(value: string): boolean {
     return !/[$`]/.test(value) && !value.startsWith('@');
 }
 
-/** The message text one body argument carries, `undefined` when it carries none, null when it can't be read. */
-function slackTextIn(flag: string, value: string): string | null | undefined {
+const SLACK_TEXT_METHODS = new Set(['chat.postMessage', 'chat.update', 'chat.scheduleMessage', 'chat.meMessage']);
+/** Fields that change where or how a message posts, never what it says. Any other field may carry content. */
+const SLACK_ROUTING_FIELDS = new Set([
+    'token', 'channel', 'ts', 'thread_ts', 'reply_broadcast', 'post_at', 'as_user', 'username', 'icon_emoji', 'icon_url',
+    'mrkdwn', 'parse', 'link_names', 'unfurl_links', 'unfurl_media',
+]);
+/** Options that add a request, a body or arguments the command line doesn't show. */
+const CURL_HIDDEN_FLAGS = new Set(['--next', '-:', '-T', '--upload-file', '-K', '--config', '--url-query']);
+
+type BodyField = { key: string; value: string | null };
+
+/** The fields one body argument sends; null when they can't all be read from the command line. */
+function bodyFields(flag: string, value: string): BodyField[] | null {
     if (!literal(value)) return null;
     if (flag === '--json' || value.trimStart().startsWith('{')) {
         try {
-            const body = JSON.parse(value) as { text?: unknown };
-            return typeof body.text === 'string' ? body.text : undefined;
+            const body = JSON.parse(value) as Record<string, unknown>;
+            if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+            return Object.entries(body).map(([key, v]) => ({ key, value: typeof v === 'string' ? v : null }));
         } catch {
             return null;
         }
     }
-    const form = /^text=(.*)$/s.exec(value);
-    if (!form) return undefined;
-    if (flag === '--data-urlencode') return form[1];
-    try {
-        return decodeURIComponent(form[1].replace(/\+/g, ' '));
-    } catch {
-        return null;
+    if (flag === '-F' || flag === '--form' || flag === '--form-string') {
+        const at = value.indexOf('=');
+        if (at < 0) return null;
+        const v = value.slice(at + 1);
+        return [{ key: value.slice(0, at), value: flag !== '--form-string' && /^[<@]/.test(v) ? null : v }];
     }
+    if (flag === '--data-urlencode') {
+        const at = value.indexOf('=');
+        return at < 0 ? null : [{ key: value.slice(0, at), value: value.slice(at + 1) }];
+    }
+    const fields: BodyField[] = [];
+    for (const pair of value.split('&')) {
+        const at = pair.indexOf('=');
+        if (at < 0) return null;
+        try {
+            fields.push({ key: decodeURIComponent(pair.slice(0, at)), value: decodeURIComponent(pair.slice(at + 1).replace(/\+/g, ' ')) });
+        } catch {
+            return null;
+        }
+    }
+    return fields;
 }
 
 function slackPostIn(name: string, args: string[], onecliAgent: string | null): SlackPost | null {
     if (!HTTP_CLIENTS.has(name)) return null;
-    const method = args.map(a => SLACK_API_URL_RE.exec(a)?.[1]).find(m => m !== undefined);
-    if (!method || !SLACK_POST_METHODS.has(method)) return null;
-    const texts: Array<string | null> = [];
-    for (let i = 0; i < args.length; i++) {
+    const methods = args.map(a => SLACK_API_URL_RE.exec(a)?.[1]).filter((m): m is string => m !== undefined);
+    const method = methods.find(m => SLACK_POST_METHODS.has(m));
+    if (!method) return null;
+    const urls = args.filter(a => /^(?:https?:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,}\/)/i.test(a)).length;
+    let readable = SLACK_TEXT_METHODS.has(method) && urls === 1 && !args.some(a => CURL_HIDDEN_FLAGS.has(a.split('=')[0]));
+    const fields: BodyField[] = [];
+    for (let i = 0; i < args.length && readable; i++) {
         const [flag, inline] = args[i].startsWith('--') && args[i].includes('=') ? [args[i].slice(0, args[i].indexOf('=')), args[i].slice(args[i].indexOf('=') + 1)] : [args[i], undefined];
         if (!CURL_BODY_FLAGS.has(flag)) continue;
         const value = inline ?? args[++i];
-        if (value === undefined) continue;
-        const text = slackTextIn(flag, value);
-        if (text !== undefined) texts.push(text);
+        const parsed = value === undefined ? null : bodyFields(flag, value);
+        if (parsed) fields.push(...parsed);
+        else readable = false;
     }
-    const query = args.map(a => /[?&]text=([^&]*)/.exec(a)?.[1]).find(t => t !== undefined);
-    if (query !== undefined) texts.push(literal(query) ? decodeURIComponent(query.replace(/\+/g, ' ')) : null);
-    return { method, text: texts.length === 1 ? texts[0] : null, onecliAgent };
+    const query = args.find(a => SLACK_API_URL_RE.test(a))?.split('?')[1];
+    if (readable && query) {
+        const parsed = bodyFields('-d', query);
+        if (parsed) fields.push(...parsed);
+        else readable = false;
+    }
+    const texts = fields.filter(f => f.key === 'text');
+    readable &&= texts.length === 1 && fields.every(f => f.key === 'text' || SLACK_ROUTING_FIELDS.has(f.key));
+    return { method, text: readable ? texts[0].value : null, onecliAgent };
 }
 
 /** Every Slack post a command makes, inside an `onecli run … --` wrapper too. */
