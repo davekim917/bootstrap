@@ -55,7 +55,14 @@ describe('reading Render needs no approval', () => {
         'render whoami -o json',
         'render --version',
         `render jobs create ${PROD} --help`,
-        `render psql ${PROD_DB}`,
+        `render services delete ${PROD} --help`,
+        'render services -e evm-environment000000001 -o json',
+        'render service list -o json',
+        `render workflows tasks list ${PROD}`,
+        `render workflows tasks runs show ${PROD}`,
+        `render workflows versions list ${PROD}`,
+        `render logs --text delete -r ${PROD}`,
+        `render psql ${PROD_DB} -c 'select count(*) from accounts' -o text`,
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -77,6 +84,20 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a target held in a variable', `S=${DEV}; render restart $S`],
         ['a target given only after a flag value', `render jobs create --start-command "node job.js" ${DEV}`],
         ['a dev target run through xargs', `echo ${DEV} | xargs render restart`],
+        ['an interactive SQL session', `render psql ${PROD_DB}`],
+        ['a SQL write', `render psql ${PROD_DB} -c 'DROP TABLE public.accounts'`],
+        ['a read followed by a write', `render psql ${PROD_DB} -c 'select 1; delete from accounts'`],
+        ['a read that calls a side-effecting function', `render psql ${PROD_DB} -c "select pg_terminate_backend(42)"`],
+        ['psql arguments passed through', `render psql ${PROD_DB} -- -c 'select 1'`],
+        ['a pgcli session', `render pgcli ${PROD_DB}`],
+        ['a workflow dev run, which runs any program', `render workflows dev -- render restart ${PROD}`],
+        ['a help word given as a flag value', `render jobs create ${PROD} --start-command --help --confirm`],
+        ['a dev id given as a flag value beside a variable target', `S=${PROD}; render jobs create --start-command ${DEV} "$S" --confirm`],
+        ['a task run start', `render workflows tasks runs start ${PROD}`],
+        ['a version release', `render workflows versions release ${PROD}`],
+        ['a listing forced into interactive mode', 'render services -o interactive'],
+        ['an inherited object key as a command', 'render constructor'],
+        ['another inherited object key', 'render toString'],
     ])('%s', (_label, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
@@ -104,6 +125,12 @@ describe('which gate a stopped command takes', () => {
         expect(changesProduction(command, '/tmp')).toBe(true);
     });
 
+    test('a render command run by a SQL client takes the production gate', () => {
+        const command = `psql -X -c '\\! render restart ${PROD}'`;
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
     test('a dev Render change beside another destructive step keeps the destructive gate', () => {
         const command = `kubectl delete deployment app && render restart ${DEV}`;
         expect(verdict(command)).toBe('gate');
@@ -116,6 +143,8 @@ describe('a lab session', () => {
         process.env.NANOCLAW_INSTRUCTIONS_PROFILE = 'lab';
         expect(verdict(`render services delete ${PROD} lab-app-api --confirm`)).toBe('gate');
         expect(verdict(`render jobs create ${PROD} --start-command lab-app-api`)).toBe('gate');
+        expect(verdict(`render jobs create "$S" --start-command lab-task --confirm`)).toBe('gate');
+        expect(verdict('render services delete lab-app-api --confirm')).toBe('allow');
     });
 });
 
