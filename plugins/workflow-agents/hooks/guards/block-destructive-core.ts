@@ -1850,7 +1850,7 @@ export function renderChangeReason(args: string[]): string | null {
     if (shape && shape.entry.kind !== 'proof') {
         const subcommand = !RENDER_OPEN_READS.has(shape.command.split(' ')[0]) && shape.operands.length > 0
             && [...RENDER_COMMANDS.keys()].some(c => c.startsWith(`${shape.command} `));
-        if (!subcommand && shape.output !== 'interactive') {
+        if (!subcommand) {
             if (shape.entry.kind === 'read' || RENDER_PLAIN_OUTPUT.has(shape.output ?? '')) return null;
             return `${RENDER_CHANGE_REASON} possible: render ${shape.command} can open an interactive menu that deploys. Add -o json (or yaml/text) to read it without approval.`;
         }

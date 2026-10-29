@@ -78,6 +78,8 @@ describe('reading Render needs no approval', () => {
         'render workspaces',
         `render workflows tasks runs list ${PROD}`,
         `render logs --tail=false -r ${PROD}`,
+        `render logs -r ${PROD} -o interactive`,
+        `render services instances ${PROD} -o interactive`,
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
     });
