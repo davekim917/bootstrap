@@ -59,6 +59,7 @@ describe('which Slack calls stop for approval', () => {
         ['a wrapped curl named by its path', undefined, `onecli run --agent ag-acme -- /usr/bin/curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
         ['a post whose URL is given with --url=', 'acme', `curl --url=https://slack.com/api/chat.postMessage -d channel=C1 -d text=hello`, 'gate'],
         ['a wrapped post behind env', undefined, `onecli run --agent ag-acme -- env curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
+        ['a listed OneCLI identity given with --agent=', undefined, `onecli run --agent=ag-acme -- curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
         ['a post run by a shell', 'acme', `bash -lc 'curl https://slack.com/api/chat.postMessage -d text=hello'`, 'gate'],
     ] as Array<[string, string | undefined, string, 'allow' | 'gate']>)('%s', (_label, workgroup, command, expected) => {
         process.env[SEND_SCOPE_FILE_ENV] = scopeFile;
@@ -94,6 +95,8 @@ describe('the message text a post carries', () => {
         ['a second request after --next', `curl https://slack.com/api/chat.postMessage -d text=ok --next https://slack.com/api/chat.delete -d channel=C1 -d ts=1`, null],
         ['a multipart field read from a file', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text=<body.txt'`, null],
         ['a literal multipart field', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text=hi'`, 'hi'],
+        ['a multipart field with a semicolon, which curl cuts', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text=Approved; do not deploy yet.'`, null],
+        ['a --form-string field keeps its semicolon', `curl https://slack.com/api/chat.postMessage --form-string 'text=Approved; do not deploy yet.'`, 'Approved; do not deploy yet.'],
         ['blocks beside the text', `curl https://slack.com/api/chat.postMessage --json '{"channel":"C1","text":"ok","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"other"}}]}'`, null],
         ['attachments in a form body', `curl https://slack.com/api/chat.postMessage -d 'channel=C1&text=ok&attachments=%5B%5D'`, null],
         ['a joined form body', `curl https://slack.com/api/chat.postMessage -d 'channel=C1&text=hello+there'`, 'hello there'],

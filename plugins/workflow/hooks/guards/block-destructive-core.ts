@@ -2327,7 +2327,10 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
                 skip += a === '-u' || a === '--unset' || a === '-C' || a === '--chdir' ? 2 : 1;
             }
         } else if (name === 'nice') {
-            if (args[skip] === '-n' && skip + 1 < args.length) skip = 2;
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += args[skip] === '-n' || args[skip] === '--adjustment' ? 2 : 1;
+            }
+            if (args[skip] === '--') skip += 1;
         } else if (name === 'timeout' || name === 'gtimeout') {
             while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
                 skip += optionWords(args[skip], 'ks', TIMEOUT_LONG_VALUE_OPTIONS, TIMEOUT_LONG_FLAGS);
@@ -6868,7 +6871,8 @@ function bodyFields(flag: string, value: string): BodyField[] | null {
         const at = value.indexOf('=');
         if (at < 0) return null;
         const v = value.slice(at + 1);
-        return [{ key: value.slice(0, at), value: flag !== '--form-string' && /^[<@]/.test(v) ? null : v }];
+        // curl reads `;type=`, `;filename=` and the like after a --form value, so a ';' may cut the text short.
+        return [{ key: value.slice(0, at), value: flag !== '--form-string' && (/^[<@]/.test(v) || v.includes(';')) ? null : v }];
     }
     if (flag === '--data-urlencode') {
         const at = value.indexOf('=');
@@ -6976,8 +6980,9 @@ export function slackPostsOf(command: string): SlackPost[] {
     for (const cmd of commands) {
         if (cmd.name === 'onecli' && cmd.args[0] === 'run') {
             const split = cmd.args.indexOf('--');
-            const agentAt = cmd.args.indexOf('--agent');
-            const agent = agentAt >= 0 && agentAt < (split < 0 ? Infinity : split) ? cmd.args[agentAt + 1] ?? null : null;
+            const own = split < 0 ? cmd.args : cmd.args.slice(0, split);
+            const agentAt = own.findIndex(a => a === '--agent' || a.startsWith('--agent='));
+            const agent = agentAt < 0 ? null : own[agentAt].startsWith('--agent=') ? own[agentAt].slice('--agent='.length) : own[agentAt + 1] ?? null;
             const inner = split >= 0 ? cmd.args.slice(split + 1) : [];
             const post = (inner.length ? slackPostIn(commandName(inner[0]), inner.slice(1), agent) : null) ?? carriedPost(inner, agent);
             if (post) posts.push(post);
