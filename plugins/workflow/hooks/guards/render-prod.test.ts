@@ -72,6 +72,12 @@ describe('reading Render needs no approval', () => {
         'render blueprints validate -w tea-workspace000000000001',
         `render workflows tasks runs show ${PROD} --local -o json`,
         'render skills list --scope project',
+        'render postgres list',
+        `render keyvalues get ${PROD}`,
+        `render services instances ${PROD}`,
+        'render workspaces',
+        `render workflows tasks runs list ${PROD}`,
+        `render logs --tail=false -r ${PROD}`,
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -111,6 +117,11 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a listing with no output format, which may open a menu', 'render services list'],
         ['a listing forced interactive with an equals sign', 'render services -o=interactive'],
         ['a listing whose output mode comes from the environment', 'RENDER_OUTPUT=interactive render services'],
+        ['a shell whose flag the guard would misread as taking a value', `render ssh -e production-api ${DEV} -o interactive`],
+        ['a services menu named with a dev id it ignores', `render services ${DEV} -o interactive`],
+        ['a projects menu named with a dev id it ignores', `render projects ${DEV} -o interactive`],
+        ['psql on a dev database, which reads startup files', `render psql ${DEV_DB} -c 'select 1' -o text`],
+        ['a workflow start on a dev id, which opens an input form', `render workflows start ${DEV}`],
         ['a read followed by a write', `render psql ${PROD_DB} -c 'select 1; delete from accounts'`],
         ['a read that calls a side-effecting function', `render psql ${PROD_DB} -c "select pg_terminate_backend(42)"`],
         ['psql arguments passed through', `render psql ${PROD_DB} -- -c 'select 1'`],
@@ -134,7 +145,6 @@ describe('a Render resource listed as dev changes freely', () => {
         `render jobs create ${DEV} --confirm -o json --start-command "node job.js"`,
         `render restart ${DEV}`,
         `render deploys create ${DEV}`,
-        `render psql ${DEV_DB} -c 'delete from sessions'`,
         `render jobs create --start-command "node job.js" ${DEV}`,
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
