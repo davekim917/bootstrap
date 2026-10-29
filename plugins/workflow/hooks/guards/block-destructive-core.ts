@@ -1728,6 +1728,55 @@ export const PLATFORM_DESTRUCTIVE: Record<string, Set<string>> = {
     doctl:   new Set(['delete', 'destroy']),
 };
 
+// Every Render command is a production change except these, which only read or change the CLI's own local
+// state. '' is a group run with no subcommand, which lists. `psql` and `pgcli` open SQL sessions whose
+// statements this check does not read.
+const RENDER_READ_ONLY: Record<string, 'any' | ReadonlySet<string>> = {
+    logs: 'any', whoami: 'any', workspaces: 'any', workspace: 'any', projects: 'any', environments: 'any',
+    help: 'any', docs: 'any', login: 'any', logout: 'any', skills: 'any', psql: 'any', pgcli: 'any',
+    services: new Set(['', 'list', 'instances']),
+    deploys: new Set(['', 'list']),
+    jobs: new Set(['', 'list']),
+    postgres: new Set(['', 'list', 'get']),
+    pg: new Set(['', 'list', 'get']),
+    keyvalues: new Set(['', 'list', 'get']),
+    kv: new Set(['', 'list', 'get']),
+    workflows: new Set(['', 'list', 'init', 'dev']),
+    blueprints: new Set(['', 'validate']),
+};
+const RENDER_VALUE_FLAGS = new Set(['-o', '--output']);
+export const RENDER_RESOURCE_ID_RE = /^[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?$/;
+
+/** What a render invocation runs, past its global flags: the command, its subcommand ('' for none), and the words after them. */
+function renderInvocation(args: string[]): { verb: string; sub: string; operands: string[]; help: boolean } {
+    const words: string[] = [];
+    let help = false;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '-h' || a === '--help') help = true;
+        if (RENDER_VALUE_FLAGS.has(a)) i++;
+        else if (!a.startsWith('-')) words.push(a);
+    }
+    const verb = words[0] ?? '';
+    const grouped = RENDER_READ_ONLY[verb] instanceof Set || !(verb in RENDER_READ_ONLY) && words.length > 1 && /^[a-z]+$/.test(words[1]);
+    const sub = grouped ? words[1] ?? '' : '';
+    return { verb, sub, operands: words.slice(grouped && sub ? 2 : 1), help: help || verb === 'help' };
+}
+
+export function renderChangeReason(args: string[]): string | null {
+    const { verb, sub, help } = renderInvocation(args);
+    if (!verb || help) return null;
+    const allowed = RENDER_READ_ONLY[verb];
+    if (allowed === 'any' || allowed?.has(sub)) return null;
+    return `Production change on Render (render ${[verb, sub].filter(Boolean).join(' ')}).`;
+}
+
+const RENDER_RESOURCE_ID_IN_TEXT = new RegExp(String.raw`(?<![a-z0-9-])[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?(?![a-z0-9-])`, 'g');
+
+function renderResourceIds(args: string[]): string[] {
+    return args.flatMap(a => a.match(RENDER_RESOURCE_ID_IN_TEXT) ?? []);
+}
+
 // ── Path helpers ─────────────────────────────────────────────────────────────
 
 export function expandPath(p: string): string {
@@ -3427,6 +3476,8 @@ function labSqlTarget(cmd: ResolvedCommand): string | null {
 const LAB_RESOURCE_RE = /^lab-/;
 
 function labRenderTarget(cmd: ResolvedCommand): string | null {
+    // Ids are never lab names, so a command naming one targets something a lab- word cannot vouch for.
+    if (renderResourceIds(cmd.args).length) return null;
     const verbs = PLATFORM_DESTRUCTIVE.render;
     for (const a of cmd.args) {
         if (a.startsWith('-') || verbs.has(a)) continue;
@@ -3505,6 +3556,7 @@ export interface DevLogin {
 
 export interface DevScope {
     snowflake: Array<{ connection: string; databases: string[]; login?: DevLogin }>;
+    render?: { resources: string[] };
 }
 
 /** Parse a dev-scope file's text. Null when anything about it is unusable. */
@@ -3532,7 +3584,25 @@ export function parseDevScope(text: string): DevScope | null {
             }
         }
     }
-    return { snowflake: entries as DevScope['snowflake'] };
+    const render = (raw as { render?: unknown }).render;
+    if (render === undefined) return { snowflake: entries as DevScope['snowflake'] };
+    const resources = (render as { resources?: unknown } | null)?.resources;
+    if (!Array.isArray(resources) || resources.length === 0
+        || !resources.every((r: unknown) => typeof r === 'string' && RENDER_RESOURCE_ID_RE.test(r))) {
+        return null;
+    }
+    return { snowflake: entries as DevScope['snowflake'], render: { resources: resources as string[] } };
+}
+
+/**
+ * The dev resource a render command changes, when its target (the first word after the subcommand) and every
+ * other resource id it names are listed. A target given any other way, or none, is not proven dev.
+ */
+function renderDevTarget(cmd: ResolvedCommand): string | null {
+    const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    const target = renderInvocation(cmd.args).operands[0];
+    if (!target || !listed.has(target)) return null;
+    return renderResourceIds(cmd.args).every(id => listed.has(id)) ? `render resource ${target}` : null;
 }
 
 function currentDevScope(): DevScope | null {
@@ -3798,6 +3868,7 @@ function trustedLoginConnection(cmd: ResolvedCommand): string | null {
  * `command` are the whole command line, so anything set up around the call counts.
  */
 export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
+    if (cmd.name === 'render') return topLevel ? renderDevTarget(cmd) : null;
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
     const scope = currentDevScope();
     if (!scope) return null;
@@ -4696,6 +4767,10 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (platformVerbs && args.some(a => platformVerbs.has(a))) {
         return `Destructive ${name} CLI command.`;
     }
+    if (name === 'render') {
+        const change = renderChangeReason(args);
+        if (change) return change;
+    }
 
     // Platform CLIs with custom logic
     if (name === 'heroku' && args.some(a => a === 'destroy' || a === 'pg:reset' || a.includes(':destroy'))) {
@@ -5456,6 +5531,7 @@ const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
     'helm delete': ['Removes the release and every Kubernetes resource it created.', 'data kept only in those resources is lost'],
     'gh repo': ['Permanently deletes the GitHub repository.', "its code, issues and pull requests can't be recovered"],
     dd: ['Writes raw bytes to the output target; pointed at a disk, it overwrites it.', "whatever it overwrites can't be recovered"],
+    render: ['Changes the Render service, database or job named in the step below, which is not listed as dev, so treat it as production.', "some changes, such as a deleted database, can't be undone"],
 };
 
 function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
@@ -6094,11 +6170,13 @@ export function sleepSync(ms: number): void {
  * host uses even). We compute seq under BEGIN IMMEDIATE to serialize against
  * any concurrent writeMessageOut from the agent-runner process.
  */
+export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'request_prod_gate';
+
 export function writeGateRequest(
     label: string,
     summary: string,
     command: string,
-    action: 'request_destructive_gate' | 'request_bash_gate' = 'request_destructive_gate',
+    action: GateAction = 'request_destructive_gate',
 ): string {
     // Dynamic import so non-NanoClaw environments (plain Claude Code) never
     // touch bun:sqlite — the module is only present under bun runtime.
@@ -6199,6 +6277,7 @@ export function pollDeliveredTable(requestId: string, timeoutMs: number): GateDe
  * `opts.action` selects the host-side handler the staged request routes to:
  *   - 'request_destructive_gate' — the destructive-command gate (default path).
  *   - 'request_bash_gate'        — the generic bash gate (email gate uses this).
+ *   - 'request_prod_gate'        — a production change; the host counts only an owner's or admin's click.
  *
  * Fail-closed: if writeGateRequest throws (session DBs in a broken state),
  * returns 'denied'. The CALLER emits the stderr/exit — this function never
@@ -6212,7 +6291,7 @@ export function runGateRequest(
     command: string,
     reason: string,
     opts: {
-        action: 'request_destructive_gate' | 'request_bash_gate';
+        action: GateAction;
         onStageError?: (err: unknown) => void;
         // Card title and body. Either one omitted falls back to `reason`.
         label?: string;
@@ -6274,7 +6353,19 @@ export function runNanoclawGate(
     toolUseId?: string,
     cwd?: string,
 ): GateDecision {
-    return runGateRequest(command, reason, { action: 'request_destructive_gate', onStageError, toolUseId, ...describeGate(command, reason, cwd) });
+    const action = changesProduction(command, cwd) ? 'request_prod_gate' : 'request_destructive_gate';
+    return runGateRequest(command, reason, { action, onStageError, toolUseId, ...describeGate(command, reason, cwd) });
+}
+
+/** Whether a step the gate stops on is a Render production change. A command the guard cannot read counts if it names render. */
+export function changesProduction(command: string, cwd: string = currentWorkingDir()): boolean {
+    try {
+        const commands = extractCommands(command);
+        if (commands[0]?.script) commands[0].script.cwd = cwd;
+        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => step.cmd.name === 'render');
+    } catch {
+        return /\brender\b/.test(command);
+    }
 }
 
 /**
