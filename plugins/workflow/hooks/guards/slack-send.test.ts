@@ -56,6 +56,7 @@ describe('which Slack calls stop for approval', () => {
         ['a post after another command', 'acme', `cd /tmp && ${POST}`, 'gate'],
         ['a post on a workspace subdomain', 'acme', `curl https://acme.slack.com/api/chat.postMessage -d text=x`, 'gate'],
         ['a post after a read in the same curl', 'acme', `curl https://slack.com/api/conversations.list --next https://slack.com/api/chat.postMessage -d text=x`, 'gate'],
+        ['a wrapped curl named by its path', undefined, `onecli run --agent ag-acme -- /usr/bin/curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
     ] as Array<[string, string | undefined, string, 'allow' | 'gate']>)('%s', (_label, workgroup, command, expected) => {
         process.env[SEND_SCOPE_FILE_ENV] = scopeFile;
         if (workgroup === undefined) delete process.env.NANOCLAW_WORKGROUP_ID;
@@ -94,6 +95,12 @@ describe('the message text a post carries', () => {
         ['attachments in a form body', `curl https://slack.com/api/chat.postMessage -d 'channel=C1&text=ok&attachments=%5B%5D'`, null],
         ['a joined form body', `curl https://slack.com/api/chat.postMessage -d 'channel=C1&text=hello+there'`, 'hello there'],
         ['a delete carries no text', `curl https://slack.com/api/chat.delete -d channel=C1 -d ts=1 -d text=x`, null],
+        ['an attached multipart file field', `curl https://slack.com/api/chat.postMessage -F text=ok -Fblocks=@blocks.json`, null],
+        ['an attached config file', `curl https://slack.com/api/chat.postMessage -d text=ok -Kextra.conf`, null],
+        ['an attached data value', `curl https://slack.com/api/chat.postMessage -dtext=hi`, 'hi'],
+        ['a cluster ending in a data flag', `curl -sSd text=hi https://slack.com/api/chat.postMessage`, 'hi'],
+        ['a curl option outside the known set', `curl https://slack.com/api/chat.postMessage --variable t@file --expand-data 'text={{t}}'`, null],
+        ['a client other than curl', `http POST https://slack.com/api/chat.postMessage text=hi`, null],
     ])('%s', (_label, command, text) => {
         expect(slackPostsOf(command)[0]?.text).toBe(text);
     });
