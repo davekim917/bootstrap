@@ -1750,12 +1750,15 @@ const RENDER_COMMANDS = new Map<string, 'read' | 'change'>([
         'workflows create', 'workflows cancel', 'workflows start', 'workflows dev', 'workflows tasks runs start',
         'workflows tasks runs cancel', 'workflows versions release'].map(c => [c, 'change'] as const),
 ]);
+// Reads that open a menu able to deploy or open a shell unless the output is set (a TTY or RENDER_OUTPUT can pick it).
+const RENDER_MENU_READS = new Set(['services', 'deploys', 'jobs', 'postgres', 'keyvalues', 'workflows', 'projects', 'environments', 'workspaces']);
+const RENDER_PLAIN_OUTPUT = new Set(['json', 'yaml', 'text']);
 // Reads whose words after the command are filters or local CLI state, never a subcommand.
 const RENDER_OPEN_READS = new Set(['logs', 'whoami', 'workspaces', 'workspace', 'projects', 'environments', 'help', 'docs', 'login', 'logout', 'skills']);
 const RENDER_ALIASES = new Map([['pg', 'postgres'], ['kv', 'keyvalues'], ['keyvalue', 'keyvalues'], ['service', 'services'], ['ls', 'list']]);
 // Every Render flag that takes a value, from `render <command> --help`.
 const RENDER_VALUE_FLAGS = new Set([
-    '--output', '--command', '--resources', '--environment-ids',
+    '--output', '--command', '--resources', '--environment-ids', '--workspace', '--scope', '--version',
     '--branch', '--build-command', '--build-filter-ignored-path', '--build-filter-path', '--commit', '--cron-command',
     '--cron-schedule', '--datadog-api-key', '--datadog-site', '--direction', '--disk-size-gb', '--end', '--environment',
     '--environment-id', '--env-var', '--from', '--health-check-path', '--host', '--image', '--input-file', '--input',
@@ -1764,8 +1767,8 @@ const RENDER_VALUE_FLAGS = new Set([
     '--project', '--publish-directory', '--region', '--registry-credential', '--repo', '--root-directory', '--runtime',
     '--secret-file', '--start-command', '--start', '--status-code', '--task-id', '--task-run-id', '--task', '--text', '--type',
 ]);
-const RENDER_SHORT_VALUE = new Map([['o', '--output'], ['c', '--command'], ['r', '--resources'], ['e', '--environment-ids']]);
-const RENDER_SWITCHES = new Set(['--confirm', '--include-previews', '--wait', '--tail']);
+const RENDER_SHORT_VALUE = new Map([['o', '--output'], ['c', '--command'], ['r', '--resources'], ['e', '--environment-ids'], ['w', '--workspace']]);
+const RENDER_SWITCHES = new Set(['--confirm', '--include-previews', '--wait', '--tail', '--local', '--include-sensitive-connection-info']);
 export const RENDER_RESOURCE_ID_RE = /^[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?$/;
 export const RENDER_CHANGE_REASON = 'Production change on Render';
 
@@ -1783,7 +1786,7 @@ function renderShape(args: string[]): RenderShape | null {
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         if (/[[\]*?{}$`~]/.test(a) || a === '--') return null;
-        if (a === '-h' || a === '--help' || a === '-v' || a === '--version') {
+        if (a === '-h' || a === '--help' || ((a === '-v' || a === '--version') && args.length === 1)) {
             help = true;
         } else if (a.startsWith('--')) {
             const at = a.indexOf('=');
@@ -1798,7 +1801,7 @@ function renderShape(args: string[]): RenderShape | null {
         } else if (a.startsWith('-') && a.length > 1) {
             const flag = RENDER_SHORT_VALUE.get(a[1]);
             if (!flag) return null;
-            const value = a.length > 2 ? a.slice(2) : args[++i];
+            const value = a.length > 2 ? a.slice(2).replace(/^=/, '') : args[++i];
             if (value === undefined || /[[\]*?{}$`~]/.test(value)) return null;
             values.set(flag, value);
         } else {
@@ -1816,7 +1819,11 @@ function renderShape(args: string[]): RenderShape | null {
 export function renderChangeReason(args: string[]): string | null {
     const shape = renderShape(args);
     if (shape && (shape.command === '' || shape.help) && !shape.values.has('--command')) return null;
-    if (shape?.command && shape.values.get('--output') !== 'interactive' && RENDER_COMMANDS.get(shape.command) === 'read') {
+    const menu = shape?.command && RENDER_MENU_READS.has(shape.command.split(' ')[0]) && !RENDER_PLAIN_OUTPUT.has(shape.values.get('--output') ?? '');
+    if (menu && RENDER_COMMANDS.get(shape!.command!) === 'read') {
+        return `${RENDER_CHANGE_REASON} possible: render ${shape!.command} can open an interactive menu that deploys. Add -o json (or yaml/text) to read it without approval.`;
+    }
+    if (shape?.command && RENDER_COMMANDS.get(shape.command) === 'read') {
         if (RENDER_OPEN_READS.has(shape.command.split(' ')[0]) || shape.operands.length === 0) return null;
         const hasSubcommands = [...RENDER_COMMANDS.keys()].some(c => c.startsWith(`${shape.command} `));
         if (!hasSubcommands) return null;
@@ -3531,17 +3538,16 @@ const LAB_RESOURCE_RE = /^lab-/;
 
 /**
  * The one resource a render command acts on, when `accepts` vouches for it and for every resource id the line names.
- * The line must read word by word with exactly one operand; for a command the tree doesn't know, the operands are
- * its words that aren't plain lowercase.
+ * The line must read word by word as a command in the tree with exactly one operand: a command the tree doesn't
+ * know has no known target position, so nothing proves what it acts on.
  */
 function renderProvenTarget(cmd: ResolvedCommand, accepts: (resource: string) => boolean): string | null {
     const shape = renderShape(cmd.args);
-    if (!shape || shape.command === '' || shape.command === 'pgcli' || shape.command === 'workflows dev') return null;
+    if (!shape?.command || shape.command === 'pgcli' || shape.command === 'workflows dev') return null;
     // A psql session runs whatever arrives on stdin, and a meta-command can open a shell or another connection.
     if (shape.command === 'psql' && (!shape.values.has('--command') || cmd.args.some(a => a.includes('\\')))) return null;
-    const operands = shape.command === null ? shape.operands.filter(w => !/^[a-z]+$/.test(w)) : shape.operands;
-    if (operands.length !== 1 || !accepts(operands[0])) return null;
-    return renderResourceIds(cmd.args).every(accepts) ? operands[0] : null;
+    if (shape.operands.length !== 1 || !accepts(shape.operands[0])) return null;
+    return renderResourceIds(cmd.args).every(accepts) ? shape.operands[0] : null;
 }
 
 function labRenderTarget(cmd: ResolvedCommand): string | null {
