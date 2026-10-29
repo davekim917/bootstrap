@@ -5954,7 +5954,7 @@ function evaluateBashLine(
     }
     const selfKill = selfMatchingKillReason(commands, command);
     if (selfKill) return { action: 'block', reason: selfKill };
-    const merge = noMergeReason(commands, cwd);
+    const merge = noMergeReason(commands, cwd, command);
     if (merge) return { action: 'block', reason: merge };
     // A line the guard can't read the way bash runs it blocks and stays blocked on the approval replay: approval
     // can't clear what could not be read, the same as a shell taking its command from a variable.
@@ -6633,6 +6633,8 @@ function headAfterSwitches(earlier: ResolvedCommand[]): string | null | undefine
         if (c.name !== 'git') continue;
         const sub = gitSubcommandIndex(c.args);
         if (!['switch', 'checkout'].includes(c.args[sub])) continue;
+        // A switch run in another checkout (git -C …) says nothing about this one's branch.
+        if (c.args.slice(0, sub).some(a => /^(?:-C|--git-dir|--work-tree)(?:=|$)/.test(a)) || c.chdir !== undefined) { head = null; continue; }
         const rest = c.args.slice(sub + 1);
         const create = rest.findIndex(a => ['-c', '-C', '-b', '-B', '--create', '--force-create'].includes(a));
         const named = create >= 0 ? rest[create + 1] : c.args[sub] === 'switch' ? rest.filter(a => !a.startsWith('-')).at(0) : undefined;
@@ -6688,7 +6690,7 @@ function ghArgs(args: string[]): { args: string[]; repo: string | undefined } {
 }
 
 /** Why a command merges into, or pushes to a protected branch of, a repository agents never merge into. */
-function noMergeReason(commands: ResolvedCommand[], cwd: string): string | null {
+function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): string | null {
     const scope = currentMergeScope();
     if (scope === null) return null;
     const refused = (repo: string | null, what: string): string | null => {
@@ -6703,7 +6705,7 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string): string | null 
         const places: Array<string | null> = dirs && !/[$`]/.test(cmd.chdir ?? '') ? dirs.map(d => pathResolve(d, cmd.chdir ?? '.')) : [null];
         const head = headAfterSwitches(commands.slice(0, commands.indexOf(cmd)));
         for (const dir of places) {
-            const reason = noMergeStepReason(cmd, commands, dir, scope, refused, head);
+            const reason = noMergeStepReason(cmd, commands, dir, scope, refused, head, line);
             if (reason) return reason;
         }
     }
@@ -6720,8 +6722,12 @@ function apiMergeTarget(text: string, ghRepo: string | undefined, dir: string | 
     if (!match) return undefined;
     if (/[$`]/.test(match[0])) return 'unresolved';
     if (!/\{owner\}|\{repo\}/.test(match[1])) return match[1].toLowerCase();
-    if (ghRepo !== undefined) return /[$`]/.test(ghRepo) ? 'unresolved' : githubRepoOf(ghRepo);
-    return dir === null ? 'unplaced' : checkoutRemoteRepo(dir);
+    if (ghRepo !== undefined && /[$`]/.test(ghRepo)) return 'unresolved';
+    if (ghRepo === undefined && dir === null) return 'unplaced';
+    const fill = ghRepo !== undefined ? githubRepoOf(ghRepo) : checkoutRemoteRepo(dir!);
+    if (fill === null) return null;
+    const [owner, repo] = fill.split('/');
+    return match[1].replace('{owner}', owner).replace('{repo}', repo).toLowerCase();
 }
 
 /** The directory a git push runs in from `dir`, after every `-C` and `--work-tree` before its subcommand; null when unknown. */
@@ -6757,6 +6763,7 @@ function noMergeStepReason(
     scope: MergeScope | 'unreadable',
     refused: (repo: string | null, what: string) => string | null,
     head: string | null | undefined,
+    line: string,
 ): string | null {
     const text = cmd.args.join(' ');
     const unresolved = (what: string) => `${what}: its repository is only known when the command runs, so it is refused. Name the repository literally.`;
@@ -6774,8 +6781,11 @@ function noMergeStepReason(
             if (reason) return reason;
         }
     }
-    const api = (cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name) ? apiMergeTarget(text, ghRepo, dir) : undefined;
+    const apiClient = (cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name);
+    const api = apiClient ? apiMergeTarget(text, ghRepo, dir) : undefined;
     if (api === 'unresolved') return unresolved('Merging through the API');
+    // An endpoint written only into a variable (ENDPOINT=repos/…/merge; gh api "$ENDPOINT") is a merge the words don't show.
+    if (api === undefined && apiClient && cmd.args.some(a => /[$`]/.test(a)) && /repos\/\S+?\/(?:pulls\/[^/\s]+\/merge|merges)\b/.test(line)) return unresolved('Merging through the API');
     if (api === 'unplaced') return unplaced('Merging through the API');
     if (api !== undefined) {
         const reason = refused(api, 'Merging through the API');

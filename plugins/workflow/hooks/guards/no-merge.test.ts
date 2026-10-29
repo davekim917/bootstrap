@@ -85,6 +85,9 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a push of the current branch after switching to the protected one', 'git switch master && git push', () => theirs],
         ['a push after checking out the protected branch', 'git checkout master && git push origin HEAD', () => theirs],
         ['a push whose last -C names the checkout', 'git -C OURS -C ../core push origin HEAD:master', () => dir],
+        ['a push of the current branch after a switch in another checkout', 'git -C OURS switch feature-x && git push', () => join(dir, 'core-on-master')],
+        ['a REST merge endpoint held whole in a variable', 'ENDPOINT=repos/Acme/core/pulls/12/merge; gh api -X PUT "$ENDPOINT"', () => other],
+        ['a REST merge endpoint with a partial placeholder', 'GH_REPO=example/core gh api -X PUT repos/Acme/{repo}/pulls/12/merge', () => other],
     ])('%s', (_label, command, cwd) => {
         checkout(join(dir, 'core-on-master'), 'https://github.com/Acme/core.git', 'master');
         const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`);
