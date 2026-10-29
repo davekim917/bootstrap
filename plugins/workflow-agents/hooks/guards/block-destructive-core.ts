@@ -6643,7 +6643,23 @@ const SLACK_POST_METHODS = new Set([
 ]);
 const SLACK_API_URL_RE = /^(?:https?:\/\/)?(?:[a-z0-9-]+\.)*slack\.com\/api\/([A-Za-z.]+)/;
 const HTTP_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs']);
-const CURL_BODY_FLAGS = new Set(['-d', '--data', '--data-raw', '--data-binary', '--data-ascii', '--data-urlencode', '--json', '-F', '--form', '--form-string']);
+const CURL_BODY_FLAGS = new Set(['--data', '--data-raw', '--data-binary', '--data-ascii', '--data-urlencode', '--json', '--form', '--form-string']);
+/** Every curl option a readable post may use, short spellings mapped to their long names; true when it takes a value. */
+const CURL_SHORT: Record<string, string> = {
+    d: '--data', F: '--form', H: '--header', X: '--request', o: '--output', m: '--max-time', w: '--write-out',
+    A: '--user-agent', u: '--user', b: '--cookie', e: '--referer', x: '--proxy',
+    s: '--silent', S: '--show-error', f: '--fail', L: '--location', k: '--insecure', v: '--verbose', i: '--include',
+    g: '--globoff', G: '--get', N: '--no-buffer',
+};
+const CURL_LONG: Record<string, boolean> = {
+    '--data': true, '--data-raw': true, '--data-binary': true, '--data-ascii': true, '--data-urlencode': true, '--json': true,
+    '--form': true, '--form-string': true, '--header': true, '--request': true, '--output': true, '--max-time': true,
+    '--connect-timeout': true, '--retry': true, '--write-out': true, '--user-agent': true, '--user': true, '--url': true,
+    '--cookie': true, '--referer': true, '--proxy': true,
+    '--silent': false, '--show-error': false, '--fail': false, '--fail-with-body': false, '--location': false,
+    '--insecure': false, '--verbose': false, '--include': false, '--globoff': false, '--get': false, '--no-buffer': false,
+    '--compressed': false, '--http1.1': false, '--http2': false, '--no-progress-meter': false,
+};
 
 export interface SendScope {
     slack: { workgroups: string[]; onecliAgents: string[] };
@@ -6695,8 +6711,6 @@ const SLACK_ROUTING_FIELDS = new Set([
     'token', 'channel', 'ts', 'thread_ts', 'reply_broadcast', 'post_at', 'as_user', 'username', 'icon_emoji', 'icon_url',
     'mrkdwn', 'parse', 'link_names', 'unfurl_links', 'unfurl_media',
 ]);
-/** Options that add a request, a body or arguments the command line doesn't show. */
-const CURL_HIDDEN_FLAGS = new Set(['--next', '-:', '-T', '--upload-file', '-K', '--config', '--url-query']);
 
 type BodyField = { key: string; value: string | null };
 
@@ -6712,7 +6726,7 @@ function bodyFields(flag: string, value: string): BodyField[] | null {
             return null;
         }
     }
-    if (flag === '-F' || flag === '--form' || flag === '--form-string') {
+    if (flag === '--form' || flag === '--form-string') {
         const at = value.indexOf('=');
         if (at < 0) return null;
         const v = value.slice(at + 1);
@@ -6735,25 +6749,69 @@ function bodyFields(flag: string, value: string): BodyField[] | null {
     return fields;
 }
 
+type CurlOption = { flag: string; value: string | undefined };
+
+/**
+ * A curl command line in one spelling: `--flag=value`, `-Fvalue` and clusters like `-sSd` become separate long
+ * options. Null when it uses an option outside the known set, since an unknown one may add a request or a body.
+ */
+function curlOptions(args: string[]): { options: CurlOption[]; urls: string[] } | null {
+    const options: CurlOption[] = [];
+    const urls: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--') {
+            urls.push(...args.slice(i + 1));
+            break;
+        }
+        if (arg.startsWith('--')) {
+            const at = arg.indexOf('=');
+            const flag = at < 0 ? arg : arg.slice(0, at);
+            const takesValue = CURL_LONG[flag];
+            if (takesValue === undefined) return null;
+            const value = takesValue ? (at < 0 ? args[++i] : arg.slice(at + 1)) : undefined;
+            if (takesValue && value === undefined) return null;
+            if (flag === '--url') urls.push(value!);
+            else options.push({ flag, value });
+            continue;
+        }
+        if (!arg.startsWith('-') || arg === '-') {
+            urls.push(arg);
+            continue;
+        }
+        for (let c = 1; c < arg.length; c++) {
+            const flag = CURL_SHORT[arg[c]];
+            if (!flag) return null;
+            if (!CURL_LONG[flag]) {
+                options.push({ flag, value: undefined });
+                continue;
+            }
+            const value = c + 1 < arg.length ? arg.slice(c + 1) : args[++i];
+            if (value === undefined) return null;
+            options.push({ flag, value });
+            break;
+        }
+    }
+    return { options, urls };
+}
+
 function slackPostIn(name: string, args: string[], onecliAgent: string | null): SlackPost | null {
     if (!HTTP_CLIENTS.has(name)) return null;
     const methods = args.map(a => SLACK_API_URL_RE.exec(a)?.[1]).filter((m): m is string => m !== undefined);
     const method = methods.find(m => SLACK_POST_METHODS.has(m));
     if (!method) return null;
-    const urls = args.filter(a => /^(?:https?:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,}\/)/i.test(a)).length;
-    let readable = SLACK_TEXT_METHODS.has(method) && urls === 1 && !args.some(a => CURL_HIDDEN_FLAGS.has(a.split('=')[0]));
+    const line = name === 'curl' ? curlOptions(args) : null;
+    let readable = SLACK_TEXT_METHODS.has(method) && line !== null && line.urls.length === 1;
     const fields: BodyField[] = [];
-    for (let i = 0; i < args.length && readable; i++) {
-        const [flag, inline] = args[i].startsWith('--') && args[i].includes('=') ? [args[i].slice(0, args[i].indexOf('=')), args[i].slice(args[i].indexOf('=') + 1)] : [args[i], undefined];
+    for (const { flag, value } of readable ? line!.options : []) {
         if (!CURL_BODY_FLAGS.has(flag)) continue;
-        const value = inline ?? args[++i];
-        const parsed = value === undefined ? null : bodyFields(flag, value);
+        const parsed = bodyFields(flag, value!);
         if (parsed) fields.push(...parsed);
         else readable = false;
     }
-    const query = args.find(a => SLACK_API_URL_RE.test(a))?.split('?')[1];
+    const query = readable ? line!.urls[0].split('?')[1] : undefined;
     if (readable && query) {
-        const parsed = bodyFields('-d', query);
+        const parsed = bodyFields('--data', query);
         if (parsed) fields.push(...parsed);
         else readable = false;
     }
@@ -6777,7 +6835,7 @@ export function slackPostsOf(command: string): SlackPost[] {
             const agentAt = cmd.args.indexOf('--agent');
             const agent = agentAt >= 0 && agentAt < (split < 0 ? Infinity : split) ? cmd.args[agentAt + 1] ?? null : null;
             const inner = split >= 0 ? cmd.args.slice(split + 1) : [];
-            const post = inner.length ? slackPostIn(inner[0], inner.slice(1), agent) : null;
+            const post = inner.length ? slackPostIn(commandName(inner[0]), inner.slice(1), agent) : null;
             if (post) posts.push(post);
             continue;
         }
