@@ -2361,7 +2361,7 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
         } else if (name === 'nohup' || name === 'time') {
             // GNU time's -o FILE and -f FORMAT (and --output/--format) take the next word.
             while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
-                skip += name === 'time' && ['-o', '-f', '--output', '--format'].includes(args[skip]) ? 2 : 1;
+                skip += name === 'time' ? optionWords(args[skip], 'of', new Set(['--output', '--format']), new Set(['--append', '--verbose', '--portability', '--quiet'])) : 1;
             }
             if (args[skip] === '--') skip += 1;
         }
