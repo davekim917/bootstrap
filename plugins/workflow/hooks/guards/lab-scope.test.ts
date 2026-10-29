@@ -100,7 +100,7 @@ const LAB_TARGETS: Array<[string, string]> = [
   ['psql "host=example.com dbname=lab_app" -c "DROP TABLE t"', '/tmp'],
   // render — lab service / database argument
   ['render services delete lab-app-api --confirm', '/tmp'],
-  ['render databases delete lab-app-db', '/tmp'],
+  ['render postgres delete lab-app-db', '/tmp'],
   // gh — LAB-* repos only
   ['gh repo delete Lab-Org/LAB-APP --yes', '/tmp'],
 ];
