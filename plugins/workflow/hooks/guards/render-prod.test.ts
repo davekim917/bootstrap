@@ -64,6 +64,10 @@ describe('reading Render needs no approval', () => {
         `render workflows versions list ${PROD}`,
         `render logs --text delete -r ${PROD}`,
         'render -ojson services',
+        'render postgres ls',
+        'render pg ls -o json',
+        'render keyvalue list',
+        `render workflows runs list ${PROD}`,
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -94,6 +98,10 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a shell escape on a dev database', `render psql ${DEV_DB} -c '\\! render restart srv-"prodservice000000001"'`],
         ['psql arguments passed through on a dev database', `render psql ${DEV_DB} -c 'select 1' -- -d postgresql://db.example.com/app -c 'DROP TABLE accounts'`],
         ['an interactive session on a dev database', `render psql ${DEV_DB}`],
+        ['a help flag set to false', `render restart ${PROD} --help=false --confirm`],
+        ['a subcommand spelled as a glob', `touch delete; render services [d]elete ${PROD} --confirm`],
+        ['a production database named before a listed dev one', `render psql production ${DEV_DB} -c 'DROP TABLE accounts'`],
+        ['a flag the guard does not know', `render services update ${PROD} --suspend-everything`],
         ['a read followed by a write', `render psql ${PROD_DB} -c 'select 1; delete from accounts'`],
         ['a read that calls a side-effecting function', `render psql ${PROD_DB} -c "select pg_terminate_backend(42)"`],
         ['psql arguments passed through', `render psql ${PROD_DB} -- -c 'select 1'`],
@@ -149,6 +157,14 @@ describe('which gate a stopped command takes', () => {
         expect(changesProduction(command, '/tmp')).toBe(true);
     });
 
+    test('a render command after another gated program in a SQL file still takes the production gate', () => {
+        const file = join(dir, 'two.sql');
+        writeFileSync(file, `\\! kubectl delete deployment app\n\\! render restart ${PROD} --confirm\n`);
+        const command = `psql -X -f ${file}`;
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
     test('a dev Render change beside another destructive step keeps the destructive gate', () => {
         const command = `kubectl delete deployment app && render restart ${DEV}`;
         expect(verdict(command)).toBe('gate');
@@ -162,6 +178,7 @@ describe('a lab session', () => {
         expect(verdict(`render services delete ${PROD} lab-app-api --confirm`)).toBe('gate');
         expect(verdict(`render jobs create ${PROD} --start-command lab-app-api`)).toBe('gate');
         expect(verdict(`render jobs create "$S" --start-command lab-task --confirm`)).toBe('gate');
+        expect(verdict(`render psql production lab-db -c 'DROP TABLE accounts'`)).toBe('gate');
         expect(verdict('render services delete lab-app-api --confirm')).toBe('allow');
     });
 });
