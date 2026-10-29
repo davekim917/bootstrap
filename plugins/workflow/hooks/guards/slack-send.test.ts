@@ -55,6 +55,7 @@ describe('which Slack calls stop for approval', () => {
         ['another OneCLI identity', 'acme', `onecli run --agent ag-other -- ${POST}`, 'allow'],
         ['a post after another command', 'acme', `cd /tmp && ${POST}`, 'gate'],
         ['a post on a workspace subdomain', 'acme', `curl https://acme.slack.com/api/chat.postMessage -d text=x`, 'gate'],
+        ['a post after a read in the same curl', 'acme', `curl https://slack.com/api/conversations.list --next https://slack.com/api/chat.postMessage -d text=x`, 'gate'],
     ] as Array<[string, string | undefined, string, 'allow' | 'gate']>)('%s', (_label, workgroup, command, expected) => {
         process.env[SEND_SCOPE_FILE_ENV] = scopeFile;
         if (workgroup === undefined) delete process.env.NANOCLAW_WORKGROUP_ID;
@@ -86,6 +87,13 @@ describe('the message text a post carries', () => {
         ['a variable', `curl https://slack.com/api/chat.postMessage --data "{\\"text\\":\\"$T\\"}"`, null],
         ['a body file', `curl https://slack.com/api/chat.postMessage --data @msg.json`, null],
         ['two texts', `curl https://slack.com/api/chat.postMessage -d text=a -d text=b`, null],
+        ['a second request after --next', `curl https://slack.com/api/chat.postMessage -d text=ok --next https://slack.com/api/chat.delete -d channel=C1 -d ts=1`, null],
+        ['a multipart field read from a file', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text=<body.txt'`, null],
+        ['a literal multipart field', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text=hi'`, 'hi'],
+        ['blocks beside the text', `curl https://slack.com/api/chat.postMessage --json '{"channel":"C1","text":"ok","blocks":[{"type":"section","text":{"type":"mrkdwn","text":"other"}}]}'`, null],
+        ['attachments in a form body', `curl https://slack.com/api/chat.postMessage -d 'channel=C1&text=ok&attachments=%5B%5D'`, null],
+        ['a joined form body', `curl https://slack.com/api/chat.postMessage -d 'channel=C1&text=hello+there'`, 'hello there'],
+        ['a delete carries no text', `curl https://slack.com/api/chat.delete -d channel=C1 -d ts=1 -d text=x`, null],
     ])('%s', (_label, command, text) => {
         expect(slackPostsOf(command)[0]?.text).toBe(text);
     });
@@ -118,6 +126,8 @@ describe('the gate request a send stages', () => {
         ['a Slack post beside another command carries nothing', `gws gmail +send --to a@example.com; ${POST}`, undefined],
         ['an email beside another command carries nothing', `cd /tmp && gws gmail +send --to a@example.com --body 'hi'`, undefined],
         ['an email whose body runs a command carries nothing', `gws gmail +send --to a@example.com --body "$(cat notes.txt)"`, undefined],
+        ['an email with an attachment carries nothing', `gws gmail +send --to a@example.com --subject Q3 --body 'Numbers are in.' --attach confidential.pdf`, undefined],
+        ['a forward carries nothing', `gws gmail +forward --message-id m1 --to a@example.com --body 'FYI'`, undefined],
     ] as Array<[string, string, string[] | undefined]>)('%s', async (_label, command, parts) => {
         expect(await staged(command)).toEqual({ action: 'request_send_gate', sendParts: parts });
     });
