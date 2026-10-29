@@ -666,7 +666,7 @@ export const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 
 // Command wrappers that should be stripped to find the real command
 export const WRAPPERS = new Set([
-    'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout',
+    'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout', 'stdbuf', 'setsid',
     // Package runners execute an arbitrary command too. Without them here,
     // `pnpm exec rm -rf <path>` resolved to name='pnpm' and every destructive
     // check passed — and since `Bash(pnpm exec *)` is commonly allow-listed,
@@ -2362,6 +2362,15 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
             while (skip < args.length && args[skip].startsWith('-')) {
                 skip += args[skip] === '-p' || args[skip] === '--package' ? 2 : 1;
             }
+        } else if (name === 'stdbuf') {
+            // -i/-o/-e MODE (and --input/--output/--error) take a value.
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += optionWords(args[skip], 'ioe', new Set(['--input', '--output', '--error']));
+            }
+            if (args[skip] === '--') skip += 1;
+        } else if (name === 'setsid') {
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') skip += 1;
+            if (args[skip] === '--') skip += 1;
         } else if (name === 'nohup' || name === 'time') {
             // GNU time's -o FILE and -f FORMAT (and --output/--format) take the next word.
             while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
