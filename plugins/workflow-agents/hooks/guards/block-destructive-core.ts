@@ -2363,7 +2363,10 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
                 skip += args[skip] === '-p' || args[skip] === '--package' ? 2 : 1;
             }
         } else if (name === 'nohup' || name === 'time') {
-            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') skip += 1;
+            // GNU time's -o FILE and -f FORMAT (and --output/--format) take the next word.
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += name === 'time' && ['-o', '-f', '--output', '--format'].includes(args[skip]) ? 2 : 1;
+            }
             if (args[skip] === '--') skip += 1;
         }
 
