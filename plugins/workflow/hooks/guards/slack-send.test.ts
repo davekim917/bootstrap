@@ -91,35 +91,35 @@ describe('the message text a post carries', () => {
     });
 });
 
-describe('the gate request a post stages', () => {
+describe('the gate request a send stages', () => {
     async function staged(command: string) {
         process.env[SEND_SCOPE_FILE_ENV] = scopeFile;
         process.env.NANOCLAW_WORKGROUP_ID = 'acme';
         const real = await import(MODULE);
-        const calls: Array<{ action?: string; sendText?: string }> = [];
+        const calls: Array<{ action?: string; sendParts?: string[] }> = [];
         mock.module(MODULE, () => ({
             ...real,
-            writeGateRequest: (_l: string, _s: string, _c: string, action?: string, sendText?: string) => {
-                calls.push({ action, sendText });
+            writeGateRequest: (_l: string, _s: string, _c: string, action?: string, sendParts?: string[]) => {
+                calls.push({ action, sendParts });
                 return 'gate-test-id';
             },
             pollDeliveredTable: () => 'approved',
         }));
         const mod = await import(MODULE);
-        mod.runEmailGate(command, 'Slack post');
+        const email = await import('./email-gate-core');
+        email.evaluateEmailSend(command, { isScheduledTask: false });
+        mod.runEmailGate(command, 'send');
         return calls[0];
     }
 
-    test('a lone post asks the send gate and carries its text', async () => {
-        expect(await staged(POST)).toEqual({ action: 'request_send_gate', sendText: 'Numbers are in.' });
-    });
-
-    test('a post beside another command asks the send gate without its text', async () => {
-        expect(await staged(`gws gmail +send --to a@example.com; ${POST}`)).toEqual({ action: 'request_send_gate', sendText: undefined });
-    });
-
-    test('an email send keeps the bash gate', async () => {
-        expect((await staged('gws gmail +send --to a@example.com')).action).toBe('request_bash_gate');
+    test.each([
+        ['a lone Slack post carries its text', POST, ['Numbers are in.']],
+        ['a lone email carries its body, recipients and subject', `gws gmail +send --to a@example.com,b@example.com --subject 'Q3' --body 'Numbers are in.'`, ['Numbers are in.', 'a@example.com', 'b@example.com', 'Q3']],
+        ['a Slack post beside another command carries nothing', `gws gmail +send --to a@example.com; ${POST}`, undefined],
+        ['an email beside another command carries nothing', `cd /tmp && gws gmail +send --to a@example.com --body 'hi'`, undefined],
+        ['an email whose body runs a command carries nothing', `gws gmail +send --to a@example.com --body "$(cat notes.txt)"`, undefined],
+    ] as Array<[string, string, string[] | undefined]>)('%s', async (_label, command, parts) => {
+        expect(await staged(command)).toEqual({ action: 'request_send_gate', sendParts: parts });
     });
 });
 

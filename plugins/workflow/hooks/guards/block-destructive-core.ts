@@ -6177,7 +6177,7 @@ export function writeGateRequest(
     summary: string,
     command: string,
     action: GateAction = 'request_destructive_gate',
-    sendText?: string,
+    sendParts?: string[],
 ): string {
     // Dynamic import so non-NanoClaw environments (plain Claude Code) never
     // touch bun:sqlite — the module is only present under bun runtime.
@@ -6194,7 +6194,7 @@ export function writeGateRequest(
         // command in its approval record. Truncating here would discard final
         // arguments before the approver or audit trail could inspect them.
         command,
-        ...(sendText !== undefined ? { sendText } : {}),
+        ...(sendParts !== undefined ? { sendParts } : {}),
     });
 
     const outbound = new Database(NANOCLAW_OUTBOUND_DB);
@@ -6280,8 +6280,8 @@ export function pollDeliveredTable(requestId: string, timeoutMs: number): GateDe
  *   - 'request_destructive_gate' — the destructive-command gate (default path).
  *   - 'request_bash_gate'        — the generic bash gate (email gate uses this).
  *   - 'request_prod_gate'        — a production change; the host counts only an owner's or admin's click.
- *   - 'request_send_gate'        — a Slack post in a person's name; owner or admin only, and the host skips
- *                                  the card when that person already said "send" to this exact text.
+ *   - 'request_send_gate'        — an email or Slack post in a person's name; owner or admin only, and the
+ *                                  host skips the card when they already said "send" to a draft showing it.
  *
  * Fail-closed: if writeGateRequest throws (session DBs in a broken state),
  * returns 'denied'. The CALLER emits the stderr/exit — this function never
@@ -6296,8 +6296,8 @@ export function runGateRequest(
     reason: string,
     opts: {
         action: GateAction;
-        // The exact message a send gate would deliver; the host may then accept the requester's own "send".
-        sendText?: string;
+        // What a send gate would deliver; the host may accept a person's own "send" to a draft showing all of it.
+        sendParts?: string[];
         onStageError?: (err: unknown) => void;
         // Card title and body. Either one omitted falls back to `reason`.
         label?: string;
@@ -6324,7 +6324,7 @@ export function runGateRequest(
 
     let requestId: string;
     try {
-        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action, opts.sendText);
+        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action, opts.sendParts);
     } catch (err) {
         // If we can't even stage the request, the session DBs are in a broken
         // state. Deny rather than silently allowing — the gate is fail-closed.
@@ -6393,15 +6393,19 @@ export function runEmailGate(
     summary?: string,
     toolUseId?: string,
 ): GateDecision {
-    const posts = gatedSlackPosts(command);
-    if (posts.length > 0) {
-        // Only a command that is one Slack post and nothing else carries its text, so a "send" can never cover a second effect.
-        const sole = posts.length === 1 && posts[0].text !== null && soleCommand(command);
-        return runGateRequest(command, reason, {
-            action: 'request_send_gate', onStageError, summary, toolUseId, ...(sole ? { sendText: posts[0].text! } : {}),
-        });
-    }
-    return runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId });
+    const sendParts = sendPartsByCommand.get(command);
+    sendPartsByCommand.delete(command);
+    return runGateRequest(command, reason, {
+        action: 'request_send_gate', onStageError, summary, toolUseId, ...(sendParts ? { sendParts } : {}),
+    });
+}
+
+const sendPartsByCommand = new Map<string, string[]>();
+
+/** Records what a send delivers for its gate request: `evaluateEmailSend` reads the command, `runEmailGate` stages it. */
+export function noteSendParts(command: string, parts: string[] | null): void {
+    if (parts) sendPartsByCommand.set(command, parts);
+    else sendPartsByCommand.delete(command);
 }
 
 // ── Slack posts in a person's name ───────────────────────────────────────────
@@ -6529,7 +6533,8 @@ export function slackPostsOf(command: string): SlackPost[] {
     return posts;
 }
 
-function soleCommand(command: string): boolean {
+/** True when the line is one command and nothing else, so what a send delivers can be all it does. */
+export function soleCommand(command: string): boolean {
     try {
         return extractCommands(command).length === 1;
     } catch {
@@ -6539,6 +6544,7 @@ function soleCommand(command: string): boolean {
 
 /** The Slack posts in a command that need their sender's OK under the send scope in force. */
 export function gatedSlackPosts(command: string, workgroupId: string | undefined = process.env.NANOCLAW_WORKGROUP_ID): SlackPost[] {
+    if (!/slack\.com\/api\//.test(command)) return [];
     const posts = slackPostsOf(command);
     if (posts.length === 0) return [];
     const scope = currentSendScope();

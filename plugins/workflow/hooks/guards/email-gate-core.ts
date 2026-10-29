@@ -33,7 +33,7 @@
  * Python/Node SDK calls, SMTP CLIs, and eval/alias/base64-decoded subshells. The
  * only sound place to catch all of those is the egress proxy.
  */
-import { gatedSlackPosts, resolveCommand, walkCommandNodes } from './block-destructive-core';
+import { gatedSlackPosts, noteSendParts, resolveCommand, soleCommand, walkCommandNodes } from './block-destructive-core';
 import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, parseShell, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
@@ -496,6 +496,8 @@ export interface EmailGateVerdict {
     label?: string;
     summary?: string;
     reason?: string;
+    /** Everything the send delivers, when the command is that one send stated literally; see `request_send_gate`. */
+    sendParts?: string[];
 }
 
 function normalizedToolName(toolName: string): string {
@@ -681,8 +683,11 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const slack = command ? gatedSlackPosts(command) : [];
     if (slack.length > 0) {
         const text = slack[0].text;
+        const sendParts = slack.length === 1 && text !== null && soleCommand(command) ? [text] : undefined;
+        noteSendParts(command, sendParts ?? null);
         return {
             action: 'gate',
+            ...(sendParts ? { sendParts } : {}),
             label: `Slack post in your name (${slack[0].method})`,
             summary: text === null
                 ? "The agent wants to post to Slack as you. The guard couldn't read the exact text; check the full command before approving."
@@ -819,7 +824,13 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         const list = [...unresolved];
         lines.push(`⚠️ ${list.map(code).join(', ')} ${list.length === 1 ? 'is' : 'are'} only known when the command runs, so the value${list.length === 1 ? '' : 's'} above may differ.`);
     }
-    return { action: 'gate', label, summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
+    // What a person must have seen for their own "send" to stand in for the card: a single literal send only.
+    const literalParts = [flagTo, cc, bcc, subject || undefined].filter((v): v is string => v !== undefined && v !== '');
+    const readable = gwsWords === 1 && !generatedWord && !probeFlag && !isHtml && !isRawApi && unresolved.size === 0
+        && body.text !== null && body.text.trim() !== '' && literalParts.every(v => !/[$`]/.test(v));
+    const sendParts = readable && view.commands.length === 1 ? [body.text!.trim(), ...literalParts.flatMap(v => v.split(/\s*,\s*/))] : undefined;
+    noteSendParts(command, sendParts ?? null);
+    return { action: 'gate', label, summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS), ...(sendParts ? { sendParts } : {}) };
 }
 
 // The regex fallback runs only when the parser finds no send; it is quadratic
