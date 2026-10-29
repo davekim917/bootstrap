@@ -1744,55 +1744,50 @@ const RENDER_READS = new Map<string, 'group' | 'leaf'>([
     ['blueprints', 'group'], ['blueprints validate', 'leaf'],
 ]);
 const RENDER_ALIASES = new Map([['pg', 'postgres'], ['kv', 'keyvalues'], ['service', 'services']]);
-const RENDER_VALUE_FLAGS = new Set(['-o', '--output', '-c', '--command']);
-const RENDER_BARE_FLAGS = new Set(['--confirm', '-h', '--help', '-v', '--version']);
+// Every Render flag that takes a value, from `render <command> --help`. Any other flag is read as a switch, so a
+// value it really takes lands among the command words, where it can only make a read or a dev proof fail.
+const RENDER_VALUE_FLAGS = new Set([
+    '-o', '--output', '-c', '--command', '-r', '--resources', '-e', '--environment-ids',
+    '--branch', '--build-command', '--build-filter-ignored-path', '--build-filter-path', '--commit', '--cron-command',
+    '--cron-schedule', '--datadog-api-key', '--datadog-site', '--direction', '--disk-size-gb', '--end', '--environment',
+    '--environment-id', '--env-var', '--from', '--health-check-path', '--host', '--image', '--input-file', '--input',
+    '--instance', '--ip-allow-list', '--level', '--limit', '--maintenance-mode-uri', '--max-shutdown-delay', '--method',
+    '--name', '--num-instances', '--path', '--plan-id', '--plan', '--port', '--pre-deploy-command', '--previews',
+    '--project', '--publish-directory', '--region', '--registry-credential', '--repo', '--root-directory', '--runtime',
+    '--secret-file', '--start-command', '--start', '--status-code', '--task-id', '--task-run-id', '--task', '--text', '--type',
+]);
+const RENDER_SHORT_VALUE = new Map([['o', '--output'], ['c', '--command'], ['r', '--resources'], ['e', '--environment-ids']]);
+const RENDER_HELP_FLAGS = new Set(['-h', '--help', '-v', '--version']);
 export const RENDER_RESOURCE_ID_RE = /^[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?$/;
-// A query `render psql -c` may run without approval: one statement that only reads, and no psql meta-command.
-const READ_ONLY_SQL_RE = /^\s*(?:select|show|table|values|with|explain(?!\s+(?:\(|analy[sz]e)))\b/i;
-const SQL_WRITE_WORD_RE = /\b(?:insert|update|delete|merge|drop|alter|create|truncate|grant|revoke|copy|call|do|lock|vacuum|analy[sz]e|set|reset|refresh|reindex|cluster|comment|security|listen|notify|prepare|execute|nextval|setval|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|dblink\w*|lo_\w+|into)\b/i;
+export const RENDER_CHANGE_REASON = 'Production change on Render';
 
-/**
- * What a render invocation runs: its command words (aliases resolved) up to the first flag the guard doesn't know,
- * the values of the flags it does, and whether that much is the whole line. Words after an unknown flag are not
- * placed, since its arity is unknown.
- */
-function renderInvocation(args: string[]): { path: string[]; values: Map<string, string>; complete: boolean; help: boolean; passthrough: boolean } {
+/** What a render invocation runs: its non-flag words (aliases resolved), its flags' values, and whether it asks for help or passes arguments through. */
+function renderInvocation(args: string[]): { path: string[]; values: Map<string, string>; help: boolean; passthrough: boolean } {
     const path: string[] = [];
     const values = new Map<string, string>();
-    let complete = true;
     let help = false;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (a === '--') return { path, values, complete: false, help: false, passthrough: true };
-        const at = a.startsWith('--') ? a.indexOf('=') : -1;
-        const flag = at > 0 ? a.slice(0, at) : a;
-        if (RENDER_VALUE_FLAGS.has(flag)) {
-            const value = at > 0 ? a.slice(at + 1) : args[++i];
-            if (value === undefined) complete = false;
-            else values.set(flag.replace(/^-o$/, '--output').replace(/^-c$/, '--command'), value);
-        } else if (RENDER_BARE_FLAGS.has(a)) {
-            if (a !== '--confirm') help = true;
-        } else if (a.startsWith('-')) {
-            complete = false;
-            break;
+        if (a === '--') return { path, values, help: false, passthrough: true };
+        if (a.startsWith('--')) {
+            const at = a.indexOf('=');
+            const flag = at < 0 ? a : a.slice(0, at);
+            if (RENDER_VALUE_FLAGS.has(flag)) values.set(flag, at < 0 ? args[++i] ?? '' : a.slice(at + 1));
+            else if (RENDER_HELP_FLAGS.has(flag)) help = true;
+        } else if (a.startsWith('-') && a.length > 1) {
+            const long = RENDER_SHORT_VALUE.get(a[1]);
+            if (long) values.set(long, a.length > 2 ? a.slice(2) : args[++i] ?? '');
+            else if (RENDER_HELP_FLAGS.has(a)) help = true;
         } else {
             path.push(path.length === 0 ? RENDER_ALIASES.get(a) ?? a : a);
         }
     }
-    return { path, values, complete, help: help && complete, passthrough: false };
+    return { path, values, help: help && !values.has('--command'), passthrough: false };
 }
 
-function readOnlySql(sql: string): boolean {
-    const statements = sql.split(';').map(t => t.trim()).filter(Boolean);
-    return statements.length === 1 && !sql.includes('\\') && READ_ONLY_SQL_RE.test(statements[0]) && !SQL_WRITE_WORD_RE.test(statements[0]);
-}
-
-function renderReads(path: string[], values: Map<string, string>, complete: boolean, passthrough: boolean): boolean {
+function renderReads(path: string[]): boolean {
+    if (path.some(w => /[$`*?]/.test(w))) return false;
     const verb = path[0];
-    if (verb === 'psql') {
-        const sql = values.get('--command');
-        return complete && !passthrough && path.length <= 2 && sql !== undefined && readOnlySql(sql);
-    }
     if (RENDER_READ_ANY.has(verb)) return true;
     for (let n = Math.min(path.length, 4); n > 0; n--) {
         const kind = RENDER_READS.get(path.slice(0, n).join(' '));
@@ -1803,11 +1798,11 @@ function renderReads(path: string[], values: Map<string, string>, complete: bool
 }
 
 export function renderChangeReason(args: string[]): string | null {
-    const { path, values, complete, help, passthrough } = renderInvocation(args);
-    if (path.length === 0 && complete) return null;
-    if (help && !values.has('--command')) return null;
-    if (values.get('--output') !== 'interactive' && renderReads(path, values, complete, passthrough)) return null;
-    return `Production change on Render (render ${path.slice(0, 3).join(' ') || args.join(' ')}).`;
+    const { path, values, help, passthrough } = renderInvocation(args);
+    if (path.length === 0 && !passthrough) return null;
+    if (help) return null;
+    if (!passthrough && values.get('--output') !== 'interactive' && renderReads(path)) return null;
+    return `${RENDER_CHANGE_REASON} (render ${path.slice(0, 3).join(' ') || args.join(' ')}).`;
 }
 
 const RENDER_RESOURCE_ID_IN_TEXT = new RegExp(String.raw`(?<![a-z0-9-])[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?(?![a-z0-9-])`, 'g');
@@ -3515,15 +3510,19 @@ function labSqlTarget(cmd: ResolvedCommand): string | null {
 const LAB_RESOURCE_RE = /^lab-/;
 
 /**
- * The resource a render command acts on, when `accepts` vouches for it and for every resource id the command names.
- * The target is the first command word that isn't a plain lowercase word. Any word the shell builds when it runs
- * disqualifies the command, since that word may be the real target.
+ * The resource a render command acts on, when `accepts` vouches for every word that isn't a plain lowercase command
+ * word and every resource id the command names. Any word the shell builds when it runs disqualifies the command,
+ * since that word may be the real target.
  */
 function renderProvenTarget(cmd: ResolvedCommand, accepts: (resource: string) => boolean): string | null {
     if (cmd.args.some(a => /[$`*?]/.test(a))) return null;
-    const target = renderInvocation(cmd.args).path.find(w => !/^[a-z]+$/.test(w));
-    if (!target || !accepts(target)) return null;
-    return renderResourceIds(cmd.args).every(accepts) ? target : null;
+    const { path, values, passthrough } = renderInvocation(cmd.args);
+    if (passthrough || path[0] === 'pgcli' || (path[0] === 'workflows' && path[1] === 'dev')) return null;
+    // A psql session runs whatever arrives on stdin, and a meta-command can open a shell or another connection.
+    if (path[0] === 'psql' && (!values.has('--command') || cmd.args.some(a => a.includes('\\')))) return null;
+    const targets = path.filter(w => !/^[a-z]+$/.test(w));
+    if (targets.length === 0 || !targets.every(accepts)) return null;
+    return renderResourceIds(cmd.args).every(accepts) ? targets[0] : null;
 }
 
 function labRenderTarget(cmd: ResolvedCommand): string | null {
@@ -6403,14 +6402,15 @@ export function runNanoclawGate(
 }
 
 /**
- * Whether a step the gate stops on may change Render production: a render step, or another step whose own text runs
- * render (a SQL client's shell escape). A command the guard cannot read counts if it names render.
+ * Whether a step the gate stops on may change Render production: a render step, or one whose verdict came from a
+ * render command it runs (a SQL client's shell escape, inline or from a file). A command the guard cannot read
+ * counts if it names render.
  */
 export function changesProduction(command: string, cwd: string = currentWorkingDir()): boolean {
     try {
         const commands = extractCommands(command);
         if (commands[0]?.script) commands[0].script.cwd = cwd;
-        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => step.cmd.name === 'render' || /\brender\b/.test(step.cmd.raw));
+        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || /\brender\b/.test(step.cmd.raw));
     } catch {
         return /\brender\b/.test(command);
     }
