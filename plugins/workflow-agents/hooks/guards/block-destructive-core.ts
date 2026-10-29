@@ -6527,6 +6527,7 @@ export const MERGE_SCOPE_FILE_ENV = 'BOOTSTRAP_MERGE_SCOPE_FILE';
 const MERGE_SCOPE_FILE = 'merge-scope.local.json';
 const GITHUB_REPO_IN_TEXT_RE = /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/?#\s]|$)/;
 const API_MERGE_RE = /(?:^|[\s/])repos\/([^/\s]+)\/([^/\s]+)\/(?:pulls\/[^/\s]+\/merge|merges)\b/;
+const API_MERGE_VARIABLE_RE = /(?:^|[\s/])repos\/\S*[$`]\S*\/(?:pulls\/[^/\s]+\/merge|merges)\b/;
 const GRAPHQL_MERGE_RE = /\b(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\b/;
 
 export type MergeScope = Map<string, Set<string>>;
@@ -6624,21 +6625,39 @@ function checkoutBranch(dir: string): string | null {
 }
 
 /** Branch names a `git push` writes to, or null when it may write to every branch or the guard can't tell. */
-function pushedBranches(args: string[], dir: string | null): string[] | null {
+/**
+ * The branch earlier steps leave checked out: undefined when none switches, its name when the last switch names it
+ * (`git switch X`, `-c/-C X`, `git checkout -b/-B X`), null when it can't be read (`git checkout X` may name paths).
+ */
+function headAfterSwitches(earlier: ResolvedCommand[]): string | null | undefined {
+    let head: string | null | undefined;
+    for (const c of earlier) {
+        if (c.name !== 'git') continue;
+        const sub = gitSubcommandIndex(c.args);
+        if (!['switch', 'checkout'].includes(c.args[sub])) continue;
+        const rest = c.args.slice(sub + 1);
+        const create = rest.findIndex(a => ['-c', '-C', '-b', '-B', '--create', '--force-create'].includes(a));
+        const named = create >= 0 ? rest[create + 1] : c.args[sub] === 'switch' ? rest.filter(a => !a.startsWith('-')).at(0) : undefined;
+        head = named !== undefined && !/[$`]/.test(named) && rest.filter(a => !a.startsWith('-')).length <= 2 ? named : null;
+    }
+    return head;
+}
+
+function pushedBranches(args: string[], dir: string | null, head?: string | null): string[] | null {
     const sub = gitSubcommandIndex(args);
     const rest = args.slice(sub + 1);
     if (rest.some(a => /^--[a-z]/.test(a) && ['all', 'mirror', 'branches'].some(o => o.startsWith(a.slice(2))))) return null;
     const positionals = pushArgsWithoutValues(rest).filter(a => !a.startsWith('-'));
     const refspecs = positionals.slice(1);
     if (refspecs.length === 0) {
-        const branch = dir ? checkoutBranch(dir) : null;
+        const branch = head !== undefined ? head : dir ? checkoutBranch(dir) : null;
         return branch ? [branch] : null;
     }
     const names: string[] = [];
     for (const spec of refspecs) {
         const target = (spec.includes(':') ? spec.slice(spec.indexOf(':') + 1) : spec).replace(/^\+/, '').replace(/^refs\/heads\//, '');
         if (target === 'HEAD' || target === '') {
-            const branch = dir ? checkoutBranch(dir) : null;
+            const branch = head !== undefined ? head : dir ? checkoutBranch(dir) : null;
             if (!branch) return null;
             names.push(branch);
         } else if (/[$`*]/.test(target)) {
@@ -6683,13 +6702,28 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string): string | null 
     for (const cmd of commands) {
         if (DIRECTORY_CHANGERS.has(cmd.name)) dirs = directoriesAfter(dirs, cmd);
         // After a cd the step may run in any of the directories it could have reached; each one is checked.
-        const places: Array<string | null> = dirs ? dirs.map(d => pathResolve(d, cmd.chdir ?? '.')) : [null];
+        const places: Array<string | null> = dirs && !/[$`]/.test(cmd.chdir ?? '') ? dirs.map(d => pathResolve(d, cmd.chdir ?? '.')) : [null];
+        const head = headAfterSwitches(commands.slice(0, commands.indexOf(cmd)));
         for (const dir of places) {
-            const reason = noMergeStepReason(cmd, commands, dir, scope, refused);
+            const reason = noMergeStepReason(cmd, commands, dir, scope, refused, head);
             if (reason) return reason;
         }
     }
     return null;
+}
+
+/** The directory a git push runs in from `dir`, after every `-C` and `--work-tree` before its subcommand; null when unknown. */
+function gitPushDir(args: string[], dir: string | null): string | null {
+    let at = dir;
+    const sub = gitSubcommandIndex(args);
+    for (let i = 0; i < sub; i++) {
+        const value = args[i] === '-C' || args[i] === '--work-tree' ? args[++i]
+            : args[i].startsWith('--work-tree=') ? args[i].slice('--work-tree='.length) : undefined;
+        if (value === undefined) continue;
+        if (at === null || /[$`]/.test(value)) return null;
+        at = pathResolve(at, value);
+    }
+    return at;
 }
 
 const GH_MERGE_VALUE_FLAGS = new Set(['-b', '--body', '-F', '--body-file', '-t', '--subject', '--match-head-commit', '-A', '--author-email']);
@@ -6710,6 +6744,7 @@ function noMergeStepReason(
     dir: string | null,
     scope: MergeScope | 'unreadable',
     refused: (repo: string | null, what: string) => string | null,
+    head: string | null | undefined,
 ): string | null {
     const text = cmd.args.join(' ');
     const unresolved = (what: string) => `${what}: its repository is only known when the command runs, so it is refused. Name the repository literally.`;
@@ -6728,6 +6763,9 @@ function noMergeStepReason(
         }
     }
     const apiMerge = (cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name) ? API_MERGE_RE.exec(text) : null;
+    if (!apiMerge && ((cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name)) && API_MERGE_VARIABLE_RE.test(text)) {
+        return unresolved('Merging through the API');
+    }
     if (apiMerge) {
         // gh fills {owner}/{repo} from GH_REPO, else from the checkout it runs in.
         if (/[$`]/.test(apiMerge[0])) return unresolved('Merging through the API');
@@ -6754,13 +6792,12 @@ function noMergeStepReason(
         if (reason) return reason;
     }
     if (cmd.name === 'git' && cmd.args[gitSubcommandIndex(cmd.args)] === 'push') {
-        const gitDir = gitRelocatedDir(cmd.args);
-        const pushDir = gitDir ? (dir ? pathResolve(dir, gitDir) : null) : dir;
+        const pushDir = gitPushDir(cmd.args, dir);
         const remote = gitRemoteArg(cmd.args);
         const repo = remote && (REPO_URL_RE.test(remote) || ORG_REPO_RE.test(remote))
             ? githubRepoOf(remote)
             : pushDir ? checkoutRemoteRepo(pushDir, remote ?? 'origin') : null;
-        const branches = pushedBranches(cmd.args, pushDir);
+        const branches = pushedBranches(cmd.args, pushDir, head);
         if (scope === 'unreadable') return refused(null, 'Pushing');
         const protectedHere = repo !== null ? scope.get(repo) : undefined;
         if (protectedHere && (branches === null || branches.some(b => protectedHere.has(b)))) {

@@ -68,6 +68,8 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a push of every branch after a cd the guard cannot follow', 'cd "$CHECKOUT" && git push --all origin', () => other],
         ['a pull request URL held in a variable', 'PR_URL=https://github.com/Acme/core/pull/12; gh pr merge "$PR_URL" --squash', () => other],
         ['a REST merge endpoint with a variable part', 'PR=12; gh api -X PUT "repos/Acme/core/pulls/$PR/merge"', () => other],
+        ['a REST merge endpoint whose whole repository is a variable', 'REPO=Acme/core; gh api -X PUT "repos/$REPO/pulls/12/merge"', () => other],
+        ['a merge from a variable env -C directory', 'CHECKOUT=/somewhere; env -C "$CHECKOUT" gh pr merge 12 --squash', () => other],
         ['the REST merge endpoint by curl', 'curl -X PUT https://api.github.com/repos/Acme/core/pulls/12/merge', () => other],
         ['a GraphQL merge from its checkout', `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }'`, () => theirs],
         ['the review-loop merge', 'PR=12 REPO=Acme/core codex-review.sh merge --head abc', () => other],
@@ -80,9 +82,12 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a push of every branch by an abbreviation', 'git push --mirr origin', () => theirs],
         ['a push by URL', 'git push https://github.com/Acme/core.git main:master', () => other],
         ['a push to that branch name from a checkout the guard can not place', 'cd $D && git push origin HEAD:master', () => dir],
+        ['a push of the current branch after switching to the protected one', 'git switch master && git push', () => theirs],
+        ['a push after checking out the protected branch', 'git checkout master && git push origin HEAD', () => theirs],
+        ['a push whose last -C names the checkout', 'git -C OURS -C ../core push origin HEAD:master', () => dir],
     ])('%s', (_label, command, cwd) => {
         checkout(join(dir, 'core-on-master'), 'https://github.com/Acme/core.git', 'master');
-        const resolved = command.replace('cd CORE', `cd ${theirs}`);
+        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`);
         expect(action(resolved, cwd())).toBe('block');
     });
 });
@@ -90,6 +95,8 @@ describe('a listed repository refuses every merge and protected-branch push', ()
 describe('everything else is untouched', () => {
     test.each([
         ['a feature-branch push', 'git push -u origin feature-x', () => theirs],
+        ['a push of a branch just created', 'git checkout -b fix-y && git push -u origin HEAD', () => theirs],
+        ['a push after switching to a feature branch', 'git switch feature-y && git push', () => join(dir, 'core-on-master')],
         ['a draft pull request', 'gh pr create --draft --title t --body b', () => theirs],
         ['a merge in another repository', 'gh pr merge 12 --squash', () => other],
         ['a merge naming another repository from their checkout', 'gh pr merge 12 -R example/ours', () => theirs],
