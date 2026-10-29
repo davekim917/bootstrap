@@ -17,6 +17,7 @@ __pycache__/
 lab-scope.local.json
 dev-scope.local.json
 send-scope.local.json
+merge-scope.local.json
 
 # This repository is public: workflow plans and run records (docs/specs/<feature>/) stay local.
 docs/specs/

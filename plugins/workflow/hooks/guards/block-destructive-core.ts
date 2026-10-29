@@ -5853,6 +5853,8 @@ function evaluateBashLine(
     }
     const selfKill = selfMatchingKillReason(commands, command);
     if (selfKill) return { action: 'block', reason: selfKill };
+    const merge = noMergeReason(commands, cwd);
+    if (merge) return { action: 'block', reason: merge };
     // A line the guard can't read the way bash runs it blocks and stays blocked on the approval replay: approval
     // can't clear what could not be read, the same as a shell taking its command from a variable.
     const unreadable = shellParseProblem(command);
@@ -6406,6 +6408,199 @@ const sendPartsByCommand = new Map<string, string[]>();
 export function noteSendParts(command: string, parts: string[] | null): void {
     if (parts) sendPartsByCommand.set(command, parts);
     else sendPartsByCommand.delete(command);
+}
+
+// ── Repositories agents never merge into ─────────────────────────────────────
+// Some repositories belong to another team: agents open draft pull requests there and hand them over, and never
+// merge or push to a protected branch. Which repositories and branches is deployment data in an untracked
+// `merge-scope.local.json`, found like lab-scope.local.json:
+//   {"noMerge": {"<org>/<repo>": ["<protected branch>", …]}}
+// No file refuses nothing. A file that can't be read or parsed refuses every merge it can see.
+
+export const MERGE_SCOPE_FILE_ENV = 'BOOTSTRAP_MERGE_SCOPE_FILE';
+const MERGE_SCOPE_FILE = 'merge-scope.local.json';
+const GITHUB_REPO_IN_TEXT_RE = /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/?#\s]|$)/;
+const API_MERGE_RE = /(?:^|[\s/])repos\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pulls\/\d+\/merge\b/;
+const GRAPHQL_MERGE_RE = /\b(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\b/;
+
+export type MergeScope = Map<string, Set<string>>;
+
+/** Parse a merge-scope file's text, keyed by lower-cased `org/repo`. Null when anything about it is unusable. */
+export function parseMergeScope(text: string): MergeScope | null {
+    let raw: unknown;
+    try {
+        raw = JSON.parse(text);
+    } catch {
+        return null;
+    }
+    const entries = (raw as { noMerge?: unknown } | null)?.noMerge;
+    if (!entries || typeof entries !== 'object' || Array.isArray(entries)) return null;
+    const scope: MergeScope = new Map();
+    for (const [repo, branches] of Object.entries(entries)) {
+        if (!ORG_REPO_RE.test(repo) || !Array.isArray(branches) || branches.length === 0
+            || !branches.every((b: unknown) => typeof b === 'string' && /^[A-Za-z0-9._/-]{1,200}$/.test(b))) {
+            return null;
+        }
+        scope.set(repo.toLowerCase(), new Set(branches as string[]));
+    }
+    return scope;
+}
+
+function currentMergeScope(): MergeScope | null | 'unreadable' {
+    const file = deploymentFilePath(MERGE_SCOPE_FILE, MERGE_SCOPE_FILE_ENV);
+    if (!file || !existsSync(file)) return null;
+    try {
+        return parseMergeScope(readFileSync(file, 'utf-8')) ?? 'unreadable';
+    } catch {
+        return 'unreadable';
+    }
+}
+
+/** `org/repo` a remote URL, `org/repo` word or GitHub URL names, lower-cased; null for anything else. */
+function githubRepoOf(value: string): string | null {
+    const url = GITHUB_REPO_IN_TEXT_RE.exec(value);
+    if (url) return `${url[1]}/${url[2]}`.toLowerCase();
+    return ORG_REPO_RE.test(value) && !REPO_URL_RE.test(value) ? value.replace(/\.git$/, '').toLowerCase() : null;
+}
+
+/** The git directory and common directory of the checkout containing `dir`, or null. */
+function gitDirsOf(dir: string): { gitDir: string; commonDir: string } | null {
+    let current = pathResolve(dir);
+    for (;;) {
+        const dotGit = join(current, '.git');
+        try {
+            const stat = statSync(dotGit);
+            let gitDir = dotGit;
+            if (stat.isFile()) {
+                const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf-8'));
+                if (!pointer) return null;
+                gitDir = pathResolve(current, pointer[1].trim());
+            }
+            let commonDir = gitDir;
+            try {
+                commonDir = pathResolve(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf-8').trim());
+            } catch {
+                commonDir = gitDir;
+            }
+            return { gitDir, commonDir };
+        } catch {
+            const parent = dirname(current);
+            if (parent === current) return null;
+            current = parent;
+        }
+    }
+}
+
+/** The repository a checkout's remote points at, read from its git config. */
+function checkoutRemoteRepo(dir: string, remote = 'origin'): string | null {
+    const dirs = gitDirsOf(dir);
+    if (!dirs) return null;
+    let config: string;
+    try {
+        config = readFileSync(join(dirs.commonDir, 'config'), 'utf-8');
+    } catch {
+        return null;
+    }
+    const section = new RegExp(String.raw`^\[remote\s+"${remote.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\]([^[]*)`, 'm').exec(config);
+    const url = section ? /^\s*url\s*=\s*(.+)$/m.exec(section[1])?.[1].trim() : undefined;
+    return url ? githubRepoOf(url) : null;
+}
+
+/** The branch a checkout has out, or null when detached or unreadable. */
+function checkoutBranch(dir: string): string | null {
+    const dirs = gitDirsOf(dir);
+    if (!dirs) return null;
+    try {
+        return /^ref:\s*refs\/heads\/(.+)$/m.exec(readFileSync(join(dirs.gitDir, 'HEAD'), 'utf-8'))?.[1].trim() ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/** Branch names a `git push` writes to, or null when it may write to every branch or the guard can't tell. */
+function pushedBranches(args: string[], dir: string | null): string[] | null {
+    const sub = gitSubcommandIndex(args);
+    const rest = args.slice(sub + 1);
+    if (rest.some(a => a === '--all' || a === '--mirror')) return null;
+    const positionals = pushArgsWithoutValues(rest).filter(a => !a.startsWith('-'));
+    const refspecs = positionals.slice(1);
+    if (refspecs.length === 0) {
+        const branch = dir ? checkoutBranch(dir) : null;
+        return branch ? [branch] : null;
+    }
+    const names: string[] = [];
+    for (const spec of refspecs) {
+        const target = (spec.includes(':') ? spec.slice(spec.indexOf(':') + 1) : spec).replace(/^\+/, '').replace(/^refs\/heads\//, '');
+        if (target === 'HEAD' || target === '') {
+            const branch = dir ? checkoutBranch(dir) : null;
+            if (!branch) return null;
+            names.push(branch);
+        } else if (/[$`*]/.test(target)) {
+            return null;
+        } else {
+            names.push(target);
+        }
+    }
+    return names;
+}
+
+/** Why a command merges into, or pushes to a protected branch of, a repository agents never merge into. */
+function noMergeReason(commands: ResolvedCommand[], cwd: string): string | null {
+    const scope = currentMergeScope();
+    if (scope === null) return null;
+    const refused = (repo: string | null, what: string): string | null => {
+        if (scope === 'unreadable') return `${what}: merge-scope.local.json can't be read, so every merge is refused until it's fixed.`;
+        if (repo === null || !scope.has(repo)) return null;
+        return `${what} in ${repo}, which belongs to another team. Open the pull request as a draft and hand it to them; agents never merge there.`;
+    };
+    let dirs: string[] | null = [cwd];
+    for (const cmd of commands) {
+        if (DIRECTORY_CHANGERS.has(cmd.name)) dirs = directoriesAfter(dirs, cmd);
+        const dir = dirs && dirs.length === 1 ? pathResolve(dirs[0], cmd.chdir ?? '.') : null;
+        const text = cmd.args.join(' ');
+        if (cmd.name === 'gh' && cmd.args[0] === 'pr' && cmd.args[1] === 'merge') {
+            const named = flagValue(cmd.args, ['-R', '--repo']);
+            const url = cmd.args.slice(2).find(a => GITHUB_REPO_IN_TEXT_RE.test(a));
+            const repo = named ? githubRepoOf(named) : url ? githubRepoOf(url) : dir ? checkoutRemoteRepo(dir) : null;
+            const reason = refused(repo, 'Merging a pull request');
+            if (reason) return reason;
+        }
+        const apiMerge = (cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name) ? API_MERGE_RE.exec(text) : null;
+        if (apiMerge) {
+            const reason = refused(`${apiMerge[1]}/${apiMerge[2]}`.toLowerCase(), 'Merging a pull request through the API');
+            if (reason) return reason;
+        }
+        if (((cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name)) && GRAPHQL_MERGE_RE.test(text)) {
+            const reason = refused(dir ? checkoutRemoteRepo(dir) : null, 'Merging through the GraphQL API');
+            if (reason) return reason;
+        }
+        if (/(?:^|\/)codex-review\.sh$/.test(cmd.name) && cmd.args[0] === 'merge') {
+            const assigned = [...(cmd.env ?? []), ...commands.flatMap(c => c.name === 'export' ? c.args : [])]
+                .map(e => /^REPO=(.+)$/.exec(e)?.[1]).filter((v): v is string => v !== undefined);
+            const repo = assigned.length ? githubRepoOf(assigned[assigned.length - 1]) : dir ? checkoutRemoteRepo(dir) : null;
+            const reason = refused(repo, 'Merging a pull request');
+            if (reason) return reason;
+        }
+        if (cmd.name === 'git' && cmd.args[gitSubcommandIndex(cmd.args)] === 'push') {
+            const gitDir = gitRelocatedDir(cmd.args);
+            const pushDir = gitDir ? (dir ? pathResolve(dir, gitDir) : null) : dir;
+            const remote = gitRemoteArg(cmd.args);
+            const repo = remote && (REPO_URL_RE.test(remote) || ORG_REPO_RE.test(remote))
+                ? githubRepoOf(remote)
+                : pushDir ? checkoutRemoteRepo(pushDir, remote ?? 'origin') : null;
+            const branches = pushedBranches(cmd.args, pushDir);
+            if (scope === 'unreadable') return refused(null, 'Pushing');
+            const protectedHere = repo !== null ? scope.get(repo) : undefined;
+            if (protectedHere && (branches === null || branches.some(b => protectedHere.has(b)))) {
+                return refused(repo, `Pushing to ${branches === null ? 'every branch or one the guard cannot read' : branches.join(', ')}`);
+            }
+            if (repo === null && branches !== null) {
+                const anywhere = [...scope.entries()].find(([, set]) => branches.some(b => set.has(b)));
+                if (anywhere) return refused(anywhere[0], `Pushing to ${branches.join(', ')} from a checkout the guard can't place`);
+            }
+        }
+    }
+    return null;
 }
 
 // ── Slack posts in a person's name ───────────────────────────────────────────
