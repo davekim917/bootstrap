@@ -2362,8 +2362,10 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
             while (skip < args.length && args[skip].startsWith('-')) {
                 skip += args[skip] === '-p' || args[skip] === '--package' ? 2 : 1;
             }
+        } else if (name === 'nohup' || name === 'time') {
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') skip += 1;
+            if (args[skip] === '--') skip += 1;
         }
-        // nohup, time, command, builtin: just skip the wrapper word
 
         if (skip >= args.length) break;
 
