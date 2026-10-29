@@ -2333,7 +2333,14 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
         } else if (name === 'nice') {
             if (args[skip] === '-n' && skip + 1 < args.length) skip = 2;
         } else if (name === 'timeout' || name === 'gtimeout') {
-            skip = 1; // skip duration argument
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += optionWords(args[skip], 'ks', TIMEOUT_LONG_VALUE_OPTIONS, TIMEOUT_LONG_FLAGS);
+            }
+            if (args[skip] === '--') skip += 1;
+            skip += 1;
+        } else if (name === 'command' || name === 'builtin') {
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') skip += 1;
+            if (args[skip] === '--') skip += 1;
         } else if (name === 'pnpm' || name === 'yarn') {
             // Only `exec`/`dlx` run an arbitrary command. `pnpm run <script>`
             // executes a package.json script whose body is not on this command
@@ -2523,6 +2530,8 @@ function sudoChdir(arg: string, next: string | undefined): string | undefined {
     return at === arg.length - 1 ? next : arg.slice(at + 1);
 }
 
+const TIMEOUT_LONG_VALUE_OPTIONS = new Set(['--signal', '--kill-after']);
+const TIMEOUT_LONG_FLAGS = new Set(['--preserve-status', '--foreground', '--verbose']);
 const SUDO_LONG_FLAGS = new Set(['--login', '--preserve-env', '--non-interactive', '--background', '--shell', '--stdin',
     '--set-home', '--edit', '--list', '--validate', '--remove-timestamp', '--reset-timestamp', '--askpass', '--bell',
     '--help', '--version']);
