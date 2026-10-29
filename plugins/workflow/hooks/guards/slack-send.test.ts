@@ -147,10 +147,12 @@ describe('the gate request a send stages', () => {
         ['an email whose body runs a command carries nothing', `gws gmail +send --to a@example.com --body "$(cat notes.txt)"`, undefined],
         ['an email with an attachment carries nothing', `gws gmail +send --to a@example.com --subject Q3 --body 'Numbers are in.' --attach confidential.pdf`, undefined],
         ['an email with an attached -a attachment carries nothing', `gws gmail +send --to a@example.com --subject Q3 --body 'Numbers are in.' -aconfidential.pdf`, undefined],
+        ['an email body drops a line continuation, as bash does', `gws gmail +send --to a@example.com --body "Do not\\\nrelease until approved."`, ['Do notrelease until approved.', 'to:a@example.com']],
         ['an email body keeps its leading indentation', `gws gmail +send --to a@example.com --body '    if approved:\n        release()'`, ['    if approved:\n        release()', 'to:a@example.com']],
         ['a forward carries nothing', `gws gmail +forward --message-id m1 --to a@example.com --body 'FYI'`, undefined],
         ['a reply carries nothing', `gws gmail +reply --message-id m1 --body 'Approved text'`, undefined],
         ['a reply-all carries nothing', `gws gmail +reply-all --message-id m1 --body 'Approved text'`, undefined],
+        ['a Slack post whose URL a variable holds is gated with nothing', `URL=https://slack.com/api/chat.postMessage; curl "$URL" -d channel=C1 -d text=hello`, undefined],
         ['a Slack delete carries nothing', `curl https://slack.com/api/chat.delete -d channel=C1 -d ts=1`, undefined],
     ] as Array<[string, string, string[] | undefined]>)('%s', async (_label, command, parts) => {
         expect(await staged(command)).toEqual({ action: 'request_send_gate', sendParts: parts });
