@@ -86,11 +86,13 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a push after checking out the protected branch', 'git checkout master && git push origin HEAD', () => theirs],
         ['a push whose last -C names the checkout', 'git -C OURS -C ../core push origin HEAD:master', () => dir],
         ['a push of the current branch after a switch in another checkout', 'git -C OURS switch feature-x && git push', () => join(dir, 'core-on-master')],
+        ['a push from another checkout after a switch here', 'git switch feature-x && git -C CORE_ON_MASTER push', () => other],
+        ['a push after switching to the previous branch', "git switch '@{-1}' && git push", () => theirs],
         ['a REST merge endpoint held whole in a variable', 'ENDPOINT=repos/Acme/core/pulls/12/merge; gh api -X PUT "$ENDPOINT"', () => other],
         ['a REST merge endpoint with a partial placeholder', 'GH_REPO=example/core gh api -X PUT repos/Acme/{repo}/pulls/12/merge', () => other],
     ])('%s', (_label, command, cwd) => {
         checkout(join(dir, 'core-on-master'), 'https://github.com/Acme/core.git', 'master');
-        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`);
+        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`).replace('CORE_ON_MASTER', join(dir, 'core-on-master'));
         expect(action(resolved, cwd())).toBe('block');
     });
 });

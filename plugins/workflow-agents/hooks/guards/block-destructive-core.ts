@@ -6651,7 +6651,7 @@ function headAfterSwitches(earlier: ResolvedCommand[]): string | null | undefine
         const rest = c.args.slice(sub + 1);
         const create = rest.findIndex(a => ['-c', '-C', '-b', '-B', '--create', '--force-create'].includes(a));
         const named = create >= 0 ? rest[create + 1] : c.args[sub] === 'switch' ? rest.filter(a => !a.startsWith('-')).at(0) : undefined;
-        head = named !== undefined && !/[$`]/.test(named) && rest.filter(a => !a.startsWith('-')).length <= 2 ? named : null;
+        head = named !== undefined && !/[$`@]/.test(named) && rest.filter(a => !a.startsWith('-')).length <= 2 ? named : null;
     }
     return head;
 }
@@ -6823,7 +6823,8 @@ function noMergeStepReason(
         const repo = remote && (REPO_URL_RE.test(remote) || ORG_REPO_RE.test(remote))
             ? githubRepoOf(remote)
             : pushDir ? checkoutRemoteRepo(pushDir, remote ?? 'origin') : null;
-        const branches = pushedBranches(cmd.args, pushDir, head);
+        // A branch read from earlier switches belongs to the checkout they ran in, not one the push moves to.
+        const branches = pushedBranches(cmd.args, pushDir, pushDir === dir ? head : undefined);
         if (scope === 'unreadable') return refused(null, 'Pushing');
         const protectedHere = repo !== null ? scope.get(repo) : undefined;
         if (protectedHere && (branches === null || branches.some(b => protectedHere.has(b)))) {
