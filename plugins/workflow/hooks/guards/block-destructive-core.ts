@@ -6716,7 +6716,8 @@ export function slackPostsOf(command: string): SlackPost[] {
 /** True when the line is one command and nothing else, so what a send delivers can be all it does. */
 export function soleCommand(command: string): boolean {
     try {
-        return extractCommands(command).length === 1;
+        const commands = extractCommands(command);
+        return commands.length === 1 && commands[0].raw.trim() === command.trim();
     } catch {
         return false;
     }
