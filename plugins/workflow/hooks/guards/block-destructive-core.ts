@@ -2327,7 +2327,10 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
                 skip += a === '-u' || a === '--unset' || a === '-C' || a === '--chdir' ? 2 : 1;
             }
         } else if (name === 'nice') {
-            if (args[skip] === '-n' && skip + 1 < args.length) skip = 2;
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += args[skip] === '-n' || args[skip] === '--adjustment' ? 2 : 1;
+            }
+            if (args[skip] === '--') skip += 1;
         } else if (name === 'timeout' || name === 'gtimeout') {
             while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
                 skip += optionWords(args[skip], 'ks', TIMEOUT_LONG_VALUE_OPTIONS, TIMEOUT_LONG_FLAGS);
