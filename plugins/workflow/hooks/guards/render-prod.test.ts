@@ -15,6 +15,7 @@ import { DEV_SCOPE_FILE_ENV, changesProduction, evaluateBashCommand, parseDevSco
 const DEV = 'srv-devservice0000000001';
 const PROD = 'srv-prodservice000000001';
 const PROD_DB = 'dpg-proddatabase00000001-a';
+const DEV_DB = 'dpg-devdatabase000000001-a';
 
 let dir = '';
 let saved: string | undefined;
@@ -25,7 +26,7 @@ beforeAll(() => {
     savedProfile = process.env.NANOCLAW_INSTRUCTIONS_PROFILE;
     dir = mkdtempSync(join(tmpdir(), 'render-prod-test-'));
     const scopeFile = join(dir, 'dev-scope.local.json');
-    writeFileSync(scopeFile, JSON.stringify({ snowflake: [], render: { resources: [DEV] } }));
+    writeFileSync(scopeFile, JSON.stringify({ snowflake: [], render: { resources: [DEV, DEV_DB] } }));
     process.env[DEV_SCOPE_FILE_ENV] = scopeFile;
 });
 
@@ -62,7 +63,7 @@ describe('reading Render needs no approval', () => {
         `render workflows tasks runs show ${PROD}`,
         `render workflows versions list ${PROD}`,
         `render logs --text delete -r ${PROD}`,
-        `render psql ${PROD_DB} -c 'select count(*) from accounts' -o text`,
+        'render -ojson services',
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -82,10 +83,17 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a listed target beside an unlisted id', `render jobs create ${DEV} --start-command "curl -X POST x/${PROD}"`],
         ['a listed target beside an unlisted id in a list', `render restart ${DEV},${PROD}`],
         ['a target held in a variable', `S=${DEV}; render restart $S`],
-        ['a target given only after a flag value', `render jobs create --start-command "node job.js" ${DEV}`],
+        ['a dev id given as a flag value beside a production target', `render jobs create --start-command ${DEV} ${PROD}`],
         ['a dev target run through xargs', `echo ${DEV} | xargs render restart`],
         ['an interactive SQL session', `render psql ${PROD_DB}`],
+        ['a SQL read on a production database', `render psql ${PROD_DB} -c 'select count(*) from accounts' -o text`],
         ['a SQL write', `render psql ${PROD_DB} -c 'DROP TABLE public.accounts'`],
+        ['a subcommand after a switch given with =', `render services --confirm=true update ${PROD} --plan pro`],
+        ['a subcommand after an attached output flag', `render services -ojson update ${PROD} --plan pro`],
+        ['a subcommand held in a variable', `A=update; render services "$A" ${PROD} --plan pro`],
+        ['a shell escape on a dev database', `render psql ${DEV_DB} -c '\\! render restart srv-"prodservice000000001"'`],
+        ['psql arguments passed through on a dev database', `render psql ${DEV_DB} -c 'select 1' -- -d postgresql://db.example.com/app -c 'DROP TABLE accounts'`],
+        ['an interactive session on a dev database', `render psql ${DEV_DB}`],
         ['a read followed by a write', `render psql ${PROD_DB} -c 'select 1; delete from accounts'`],
         ['a read that calls a side-effecting function', `render psql ${PROD_DB} -c "select pg_terminate_backend(42)"`],
         ['psql arguments passed through', `render psql ${PROD_DB} -- -c 'select 1'`],
@@ -109,6 +117,8 @@ describe('a Render resource listed as dev changes freely', () => {
         `render jobs create ${DEV} --confirm -o json --start-command "node job.js"`,
         `render restart ${DEV}`,
         `render deploys create ${DEV}`,
+        `render psql ${DEV_DB} -c 'delete from sessions'`,
+        `render jobs create --start-command "node job.js" ${DEV}`,
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -127,6 +137,14 @@ describe('which gate a stopped command takes', () => {
 
     test('a render command run by a SQL client takes the production gate', () => {
         const command = `psql -X -c '\\! render restart ${PROD}'`;
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test('a render command in a SQL file a client runs takes the production gate', () => {
+        const file = join(dir, 'prodguard.sql');
+        writeFileSync(file, `\\! render restart ${PROD}\n`);
+        const command = `psql -X -f ${file}`;
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
     });
