@@ -53,6 +53,10 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['gh pr merge naming it', 'gh pr merge 12 -R Acme/core --squash', () => other],
         ['gh pr merge naming it with --repo=', 'gh pr merge 12 --repo=acme/CORE', () => other],
         ['gh pr merge by URL', 'gh pr merge https://github.com/Acme/core/pull/12', () => other],
+        ['gh pr merge naming it before the subcommand', 'gh -R Acme/core pr merge 12 --squash', () => other],
+        ['gh pr merge with an attached -R', 'gh pr merge 12 -RAcme/core', () => other],
+        ['gh pr merge with GH_REPO set on the command', 'GH_REPO=Acme/core gh pr merge 12 --squash', () => other],
+        ['gh pr merge after GH_REPO is exported', 'export GH_REPO=Acme/core && gh pr merge 12 --squash', () => other],
         ['auto-merge', 'gh pr merge 12 --auto --squash', () => theirs],
         ['the REST merge endpoint', 'gh api -X PUT repos/Acme/core/pulls/12/merge', () => other],
         ['the REST merge endpoint by curl', 'curl -X PUT https://api.github.com/repos/Acme/core/pulls/12/merge', () => other],
@@ -63,6 +67,8 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a push after cd into the checkout', 'cd CORE && git push origin feature-x:master', () => dir],
         ['a delete of the protected branch', 'git push origin :master', () => theirs],
         ['a push of every branch', 'git push --all origin', () => theirs],
+        ['a push of every branch by its alias', 'git push --branches origin', () => theirs],
+        ['a push of every branch by an abbreviation', 'git push --mirr origin', () => theirs],
         ['a push by URL', 'git push https://github.com/Acme/core.git main:master', () => other],
         ['a push to that branch name from a checkout the guard can not place', 'cd $D && git push origin HEAD:master', () => dir],
     ])('%s', (_label, command, cwd) => {
@@ -77,6 +83,8 @@ describe('everything else is untouched', () => {
         ['a feature-branch push', 'git push -u origin feature-x', () => theirs],
         ['a draft pull request', 'gh pr create --draft --title t --body b', () => theirs],
         ['a merge in another repository', 'gh pr merge 12 --squash', () => other],
+        ['a merge naming another repository from their checkout', 'gh pr merge 12 -R example/ours', () => theirs],
+        ['an atomic feature-branch push', 'git push --atomic origin feature-x', () => theirs],
         ['a push to master of another repository', 'git push origin master', () => other],
         ['the review-loop merge elsewhere', 'PR=3 REPO=example/ours codex-review.sh merge --head abc', () => theirs],
     ])('%s', (_label, command, cwd) => {

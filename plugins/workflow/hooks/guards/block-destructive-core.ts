@@ -6521,7 +6521,7 @@ function checkoutBranch(dir: string): string | null {
 function pushedBranches(args: string[], dir: string | null): string[] | null {
     const sub = gitSubcommandIndex(args);
     const rest = args.slice(sub + 1);
-    if (rest.some(a => a === '--all' || a === '--mirror')) return null;
+    if (rest.some(a => /^--[a-z]/.test(a) && ['all', 'mirror', 'branches'].some(o => o.startsWith(a.slice(2))))) return null;
     const positionals = pushArgsWithoutValues(rest).filter(a => !a.startsWith('-'));
     const refspecs = positionals.slice(1);
     if (refspecs.length === 0) {
@@ -6544,6 +6544,26 @@ function pushedBranches(args: string[], dir: string | null): string[] | null {
     return names;
 }
 
+/** The last value a command gives `name`: its own prefix, else an earlier `export`, else what the session inherited. */
+function assignedValue(name: string, cmd: ResolvedCommand, commands: ResolvedCommand[]): string | undefined {
+    const pick = (entries: string[]) => entries.map(e => e.startsWith(`${name}=`) ? e.slice(name.length + 1) : undefined).filter((v): v is string => v !== undefined).at(-1);
+    return pick(cmd.env ?? []) ?? pick(commands.slice(0, commands.indexOf(cmd)).flatMap(c => c.name === 'export' ? c.args : [])) ?? process.env[name];
+}
+
+/** `gh`'s arguments with the inherited `-R`/`--repo` taken out, and the repository it names. */
+function ghArgs(args: string[]): { args: string[]; repo: string | undefined } {
+    const rest: string[] = [];
+    let repo: string | undefined;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '-R' || a === '--repo') repo = args[++i];
+        else if (a.startsWith('--repo=')) repo = a.slice('--repo='.length);
+        else if (/^-R./.test(a)) repo = a.slice(2);
+        else rest.push(a);
+    }
+    return { args: rest, repo };
+}
+
 /** Why a command merges into, or pushes to a protected branch of, a repository agents never merge into. */
 function noMergeReason(commands: ResolvedCommand[], cwd: string): string | null {
     const scope = currentMergeScope();
@@ -6558,12 +6578,14 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string): string | null 
         if (DIRECTORY_CHANGERS.has(cmd.name)) dirs = directoriesAfter(dirs, cmd);
         const dir = dirs && dirs.length === 1 ? pathResolve(dirs[0], cmd.chdir ?? '.') : null;
         const text = cmd.args.join(' ');
-        if (cmd.name === 'gh' && cmd.args[0] === 'pr' && cmd.args[1] === 'merge') {
-            const named = flagValue(cmd.args, ['-R', '--repo']);
-            const url = cmd.args.slice(2).find(a => GITHUB_REPO_IN_TEXT_RE.test(a));
-            const repo = named ? githubRepoOf(named) : url ? githubRepoOf(url) : dir ? checkoutRemoteRepo(dir) : null;
-            const reason = refused(repo, 'Merging a pull request');
-            if (reason) return reason;
+        const gh = cmd.name === 'gh' ? ghArgs(cmd.args) : null;
+        if (gh && gh.args[0] === 'pr' && gh.args[1] === 'merge') {
+            const url = gh.args.slice(2).find(a => GITHUB_REPO_IN_TEXT_RE.test(a));
+            const targets = [gh.repo, url, assignedValue('GH_REPO', cmd, commands)].filter((v): v is string => v !== undefined).map(githubRepoOf);
+            for (const repo of targets.length ? targets : [dir ? checkoutRemoteRepo(dir) : null]) {
+                const reason = refused(repo, 'Merging a pull request');
+                if (reason) return reason;
+            }
         }
         const apiMerge = (cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name) ? API_MERGE_RE.exec(text) : null;
         if (apiMerge) {
@@ -6575,9 +6597,8 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string): string | null 
             if (reason) return reason;
         }
         if (/(?:^|\/)codex-review\.sh$/.test(cmd.name) && cmd.args[0] === 'merge') {
-            const assigned = [...(cmd.env ?? []), ...commands.flatMap(c => c.name === 'export' ? c.args : [])]
-                .map(e => /^REPO=(.+)$/.exec(e)?.[1]).filter((v): v is string => v !== undefined);
-            const repo = assigned.length ? githubRepoOf(assigned[assigned.length - 1]) : dir ? checkoutRemoteRepo(dir) : null;
+            const assigned = assignedValue('REPO', cmd, commands);
+            const repo = assigned !== undefined ? githubRepoOf(assigned) : dir ? checkoutRemoteRepo(dir) : null;
             const reason = refused(repo, 'Merging a pull request');
             if (reason) return reason;
         }
