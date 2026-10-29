@@ -58,6 +58,8 @@ describe('which Slack calls stop for approval', () => {
         ['a post after a read in the same curl', 'acme', `curl https://slack.com/api/conversations.list --next https://slack.com/api/chat.postMessage -d text=x`, 'gate'],
         ['a wrapped curl named by its path', undefined, `onecli run --agent ag-acme -- /usr/bin/curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
         ['a post whose URL is given with --url=', 'acme', `curl --url=https://slack.com/api/chat.postMessage -d channel=C1 -d text=hello`, 'gate'],
+        ['a wrapped post behind env', undefined, `onecli run --agent ag-acme -- env curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
+        ['a post run by a shell', 'acme', `bash -lc 'curl https://slack.com/api/chat.postMessage -d text=hello'`, 'gate'],
     ] as Array<[string, string | undefined, string, 'allow' | 'gate']>)('%s', (_label, workgroup, command, expected) => {
         process.env[SEND_SCOPE_FILE_ENV] = scopeFile;
         if (workgroup === undefined) delete process.env.NANOCLAW_WORKGROUP_ID;
@@ -134,6 +136,7 @@ describe('the gate request a send stages', () => {
         ['a lone email carries its body, recipients and subject', `gws gmail +send --to a@example.com,b@example.com --subject 'Q3' --body 'Numbers are in.'`, ['Numbers are in.', 'to:a@example.com', 'to:b@example.com', 'subject:Q3']],
         ['a Slack post beside another command carries nothing', `gws gmail +send --to a@example.com; ${POST}`, undefined],
         ['a Slack post inside a loop carries nothing', `for c in C1 C2; do ${POST}; done`, undefined],
+        ['an email inside a loop carries nothing', `for n in 1 2; do gws gmail +send --to a@example.com --body hi; done`, undefined],
         ['an email beside another command carries nothing', `cd /tmp && gws gmail +send --to a@example.com --body 'hi'`, undefined],
         ['an email whose body runs a command carries nothing', `gws gmail +send --to a@example.com --body "$(cat notes.txt)"`, undefined],
         ['an email with an attachment carries nothing', `gws gmail +send --to a@example.com --subject Q3 --body 'Numbers are in.' --attach confidential.pdf`, undefined],
