@@ -6522,8 +6522,7 @@ export function noteSendParts(command: string, parts: string[] | null): void {
 export const MERGE_SCOPE_FILE_ENV = 'BOOTSTRAP_MERGE_SCOPE_FILE';
 const MERGE_SCOPE_FILE = 'merge-scope.local.json';
 const GITHUB_REPO_IN_TEXT_RE = /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/?#\s]|$)/;
-const API_MERGE_RE = /(?:^|[\s/])repos\/([^/\s]+)\/([^/\s]+)\/(?:pulls\/[^/\s]+\/merge|merges)\b/;
-const API_MERGE_VARIABLE_RE = /(?:^|[\s/])repos\/\S*[$`]\S*\/(?:pulls\/[^/\s]+\/merge|merges)\b/;
+const API_MERGE_RE = /(?:^|[\s/])repos\/(\S+?)\/(?:pulls\/[^/\s]+\/merge|merges)\b/;
 const GRAPHQL_MERGE_RE = /\b(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\b/;
 
 export type MergeScope = Map<string, Set<string>>;
@@ -6708,6 +6707,20 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string): string | null 
     return null;
 }
 
+/**
+ * The repository a REST merge call (`repos/<owner>/<repo>/pulls/<n>/merge`, `…/merges`) in `text` merges into:
+ * undefined when it makes none, 'unresolved' when any part is a variable, 'unplaced' when gh's {owner}/{repo}
+ * must come from a checkout the guard can't place. gh fills {owner}/{repo} from GH_REPO, else from its checkout.
+ */
+function apiMergeTarget(text: string, ghRepo: string | undefined, dir: string | null): string | null | 'unresolved' | 'unplaced' | undefined {
+    const match = API_MERGE_RE.exec(text);
+    if (!match) return undefined;
+    if (/[$`]/.test(match[0])) return 'unresolved';
+    if (!/\{owner\}|\{repo\}/.test(match[1])) return match[1].toLowerCase();
+    if (ghRepo !== undefined) return /[$`]/.test(ghRepo) ? 'unresolved' : githubRepoOf(ghRepo);
+    return dir === null ? 'unplaced' : checkoutRemoteRepo(dir);
+}
+
 /** The directory a git push runs in from `dir`, after every `-C` and `--work-tree` before its subcommand; null when unknown. */
 function gitPushDir(args: string[], dir: string | null): string | null {
     let at = dir;
@@ -6758,20 +6771,11 @@ function noMergeStepReason(
             if (reason) return reason;
         }
     }
-    const apiMerge = (cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name) ? API_MERGE_RE.exec(text) : null;
-    if (!apiMerge && ((cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name)) && API_MERGE_VARIABLE_RE.test(text)) {
-        return unresolved('Merging through the API');
-    }
-    if (apiMerge) {
-        // gh fills {owner}/{repo} from GH_REPO, else from the checkout it runs in.
-        if (/[$`]/.test(apiMerge[0])) return unresolved('Merging through the API');
-        const placeholder = apiMerge[1] === '{owner}' || apiMerge[2] === '{repo}';
-        if (placeholder && ghRepo !== undefined && /[$`]/.test(ghRepo)) return unresolved('Merging through the API');
-        if (placeholder && ghRepo === undefined && dir === null) return unplaced('Merging through the API');
-        const named = placeholder
-            ? (ghRepo !== undefined ? githubRepoOf(ghRepo) : dir ? checkoutRemoteRepo(dir) : null)
-            : `${apiMerge[1]}/${apiMerge[2]}`.toLowerCase();
-        const reason = refused(named, 'Merging through the API');
+    const api = (cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name) ? apiMergeTarget(text, ghRepo, dir) : undefined;
+    if (api === 'unresolved') return unresolved('Merging through the API');
+    if (api === 'unplaced') return unplaced('Merging through the API');
+    if (api !== undefined) {
+        const reason = refused(api, 'Merging through the API');
         if (reason) return reason;
     }
     if (((cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name)) && GRAPHQL_MERGE_RE.test(text)) {
