@@ -47,11 +47,11 @@ describe('reading Render needs no approval', () => {
     test.each([
         'render services list -o json',
         'render services -o json',
-        'render services instances ' + PROD,
+        'render services instances ' + PROD + ' -o json',
         `render deploys list ${PROD} -o json`,
-        `render jobs list ${PROD}`,
+        `render jobs list ${PROD} -o json`,
         `render logs -r ${PROD} --limit 50`,
-        `render postgres get ${PROD_DB}`,
+        `render postgres get ${PROD_DB} -o json`,
         'render workspace set tea-workspace000000000001',
         'render whoami -o json',
         'render --version',
@@ -59,15 +59,19 @@ describe('reading Render needs no approval', () => {
         `render services delete ${PROD} --help`,
         'render services -e evm-environment000000001 -o json',
         'render service list -o json',
-        `render workflows tasks list ${PROD}`,
-        `render workflows tasks runs show ${PROD}`,
-        `render workflows versions list ${PROD}`,
+        `render workflows tasks list ${PROD} -o json`,
+        `render workflows tasks runs show ${PROD} -o json`,
+        `render workflows versions list ${PROD} -o json`,
         `render logs --text delete -r ${PROD}`,
         'render -ojson services',
-        'render postgres ls',
+        'render postgres ls -o json',
         'render pg ls -o json',
-        'render keyvalue list',
-        `render workflows runs list ${PROD}`,
+        'render keyvalue list -o json',
+        `render workflows runs list ${PROD} -o json`,
+        `render keyvalues get ${PROD} --include-sensitive-connection-info -o json`,
+        'render blueprints validate -w tea-workspace000000000001',
+        `render workflows tasks runs show ${PROD} --local -o json`,
+        'render skills list --scope project',
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -102,6 +106,11 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a subcommand spelled as a glob', `touch delete; render services [d]elete ${PROD} --confirm`],
         ['a production database named before a listed dev one', `render psql production ${DEV_DB} -c 'DROP TABLE accounts'`],
         ['a flag the guard does not know', `render services update ${PROD} --suspend-everything`],
+        ['a database version flag, which is not help', `render postgres create --version 17 --name production-db --confirm`],
+        ['a command the tree does not know, beside a listed dev id', `render ea objects delete backups ${DEV} --region oregon`],
+        ['a listing with no output format, which may open a menu', 'render services list'],
+        ['a listing forced interactive with an equals sign', 'render services -o=interactive'],
+        ['a listing whose output mode comes from the environment', 'RENDER_OUTPUT=interactive render services'],
         ['a read followed by a write', `render psql ${PROD_DB} -c 'select 1; delete from accounts'`],
         ['a read that calls a side-effecting function', `render psql ${PROD_DB} -c "select pg_terminate_backend(42)"`],
         ['psql arguments passed through', `render psql ${PROD_DB} -- -c 'select 1'`],
@@ -179,6 +188,7 @@ describe('a lab session', () => {
         expect(verdict(`render jobs create ${PROD} --start-command lab-app-api`)).toBe('gate');
         expect(verdict(`render jobs create "$S" --start-command lab-task --confirm`)).toBe('gate');
         expect(verdict(`render psql production lab-db -c 'DROP TABLE accounts'`)).toBe('gate');
+        expect(verdict('render ea objects delete backups lab-cache --region oregon')).toBe('gate');
         expect(verdict('render services delete lab-app-api --confirm')).toBe('allow');
     });
 });
