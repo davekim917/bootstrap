@@ -2365,7 +2365,7 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
         } else if (name === 'nohup' || name === 'time') {
             // GNU time's -o FILE and -f FORMAT (and --output/--format) take the next word.
             while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
-                skip += name === 'time' && ['-o', '-f', '--output', '--format'].includes(args[skip]) ? 2 : 1;
+                skip += name === 'time' ? optionWords(args[skip], 'of', new Set(['--output', '--format']), new Set(['--append', '--verbose', '--portability', '--quiet'])) : 1;
             }
             if (args[skip] === '--') skip += 1;
         }
@@ -7042,6 +7042,13 @@ export function slackPostsOf(command: string): SlackPost[] {
         }
         const post = slackPostIn(cmd.name, cmd.args, null) ?? carriedPost(cmd.args, null);
         if (post) posts.push(post);
+    }
+    // A posting URL the commands never carry as a word (held in a variable assignment, say) is still a post the
+    // guard can't read.
+    if (posts.length === 0) {
+        const held = carriedPost([command], null);
+        const agent = /\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/.exec(command)?.[1] ?? null;
+        if (held) posts.push({ ...held, onecliAgent: agent });
     }
     return posts;
 }
