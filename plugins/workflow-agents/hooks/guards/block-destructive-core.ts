@@ -666,7 +666,7 @@ export const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 
 // Command wrappers that should be stripped to find the real command
 export const WRAPPERS = new Set([
-    'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout',
+    'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout', 'stdbuf', 'setsid',
     // Package runners execute an arbitrary command too. Without them here,
     // `pnpm exec rm -rf <path>` resolved to name='pnpm' and every destructive
     // check passed — and since `Bash(pnpm exec *)` is commonly allow-listed,
@@ -2362,6 +2362,15 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
             while (skip < args.length && args[skip].startsWith('-')) {
                 skip += args[skip] === '-p' || args[skip] === '--package' ? 2 : 1;
             }
+        } else if (name === 'stdbuf') {
+            // -i/-o/-e MODE (and --input/--output/--error) take a value.
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += optionWords(args[skip], 'ioe', new Set(['--input', '--output', '--error']));
+            }
+            if (args[skip] === '--') skip += 1;
+        } else if (name === 'setsid') {
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') skip += 1;
+            if (args[skip] === '--') skip += 1;
         } else if (name === 'nohup' || name === 'time') {
             // GNU time's -o FILE and -f FORMAT (and --output/--format) take the next word.
             while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
@@ -6837,6 +6846,7 @@ function noMergeStepReason(
 // No file gates nothing. A file that can't be read or parsed gates every Slack post.
 
 export const SEND_SCOPE_FILE_ENV = 'BOOTSTRAP_SEND_SCOPE_FILE';
+const UNKNOWN_ONECLI_AGENT = '\0unknown';
 const SEND_SCOPE_FILE = 'send-scope.local.json';
 const SLACK_POST_METHODS = new Set([
     'chat.postMessage', 'chat.update', 'chat.scheduleMessage', 'chat.meMessage', 'chat.delete',
@@ -7044,7 +7054,8 @@ export function slackPostsOf(command: string): SlackPost[] {
             const split = cmd.args.indexOf('--');
             const own = split < 0 ? cmd.args : cmd.args.slice(0, split);
             const agentAt = own.findIndex(a => a === '--agent' || a.startsWith('--agent='));
-            const agent = agentAt < 0 ? null : own[agentAt].startsWith('--agent=') ? own[agentAt].slice('--agent='.length) : own[agentAt + 1] ?? null;
+            const named = agentAt < 0 ? null : own[agentAt].startsWith('--agent=') ? own[agentAt].slice('--agent='.length) : own[agentAt + 1] ?? null;
+            const agent = named !== null && /[$`]/.test(named) ? UNKNOWN_ONECLI_AGENT : named;
             const inner = split >= 0 ? cmd.args.slice(split + 1) : [];
             const post = (inner.length ? slackPostIn(commandName(inner[0]), inner.slice(1), agent) : null) ?? carriedPost(inner, agent);
             if (post) posts.push(post);
@@ -7057,7 +7068,8 @@ export function slackPostsOf(command: string): SlackPost[] {
     // guard can't read.
     if (posts.length === 0) {
         const held = carriedPost([command], null);
-        const agent = /\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/.exec(command)?.[1] ?? null;
+        const named = /\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/.exec(command)?.[1] ?? null;
+        const agent = named !== null && /[$`]/.test(named) ? UNKNOWN_ONECLI_AGENT : named;
         if (held) posts.push({ ...held, onecliAgent: agent });
     }
     return posts;
@@ -7082,5 +7094,7 @@ export function gatedSlackPosts(command: string, workgroupId: string | undefined
     if (scope === null) return [];
     if (scope === 'unreadable') return posts;
     const inWorkgroup = workgroupId !== undefined && scope.slack.workgroups.includes(workgroupId);
-    return posts.filter(p => p.onecliAgent !== null ? scope.slack.onecliAgents.includes(p.onecliAgent) : inWorkgroup);
+    // An identity only known when the command runs may be any listed one.
+    return posts.filter(p => p.onecliAgent === UNKNOWN_ONECLI_AGENT ? scope.slack.onecliAgents.length > 0 || inWorkgroup
+        : p.onecliAgent !== null ? scope.slack.onecliAgents.includes(p.onecliAgent) : inWorkgroup);
 }
