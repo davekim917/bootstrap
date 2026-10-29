@@ -1550,6 +1550,9 @@ function shellDirectories(cmd: ResolvedCommand): string[] | null {
  * replay, since it is returned from the hard-block tier), or else a gate reason, or null. One evaluator judges each
  * readable shell command; an unreadable program blocks.
  */
+// A nested program's gate can't say which of a client's programs needs it, so it takes the production gate.
+const CLIENT_PROGRAM_GATE = 'runs a client program that needs approval';
+
 function clientProgramVerdict(cmd: ResolvedCommand): { block?: string; gate?: string } {
     let gate: string | undefined;
     const runs = clientRunsOf(cmd);
@@ -1570,7 +1573,7 @@ function clientProgramVerdict(cmd: ResolvedCommand): { block?: string; gate?: st
             for (const dir of dirs) {
                 const v = clientShellVerdict(shell, dir);
                 if (v.action === 'block') return { block: `${cmd.name} ${program.via} runs a blocked command. ${v.reason}` };
-                if (v.action === 'gate') gate ??= `${cmd.name} ${program.via} runs a command that needs approval. ${v.reason}`;
+                if (v.action === 'gate') gate ??= `${cmd.name} ${program.via} ${CLIENT_PROGRAM_GATE}. ${v.reason}`;
             }
         }
     }
@@ -1728,26 +1731,27 @@ export const PLATFORM_DESTRUCTIVE: Record<string, Set<string>> = {
     doctl:   new Set(['delete', 'destroy']),
 };
 
-// Every Render command is a production change except these reads. A 'group' read lists, and a lowercase word
-// after it is a subcommand this table doesn't know, so it counts as a change; a 'leaf' read takes operands.
-const RENDER_READ_ANY = new Set(['logs', 'whoami', 'workspaces', 'workspace', 'projects', 'environments', 'help', 'docs', 'login', 'logout', 'skills']);
-const RENDER_READS = new Map<string, 'group' | 'leaf'>([
-    ['services', 'group'], ['services list', 'leaf'], ['services instances', 'leaf'],
-    ['deploys', 'group'], ['deploys list', 'leaf'],
-    ['jobs', 'group'], ['jobs list', 'leaf'],
-    ['postgres', 'group'], ['postgres list', 'leaf'], ['postgres get', 'leaf'],
-    ['keyvalues', 'group'], ['keyvalues list', 'leaf'], ['keyvalues get', 'leaf'],
-    ['workflows', 'group'], ['workflows list', 'leaf'], ['workflows init', 'leaf'],
-    ['workflows tasks', 'group'], ['workflows tasks list', 'leaf'],
-    ['workflows tasks runs', 'group'], ['workflows tasks runs list', 'leaf'], ['workflows tasks runs show', 'leaf'],
-    ['workflows versions', 'group'], ['workflows versions list', 'leaf'],
-    ['blueprints', 'group'], ['blueprints validate', 'leaf'],
+// Render's command tree (`render <command> --help`). A read needs no approval; every other command, and any line
+// this table can't account for word by word, is a production change.
+const RENDER_COMMANDS = new Map<string, 'read' | 'change'>([
+    ...['logs', 'whoami', 'workspaces', 'workspace', 'workspace set', 'projects', 'environments', 'help', 'docs', 'login', 'logout', 'skills',
+        'services', 'services list', 'services instances', 'deploys', 'deploys list', 'jobs', 'jobs list',
+        'postgres', 'postgres list', 'postgres get', 'keyvalues', 'keyvalues list', 'keyvalues get',
+        'workflows', 'workflows list', 'workflows init', 'workflows tasks', 'workflows tasks list', 'workflows tasks runs',
+        'workflows tasks runs list', 'workflows tasks runs show', 'workflows versions', 'workflows versions list',
+        'blueprints', 'blueprints validate'].map(c => [c, 'read'] as const),
+    ...['restart', 'psql', 'pgcli', 'ssh', 'services create', 'services delete', 'services update', 'deploys create', 'deploys cancel',
+        'jobs create', 'jobs cancel', 'postgres create', 'postgres delete', 'postgres update', 'postgres suspend', 'postgres resume',
+        'keyvalues create', 'keyvalues delete', 'keyvalues update', 'keyvalues suspend', 'keyvalues resume',
+        'workflows create', 'workflows cancel', 'workflows start', 'workflows dev', 'workflows tasks runs start',
+        'workflows tasks runs cancel', 'workflows versions release'].map(c => [c, 'change'] as const),
 ]);
-const RENDER_ALIASES = new Map([['pg', 'postgres'], ['kv', 'keyvalues'], ['service', 'services']]);
-// Every Render flag that takes a value, from `render <command> --help`. Any other flag is read as a switch, so a
-// value it really takes lands among the command words, where it can only make a read or a dev proof fail.
+// Reads whose words after the command are filters or local CLI state, never a subcommand.
+const RENDER_OPEN_READS = new Set(['logs', 'whoami', 'workspaces', 'workspace', 'projects', 'environments', 'help', 'docs', 'login', 'logout', 'skills']);
+const RENDER_ALIASES = new Map([['pg', 'postgres'], ['kv', 'keyvalues'], ['keyvalue', 'keyvalues'], ['service', 'services'], ['ls', 'list']]);
+// Every Render flag that takes a value, from `render <command> --help`.
 const RENDER_VALUE_FLAGS = new Set([
-    '-o', '--output', '-c', '--command', '-r', '--resources', '-e', '--environment-ids',
+    '--output', '--command', '--resources', '--environment-ids',
     '--branch', '--build-command', '--build-filter-ignored-path', '--build-filter-path', '--commit', '--cron-command',
     '--cron-schedule', '--datadog-api-key', '--datadog-site', '--direction', '--disk-size-gb', '--end', '--environment',
     '--environment-id', '--env-var', '--from', '--health-check-path', '--host', '--image', '--input-file', '--input',
@@ -1757,52 +1761,64 @@ const RENDER_VALUE_FLAGS = new Set([
     '--secret-file', '--start-command', '--start', '--status-code', '--task-id', '--task-run-id', '--task', '--text', '--type',
 ]);
 const RENDER_SHORT_VALUE = new Map([['o', '--output'], ['c', '--command'], ['r', '--resources'], ['e', '--environment-ids']]);
-const RENDER_HELP_FLAGS = new Set(['-h', '--help', '-v', '--version']);
+const RENDER_SWITCHES = new Set(['--confirm', '--include-previews', '--wait', '--tail']);
 export const RENDER_RESOURCE_ID_RE = /^[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?$/;
 export const RENDER_CHANGE_REASON = 'Production change on Render';
 
-/** What a render invocation runs: its non-flag words (aliases resolved), its flags' values, and whether it asks for help or passes arguments through. */
-function renderInvocation(args: string[]): { path: string[]; values: Map<string, string>; help: boolean; passthrough: boolean } {
-    const path: string[] = [];
+interface RenderShape { command: string | null; operands: string[]; values: Map<string, string>; help: boolean }
+
+/**
+ * A render line read word by word: the longest known command its leading words name (aliases resolved), the words
+ * after it, and its flags' values. Null when any word is unaccounted for: an unknown flag or flag form, a word the
+ * shell expands, or a `--` passthrough, since each can make the CLI do something this reading doesn't see.
+ */
+function renderShape(args: string[]): RenderShape | null {
+    const words: string[] = [];
     const values = new Map<string, string>();
     let help = false;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (a === '--') return { path, values, help: false, passthrough: true };
-        if (a.startsWith('--')) {
+        if (/[[\]*?{}$`~]/.test(a) || a === '--') return null;
+        if (a === '-h' || a === '--help' || a === '-v' || a === '--version') {
+            help = true;
+        } else if (a.startsWith('--')) {
             const at = a.indexOf('=');
             const flag = at < 0 ? a : a.slice(0, at);
-            if (RENDER_VALUE_FLAGS.has(flag)) values.set(flag, at < 0 ? args[++i] ?? '' : a.slice(at + 1));
-            else if (RENDER_HELP_FLAGS.has(flag)) help = true;
+            if (RENDER_VALUE_FLAGS.has(flag)) {
+                const value = at < 0 ? args[++i] : a.slice(at + 1);
+                if (value === undefined || /[[\]*?{}$`~]/.test(value)) return null;
+                values.set(flag, value);
+            } else if (!(RENDER_SWITCHES.has(flag) && (at < 0 || a.slice(at + 1) === 'true'))) {
+                return null;
+            }
         } else if (a.startsWith('-') && a.length > 1) {
-            const long = RENDER_SHORT_VALUE.get(a[1]);
-            if (long) values.set(long, a.length > 2 ? a.slice(2) : args[++i] ?? '');
-            else if (RENDER_HELP_FLAGS.has(a)) help = true;
+            const flag = RENDER_SHORT_VALUE.get(a[1]);
+            if (!flag) return null;
+            const value = a.length > 2 ? a.slice(2) : args[++i];
+            if (value === undefined || /[[\]*?{}$`~]/.test(value)) return null;
+            values.set(flag, value);
         } else {
-            path.push(path.length === 0 ? RENDER_ALIASES.get(a) ?? a : a);
+            words.push(RENDER_ALIASES.get(a) ?? a);
         }
     }
-    return { path, values, help: help && !values.has('--command'), passthrough: false };
-}
-
-function renderReads(path: string[]): boolean {
-    if (path.some(w => /[$`*?]/.test(w))) return false;
-    const verb = path[0];
-    if (RENDER_READ_ANY.has(verb)) return true;
-    for (let n = Math.min(path.length, 4); n > 0; n--) {
-        const kind = RENDER_READS.get(path.slice(0, n).join(' '));
-        if (kind === undefined) continue;
-        return kind === 'leaf' || n === path.length || !/^[a-z]+$/.test(path[n]);
+    if (words[0] === 'workflows' && words[1] === 'runs') words.splice(1, 1, 'tasks', 'runs');
+    for (let n = Math.min(words.length, 4); n > 0; n--) {
+        const command = words.slice(0, n).join(' ');
+        if (RENDER_COMMANDS.has(command)) return { command, operands: words.slice(n), values, help: help && !values.has('--command') };
     }
-    return false;
+    return words.length === 0 ? { command: '', operands: [], values, help } : { command: null, operands: words, values, help: false };
 }
 
 export function renderChangeReason(args: string[]): string | null {
-    const { path, values, help, passthrough } = renderInvocation(args);
-    if (path.length === 0 && !passthrough) return null;
-    if (help) return null;
-    if (!passthrough && values.get('--output') !== 'interactive' && renderReads(path)) return null;
-    return `${RENDER_CHANGE_REASON} (render ${path.slice(0, 3).join(' ') || args.join(' ')}).`;
+    const shape = renderShape(args);
+    if (shape && (shape.command === '' || shape.help) && !shape.values.has('--command')) return null;
+    if (shape?.command && shape.values.get('--output') !== 'interactive' && RENDER_COMMANDS.get(shape.command) === 'read') {
+        if (RENDER_OPEN_READS.has(shape.command.split(' ')[0]) || shape.operands.length === 0) return null;
+        const hasSubcommands = [...RENDER_COMMANDS.keys()].some(c => c.startsWith(`${shape.command} `));
+        if (!hasSubcommands) return null;
+    }
+    const words = shape?.command ?? args.filter(a => !a.startsWith('-')).slice(0, 3).join(' ');
+    return `${RENDER_CHANGE_REASON} (render ${words || args.join(' ')}).`;
 }
 
 const RENDER_RESOURCE_ID_IN_TEXT = new RegExp(String.raw`(?<![a-z0-9-])[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?(?![a-z0-9-])`, 'g');
@@ -3510,19 +3526,18 @@ function labSqlTarget(cmd: ResolvedCommand): string | null {
 const LAB_RESOURCE_RE = /^lab-/;
 
 /**
- * The resource a render command acts on, when `accepts` vouches for every word that isn't a plain lowercase command
- * word and every resource id the command names. Any word the shell builds when it runs disqualifies the command,
- * since that word may be the real target.
+ * The one resource a render command acts on, when `accepts` vouches for it and for every resource id the line names.
+ * The line must read word by word with exactly one operand; for a command the tree doesn't know, the operands are
+ * its words that aren't plain lowercase.
  */
 function renderProvenTarget(cmd: ResolvedCommand, accepts: (resource: string) => boolean): string | null {
-    if (cmd.args.some(a => /[$`*?]/.test(a))) return null;
-    const { path, values, passthrough } = renderInvocation(cmd.args);
-    if (passthrough || path[0] === 'pgcli' || (path[0] === 'workflows' && path[1] === 'dev')) return null;
+    const shape = renderShape(cmd.args);
+    if (!shape || shape.command === '' || shape.command === 'pgcli' || shape.command === 'workflows dev') return null;
     // A psql session runs whatever arrives on stdin, and a meta-command can open a shell or another connection.
-    if (path[0] === 'psql' && (!values.has('--command') || cmd.args.some(a => a.includes('\\')))) return null;
-    const targets = path.filter(w => !/^[a-z]+$/.test(w));
-    if (targets.length === 0 || !targets.every(accepts)) return null;
-    return renderResourceIds(cmd.args).every(accepts) ? targets[0] : null;
+    if (shape.command === 'psql' && (!shape.values.has('--command') || cmd.args.some(a => a.includes('\\')))) return null;
+    const operands = shape.command === null ? shape.operands.filter(w => !/^[a-z]+$/.test(w)) : shape.operands;
+    if (operands.length !== 1 || !accepts(operands[0])) return null;
+    return renderResourceIds(cmd.args).every(accepts) ? operands[0] : null;
 }
 
 function labRenderTarget(cmd: ResolvedCommand): string | null {
@@ -6410,7 +6425,7 @@ export function changesProduction(command: string, cwd: string = currentWorkingD
     try {
         const commands = extractCommands(command);
         if (commands[0]?.script) commands[0].script.cwd = cwd;
-        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || /\brender\b/.test(step.cmd.raw));
+        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || step.reason.includes(CLIENT_PROGRAM_GATE) || /\brender\b/.test(step.cmd.raw));
     } catch {
         return /\brender\b/.test(command);
     }
