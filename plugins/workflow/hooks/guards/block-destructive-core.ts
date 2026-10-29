@@ -6521,6 +6521,7 @@ export function noteSendParts(command: string, parts: string[] | null): void {
 // No file gates nothing. A file that can't be read or parsed gates every Slack post.
 
 export const SEND_SCOPE_FILE_ENV = 'BOOTSTRAP_SEND_SCOPE_FILE';
+const UNKNOWN_ONECLI_AGENT = '\0unknown';
 const SEND_SCOPE_FILE = 'send-scope.local.json';
 const SLACK_POST_METHODS = new Set([
     'chat.postMessage', 'chat.update', 'chat.scheduleMessage', 'chat.meMessage', 'chat.delete',
@@ -6728,7 +6729,8 @@ export function slackPostsOf(command: string): SlackPost[] {
             const split = cmd.args.indexOf('--');
             const own = split < 0 ? cmd.args : cmd.args.slice(0, split);
             const agentAt = own.findIndex(a => a === '--agent' || a.startsWith('--agent='));
-            const agent = agentAt < 0 ? null : own[agentAt].startsWith('--agent=') ? own[agentAt].slice('--agent='.length) : own[agentAt + 1] ?? null;
+            const named = agentAt < 0 ? null : own[agentAt].startsWith('--agent=') ? own[agentAt].slice('--agent='.length) : own[agentAt + 1] ?? null;
+            const agent = named !== null && /[$`]/.test(named) ? UNKNOWN_ONECLI_AGENT : named;
             const inner = split >= 0 ? cmd.args.slice(split + 1) : [];
             const post = (inner.length ? slackPostIn(commandName(inner[0]), inner.slice(1), agent) : null) ?? carriedPost(inner, agent);
             if (post) posts.push(post);
@@ -6741,7 +6743,8 @@ export function slackPostsOf(command: string): SlackPost[] {
     // guard can't read.
     if (posts.length === 0) {
         const held = carriedPost([command], null);
-        const agent = /\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/.exec(command)?.[1] ?? null;
+        const named = /\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/.exec(command)?.[1] ?? null;
+        const agent = named !== null && /[$`]/.test(named) ? UNKNOWN_ONECLI_AGENT : named;
         if (held) posts.push({ ...held, onecliAgent: agent });
     }
     return posts;
@@ -6766,5 +6769,7 @@ export function gatedSlackPosts(command: string, workgroupId: string | undefined
     if (scope === null) return [];
     if (scope === 'unreadable') return posts;
     const inWorkgroup = workgroupId !== undefined && scope.slack.workgroups.includes(workgroupId);
-    return posts.filter(p => p.onecliAgent !== null ? scope.slack.onecliAgents.includes(p.onecliAgent) : inWorkgroup);
+    // An identity only known when the command runs may be any listed one.
+    return posts.filter(p => p.onecliAgent === UNKNOWN_ONECLI_AGENT ? scope.slack.onecliAgents.length > 0 || inWorkgroup
+        : p.onecliAgent !== null ? scope.slack.onecliAgents.includes(p.onecliAgent) : inWorkgroup);
 }
