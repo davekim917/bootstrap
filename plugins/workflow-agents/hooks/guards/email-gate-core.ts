@@ -845,7 +845,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const roleParts = ([['to', flagTo], ['cc', cc], ['bcc', bcc]] as const)
         .flatMap(([role, value]) => value ? value.split(/\s*,\s*/).filter(Boolean).map(addr => `${role}:${addr}`) : [])
         .concat(subject ? [`subject:${subject}`] : []);
-    const sendParts = approvableSendParts(`email ${action}`, readable && view.commands.length === 1 ? [body.text!.trim(), ...roleParts] : undefined);
+    const sendParts = approvableSendParts(`email ${action}`, readable && view.commands.length === 1 ? [body.text!, ...roleParts] : undefined);
     noteSendParts(command, sendParts ?? null);
     return { action: 'gate', label, summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS), ...(sendParts ? { sendParts } : {}) };
 }
@@ -892,6 +892,8 @@ function argTexts(call: GwsGmailCall, flag: string): string[] {
     call.values.forEach((v, i) => {
         if (v === flag && i + 1 < call.texts.length) out.push(call.texts[i + 1]);
         else if (v.startsWith(`${flag}=`)) out.push(call.texts[i].replace(/^[^=]*=/, ''));
+        // A one-letter flag also takes its value attached (`-afile.pdf`), as the gws CLI parser accepts.
+        else if (/^-[A-Za-z]$/.test(flag) && v.length > 2 && v.startsWith(flag)) out.push(call.texts[i].slice(2));
     });
     return out;
 }

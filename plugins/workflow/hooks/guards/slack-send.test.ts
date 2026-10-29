@@ -146,6 +146,8 @@ describe('the gate request a send stages', () => {
         ['an email beside another command carries nothing', `cd /tmp && gws gmail +send --to a@example.com --body 'hi'`, undefined],
         ['an email whose body runs a command carries nothing', `gws gmail +send --to a@example.com --body "$(cat notes.txt)"`, undefined],
         ['an email with an attachment carries nothing', `gws gmail +send --to a@example.com --subject Q3 --body 'Numbers are in.' --attach confidential.pdf`, undefined],
+        ['an email with an attached -a attachment carries nothing', `gws gmail +send --to a@example.com --subject Q3 --body 'Numbers are in.' -aconfidential.pdf`, undefined],
+        ['an email body keeps its leading indentation', `gws gmail +send --to a@example.com --body '    if approved:\n        release()'`, ['    if approved:\n        release()', 'to:a@example.com']],
         ['a forward carries nothing', `gws gmail +forward --message-id m1 --to a@example.com --body 'FYI'`, undefined],
         ['a reply carries nothing', `gws gmail +reply --message-id m1 --body 'Approved text'`, undefined],
         ['a reply-all carries nothing', `gws gmail +reply-all --message-id m1 --body 'Approved text'`, undefined],
