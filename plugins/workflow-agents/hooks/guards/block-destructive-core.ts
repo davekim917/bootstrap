@@ -1735,98 +1735,125 @@ export const PLATFORM_DESTRUCTIVE: Record<string, Set<string>> = {
     doctl:   new Set(['delete', 'destroy']),
 };
 
-// Render's command tree (`render <command> --help`). A read needs no approval; every other command, and any line
-// this table can't account for word by word, is a production change.
-const RENDER_COMMANDS = new Map<string, 'read' | 'change'>([
-    ...['logs', 'whoami', 'workspaces', 'workspace', 'workspace set', 'projects', 'environments', 'help', 'docs', 'login', 'logout', 'skills',
-        'services', 'services list', 'services instances', 'deploys', 'deploys list', 'jobs', 'jobs list',
-        'postgres', 'postgres list', 'postgres get', 'keyvalues', 'keyvalues list', 'keyvalues get',
-        'workflows', 'workflows list', 'workflows init', 'workflows tasks', 'workflows tasks list', 'workflows tasks runs',
-        'workflows tasks runs list', 'workflows tasks runs show', 'workflows versions', 'workflows versions list',
-        'blueprints', 'blueprints validate'].map(c => [c, 'read'] as const),
-    ...['restart', 'psql', 'pgcli', 'ssh', 'services create', 'services delete', 'services update', 'deploys create', 'deploys cancel',
-        'jobs create', 'jobs cancel', 'postgres create', 'postgres delete', 'postgres update', 'postgres suspend', 'postgres resume',
-        'keyvalues create', 'keyvalues delete', 'keyvalues update', 'keyvalues suspend', 'keyvalues resume',
-        'workflows create', 'workflows cancel', 'workflows start', 'workflows dev', 'workflows tasks runs start',
-        'workflows tasks runs cancel', 'workflows versions release'].map(c => [c, 'change'] as const),
+// Render's command tree, from `render <command> --help` (v2.22). Each entry lists the flags that command takes
+// besides the global -o/--output, --confirm and -h/--help, with whether each takes a value. A `read` needs no
+// approval; a `menu` read can open an interactive menu or form that deploys or runs an editor, so it needs an
+// explicit plain output; a `proof` change may run free on a resource listed as dev or lab. Every other command, flag,
+// spelling or word is a production change.
+type RenderFlags = Record<string, 'value' | 'switch'>;
+type RenderEntry = { kind: 'read' | 'menu' | 'proof'; flags: RenderFlags };
+const LOG_FLAGS: RenderFlags = {
+    '--direction': 'value', '--end': 'value', '--host': 'value', '--instance': 'value', '--level': 'value', '--limit': 'value',
+    '--method': 'value', '--path': 'value', '--resources': 'value', '--start': 'value', '--status-code': 'value', '--tail': 'switch',
+    '--task-id': 'value', '--task-run-id': 'value', '--text': 'value', '--type': 'value',
+};
+const SERVICE_LIST_FLAGS: RenderFlags = { '--environment-ids': 'value', '--include-previews': 'switch' };
+const DATASTORE_LIST_FLAGS: RenderFlags = { '--environment': 'value', '--project': 'value' };
+const DATASTORE_GET_FLAGS: RenderFlags = { ...DATASTORE_LIST_FLAGS, '--include-sensitive-connection-info': 'switch' };
+const LOCAL_WORKFLOW_FLAGS: RenderFlags = { '--local': 'switch', '--port': 'value' };
+const read = (flags: RenderFlags = {}): RenderEntry => ({ kind: 'read', flags });
+const menu = (flags: RenderFlags = {}): RenderEntry => ({ kind: 'menu', flags });
+const proof = (flags: RenderFlags = {}): RenderEntry => ({ kind: 'proof', flags });
+const RENDER_COMMANDS = new Map<string, RenderEntry>([
+    ['logs', read(LOG_FLAGS)], ['whoami', read()], ['workspaces', read()], ['workspace', read()], ['workspace set', read()],
+    ['help', read()], ['docs', read()], ['login', read()], ['logout', read()], ['skills', read()], ['skills list', read({ '--scope': 'value' })],
+    ['projects', menu()], ['environments', menu()],
+    ['services', menu(SERVICE_LIST_FLAGS)], ['services list', menu(SERVICE_LIST_FLAGS)], ['services instances', read()],
+    ['deploys', menu()], ['deploys list', menu()], ['jobs', menu()], ['jobs list', menu()],
+    ['postgres', menu()], ['postgres list', read(DATASTORE_LIST_FLAGS)], ['postgres get', read(DATASTORE_GET_FLAGS)],
+    ['keyvalues', menu()], ['keyvalues list', read(DATASTORE_LIST_FLAGS)], ['keyvalues get', read(DATASTORE_GET_FLAGS)],
+    ['workflows', menu()], ['workflows list', menu()], ['workflows tasks', menu()], ['workflows tasks list', menu(LOCAL_WORKFLOW_FLAGS)],
+    ['workflows tasks runs', menu()], ['workflows tasks runs list', read({ ...LOCAL_WORKFLOW_FLAGS, '--task': 'value' })],
+    ['workflows tasks runs show', read(LOCAL_WORKFLOW_FLAGS)], ['workflows versions', menu()], ['workflows versions list', menu()],
+    ['blueprints', read()], ['blueprints validate', read({ '--workspace': 'value' })],
+    ['restart', proof()], ['deploys create', proof({ '--clear-cache': 'switch', '--commit': 'value', '--image': 'value', '--wait': 'switch' })],
+    ['deploys cancel', proof()], ['jobs create', proof({ '--plan-id': 'value', '--start-command': 'value' })], ['jobs cancel', proof()],
+    ['services delete', proof()], ['postgres delete', proof()], ['postgres suspend', proof()], ['postgres resume', proof()],
+    ['keyvalues delete', proof()], ['keyvalues suspend', proof()], ['keyvalues resume', proof()],
 ]);
-// Reads that open a menu able to deploy or open a shell unless the output is set (a TTY or RENDER_OUTPUT can pick it).
-const RENDER_MENU_READS = new Set(['services', 'deploys', 'jobs', 'postgres', 'keyvalues', 'workflows', 'projects', 'environments', 'workspaces']);
-const RENDER_PLAIN_OUTPUT = new Set(['json', 'yaml', 'text']);
-// Reads whose words after the command are filters or local CLI state, never a subcommand.
+// Commands whose words after them are filters or local CLI state, never a subcommand.
 const RENDER_OPEN_READS = new Set(['logs', 'whoami', 'workspaces', 'workspace', 'projects', 'environments', 'help', 'docs', 'login', 'logout', 'skills']);
-const RENDER_ALIASES = new Map([['pg', 'postgres'], ['kv', 'keyvalues'], ['keyvalue', 'keyvalues'], ['service', 'services'], ['ls', 'list']]);
-// Every Render flag that takes a value, from `render <command> --help`.
-const RENDER_VALUE_FLAGS = new Set([
-    '--output', '--command', '--resources', '--environment-ids', '--workspace', '--scope', '--version',
-    '--branch', '--build-command', '--build-filter-ignored-path', '--build-filter-path', '--commit', '--cron-command',
-    '--cron-schedule', '--datadog-api-key', '--datadog-site', '--direction', '--disk-size-gb', '--end', '--environment',
-    '--environment-id', '--env-var', '--from', '--health-check-path', '--host', '--image', '--input-file', '--input',
-    '--instance', '--ip-allow-list', '--level', '--limit', '--maintenance-mode-uri', '--max-shutdown-delay', '--method',
-    '--name', '--num-instances', '--path', '--plan-id', '--plan', '--port', '--pre-deploy-command', '--previews',
-    '--project', '--publish-directory', '--region', '--registry-credential', '--repo', '--root-directory', '--runtime',
-    '--secret-file', '--start-command', '--start', '--status-code', '--task-id', '--task-run-id', '--task', '--text', '--type',
-]);
-const RENDER_SHORT_VALUE = new Map([['o', '--output'], ['c', '--command'], ['r', '--resources'], ['e', '--environment-ids'], ['w', '--workspace']]);
-const RENDER_SWITCHES = new Set(['--confirm', '--include-previews', '--wait', '--tail', '--local', '--include-sensitive-connection-info']);
+const RENDER_ALIASES = new Map([['pg', 'postgres'], ['kv', 'keyvalues'], ['keyvalue', 'keyvalues'], ['service', 'services']]);
+const RENDER_SHORT = new Map([['o', '--output'], ['r', '--resources'], ['e', '--environment-ids'], ['w', '--workspace']]);
+const RENDER_GLOBAL: RenderFlags = { '--output': 'value', '--confirm': 'switch' };
+const RENDER_PLAIN_OUTPUT = new Set(['json', 'yaml', 'text']);
+const RENDER_EXPANDS = /[[\]*?{}$`~]/;
 export const RENDER_RESOURCE_ID_RE = /^[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?$/;
 export const RENDER_CHANGE_REASON = 'Production change on Render';
 
-interface RenderShape { command: string | null; operands: string[]; values: Map<string, string>; help: boolean }
+interface RenderShape { command: string; entry: RenderEntry; operands: string[]; output: string | undefined; help: boolean }
 
 /**
- * A render line read word by word: the longest known command its leading words name (aliases resolved), the words
- * after it, and its flags' values. Null when any word is unaccounted for: an unknown flag or flag form, a word the
- * shell expands, or a `--` passthrough, since each can make the CLI do something this reading doesn't see.
+ * A render line read word by word against its own command's flags: the command its leading words name (aliases
+ * resolved; only global flags may come before them), the words after it, and the output it asked for. Null when any
+ * word is unaccounted for: a command or flag outside the table, a flag spelling it doesn't take, a word the shell
+ * expands, or a `--` passthrough.
  */
 function renderShape(args: string[]): RenderShape | null {
     const words: string[] = [];
     const values = new Map<string, string>();
     let help = false;
+    let flagsFor: RenderFlags = RENDER_GLOBAL;
+    let command: string | null = null;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (/[[\]*?{}$`~]/.test(a) || a === '--') return null;
-        if (a === '-h' || a === '--help' || ((a === '-v' || a === '--version') && args.length === 1)) {
+        if (RENDER_EXPANDS.test(a) || a === '--') return null;
+        if (a === '-h' || a === '--help') {
             help = true;
-        } else if (a.startsWith('--')) {
-            const at = a.indexOf('=');
-            const flag = at < 0 ? a : a.slice(0, at);
-            if (RENDER_VALUE_FLAGS.has(flag)) {
-                const value = at < 0 ? args[++i] : a.slice(at + 1);
-                if (value === undefined || /[[\]*?{}$`~]/.test(value)) return null;
-                values.set(flag, value);
-            } else if (!(RENDER_SWITCHES.has(flag) && (at < 0 || a.slice(at + 1) === 'true'))) {
-                return null;
-            }
-        } else if (a.startsWith('-') && a.length > 1) {
-            const flag = RENDER_SHORT_VALUE.get(a[1]);
-            if (!flag) return null;
-            const value = a.length > 2 ? a.slice(2).replace(/^=/, '') : args[++i];
-            if (value === undefined || /[[\]*?{}$`~]/.test(value)) return null;
-            values.set(flag, value);
-        } else {
-            words.push(RENDER_ALIASES.get(a) ?? a);
+            continue;
+        }
+        if (!a.startsWith('-') || a === '-') {
+            words.push(command === null ? RENDER_ALIASES.get(a) ?? a : a);
+            continue;
+        }
+        const at = a.startsWith('--') ? a.indexOf('=') : -1;
+        const flag = a.startsWith('--') ? (at < 0 ? a : a.slice(0, at)) : RENDER_SHORT.get(a[1]);
+        if (!flag) return null;
+        if (command === null && !(flag in RENDER_GLOBAL)) {
+            command = renderCommandOf(words);
+            if (command === null) return null;
+            flagsFor = { ...RENDER_GLOBAL, ...RENDER_COMMANDS.get(command)!.flags };
+        }
+        const arity = Object.hasOwn(flagsFor, flag) ? flagsFor[flag] : undefined;
+        if (!arity) return null;
+        if (arity === 'switch') {
+            if (!a.startsWith('--') || (at >= 0 && !['true', 'false'].includes(a.slice(at + 1)))) return null;
+            continue;
+        }
+        const value = a.startsWith('--') ? (at < 0 ? args[++i] : a.slice(at + 1)) : a.length > 2 ? a.slice(2).replace(/^=/, '') : args[++i];
+        if (value === undefined || RENDER_EXPANDS.test(value)) return null;
+        values.set(flag, value);
+    }
+    command ??= renderCommandOf(words);
+    if (command === null) return null;
+    return { command, entry: RENDER_COMMANDS.get(command)!, operands: words.slice(command.split(' ').length), output: values.get('--output'), help };
+}
+
+/** The longest known command the leading words name, with `ls` read as `list`; null when they name none. */
+function renderCommandOf(words: string[]): string | null {
+    const path = words.map((w, i) => (i > 0 && w === 'ls' ? 'list' : w));
+    if (path[0] === 'workflows' && path[1] === 'runs') path.splice(1, 1, 'tasks', 'runs');
+    for (let n = Math.min(path.length, 4); n > 0; n--) {
+        const command = path.slice(0, n).join(' ');
+        if (RENDER_COMMANDS.has(command)) {
+            words.splice(0, words.length - (path.length - n), ...path.slice(0, n));
+            return command;
         }
     }
-    if (words[0] === 'workflows' && words[1] === 'runs') words.splice(1, 1, 'tasks', 'runs');
-    for (let n = Math.min(words.length, 4); n > 0; n--) {
-        const command = words.slice(0, n).join(' ');
-        if (RENDER_COMMANDS.has(command)) return { command, operands: words.slice(n), values, help: help && !values.has('--command') };
-    }
-    return words.length === 0 ? { command: '', operands: [], values, help } : { command: null, operands: words, values, help: false };
+    return null;
 }
 
 export function renderChangeReason(args: string[]): string | null {
+    if (args.length === 0 || (args.length === 1 && (args[0] === '-v' || args[0] === '--version'))) return null;
     const shape = renderShape(args);
-    if (shape && (shape.command === '' || shape.help) && !shape.values.has('--command')) return null;
-    const menu = shape?.command && RENDER_MENU_READS.has(shape.command.split(' ')[0]) && !RENDER_PLAIN_OUTPUT.has(shape.values.get('--output') ?? '');
-    if (menu && RENDER_COMMANDS.get(shape!.command!) === 'read') {
-        return `${RENDER_CHANGE_REASON} possible: render ${shape!.command} can open an interactive menu that deploys. Add -o json (or yaml/text) to read it without approval.`;
-    }
-    if (shape?.command && RENDER_COMMANDS.get(shape.command) === 'read') {
-        if (RENDER_OPEN_READS.has(shape.command.split(' ')[0]) || shape.operands.length === 0) return null;
-        const hasSubcommands = [...RENDER_COMMANDS.keys()].some(c => c.startsWith(`${shape.command} `));
-        if (!hasSubcommands) return null;
+    if (shape?.help) return null;
+    if (shape && shape.entry.kind !== 'proof') {
+        const subcommand = !RENDER_OPEN_READS.has(shape.command.split(' ')[0]) && shape.operands.length > 0
+            && [...RENDER_COMMANDS.keys()].some(c => c.startsWith(`${shape.command} `));
+        if (!subcommand && shape.output !== 'interactive') {
+            if (shape.entry.kind === 'read' || RENDER_PLAIN_OUTPUT.has(shape.output ?? '')) return null;
+            return `${RENDER_CHANGE_REASON} possible: render ${shape.command} can open an interactive menu that deploys. Add -o json (or yaml/text) to read it without approval.`;
+        }
     }
     const words = shape?.command ?? args.filter(a => !a.startsWith('-')).slice(0, 3).join(' ');
     return `${RENDER_CHANGE_REASON} (render ${words || args.join(' ')}).`;
@@ -3538,14 +3565,12 @@ const LAB_RESOURCE_RE = /^lab-/;
 
 /**
  * The one resource a render command acts on, when `accepts` vouches for it and for every resource id the line names.
- * The line must read word by word as a command in the tree with exactly one operand: a command the tree doesn't
- * know has no known target position, so nothing proves what it acts on.
+ * Only a `proof` command qualifies (one that acts on the resource it names and runs no other program), read word by
+ * word against its own flags, with exactly one operand.
  */
 function renderProvenTarget(cmd: ResolvedCommand, accepts: (resource: string) => boolean): string | null {
     const shape = renderShape(cmd.args);
-    if (!shape?.command || shape.command === 'pgcli' || shape.command === 'workflows dev') return null;
-    // A psql session runs whatever arrives on stdin, and a meta-command can open a shell or another connection.
-    if (shape.command === 'psql' && (!shape.values.has('--command') || cmd.args.some(a => a.includes('\\')))) return null;
+    if (shape?.entry.kind !== 'proof' || shape.output === 'interactive' || shape.help) return null;
     if (shape.operands.length !== 1 || !accepts(shape.operands[0])) return null;
     return renderResourceIds(cmd.args).every(accepts) ? shape.operands[0] : null;
 }
