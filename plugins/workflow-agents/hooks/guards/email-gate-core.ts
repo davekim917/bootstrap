@@ -841,7 +841,11 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const readable = gwsWords === 1 && !generatedWord && !probeFlag && !isHtml && !isRawApi && unresolved.size === 0
         && attachments.length === 0
         && body.text !== null && body.text.trim() !== '' && literalParts.every(v => !/[$`]/.test(v));
-    const sendParts = approvableSendParts(`email ${action}`, readable && view.commands.length === 1 ? [body.text!.trim(), ...literalParts.flatMap(v => v.split(/\s*,\s*/))] : undefined);
+    // Each envelope part carries its role, so the host can match it to the same field of the draft the person saw.
+    const roleParts = ([['to', flagTo], ['cc', cc], ['bcc', bcc]] as const)
+        .flatMap(([role, value]) => value ? value.split(/\s*,\s*/).filter(Boolean).map(addr => `${role}:${addr}`) : [])
+        .concat(subject ? [`subject:${subject}`] : []);
+    const sendParts = approvableSendParts(`email ${action}`, readable && view.commands.length === 1 ? [body.text!.trim(), ...roleParts] : undefined);
     noteSendParts(command, sendParts ?? null);
     return { action: 'gate', label, summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS), ...(sendParts ? { sendParts } : {}) };
 }
