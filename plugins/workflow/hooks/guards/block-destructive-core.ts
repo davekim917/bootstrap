@@ -3977,11 +3977,11 @@ function mayWriteFiles(command: string): boolean {
 }
 
 /**
- * The host and port psql connects to, read the way psql reads its options: the last of a repeated option wins. Null
- * when an option is one the guard doesn't place, no -c gives the SQL, -X is missing, or the dbname is a connection
- * string libpq would expand.
+ * The host and port psql connects to, read the way psql reads its options: the last of a repeated option wins, and
+ * whether -X skips the startup files. Null when an option is one the guard doesn't place, no -c gives the SQL, or the
+ * dbname is a connection string libpq would expand.
  */
-function psqlTarget(args: string[]): { host?: string; port?: string } | null {
+function psqlTarget(args: string[]): { host?: string; port?: string; noPsqlrc: boolean } | null {
     const last = new Map<string, string>();
     const positionals: string[] = [];
     let commands = 0;
@@ -4024,12 +4024,12 @@ function psqlTarget(args: string[]): { host?: string; port?: string } | null {
         }
         positionals.push(a);
     }
-    if (commands === 0 || !noPsqlrc) return null;
+    if (commands === 0) return null;
     // Without -d, psql takes the first operand as the dbname (later ones as the username, or ignored). libpq expands a
     // dbname holding `=` or a URI prefix, and what that holds overrides -h and -p.
     const dbname = last.get('--dbname') ?? positionals[0];
     if (dbname !== undefined && (dbname.includes('=') || /^postgres(?:ql)?:\/\//.test(dbname))) return null;
-    return { host: last.get('--host'), port: last.get('--port') };
+    return { host: last.get('--host'), port: last.get('--port'), noPsqlrc };
 }
 
 /** A /proc/net/tcp{,6} address in network byte order as hex; the kernel prints each 32-bit word in host order. */
@@ -4132,13 +4132,15 @@ function postgresListening(host: LocalPgHost, endpoint: string, inodes: string[]
 
 /**
  * The local scratch Postgres a top-level psql command is exempt against, or null. `commands` and `command` are the
- * whole command line, so anything set up around the call counts.
+ * whole command line, so anything set up around the call counts. `assumeNoPsqlrc` asks whether the command would be
+ * exempt with -X added, which is all that tells the agent how to rerun it without approval.
  */
 export function localPgTargetOf(
     cmd: ResolvedCommand,
     commands: ResolvedCommand[],
     command: string,
     host: LocalPgHost = LIVE_LOCAL_PG_HOST,
+    assumeNoPsqlrc = false,
 ): string | null {
     if (cmd.name !== 'psql' || host.platform !== 'linux') return null;
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !PSQL_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
@@ -4151,7 +4153,8 @@ export function localPgTargetOf(
     if (!written || !written.every(isLiteralShellWord) || cmd.args.some(a => a.includes('\\'))) return null;
 
     const target = psqlTarget(cmd.args);
-    if (!target?.host || !target.port || !/^\d{1,5}$/.test(target.port)) return null;
+    if (!target || (!target.noPsqlrc && !assumeNoPsqlrc)) return null;
+    if (!target.host || !target.port || !/^\d{1,5}$/.test(target.port)) return null;
     const port = Number(target.port);
     if (port < 1 || port > 65535) return null;
 
@@ -5498,7 +5501,7 @@ function* gatedSteps(
     lab: boolean,
     log: boolean,
     localPg: LocalPgHost = LIVE_LOCAL_PG_HOST,
-): Generator<{ cmd: ResolvedCommand; reason: string; outer: ResolvedCommand; moves?: ResolvedCommand[] }> {
+): Generator<{ cmd: ResolvedCommand; reason: string; outer: ResolvedCommand; moves?: ResolvedCommand[]; fix?: string }> {
     let dirs: string[] | null = [cwd];
     for (const outer of commands) {
         if (DIRECTORY_CHANGERS.has(outer.name)) dirs = directoriesAfter(dirs, outer);
@@ -5533,6 +5536,14 @@ function* gatedSteps(
                     if (log) logLabScope(`allowed ${cmd.name} against lab target ${target}`);
                     continue;
                 }
+            }
+            const withoutPsqlrc = cmd === outer ? localPgTargetOf(cmd, commands, command, localPg, true) : null;
+            if (withoutPsqlrc !== null) {
+                yield {
+                    cmd, reason, outer, moves,
+                    fix: `${reason}: psql against the scratch Postgres at ${withoutPsqlrc} runs without approval only with -X (--no-psqlrc), since a psqlrc file can connect somewhere other than the -h shown. Run the same command again with -X added.`,
+                };
+                continue;
             }
             yield { cmd, reason, outer, moves };
         }
@@ -5785,7 +5796,9 @@ function evaluateBashLine(
     // --- Gated checks ---
     if (!opts.skipGate) {
         const first = gatedSteps(commands, command, cwd, lab, true, opts.localPg).next();
-        if (!first.done) return { action: 'gate', reason: first.value.reason };
+        // A step one flag short of the scratch-Postgres exemption is refused with that flag named, not sent to an
+        // approver: the agent reruns it with -X and it passes without a card.
+        if (!first.done) return first.value.fix ? { action: 'block', reason: first.value.fix } : { action: 'gate', reason: first.value.reason };
     }
 
     // --- rm-specific checks (three-tier protection) ---

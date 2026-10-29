@@ -224,9 +224,35 @@ describe('anything that could expand, redirect or run another connection holds',
     });
 
     test('without -X, psql runs startup files the guard cannot locate (one sits beside the psql binary)', () => {
-        expect(verdict(TCP.replace('psql -X ', 'psql '))).toBe('gate');
+        expect(verdict(TCP.replace('psql -X ', 'psql '))).not.toBe('allow');
     });
 
+});
+
+describe('one flag short of the exemption, the agent is told the flag instead of an approver being asked', () => {
+    const withoutX = (command: string) => command.replace('psql -X ', 'psql ');
+    const evaluate = (command: string, f: Fixture = scratch) => evaluateBashCommand(command, { cwd: '/tmp', localPg: fixtureHost(f) });
+
+    test.each([
+        ['the unix socket under /tmp', SOCKET, '/tmp/embedded-pg/.s.PGSQL.55432 (postgres pid 4242, data /tmp/embedded-pg/data)'],
+        ['TCP on 127.0.0.1', TCP, '127.0.0.1:55432 (postgres pid 4242, data /tmp/embedded-pg/data)'],
+    ])('%s: refused with -X named, and the same command with -X runs', (_name, command, endpoint) => {
+        const v = evaluate(withoutX(command));
+        expect(v.action).toBe('block');
+        expect(v.reason).toContain(`scratch Postgres at ${endpoint} runs without approval only with -X`);
+        expect(v.reason).toContain('Run the same command again with -X added.');
+        expect(evaluate(command).action).toBe('allow');
+    });
+
+    test.each<[string, string, Fixture]>([
+        ['a forwarder holds the port', withoutX(TCP), { tcp: [['0100007F', PORT_HEX, '9101']], procs: { 5001: { comm: 'ssh', sockets: ['9101'] } } }],
+        ['its data directory is outside /tmp', withoutX(SOCKET), { ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'], cwd: '/var/lib/postgresql/data' } } }],
+        ['libpq is redirected by the environment', withoutX(TCP), { ...scratch, env: { HOME: '/home/tester', PGSERVICE: 'other' } }],
+        ['another program runs on the line', `${withoutX(TCP)}; curl -s https://example.com`, scratch],
+        ['no port is given', "psql -h 127.0.0.1 -c 'DROP TABLE orders'", scratch],
+    ])('still goes to an approver when -X alone would not exempt it: %s', (_name, command, f) => {
+        expect(evaluate(command, f).action).toBe('gate');
+    });
 });
 
 describe('tier 1 is never exempted', () => {
