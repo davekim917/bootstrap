@@ -662,7 +662,7 @@ export const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 
 // Command wrappers that should be stripped to find the real command
 export const WRAPPERS = new Set([
-    'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout',
+    'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout', 'stdbuf', 'setsid',
     // Package runners execute an arbitrary command too. Without them here,
     // `pnpm exec rm -rf <path>` resolved to name='pnpm' and every destructive
     // check passed — and since `Bash(pnpm exec *)` is commonly allow-listed,
@@ -1550,6 +1550,9 @@ function shellDirectories(cmd: ResolvedCommand): string[] | null {
  * replay, since it is returned from the hard-block tier), or else a gate reason, or null. One evaluator judges each
  * readable shell command; an unreadable program blocks.
  */
+// A nested program's gate can't say which of a client's programs needs it, so it takes the production gate.
+const CLIENT_PROGRAM_GATE = 'runs a client program that needs approval';
+
 function clientProgramVerdict(cmd: ResolvedCommand): { block?: string; gate?: string } {
     let gate: string | undefined;
     const runs = clientRunsOf(cmd);
@@ -1570,7 +1573,7 @@ function clientProgramVerdict(cmd: ResolvedCommand): { block?: string; gate?: st
             for (const dir of dirs) {
                 const v = clientShellVerdict(shell, dir);
                 if (v.action === 'block') return { block: `${cmd.name} ${program.via} runs a blocked command. ${v.reason}` };
-                if (v.action === 'gate') gate ??= `${cmd.name} ${program.via} runs a command that needs approval. ${v.reason}`;
+                if (v.action === 'gate') gate ??= `${cmd.name} ${program.via} ${CLIENT_PROGRAM_GATE}. ${v.reason}`;
             }
         }
     }
@@ -1727,6 +1730,136 @@ export const PLATFORM_DESTRUCTIVE: Record<string, Set<string>> = {
     flyctl:  new Set(['delete', 'destroy']),
     doctl:   new Set(['delete', 'destroy']),
 };
+
+// Render's command tree, from `render <command> --help` (v2.22). Each entry lists the flags that command takes
+// besides the global -o/--output, --confirm and -h/--help, with whether each takes a value. A `read` needs no
+// approval; a `menu` read can open an interactive menu or form that deploys or runs an editor, so it needs an
+// explicit plain output; a `proof` change may run free on a resource listed as dev or lab. Every other command, flag,
+// spelling or word is a production change.
+type RenderFlags = Record<string, 'value' | 'switch'>;
+type RenderEntry = { kind: 'read' | 'menu' | 'proof'; flags: RenderFlags };
+const LOG_FLAGS: RenderFlags = {
+    '--direction': 'value', '--end': 'value', '--host': 'value', '--instance': 'value', '--level': 'value', '--limit': 'value',
+    '--method': 'value', '--path': 'value', '--resources': 'value', '--start': 'value', '--status-code': 'value', '--tail': 'switch',
+    '--task-id': 'value', '--task-run-id': 'value', '--text': 'value', '--type': 'value',
+};
+const SERVICE_LIST_FLAGS: RenderFlags = { '--environment-ids': 'value', '--include-previews': 'switch' };
+const DATASTORE_LIST_FLAGS: RenderFlags = { '--environment': 'value', '--project': 'value' };
+const DATASTORE_GET_FLAGS: RenderFlags = { ...DATASTORE_LIST_FLAGS, '--include-sensitive-connection-info': 'switch' };
+const LOCAL_WORKFLOW_FLAGS: RenderFlags = { '--local': 'switch', '--port': 'value' };
+const read = (flags: RenderFlags = {}): RenderEntry => ({ kind: 'read', flags });
+const menu = (flags: RenderFlags = {}): RenderEntry => ({ kind: 'menu', flags });
+const proof = (flags: RenderFlags = {}): RenderEntry => ({ kind: 'proof', flags });
+const RENDER_COMMANDS = new Map<string, RenderEntry>([
+    ['logs', read(LOG_FLAGS)], ['whoami', read()], ['workspaces', read()], ['workspace', read()], ['workspace set', read()],
+    ['help', read()], ['docs', read()], ['login', read()], ['logout', read()], ['skills', read()], ['skills list', read({ '--scope': 'value' })],
+    ['projects', menu()], ['environments', menu()],
+    ['services', menu(SERVICE_LIST_FLAGS)], ['services list', menu(SERVICE_LIST_FLAGS)], ['services instances', read()],
+    ['deploys', menu()], ['deploys list', menu()], ['jobs', menu()], ['jobs list', menu()],
+    ['postgres', menu()], ['postgres list', read(DATASTORE_LIST_FLAGS)], ['postgres get', read(DATASTORE_GET_FLAGS)],
+    ['keyvalues', menu()], ['keyvalues list', read(DATASTORE_LIST_FLAGS)], ['keyvalues get', read(DATASTORE_GET_FLAGS)],
+    ['workflows', menu()], ['workflows list', menu()], ['workflows tasks', menu()], ['workflows tasks list', menu(LOCAL_WORKFLOW_FLAGS)],
+    ['workflows tasks runs', menu()], ['workflows tasks runs list', read({ ...LOCAL_WORKFLOW_FLAGS, '--task': 'value' })],
+    ['workflows tasks runs show', read(LOCAL_WORKFLOW_FLAGS)], ['workflows versions', menu()], ['workflows versions list', menu()],
+    ['blueprints', read()], ['blueprints validate', read({ '--workspace': 'value' })],
+    ['restart', proof()], ['deploys create', proof({ '--clear-cache': 'switch', '--commit': 'value', '--image': 'value', '--wait': 'switch' })],
+    ['deploys cancel', proof()], ['jobs create', proof({ '--plan-id': 'value', '--start-command': 'value' })], ['jobs cancel', proof()],
+    ['services delete', proof()], ['postgres delete', proof()], ['postgres suspend', proof()], ['postgres resume', proof()],
+    ['keyvalues delete', proof()], ['keyvalues suspend', proof()], ['keyvalues resume', proof()],
+]);
+// Commands whose words after them are filters or local CLI state, never a subcommand.
+const RENDER_OPEN_READS = new Set(['logs', 'whoami', 'workspaces', 'workspace', 'projects', 'environments', 'help', 'docs', 'login', 'logout', 'skills']);
+const RENDER_ALIASES = new Map([['pg', 'postgres'], ['kv', 'keyvalues'], ['keyvalue', 'keyvalues'], ['service', 'services']]);
+const RENDER_SHORT = new Map([['o', '--output'], ['r', '--resources'], ['e', '--environment-ids'], ['w', '--workspace']]);
+const RENDER_GLOBAL: RenderFlags = { '--output': 'value', '--confirm': 'switch' };
+const RENDER_PLAIN_OUTPUT = new Set(['json', 'yaml', 'text']);
+const RENDER_EXPANDS = /[[\]*?{}$`~]/;
+export const RENDER_RESOURCE_ID_RE = /^[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?$/;
+export const RENDER_CHANGE_REASON = 'Production change on Render';
+
+interface RenderShape { command: string; entry: RenderEntry; operands: string[]; output: string | undefined; help: boolean }
+
+/**
+ * A render line read word by word against its own command's flags: the command its leading words name (aliases
+ * resolved; only global flags may come before them), the words after it, and the output it asked for. Null when any
+ * word is unaccounted for: a command or flag outside the table, a flag spelling it doesn't take, a word the shell
+ * expands, or a `--` passthrough.
+ */
+function renderShape(args: string[]): RenderShape | null {
+    const words: string[] = [];
+    const values = new Map<string, string>();
+    let help = false;
+    let flagsFor: RenderFlags = RENDER_GLOBAL;
+    let command: string | null = null;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (RENDER_EXPANDS.test(a) || a === '--') return null;
+        if (a === '-h' || a === '--help') {
+            help = true;
+            continue;
+        }
+        if (!a.startsWith('-') || a === '-') {
+            words.push(command === null ? RENDER_ALIASES.get(a) ?? a : a);
+            continue;
+        }
+        const at = a.startsWith('--') ? a.indexOf('=') : -1;
+        const flag = a.startsWith('--') ? (at < 0 ? a : a.slice(0, at)) : RENDER_SHORT.get(a[1]);
+        if (!flag) return null;
+        if (command === null && !(flag in RENDER_GLOBAL)) {
+            command = renderCommandOf(words);
+            if (command === null) return null;
+            flagsFor = { ...RENDER_GLOBAL, ...RENDER_COMMANDS.get(command)!.flags };
+        }
+        const arity = Object.hasOwn(flagsFor, flag) ? flagsFor[flag] : undefined;
+        if (!arity) return null;
+        if (arity === 'switch') {
+            if (!a.startsWith('--') || (at >= 0 && !['true', 'false'].includes(a.slice(at + 1)))) return null;
+            continue;
+        }
+        const value = a.startsWith('--') ? (at < 0 ? args[++i] : a.slice(at + 1)) : a.length > 2 ? a.slice(2).replace(/^=/, '') : args[++i];
+        if (value === undefined || RENDER_EXPANDS.test(value)) return null;
+        values.set(flag, value);
+    }
+    command ??= renderCommandOf(words);
+    if (command === null) return null;
+    return { command, entry: RENDER_COMMANDS.get(command)!, operands: words.slice(command.split(' ').length), output: values.get('--output'), help };
+}
+
+/** The longest known command the leading words name, with `ls` read as `list`; null when they name none. */
+function renderCommandOf(words: string[]): string | null {
+    const path = words.map((w, i) => (i > 0 && w === 'ls' ? 'list' : w));
+    if (path[0] === 'workflows' && path[1] === 'runs') path.splice(1, 1, 'tasks', 'runs');
+    for (let n = Math.min(path.length, 4); n > 0; n--) {
+        const command = path.slice(0, n).join(' ');
+        if (RENDER_COMMANDS.has(command)) {
+            words.splice(0, words.length - (path.length - n), ...path.slice(0, n));
+            return command;
+        }
+    }
+    return null;
+}
+
+export function renderChangeReason(args: string[]): string | null {
+    if (args.length === 0 || (args.length === 1 && (args[0] === '-v' || args[0] === '--version'))) return null;
+    const shape = renderShape(args);
+    if (shape?.help) return null;
+    if (shape && shape.entry.kind !== 'proof') {
+        const subcommand = !RENDER_OPEN_READS.has(shape.command.split(' ')[0]) && shape.operands.length > 0
+            && [...RENDER_COMMANDS.keys()].some(c => c.startsWith(`${shape.command} `));
+        if (!subcommand) {
+            if (shape.entry.kind === 'read' || RENDER_PLAIN_OUTPUT.has(shape.output ?? '')) return null;
+            return `${RENDER_CHANGE_REASON} possible: render ${shape.command} can open an interactive menu that deploys. Add -o json (or yaml/text) to read it without approval.`;
+        }
+    }
+    const words = shape?.command ?? args.filter(a => !a.startsWith('-')).slice(0, 3).join(' ');
+    return `${RENDER_CHANGE_REASON} (render ${words || args.join(' ')}).`;
+}
+
+const RENDER_RESOURCE_ID_IN_TEXT = new RegExp(String.raw`(?<![a-z0-9-])[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?(?![a-z0-9-])`, 'g');
+
+function renderResourceIds(args: string[]): string[] {
+    return args.flatMap(a => a.match(RENDER_RESOURCE_ID_IN_TEXT) ?? []);
+}
 
 // ── Path helpers ─────────────────────────────────────────────────────────────
 
@@ -2194,9 +2327,19 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
                 skip += a === '-u' || a === '--unset' || a === '-C' || a === '--chdir' ? 2 : 1;
             }
         } else if (name === 'nice') {
-            if (args[skip] === '-n' && skip + 1 < args.length) skip = 2;
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += args[skip] === '-n' || args[skip] === '--adjustment' ? 2 : 1;
+            }
+            if (args[skip] === '--') skip += 1;
         } else if (name === 'timeout' || name === 'gtimeout') {
-            skip = 1; // skip duration argument
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += optionWords(args[skip], 'ks', TIMEOUT_LONG_VALUE_OPTIONS, TIMEOUT_LONG_FLAGS);
+            }
+            if (args[skip] === '--') skip += 1;
+            skip += 1;
+        } else if (name === 'command' || name === 'builtin') {
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') skip += 1;
+            if (args[skip] === '--') skip += 1;
         } else if (name === 'pnpm' || name === 'yarn') {
             // Only `exec`/`dlx` run an arbitrary command. `pnpm run <script>`
             // executes a package.json script whose body is not on this command
@@ -2215,8 +2358,22 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
             while (skip < args.length && args[skip].startsWith('-')) {
                 skip += args[skip] === '-p' || args[skip] === '--package' ? 2 : 1;
             }
+        } else if (name === 'stdbuf') {
+            // -i/-o/-e MODE (and --input/--output/--error) take a value.
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += optionWords(args[skip], 'ioe', new Set(['--input', '--output', '--error']));
+            }
+            if (args[skip] === '--') skip += 1;
+        } else if (name === 'setsid') {
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') skip += 1;
+            if (args[skip] === '--') skip += 1;
+        } else if (name === 'nohup' || name === 'time') {
+            // GNU time's -o FILE and -f FORMAT (and --output/--format) take the next word.
+            while (skip < args.length && args[skip].startsWith('-') && args[skip] !== '--') {
+                skip += name === 'time' ? optionWords(args[skip], 'of', new Set(['--output', '--format']), new Set(['--append', '--verbose', '--portability', '--quiet'])) : 1;
+            }
+            if (args[skip] === '--') skip += 1;
         }
-        // nohup, time, command, builtin: just skip the wrapper word
 
         if (skip >= args.length) break;
 
@@ -2386,6 +2543,8 @@ function sudoChdir(arg: string, next: string | undefined): string | undefined {
     return at === arg.length - 1 ? next : arg.slice(at + 1);
 }
 
+const TIMEOUT_LONG_VALUE_OPTIONS = new Set(['--signal', '--kill-after']);
+const TIMEOUT_LONG_FLAGS = new Set(['--preserve-status', '--foreground', '--verbose']);
 const SUDO_LONG_FLAGS = new Set(['--login', '--preserve-env', '--non-interactive', '--background', '--shell', '--stdin',
     '--set-home', '--edit', '--list', '--validate', '--remove-timestamp', '--reset-timestamp', '--askpass', '--bell',
     '--help', '--version']);
@@ -3426,13 +3585,20 @@ function labSqlTarget(cmd: ResolvedCommand): string | null {
 
 const LAB_RESOURCE_RE = /^lab-/;
 
+/**
+ * The one resource a render command acts on, when `accepts` vouches for it and for every resource id the line names.
+ * Only a `proof` command qualifies (one that acts on the resource it names and runs no other program), read word by
+ * word against its own flags, with exactly one operand.
+ */
+function renderProvenTarget(cmd: ResolvedCommand, accepts: (resource: string) => boolean): string | null {
+    const shape = renderShape(cmd.args);
+    if (shape?.entry.kind !== 'proof' || shape.output === 'interactive' || shape.help) return null;
+    if (shape.operands.length !== 1 || !accepts(shape.operands[0])) return null;
+    return renderResourceIds(cmd.args).every(accepts) ? shape.operands[0] : null;
+}
+
 function labRenderTarget(cmd: ResolvedCommand): string | null {
-    const verbs = PLATFORM_DESTRUCTIVE.render;
-    for (const a of cmd.args) {
-        if (a.startsWith('-') || verbs.has(a)) continue;
-        if (LAB_RESOURCE_RE.test(a)) return a;
-    }
-    return null;
+    return renderProvenTarget(cmd, r => LAB_RESOURCE_RE.test(r) && !RENDER_RESOURCE_ID_RE.test(r));
 }
 
 // `gh repo delete` is exempt for LAB-* under that lab org ONLY. A configured
@@ -3505,6 +3671,7 @@ export interface DevLogin {
 
 export interface DevScope {
     snowflake: Array<{ connection: string; databases: string[]; login?: DevLogin }>;
+    render?: { resources: string[] };
 }
 
 /** Parse a dev-scope file's text. Null when anything about it is unusable. */
@@ -3532,7 +3699,20 @@ export function parseDevScope(text: string): DevScope | null {
             }
         }
     }
-    return { snowflake: entries as DevScope['snowflake'] };
+    const render = (raw as { render?: unknown }).render;
+    if (render === undefined) return { snowflake: entries as DevScope['snowflake'] };
+    const resources = (render as { resources?: unknown } | null)?.resources;
+    if (!Array.isArray(resources) || resources.length === 0
+        || !resources.every((r: unknown) => typeof r === 'string' && RENDER_RESOURCE_ID_RE.test(r))) {
+        return null;
+    }
+    return { snowflake: entries as DevScope['snowflake'], render: { resources: resources as string[] } };
+}
+
+function renderDevTarget(cmd: ResolvedCommand): string | null {
+    const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    const target = renderProvenTarget(cmd, r => listed.has(r));
+    return target ? `render resource ${target}` : null;
 }
 
 function currentDevScope(): DevScope | null {
@@ -3798,6 +3978,7 @@ function trustedLoginConnection(cmd: ResolvedCommand): string | null {
  * `command` are the whole command line, so anything set up around the call counts.
  */
 export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
+    if (cmd.name === 'render') return topLevel ? renderDevTarget(cmd) : null;
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
     const scope = currentDevScope();
     if (!scope) return null;
@@ -4695,9 +4876,13 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     // ── Platform CLIs ────────────────────────────────────────────────────
 
     // Data-driven platform CLIs (shared verb-set lookup)
-    const platformVerbs = PLATFORM_DESTRUCTIVE[name];
+    const platformVerbs = name === 'render' ? undefined : PLATFORM_DESTRUCTIVE[name];
     if (platformVerbs && args.some(a => platformVerbs.has(a))) {
         return `Destructive ${name} CLI command.`;
+    }
+    if (name === 'render') {
+        const change = renderChangeReason(args);
+        if (change) return change;
     }
 
     // Platform CLIs with custom logic
@@ -5459,6 +5644,7 @@ const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
     'helm delete': ['Removes the release and every Kubernetes resource it created.', 'data kept only in those resources is lost'],
     'gh repo': ['Permanently deletes the GitHub repository.', "its code, issues and pull requests can't be recovered"],
     dd: ['Writes raw bytes to the output target; pointed at a disk, it overwrites it.', "whatever it overwrites can't be recovered"],
+    render: ['Changes the Render service, database or job named in the step below, which is not listed as dev, so treat it as production.', "some changes, such as a deleted database, can't be undone"],
 };
 
 function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
@@ -6107,11 +6293,13 @@ export function sleepSync(ms: number): void {
  * host uses even). We compute seq under BEGIN IMMEDIATE to serialize against
  * any concurrent writeMessageOut from the agent-runner process.
  */
+export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'request_prod_gate';
+
 export function writeGateRequest(
     label: string,
     summary: string,
     command: string,
-    action: 'request_destructive_gate' | 'request_bash_gate' = 'request_destructive_gate',
+    action: GateAction = 'request_destructive_gate',
 ): string {
     // Dynamic import so non-NanoClaw environments (plain Claude Code) never
     // touch bun:sqlite — the module is only present under bun runtime.
@@ -6212,6 +6400,7 @@ export function pollDeliveredTable(requestId: string, timeoutMs: number): GateDe
  * `opts.action` selects the host-side handler the staged request routes to:
  *   - 'request_destructive_gate' — the destructive-command gate (default path).
  *   - 'request_bash_gate'        — the generic bash gate (email gate uses this).
+ *   - 'request_prod_gate'        — a production change; the host counts only an owner's or admin's click.
  *
  * Fail-closed: if writeGateRequest throws (session DBs in a broken state),
  * returns 'denied'. The CALLER emits the stderr/exit — this function never
@@ -6225,7 +6414,7 @@ export function runGateRequest(
     command: string,
     reason: string,
     opts: {
-        action: 'request_destructive_gate' | 'request_bash_gate';
+        action: GateAction;
         onStageError?: (err: unknown) => void;
         // Card title and body. Either one omitted falls back to `reason`.
         label?: string;
@@ -6287,7 +6476,23 @@ export function runNanoclawGate(
     toolUseId?: string,
     cwd?: string,
 ): GateDecision {
-    return runGateRequest(command, reason, { action: 'request_destructive_gate', onStageError, toolUseId, ...describeGate(command, reason, cwd) });
+    const action = changesProduction(command, cwd) ? 'request_prod_gate' : 'request_destructive_gate';
+    return runGateRequest(command, reason, { action, onStageError, toolUseId, ...describeGate(command, reason, cwd) });
+}
+
+/**
+ * Whether a step the gate stops on may change Render production: a render step, or one whose verdict came from a
+ * render command it runs (a SQL client's shell escape, inline or from a file). A command the guard cannot read
+ * counts if it names render.
+ */
+export function changesProduction(command: string, cwd: string = currentWorkingDir()): boolean {
+    try {
+        const commands = extractCommands(command);
+        if (commands[0]?.script) commands[0].script.cwd = cwd;
+        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || step.reason.includes(CLIENT_PROGRAM_GATE) || /\brender\b/.test(step.cmd.raw));
+    } catch {
+        return /\brender\b/.test(command);
+    }
 }
 
 /**
