@@ -7182,7 +7182,7 @@ function exactSlackPost(command: string): SlackPost | null {
  */
 // A line that may post to Slack: it names the host, or a method after a variable (`"$SLACK_API/chat.postMessage"`, a
 // base URL already in the environment). A method name alone is often code or a search, not a call.
-const MAY_POST_TO_SLACK = /slack\.com|\$\{?\w+\}?\/?(?:chat|files)\.[A-Za-z]/;
+const MAY_POST_TO_SLACK = /slack\.com|\$\{?\w+\}?["']?\/?(?:chat|files)\.[A-Za-z]/;
 
 export function slackPostsOf(command: string): SlackPost[] {
     if (!MAY_POST_TO_SLACK.test(command)) return [];

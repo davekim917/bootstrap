@@ -55,6 +55,7 @@ describe('which Slack calls stop for approval', () => {
         ['another OneCLI identity', 'acme', `onecli run --agent ag-other -- ${POST}`, 'allow'],
         ['a post after another command', 'acme', `cd /tmp && ${POST}`, 'gate'],
         ['a listed identity posting through a base URL already in the environment', undefined, `onecli run --agent ag-acme -- curl "$SLACK_API/chat.postMessage" --json '{"channel":"C1","text":"hi"}'`, 'gate'],
+        ['a listed identity posting through a quoted base URL', undefined, `onecli run --agent ag-acme -- curl "$SLACK_API"/chat.postMessage --json '{"channel":"C1","text":"hi"}'`, 'gate'],
         ['an unwrapped post in a container beside a wrapped read', 'acme', `onecli run --agent ag-other -- curl https://slack.com/api/conversations.list; docker exec worker curl https://slack.com/api/chat.postMessage --json '{"channel":"C1","text":"hi"}'`, 'gate'],
         ['a search for a posting method in code', 'acme', `rg -n 'chat.postMessage' src/`, 'allow'],
         ['a post on a workspace subdomain', 'acme', `curl https://acme.slack.com/api/chat.postMessage -d text=x`, 'gate'],
