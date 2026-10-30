@@ -1780,8 +1780,29 @@ const RENDER_PLAIN_OUTPUT = new Set(['json', 'yaml', 'text']);
 const RENDER_EXPANDS = /[[\]*?{}$`~]/;
 export const RENDER_RESOURCE_ID_RE = /^[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?$/;
 export const RENDER_CHANGE_REASON = 'Production change on Render';
+// `render services --help` shows its usage as `render services [subcommand]`: the CLI reads `list` as an argument to
+// `services`, whose children include update and delete, so `services list` is not a leaf there.
+const RENDER_NOT_LEAF = new Set(['services list']);
 
-interface RenderShape { command: string; entry: RenderEntry; operands: string[]; output: string | undefined; help: boolean }
+/**
+ * Whether a word the shell expands can stand after `command`. It may become any number of words, flags included, so it
+ * is read only after a read whose command path is already complete: one with no subcommand left for it to become.
+ */
+function renderExpansionSafe(command: string): boolean {
+    return RENDER_COMMANDS.get(command)!.kind !== 'proof' && !RENDER_NOT_LEAF.has(command)
+        && ![...RENDER_COMMANDS.keys()].some(c => c.startsWith(`${command} `));
+}
+
+interface RenderShape {
+    command: string;
+    entry: RenderEntry;
+    operands: string[];
+    output: string | undefined;
+    help: boolean;
+    expanded: boolean;
+    /** The output flag in force was given after the last expanded word, so no expansion can override it. */
+    outputAfterExpansion: boolean;
+}
 
 /**
  * A render line read word by word against its own command's flags: the command its leading words name (aliases
@@ -1795,9 +1816,24 @@ function renderShape(args: string[]): RenderShape | null {
     let help = false;
     let flagsFor: RenderFlags = RENDER_GLOBAL;
     let command: string | null = null;
+    let expandedAt = -1;
+    let outputAt = -1;
+    const resolve = (): boolean => {
+        if (command !== null) return true;
+        command = renderCommandOf(words);
+        if (command === null) return false;
+        flagsFor = { ...RENDER_GLOBAL, ...RENDER_COMMANDS.get(command)!.flags };
+        return true;
+    };
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (RENDER_EXPANDS.test(a) || a === '--') return null;
+        if (a === '--') return null;
+        if (RENDER_EXPANDS.test(a)) {
+            if (!resolve() || !renderExpansionSafe(command!)) return null;
+            expandedAt = i;
+            words.push(a);
+            continue;
+        }
         if (a === '-h' || a === '--help') {
             help = true;
             continue;
@@ -1809,11 +1845,7 @@ function renderShape(args: string[]): RenderShape | null {
         const at = a.startsWith('--') ? a.indexOf('=') : -1;
         const flag = a.startsWith('--') ? (at < 0 ? a : a.slice(0, at)) : RENDER_SHORT.get(a[1]);
         if (!flag) return null;
-        if (command === null && !(flag in RENDER_GLOBAL)) {
-            command = renderCommandOf(words);
-            if (command === null) return null;
-            flagsFor = { ...RENDER_GLOBAL, ...RENDER_COMMANDS.get(command)!.flags };
-        }
+        if (command === null && !(flag in RENDER_GLOBAL) && !resolve()) return null;
         const arity = Object.hasOwn(flagsFor, flag) ? flagsFor[flag] : undefined;
         if (!arity) return null;
         if (arity === 'switch') {
@@ -1821,12 +1853,25 @@ function renderShape(args: string[]): RenderShape | null {
             continue;
         }
         const value = a.startsWith('--') ? (at < 0 ? args[++i] : a.slice(at + 1)) : a.length > 2 ? a.slice(2).replace(/^=/, '') : args[++i];
-        if (value === undefined || RENDER_EXPANDS.test(value)) return null;
+        if (value === undefined) return null;
+        if (RENDER_EXPANDS.test(value)) {
+            if (command === null || !renderExpansionSafe(command)) return null;
+            expandedAt = i;
+        }
+        if (flag === '--output') outputAt = i;
         values.set(flag, value);
     }
-    command ??= renderCommandOf(words);
-    if (command === null) return null;
-    return { command, entry: RENDER_COMMANDS.get(command)!, operands: words.slice(command.split(' ').length), output: values.get('--output'), help };
+    if (!resolve()) return null;
+    const found: string = command!;
+    return {
+        command: found,
+        entry: RENDER_COMMANDS.get(found)!,
+        operands: words.slice(found.split(' ').length),
+        output: values.get('--output'),
+        help,
+        expanded: expandedAt >= 0,
+        outputAfterExpansion: outputAt > expandedAt,
+    };
 }
 
 /** The longest known command the leading words name, with `ls` read as `list`; null when they name none. */
@@ -1846,13 +1891,15 @@ function renderCommandOf(words: string[]): string | null {
 export function renderChangeReason(args: string[]): string | null {
     if (args.length === 0 || (args.length === 1 && (args[0] === '-v' || args[0] === '--version'))) return null;
     const shape = renderShape(args);
-    if (shape?.help) return null;
+    // An expanded word could hold --help=false, so help ends the check only on a line with none.
+    if (shape?.help && !shape.expanded) return null;
     if (shape && shape.entry.kind !== 'proof') {
         const subcommand = !RENDER_OPEN_READS.has(shape.command.split(' ')[0]) && shape.operands.length > 0
             && [...RENDER_COMMANDS.keys()].some(c => c.startsWith(`${shape.command} `));
         if (!subcommand) {
-            if (shape.entry.kind === 'read' || RENDER_PLAIN_OUTPUT.has(shape.output ?? '')) return null;
-            return `${RENDER_CHANGE_REASON} possible: render ${shape.command} can open an interactive menu that deploys. Add -o json (or yaml/text) to read it without approval.`;
+            if (shape.entry.kind === 'read' || (RENDER_PLAIN_OUTPUT.has(shape.output ?? '') && shape.outputAfterExpansion)) return null;
+            const where = shape.expanded ? ', after the last variable,' : '';
+            return `${RENDER_CHANGE_REASON} possible: render ${shape.command} can open an interactive menu that deploys. Add -o json (or yaml/text)${where} to read it without approval.`;
         }
     }
     const words = shape?.command ?? args.filter(a => !a.startsWith('-')).slice(0, 3).join(' ');
