@@ -512,6 +512,11 @@ describe('wrapper resolution', () => {
         const cmd = 'nohup docker system prune';
         expectNativeAsk(await runHook(cmd));
     });
+
+    test('onecli run wrapper is stripped', async () => {
+        expectNativeAsk(await runHook('onecli run --agent ag-example -- terraform destroy'));
+        expectNativeAsk(await runHook('onecli run --agent=ag-example -- docker system prune'));
+    });
 });
 
 // A package runner executes an arbitrary command, so the guard has to resolve
