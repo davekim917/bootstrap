@@ -66,6 +66,9 @@ describe('reading Render needs no approval', () => {
         'render workspace set tea-workspace000000000001',
         'render whoami -o json',
         'render --version',
+        'render --help',
+        'render -h',
+        'render --help 2>&1 | head -40',
         `render jobs create ${PROD} --help`,
         `render services delete ${PROD} --help`,
         'render services -e evm-environment000000001 -o json',
@@ -117,6 +120,7 @@ describe('a read whose command is complete before a variable needs no approval',
         ['services list, which the CLI reads as services with an argument', 'render services list $s -o json'],
         ['a variable after a mutating command', 'render deploys create $s --confirm'],
         ['help beside a variable that could turn it off', 'render deploys list --help $s'],
+        ['top-level help beside a variable that could name a command', 'render --help $s'],
         ['a dev deploy whose flag value is a variable that could split into a production id', `render deploys create ${DEV} --commit $C --confirm`],
     ])('still needs approval: %s', (_name, command) => {
         expect(verdict(command)).toBe('gate');
