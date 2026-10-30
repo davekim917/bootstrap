@@ -1809,11 +1809,7 @@ export const RENDER_CLI_TREE: ReadonlySet<string> = new Set([
 ]);
 const RENDER_KNOWN = new Set([...RENDER_CLI_TREE, ...RENDER_COMMANDS.keys()]);
 
-/**
- * The command words of a render line that name no command, as written: an unknown first word, or a word after a
- * command that has subcommands and takes it as none of them. Null when every command word is known, or when a word
- * the shell expands or a flag outside the table comes first, since what follows it can't be read as a command word.
- */
+/** Null once a shell expansion, `--` or a flag outside the table comes first: what follows can't be read as a command word. */
 export function renderUnknownCommand(args: string[]): string | null {
     const written: string[] = [];
     let node = '';
