@@ -6879,20 +6879,32 @@ function noMergeStepReason(
         const remote = gitRemoteArg(cmd.args);
         // A push to a URL off GitHub reaches no listed repository.
         if (remote && /^(?:[a-z+]+:\/\/|[^@\s]+@)/i.test(remote) && !/github\.com[/:]/i.test(remote)) return null;
-        const repo = remote && (REPO_URL_RE.test(remote) || ORG_REPO_RE.test(remote))
-            ? githubRepoOf(remote)
-            : pushDir && !remotesMoved ? checkoutRemoteRepo(pushDir, remote ?? 'origin') : null;
+        // With no remote named, git picks one from the branch's push or upstream config, so every remote may be it.
+        const repos: Array<string | null> = remote && (REPO_URL_RE.test(remote) || ORG_REPO_RE.test(remote))
+            ? [githubRepoOf(remote)]
+            : !pushDir || remotesMoved ? [null]
+            : remote ? [checkoutRemoteRepo(pushDir, remote)] : remotesOf(pushDir);
         const branches = pushedBranches(cmd.args, pushDir, head);
         if (scope === 'unreadable') return refused(null, 'Pushing');
-        const protectedHere = repo !== null ? scope.get(repo) : undefined;
-        if (protectedHere && (branches === null || branches.some(b => protectedHere.has(b)))) {
-            return refused(repo, `Pushing to ${branches === null ? 'every branch, or one the guard cannot read (after a branch switch, name it: git push origin <branch>)' : branches.join(', ')}`);
+        for (const repo of repos) {
+            const protectedHere = repo !== null ? scope.get(repo) : undefined;
+            if (protectedHere && (branches === null || branches.some(b => protectedHere.has(b)))) {
+                return refused(repo, `Pushing to ${branches === null ? 'every branch, or one the guard cannot read (after a branch switch, name it: git push origin <branch>)' : branches.join(', ')}`);
+            }
+            if (repo === null && branches === null) return unplaced('Pushing to every branch');
+            if (repo === null && branches !== null) {
+                const anywhere = [...scope.entries()].find(([, set]) => branches.some(b => set.has(b)));
+                if (anywhere) return refused(anywhere[0], `Pushing to ${branches.join(', ')} from a checkout the guard can't place`);
+            }
         }
-        if (repo === null && branches === null) return unplaced('Pushing to every branch');
-        if (repo === null && branches !== null) {
-            const anywhere = [...scope.entries()].find(([, set]) => branches.some(b => set.has(b)));
-            if (anywhere) return refused(anywhere[0], `Pushing to ${branches.join(', ')} from a checkout the guard can't place`);
-        }
+    }
+    if (gh && gh.args[0] === 'repo' && gh.args[1] === 'sync') {
+        // `gh repo sync [<destination>]` updates the destination (the checkout's repository when none is named).
+        const destination = gh.args.slice(2).find(a => !a.startsWith('-') && !['--branch', '-b', '--source', '-s'].includes(gh.args[gh.args.indexOf(a) - 1]));
+        if (destination !== undefined && /[$`]/.test(destination)) return unresolved('Syncing a repository');
+        const reason = destination !== undefined ? refused(githubRepoOf(destination), 'Syncing a repository')
+            : dir === null ? unplaced('Syncing a repository') : checked(remotesOf(dir), 'Syncing a repository');
+        if (reason) return reason;
     }
     return null;
 }

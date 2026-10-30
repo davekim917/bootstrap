@@ -84,6 +84,14 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a merge behind onecli run', 'onecli run -- gh pr merge 12 -R Acme/core --squash', () => other],
         ['a push of the current branch after gh pr checkout', 'gh pr checkout 12 && git push origin HEAD', () => theirs],
         ['a push of the current branch after gh pr co', 'gh pr co 12 && git push', () => theirs],
+        ['an implicit push from a fork whose upstream is listed', 'git push', () => {
+            const tracking = join(dir, 'tracking');
+            checkout(tracking, 'git@github.com:example/core.git', 'master');
+            writeFileSync(join(tracking, '.git', 'config'), `[remote "origin"]\n\turl = git@github.com:example/core.git\n[remote "upstream"]\n\turl = https://github.com/Acme/core.git\n[branch "master"]\n\tremote = upstream\n\tmerge = refs/heads/master\n`);
+            return tracking;
+        }],
+        ['a repository sync into the listed repository', 'gh repo sync Acme/core --branch master', () => other],
+        ['a repository sync from inside the listed checkout', 'gh repo sync --branch master', () => theirs],
         ['a push of @ from the protected branch', 'git push origin @', () => join(dir, 'core-on-master')],
         ['a second REST merge endpoint on one curl', 'curl -X PUT https://api.github.com/repos/example/ours/pulls/1/merge https://api.github.com/repos/Acme/core/pulls/12/merge', () => other],
         ['a push from a worktree added in the same step', 'git -C CORE worktree add NESTED master && git -C NESTED push origin HEAD:master', () => other],
