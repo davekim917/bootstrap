@@ -153,12 +153,13 @@ describe('a forwarder or an unproven listener holds', () => {
 });
 
 describe('a connection the guard cannot read exactly as psql will make it holds', () => {
-    test.each([
+    test.each<[string, string, ('gate' | 'block')?]>([
         ['a non-local host', "psql -X -h db.example.internal -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'"],
-        ['localhost, which NSS resolves', "psql -X -h localhost -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'"],
+        // Refused rather than gated: the refusal names the 127.0.0.1 form the exemption reads.
+        ['localhost, which NSS resolves', "psql -X -h localhost -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'", 'block'],
         ['no host', "psql -X -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'"],
         ['no port, which a client build can default to anything', "psql -X -h 127.0.0.1 -d foo_test -c 'DROP DATABASE scratch_db'"],
-        ['a URI naming the same address, which libpq parses, not the guard', "psql -X -h 127.0.0.1 -p 55432 'postgresql://tester@127.0.0.1:55432/foo_test' -c 'TRUNCATE orders'"],
+        ['a URI naming the same address, which libpq parses, not the guard', "psql -X -h 127.0.0.1 -p 55432 'postgresql://tester@127.0.0.1:55432/foo_test' -c 'TRUNCATE orders'", 'block'],
         ['a URI whose userinfo hides the real host', "psql -X -h 127.0.0.1 -p 55432 'postgresql://127.0.0.1:55432?sslmode=disable@203.0.113.9:5432/foo_test' -c 'DROP TABLE orders'"],
         ['a key=value string naming the socket directory', "psql -X -h 127.0.0.1 -p 55432 'host=/tmp/embedded-pg port=55432 dbname=foo_test' -c 'DROP TABLE orders'"],
         ['a key=value string split by a non-ASCII space', "psql -X -h 127.0.0.1 -p 55432 'application_name=x\u00a0port=55432' -c 'DROP TABLE orders'"],
@@ -175,8 +176,8 @@ describe('a connection the guard cannot read exactly as psql will make it holds'
         ['an option the guard does not place', "psql -X -h 127.0.0.1 -p 55432 --log-file=/tmp/l -c 'DROP TABLE orders'"],
         ['SQL on stdin', "psql -X -h 127.0.0.1 -p 55432 <<'SQL'\nDROP TABLE orders;\nSQL"],
         ['a stdin file read beside -c', "echo x | psql -X -h 127.0.0.1 -p 55432 -Xf- -c 'DROP TABLE orders'"],
-    ])('%s', (_name, command) => {
-        expect(verdict(command)).toBe('gate');
+    ])('%s', (_name, command, expected = 'gate') => {
+        expect(verdict(command)).toBe(expected);
     });
 });
 
@@ -251,6 +252,47 @@ describe('one flag short of the exemption, the agent is told the flag instead of
         ['another program runs on the line', `${withoutX(TCP)}; curl -s https://example.com`, scratch],
         ['no port is given', "psql -h 127.0.0.1 -c 'DROP TABLE orders'", scratch],
     ])('still goes to an approver when -X alone would not exempt it: %s', (_name, command, f) => {
+        expect(evaluate(command, f).action).toBe('gate');
+    });
+});
+
+describe('a connection string or localhost the guard does not resolve is answered with the form it does', () => {
+    const evaluate = (command: string, f: Fixture = scratch) => evaluateBashCommand(command, { cwd: '/tmp', localPg: fixtureHost(f) });
+    const rewriteIn = (reason: string | undefined) => reason?.split('This runs without approval:\n')[1]?.split('\n')[0];
+    // /proc/net/tcp6 prints each 32-bit word in host order, so ::1 reads as …01000000 on little-endian.
+    const v6only: Fixture = { tcp6: [['0'.repeat(24) + '01000000', PORT_HEX, '9004']], procs: { 4301: { comm: 'postgres', sockets: ['9004'] } } };
+
+    test.each<[string, string, string, Fixture]>([
+        ['a URI with a password, as the first operand', "psql 'postgresql://tester:s3cret-example@localhost:55432/foo_test' -X -c 'DROP TABLE orders'", "psql foo_test -h 127.0.0.1 -p 55432 -U tester -X -c 'DROP TABLE orders'", scratch],
+        ['a URI given to -d, without -X', "psql -d postgres://127.0.0.1:55432/foo_test -c 'DROP TABLE orders'", "psql -d foo_test -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'", scratch],
+        ['a URI given to --dbname=', "psql -X --dbname='postgresql://localhost:55432/foo_test' -c 'DROP TABLE orders'", "psql -X --dbname=foo_test -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'", scratch],
+        ['-h localhost, without -X', "psql -h localhost -p 55432 -c 'DROP TABLE orders'", "psql -h 127.0.0.1 -X -p 55432 -c 'DROP TABLE orders'", scratch],
+        ['localhost when the scratch postgres listens only on ::1', "psql -X -h localhost -p 55432 -c 'DROP TABLE orders'", "psql -X -h ::1 -p 55432 -c 'DROP TABLE orders'", v6only],
+        ['a [::1] URI', "psql 'postgresql://[::1]:55432/foo_test' -X -c 'DROP TABLE orders'", "psql foo_test -h ::1 -p 55432 -X -c 'DROP TABLE orders'", v6only],
+    ])('%s: refused with the rewrite, and the rewrite runs', (_name, command, rewrite, f) => {
+        const v = evaluate(command, f);
+        expect(v.action).toBe('block');
+        expect(rewriteIn(v.reason)).toBe(rewrite);
+        expect(evaluate(rewrite, f).action).toBe('allow');
+    });
+
+    test('the password never appears in the refusal; the ~/.pgpass line names the rewritten host', () => {
+        const v = evaluate("psql 'postgresql://tester:s3cret-example@localhost:55432/foo_test' -X -c 'DROP TABLE orders'");
+        expect(v.reason).not.toContain('s3cret-example');
+        expect(v.reason).toContain('add the line 127.0.0.1:55432:foo_test:tester:<password> to ~/.pgpass (mode 0600)');
+    });
+
+    test.each<[string, string, Fixture]>([
+        ['a URI with a query string', "psql 'postgresql://localhost:55432/foo_test?sslmode=disable' -X -c 'DROP TABLE orders'", scratch],
+        ['a URI without a port', "psql 'postgresql://localhost/foo_test' -X -c 'DROP TABLE orders'", scratch],
+        ['a URI to another host', "psql 'postgresql://db.example.internal:55432/foo_test' -X -c 'DROP TABLE orders'", scratch],
+        ['a URI written twice on the line', "echo postgresql://localhost:55432/foo_test; psql postgresql://localhost:55432/foo_test -X -c 'DROP TABLE orders'", scratch],
+        ['a keyword connection string', "psql 'host=localhost port=55432 dbname=foo_test' -X -c 'DROP TABLE orders'", scratch],
+        ['-h localhost without a port', "psql -X -h localhost -c 'DROP TABLE orders'", scratch],
+        ['a forwarder behind the URI', "psql 'postgresql://localhost:55432/foo_test' -X -c 'DROP TABLE orders'", { tcp: [['0100007F', PORT_HEX, '9101']], procs: { 5001: { comm: 'ssh', sockets: ['9101'] } } }],
+        ['a postgres whose data directory is outside /tmp', "psql -X -h localhost -p 55432 -c 'DROP TABLE orders'", { ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'], cwd: '/var/lib/postgresql/data' } } }],
+        ['an environment prefix on psql', "PGPASSWORD=x psql 'postgresql://localhost:55432/foo_test' -X -c 'DROP TABLE orders'", scratch],
+    ])('still goes to an approver when no rewrite passes the exemption: %s', (_name, command, f) => {
         expect(evaluate(command, f).action).toBe('gate');
     });
 });

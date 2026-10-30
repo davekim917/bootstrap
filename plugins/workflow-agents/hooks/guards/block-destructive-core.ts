@@ -4359,6 +4359,60 @@ export function localPgTargetOf(
     return postgresListening(host, `${target.host}:${port}`, tcpListenerInodes(host, target.host, port));
 }
 
+const LOCAL_PG_URI_RE = /^postgres(?:ql)?:\/\/(?:([A-Za-z0-9_.-]+)(:[^@/?#\s'"]*)?@)?(localhost|127\.0\.0\.1|\[::1\]):(\d{1,5})\/([A-Za-z0-9_.-]+)$/;
+const LOCAL_PG_HOST_LOCALHOST_RE = /(^|\s)(-h\s*|--host[=\s]\s*)(['"]?)localhost\3(?=\s|;|&|\||$)/g;
+
+/**
+ * The psql line rewritten into the form the scratch-Postgres exemption reads, when a connection URI or `localhost`,
+ * neither of which the guard resolves, is all that keeps it from the exemption; null otherwise. The rewrite is
+ * returned only after the unchanged exemption accepts it, so a hint never names a command that still needs approval.
+ * A password in the URI is left out of the rewrite.
+ */
+export function localPgRewriteOf(
+    cmd: ResolvedCommand,
+    command: string,
+    host: LocalPgHost = LIVE_LOCAL_PG_HOST,
+): { line: string; endpoint: string; via: 'a connection string' | '`localhost`'; pgpass?: string } | null {
+    if (cmd.name !== 'psql') return null;
+    const addX = !cmd.args.some(a => a === '--no-psqlrc' || /^-[A-Za-z]*X/.test(a));
+    const candidates: Array<{ line: string; via: 'a connection string' | '`localhost`'; pgpass?: string }> = [];
+    const uris = cmd.args
+        .map(a => a.replace(/^(?:--dbname=|-d)(?=postgres)/, ''))
+        .filter(a => /^postgres(?:ql)?:\/\//.test(a));
+    if (uris.length === 1) {
+        const m = LOCAL_PG_URI_RE.exec(uris[0]);
+        if (!m) return null;
+        const [, user, password, uriHost, port, db] = m;
+        const at = command.indexOf(uris[0]);
+        const quote = command[at - 1];
+        const quoted = (quote === "'" || quote === '"') && command[at + uris[0].length] === quote;
+        const start = quoted ? at - 1 : at;
+        const end = at + uris[0].length + (quoted ? 1 : 0);
+        const addrs = uriHost === 'localhost' ? ['127.0.0.1', '::1'] : [uriHost.replace(/^\[|\]$/g, '')];
+        for (const addr of addrs) {
+            const flags = `${db}${addX ? ' -X' : ''} -h ${addr} -p ${port}${user ? ` -U ${user}` : ''}`;
+            // libpq matches a ~/.pgpass line on the host exactly as given, so the line names the rewritten address.
+            const pgpass = password === undefined ? undefined : `${addr}:${port}:${db}:${user ?? '*'}:<password>`;
+            candidates.push({ line: command.slice(0, start) + flags + command.slice(end), via: 'a connection string', pgpass });
+        }
+    } else if (uris.length === 0) {
+        const hits = [...command.matchAll(LOCAL_PG_HOST_LOCALHOST_RE)];
+        if (hits.length !== 1) return null;
+        for (const addr of ['127.0.0.1', '::1']) {
+            const line = command.replace(LOCAL_PG_HOST_LOCALHOST_RE, (_m, lead: string, flag: string) => `${lead}${flag}${addr}${addX ? ' -X' : ''}`);
+            candidates.push({ line, via: '`localhost`' });
+        }
+    } else return null;
+    for (const candidate of candidates) {
+        const rewritten = extractCommands(candidate.line);
+        const psqls = rewritten.filter(c => c.name === 'psql');
+        if (psqls.length !== 1) continue;
+        const endpoint = localPgTargetOf(psqls[0], rewritten, candidate.line, host);
+        if (endpoint !== null) return { ...candidate, endpoint };
+    }
+    return null;
+}
+
 // ── Git hook bypass ──────────────────────────────────────────────────────────
 // A repo's commit and push hooks are where its own gates run — the public
 // boundary scan, formatting, parity. An agent that trips one fixes the finding;
@@ -5737,6 +5791,17 @@ function* gatedSteps(
                 yield {
                     cmd, reason, outer, moves,
                     fix: `${reason}: psql against the scratch Postgres at ${withoutPsqlrc} runs without approval only with -X (--no-psqlrc), since a psqlrc file can connect somewhere other than the -h shown. Run the same command again with -X added.`,
+                };
+                continue;
+            }
+            const rewrite = cmd === outer ? localPgRewriteOf(cmd, command, localPg) : null;
+            if (rewrite !== null) {
+                const password = rewrite.pgpass
+                    ? `\nThe password is left out: add the line ${rewrite.pgpass} to ~/.pgpass (mode 0600), since an environment prefix such as PGPASSWORD= also needs approval.`
+                    : '';
+                yield {
+                    cmd, reason, outer, moves,
+                    fix: `${reason}: psql reaches the scratch Postgres at ${rewrite.endpoint} through ${rewrite.via}, which the guard does not resolve, so as written it needs approval. This runs without approval:\n${rewrite.line}${password}`,
                 };
                 continue;
             }
