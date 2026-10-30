@@ -666,7 +666,7 @@ export const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 
 // Command wrappers that should be stripped to find the real command
 export const WRAPPERS = new Set([
-    'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout', 'stdbuf', 'setsid',
+    'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout', 'stdbuf', 'setsid', 'onecli',
     // Package runners execute an arbitrary command too. Without them here,
     // `pnpm exec rm -rf <path>` resolved to name='pnpm' and every destructive
     // check passed — and since `Bash(pnpm exec *)` is commonly allow-listed,
@@ -2357,6 +2357,11 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
                 skip += optionWords(args[skip], 'a');
             }
             if (args[skip] === '--') skip += 1;
+        } else if (name === 'onecli') {
+            // `onecli run [options] -- <command>` runs the command with credentials injected; nothing else does.
+            const split = args.indexOf('--');
+            if (args[0] !== 'run' || split < 0) break;
+            skip = split + 1;
         } else if (name === 'npx' || name === 'bunx') {
             // The command follows the flags; -p/--package takes a value.
             while (skip < args.length && args[skip].startsWith('-')) {

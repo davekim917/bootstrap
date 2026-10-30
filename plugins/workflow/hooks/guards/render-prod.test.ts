@@ -45,6 +45,8 @@ const verdict = (command: string) => evaluateBashCommand(command, { cwd: '/tmp' 
 
 describe('reading Render needs no approval', () => {
     test.each([
+        'onecli agents list',
+        `onecli run --agent ag-example -- render services -o json`,
         'render services list -o json',
         'render services -o json',
         'render services instances ' + PROD + ' -o json',
@@ -138,6 +140,7 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a deploy behind stdbuf', `stdbuf -oL render deploys create ${PROD} --wait --confirm`],
         ['a deploy behind stdbuf with a separate mode', `stdbuf -o L render deploys create ${PROD} --wait --confirm`],
         ['a deploy behind setsid', `setsid -f render deploys create ${PROD} --confirm`],
+        ['a restart behind onecli run', `onecli run --agent ag-example -- render restart ${PROD} --confirm`],
         ['a restart behind nice --adjustment', `nice --adjustment=10 render restart ${PROD} --confirm`],
         ['a read followed by a write', `render psql ${PROD_DB} -c 'select 1; delete from accounts'`],
         ['a read that calls a side-effecting function', `render psql ${PROD_DB} -c "select pg_terminate_backend(42)"`],
