@@ -97,6 +97,8 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a protected push after a cd inside an executor script', "find . -maxdepth 0 -exec sh -c 'cd LISTED_DIR && git push origin HEAD:master' \\;", () => other],
         ['an implicit push run by find after a branch switch', 'git switch master && find . -maxdepth 0 -exec git push origin HEAD \\;', () => theirs],
         ['a protected push two executors deep', "find . -maxdepth 0 -exec git submodule foreach 'git push origin HEAD:master' \\;", () => other],
+        ['a protected push in a ~ path', 'git -C ~/listed-core push origin HEAD:master', () => other],
+        ['a merge whose repository xargs fills in', "printf '%s\\n' Acme/core | xargs -I{} gh pr merge 12 -R {} --squash", () => other],
         ['a merge run by find -exec', 'find . -maxdepth 0 -exec gh pr merge 12 -R Acme/core --squash \\;', () => other],
         ['a matching push, which writes every matching branch', 'git push origin :', () => theirs],
         ['a push through a symlink into the listed checkout', 'cd core-link && git push origin HEAD:master', () => {
@@ -150,6 +152,7 @@ describe('everything else is untouched', () => {
             return mixed;
         }],
         ['a feature push in every submodule', "git submodule foreach 'git push origin feature-x'", () => other],
+        ['a merge in another repository after listing remotes', 'git remote -v && gh pr merge 12 --squash', () => other],
         ['a push naming the branch just created', 'git checkout -b fix-y && git push -u origin fix-y', () => theirs],
         ['a tags-only push from the protected branch', 'git push origin --tags', () => join(dir, 'core-on-master')],
         ['a push to a repository off GitHub', 'git push https://gitlab.com/example/ours.git HEAD:master', () => theirs],
