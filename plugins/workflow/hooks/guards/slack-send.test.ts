@@ -60,6 +60,7 @@ describe('which Slack calls stop for approval', () => {
         ['a post whose URL is given with --url=', 'acme', `curl --url=https://slack.com/api/chat.postMessage -d channel=C1 -d text=hello`, 'gate'],
         ['a wrapped post behind env', undefined, `onecli run --agent ag-acme -- env curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
         ['a listed OneCLI identity given with --agent=', undefined, `onecli run --agent=ag-acme -- curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
+        ['a listed identity posting beside an ordinary post', undefined, `URL=https://slack.com/api/chat.postMessage; onecli run --agent ag-acme -- curl "$URL" -d channel=C1 -d text=hello; curl https://slack.com/api/chat.postMessage -d channel=C2 -d text=hi`, 'gate'],
         ['a quoted OneCLI identity with the posting URL in a variable', undefined, `URL=https://slack.com/api/chat.postMessage; onecli run --agent 'ag-acme' -- curl "$URL" -d text=hello`, 'gate'],
         ['a quoted OneCLI identity given with --agent= and the URL in a variable', undefined, `URL=https://slack.com/api/chat.postMessage; onecli run --agent="ag-acme" -- curl "$URL" -d text=hello`, 'gate'],
         ['a OneCLI identity held in a variable', undefined, `AGENT=ag-acme; onecli run --agent "$AGENT" -- curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
@@ -143,6 +144,7 @@ describe('the gate request a send stages', () => {
 
     test.each([
         ['a lone Slack post carries its text', POST, ['Numbers are in.']],
+        ['a lone Slack post through a OneCLI identity carries its text', `onecli run --agent ag-acme -- ${POST}`, ['Numbers are in.']],
         ['a lone email carries its body, recipients and subject', `gws gmail +send --to a@example.com,b@example.com --subject 'Q3' --body 'Numbers are in.'`, ['Numbers are in.', 'to:a@example.com', 'to:b@example.com', 'subject:Q3']],
         ['a Slack post beside another command carries nothing', `gws gmail +send --to a@example.com; ${POST}`, undefined],
         ['a Slack post inside a loop carries nothing', `for c in C1 C2; do ${POST}; done`, undefined],
