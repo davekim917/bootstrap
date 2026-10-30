@@ -7086,7 +7086,11 @@ export function slackPostsOf(command: string): SlackPost[] {
     }
     // A posting URL the commands never carry as a word (held in a variable assignment, say) is still a post the
     // guard can't read: under each OneCLI identity the line names that no read post carries, or under none.
-    const held = carriedPost([command], null);
+    // A base URL held in a variable (`${SLACK_API}chat.postMessage`) leaves the method name beside the variable.
+    const heldMethod = /slack\.com\/api/.test(command)
+        ? [...command.matchAll(/\b((?:chat|files)\.[A-Za-z]+)\b/g)].map(m => m[1]).find(m => SLACK_POST_METHODS.has(m))
+        : undefined;
+    const held = carriedPost([command], null) ?? (heldMethod ? { method: heldMethod, text: null, onecliAgent: null } : null);
     if (held) {
         const named = [...command.matchAll(/\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/g)]
             .map(m => m[1].replace(/^(['"])(.*)\1$/, '$2'))
