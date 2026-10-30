@@ -3862,7 +3862,7 @@ function renderDevExpansionFix(cmd: ResolvedCommand): string | null {
                     continue;
                 }
                 const text = String(inner?.text ?? '');
-                if (!evalWord(text, script.view, words[i].pos).unresolved.length) return null;
+                if (!evalWord(`"${text}"`, script.view, words[i].pos).unresolved.length) return null;
                 if (!unread.includes(text)) unread.push(text);
                 // `_` can't appear in a resource id, so a written-out operand never reads as a listed one.
                 written += '_';
