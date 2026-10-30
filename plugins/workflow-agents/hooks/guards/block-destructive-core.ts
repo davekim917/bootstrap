@@ -7107,7 +7107,7 @@ export function slackPostsOf(command: string): SlackPost[] {
         : undefined;
     const held = carriedPost([command], null) ?? (heldMethod ? { method: heldMethod, text: null, onecliAgent: null } : null);
     if (held) {
-        const named = [...command.matchAll(/\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/g)]
+        const named = [...command.replace(/\\\n/g, ' ').matchAll(/\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/g)]
             .map(m => m[1].replace(/^(['"])(.*)\1$/, '$2'))
             .map(n => /[$`]/.test(n) ? UNKNOWN_ONECLI_AGENT : n);
         for (const agent of posts.length === 0 ? [null, ...named] : named) {
@@ -7129,7 +7129,7 @@ export function soleCommand(command: string): boolean {
 
 /** The Slack posts in a command that need their sender's OK under the send scope in force. */
 export function gatedSlackPosts(command: string, workgroupId: string | undefined = process.env.NANOCLAW_WORKGROUP_ID): SlackPost[] {
-    if (!/slack\.com\/api\//.test(command)) return [];
+    if (!/slack\.com\/api/.test(command)) return [];
     const posts = slackPostsOf(command);
     if (posts.length === 0) return [];
     const scope = currentSendScope();
