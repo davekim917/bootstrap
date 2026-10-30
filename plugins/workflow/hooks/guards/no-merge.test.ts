@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -92,6 +92,13 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         }],
         ['a repository sync into the listed repository', 'gh repo sync Acme/core --branch master', () => other],
         ['a repository sync from inside the listed checkout', 'gh repo sync --branch master', () => theirs],
+        ['a matching push, which writes every matching branch', 'git push origin :', () => theirs],
+        ['a push through a symlink into the listed checkout', 'cd core-link && git push origin HEAD:master', () => {
+            mkdirSync(join(theirs, 'subdir'), { recursive: true });
+            const link = join(other, 'core-link');
+            if (!existsSync(link)) symlinkSync(join(theirs, 'subdir'), link);
+            return other;
+        }],
         ['a push of @ from the protected branch', 'git push origin @', () => join(dir, 'core-on-master')],
         ['a second REST merge endpoint on one curl', 'curl -X PUT https://api.github.com/repos/example/ours/pulls/1/merge https://api.github.com/repos/Acme/core/pulls/12/merge', () => other],
         ['a push from a worktree added in the same step', 'git -C CORE worktree add NESTED master && git -C NESTED push origin HEAD:master', () => other],

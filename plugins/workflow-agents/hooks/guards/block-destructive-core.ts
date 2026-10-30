@@ -6606,8 +6606,24 @@ function githubRepoOf(value: string): string | null {
 }
 
 /** The git directory and common directory of the checkout containing `dir`, or null. */
+/** `dir` with symlinks resolved as far as it exists, so a link into a checkout is read as that checkout. */
+function physicalPath(dir: string): string {
+    let existing = pathResolve(dir);
+    const rest: string[] = [];
+    for (;;) {
+        try {
+            return join(realpathSync(existing), ...rest);
+        } catch {
+            const parent = dirname(existing);
+            if (parent === existing) return pathResolve(dir);
+            rest.unshift(basename(existing));
+            existing = parent;
+        }
+    }
+}
+
 function gitDirsOf(dir: string): { gitDir: string; commonDir: string } | null {
-    let current = pathResolve(dir);
+    let current = physicalPath(dir);
     for (;;) {
         const dotGit = join(current, '.git');
         try {
@@ -6705,6 +6721,8 @@ function pushedBranches(args: string[], dir: string | null, head?: string | null
     }
     const names: string[] = [];
     for (const spec of refspecs) {
+        // A bare ':' pushes every branch that matches one on the remote.
+        if (spec.replace(/^\+/, '') === ':') return null;
         const target = (spec.includes(':') ? spec.slice(spec.indexOf(':') + 1) : spec).replace(/^\+/, '').replace(/^refs\/heads\//, '');
         if (target === 'HEAD' || target === '@' || target === '') {
             const branch = head !== undefined ? head : dir ? checkoutBranch(dir) : null;
