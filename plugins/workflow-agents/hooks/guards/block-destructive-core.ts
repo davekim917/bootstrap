@@ -4550,6 +4550,7 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
         const host = value(new RegExp(`^(?:-[${cmd.name === 'psql' ? PSQL_SHORT_FLAGS : DROPDB_SHORT_FLAGS}]*h|--host=?)(.*)$`));
         if (host) {
             if (literal(host.at) && host.text.split(',').some(isRemotePgHost)) return null;
+            i = host.at;
             continue;
         }
         const command = cmd.name === 'psql' ? value(new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*c|--command=?)(.*)$`)) : null;
@@ -5032,7 +5033,8 @@ const CROSS_SERVER_REASON = 'PostgreSQL SQL that reaches another server';
 /** The cross-server construct `sql` runs, if any: a mention in a string or comment doesn't run, unless DO or EXECUTE runs that string as SQL. */
 function crossServerConstruct(sql: string): string | undefined {
     const code = stripSqlLiteralsAndComments(sql);
-    const direct = code.match(CROSS_SERVER_SQL)?.[0];
+    // A quoted identifier names the same function, and stripping blanks it with the literals.
+    const direct = code.match(CROSS_SERVER_SQL)?.[0] ?? sql.match(/"(?:dblink\w*|postgres_fdw)"/i)?.[0];
     if (direct || !/\b(?:DO|EXECUTE)\b/i.test(code)) return direct;
     return sql.replace(/\/\*[^]*?\*\//g, ' ').match(CROSS_SERVER_SQL)?.[0];
 }

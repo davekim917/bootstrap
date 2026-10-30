@@ -353,6 +353,8 @@ describe('a psql or dropdb whose database the line does not name is refused towa
         ['a username before -d', "psql -U postgres -d app_test -c 'DROP TABLE orders'", `${SPG} psql app_test -c 'DROP TABLE orders'`],
         ['-d after a positional', "psql other_db -p 5432 -d app_test -c 'DROP TABLE orders'", `${SPG} psql app_test -c 'DROP TABLE orders'`],
         ['dropdb with a username and port', 'dropdb -U postgres -p 5432 app_test', `${SPG} dropdb app_test`],
+        ['dropdb with a separate local host', 'dropdb -h localhost app_test', `${SPG} dropdb app_test`],
+        ['psql with a separate local host', "psql -h localhost app_test -c 'DROP TABLE orders'", `${SPG} psql app_test -c 'DROP TABLE orders'`],
     ])('%s: refused with the scratch-pg line', (_name, command, line) => {
         const v = evaluate(command);
         expect(v.action).toBe('block');
@@ -431,6 +433,7 @@ describe('SQL that reaches another server always goes to an approver, scratch or
     });
 
     test.each([
+        ['as a quoted identifier', `psql -X -h 127.0.0.1 -p 55432 -d foo_test -c 'SELECT "dblink_exec"(\'host=db.example.internal\', \'DROP TABLE orders\')'`],
         ['split by a comment', "psql -X -h 127.0.0.1 -p 55432 -d foo_test -c 'CREATE/* x */SERVER prod FOREIGN DATA WRAPPER postgres_fdw'"],
         ['inside a DO body', "psql -X -h 127.0.0.1 -p 55432 -d foo_test -c \"DO \\$\\$ BEGIN PERFORM dblink_exec('host=db.example.internal', 'DROP TABLE orders'); END \\$\\$\""],
         ['run by EXECUTE', "psql -X -h 127.0.0.1 -p 55432 -d foo_test -c \"DO \\$\\$ BEGIN EXECUTE 'CREATE SERVER prod FOREIGN DATA WRAPPER postgres_fdw'; END \\$\\$\""],
