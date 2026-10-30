@@ -103,6 +103,8 @@ describe('everything else is untouched', () => {
     test.each([
         ['a feature-branch push', 'git push -u origin feature-x', () => theirs],
         ['a push naming the branch just created', 'git checkout -b fix-y && git push -u origin fix-y', () => theirs],
+        ['a tags-only push from the protected branch', 'git push origin --tags', () => join(dir, 'core-on-master')],
+        ['a push to a repository off GitHub', 'git push https://gitlab.com/example/ours.git HEAD:master', () => theirs],
         ['a draft pull request', 'gh pr create --draft --title t --body b', () => theirs],
         ['a merge in another repository', 'gh pr merge 12 --squash', () => other],
         ['a merge naming another repository from their checkout', 'gh pr merge 12 -R example/ours', () => theirs],

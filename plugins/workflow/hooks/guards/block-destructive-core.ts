@@ -6643,6 +6643,8 @@ function pushedBranches(args: string[], dir: string | null, head?: string | null
     if (rest.some(a => /^--[a-z]/.test(a) && ['all', 'mirror', 'branches'].some(o => o.startsWith(a.slice(2))))) return null;
     const positionals = pushArgsWithoutValues(rest).filter(a => !a.startsWith('-'));
     const refspecs = positionals.slice(1);
+    // `--tags` alone pushes tags and no branch.
+    if (refspecs.length === 0 && rest.includes('--tags')) return [];
     if (refspecs.length === 0) {
         const branch = head !== undefined ? head : dir ? checkoutBranch(dir) : null;
         return branch ? [branch] : null;
@@ -6801,6 +6803,8 @@ function noMergeStepReason(
     if (cmd.name === 'git' && cmd.args[gitSubcommandIndex(cmd.args)] === 'push') {
         const pushDir = gitPushDir(cmd.args, dir);
         const remote = gitRemoteArg(cmd.args);
+        // A push to a URL off GitHub reaches no listed repository.
+        if (remote && /^(?:[a-z+]+:\/\/|[^@\s]+@)/i.test(remote) && !/github\.com[/:]/i.test(remote)) return null;
         const repo = remote && (REPO_URL_RE.test(remote) || ORG_REPO_RE.test(remote))
             ? githubRepoOf(remote)
             : pushDir ? checkoutRemoteRepo(pushDir, remote ?? 'origin') : null;
