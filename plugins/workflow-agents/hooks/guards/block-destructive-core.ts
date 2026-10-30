@@ -6560,10 +6560,12 @@ export function noteSendParts(command: string, parts: string[] | null): void {
 export const SEND_SCOPE_FILE_ENV = 'BOOTSTRAP_SEND_SCOPE_FILE';
 const UNKNOWN_ONECLI_AGENT = '\0unknown';
 const SEND_SCOPE_FILE = 'send-scope.local.json';
-const SLACK_POST_METHODS = new Set([
-    'chat.postMessage', 'chat.postEphemeral', 'chat.update', 'chat.scheduleMessage', 'chat.meMessage', 'chat.delete',
-    'files.completeUploadExternal', 'files.upload', 'files.share',
+// Every chat.* and files.* method acts in the token's name except these reads; a method Slack adds later gates.
+const SLACK_READ_METHODS = new Set([
+    'chat.getPermalink', 'chat.scheduledMessages.list', 'files.info', 'files.list', 'files.remote.info', 'files.remote.list',
+    'files.getUploadURLExternal',
 ]);
+const isSlackPostMethod = (method: string): boolean => /^(?:chat|files)\./.test(method) && !SLACK_READ_METHODS.has(method);
 const SLACK_API_METHOD_RE = /slack\.com\/api\/([A-Za-z.]+)/g;
 const HTTP_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs']);
 const CURL_BODY_FLAGS = new Set(['--data', '--data-raw', '--data-binary', '--data-ascii', '--data-urlencode', '--json', '--form', '--form-string']);
@@ -6723,7 +6725,7 @@ function curlOptions(args: string[]): { options: CurlOption[]; urls: string[] } 
 function slackPostIn(name: string, args: string[], onecliAgent: string | null): SlackPost | null {
     if (!HTTP_CLIENTS.has(name)) return null;
     const methods = args.flatMap(a => [...a.matchAll(SLACK_API_METHOD_RE)].map(m => m[1]));
-    const method = methods.find(m => SLACK_POST_METHODS.has(m));
+    const method = methods.find(isSlackPostMethod);
     if (!method) return null;
     const line = name === 'curl' ? curlOptions(args) : null;
     let readable = SLACK_TEXT_METHODS.has(method) && line !== null && line.urls.length === 1;
@@ -6748,7 +6750,7 @@ function slackPostIn(name: string, args: string[], onecliAgent: string | null): 
 
 /** A posting URL in the words of a command the guard doesn't read as a client (a wrapper, a shell): a post it can't read. */
 function carriedPost(words: string[], onecliAgent: string | null): SlackPost | null {
-    const method = words.flatMap(w => [...w.matchAll(SLACK_API_METHOD_RE)].map(m => m[1])).find(m => SLACK_POST_METHODS.has(m));
+    const method = words.flatMap(w => [...w.matchAll(SLACK_API_METHOD_RE)].map(m => m[1])).find(isSlackPostMethod);
     return method ? { method, text: null, onecliAgent } : null;
 }
 
@@ -6770,7 +6772,7 @@ export function slackPostsOf(command: string): SlackPost[] {
     // guard can't read: under each OneCLI identity the line names that no read post carries, or under none.
     // A host or base URL held in a variable (`${SLACK_API}chat.postMessage`) leaves the method name beside it.
     const heldMethod = /slack\.com/.test(command)
-        ? [...command.matchAll(/\b((?:chat|files)\.[A-Za-z]+)\b/g)].map(m => m[1]).find(m => SLACK_POST_METHODS.has(m))
+        ? [...command.matchAll(/\b((?:chat|files)\.[A-Za-z.]*[A-Za-z])\b/g)].map(m => m[1]).find(isSlackPostMethod)
         : undefined;
     const held = carriedPost([command], null) ?? (heldMethod ? { method: heldMethod, text: null, onecliAgent: null } : null);
     if (held) {
