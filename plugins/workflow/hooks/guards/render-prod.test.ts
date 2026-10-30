@@ -271,6 +271,36 @@ describe('a Render resource listed as dev changes freely', () => {
     });
 });
 
+describe('a variable is all that keeps a listed dev resource from running freely', () => {
+    test.each([
+        ['a job whose start command holds a variable', `render jobs create ${DEV} --start-command "echo $B64"`, '`$B64`'],
+        ['a command substitution', `render jobs create ${DEV} --start-command "sh -c $(cat job.sh)" -o json`, '`$(cat job.sh)`'],
+        ['a variable inside a flag given with =', `render jobs create ${DEV} "--start-command=$CMD"`, '`$CMD`'],
+        ['a value built by a substitution earlier on the line', `B64=$(base64 -w0 job.sh); render jobs create ${DEV} --start-command "echo $B64"`, '`$B64`'],
+    ])('%s is refused with the variable named', (_label, command, named) => {
+        const result = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(result.action).toBe('block');
+        expect(result.reason).toContain(`${DEV} is listed as dev, but ${named} can't be read`);
+        expect(result.reason).not.toContain('Production change');
+    });
+
+    test.each([
+        ['the target in a variable', `render jobs create "$S" --start-command "echo hi"`],
+        ['a variable as a second operand', `render jobs create ${DEV} "$X" --start-command "echo hi"`],
+        ['a variable that could hold flags', `render jobs create ${DEV} $FLAGS`],
+        ['an unquoted variable, which can split into several words', `render jobs create ${DEV} --start-command=$CMD`],
+        ['a variable on a target not listed as dev', `render jobs create ${PROD} --start-command "echo $B64"`],
+        ['a variable beside an unlisted id', `render jobs create ${DEV} --start-command "curl ${PROD}/$X"`],
+        ['a single-quoted dollar, which is literal text', `render jobs create ${DEV} --start-command 'echo $PORT'`],
+        ['a variable beside a single-quoted dollar', `render jobs create ${DEV} --start-command "echo $A"'$B'`],
+        ['a variable the line sets, which the guard already reads', `B64=abc; render jobs create ${DEV} --start-command "echo $B64"`],
+        ['a glob, which no rewrite removes', `render jobs create ${DEV} --start-command "echo *"`],
+        ['a variable behind a wrapper', `timeout 5 render jobs create ${DEV} --start-command "echo $B64"`],
+    ])('%s keeps its card', (_label, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+});
+
 describe('which gate a stopped command takes', () => {
     test('a destructive command that touches no Render resource keeps the destructive gate', () => {
         expect(verdict('kubectl delete deployment app')).toBe('gate');
