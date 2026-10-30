@@ -6636,24 +6636,9 @@ function checkoutBranch(dir: string): string | null {
 }
 
 /** Branch names a `git push` writes to, or null when it may write to every branch or the guard can't tell. */
-/**
- * The branch earlier steps leave checked out: undefined when none switches, its name when the last switch names it
- * (`git switch X`, `-c/-C X`, `git checkout -b/-B X`), null when it can't be read (`git checkout X` may name paths).
- */
-function headAfterSwitches(earlier: ResolvedCommand[]): string | null | undefined {
-    let head: string | null | undefined;
-    for (const c of earlier) {
-        if (c.name !== 'git') continue;
-        const sub = gitSubcommandIndex(c.args);
-        if (!['switch', 'checkout'].includes(c.args[sub])) continue;
-        // A switch run in another checkout (git -C …) says nothing about this one's branch.
-        if (c.args.slice(0, sub).some(a => /^(?:-C|--git-dir|--work-tree)(?:=|$)/.test(a)) || c.chdir !== undefined) { head = null; continue; }
-        const rest = c.args.slice(sub + 1);
-        const create = rest.findIndex(a => ['-c', '-C', '-b', '-B', '--create', '--force-create'].includes(a));
-        const named = create >= 0 ? rest[create + 1] : c.args[sub] === 'switch' ? rest.filter(a => !a.startsWith('-')).at(0) : undefined;
-        head = named !== undefined && !/[$`@]/.test(named) && rest.filter(a => !a.startsWith('-')).length <= 2 ? named : null;
-    }
-    return head;
+/** Undefined when no earlier step switches branches; null when one does, since what it leaves checked out isn't read. */
+function headAfterSwitches(earlier: ResolvedCommand[]): null | undefined {
+    return earlier.some(c => c.name === 'git' && ['switch', 'checkout'].includes(c.args[gitSubcommandIndex(c.args)])) ? null : undefined;
 }
 
 function pushedBranches(args: string[], dir: string | null, head?: string | null): string[] | null {
@@ -6775,7 +6760,7 @@ function noMergeStepReason(
     dir: string | null,
     scope: MergeScope | 'unreadable',
     refused: (repo: string | null, what: string) => string | null,
-    head: string | null | undefined,
+    head: null | undefined,
     line: string,
 ): string | null {
     const text = cmd.args.join(' ');
@@ -6828,7 +6813,7 @@ function noMergeStepReason(
         if (scope === 'unreadable') return refused(null, 'Pushing');
         const protectedHere = repo !== null ? scope.get(repo) : undefined;
         if (protectedHere && (branches === null || branches.some(b => protectedHere.has(b)))) {
-            return refused(repo, `Pushing to ${branches === null ? 'every branch or one the guard cannot read' : branches.join(', ')}`);
+            return refused(repo, `Pushing to ${branches === null ? 'every branch, or one the guard cannot read (after a branch switch, name it: git push origin <branch>)' : branches.join(', ')}`);
         }
         if (repo === null && branches === null) return unplaced('Pushing to every branch');
         if (repo === null && branches !== null) {

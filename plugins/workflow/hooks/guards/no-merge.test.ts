@@ -88,6 +88,8 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a push of the current branch after a switch in another checkout', 'git -C OURS switch feature-x && git push', () => join(dir, 'core-on-master')],
         ['a push from another checkout after a switch here', 'git switch feature-x && git -C CORE_ON_MASTER push', () => other],
         ['a push after switching to the previous branch', "git switch '@{-1}' && git push", () => theirs],
+        ['a push after a switch here and a cd into the checkout', 'git switch feature-x && cd CORE_ON_MASTER && git push', () => other],
+        ['a push of the current branch after creating it, which the guard does not infer', 'git checkout -b fix-y && git push -u origin HEAD', () => theirs],
         ['a REST merge endpoint held whole in a variable', 'ENDPOINT=repos/Acme/core/pulls/12/merge; gh api -X PUT "$ENDPOINT"', () => other],
         ['a REST merge endpoint with a partial placeholder', 'GH_REPO=example/core gh api -X PUT repos/Acme/{repo}/pulls/12/merge', () => other],
     ])('%s', (_label, command, cwd) => {
@@ -100,8 +102,7 @@ describe('a listed repository refuses every merge and protected-branch push', ()
 describe('everything else is untouched', () => {
     test.each([
         ['a feature-branch push', 'git push -u origin feature-x', () => theirs],
-        ['a push of a branch just created', 'git checkout -b fix-y && git push -u origin HEAD', () => theirs],
-        ['a push after switching to a feature branch', 'git switch feature-y && git push', () => join(dir, 'core-on-master')],
+        ['a push naming the branch just created', 'git checkout -b fix-y && git push -u origin fix-y', () => theirs],
         ['a draft pull request', 'gh pr create --draft --title t --body b', () => theirs],
         ['a merge in another repository', 'gh pr merge 12 --squash', () => other],
         ['a merge naming another repository from their checkout', 'gh pr merge 12 -R example/ours', () => theirs],
