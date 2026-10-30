@@ -3,7 +3,16 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { DEV_SCOPE_FILE_ENV, changesProduction, evaluateBashCommand, parseDevScope } from './block-destructive-core';
+import { spawnSync } from 'child_process';
+
+import {
+    DEV_SCOPE_FILE_ENV,
+    RENDER_CLI_TREE,
+    RENDER_CLI_VERSION,
+    changesProduction,
+    evaluateBashCommand,
+    parseDevScope,
+} from './block-destructive-core';
 
 /**
  * RENDER PRODUCTION CHANGES. Every Render command except a short read-only list
@@ -120,6 +129,63 @@ describe('a read whose command is complete before a variable needs no approval',
     });
 });
 
+describe('a render line naming no CLI command is refused with a pointer to the help, not carded', () => {
+    test.each([
+        ['a subcommand the CLI lacks', `render services get ${PROD} -o json`, 'services get'],
+        ['a top-level command the CLI lacks', `render env-vars list ${PROD} -o json`, 'env-vars'],
+        ['the same line in a loop over a variable', 'for s in a b; do render services get "$s" -o json; done', 'services get'],
+        ['a quoted command word', 'render "services" get', 'services get'],
+        ['an attached output value after the stray word', 'render services get -ojson', 'services get'],
+        ['a global flag before the command', 'render -o json services get', 'services get'],
+        ['a known flag between the command and the stray word', 'render services --include-previews get', 'services get'],
+        ['a flag value between them', 'render services -e evm-environment000000001 get', 'services get'],
+        ['a stray word under a parent that only prints help', `render jobs get ${PROD}`, 'jobs get'],
+        ['a stray word two levels down', 'render workflows tasks bogus', 'workflows tasks bogus'],
+        ['an alias', 'render pg show', 'pg show'],
+        ['a services menu named with a dev id it ignores', `render services ${DEV} -o interactive`, `services ${DEV}`],
+        ['an inherited object key as a command', 'render constructor', 'constructor'],
+        ['another inherited object key', 'render toString', 'toString'],
+    ])('%s', (_name, command, words) => {
+        const v = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(v.action).toBe('block');
+        expect(v.reason).toContain(`\`render ${words}\` isn't a Render CLI command (Render CLI ${RENDER_CLI_VERSION})`);
+        expect(v.reason).toContain('render --help');
+    });
+
+    test.each([
+        ['a CLI write command the guard does not classify', `render services update ${PROD} --name new-name`],
+        ['a datastore create', 'render postgres create --name db'],
+        ['an early-access command', 'render ea sandboxes exec sbx-1'],
+        ['a workflow start', `render workflows start ${PROD}`],
+        ['a psql session', `render psql ${PROD_DB}`],
+        ['an operand after a leaf command', `render deploys create ${PROD} get`],
+        ['an operand after restart', 'render restart get'],
+        ['a flag outside the table before the word', 'render services --bogus get'],
+        ['a variable before the word', 'render $cmd get'],
+        ['a -- passthrough', 'render -- services get'],
+    ])('a line that may be a real command keeps its card: %s', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test.each([
+        ['services list, which the CLI reads as services with an argument', 'render services list -o json'],
+        ['an open read with a filter word', 'render logs get'],
+        ['help on an unknown subcommand', 'render deploys foo --help'],
+        ['local CLI state', 'render workspace bogus'],
+    ])('a read stays allowed: %s', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    const live = spawnSync('render', ['--version'], { encoding: 'utf8' });
+    test.skipIf(/^render v(\S+)/m.exec(live.stdout ?? '')?.[1] !== RENDER_CLI_VERSION)('the tree matches the installed CLI of the pinned version', () => {
+        const out = spawnSync('bash', [join(import.meta.dir, '../../../../scripts/render-cli-tree.sh')], { encoding: 'utf8' });
+        expect(out.status).toBe(0);
+        const [version, ...paths] = out.stdout.trim().split('\n');
+        expect(version).toBe(RENDER_CLI_VERSION);
+        expect(paths).toEqual([...RENDER_CLI_TREE].sort());
+    });
+});
+
 describe('changing a Render resource not listed as dev is a production change', () => {
     test.each([
         ['a one-off job', `render jobs create ${PROD} --confirm -o json --start-command "node job.js"`],
@@ -155,7 +221,6 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a listing forced interactive with an equals sign', 'render services -o=interactive'],
         ['a listing whose output mode comes from the environment', 'RENDER_OUTPUT=interactive render services'],
         ['a shell whose flag the guard would misread as taking a value', `render ssh -e production-api ${DEV} -o interactive`],
-        ['a services menu named with a dev id it ignores', `render services ${DEV} -o interactive`],
         ['a projects menu named with a dev id it ignores', `render projects ${DEV} -o interactive`],
         ['psql on a dev database, which reads startup files', `render psql ${DEV_DB} -c 'select 1' -o text`],
         ['a workflow start on a dev id, which opens an input form', `render workflows start ${DEV}`],
@@ -185,8 +250,6 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a task run start', `render workflows tasks runs start ${PROD}`],
         ['a version release', `render workflows versions release ${PROD}`],
         ['a listing forced into interactive mode', 'render services -o interactive'],
-        ['an inherited object key as a command', 'render constructor'],
-        ['another inherited object key', 'render toString'],
     ])('%s', (_label, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);

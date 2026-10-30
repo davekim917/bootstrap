@@ -1780,6 +1780,63 @@ export const RENDER_CHANGE_REASON = 'Production change on Render';
 // `services`, whose children include update and delete, so `services list` is not a leaf there.
 const RENDER_NOT_LEAF = new Set(['services list']);
 
+// Every command path of the Render CLI the agent image installs, as `scripts/render-cli-tree.sh` prints it run in that
+// image. A word the CLI doesn't know there is not a command: it only errors, prints help, or (after `services`) is
+// ignored, so a line naming one is refused with a pointer to the help instead of carded as a production change.
+export const RENDER_CLI_VERSION = '2.28.0';
+export const RENDER_CLI_TREE: ReadonlySet<string> = new Set([
+    'blueprints', 'blueprints validate', 'completion', 'completion bash', 'completion fish', 'completion powershell',
+    'completion zsh', 'deploys', 'deploys cancel', 'deploys create', 'deploys list', 'docs', 'ea', 'ea objects',
+    'ea objects delete', 'ea objects get', 'ea objects list', 'ea objects put', 'ea sandboxes', 'ea sandboxes copy',
+    'ea sandboxes create', 'ea sandboxes exec', 'ea sandboxes list', 'ea sandboxes snapshots',
+    'ea sandboxes snapshots create', 'ea sandboxes snapshots delete', 'ea sandboxes snapshots get',
+    'ea sandboxes snapshots list', 'ea sandboxes stop', 'ea sandbox-groups', 'ea sandbox-groups list',
+    'environments', 'help', 'jobs', 'jobs cancel', 'jobs create', 'jobs list', 'keyvalues', 'keyvalues create',
+    'keyvalues delete', 'keyvalues get', 'keyvalues list', 'keyvalues resume', 'keyvalues suspend',
+    'keyvalues update', 'kv-cli', 'login', 'logout', 'logs', 'pgcli', 'postgres', 'postgres create',
+    'postgres delete', 'postgres get', 'postgres list', 'postgres resume', 'postgres suspend', 'postgres update',
+    'projects', 'psql', 'restart', 'services', 'services create', 'services delete', 'services instances',
+    'services update', 'skills', 'skills install', 'skills list', 'skills remove', 'skills update', 'ssh', 'whoami',
+    'workflows', 'workflows cancel', 'workflows create', 'workflows dev', 'workflows init', 'workflows list',
+    'workflows start', 'workflows tasks', 'workflows tasks list', 'workflows tasks runs',
+    'workflows tasks runs cancel', 'workflows tasks runs list', 'workflows tasks runs show',
+    'workflows tasks runs start', 'workflows versions', 'workflows versions list', 'workflows versions release',
+    'workspace', 'workspace current', 'workspaces', 'workspace set',
+]);
+const RENDER_KNOWN = new Set([...RENDER_CLI_TREE, ...RENDER_COMMANDS.keys()]);
+
+/** Null once a shell expansion, `--` or a flag outside the table comes first: what follows can't be read as a command. */
+export function renderUnknownCommand(args: string[]): string | null {
+    const written: string[] = [];
+    let node = '';
+    let flags: RenderFlags = RENDER_GLOBAL;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--' || RENDER_EXPANDS.test(a)) return null;
+        if (a === '-h' || a === '--help') continue;
+        if (a.startsWith('-') && a !== '-') {
+            const at = a.startsWith('--') ? a.indexOf('=') : -1;
+            const flag = a.startsWith('--') ? (at < 0 ? a : a.slice(0, at)) : RENDER_SHORT.get(a[1]);
+            const arity = flag && Object.hasOwn(flags, flag) ? flags[flag] : undefined;
+            if (!arity) return null;
+            if (arity === 'value' && (a.startsWith('--') ? at < 0 : a.length === 2)) {
+                const value = args[++i];
+                if (value === undefined || RENDER_EXPANDS.test(value)) return null;
+            }
+            continue;
+        }
+        let word = node === '' ? RENDER_ALIASES.get(a) ?? a : a === 'ls' ? 'list' : a;
+        if (node === 'workflows' && word === 'runs') word = 'tasks runs';
+        const next = node === '' ? word : `${node} ${word}`;
+        written.push(a);
+        if (!RENDER_KNOWN.has(next)) return written.join(' ');
+        node = next;
+        if (![...RENDER_KNOWN].some(c => c.startsWith(`${node} `))) return null;
+        flags = { ...RENDER_GLOBAL, ...RENDER_COMMANDS.get(node)?.flags };
+    }
+    return null;
+}
+
 /**
  * Whether a word the shell expands can stand after `command`. It may become any number of words, flags included, so it
  * is read only after a read whose command path is already complete: one with no subcommand left for it to become.
@@ -6016,6 +6073,14 @@ function* gatedSteps(
                 yield {
                     cmd, reason, outer, moves,
                     fix: `${reason}: psql reaches the scratch Postgres at ${rewrite.endpoint} through ${rewrite.via}, which the guard does not resolve, so as written it needs approval. This runs without approval:\n${rewrite.line}${password}`,
+                };
+                continue;
+            }
+            const unknown = cmd.name === 'render' ? renderUnknownCommand(cmd.args) : null;
+            if (unknown !== null) {
+                yield {
+                    cmd, reason, outer, moves,
+                    fix: `\`render ${unknown}\` isn't a Render CLI command (Render CLI ${RENDER_CLI_VERSION}): the CLI errors, prints its help, or ignores the word. Check \`render --help\`, or use the Render REST API for reads.`,
                 };
                 continue;
             }
