@@ -6676,9 +6676,17 @@ function checkoutBranch(dir: string): string | null {
     }
 }
 
-/** Undefined when no earlier step switches branches; null when one does, since what it leaves checked out isn't read. */
+/**
+ * Undefined when no earlier step moves the checked-out branch; null when one does (a switch, a checkout, a branch
+ * rename), since what it leaves checked out isn't read.
+ */
 function headAfterSwitches(earlier: ResolvedCommand[]): null | undefined {
-    return earlier.some(c => c.name === 'git' && ['switch', 'checkout'].includes(c.args[gitSubcommandIndex(c.args)])) ? null : undefined;
+    return earlier.some(c => {
+        if (c.name !== 'git') return false;
+        const sub = c.args[gitSubcommandIndex(c.args)];
+        if (sub === 'switch' || sub === 'checkout') return true;
+        return sub === 'branch' && c.args.some(a => /^-[a-zA-Z]*[mM]|^--move$/.test(a));
+    }) ? null : undefined;
 }
 
 /** Branch names a `git push` writes to, or null when it may write to every branch or the guard can't tell. */
@@ -6829,7 +6837,8 @@ function noMergeStepReason(
     const unresolved = (what: string) => `${what}: its repository is only known when the command runs, so it is refused. Name the repository literally.`;
     const unplaced = (what: string) => scope === 'unreadable' ? refused(null, what) : `${what} from a directory the guard can't place (a cd it can't follow), so it is refused. Run it from the checkout, or name the repository.`;
     const gh = cmd.name === 'gh' ? ghArgs(cmd.args) : null;
-    const ghRepo = assignedValue('GH_REPO', cmd, commands);
+    // gh treats an empty GH_REPO as unset.
+    const ghRepo = assignedValue('GH_REPO', cmd, commands) || undefined;
     if (gh && gh.args[0] === 'pr' && gh.args[1] === 'merge') {
         const selector = ghMergeSelector(gh.args.slice(2));
         const url = selector !== undefined && GITHUB_REPO_IN_TEXT_RE.test(selector) ? selector : undefined;
