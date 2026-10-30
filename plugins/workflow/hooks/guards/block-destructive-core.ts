@@ -1942,7 +1942,7 @@ function renderCommandOf(words: string[]): string | null {
 }
 
 export function renderChangeReason(args: string[]): string | null {
-    if (args.length === 0 || (args.length === 1 && (args[0] === '-v' || args[0] === '--version'))) return null;
+    if (args.every(a => ['-h', '--help', '-v', '--version'].includes(a))) return null;
     const shape = renderShape(args);
     // An expanded word could hold --help=false, so help ends the check only on a line with none.
     if (shape?.help && !shape.expanded) return null;
