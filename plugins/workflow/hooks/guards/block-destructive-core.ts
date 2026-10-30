@@ -7108,8 +7108,8 @@ export function slackPostsOf(command: string): SlackPost[] {
     }
     // A posting URL the commands never carry as a word (held in a variable assignment, say) is still a post the
     // guard can't read: under each OneCLI identity the line names that no read post carries, or under none.
-    // A base URL held in a variable (`${SLACK_API}chat.postMessage`) leaves the method name beside the variable.
-    const heldMethod = /slack\.com\/api/.test(command)
+    // A host or base URL held in a variable (`${SLACK_API}chat.postMessage`) leaves the method name beside it.
+    const heldMethod = /slack\.com/.test(command)
         ? [...command.matchAll(/\b((?:chat|files)\.[A-Za-z]+)\b/g)].map(m => m[1]).find(m => SLACK_POST_METHODS.has(m))
         : undefined;
     const held = carriedPost([command], null) ?? (heldMethod ? { method: heldMethod, text: null, onecliAgent: null } : null);
@@ -7136,7 +7136,7 @@ export function soleCommand(command: string): boolean {
 
 /** The Slack posts in a command that need their sender's OK under the send scope in force. */
 export function gatedSlackPosts(command: string, workgroupId: string | undefined = process.env.NANOCLAW_WORKGROUP_ID): SlackPost[] {
-    if (!/slack\.com\/api/.test(command)) return [];
+    if (!/slack\.com/.test(command)) return [];
     const posts = slackPostsOf(command);
     if (posts.length === 0) return [];
     const scope = currentSendScope();

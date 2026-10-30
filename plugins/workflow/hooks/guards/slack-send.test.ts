@@ -61,6 +61,7 @@ describe('which Slack calls stop for approval', () => {
         ['a wrapped post behind env', undefined, `onecli run --agent ag-acme -- env curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
         ['a listed OneCLI identity given with --agent=', undefined, `onecli run --agent=ag-acme -- curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
         ['a post whose Slack URL a variable holds', 'acme', `URL=https://slack.com/api/chat.postMessage; curl "$URL" -d channel=C1 -d text=hello`, 'gate'],
+        ['a post whose Slack host a variable holds', 'acme', `SLACK=https://slack.com; curl "$SLACK/api/chat.postMessage" -d channel=C1 -d text=hello`, 'gate'],
         ['a post joining a variable base URL with a slash', 'acme', `SLACK_API=https://slack.com/api; curl "$SLACK_API/chat.postMessage" -d channel=C1 -d text=hello`, 'gate'],
         ['a OneCLI identity on a continued line with the URL in a variable', undefined, `URL=https://slack.com/api/chat.postMessage; onecli run --agent \\\n  ag-acme -- curl "$URL" -d channel=C1 -d text=hello`, 'gate'],
         ['a post whose Slack base URL a variable holds', 'acme', `SLACK_API=https://slack.com/api/; curl "\${SLACK_API}chat.postMessage" -d channel=C1 -d text=hello`, 'gate'],
