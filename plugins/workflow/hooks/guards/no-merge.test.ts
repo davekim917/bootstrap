@@ -155,6 +155,8 @@ describe('everything else is untouched', () => {
             return mixed;
         }],
         ['a feature push in every submodule', "git submodule foreach 'git push origin feature-x'", () => other],
+        ['a push after a file edit, in a checkout of no listed repository', "sed -i 's/a/b/' notes.md && git push origin HEAD", () => other],
+        ['a push before a worktree is removed', 'git push origin HEAD && git worktree remove ../scratch-tree', () => other],
         ['a feature push after a script', './prepare.sh && git push origin feature-x', () => theirs],
         ['a merge in another repository after listing remotes', 'git remote -v && gh pr merge 12 --squash', () => other],
         ['a push naming the branch just created', 'git checkout -b fix-y && git push -u origin fix-y', () => theirs],

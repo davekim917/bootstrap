@@ -6700,16 +6700,34 @@ function checkoutBranch(dir: string): string | null {
  * through literal directories (directoriesAfter).
  */
 const INERT_COMMANDS = new Set(['echo', 'printf', 'true', 'false', 'test', '[', 'pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'sleep', 'date', 'which', 'export']);
-const INERT_GIT = new Set(['add', 'commit', 'status', 'log', 'diff', 'show', 'fetch', 'pull', 'rev-parse', 'ls-files', 'tag', 'merge-base', 'describe', 'blame', 'grep']);
+const INERT_GIT = new Set([
+    'add', 'commit', 'status', 'log', 'diff', 'show', 'fetch', 'pull', 'rev-parse', 'ls-files', 'tag', 'merge-base', 'describe', 'blame',
+    'grep', 'merge', 'archive', 'ls-remote', 'stash', 'cherry-pick', 'revert', 'reset', 'restore', 'rm', 'mv', 'apply', 'shortlog',
+    'rev-list', 'cat-file', 'for-each-ref', 'show-ref', 'check-ignore', 'clean', 'notes',
+]);
+// gh subcommands that read or act on GitHub without touching the local checkout; any other may (pr checkout, repo clone).
+const INERT_GH = new Set(['pr view', 'pr list', 'pr status', 'pr checks', 'pr diff', 'pr create', 'pr edit', 'pr comment', 'pr review', 'pr ready', 'pr close', 'pr reopen', 'repo view', 'api', 'auth', 'issue', 'run', 'workflow', 'search', 'label', 'release', 'secret', 'variable', 'cache', 'gist', 'browse', 'status']);
+
+/** A merge or push the guard checks itself, as opposed to a command that moves the checkout before one. */
+function isMergeOrPush(c: ResolvedCommand): boolean {
+    if (c.name === 'git') return c.args[gitSubcommandIndex(c.args)] === 'push';
+    const g = c.name === 'gh' ? ghArgs(c.args).args : [];
+    return (g[0] === 'pr' && g[1] === 'merge') || (g[0] === 'repo' && g[1] === 'sync');
+}
 
 function leavesCheckoutAlone(c: ResolvedCommand): boolean {
     if (DIRECTORY_CHANGERS.has(c.name) || INERT_COMMANDS.has(c.name)) return true;
+    if (c.name === 'gh') {
+        const g = ghArgs(c.args).args;
+        return !g[0]?.startsWith('-') && (INERT_GH.has(g[0]) || INERT_GH.has(`${g[0]} ${g[1]}`));
+    }
     if (c.name !== 'git' || (c.env ?? []).some(e => /^GIT_(?:DIR|WORK_TREE)=/.test(e))) return false;
     const at = gitSubcommandIndex(c.args);
     const sub = c.args[at];
     if (INERT_GIT.has(sub)) return true;
     const rest = c.args.slice(at + 1);
     if (sub === 'branch') return !rest.some(a => /^-[a-zA-Z]*[mMcC]|^--(?:move|copy)$/.test(a));
+    if (sub === 'worktree') return rest[0] === 'list';
     if (sub === 'remote') return rest.length === 0 || ['-v', '--verbose', 'show', 'get-url'].includes(rest[0]);
     if (sub === 'config') return rest.some(a => ['--get', '--get-all', '--get-regexp', '--list', '-l'].includes(a));
     return false;
@@ -6779,13 +6797,14 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
     };
     let dirs: string[] | null = [cwd];
     let alone = true;
-    const steps: Array<{ cmd: ResolvedCommand; places: Array<string | null>; known: boolean; siblings: ResolvedCommand[] }> = [];
+    const steps: Array<{ cmd: ResolvedCommand; places: Array<string | null>; known: boolean; siblings: ResolvedCommand[]; moved: boolean }> = [];
+    let moved = false;
     const addRuns = (cmd: ResolvedCommand, depth: number): string | null => {
         for (const { inner, tail } of execRuns(cmd)) {
             const inside = innerSteps(inner, tail);
             if (inside === RUNS_VARIABLE || depth > 4) return refused(null, 'A command taken from input') ?? `A command xargs, find or git submodule foreach takes from its input may merge or push, so it is refused while merge-scope.local.json lists repositories. ${SIMPLE_COMMAND}`;
             for (const step of inside) {
-                steps.push({ cmd: step, places: [null], known: false, siblings: inside });
+                steps.push({ cmd: step, places: [null], known: false, siblings: inside, moved: true });
                 const reason = addRuns(step, depth + 1);
                 if (reason) return reason;
             }
@@ -6797,21 +6816,21 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
         // After a cd the step may run in any of the directories it could have reached; each one is checked.
         const chdir = cmd.chdir ?? '.';
         const places: Array<string | null> = dirs && !UNKNOWN_WORD_RE.test(chdir) && !chdir.startsWith('~') ? dirs.map(d => pathResolve(d, chdir)) : [null];
-        steps.push({ cmd, places, known: alone, siblings: commands });
+        steps.push({ cmd, places, known: alone, siblings: commands, moved });
         const reason = addRuns(cmd, 0);
         if (reason) return reason;
         if (!leavesCheckoutAlone(cmd)) alone = false;
+        if ((cmd.name === 'git' || cmd.name === 'gh') && !leavesCheckoutAlone(cmd) && !isMergeOrPush(cmd)) moved = true;
     }
     // Unknown checkout state is refused only where it can reach a listed repository: a line that names one, runs from a
     // checkout of one, or runs git or gh (which fetch a repository by number or URL) before the merge or push. A file
     // edit or a build before a push in a checkout of no listed repository keeps what is on disk.
     const lower = line.toLowerCase();
-    const involved = scope === 'unreadable' || [...scope.keys()].some(repo => lower.includes(repo))
-        || commands.some(c => (c.name === 'git' || c.name === 'gh') && !leavesCheckoutAlone(c))
+    const listed = scope === 'unreadable' || [...scope.keys()].some(repo => lower.includes(repo))
         || steps.some(({ places }) => places.some(dir => dir !== null && checkoutRemoteRepos(dir).some(r => r !== null && scope.has(r))));
-    for (const { cmd, places, known, siblings } of steps) {
+    for (const { cmd, places, known, siblings, moved } of steps) {
         for (const dir of places) {
-            const reason = noMergeStepReason(cmd, siblings, dir, scope, refused, line, known || (!involved && dir !== null));
+            const reason = noMergeStepReason(cmd, siblings, dir, scope, refused, line, known || (!listed && !moved && dir !== null));
             if (reason) return reason;
         }
     }
