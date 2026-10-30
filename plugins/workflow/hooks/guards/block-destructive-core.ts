@@ -6778,6 +6778,19 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
             const reason = noMergeStepReason(cmd, commands, dir, scope, refused, head, line, remotesMoved);
             if (reason) return reason;
         }
+        // What xargs, find -exec or git submodule foreach runs is checked too; per-match and per-submodule directories
+        // are unknown here, so a merge or protected push there is refused.
+        for (const { inner, tail } of execRuns(cmd)) {
+            const steps = innerSteps(inner, tail);
+            if (steps === RUNS_VARIABLE) return refused(null, 'A command taken from input') ?? 'A command taken from input (xargs or find) may merge or push, so it is refused while merge-scope.local.json lists repositories.';
+            for (const step of steps) {
+                const fixed = step.chdir === EACH_MATCH_DIR || step.chdir === EACH_SUBMODULE_DIR ? [null] : places;
+                for (const dir of fixed) {
+                    const reason = noMergeStepReason(step, steps, dir, scope, refused, headAfterSwitches(steps.slice(0, steps.indexOf(step))), line, remotesMoved);
+                    if (reason) return reason;
+                }
+            }
+        }
     }
     return null;
 }

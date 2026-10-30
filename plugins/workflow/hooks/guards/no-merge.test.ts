@@ -92,6 +92,8 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         }],
         ['a repository sync into the listed repository', 'gh repo sync Acme/core --branch master', () => other],
         ['a repository sync from inside the listed checkout', 'gh repo sync --branch master', () => theirs],
+        ['a protected push in every submodule', "git submodule foreach 'git push origin master'", () => other],
+        ['a merge run by find -exec', 'find . -maxdepth 0 -exec gh pr merge 12 -R Acme/core --squash \\;', () => other],
         ['a matching push, which writes every matching branch', 'git push origin :', () => theirs],
         ['a push through a symlink into the listed checkout', 'cd core-link && git push origin HEAD:master', () => {
             mkdirSync(join(theirs, 'subdir'), { recursive: true });
@@ -143,6 +145,7 @@ describe('everything else is untouched', () => {
             writeFileSync(join(mixed, '.git', 'config'), `[remote "origin"]\n\turl = git@github.com:example/ours.git\n[remote "mirror"]\n\turl = https://gitlab.com/example/ours.git\n`);
             return mixed;
         }],
+        ['a feature push in every submodule', "git submodule foreach 'git push origin feature-x'", () => other],
         ['a push naming the branch just created', 'git checkout -b fix-y && git push -u origin fix-y', () => theirs],
         ['a tags-only push from the protected branch', 'git push origin --tags', () => join(dir, 'core-on-master')],
         ['a push to a repository off GitHub', 'git push https://gitlab.com/example/ours.git HEAD:master', () => theirs],
