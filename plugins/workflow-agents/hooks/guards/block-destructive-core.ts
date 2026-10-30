@@ -65,6 +65,7 @@ export interface ResolvedCommand {
     raw: string;                // original text for error messages
     env?: string[];             // NAME=value assignments applied to this command (prefix or `env` wrapper)
     chdir?: string;             // working directory set by an `env -C/--chdir` wrapper
+    onecliAgent?: string;       // the identity an `onecli run --agent <id> --` wrapper runs it under
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
     stdinTexts?: string[];      // heredoc and here-string text fed to this command
@@ -666,7 +667,7 @@ export const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 
 // Command wrappers that should be stripped to find the real command
 export const WRAPPERS = new Set([
-    'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout', 'stdbuf', 'setsid',
+    'sudo', 'env', 'command', 'builtin', 'nohup', 'time', 'nice', 'timeout', 'gtimeout', 'stdbuf', 'setsid', 'onecli',
     // Package runners execute an arbitrary command too. Without them here,
     // `pnpm exec rm -rf <path>` resolved to name='pnpm' and every destructive
     // check passed — and since `Bash(pnpm exec *)` is commonly allow-listed,
@@ -2284,10 +2285,11 @@ function splitEnvString(text: string): string[] | null {
  * assignments and `env -C` directory picked up on the way. Shared by the top-level resolver and by the commands
  * xargs and find -exec run, so a wrapper is unwrapped the same way wherever it appears.
  */
-export function stripWrappers(word: string, rest: string[]): { name: string; args: string[]; env: string[]; chdir?: string } {
+export function stripWrappers(word: string, rest: string[]): { name: string; args: string[]; env: string[]; chdir?: string; onecliAgent?: string } {
     let name = commandName(word);
     let args = rest;
     let chdir: string | undefined;
+    let onecliAgent: string | undefined;
     const env: string[] = [];
     // Resolve through wrapper commands
     while (WRAPPERS.has(name) && args.length > 0) {
@@ -2357,6 +2359,14 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
                 skip += optionWords(args[skip], 'a');
             }
             if (args[skip] === '--') skip += 1;
+        } else if (name === 'onecli') {
+            // `onecli run [options] -- <command>` runs the command with credentials injected; nothing else does.
+            const split = args.indexOf('--');
+            if (args[0] !== 'run' || split < 0) break;
+            const own = args.slice(1, split);
+            const at = own.findIndex(a => a === '--agent' || a.startsWith('--agent='));
+            if (at >= 0) onecliAgent = own[at].startsWith('--agent=') ? own[at].slice('--agent='.length) : own[at + 1];
+            skip = split + 1;
         } else if (name === 'npx' || name === 'bunx') {
             // The command follows the flags; -p/--package takes a value.
             while (skip < args.length && args[skip].startsWith('-')) {
@@ -2384,7 +2394,7 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
         name = commandName(args[skip]);
         args = args.slice(skip + 1);
     }
-    return { name, args, env, ...(chdir !== undefined ? { chdir } : {}) };
+    return { name, args, env, ...(chdir !== undefined ? { chdir } : {}), ...(onecliAgent !== undefined ? { onecliAgent } : {}) };
 }
 
 const BRACE_EXPANSION_MAX = 1024;
@@ -2470,7 +2480,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const words = blocked ? ['eval'] : (expanded as string[][]).flat();
     const first = blocked || expanded[0]!.length !== 1 || expanded[0]![0] !== wordValue(node.name) ? words[0] ?? '' : node.name.value || '';
     const stripped = stripWrappers(first, words.slice(1));
-    const { name, args, chdir } = stripped;
+    const { name, args, chdir, onecliAgent } = stripped;
     env.push(...stripped.env);
 
     // Check for input redirects (<<, <<<) on the original Command node
@@ -2504,6 +2514,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         raw: rawParts.join(' '),
         env,
         ...(chdir !== undefined ? { chdir } : {}),
+        ...(onecliAgent !== undefined ? { onecliAgent } : {}),
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
         ...(stdinTexts.length ? { stdinTexts } : {}),
@@ -6751,18 +6762,8 @@ export function slackPostsOf(command: string): SlackPost[] {
     }
     const posts: SlackPost[] = [];
     for (const cmd of commands) {
-        if (cmd.name === 'onecli' && cmd.args[0] === 'run') {
-            const split = cmd.args.indexOf('--');
-            const own = split < 0 ? cmd.args : cmd.args.slice(0, split);
-            const agentAt = own.findIndex(a => a === '--agent' || a.startsWith('--agent='));
-            const named = agentAt < 0 ? null : own[agentAt].startsWith('--agent=') ? own[agentAt].slice('--agent='.length) : own[agentAt + 1] ?? null;
-            const agent = named !== null && /[$`]/.test(named) ? UNKNOWN_ONECLI_AGENT : named;
-            const inner = split >= 0 ? cmd.args.slice(split + 1) : [];
-            const post = (inner.length ? slackPostIn(commandName(inner[0]), inner.slice(1), agent) : null) ?? carriedPost(inner, agent);
-            if (post) posts.push(post);
-            continue;
-        }
-        const post = slackPostIn(cmd.name, cmd.args, null) ?? carriedPost(cmd.args, null);
+        const agent = cmd.onecliAgent === undefined ? null : /[$`]/.test(cmd.onecliAgent) ? UNKNOWN_ONECLI_AGENT : cmd.onecliAgent;
+        const post = slackPostIn(cmd.name, cmd.args, agent) ?? carriedPost(cmd.args, agent);
         if (post) posts.push(post);
     }
     // A posting URL the commands never carry as a word (held in a variable assignment, say) is still a post the
