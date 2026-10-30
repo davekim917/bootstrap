@@ -4151,6 +4151,8 @@ const LINE_EXPANSION_RE = /[$`]|[<>]\(/;
 const PLAIN_LINE_NODES = new Set(['Script', 'Statement', 'Command', 'Pipeline', 'AndOr']);
 
 const PSQL_SHORT_FLAGS = 'XqtA1eabEnwWx';
+// The long psql flags the scratch-postgres helper passes through; it refuses any other.
+const SCRATCH_PG_LONG_FLAGS = new Set(['--no-psqlrc', '--quiet', '--tuples-only', '--no-align', '--single-transaction', '--echo-queries', '--echo-all', '--echo-errors', '--echo-hidden', '--no-readline', '--no-password', '--expanded', '--csv']);
 const PSQL_SHORT_VALUES: Record<string, string> = { c: '--command', d: '--dbname', h: '--host', p: '--port', U: '--username', v: '--set' };
 const PSQL_LONG_FLAGS = new Set(['--no-psqlrc', '--quiet', '--tuples-only', '--no-align', '--single-transaction', '--echo-queries', '--echo-all', '--echo-errors', '--echo-hidden', '--no-readline', '--no-password', '--password', '--expanded', '--csv']);
 const PSQL_LONG_VALUES = new Set(['--command', '--dbname', '--host', '--port', '--username', '--set', '--variable']);
@@ -4552,8 +4554,16 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
     const otherValue = cmd.name === 'psql'
         ? new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*[UpvfoLPTFR]|--(?:username|port|set|variable|file|output|log-file|pset|table-attr|field-separator|record-separator)=?)(.*)$`)
         : new RegExp(`^(?:-[${DROPDB_SHORT_FLAGS}]*[pU]|--(?:username|port)=?)(.*)$`);
+    // The psql options scratch-pg accepts carry into the suggested line as written: -1 and ON_ERROR_STOP decide
+    // whether a failed statement rolls back the ones before it.
+    const kept: string[] = [];
+    const spelledAt = (at: number) => written?.[at] ?? `'${cmd.args[at].replace(/'/g, `'\\''`)}'`;
     for (let i = 0; i < cmd.args.length; i++) {
         const a = cmd.args[i];
+        if (cmd.name === 'psql' && (new RegExp(`^-[${PSQL_SHORT_FLAGS}]+$`).test(a) || SCRATCH_PG_LONG_FLAGS.has(a))) {
+            kept.push(spelledAt(i));
+            continue;
+        }
         const value = (option: RegExp): { text: string; at: number } | null => {
             const m = a.match(option);
             if (!m) return null;
@@ -4576,6 +4586,7 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
         }
         const other = value(otherValue);
         if (other) {
+            if (cmd.name === 'psql' && /^(?:-v|--set|--variable)/.test(a)) kept.push(...(other.at === i ? [spelledAt(i)] : [spelledAt(i), spelledAt(other.at)]));
             i = other.at;
             continue;
         }
@@ -4605,7 +4616,7 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
     const target = explicitDb ?? positionalDb ?? '<db>';
     const line = cmd.name === 'dropdb'
         ? `${SCRATCH_PG} dropdb ${target}`
-        : `${SCRATCH_PG} psql ${target} ${sql.length ? sql.map(s => `-c ${s}`).join(' ') : "-c '<sql>'"}`;
+        : [`${SCRATCH_PG} psql ${target}`, ...kept, sql.length ? sql.map(s => `-c ${s}`).join(' ') : "-c '<sql>'"].join(' ');
     return [
         `this ${cmd.name} reaches a database the guard can't name, through a variable, libpq's defaults or a local address it couldn't prove is a scratch Postgres, so it is refused instead of sent for approval.`,
         `If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval (it starts one under /tmp first if none is running: ${SCRATCH_PG} start):`,

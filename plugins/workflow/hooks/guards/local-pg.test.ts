@@ -363,6 +363,8 @@ describe('a psql or dropdb whose database the line does not name is refused towa
         ['dropdb with a username and port', 'dropdb -U postgres -p 5432 app_test', `${SPG} dropdb app_test`],
         ['dropdb with a separate local host', 'dropdb -h localhost app_test', `${SPG} dropdb app_test`],
         ['an attached --command with a variable', `psql -d app_test --command="DELETE FROM orders WHERE status = '$STATUS'"`, `${SPG} psql app_test -c "DELETE FROM orders WHERE status = '$STATUS'"`],
+        ['transaction options', "psql -d app_test -1 -v ON_ERROR_STOP=1 -c 'DELETE FROM orders' -c 'INSERT INTO orders VALUES (1)'", `${SPG} psql app_test -1 -v ON_ERROR_STOP=1 -c 'DELETE FROM orders' -c 'INSERT INTO orders VALUES (1)'`],
+        ['long transaction options', "psql -d app_test --single-transaction --set=ON_ERROR_STOP=1 -c 'DELETE FROM orders'", `${SPG} psql app_test --single-transaction --set=ON_ERROR_STOP=1 -c 'DELETE FROM orders'`],
         ['an attached -qc with a variable', `psql -d app_test -qc"DELETE FROM orders WHERE id = $ID"`, `${SPG} psql app_test -c "DELETE FROM orders WHERE id = $ID"`],
         ['psql with a separate local host', "psql -h localhost app_test -c 'DROP TABLE orders'", `${SPG} psql app_test -c 'DROP TABLE orders'`],
     ])('%s: refused with the scratch-pg line', (_name, command, line) => {
