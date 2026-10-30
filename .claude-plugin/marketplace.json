@@ -9,7 +9,7 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
-      "version": "5.19.0"
+      "version": "5.20.0"
     },
     {
       "name": "bootstrap-orchestrate",

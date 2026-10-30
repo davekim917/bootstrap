@@ -4,7 +4,7 @@ import { PLATFORM_DESTRUCTIVE, evaluateBashCommand } from './block-destructive-c
 // One command per checkGatedCommand rule. A rule added there without a row here, or without its words in
 // RUNTIME_PROBES, lets xargs input or a find match supply those words unseen.
 const GATED_BY_RULE: string[][] = [
-    ['psql', '-c', 'DROP TABLE users'],
+    ['psql', '-h', 'db.example', '-c', 'DROP TABLE users'],
     ['snow', 'sql', '-q', 'DROP TABLE prod.orders'],
     ['mongosh', '--eval', 'db.users.drop()'],
     ['redis-cli', 'FLUSHALL'],

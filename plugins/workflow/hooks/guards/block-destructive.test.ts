@@ -86,7 +86,7 @@ describe('gated full-command patterns (local native approval)', () => {
     test.each([
         // Databases
         ['snow sql -q "DROP TABLE users"', 'Snowflake'],
-        ['psql -c "DROP TABLE users"', 'PostgreSQL'],
+        ['psql -h db.example -c "DROP TABLE users"', 'PostgreSQL'],
         ['mysql -e "DROP DATABASE prod"', 'MySQL'],
         ['duckdb test.db "DELETE FROM users"', 'DuckDB'],
         ['sqlite3 db.sqlite "DROP TABLE users"', 'SQLite'],
@@ -343,7 +343,7 @@ describe('SQL gate: false positives from string literals and comments are allowe
 
 describe('SQL gate: leading destructive statement is gated even after non-destructive prefix', () => {
     test('multi-statement: SELECT then DROP TABLE is gated', async () => {
-        const cmd = `psql -c "SELECT 1; DROP TABLE foo"`;
+        const cmd = `psql -h db.example -c "SELECT 1; DROP TABLE foo"`;
         const result = await runHook(cmd);
         expectNativeAsk(result, /drop table/i);
     });
@@ -363,9 +363,9 @@ describe('SQL gate: expanded destructive patterns are gated', () => {
     test.each([
         // CTE-wrapped DML — destructive verb is inside a CTE body, not at the
         // top of the statement. Postgres-style.
-        [`psql -c "WITH d AS (DELETE FROM foo RETURNING *) SELECT * FROM d"`, 'CTE-wrapped DELETE FROM'],
-        [`psql -c "WITH t AS (TRUNCATE foo) SELECT 1"`, 'CTE-wrapped TRUNCATE'],
-        [`psql -c "WITH x AS (SELECT 1), d AS (DELETE FROM target USING x WHERE x.id = target.id) SELECT 1"`, 'multi-CTE with destructive second body'],
+        [`psql -h db.example -c "WITH d AS (DELETE FROM foo RETURNING *) SELECT * FROM d"`, 'CTE-wrapped DELETE FROM'],
+        [`psql -h db.example -c "WITH t AS (TRUNCATE foo) SELECT 1"`, 'CTE-wrapped TRUNCATE'],
+        [`psql -h db.example -c "WITH x AS (SELECT 1), d AS (DELETE FROM target USING x WHERE x.id = target.id) SELECT 1"`, 'multi-CTE with destructive second body'],
 
         // CREATE OR REPLACE — Snowflake/Postgres idiomatic drop+recreate.
         [`snow sql -q "CREATE OR REPLACE TABLE foo (id INT)"`, 'CREATE OR REPLACE TABLE'],
@@ -385,16 +385,16 @@ describe('SQL gate: expanded destructive patterns are gated', () => {
         [`snow sql -q "INSERT OVERWRITE foo SELECT 1"`, 'INSERT OVERWRITE bare'],
 
         // MERGE — gate all forms; destructive clauses are too varied to whitelist.
-        [`psql -c "MERGE INTO foo USING bar ON foo.id = bar.id WHEN MATCHED THEN DELETE"`, 'MERGE with DELETE'],
+        [`psql -h db.example -c "MERGE INTO foo USING bar ON foo.id = bar.id WHEN MATCHED THEN DELETE"`, 'MERGE with DELETE'],
         [`snow sql -q "MERGE INTO foo USING bar ON foo.id = bar.id WHEN MATCHED THEN UPDATE SET foo.x = bar.x"`, 'MERGE with UPDATE'],
 
         // ALTER ... DROP — drops columns, constraints, etc.
-        [`psql -c "ALTER TABLE foo DROP COLUMN bar"`, 'ALTER TABLE DROP COLUMN'],
-        [`psql -c "ALTER TABLE foo DROP CONSTRAINT pk_foo"`, 'ALTER TABLE DROP CONSTRAINT'],
-        [`psql -c "ALTER SCHEMA s DROP FUNCTION f()"`, 'ALTER SCHEMA DROP'],
+        [`psql -h db.example -c "ALTER TABLE foo DROP COLUMN bar"`, 'ALTER TABLE DROP COLUMN'],
+        [`psql -h db.example -c "ALTER TABLE foo DROP CONSTRAINT pk_foo"`, 'ALTER TABLE DROP CONSTRAINT'],
+        [`psql -h db.example -c "ALTER SCHEMA s DROP FUNCTION f()"`, 'ALTER SCHEMA DROP'],
 
         // UPDATE without WHERE — rewrites every row.
-        [`psql -c "UPDATE foo SET col = 1"`, 'UPDATE without WHERE'],
+        [`psql -h db.example -c "UPDATE foo SET col = 1"`, 'UPDATE without WHERE'],
         [`mysql -e "UPDATE users SET email = NULL"`, 'UPDATE without WHERE (mysql)'],
 
         // EXECUTE IMMEDIATE — destructive verb is inside the literal.
@@ -406,14 +406,14 @@ describe('SQL gate: expanded destructive patterns are gated', () => {
     });
 
     test('CTE-wrapped pattern is labeled in gate message', async () => {
-        const cmd = `psql -c "WITH d AS (DELETE FROM foo RETURNING *) SELECT * FROM d"`;
+        const cmd = `psql -h db.example -c "WITH d AS (DELETE FROM foo RETURNING *) SELECT * FROM d"`;
         const result = await runHook(cmd);
         expect(result.permissionDecisionReason).toContain('CTE-wrapped DELETE FROM');
         expect(result.permissionDecisionReason?.toLowerCase()).toContain('delete from foo');
     });
 
     test('UPDATE without WHERE pattern is labeled in gate message', async () => {
-        const cmd = `psql -c "UPDATE foo SET col = 1"`;
+        const cmd = `psql -h db.example -c "UPDATE foo SET col = 1"`;
         const result = await runHook(cmd);
         expect(result.permissionDecisionReason).toContain('UPDATE without WHERE');
     });
