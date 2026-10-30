@@ -7117,7 +7117,9 @@ export function slackPostsOf(command: string): SlackPost[] {
         const named = [...command.replace(/\\\n/g, ' ').matchAll(/\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/g)]
             .map(m => m[1].replace(/^(['"])(.*)\1$/, '$2'))
             .map(n => /[$`]/.test(n) ? UNKNOWN_ONECLI_AGENT : n);
-        for (const agent of posts.length === 0 ? [null, ...named] : named) {
+        // A direct HTTP call whose URL a variable holds may be the post itself, in the session's own name.
+        const direct = posts.length === 0 || commands.some(c => HTTP_CLIENTS.has(c.name) && c.onecliAgent === undefined && c.args.some(w => /[$`]/.test(w)));
+        for (const agent of direct ? [null, ...named] : named) {
             if (!posts.some(p => p.onecliAgent === agent)) posts.push({ ...held, onecliAgent: agent });
         }
     }
