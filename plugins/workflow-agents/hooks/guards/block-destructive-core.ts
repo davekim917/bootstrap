@@ -6680,7 +6680,10 @@ function checkoutRemoteRepos(dir: string): Array<string | null> {
         return [null];
     }
     const names = [...config.matchAll(/^\[remote\s+"([^"]+)"\]/gm)].map(m => m[1]);
-    return names.length ? names.map(name => checkoutRemoteRepo(dir, name)) : [null];
+    // A branch's pushRemote or the remote.pushDefault may be a URL no named remote holds (gh pr checkout sets one).
+    const pushUrls = [...config.matchAll(/^\s*(?:pushRemote|pushDefault)\s*=\s*(.+)$/gim)].map(m => m[1].trim()).filter(v => !names.includes(v));
+    const repos = [...names.map(name => checkoutRemoteRepo(dir, name)), ...pushUrls.map(githubRepoOf)];
+    return repos.length ? repos : [null];
 }
 
 /** The branch a checkout has out, or null when detached or unreadable. */
@@ -6695,21 +6698,29 @@ function checkoutBranch(dir: string): string | null {
 }
 
 /**
- * Undefined when no earlier step moves the checked-out branch; null when one does (a switch, a checkout, a branch
- * rename, `gh pr checkout`), since what it leaves checked out isn't read.
+ * Commands that leave a checkout's branch, remotes and directory as they were, so a merge or push after them can be
+ * checked against the checkout on disk. Anything else before it (a switch, a remote change, a clone, a script) leaves
+ * them unknown: the guard reads what is on disk, it does not follow what a line does to it. `cd` is followed only
+ * through literal directories (directoriesAfter).
  */
-function headAfterSwitches(earlier: ResolvedCommand[]): null | undefined {
-    return earlier.some(c => {
-        if (c.name === 'gh') { const g = ghArgs(c.args).args; return g[0] === 'pr' && ['checkout', 'co'].includes(g[1]); }
-        if (c.name !== 'git') return false;
-        const sub = c.args[gitSubcommandIndex(c.args)];
-        if (sub === 'switch' || sub === 'checkout') return true;
-        return sub === 'branch' && c.args.some(a => /^-[a-zA-Z]*[mM]|^--move$/.test(a));
-    }) ? null : undefined;
+const INERT_COMMANDS = new Set(['echo', 'printf', 'true', 'false', 'test', '[', 'pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'sleep', 'date', 'which', 'export']);
+const INERT_GIT = new Set(['add', 'commit', 'status', 'log', 'diff', 'show', 'fetch', 'pull', 'rev-parse', 'ls-files', 'tag', 'merge-base', 'describe', 'blame', 'grep']);
+
+function leavesCheckoutAlone(c: ResolvedCommand): boolean {
+    if (DIRECTORY_CHANGERS.has(c.name) || INERT_COMMANDS.has(c.name)) return true;
+    if (c.name !== 'git' || (c.env ?? []).some(e => /^GIT_(?:DIR|WORK_TREE)=/.test(e))) return false;
+    const at = gitSubcommandIndex(c.args);
+    const sub = c.args[at];
+    if (INERT_GIT.has(sub)) return true;
+    const rest = c.args.slice(at + 1);
+    if (sub === 'branch') return !rest.some(a => /^-[a-zA-Z]*[mMcC]|^--(?:move|copy)$/.test(a));
+    if (sub === 'remote') return rest.length === 0 || ['-v', '--verbose', 'show', 'get-url'].includes(rest[0]);
+    if (sub === 'config') return rest.some(a => ['--get', '--get-all', '--get-regexp', '--list', '-l'].includes(a));
+    return false;
 }
 
 /** Branch names a `git push` writes to, or null when it may write to every branch or the guard can't tell. */
-function pushedBranches(args: string[], dir: string | null, head?: string | null): string[] | null {
+function pushedBranches(args: string[], current: string | null): string[] | null {
     const sub = gitSubcommandIndex(args);
     const rest = args.slice(sub + 1);
     if (rest.some(a => /^--[a-z]/.test(a) && ['all', 'mirror', 'branches'].some(o => o.startsWith(a.slice(2))))) return null;
@@ -6717,20 +6728,16 @@ function pushedBranches(args: string[], dir: string | null, head?: string | null
     const refspecs = positionals.slice(1);
     // `--tags` alone pushes tags and no branch.
     if (refspecs.length === 0 && rest.includes('--tags')) return [];
-    if (refspecs.length === 0) {
-        const branch = head !== undefined ? head : dir ? checkoutBranch(dir) : null;
-        return branch ? [branch] : null;
-    }
+    if (refspecs.length === 0) return current ? [current] : null;
     const names: string[] = [];
     for (const spec of refspecs) {
         // A bare ':' pushes every branch that matches one on the remote.
         if (spec.replace(/^\+/, '') === ':') return null;
         const target = (spec.includes(':') ? spec.slice(spec.indexOf(':') + 1) : spec).replace(/^\+/, '').replace(/^refs\/heads\//, '');
         if (target === 'HEAD' || target === '@' || target === '') {
-            const branch = head !== undefined ? head : dir ? checkoutBranch(dir) : null;
-            if (!branch) return null;
-            names.push(branch);
-        } else if (/[$`*]/.test(target) || target.includes(FILLED)) {
+            if (!current) return null;
+            names.push(current);
+        } else if (/[$`*~^]/.test(target) || UNKNOWN_WORD_RE.test(target) || /^@\{/.test(target)) {
             return null;
         } else {
             names.push(target);
@@ -6759,7 +6766,13 @@ function ghArgs(args: string[]): { args: string[]; repo: string | undefined } {
     return { args: rest, repo };
 }
 
-/** Why a command merges into, or pushes to a protected branch of, a repository agents never merge into. */
+/**
+ * Why a command merges into, or pushes to a protected branch of, a repository agents never merge into. The guard
+ * checks only what it can read without following the line: a merge or push is checked against the checkout on disk
+ * when every command before it leaves that checkout alone, and what xargs, find -exec or git submodule foreach runs
+ * is checked with its directory, branch and remotes unknown. Unknown is refused wherever it could reach a listed
+ * repository; a push naming only branches no listed repository protects needs none of it and runs.
+ */
 function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): string | null {
     const scope = currentMergeScope();
     if (scope === null) return null;
@@ -6769,63 +6782,40 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
         return `${what} in ${repo}, which belongs to another team. Open the pull request as a draft and hand it to them; agents never merge there.`;
     };
     let dirs: string[] | null = [cwd];
+    let alone = true;
+    const steps: Array<{ cmd: ResolvedCommand; places: Array<string | null>; known: boolean; siblings: ResolvedCommand[] }> = [];
+    const addRuns = (cmd: ResolvedCommand, depth: number): string | null => {
+        for (const { inner, tail } of execRuns(cmd)) {
+            const inside = innerSteps(inner, tail);
+            if (inside === RUNS_VARIABLE || depth > 4) return refused(null, 'A command taken from input') ?? `A command xargs, find or git submodule foreach takes from its input may merge or push, so it is refused while merge-scope.local.json lists repositories. ${SIMPLE_COMMAND}`;
+            for (const step of inside) {
+                steps.push({ cmd: step, places: [null], known: false, siblings: inside });
+                const reason = addRuns(step, depth + 1);
+                if (reason) return reason;
+            }
+        }
+        return null;
+    };
     for (const cmd of commands) {
         if (DIRECTORY_CHANGERS.has(cmd.name)) dirs = directoriesAfter(dirs, cmd);
         // After a cd the step may run in any of the directories it could have reached; each one is checked.
-        const places: Array<string | null> = dirs && !UNKNOWN_WORD_RE.test(cmd.chdir ?? '') && !(cmd.chdir ?? '').startsWith('~') ? dirs.map(d => pathResolve(d, cmd.chdir ?? '.')) : [null];
-        const earlier = commands.slice(0, commands.indexOf(cmd));
-        const head = headAfterSwitches(earlier);
-        // A remote added, renamed or repointed, a clone or a new worktree earlier in the step leaves the checkout's
-        // repository unread.
-        const remotesMoved = earlier.some(movesRemotes);
-        for (const dir of places) {
-            const reason = noMergeStepReason(cmd, commands, dir, scope, refused, head, line, remotesMoved);
-            if (reason) return reason;
-        }
-        const reason = executorReason(cmd, scope, refused, line);
+        const chdir = cmd.chdir ?? '.';
+        const places: Array<string | null> = dirs && !UNKNOWN_WORD_RE.test(chdir) && !chdir.startsWith('~') ? dirs.map(d => pathResolve(d, chdir)) : [null];
+        steps.push({ cmd, places, known: alone, siblings: commands });
+        const reason = addRuns(cmd, 0);
         if (reason) return reason;
+        if (!leavesCheckoutAlone(cmd)) alone = false;
     }
-    return null;
-}
-
-/** True when a command changes which repository a checkout's remotes name, or makes a new checkout. */
-function movesRemotes(c: ResolvedCommand): boolean {
-    if (c.name === 'gh') {
-        const g = ghArgs(c.args).args;
-        // gh pr checkout can point the branch's pushRemote at a contributor's repository no named remote holds.
-        return (g[0] === 'repo' && (g[1] === 'clone' || g[1] === 'fork')) || (g[0] === 'pr' && (g[1] === 'checkout' || g[1] === 'co'));
-    }
-    if (c.name !== 'git') return false;
-    const at = gitSubcommandIndex(c.args);
-    const sub = c.args[at];
-    if (sub === 'clone' || sub === 'worktree') return true;
-    if (sub === 'remote') return ['add', 'set-url', 'rename', 'remove', 'rm'].includes(c.args[at + 1] ?? '');
-    return sub === 'config' && c.args.some(a => /^remote\./.test(a));
-}
-
-/**
- * Why a command that xargs, find -exec or git submodule foreach runs, at any depth, merges or pushes to a protected
- * branch. Inside an executor the guard knows nothing: not the directory (each match, each submodule, a cd in a script,
- * a `{}` path), not the branch, not the remotes. So a merge it can't place, an implicit push and a push to a protected
- * branch name are all refused there.
- */
-function executorReason(
-    cmd: ResolvedCommand,
-    scope: MergeScope | 'unreadable',
-    refused: (repo: string | null, what: string) => string | null,
-    line: string,
-    depth = 0,
-): string | null {
-    for (const { inner, tail } of execRuns(cmd)) {
-        const steps = innerSteps(inner, tail);
-        if (steps === RUNS_VARIABLE || depth > 4) return refused(null, 'A command taken from input') ?? 'A command xargs, find or git submodule foreach runs from its input may merge or push, so it is refused while merge-scope.local.json lists repositories.';
-        for (const step of steps) {
-            const reason = noMergeStepReason(step, steps, null, scope, refused, null, line, true) ?? executorReason(step, scope, refused, line, depth + 1);
+    for (const { cmd, places, known, siblings } of steps) {
+        for (const dir of places) {
+            const reason = noMergeStepReason(cmd, siblings, dir, scope, refused, line, known);
             if (reason) return reason;
         }
     }
     return null;
 }
+
+const SIMPLE_COMMAND = 'Run the merge or push as a single simple command, from the checkout, with its repository and branch written out.';
 
 /**
  * The repository a REST merge call (`repos/<owner>/<repo>/pulls/<n>/merge`, `…/merges`) in `text` merges into:
@@ -6862,6 +6852,7 @@ function gitPushDir(args: string[], dir: string | null): string | null {
     let at = dir;
     const sub = gitSubcommandIndex(args);
     for (let i = 0; i < sub; i++) {
+        if (args[i] === '--git-dir' || args[i].startsWith('--git-dir=')) return null;
         const value = args[i] === '-C' || args[i] === '--work-tree' ? args[++i]
             : args[i].startsWith('--work-tree=') ? args[i].slice('--work-tree='.length) : undefined;
         if (value === undefined) continue;
@@ -6889,11 +6880,12 @@ function noMergeStepReason(
     dir: string | null,
     scope: MergeScope | 'unreadable',
     refused: (repo: string | null, what: string) => string | null,
-    head: null | undefined,
     line: string,
-    remotesMoved: boolean,
+    // Every command before this one left the checkout alone, so its branch and remotes are what is on disk.
+    known: boolean,
 ): string | null {
-    const remotesOf = (d: string): Array<string | null> => remotesMoved ? [null] : checkoutRemoteRepos(d);
+    if (dir !== null && !known) dir = null;
+    const remotesOf = (d: string): Array<string | null> => checkoutRemoteRepos(d);
     // gh ignores a remote off GitHub, so a checkout is unread only when none of its remotes names a GitHub repository.
     const checked = (repos: Array<string | null>, what: string): string | null => {
         const known = repos.filter((r): r is string => r !== null);
@@ -6902,8 +6894,10 @@ function noMergeStepReason(
     };
     const text = cmd.args.join(' ');
     const unresolved = (what: string) => `${what}: its repository is only known when the command runs, so it is refused. Name the repository literally.`;
-    const unplaced = (what: string) => scope === 'unreadable' ? refused(null, what) : `${what} from a directory the guard can't place (a cd it can't follow), so it is refused. Run it from the checkout, or name the repository.`;
+    const unplaced = (what: string) => scope === 'unreadable' ? refused(null, what) : `${what} from a checkout the guard can't read (an earlier command on the line, or a directory it can't place), so it is refused. ${SIMPLE_COMMAND}`;
     const gh = cmd.name === 'gh' ? ghArgs(cmd.args) : null;
+    // gh reads its options anywhere, so an option before the subcommand hides which one it is.
+    if (gh && gh.args[0]?.startsWith('-') && /\b(?:merge|sync|api)\b/.test(text)) return refused(null, 'A gh command with options before its subcommand') ?? `A gh command with options before its subcommand may merge, so it is refused while merge-scope.local.json lists repositories. ${SIMPLE_COMMAND}`;
     // gh treats an empty GH_REPO as unset.
     const ghRepo = assignedValue('GH_REPO', cmd, commands) || undefined;
     if (gh && gh.args[0] === 'pr' && gh.args[1] === 'merge') {
@@ -6917,7 +6911,7 @@ function noMergeStepReason(
             : checked(remotesOf(dir!), 'Merging a pull request');
         if (reason) return reason;
     }
-    const apiClient = (cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name);
+    const apiClient = (gh !== null && gh.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name);
     const api = apiClient ? apiMergeTarget(text, ghRepo, dir, remotesOf) : undefined;
     if (api === 'unresolved') return unresolved('Merging through the API');
     // An endpoint written only into a variable (ENDPOINT=repos/…/merge; gh api "$ENDPOINT") is a merge the words don't show.
@@ -6925,7 +6919,7 @@ function noMergeStepReason(
     if (api === 'unplaced') return unplaced('Merging through the API');
     const apiReason = api !== undefined ? checked(api, 'Merging through the API') : null;
     if (apiReason) return apiReason;
-    if (((cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name)) && GRAPHQL_MERGE_RE.test(text)) {
+    if (apiClient && GRAPHQL_MERGE_RE.test(text)) {
         if (dir === null) return unplaced('Merging through the GraphQL API');
         const reason = checked(remotesOf(dir), 'Merging through the GraphQL API');
         if (reason) return reason;
@@ -6945,16 +6939,16 @@ function noMergeStepReason(
         // With no remote named, git picks one from the branch's push or upstream config, so every remote may be it.
         const repos: Array<string | null> = remote && (REPO_URL_RE.test(remote) || ORG_REPO_RE.test(remote))
             ? [githubRepoOf(remote)]
-            : !pushDir || remotesMoved ? [null]
+            : !pushDir ? [null]
             : remote ? [checkoutRemoteRepo(pushDir, remote)] : remotesOf(pushDir);
-        const branches = pushedBranches(cmd.args, pushDir, head);
+        const branches = pushedBranches(cmd.args, pushDir ? checkoutBranch(pushDir) : null);
         if (scope === 'unreadable') return refused(null, 'Pushing');
         for (const repo of repos) {
             const protectedHere = repo !== null ? scope.get(repo) : undefined;
             if (protectedHere && (branches === null || branches.some(b => protectedHere.has(b)))) {
-                return refused(repo, `Pushing to ${branches === null ? 'every branch, or one the guard cannot read (after a branch switch, name it: git push origin <branch>)' : branches.join(', ')}`);
+                return refused(repo, `Pushing to ${branches === null ? `every branch, or one the guard cannot read. ${SIMPLE_COMMAND}` : branches.join(', ')}`);
             }
-            if (repo === null && branches === null) return unplaced('Pushing to every branch');
+            if (repo === null && branches === null) return unplaced('Pushing to a branch the guard cannot read');
             if (repo === null && branches !== null) {
                 const anywhere = [...scope.entries()].find(([, set]) => branches.some(b => set.has(b)));
                 if (anywhere) return refused(anywhere[0], `Pushing to ${branches.join(', ')} from a checkout the guard can't place`);
