@@ -15,6 +15,7 @@ let dir = '';
 let scopeFile = '';
 let other = '';
 let theirs = '';
+let fork = '';
 let saved: string | undefined;
 
 function checkout(path: string, url: string, branch: string): void {
@@ -32,6 +33,9 @@ beforeAll(() => {
     other = join(dir, 'ours');
     checkout(theirs, 'https://github.com/Acme/core.git', 'feature-x');
     checkout(other, 'git@github.com:example/ours.git', 'master');
+    fork = join(dir, 'fork');
+    checkout(fork, 'git@github.com:example/core.git', 'feature-x');
+    writeFileSync(join(fork, '.git', 'config'), `[remote "origin"]\n\turl = git@github.com:example/core.git\n[remote "upstream"]\n\turl = https://github.com/Acme/core.git\n`);
     process.env[MERGE_SCOPE_FILE_ENV] = scopeFile;
 });
 
@@ -89,12 +93,14 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a push from another checkout after a switch here', 'git switch feature-x && git -C CORE_ON_MASTER push', () => other],
         ['a push after switching to the previous branch', "git switch '@{-1}' && git push", () => theirs],
         ['a push after a switch here and a cd into the checkout', 'git switch feature-x && cd CORE_ON_MASTER && git push', () => other],
+        ['a push moved by -C after a switch there', 'git -C CORE switch master && git -C CORE push', () => other],
+        ['a merge from a fork whose upstream is the listed repository', 'gh pr merge 12 --squash', () => fork],
         ['a push of the current branch after creating it, which the guard does not infer', 'git checkout -b fix-y && git push -u origin HEAD', () => theirs],
         ['a REST merge endpoint held whole in a variable', 'ENDPOINT=repos/Acme/core/pulls/12/merge; gh api -X PUT "$ENDPOINT"', () => other],
         ['a REST merge endpoint with a partial placeholder', 'GH_REPO=example/core gh api -X PUT repos/Acme/{repo}/pulls/12/merge', () => other],
     ])('%s', (_label, command, cwd) => {
         checkout(join(dir, 'core-on-master'), 'https://github.com/Acme/core.git', 'master');
-        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`).replace('CORE_ON_MASTER', join(dir, 'core-on-master'));
+        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`).replace('CORE_ON_MASTER', join(dir, 'core-on-master')).replaceAll('-C CORE ', `-C ${theirs} `);
         expect(action(resolved, cwd())).toBe('block');
     });
 });
