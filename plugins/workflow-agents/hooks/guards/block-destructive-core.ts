@@ -6716,8 +6716,12 @@ function exactSlackPost(command: string): SlackPost | null {
  * by word; any other line that names a posting method is a post with no readable text under every identity the line may run under: each OneCLI agent it names, and the
  * session's own when any client runs unwrapped or the carrier isn't a client at all.
  */
+// A line that may post to Slack: it names the host, or a method after a variable (`"$SLACK_API/chat.postMessage"`, a
+// base URL already in the environment). A method name alone is often code or a search, not a call.
+const MAY_POST_TO_SLACK = /slack\.com|\$\{?\w+\}?\/?(?:chat|files)\.[A-Za-z]/;
+
 export function slackPostsOf(command: string): SlackPost[] {
-    if (!/slack\.com/.test(command)) return [];
+    if (!MAY_POST_TO_SLACK.test(command)) return [];
     let commands: ResolvedCommand[];
     try {
         commands = extractCommands(command);
@@ -6726,7 +6730,6 @@ export function slackPostsOf(command: string): SlackPost[] {
     }
     const exact = exactSlackPost(command);
     if (exact) return [exact];
-    const clients = commands.filter(c => HTTP_CLIENTS.has(c.name));
     const method = [...command.matchAll(SLACK_API_METHOD_RE)].map(m => m[1]).find(isSlackPostMethod)
         ?? [...command.matchAll(/\b((?:chat|files)\.[A-Za-z.]*[A-Za-z])\b/g)].map(m => m[1]).find(m => SLACK_POST_METHOD_NAMES.has(m));
     if (!method) return [];
@@ -6736,7 +6739,10 @@ export function slackPostsOf(command: string): SlackPost[] {
         const name = m[1].replace(/^(['"])(.*)\1$/, '$2');
         agents.add(/[$`]/.test(name) ? UNKNOWN_ONECLI_AGENT : name);
     }
-    if (clients.length === 0 || clients.some(c => c.onecliAgent === undefined)) agents.add(null);
+    // The session's own identity, unless every command that may carry the post (one naming it, or a client with a word
+    // only known at run time) is a client run under a OneCLI agent.
+    const carriers = commands.filter(c => c.raw.includes(method) || /slack\.com/.test(c.raw) || (HTTP_CLIENTS.has(c.name) && c.args.some(w => /[$`]/.test(w))));
+    if (carriers.length === 0 || carriers.some(c => !HTTP_CLIENTS.has(c.name) || c.onecliAgent === undefined)) agents.add(null);
     return [...agents].map(onecliAgent => ({ method, text: null, onecliAgent }));
 }
 
@@ -6752,7 +6758,7 @@ export function soleCommand(command: string): boolean {
 
 /** The Slack posts in a command that need their sender's OK under the send scope in force. */
 export function gatedSlackPosts(command: string, workgroupId: string | undefined = process.env.NANOCLAW_WORKGROUP_ID): SlackPost[] {
-    if (!/slack\.com/.test(command)) return [];
+    if (!MAY_POST_TO_SLACK.test(command)) return [];
     const posts = slackPostsOf(command);
     if (posts.length === 0) return [];
     const scope = currentSendScope();
