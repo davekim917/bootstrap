@@ -4509,7 +4509,6 @@ const PG_URI_HOSTS_RE = /^postgres(?:ql)?:\/\/(?:[^@/?#]*@)?([^/?#]*)/;
 const PG_CONNINFO_HOST_RE = /(?:^|\s)host(?:addr)?\s*=\s*'?([^\s']+)/g;
 const PG_PLAIN_DB_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** True when `host` is a database server outside this container: not loopback, `localhost` or a socket directory. */
 function isRemotePgHost(host: string): boolean {
     return host !== '' && !host.startsWith('/') && !LOCAL_PG_HOST_RE.test(host);
 }
