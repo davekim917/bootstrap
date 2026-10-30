@@ -6654,8 +6654,8 @@ function bodyFields(flag: string, value: string): BodyField[] | null {
         if (at < 0) return null;
         const v = value.slice(at + 1);
         // curl reads `;type=`, `;filename=` and the like after a --form value, so a ';' may cut the text short, and a
-        // value opening with '"' is read as a quoted string that ends at its closing quote.
-        return [{ key: value.slice(0, at), value: flag !== '--form-string' && (/^[<@"]/.test(v) || v.includes(';')) ? null : v }];
+        // value opening with '"' (after any spaces) is read as a quoted string that ends at its closing quote.
+        return [{ key: value.slice(0, at), value: flag !== '--form-string' && (/^\s*[<@"]/.test(v) || v.includes(';')) ? null : v }];
     }
     if (flag === '--data-urlencode') {
         const at = value.indexOf('=');
