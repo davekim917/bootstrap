@@ -6729,9 +6729,13 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
         if (DIRECTORY_CHANGERS.has(cmd.name)) dirs = directoriesAfter(dirs, cmd);
         // After a cd the step may run in any of the directories it could have reached; each one is checked.
         const places: Array<string | null> = dirs && !/[$`]/.test(cmd.chdir ?? '') ? dirs.map(d => pathResolve(d, cmd.chdir ?? '.')) : [null];
-        const head = headAfterSwitches(commands.slice(0, commands.indexOf(cmd)));
+        const earlier = commands.slice(0, commands.indexOf(cmd));
+        const head = headAfterSwitches(earlier);
+        // A remote added, renamed or repointed, or a clone, earlier in the step leaves the checkout's repository unread.
+        const remotesMoved = earlier.some(c => c.name === 'git' && (['remote', 'clone'].includes(c.args[gitSubcommandIndex(c.args)])
+            || (c.args[gitSubcommandIndex(c.args)] === 'config' && c.args.some(a => /^remote\./.test(a)))));
         for (const dir of places) {
-            const reason = noMergeStepReason(cmd, commands, dir, scope, refused, head, line);
+            const reason = noMergeStepReason(cmd, commands, dir, scope, refused, head, line, remotesMoved);
             if (reason) return reason;
         }
     }
@@ -6743,14 +6747,19 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
  * undefined when it makes none, 'unresolved' when any part is a variable, 'unplaced' when gh's {owner}/{repo}
  * must come from a checkout the guard can't place. gh fills {owner}/{repo} from GH_REPO, else from its checkout.
  */
-function apiMergeTarget(text: string, ghRepo: string | undefined, dir: string | null): Array<string | null> | 'unresolved' | 'unplaced' | undefined {
+function apiMergeTarget(
+    text: string,
+    ghRepo: string | undefined,
+    dir: string | null,
+    remotesOf: (dir: string) => Array<string | null>,
+): Array<string | null> | 'unresolved' | 'unplaced' | undefined {
     const match = API_MERGE_RE.exec(text);
     if (!match) return undefined;
     if (/[$`]/.test(match[0])) return 'unresolved';
     if (!/\{owner\}|\{repo\}/.test(match[1])) return [match[1].toLowerCase()];
     if (ghRepo !== undefined && /[$`]/.test(ghRepo)) return 'unresolved';
     if (ghRepo === undefined && dir === null) return 'unplaced';
-    const fills = ghRepo !== undefined ? [githubRepoOf(ghRepo)] : checkoutRemoteRepos(dir!);
+    const fills = ghRepo !== undefined ? [githubRepoOf(ghRepo)] : remotesOf(dir!);
     return fills.map(fill => {
         if (fill === null) return null;
         const [owner, repo] = fill.split('/');
@@ -6792,7 +6801,15 @@ function noMergeStepReason(
     refused: (repo: string | null, what: string) => string | null,
     head: null | undefined,
     line: string,
+    remotesMoved: boolean,
 ): string | null {
+    const remotesOf = (d: string): Array<string | null> => remotesMoved ? [null] : checkoutRemoteRepos(d);
+    // gh ignores a remote off GitHub, so a checkout is unread only when none of its remotes names a GitHub repository.
+    const checked = (repos: Array<string | null>, what: string): string | null => {
+        const known = repos.filter((r): r is string => r !== null);
+        if (known.length === 0) return scope === 'unreadable' ? refused(null, what) : `${what}: the guard can't read which repository this checkout points at, so it is refused. Name it with -R <owner>/<repo>.`;
+        return known.map(repo => refused(repo, what)).find(Boolean) ?? null;
+    };
     const text = cmd.args.join(' ');
     const unresolved = (what: string) => `${what}: its repository is only known when the command runs, so it is refused. Name the repository literally.`;
     const unplaced = (what: string) => scope === 'unreadable' ? refused(null, what) : `${what} from a directory the guard can't place (a cd it can't follow), so it is refused. Run it from the checkout, or name the repository.`;
@@ -6804,36 +6821,30 @@ function noMergeStepReason(
         const named = [gh.repo, url, ghRepo].filter((v): v is string => v !== undefined);
         if ([...named, selector ?? ''].some(v => /[$`]/.test(v))) return unresolved('Merging a pull request');
         if (named.length === 0 && dir === null) return unplaced('Merging a pull request');
-        for (const repo of named.length ? named.map(githubRepoOf) : checkoutRemoteRepos(dir!)) {
-            const reason = refused(repo, 'Merging a pull request');
-            if (reason) return reason;
-        }
+        const reason = named.length
+            ? named.map(githubRepoOf).map(r => refused(r, 'Merging a pull request')).find(Boolean) ?? null
+            : checked(remotesOf(dir!), 'Merging a pull request');
+        if (reason) return reason;
     }
     const apiClient = (cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name);
-    const api = apiClient ? apiMergeTarget(text, ghRepo, dir) : undefined;
+    const api = apiClient ? apiMergeTarget(text, ghRepo, dir, remotesOf) : undefined;
     if (api === 'unresolved') return unresolved('Merging through the API');
     // An endpoint written only into a variable (ENDPOINT=repos/…/merge; gh api "$ENDPOINT") is a merge the words don't show.
     if (api === undefined && apiClient && cmd.args.some(a => /[$`]/.test(a)) && /repos\/\S+?\/(?:pulls\/[^/\s]+\/merge|merges)\b/.test(line)) return unresolved('Merging through the API');
     if (api === 'unplaced') return unplaced('Merging through the API');
-    for (const repo of api ?? []) {
-        const reason = refused(repo, 'Merging through the API');
-        if (reason) return reason;
-    }
+    const apiReason = api !== undefined ? checked(api, 'Merging through the API') : null;
+    if (apiReason) return apiReason;
     if (((cmd.name === 'gh' && cmd.args[0] === 'api') || HTTP_CLIENTS.has(cmd.name)) && GRAPHQL_MERGE_RE.test(text)) {
         if (dir === null) return unplaced('Merging through the GraphQL API');
-        for (const repo of checkoutRemoteRepos(dir)) {
-            const reason = refused(repo, 'Merging through the GraphQL API');
-            if (reason) return reason;
-        }
+        const reason = checked(remotesOf(dir), 'Merging through the GraphQL API');
+        if (reason) return reason;
     }
     if (/(?:^|\/)codex-review\.sh$/.test(cmd.name) && cmd.args[0] === 'merge') {
         const assigned = assignedValue('REPO', cmd, commands);
         if (assigned !== undefined && /[$`]/.test(assigned)) return unresolved('Merging a pull request');
         if (assigned === undefined && dir === null) return unplaced('Merging a pull request');
-        for (const repo of assigned !== undefined ? [githubRepoOf(assigned)] : checkoutRemoteRepos(dir!)) {
-            const reason = refused(repo, 'Merging a pull request');
-            if (reason) return reason;
-        }
+        const reason = assigned !== undefined ? refused(githubRepoOf(assigned), 'Merging a pull request') : checked(remotesOf(dir!), 'Merging a pull request');
+        if (reason) return reason;
     }
     if (cmd.name === 'git' && cmd.args[gitSubcommandIndex(cmd.args)] === 'push') {
         const pushDir = gitPushDir(cmd.args, dir);
@@ -6842,7 +6853,7 @@ function noMergeStepReason(
         if (remote && /^(?:[a-z+]+:\/\/|[^@\s]+@)/i.test(remote) && !/github\.com[/:]/i.test(remote)) return null;
         const repo = remote && (REPO_URL_RE.test(remote) || ORG_REPO_RE.test(remote))
             ? githubRepoOf(remote)
-            : pushDir ? checkoutRemoteRepo(pushDir, remote ?? 'origin') : null;
+            : pushDir && !remotesMoved ? checkoutRemoteRepo(pushDir, remote ?? 'origin') : null;
         const branches = pushedBranches(cmd.args, pushDir, head);
         if (scope === 'unreadable') return refused(null, 'Pushing');
         const protectedHere = repo !== null ? scope.get(repo) : undefined;

@@ -78,6 +78,8 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a GraphQL merge from its checkout', `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }'`, () => theirs],
         ['the review-loop merge', 'PR=12 REPO=Acme/core codex-review.sh merge --head abc', () => other],
         ['a push to the protected branch', 'git push origin HEAD:master', () => theirs],
+        ['a push after repointing origin at the listed repository', 'git remote set-url origin git@github.com:Acme/core.git && git push origin HEAD:master', () => other],
+        ['a merge in a checkout cloned in the same step', 'git clone git@github.com:Acme/core.git NEWDIR && cd NEWDIR && gh pr merge 12 --squash', () => dir],
         ['a push to the protected branch over GitHub SSH on port 443', 'git push ssh://git@ssh.github.com:443/Acme/core.git HEAD:master', () => other],
         ['a push of the checked-out protected branch', 'git push', () => join(dir, 'core-on-master')],
         ['a push after cd into the checkout', 'cd CORE && git push origin feature-x:master', () => dir],
@@ -101,7 +103,7 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a REST merge endpoint with a partial placeholder', 'GH_REPO=example/core gh api -X PUT repos/Acme/{repo}/pulls/12/merge', () => other],
     ])('%s', (_label, command, cwd) => {
         checkout(join(dir, 'core-on-master'), 'https://github.com/Acme/core.git', 'master');
-        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`).replace('CORE_ON_MASTER', join(dir, 'core-on-master')).replaceAll('-C CORE ', `-C ${theirs} `);
+        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`).replace('CORE_ON_MASTER', join(dir, 'core-on-master')).replaceAll('-C CORE ', `-C ${theirs} `).replaceAll('NEWDIR', join(dir, 'not-yet-cloned'));
         expect(action(resolved, cwd())).toBe('block');
     });
 });
@@ -109,6 +111,12 @@ describe('a listed repository refuses every merge and protected-branch push', ()
 describe('everything else is untouched', () => {
     test.each([
         ['a feature-branch push', 'git push -u origin feature-x', () => theirs],
+        ['a merge in a checkout with an extra remote off GitHub', 'gh pr merge 12 --squash', () => {
+            const mixed = join(dir, 'mixed');
+            checkout(mixed, 'git@github.com:example/ours.git', 'feature-x');
+            writeFileSync(join(mixed, '.git', 'config'), `[remote "origin"]\n\turl = git@github.com:example/ours.git\n[remote "mirror"]\n\turl = https://gitlab.com/example/ours.git\n`);
+            return mixed;
+        }],
         ['a push naming the branch just created', 'git checkout -b fix-y && git push -u origin fix-y', () => theirs],
         ['a tags-only push from the protected branch', 'git push origin --tags', () => join(dir, 'core-on-master')],
         ['a push to a repository off GitHub', 'git push https://gitlab.com/example/ours.git HEAD:master', () => theirs],
