@@ -6706,7 +6706,7 @@ function pushedBranches(args: string[], dir: string | null, head?: string | null
     const names: string[] = [];
     for (const spec of refspecs) {
         const target = (spec.includes(':') ? spec.slice(spec.indexOf(':') + 1) : spec).replace(/^\+/, '').replace(/^refs\/heads\//, '');
-        if (target === 'HEAD' || target === '') {
+        if (target === 'HEAD' || target === '@' || target === '') {
             const branch = head !== undefined ? head : dir ? checkoutBranch(dir) : null;
             if (!branch) return null;
             names.push(branch);
@@ -6755,8 +6755,9 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
         const places: Array<string | null> = dirs && !/[$`]/.test(cmd.chdir ?? '') ? dirs.map(d => pathResolve(d, cmd.chdir ?? '.')) : [null];
         const earlier = commands.slice(0, commands.indexOf(cmd));
         const head = headAfterSwitches(earlier);
-        // A remote added, renamed or repointed, or a clone, earlier in the step leaves the checkout's repository unread.
-        const remotesMoved = earlier.some(c => (c.name === 'git' && (['remote', 'clone'].includes(c.args[gitSubcommandIndex(c.args)])
+        // A remote added, renamed or repointed, a clone or a new worktree earlier in the step leaves the checkout's
+        // repository unread.
+        const remotesMoved = earlier.some(c => (c.name === 'git' && (['remote', 'clone', 'worktree'].includes(c.args[gitSubcommandIndex(c.args)])
             || (c.args[gitSubcommandIndex(c.args)] === 'config' && c.args.some(a => /^remote\./.test(a)))))
             || (c.name === 'gh' && ghArgs(c.args).args[0] === 'repo' && ['clone', 'fork'].includes(ghArgs(c.args).args[1])));
         for (const dir of places) {
@@ -6778,18 +6779,23 @@ function apiMergeTarget(
     dir: string | null,
     remotesOf: (dir: string) => Array<string | null>,
 ): Array<string | null> | 'unresolved' | 'unplaced' | undefined {
-    const match = API_MERGE_RE.exec(text);
-    if (!match) return undefined;
-    if (/[$`]/.test(match[0])) return 'unresolved';
-    if (!/\{owner\}|\{repo\}/.test(match[1])) return [match[1].toLowerCase()];
-    if (ghRepo !== undefined && /[$`]/.test(ghRepo)) return 'unresolved';
-    if (ghRepo === undefined && dir === null) return 'unplaced';
-    const fills = ghRepo !== undefined ? [githubRepoOf(ghRepo)] : remotesOf(dir!);
-    return fills.map(fill => {
-        if (fill === null) return null;
-        const [owner, repo] = fill.split('/');
-        return match[1].replace('{owner}', owner).replace('{repo}', repo).toLowerCase();
-    });
+    // A client may send several requests (curl takes many URLs), so every endpoint on the line is a target.
+    const matches = [...text.matchAll(new RegExp(API_MERGE_RE.source, 'g'))];
+    if (matches.length === 0) return undefined;
+    const out: Array<string | null> = [];
+    for (const match of matches) {
+        if (/[$`]/.test(match[0])) return 'unresolved';
+        if (!/\{owner\}|\{repo\}/.test(match[1])) { out.push(match[1].toLowerCase()); continue; }
+        if (ghRepo !== undefined && /[$`]/.test(ghRepo)) return 'unresolved';
+        if (ghRepo === undefined && dir === null) return 'unplaced';
+        const fills = ghRepo !== undefined ? [githubRepoOf(ghRepo)] : remotesOf(dir!);
+        for (const fill of fills) {
+            if (fill === null) { out.push(null); continue; }
+            const [owner, repo] = fill.split('/');
+            out.push(match[1].replace('{owner}', owner).replace('{repo}', repo).toLowerCase());
+        }
+    }
+    return out;
 }
 
 /** The directory a git push runs in from `dir`, after every `-C` and `--work-tree` before its subcommand; null when unknown. */
