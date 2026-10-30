@@ -120,6 +120,7 @@ describe('the message text a post carries', () => {
         ['a curl option outside the known set', `curl https://slack.com/api/chat.postMessage --variable t@file --expand-data 'text={{t}}'`, null],
         ['a client other than curl', `http POST https://slack.com/api/chat.postMessage text=hi`, null],
         ['a URL given with --url=', `curl --url=https://slack.com/api/chat.postMessage -d channel=C1 -d text=hello`, 'hello'],
+        ['a multipart value with leading spaces, which curl drops', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text=    if approved:'`, null],
         ['a quoted multipart value after a space, which curl also ends at its closing quote', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text= "Approved" do not deploy yet.'`, null],
         ['a quoted multipart value, which curl ends at its closing quote', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text="Approved" do not deploy yet.'`, null],
         ['a query text before a fragment, which curl never sends', `curl 'https://slack.com/api/chat.postMessage?channel=C1&text=Ship%20it%20#after-review'`, 'Ship it '],
