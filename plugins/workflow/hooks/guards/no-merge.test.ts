@@ -98,6 +98,8 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a protected push after a cd inside an executor script', "find . -maxdepth 0 -exec sh -c 'cd LISTED_DIR && git push origin HEAD:master' \\;", () => other],
         ['an implicit push run by find after a branch switch', 'git switch master && find . -maxdepth 0 -exec git push origin HEAD \\;', () => theirs],
         ['a protected push two executors deep', "find . -maxdepth 0 -exec git submodule foreach 'git push origin HEAD:master' \\;", () => other],
+        ['a protected push naming its destination with --repo=', 'git push --repo=https://github.com/Acme/core.git', () => other],
+        ['a protected push after a verbose remote change', 'git remote -v set-url origin https://github.com/Acme/core.git && git push origin HEAD:master', () => other],
         ['a protected push from a stash branch', 'git stash branch master && git push -u origin HEAD', () => theirs],
         ['a protected push with GIT_DIR pointing at the listed repository', 'GIT_DIR=LISTED_DIR/.git git push origin HEAD:master', () => other],
         ['a protected push from the listed checkout with --work-tree elsewhere', 'git --work-tree=OTHER_DIR push origin HEAD:master', () => theirs],

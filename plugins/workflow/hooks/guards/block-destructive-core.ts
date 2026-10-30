@@ -6734,7 +6734,10 @@ function leavesCheckoutAlone(c: ResolvedCommand): boolean {
     if (sub === 'branch') return !rest.some(a => /^-[a-zA-Z]*[mMcC]|^--(?:move|copy)$/.test(a));
     if (sub === 'worktree') return rest[0] === 'list';
     if (sub === 'stash') return rest[0] !== 'branch';
-    if (sub === 'remote') return rest.length === 0 || ['-v', '--verbose', 'show', 'get-url'].includes(rest[0]);
+    if (sub === 'remote') {
+        const words = rest.filter(a => a !== '-v' && a !== '--verbose');
+        return words.length === 0 || ['show', 'get-url'].includes(words[0]);
+    }
     if (sub === 'config') return rest.some(a => ['--get', '--get-all', '--get-regexp', '--list', '-l'].includes(a));
     return false;
 }
@@ -6971,7 +6974,10 @@ function noMergeStepReason(
         // GIT_DIR or GIT_WORK_TREE, set on the command, exported earlier or inherited, points git at another repository.
         const relocated = ['GIT_DIR', 'GIT_WORK_TREE'].some(name => assignedValue(name, cmd, commands) !== undefined);
         const pushDir = relocated ? null : gitPushDir(cmd.args, dir);
-        const remote = gitRemoteArg(cmd.args);
+        // `--repo=<remote>` names the destination as the positional would.
+        const repoOption = cmd.args.slice(gitSubcommandIndex(cmd.args) + 1).map((a, i, rest) => a === '--repo' ? rest[i + 1] : a.startsWith('--repo=') ? a.slice(7) : undefined).find(v => v !== undefined);
+        if (repoOption !== undefined && UNKNOWN_WORD_RE.test(repoOption)) return unresolved('Pushing');
+        const remote = repoOption ?? gitRemoteArg(cmd.args);
         // A push to a URL off GitHub reaches no listed repository.
         if (remote && /^(?:[a-z+]+:\/\/|[^@\s]+@)/i.test(remote) && !/github\.com[/:]/i.test(remote)) return null;
         // With no remote named, git picks one from the branch's push or upstream config, so every remote may be it.
