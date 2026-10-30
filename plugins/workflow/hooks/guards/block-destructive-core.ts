@@ -6749,12 +6749,15 @@ export function slackPostsOf(command: string): SlackPost[] {
         if (post) posts.push(post);
     }
     // A posting URL the commands never carry as a word (held in a variable assignment, say) is still a post the
-    // guard can't read.
-    if (posts.length === 0) {
-        const held = carriedPost([command], null);
-        const named = /\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/.exec(command)?.[1]?.replace(/^(['"])(.*)\1$/, '$2') ?? null;
-        const agent = named !== null && /[$`]/.test(named) ? UNKNOWN_ONECLI_AGENT : named;
-        if (held) posts.push({ ...held, onecliAgent: agent });
+    // guard can't read: under each OneCLI identity the line names that no read post carries, or under none.
+    const held = carriedPost([command], null);
+    if (held) {
+        const named = [...command.matchAll(/\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/g)]
+            .map(m => m[1].replace(/^(['"])(.*)\1$/, '$2'))
+            .map(n => /[$`]/.test(n) ? UNKNOWN_ONECLI_AGENT : n);
+        for (const agent of posts.length === 0 ? [null, ...named] : named) {
+            if (!posts.some(p => p.onecliAgent === agent)) posts.push({ ...held, onecliAgent: agent });
+        }
     }
     return posts;
 }
