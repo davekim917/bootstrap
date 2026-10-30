@@ -87,6 +87,39 @@ describe('reading Render needs no approval', () => {
     });
 });
 
+describe('a read whose command is complete before a variable needs no approval', () => {
+    test.each([
+        ['a deploy listing per service in a loop, piped to python', `for s in ${PROD} ${DEV}; do render deploys list "$s" -o json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["status"])'; done`],
+        ['a deploy listing with an unquoted variable', 'render deploys list $s -o json'],
+        ['a job listing with --output=', 'render jobs list ${SVC} --output=json'],
+        ['logs for a service held in a variable', 'render logs -r $SVC --limit 20'],
+        ['a database read', 'render postgres get $DB -o json'],
+        ['help on a listing with no variable', 'render deploys list --help'],
+    ])('%s', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['a listing with no output format', 'render deploys list $s'],
+        ['the output format given before the variable, which can override it', 'render deploys list -o json $s'],
+        ['a global output format before the command', 'render -o json deploys list $s'],
+        ['the output format itself a variable', 'render deploys list $s -o $FMT'],
+        ['a variable where a subcommand could go', 'render deploys $s -o json'],
+        ['services list, which the CLI reads as services with an argument', 'render services list $s -o json'],
+        ['a variable after a mutating command', 'render deploys create $s --confirm'],
+        ['help beside a variable that could turn it off', 'render deploys list --help $s'],
+        ['a dev deploy whose flag value is a variable that could split into a production id', `render deploys create ${DEV} --commit $C --confirm`],
+    ])('still needs approval: %s', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test('a listing refused for its output format says where -o goes', () => {
+        expect(evaluateBashCommand('render deploys list -o json $s', { cwd: '/tmp' }).reason).toContain(
+            'Add -o json (or yaml/text), after the last variable, to read it without approval.',
+        );
+    });
+});
+
 describe('changing a Render resource not listed as dev is a production change', () => {
     test.each([
         ['a one-off job', `render jobs create ${PROD} --confirm -o json --start-command "node job.js"`],
