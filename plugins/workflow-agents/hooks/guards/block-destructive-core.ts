@@ -4533,8 +4533,12 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
         const m = assignment.match(/^PGHOST(?:ADDR)?=(.*)$/);
         if (m && !/[$`]/.test(m[1]) && m[1].split(',').some(isRemotePgHost)) return null;
     }
-    let db: string | undefined;
+    let explicitDb: string | undefined;
+    let positionalDb: string | undefined;
     const sql: string[] = [];
+    const otherValue = cmd.name === 'psql'
+        ? new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*[UpvfoLPTFR]|--(?:username|port|set|variable|file|output|log-file|pset|table-attr|field-separator|record-separator)=?)(.*)$`)
+        : new RegExp(`^(?:-[${DROPDB_SHORT_FLAGS}]*[pU]|--(?:username|port)=?)(.*)$`);
     for (let i = 0; i < cmd.args.length; i++) {
         const a = cmd.args[i];
         const value = (option: RegExp): { text: string; at: number } | null => {
@@ -4548,14 +4552,20 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
             if (literal(host.at) && host.text.split(',').some(isRemotePgHost)) return null;
             continue;
         }
-        const maintenance = cmd.name === 'dropdb' ? value(/^--maintenance-db=?(.*)$/) : null;
-        const named = maintenance ?? value(/^(?:-d|--dbname=?)(.*)$/) ?? (a.startsWith('-') ? null : { text: a, at: i });
         const command = cmd.name === 'psql' ? value(new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*c|--command=?)(.*)$`)) : null;
         if (command) {
             sql.push(written && command.at === i + 1 ? written[command.at] : `'${command.text.replace(/'/g, `'\\''`)}'`);
             i = command.at;
             continue;
         }
+        const other = value(otherValue);
+        if (other) {
+            i = other.at;
+            continue;
+        }
+        const maintenance = cmd.name === 'dropdb' ? value(/^--maintenance-db=?(.*)$/) : null;
+        const explicit = maintenance ?? value(/^(?:-d|--dbname=?)(.*)$/);
+        const named = explicit ?? (a.startsWith('-') ? null : { text: a, at: i });
         if (!named) continue;
         const text = named.text;
         // The host as written: a URL whose password comes from a variable still names its host.
@@ -4568,10 +4578,12 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
         const atHosts = shown.startsWith('postgres') ? [...shown.matchAll(/@(\[[^\]]*\]|[^:/?#,@]+)/g)].map(m => m[1].replace(/^\[|\]$/g, '')) : [];
         const shownHosts = [...uriHosts, ...atHosts, ...[...shown.matchAll(PG_CONNINFO_HOST_RE)].flatMap(m => m[1].split(','))];
         if (shownHosts.some(h => !/[$`\\]/.test(h) && isRemotePgHost(h))) return null;
-        if (!maintenance) db ??= PG_PLAIN_DB_RE.test(text) ? text : (written?.[named.at] ?? text).match(/\/([A-Za-z_][A-Za-z0-9_]*)['"]?$/)?.[1];
+        const db = PG_PLAIN_DB_RE.test(text) ? text : (written?.[named.at] ?? text).match(/\/([A-Za-z_][A-Za-z0-9_]*)['"]?$/)?.[1];
+        if (explicit && !maintenance) explicitDb = db ?? explicitDb;
+        else if (!explicit) positionalDb ??= db;
         if (named.at > i) i = named.at;
     }
-    const target = db ?? '<db>';
+    const target = explicitDb ?? positionalDb ?? '<db>';
     const line = cmd.name === 'dropdb'
         ? `${SCRATCH_PG} dropdb ${target}`
         : `${SCRATCH_PG} psql ${target} ${sql.length ? sql.map(s => `-c ${s}`).join(' ') : "-c '<sql>'"}`;
@@ -5064,7 +5076,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         return 'Destructive Redis command detected (FLUSHDB/FLUSHALL).';
     }
 
-    if (name === 'dropdb' && !args.some(a => ['--help', '-?', '--version', '-V'].includes(a))) {
+    // dropdb reads help and version only as its first argument; anywhere else they are options or the database.
+    if (name === 'dropdb' && !['--help', '-?', '--version', '-V'].includes(args[0])) {
         return 'dropdb drops a whole PostgreSQL database';
     }
 

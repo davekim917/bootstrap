@@ -350,6 +350,9 @@ describe('a psql or dropdb whose database the line does not name is refused towa
         ['a host from a variable', 'psql -h $DB_HOST -d app_test -c "DROP TABLE orders"', `${SPG} psql app_test -c "DROP TABLE orders"`],
         ['dropdb with no host', 'dropdb app_test', `${SPG} dropdb app_test`],
         ['dropdb on a URL in a variable', 'dropdb "$DATABASE_URL"', `${SPG} dropdb <db>`],
+        ['a username before -d', "psql -U postgres -d app_test -c 'DROP TABLE orders'", `${SPG} psql app_test -c 'DROP TABLE orders'`],
+        ['-d after a positional', "psql other_db -p 5432 -d app_test -c 'DROP TABLE orders'", `${SPG} psql app_test -c 'DROP TABLE orders'`],
+        ['dropdb with a username and port', 'dropdb -U postgres -p 5432 app_test', `${SPG} dropdb app_test`],
     ])('%s: refused with the scratch-pg line', (_name, command, line) => {
         const v = evaluate(command);
         expect(v.action).toBe('block');
@@ -400,8 +403,12 @@ describe('dropdb takes the scratch exemption the way psql does', () => {
         refusedToScratchPg(command, f);
     });
 
-    test('dropdb --help runs', () => {
-        expect(evaluate('dropdb --help').action).toBe('allow');
+    test.each([['--help'], ['-?'], ['--version'], ['-V']])('dropdb %s as its first argument runs', (flag) => {
+        expect(evaluate(`dropdb ${flag}`).action).toBe('allow');
+    });
+
+    test('a database named like a version flag is still dropped, so it still gates', () => {
+        expect(evaluate('dropdb -h db.example.internal -- -V').action).toBe('gate');
     });
 });
 
