@@ -1805,7 +1805,7 @@ export const RENDER_CLI_TREE: ReadonlySet<string> = new Set([
 ]);
 const RENDER_KNOWN = new Set([...RENDER_CLI_TREE, ...RENDER_COMMANDS.keys()]);
 
-/** Null once a shell expansion, `--` or a flag outside the table comes first: what follows can't be read as a command word. */
+/** Null once a shell expansion, `--` or a flag outside the table comes first: what follows can't be read as a command. */
 export function renderUnknownCommand(args: string[]): string | null {
     const written: string[] = [];
     let node = '';
