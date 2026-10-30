@@ -296,6 +296,8 @@ describe('a variable is all that keeps a listed dev resource from running freely
         ['a variable beside a single-quoted dollar', `render jobs create ${DEV} --start-command "echo $A"'$B'`],
         ['a variable the line sets, which the guard already reads', `B64=abc; render jobs create ${DEV} --start-command "echo $B64"`],
         ['a variable the line sets to words with a space', `CMD='echo hello'; render jobs create ${DEV} --start-command "$CMD"`],
+        ['the positional arguments, which stay several words in quotes', `render jobs create ${DEV} --start-command "$@"`],
+        ['an array splat, which stays several words in quotes', `render jobs create ${DEV} --start-command "${'$'}{ARGS[@]}"`],
         ['a glob, which no rewrite removes', `render jobs create ${DEV} --start-command "echo *"`],
         ['a variable behind a wrapper', `timeout 5 render jobs create ${DEV} --start-command "echo $B64"`],
     ])('%s keeps its card', (_label, command) => {
