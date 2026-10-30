@@ -276,6 +276,7 @@ describe('a variable is all that keeps a listed dev resource from running freely
         ['a job whose start command holds a variable', `render jobs create ${DEV} --start-command "echo $B64"`, '`$B64`'],
         ['a command substitution', `render jobs create ${DEV} --start-command "sh -c $(cat job.sh)" -o json`, '`$(cat job.sh)`'],
         ['a variable inside a flag given with =', `render jobs create ${DEV} "--start-command=$CMD"`, '`$CMD`'],
+        ['a command substitution longer than a clipped name', `render jobs create ${DEV} --start-command "$(cat /workspace/scripts/render-start-command.sh)"`, '`$(cat /workspace/scripts/render-start-command.sh)`'],
         ['a value built by a substitution earlier on the line', `B64=$(base64 -w0 job.sh); render jobs create ${DEV} --start-command "echo $B64"`, '`$B64`'],
     ])('%s is refused with the variable named', (_label, command, named) => {
         const result = evaluateBashCommand(command, { cwd: '/tmp' });

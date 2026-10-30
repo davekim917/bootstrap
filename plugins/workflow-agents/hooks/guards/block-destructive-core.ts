@@ -3852,19 +3852,32 @@ function renderDevExpansionFix(cmd: ResolvedCommand): string | null {
             args.push(cmd.args[i]);
             continue;
         }
-        // Unquoted, an expansion can split into several words, a second operand or a flag among them.
-        if (!(words[i].parts ?? []).every((part: any) => ['Literal', 'SingleQuoted', 'DoubleQuoted'].includes(part?.type))) return null;
-        const { value, unresolved } = evalWord(String(words[i].text ?? ''), script.view, words[i].pos);
-        // `_` can't appear in a resource id, so a written-out operand never reads as a listed one.
-        const written = unresolved.reduce((v, u) => v.split(u).join('_'), value);
-        if (!unresolved.length || RENDER_EXPANDS.test(written)) return null;
-        unread.push(...unresolved.filter(u => !unread.includes(u)));
+        let written = '';
+        for (const part of words[i].parts ?? []) {
+            if (part?.type === 'Literal' || part?.type === 'SingleQuoted') {
+                written += String(part.value ?? '');
+                continue;
+            }
+            // Unquoted, an expansion can split into several words, a second operand or a flag among them.
+            if (part?.type !== 'DoubleQuoted') return null;
+            for (const inner of part.parts ?? []) {
+                if (inner?.type === 'Literal') {
+                    written += String(inner.value ?? '');
+                    continue;
+                }
+                const text = String(inner?.text ?? '');
+                if (!evalWord(text, script.view, words[i].pos).unresolved.length) return null;
+                if (!unread.includes(text)) unread.push(text);
+                // `_` can't appear in a resource id, so a written-out operand never reads as a listed one.
+                written += '_';
+            }
+        }
         args.push(written);
     }
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const target = renderProvenTarget({ ...cmd, args }, r => listed.has(r));
     if (target === null) return null;
-    const named = unread.map(u => `\`${u}\``).join(', ');
+    const named = unread.map(u => `\`${clip(u, 80)}\``).join(', ');
     return `${target} is listed as dev, but ${named} can't be read before the command runs, so the guard can't see what it does. Write the value out (a secret belongs in the service's environment instead) and it runs without approval.`;
 }
 
