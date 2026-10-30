@@ -6806,9 +6806,16 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
         if (reason) return reason;
         if (!leavesCheckoutAlone(cmd)) alone = false;
     }
+    // Unknown checkout state is refused only where it can reach a listed repository: a line that names one, runs from a
+    // checkout of one, or runs git or gh (which fetch a repository by number or URL) before the merge or push. A file
+    // edit or a build before a push in a checkout of no listed repository keeps what is on disk.
+    const lower = line.toLowerCase();
+    const involved = scope === 'unreadable' || [...scope.keys()].some(repo => lower.includes(repo))
+        || commands.some(c => (c.name === 'git' || c.name === 'gh') && !leavesCheckoutAlone(c))
+        || steps.some(({ places }) => places.some(dir => dir !== null && checkoutRemoteRepos(dir).some(r => r !== null && scope.has(r))));
     for (const { cmd, places, known, siblings } of steps) {
         for (const dir of places) {
-            const reason = noMergeStepReason(cmd, siblings, dir, scope, refused, line, known);
+            const reason = noMergeStepReason(cmd, siblings, dir, scope, refused, line, known || (!involved && dir !== null));
             if (reason) return reason;
         }
     }
