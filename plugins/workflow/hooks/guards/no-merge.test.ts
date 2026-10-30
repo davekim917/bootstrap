@@ -82,6 +82,7 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a merge in a checkout cloned in the same step', 'git clone git@github.com:Acme/core.git NEWDIR && cd NEWDIR && gh pr merge 12 --squash', () => dir],
         ['a push behind onecli run', 'onecli run --agent ag-example -- git push origin HEAD:master', () => theirs],
         ['a merge behind onecli run', 'onecli run -- gh pr merge 12 -R Acme/core --squash', () => other],
+        ['a push naming a protected branch after gh pr checkout from another checkout', 'gh pr checkout 12 && git push origin HEAD:master', () => other],
         ['a push of the current branch after gh pr checkout', 'gh pr checkout 12 && git push origin HEAD', () => theirs],
         ['a push of the current branch after gh pr co', 'gh pr co 12 && git push', () => theirs],
         ['an implicit push from a fork whose upstream is listed', 'git push', () => {

@@ -6792,7 +6792,8 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
 function movesRemotes(c: ResolvedCommand): boolean {
     if (c.name === 'gh') {
         const g = ghArgs(c.args).args;
-        return g[0] === 'repo' && (g[1] === 'clone' || g[1] === 'fork');
+        // gh pr checkout can point the branch's pushRemote at a contributor's repository no named remote holds.
+        return (g[0] === 'repo' && (g[1] === 'clone' || g[1] === 'fork')) || (g[0] === 'pr' && (g[1] === 'checkout' || g[1] === 'co'));
     }
     if (c.name !== 'git') return false;
     const at = gitSubcommandIndex(c.args);
