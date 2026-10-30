@@ -3828,6 +3828,61 @@ function renderDevTarget(cmd: ResolvedCommand): string | null {
     return target ? `render resource ${target}` : null;
 }
 
+/**
+ * Why a render proof command on a listed dev resource is refused rather than carded: its only obstacle is a variable or
+ * command substitution the guard can't read, which writing out clears. Null when anything else stands in the way, or
+ * when a word is literal text (a single-quoted `$`), which no rewrite can drop.
+ */
+function renderDevExpansionFix(cmd: ResolvedCommand): string | null {
+    const script = cmd.script;
+    if (!script || cmd.pos === undefined || !cmd.args.some(a => RENDER_EXPANDS.test(a))) return null;
+    let node: any;
+    try {
+        node = walkCommandNodes(parseShell(script.command)).find(n => n.pos === cmd.pos);
+    } catch {
+        return null;
+    }
+    const words: any[] = node?.suffix ?? [];
+    if (words.length !== cmd.args.length || words.some((w, i) => wordValue(w) !== cmd.args[i])) return null;
+    script.view ??= viewShell(script.command);
+    const unread: string[] = [];
+    const args: string[] = [];
+    for (let i = 0; i < cmd.args.length; i++) {
+        if (!RENDER_EXPANDS.test(cmd.args[i])) {
+            args.push(cmd.args[i]);
+            continue;
+        }
+        let written = '';
+        for (const part of words[i].parts ?? []) {
+            if (part?.type === 'Literal' || part?.type === 'SingleQuoted') {
+                written += String(part.value ?? '');
+                continue;
+            }
+            // Unquoted, an expansion can split into several words, a second operand or a flag among them.
+            if (part?.type !== 'DoubleQuoted') return null;
+            for (const inner of part.parts ?? []) {
+                if (inner?.type === 'Literal') {
+                    written += String(inner.value ?? '');
+                    continue;
+                }
+                const text = String(inner?.text ?? '');
+                // "$@" and "${a[@]}" stay several words inside quotes.
+                if (text.includes('@')) return null;
+                if (!evalWord(`"${text}"`, script.view, words[i].pos).unresolved.length) return null;
+                if (!unread.includes(text)) unread.push(text);
+                // `_` can't appear in a resource id, so a written-out operand never reads as a listed one.
+                written += '_';
+            }
+        }
+        args.push(written);
+    }
+    const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    const target = renderProvenTarget({ ...cmd, args }, r => listed.has(r));
+    if (target === null) return null;
+    const named = unread.map(u => `\`${clip(u, 80)}\``).join(', ');
+    return `${target} is listed as dev, but ${named} can't be read before the command runs, so the guard can't see what it does. Write the value out (a secret belongs in the service's environment instead) and it runs without approval.`;
+}
+
 function currentDevScope(): DevScope | null {
     const file = deploymentFilePath(DEV_SCOPE_FILE, DEV_SCOPE_FILE_ENV);
     if (!file) return null;
@@ -6086,6 +6141,11 @@ function* gatedSteps(
                     cmd, reason, outer, moves,
                     fix: `\`render ${unknown}\` isn't a Render CLI command (Render CLI ${RENDER_CLI_VERSION}): the CLI errors, prints its help, or ignores the word. Check \`render --help\`, or use the Render REST API for reads.`,
                 };
+                continue;
+            }
+            const devExpansion = cmd === outer && cmd.name === 'render' ? renderDevExpansionFix(cmd) : null;
+            if (devExpansion !== null) {
+                yield { cmd, reason, outer, moves, fix: devExpansion };
                 continue;
             }
             const unresolved = cmd === outer ? unresolvedPgTargetFix(cmd) : null;
