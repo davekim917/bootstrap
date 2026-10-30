@@ -93,6 +93,10 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a repository sync into the listed repository', 'gh repo sync Acme/core --branch master', () => other],
         ['a repository sync from inside the listed checkout', 'gh repo sync --branch master', () => theirs],
         ['a protected push in every submodule', "git submodule foreach 'git push origin master'", () => other],
+        ['a protected push from a find match directory', 'find LISTED_DIR -maxdepth 0 -exec git -C {} push origin HEAD:master \\;', () => other],
+        ['a protected push after a cd inside an executor script', "find . -maxdepth 0 -exec sh -c 'cd LISTED_DIR && git push origin HEAD:master' \\;", () => other],
+        ['an implicit push run by find after a branch switch', 'git switch master && find . -maxdepth 0 -exec git push origin HEAD \\;', () => theirs],
+        ['a protected push two executors deep', "find . -maxdepth 0 -exec git submodule foreach 'git push origin HEAD:master' \\;", () => other],
         ['a merge run by find -exec', 'find . -maxdepth 0 -exec gh pr merge 12 -R Acme/core --squash \\;', () => other],
         ['a matching push, which writes every matching branch', 'git push origin :', () => theirs],
         ['a push through a symlink into the listed checkout', 'cd core-link && git push origin HEAD:master', () => {
@@ -131,7 +135,7 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a REST merge endpoint with a partial placeholder', 'GH_REPO=example/core gh api -X PUT repos/Acme/{repo}/pulls/12/merge', () => other],
     ])('%s', (_label, command, cwd) => {
         checkout(join(dir, 'core-on-master'), 'https://github.com/Acme/core.git', 'master');
-        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`).replace('CORE_ON_MASTER', join(dir, 'core-on-master')).replaceAll('-C CORE ', `-C ${theirs} `).replaceAll('NEWDIR', join(dir, 'not-yet-cloned')).replaceAll('NESTED', join(other, 'new-core'));
+        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`).replace('CORE_ON_MASTER', join(dir, 'core-on-master')).replaceAll('-C CORE ', `-C ${theirs} `).replaceAll('NEWDIR', join(dir, 'not-yet-cloned')).replaceAll('NESTED', join(other, 'new-core')).replaceAll('LISTED_DIR', theirs);
         expect(action(resolved, cwd())).toBe('block');
     });
 });

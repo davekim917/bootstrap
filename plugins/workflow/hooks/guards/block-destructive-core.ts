@@ -6778,18 +6778,31 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
             const reason = noMergeStepReason(cmd, commands, dir, scope, refused, head, line, remotesMoved);
             if (reason) return reason;
         }
-        // What xargs, find -exec or git submodule foreach runs is checked too; per-match and per-submodule directories
-        // are unknown here, so a merge or protected push there is refused.
-        for (const { inner, tail } of execRuns(cmd)) {
-            const steps = innerSteps(inner, tail);
-            if (steps === RUNS_VARIABLE) return refused(null, 'A command taken from input') ?? 'A command taken from input (xargs or find) may merge or push, so it is refused while merge-scope.local.json lists repositories.';
-            for (const step of steps) {
-                const fixed = step.chdir === EACH_MATCH_DIR || step.chdir === EACH_SUBMODULE_DIR ? [null] : places;
-                for (const dir of fixed) {
-                    const reason = noMergeStepReason(step, steps, dir, scope, refused, headAfterSwitches(steps.slice(0, steps.indexOf(step))), line, remotesMoved);
-                    if (reason) return reason;
-                }
-            }
+        const reason = executorReason(cmd, scope, refused, line);
+        if (reason) return reason;
+    }
+    return null;
+}
+
+/**
+ * Why a command that xargs, find -exec or git submodule foreach runs, at any depth, merges or pushes to a protected
+ * branch. Inside an executor the guard knows nothing: not the directory (each match, each submodule, a cd in a script,
+ * a `{}` path), not the branch, not the remotes. So a merge it can't place, an implicit push and a push to a protected
+ * branch name are all refused there.
+ */
+function executorReason(
+    cmd: ResolvedCommand,
+    scope: MergeScope | 'unreadable',
+    refused: (repo: string | null, what: string) => string | null,
+    line: string,
+    depth = 0,
+): string | null {
+    for (const { inner, tail } of execRuns(cmd)) {
+        const steps = innerSteps(inner, tail);
+        if (steps === RUNS_VARIABLE || depth > 4) return refused(null, 'A command taken from input') ?? 'A command xargs, find or git submodule foreach runs from its input may merge or push, so it is refused while merge-scope.local.json lists repositories.';
+        for (const step of steps) {
+            const reason = noMergeStepReason(step, steps, null, scope, refused, null, line, true) ?? executorReason(step, scope, refused, line, depth + 1);
+            if (reason) return reason;
         }
     }
     return null;
