@@ -84,6 +84,8 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a merge behind onecli run', 'onecli run -- gh pr merge 12 -R Acme/core --squash', () => other],
         ['a push of the current branch after gh pr checkout', 'gh pr checkout 12 && git push origin HEAD', () => theirs],
         ['a push of the current branch after gh pr co', 'gh pr co 12 && git push', () => theirs],
+        ['a push after gh pr checkout with a repository flag first', 'gh -R Acme/core pr checkout 12 && git push origin HEAD', () => theirs],
+        ['a merge in a checkout gh cloned in the same step', 'gh repo clone Acme/core NESTED && cd NESTED && gh pr merge 12 --squash', () => other],
         ['a push of the current branch after renaming it', 'git branch -M master && git push -u origin HEAD', () => theirs],
         ['a merge with an empty GH_REPO, which gh ignores', "GH_REPO='' gh pr merge 12 --squash", () => theirs],
         ['a push to the protected branch over GitHub SSH on port 443', 'git push ssh://git@ssh.github.com:443/Acme/core.git HEAD:master', () => other],
@@ -109,7 +111,7 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a REST merge endpoint with a partial placeholder', 'GH_REPO=example/core gh api -X PUT repos/Acme/{repo}/pulls/12/merge', () => other],
     ])('%s', (_label, command, cwd) => {
         checkout(join(dir, 'core-on-master'), 'https://github.com/Acme/core.git', 'master');
-        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`).replace('CORE_ON_MASTER', join(dir, 'core-on-master')).replaceAll('-C CORE ', `-C ${theirs} `).replaceAll('NEWDIR', join(dir, 'not-yet-cloned'));
+        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`).replace('CORE_ON_MASTER', join(dir, 'core-on-master')).replaceAll('-C CORE ', `-C ${theirs} `).replaceAll('NEWDIR', join(dir, 'not-yet-cloned')).replaceAll('NESTED', join(other, 'new-core'));
         expect(action(resolved, cwd())).toBe('block');
     });
 });

@@ -6682,7 +6682,7 @@ function checkoutBranch(dir: string): string | null {
  */
 function headAfterSwitches(earlier: ResolvedCommand[]): null | undefined {
     return earlier.some(c => {
-        if (c.name === 'gh') return c.args[0] === 'pr' && ['checkout', 'co'].includes(c.args[1]);
+        if (c.name === 'gh') { const g = ghArgs(c.args).args; return g[0] === 'pr' && ['checkout', 'co'].includes(g[1]); }
         if (c.name !== 'git') return false;
         const sub = c.args[gitSubcommandIndex(c.args)];
         if (sub === 'switch' || sub === 'checkout') return true;
@@ -6756,8 +6756,9 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
         const earlier = commands.slice(0, commands.indexOf(cmd));
         const head = headAfterSwitches(earlier);
         // A remote added, renamed or repointed, or a clone, earlier in the step leaves the checkout's repository unread.
-        const remotesMoved = earlier.some(c => c.name === 'git' && (['remote', 'clone'].includes(c.args[gitSubcommandIndex(c.args)])
-            || (c.args[gitSubcommandIndex(c.args)] === 'config' && c.args.some(a => /^remote\./.test(a)))));
+        const remotesMoved = earlier.some(c => (c.name === 'git' && (['remote', 'clone'].includes(c.args[gitSubcommandIndex(c.args)])
+            || (c.args[gitSubcommandIndex(c.args)] === 'config' && c.args.some(a => /^remote\./.test(a)))))
+            || (c.name === 'gh' && ghArgs(c.args).args[0] === 'repo' && ['clone', 'fork'].includes(ghArgs(c.args).args[1])));
         for (const dir of places) {
             const reason = noMergeStepReason(cmd, commands, dir, scope, refused, head, line, remotesMoved);
             if (reason) return reason;
