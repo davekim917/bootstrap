@@ -148,6 +148,7 @@ describe('the gate request a send stages', () => {
         ['an email beside another command carries nothing', `cd /tmp && gws gmail +send --to a@example.com --body 'hi'`, undefined],
         ['an email whose body runs a command carries nothing', `gws gmail +send --to a@example.com --body "$(cat notes.txt)"`, undefined],
         ['an email with an attachment carries nothing', `gws gmail +send --to a@example.com --subject Q3 --body 'Numbers are in.' --attach confidential.pdf`, undefined],
+        ['an email inside a shell program carries nothing', `bash -c 'gws gmail +send --to a@example.com --body "Numbers are in." --attach confidential.pdf'`, undefined],
         ['an email with an attached -a attachment carries nothing', `gws gmail +send --to a@example.com --subject Q3 --body 'Numbers are in.' -aconfidential.pdf`, undefined],
         ['an email body drops a line continuation, as bash does', `gws gmail +send --to a@example.com --body "Do not\\\nrelease until approved."`, ['Do notrelease until approved.', 'to:a@example.com']],
         ['an email body keeps its leading indentation', `gws gmail +send --to a@example.com --body '    if approved:\n        release()'`, ['    if approved:\n        release()', 'to:a@example.com']],

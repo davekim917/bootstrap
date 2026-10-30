@@ -838,7 +838,8 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     }
     // What a person must have seen for their own "send" to stand in for the card: a single literal send only.
     const literalParts = [flagTo, cc, bcc, subject || undefined].filter((v): v is string => v !== undefined && v !== '');
-    const readable = gwsWords === 1 && !generatedWord && !probeFlag && !isHtml && !isRawApi && unresolved.size === 0
+    // Only a send the parser read word by word: a regex fallback can't see every flag, an attachment among them.
+    const readable = send !== undefined && send.verb === 'send' && gwsWords === 1 && !generatedWord && !probeFlag && !isHtml && !isRawApi && unresolved.size === 0
         && attachments.length === 0 && soleCommand(command)
         && body.text !== null && body.text.trim() !== '' && literalParts.every(v => !/[$`]/.test(v));
     // Each envelope part carries its role, so the host can match it to the same field of the draft the person saw.
