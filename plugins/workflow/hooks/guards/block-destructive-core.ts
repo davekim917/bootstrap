@@ -6902,7 +6902,7 @@ export const SEND_SCOPE_FILE_ENV = 'BOOTSTRAP_SEND_SCOPE_FILE';
 const UNKNOWN_ONECLI_AGENT = '\0unknown';
 const SEND_SCOPE_FILE = 'send-scope.local.json';
 const SLACK_POST_METHODS = new Set([
-    'chat.postMessage', 'chat.update', 'chat.scheduleMessage', 'chat.meMessage', 'chat.delete',
+    'chat.postMessage', 'chat.postEphemeral', 'chat.update', 'chat.scheduleMessage', 'chat.meMessage', 'chat.delete',
     'files.completeUploadExternal', 'files.upload', 'files.share',
 ]);
 const SLACK_API_METHOD_RE = /slack\.com\/api\/([A-Za-z.]+)/g;
