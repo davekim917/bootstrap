@@ -4096,8 +4096,9 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
 // the shell each have ways to connect somewhere other than the -h a command shows.
 // So the exemption accepts only a command whose connection needs no emulation of
 // them, and procfs must show every listener it reaches held only by postgres
-// running from a data directory under /tmp: a postgres on loopback can as well be a
-// volume-backed database with real data. Anything else, or anything unreadable, holds.
+// running from a cluster the scratch-postgres helper started under /tmp: a postgres on
+// loopback can as well be a volume-backed database with real data, and any other
+// cluster has a login that can reach one. Anything else, or anything unreadable, holds.
 // `localhost`, an omitted port, connection strings and psqlrc files are refused
 // rather than resolved: NSS, the client build, libpq's own parser and psql's
 // binary-relative startup files decide them, not anything the guard can read.
@@ -4133,7 +4134,9 @@ const LIVE_LOCAL_PG_HOST: LocalPgHost = {
     readLink: (p) => readOr(() => readlinkSync(p), ''),
 };
 
-const PSQL_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}(?:/[^\\s'"$\`\\\\]*/)?psql\\s`);
+const PG_CLIENT_UNDER_SAFE_WRAPPERS_RE: Record<string, RegExp> = Object.fromEntries(
+    ['psql', 'dropdb'].map(name => [name, new RegExp(`${SAFE_WRAPPERS_PREFIX}(?:/[^\\s'"$\`\\\\]*/)?${name}\\s`)]),
+);
 // What else the line may run. Not printf (`-v` assigns), sort (`-o`) or tee, which write; and not a second psql, whose
 // `\!` could stop the checked postgres and start a forwarder before this one connects.
 const LOCAL_PG_LINE_COMMANDS = new Set(['cd', 'pushd', 'popd', 'echo', 'cat', 'head', 'tail', 'grep', 'wc', 'true']);
@@ -4148,9 +4151,15 @@ const LINE_EXPANSION_RE = /[$`]|[<>]\(/;
 const PLAIN_LINE_NODES = new Set(['Script', 'Statement', 'Command', 'Pipeline', 'AndOr']);
 
 const PSQL_SHORT_FLAGS = 'XqtA1eabEnwWx';
+// The long psql flags the scratch-postgres helper passes through; it refuses any other.
+const SCRATCH_PG_LONG_FLAGS = new Set(['--no-psqlrc', '--quiet', '--tuples-only', '--no-align', '--single-transaction', '--echo-queries', '--echo-all', '--echo-errors', '--echo-hidden', '--no-readline', '--no-password', '--expanded', '--csv']);
 const PSQL_SHORT_VALUES: Record<string, string> = { c: '--command', d: '--dbname', h: '--host', p: '--port', U: '--username', v: '--set' };
 const PSQL_LONG_FLAGS = new Set(['--no-psqlrc', '--quiet', '--tuples-only', '--no-align', '--single-transaction', '--echo-queries', '--echo-all', '--echo-errors', '--echo-hidden', '--no-readline', '--no-password', '--password', '--expanded', '--csv']);
 const PSQL_LONG_VALUES = new Set(['--command', '--dbname', '--host', '--port', '--username', '--set', '--variable']);
+const DROPDB_SHORT_FLAGS = 'eifwW';
+const DROPDB_SHORT_VALUES: Record<string, string> = { h: '--host', p: '--port', U: '--username' };
+const DROPDB_LONG_FLAGS = new Set(['--echo', '--interactive', '--force', '--no-password', '--password', '--if-exists']);
+const DROPDB_LONG_VALUES = new Set(['--host', '--port', '--username']);
 
 /** True when the shell passes `text` (one argument as written) through unchanged: no expansion, glob or escape. */
 function isLiteralShellWord(text: string): boolean {
@@ -4269,6 +4278,46 @@ function psqlTarget(args: string[]): { host?: string; port?: string; noPsqlrc: b
     return { host: last.get('--host'), port: last.get('--port'), noPsqlrc };
 }
 
+/**
+ * The host and port dropdb connects to, read the way it reads its options (the last of a repeated option wins). Null
+ * when an option is one the guard doesn't place (`--maintenance-db` takes a connection string), or the line names
+ * anything but one plain database.
+ */
+function dropdbTarget(args: string[]): { host?: string; port?: string; noPsqlrc: boolean } | null {
+    const last = new Map<string, string>();
+    const positionals: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') {
+            positionals.push(...args.slice(i + 1));
+            break;
+        }
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const option = eq < 0 ? a : a.slice(0, eq);
+            if (eq < 0 && DROPDB_LONG_FLAGS.has(option)) continue;
+            const value = eq < 0 ? args[++i] : a.slice(eq + 1);
+            if (!DROPDB_LONG_VALUES.has(option) || value === undefined) return null;
+            last.set(option, value);
+            continue;
+        }
+        if (a.length > 1 && a.startsWith('-')) {
+            for (let j = 1; j < a.length; j++) {
+                if (DROPDB_SHORT_FLAGS.includes(a[j])) continue;
+                const option = DROPDB_SHORT_VALUES[a[j]];
+                const value = j + 1 < a.length ? a.slice(j + 1) : args[++i];
+                if (!option || value === undefined) return null;
+                last.set(option, value);
+                break;
+            }
+            continue;
+        }
+        positionals.push(a);
+    }
+    if (positionals.length !== 1 || !/^[A-Za-z0-9_.-]+$/.test(positionals[0])) return null;
+    return { host: last.get('--host'), port: last.get('--port'), noPsqlrc: true };
+}
+
 /** A /proc/net/tcp{,6} address in network byte order as hex; the kernel prints each 32-bit word in host order. */
 function procNetAddress(hex: string): string {
     if (endianness() === 'BE') return hex.toLowerCase();
@@ -4337,14 +4386,26 @@ function isPostgresProcess(host: LocalPgHost, pid: string): boolean {
     return exe !== null && basename(exe.replace(/ \(deleted\)$/, '')) === 'postgres';
 }
 
+// The pg_hba.conf scratch-pg writes: only its NOSUPERUSER login role connects, so the server itself refuses dblink,
+// postgres_fdw, COPY ... PROGRAM and server file access however the SQL is put together. Text checks on the SQL can't
+// promise that (EXECUTE of a concatenated string, \gexec), so a cluster with any other pg_hba.conf, a test harness's
+// superuser cluster included, gets no exemption. The files are trusted as written: a cluster built to imitate them,
+// or a pg_hba.conf swapped after a reload, passes. The exemption stops a mistaken drop, not a deliberate forgery.
+// `all` and the other user-column keywords match more than one role, so they are never the scratch role.
+const SCRATCH_PG_HBA_RE = /^# scratch-pg: only the scratch role logs in\nlocal all ((?!(?:all|sameuser|samerole|samegroup|replication|public|none)\b)[a-z_][a-z0-9_]{0,62}) trust\nhost all \1 127\.0\.0\.1\/32 trust\nlocal all all reject\nhost all all all reject\n$/;
+
 /**
- * The data directory of a postgres process when it is under /tmp, else null. The postmaster changes into its data
- * directory at start and its children inherit that, so the cwd names it; under /tmp it is scratch that goes with the
- * container, where a volume-backed or system database lives anywhere else.
+ * The data directory of a postgres process when it is a cluster scratch-pg started, else null: under /tmp (scratch
+ * that goes with the container), with scratch-pg's pg_hba.conf and its state file beside it naming the same role.
+ * The postmaster changes into its data directory at start and its children inherit that, so the cwd names it.
  */
 function scratchDataDir(host: LocalPgHost, pid: string): string | null {
     const cwd = host.readLink(`/proc/${pid}/cwd`);
-    return cwd?.startsWith('/tmp/') ? cwd : null;
+    if (!cwd?.startsWith('/tmp/') || basename(cwd) !== 'data') return null;
+    const role = host.readFile(`${cwd}/pg_hba.conf`)?.match(SCRATCH_PG_HBA_RE)?.[1];
+    if (!role) return null;
+    const state = host.readFile(`${dirname(cwd)}/state`);
+    return state?.split('\n').includes(`role=${role}`) ? cwd : null;
 }
 
 /** "<endpoint> (postgres pid N, data <dir>)" when only scratch postgres holds every listener in `inodes`, else null. */
@@ -4379,8 +4440,9 @@ export function localPgTargetOf(
     host: LocalPgHost = LIVE_LOCAL_PG_HOST,
     assumeNoPsqlrc = false,
 ): string | null {
-    if (cmd.name !== 'psql' || host.platform !== 'linux') return null;
-    if ((cmd.env ?? []).length || cmd.chdir !== undefined || !PSQL_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
+    const underWrappers = PG_CLIENT_UNDER_SAFE_WRAPPERS_RE[cmd.name];
+    if (!underWrappers || host.platform !== 'linux') return null;
+    if ((cmd.env ?? []).length || cmd.chdir !== undefined || !underWrappers.test(cmd.raw)) return null;
     // Each neighbour by its own name with no wrapper: `npx cat` resolves to cat but runs a package.
     const plain = (c: ResolvedCommand) => LOCAL_PG_LINE_COMMANDS.has(c.name) && (c.raw === c.name || c.raw.startsWith(`${c.name} `));
     if (!commands.every(c => c === cmd || plain(c)) || LINE_EXPANSION_RE.test(command)) return null;
@@ -4389,7 +4451,7 @@ export function localPgTargetOf(
     const written = writtenArgs(cmd);
     if (!written || !written.every(isLiteralShellWord) || cmd.args.some(a => a.includes('\\'))) return null;
 
-    const target = psqlTarget(cmd.args);
+    const target = cmd.name === 'psql' ? psqlTarget(cmd.args) : dropdbTarget(cmd.args);
     if (!target || (!target.noPsqlrc && !assumeNoPsqlrc)) return null;
     if (!target.host || !target.port || !/^\d{1,5}$/.test(target.port)) return null;
     const port = Number(target.port);
@@ -4458,6 +4520,110 @@ export function localPgRewriteOf(
         if (endpoint !== null) return { ...candidate, endpoint };
     }
     return null;
+}
+
+const SCRATCH_PG = '/app/skills/scratch-postgres/scratch-pg';
+const LOCAL_PG_HOST_RE = /^(?:localhost|127(?:\.\d{1,3}){3}|::1|\[::1\]|0\.0\.0\.0)$/i;
+const PG_URI_HOSTS_RE = /^postgres(?:ql)?:\/\/(?:[^@/?#]*@)?([^/?#]*)/;
+const PG_CONNINFO_HOST_RE = /(?:^|\s)host(?:addr)?\s*=\s*'?([^\s']+)/g;
+const PG_PLAIN_DB_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function isRemotePgHost(host: string): boolean {
+    return host !== '' && !host.startsWith('/') && !LOCAL_PG_HOST_RE.test(host);
+}
+
+/**
+ * For a top-level psql or dropdb outside the scratch exemption: null when the line writes out a database server
+ * outside this container (an -h, a postgres:// URL, a host= connection string or a PGHOST prefix, each as a literal),
+ * which goes to an approver as before. Otherwise the line reaches a server the guard can't name, through a variable,
+ * libpq's defaults or a loopback address it couldn't prove is scratch, and the returned text refuses it with both ways
+ * forward: the scratch-pg helper for a scratch database, a written-out host for a real one.
+ */
+export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
+    if (cmd.name !== 'psql' && cmd.name !== 'dropdb') return null;
+    const written = writtenArgs(cmd);
+    // Without the words as written (a brace expansion moved them), the parsed value decides, which keeps the approver.
+    const literal = (i: number) => written === null || isLiteralShellWord(written[i]);
+    for (const assignment of cmd.env ?? []) {
+        const m = assignment.match(/^PGHOST(?:ADDR)?=(.*)$/);
+        if (m && !/[$`]/.test(m[1]) && m[1].split(',').some(isRemotePgHost)) return null;
+    }
+    let explicitDb: string | undefined;
+    let positionalDb: string | undefined;
+    const sql: string[] = [];
+    const otherValue = cmd.name === 'psql'
+        ? new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*[UpvfoLPTFR]|--(?:username|port|set|variable|file|output|log-file|pset|table-attr|field-separator|record-separator)=?)(.*)$`)
+        : new RegExp(`^(?:-[${DROPDB_SHORT_FLAGS}]*[pU]|--(?:username|port)=?)(.*)$`);
+    // The psql options scratch-pg accepts carry into the suggested line as written: -1 and ON_ERROR_STOP decide
+    // whether a failed statement rolls back the ones before it.
+    const kept: string[] = [];
+    const spelledAt = (at: number) => written?.[at] ?? `'${cmd.args[at].replace(/'/g, `'\\''`)}'`;
+    for (let i = 0; i < cmd.args.length; i++) {
+        const a = cmd.args[i];
+        if (cmd.name === 'psql' && (new RegExp(`^-[${PSQL_SHORT_FLAGS}]+$`).test(a) || SCRATCH_PG_LONG_FLAGS.has(a))) {
+            kept.push(spelledAt(i));
+            continue;
+        }
+        const value = (option: RegExp): { text: string; at: number } | null => {
+            const m = a.match(option);
+            if (!m) return null;
+            if (m[1]) return { text: m[1], at: i };
+            return i + 1 < cmd.args.length ? { text: cmd.args[i + 1], at: i + 1 } : null;
+        };
+        const host = value(new RegExp(`^(?:-[${cmd.name === 'psql' ? PSQL_SHORT_FLAGS : DROPDB_SHORT_FLAGS}]*h|--host=?)(.*)$`));
+        if (host) {
+            if (literal(host.at) && host.text.split(',').some(isRemotePgHost)) return null;
+            i = host.at;
+            continue;
+        }
+        const command = cmd.name === 'psql' ? value(new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*c|--command=?)(.*)$`)) : null;
+        if (command) {
+            // The SQL as the shell spelled it, so a $VAR in it still expands when the suggested line runs.
+            const spelled = written && (command.at === i + 1 ? written[command.at] : written[i].replace(new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*c|--command=)`), ''));
+            sql.push(spelled || `'${command.text.replace(/'/g, `'\\''`)}'`);
+            i = command.at;
+            continue;
+        }
+        const other = value(otherValue);
+        if (other) {
+            if (cmd.name === 'psql' && /^(?:-v|--set|--variable)/.test(a)) kept.push(...(other.at === i ? [spelledAt(i)] : [spelledAt(i), spelledAt(other.at)]));
+            i = other.at;
+            continue;
+        }
+        const maintenance = cmd.name === 'dropdb' ? value(/^--maintenance-db=?(.*)$/) : null;
+        const explicit = maintenance ?? value(/^(?:-d|--dbname=?)(.*)$/);
+        const named = explicit ?? (a.startsWith('-') ? null : { text: a, at: i });
+        if (!named) continue;
+        const text = named.text;
+        // The host as written: a URL whose password comes from a variable still names its host.
+        // `--opt=value` writes the option and its value as one word; the value alone is what libpq reads.
+        const word = named.at === i && text !== a ? text : (written?.[named.at] ?? text);
+        const shown = word.replace(/^(['"])([^]*)\1$/, '$2');
+        // A URL's host list (`h1:p1,h2:p2`) and every host= or hostaddr= of a connection string: libpq may use any.
+        const uriHosts = shown.match(PG_URI_HOSTS_RE)?.[1].split(',').map(h => h.replace(/^\[([^\]]*)\].*$|:\d*$/, '$1')) ?? [];
+        // Every `@host` too: libpq's userinfo runs to the last @, which can hide the host a simple reading finds.
+        const atHosts = shown.startsWith('postgres') ? [...shown.matchAll(/@(\[[^\]]*\]|[^:/?#,@]+)/g)].map(m => m[1].replace(/^\[|\]$/g, '')) : [];
+        const queryHosts = shown.startsWith('postgres')
+            ? [...shown.matchAll(/[?&](?:host|hostaddr)=([^&#]*)/gi)].flatMap(m => m[1].split(','))
+            : [];
+        const shownHosts = [...uriHosts, ...atHosts, ...queryHosts, ...[...shown.matchAll(PG_CONNINFO_HOST_RE)].flatMap(m => m[1].split(','))];
+        if (shownHosts.some(h => !/[$`\\]/.test(h) && isRemotePgHost(h))) return null;
+        const db = PG_PLAIN_DB_RE.test(text) ? text : (written?.[named.at] ?? text).match(/\/([A-Za-z_][A-Za-z0-9_]*)['"]?$/)?.[1];
+        if (explicit && !maintenance) explicitDb = db ?? explicitDb;
+        else if (!explicit) positionalDb ??= db;
+        if (named.at > i) i = named.at;
+    }
+    const target = explicitDb ?? positionalDb ?? '<db>';
+    const line = cmd.name === 'dropdb'
+        ? `${SCRATCH_PG} dropdb ${target}`
+        : [`${SCRATCH_PG} psql ${target}`, ...kept, sql.length ? sql.map(s => `-c ${s}`).join(' ') : "-c '<sql>'"].join(' ');
+    return [
+        `this ${cmd.name} reaches a database the guard can't name, through a variable, libpq's defaults or a local address it couldn't prove is a scratch Postgres, so it is refused instead of sent for approval.`,
+        `If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval (it starts one under /tmp first if none is running: ${SCRATCH_PG} start):`,
+        line,
+        `If a test harness started its own Postgres, start that cluster with ${SCRATCH_PG} start --port <port> --role <the harness's user> instead and point the harness at it; its drops then need no approval.`,
+        `If it is a real database, write its host out in the command and keep the password out of it: -h <host> -p <port> -U <user> -d <db>, with the password in ~/.pgpass or PGPASSWORD="$VAR", or a postgres:// URL whose host is written out and whose password stays in a variable. That goes to a person for approval.`,
+    ].join('\n');
 }
 
 // ── Git hook bypass ──────────────────────────────────────────────────────────
@@ -4930,6 +5096,11 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     // Redis
     if (name === 'redis-cli' && args.some(a => /^(?:FLUSHDB|FLUSHALL)$/i.test(a))) {
         return 'Destructive Redis command detected (FLUSHDB/FLUSHALL).';
+    }
+
+    // dropdb reads help and version only as its first argument; anywhere else they are options or the database.
+    if (name === 'dropdb' && !['--help', '-?', '--version', '-V'].includes(args[0])) {
+        return 'dropdb drops a whole PostgreSQL database';
     }
 
     // ── Cloud providers ──────────────────────────────────────────────────
@@ -5850,6 +6021,11 @@ function* gatedSteps(
                     cmd, reason, outer, moves,
                     fix: `${reason}: psql reaches the scratch Postgres at ${rewrite.endpoint} through ${rewrite.via}, which the guard does not resolve, so as written it needs approval. This runs without approval:\n${rewrite.line}${password}`,
                 };
+                continue;
+            }
+            const unresolved = cmd === outer ? unresolvedPgTargetFix(cmd) : null;
+            if (unresolved !== null) {
+                yield { cmd, reason, outer, moves, fix: `${reason}: ${unresolved}` };
                 continue;
             }
             yield { cmd, reason, outer, moves };
