@@ -60,6 +60,8 @@ describe('which Slack calls stop for approval', () => {
         ['a post whose URL is given with --url=', 'acme', `curl --url=https://slack.com/api/chat.postMessage -d channel=C1 -d text=hello`, 'gate'],
         ['a wrapped post behind env', undefined, `onecli run --agent ag-acme -- env curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
         ['a listed OneCLI identity given with --agent=', undefined, `onecli run --agent=ag-acme -- curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
+        ['a quoted OneCLI identity with the posting URL in a variable', undefined, `URL=https://slack.com/api/chat.postMessage; onecli run --agent 'ag-acme' -- curl "$URL" -d text=hello`, 'gate'],
+        ['a quoted OneCLI identity given with --agent= and the URL in a variable', undefined, `URL=https://slack.com/api/chat.postMessage; onecli run --agent="ag-acme" -- curl "$URL" -d text=hello`, 'gate'],
         ['a OneCLI identity held in a variable', undefined, `AGENT=ag-acme; onecli run --agent "$AGENT" -- curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
         ['a OneCLI identity held in a variable, given with --agent=', undefined, `AGENT=ag-acme; onecli run --agent="$AGENT" -- curl https://slack.com/api/chat.postMessage -d text=hello`, 'gate'],
         ['a post run by a shell', 'acme', `bash -lc 'curl https://slack.com/api/chat.postMessage -d text=hello'`, 'gate'],

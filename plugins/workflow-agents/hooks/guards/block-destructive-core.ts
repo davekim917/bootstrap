@@ -7079,7 +7079,7 @@ export function slackPostsOf(command: string): SlackPost[] {
     // guard can't read.
     if (posts.length === 0) {
         const held = carriedPost([command], null);
-        const named = /\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/.exec(command)?.[1] ?? null;
+        const named = /\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/.exec(command)?.[1]?.replace(/^(['"])(.*)\1$/, '$2') ?? null;
         const agent = named !== null && /[$`]/.test(named) ? UNKNOWN_ONECLI_AGENT : named;
         if (held) posts.push({ ...held, onecliAgent: agent });
     }
