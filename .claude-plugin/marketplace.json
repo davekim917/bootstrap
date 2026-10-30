@@ -64,14 +64,6 @@
       "source": "./plugins/slack-humanizer",
       "description": "Slack messages drafted in the user's voice and posted as rich text, so bullets and numbered lists render as real Slack lists.",
       "version": "1.0.1"
-    },
-    {
-      "name": "anderton",
-      "source": {
-        "source": "url",
-        "url": "https://github.com/davekim917/anderton.git"
-      },
-      "description": "The /anderton skill: one operator session that owns a project's line to production, watches the project's other live Claude Code sessions and PRs, and turns repeated corrections into structure. Invoke-only; Claude Code on the host only."
     }
   ]
 }
