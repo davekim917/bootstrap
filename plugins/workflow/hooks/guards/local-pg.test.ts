@@ -444,6 +444,10 @@ describe('the exemption applies only to a cluster scratch-pg started', () => {
         ['no pg_hba.conf readable', withFiles({ '/tmp/embedded-pg/data/pg_hba.conf': null })],
         ['scratch-pg pg_hba.conf with a line added', withFiles({ '/tmp/embedded-pg/data/pg_hba.conf': SCRATCH_PG_HBA + 'host all scratch_admin 127.0.0.1/32 trust\n' })],
         ['a state file naming another role', withFiles({ '/tmp/embedded-pg/state': 'port=55432\nrole=other\n' })],
+        ['the pg_hba.conf keyword all as the role', withFiles({
+            '/tmp/embedded-pg/data/pg_hba.conf': SCRATCH_PG_HBA.replaceAll('scratch', 'all').replace('# all-pg: only the all role', '# scratch-pg: only the scratch role'),
+            '/tmp/embedded-pg/state': 'port=55432\nrole=all\n',
+        })],
         ['no state file', withFiles({ '/tmp/embedded-pg/state': null })],
         ['a data directory not named data', withFiles({ '/tmp/harness/pgdata/pg_hba.conf': SCRATCH_PG_HBA, '/tmp/harness/state': 'role=scratch\n' }, '/tmp/harness/pgdata')],
     ])('not exempt, refused toward scratch-pg start --role: %s', (_name, f) => {

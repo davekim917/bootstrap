@@ -4383,8 +4383,10 @@ function isPostgresProcess(host: LocalPgHost, pid: string): boolean {
 // The pg_hba.conf scratch-pg writes: only its NOSUPERUSER login role connects, so the server itself refuses dblink,
 // postgres_fdw, COPY ... PROGRAM and server file access however the SQL is put together. Text checks on the SQL can't
 // promise that (EXECUTE of a concatenated string, \gexec), so a cluster with any other pg_hba.conf, a test harness's
-// superuser cluster included, gets no exemption.
-const SCRATCH_PG_HBA_RE = /^# scratch-pg: only the scratch role logs in\nlocal all ([a-z_][a-z0-9_]{0,62}) trust\nhost all \1 127\.0\.0\.1\/32 trust\nlocal all all reject\nhost all all all reject\n$/;
+// superuser cluster included, gets no exemption. The files are trusted as written: a cluster built to imitate them,
+// or a pg_hba.conf swapped after a reload, passes. The exemption stops a mistaken drop, not a deliberate forgery.
+// `all` and the other user-column keywords match more than one role, so they are never the scratch role.
+const SCRATCH_PG_HBA_RE = /^# scratch-pg: only the scratch role logs in\nlocal all ((?!(?:all|sameuser|samerole|samegroup|replication|public|none)\b)[a-z_][a-z0-9_]{0,62}) trust\nhost all \1 127\.0\.0\.1\/32 trust\nlocal all all reject\nhost all all all reject\n$/;
 
 /**
  * The data directory of a postgres process when it is a cluster scratch-pg started, else null: under /tmp (scratch
