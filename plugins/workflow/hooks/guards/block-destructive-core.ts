@@ -7025,7 +7025,7 @@ export function parseSendScope(text: string): SendScope | null {
     }
     const slack = (raw as { slack?: unknown } | null)?.slack as { workgroups?: unknown; onecliAgents?: unknown } | undefined;
     const names = (v: unknown) => v === undefined ? [] : Array.isArray(v) && v.every(x => typeof x === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(x)) ? v as string[] : null;
-    if (!slack || typeof slack !== 'object') return null;
+    if (!slack || typeof slack !== 'object' || Array.isArray(slack)) return null;
     const workgroups = names(slack.workgroups);
     const onecliAgents = names(slack.onecliAgents);
     if (!workgroups || !onecliAgents) return null;

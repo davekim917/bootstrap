@@ -172,6 +172,7 @@ describe('the gate request a send stages', () => {
         ['an email inside a shell program carries nothing', `bash -c 'gws gmail +send --to a@example.com --body "Numbers are in." --attach confidential.pdf'`, undefined],
         ['an email with an attached -a attachment carries nothing', `gws gmail +send --to a@example.com --subject Q3 --body 'Numbers are in.' -aconfidential.pdf`, undefined],
         ['an email body drops a line continuation, as bash does', `gws gmail +send --to a@example.com --body "Do not\\\nrelease until approved."`, ['Do notrelease until approved.', 'to:a@example.com']],
+        ['an email body with UTF-8 byte escapes carries the decoded text', `gws gmail +send --to a@example.com --body $'Caf\\303\\251 is open.'`, ['Caf\u00e9 is open.', 'to:a@example.com']],
         ['an email body with ANSI-C escapes carries the decoded text', `gws gmail +send --to a@example.com --body $'a \\u2014 b\\101'`, ['a \u2014 bA', 'to:a@example.com']],
         ['an email body keeps its leading indentation', `gws gmail +send --to a@example.com --body '    if approved:\n        release()'`, ['    if approved:\n        release()', 'to:a@example.com']],
         ['a forward carries nothing', `gws gmail +forward --message-id m1 --to a@example.com --body 'FYI'`, undefined],
@@ -189,6 +190,7 @@ describe('send-scope files', () => {
         [{ slack: { workgroups: ['acme'] } }, true],
         [{ slack: { onecliAgents: ['ag-1'] } }, true],
         [{ slack: { workgroups: 'acme' } }, false],
+        [{ slack: [{ workgroups: ['acme'] }] }, false],
         [{ slack: { workgroups: ['has space'] } }, false],
         [{}, false],
     ])('%j parses: %p', (scope, ok) => {
