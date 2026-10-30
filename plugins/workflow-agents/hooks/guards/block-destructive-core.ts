@@ -6537,7 +6537,7 @@ export function noteSendParts(command: string, parts: string[] | null): void {
 
 export const MERGE_SCOPE_FILE_ENV = 'BOOTSTRAP_MERGE_SCOPE_FILE';
 const MERGE_SCOPE_FILE = 'merge-scope.local.json';
-const GITHUB_REPO_IN_TEXT_RE = /github\.com[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/?#\s]|$)/;
+const GITHUB_REPO_IN_TEXT_RE = /github\.com(?::\d+)?[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/?#\s]|$)/;
 const API_MERGE_RE = /(?:^|[\s/])repos\/(\S+?)\/(?:pulls\/[^/\s]+\/merge|merges)\b/;
 const GRAPHQL_MERGE_RE = /\b(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\b/;
 

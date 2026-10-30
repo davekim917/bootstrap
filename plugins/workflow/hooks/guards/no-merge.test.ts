@@ -78,6 +78,7 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a GraphQL merge from its checkout', `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "x"}) { clientMutationId } }'`, () => theirs],
         ['the review-loop merge', 'PR=12 REPO=Acme/core codex-review.sh merge --head abc', () => other],
         ['a push to the protected branch', 'git push origin HEAD:master', () => theirs],
+        ['a push to the protected branch over GitHub SSH on port 443', 'git push ssh://git@ssh.github.com:443/Acme/core.git HEAD:master', () => other],
         ['a push of the checked-out protected branch', 'git push', () => join(dir, 'core-on-master')],
         ['a push after cd into the checkout', 'cd CORE && git push origin feature-x:master', () => dir],
         ['a delete of the protected branch', 'git push origin :master', () => theirs],
