@@ -379,6 +379,11 @@ describe('a psql or dropdb whose database the line does not name is refused towa
         ['a PGHOST prefix', 'PGHOST=db.example.internal psql -d app -c "DROP TABLE orders"'],
         ['the password from a variable', 'PGPASSWORD="$PW" psql -h db.example.internal -U app -d app -c "DROP TABLE orders"'],
         ['dropdb -h', 'dropdb -h db.example.internal -p 5432 app'],
+        ['-h clustered after -X', "psql -Xh db.example.internal -d app -c 'DROP TABLE orders'"],
+        ['dropdb -h clustered after -e', 'dropdb -eh db.example.internal -p 5432 app'],
+        ['host= in a URL query', "psql 'postgresql:///app?host=db.example.internal' -c 'DROP TABLE orders'"],
+        ['hostaddr= in a URL query', "psql 'postgresql://127.0.0.1:55432/app?sslmode=disable&hostaddr=203.0.113.5' -c 'DROP TABLE orders'"],
+        ['a percent-encoded host in a URL query', "psql 'postgresql:///app?host=db%2Eexample%2Einternal' -c 'DROP TABLE orders'"],
         ['dropdb --maintenance-db naming a host', "dropdb -h 127.0.0.1 -p 55432 --maintenance-db='host=db.example.internal dbname=postgres' app_test"],
     ])('a host outside this container written out goes to an approver: %s', (_name, command) => {
         expect(evaluate(command).action).toBe('gate');

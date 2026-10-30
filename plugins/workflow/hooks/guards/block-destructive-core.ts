@@ -4543,7 +4543,7 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
             if (m[1]) return { text: m[1], at: i };
             return i + 1 < cmd.args.length ? { text: cmd.args[i + 1], at: i + 1 } : null;
         };
-        const host = value(/^(?:-h|--host=?)(.*)$/);
+        const host = value(new RegExp(`^(?:-[${cmd.name === 'psql' ? PSQL_SHORT_FLAGS : DROPDB_SHORT_FLAGS}]*h|--host=?)(.*)$`));
         if (host) {
             if (literal(host.at) && host.text.split(',').some(isRemotePgHost)) return null;
             continue;
@@ -4572,7 +4572,10 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
         const uriHosts = shown.match(PG_URI_HOSTS_RE)?.[1].split(',').map(h => h.replace(/^\[([^\]]*)\].*$|:\d*$/, '$1')) ?? [];
         // Every `@host` too: libpq's userinfo runs to the last @, which can hide the host a simple reading finds.
         const atHosts = shown.startsWith('postgres') ? [...shown.matchAll(/@(\[[^\]]*\]|[^:/?#,@]+)/g)].map(m => m[1].replace(/^\[|\]$/g, '')) : [];
-        const shownHosts = [...uriHosts, ...atHosts, ...[...shown.matchAll(PG_CONNINFO_HOST_RE)].flatMap(m => m[1].split(','))];
+        const queryHosts = shown.startsWith('postgres')
+            ? [...shown.matchAll(/[?&](?:host|hostaddr)=([^&#]*)/gi)].flatMap(m => m[1].split(','))
+            : [];
+        const shownHosts = [...uriHosts, ...atHosts, ...queryHosts, ...[...shown.matchAll(PG_CONNINFO_HOST_RE)].flatMap(m => m[1].split(','))];
         if (shownHosts.some(h => !/[$`\\]/.test(h) && isRemotePgHost(h))) return null;
         const db = PG_PLAIN_DB_RE.test(text) ? text : (written?.[named.at] ?? text).match(/\/([A-Za-z_][A-Za-z0-9_]*)['"]?$/)?.[1];
         if (explicit && !maintenance) explicitDb = db ?? explicitDb;
