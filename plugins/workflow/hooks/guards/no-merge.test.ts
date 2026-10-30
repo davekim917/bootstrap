@@ -98,6 +98,10 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a protected push after a cd inside an executor script', "find . -maxdepth 0 -exec sh -c 'cd LISTED_DIR && git push origin HEAD:master' \\;", () => other],
         ['an implicit push run by find after a branch switch', 'git switch master && find . -maxdepth 0 -exec git push origin HEAD \\;', () => theirs],
         ['a protected push two executors deep', "find . -maxdepth 0 -exec git submodule foreach 'git push origin HEAD:master' \\;", () => other],
+        ['a protected push from a stash branch', 'git stash branch master && git push -u origin HEAD', () => theirs],
+        ['a protected push with GIT_DIR pointing at the listed repository', 'GIT_DIR=LISTED_DIR/.git git push origin HEAD:master', () => other],
+        ['a protected push from the listed checkout with --work-tree elsewhere', 'git --work-tree=OTHER_DIR push origin HEAD:master', () => theirs],
+        ['a GraphQL merge from another checkout', `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "PR_x"}) { clientMutationId } }'`, () => other],
         ['a REST merge with a gh option before api', 'gh --hostname github.com api -X PUT repos/Acme/core/pulls/12/merge', () => other],
         ['an implicit push after a script the guard does not follow', './prepare.sh && git push origin HEAD', () => theirs],
         ['a protected push in a ~ path', 'git -C ~/listed-core push origin HEAD:master', () => other],
@@ -140,7 +144,7 @@ describe('a listed repository refuses every merge and protected-branch push', ()
         ['a REST merge endpoint with a partial placeholder', 'GH_REPO=example/core gh api -X PUT repos/Acme/{repo}/pulls/12/merge', () => other],
     ])('%s', (_label, command, cwd) => {
         checkout(join(dir, 'core-on-master'), 'https://github.com/Acme/core.git', 'master');
-        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`).replace('CORE_ON_MASTER', join(dir, 'core-on-master')).replaceAll('-C CORE ', `-C ${theirs} `).replaceAll('NEWDIR', join(dir, 'not-yet-cloned')).replaceAll('NESTED', join(other, 'new-core')).replaceAll('LISTED_DIR', theirs);
+        const resolved = command.replace('cd CORE', `cd ${theirs}`).replace('-C OURS', `-C ${other}`).replace('CORE_ON_MASTER', join(dir, 'core-on-master')).replaceAll('-C CORE ', `-C ${theirs} `).replaceAll('NEWDIR', join(dir, 'not-yet-cloned')).replaceAll('NESTED', join(other, 'new-core')).replaceAll('LISTED_DIR', theirs).replaceAll('OTHER_DIR', other);
         expect(action(resolved, cwd())).toBe('block');
     });
 });
@@ -226,8 +230,8 @@ describe('a scope listing workgroups refuses what it cannot read only in them', 
         ['a merge naming the listed repository', 'gh pr merge 12 -R Acme/core --squash', 'block', 'block'],
         ['a merge naming the listed repository after a cd the guard cannot follow', 'cd "$CHECKOUT" && gh pr merge 12 -R Acme/core', 'block', 'block'],
     ])('%s', (_name, command, listed, elsewhere) => {
-        expect(inWorkgroup('acme-wg', command, other)).toBe(listed);
-        expect(inWorkgroup('another-wg', command, other)).toBe(elsewhere);
+        expect(inWorkgroup('acme-wg', command, other)).toBe(listed as 'block' | 'allow');
+        expect(inWorkgroup('another-wg', command, other)).toBe(elsewhere as 'block' | 'allow');
     });
 
     test('a merge from a checkout of the listed repository is refused everywhere', () => {

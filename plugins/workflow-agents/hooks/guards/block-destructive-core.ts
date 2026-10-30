@@ -6711,7 +6711,7 @@ function checkoutBranch(dir: string): string | null {
 const INERT_COMMANDS = new Set(['echo', 'printf', 'true', 'false', 'test', '[', 'pwd', 'ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'sleep', 'date', 'which', 'export']);
 const INERT_GIT = new Set([
     'add', 'commit', 'status', 'log', 'diff', 'show', 'fetch', 'pull', 'rev-parse', 'ls-files', 'tag', 'merge-base', 'describe', 'blame',
-    'grep', 'merge', 'archive', 'ls-remote', 'stash', 'cherry-pick', 'revert', 'reset', 'restore', 'rm', 'mv', 'apply', 'shortlog',
+    'grep', 'merge', 'archive', 'ls-remote', 'cherry-pick', 'revert', 'reset', 'restore', 'rm', 'mv', 'apply', 'shortlog',
     'rev-list', 'cat-file', 'for-each-ref', 'show-ref', 'check-ignore', 'clean', 'notes',
 ]);
 // gh subcommands that read or act on GitHub without touching the local checkout; any other may (pr checkout, repo clone).
@@ -6737,6 +6737,7 @@ function leavesCheckoutAlone(c: ResolvedCommand): boolean {
     const rest = c.args.slice(at + 1);
     if (sub === 'branch') return !rest.some(a => /^-[a-zA-Z]*[mMcC]|^--(?:move|copy)$/.test(a));
     if (sub === 'worktree') return rest[0] === 'list';
+    if (sub === 'stash') return rest[0] !== 'branch';
     if (sub === 'remote') return rest.length === 0 || ['-v', '--verbose', 'show', 'get-url'].includes(rest[0]);
     if (sub === 'config') return rest.some(a => ['--get', '--get-all', '--get-regexp', '--list', '-l'].includes(a));
     return false;
@@ -6884,14 +6885,14 @@ function apiMergeTarget(
     return out;
 }
 
-/** The directory a git push runs in from `dir`, after every `-C` and `--work-tree` before its subcommand; null when unknown. */
+/** The directory a git push runs in from `dir`, after every `-C` before its subcommand; null when unknown. */
 function gitPushDir(args: string[], dir: string | null): string | null {
     let at = dir;
     const sub = gitSubcommandIndex(args);
     for (let i = 0; i < sub; i++) {
-        if (args[i] === '--git-dir' || args[i].startsWith('--git-dir=')) return null;
-        const value = args[i] === '-C' || args[i] === '--work-tree' ? args[++i]
-            : args[i].startsWith('--work-tree=') ? args[i].slice('--work-tree='.length) : undefined;
+        // git keeps its own directory under --work-tree, so only -C says where the repository is.
+        if (/^--(?:git-dir|work-tree)(?:=|$)/.test(args[i])) return null;
+        const value = args[i] === '-C' ? args[++i] : undefined;
         if (value === undefined) continue;
         if (at === null || UNKNOWN_WORD_RE.test(value) || value.startsWith('~')) return null;
         at = pathResolve(at, value);
@@ -6958,9 +6959,9 @@ function noMergeStepReason(
     if (api === 'unplaced') return unplaced('Merging through the API');
     const apiReason = api !== undefined ? checked(api, 'Merging through the API') : null;
     if (apiReason) return apiReason;
+    // A GraphQL merge picks its pull request by node ID, which names no repository the guard can read.
     if (apiClient && GRAPHQL_MERGE_RE.test(text)) {
-        if (dir === null) return unplaced('Merging through the GraphQL API');
-        const reason = checked(remotesOf(dir), 'Merging through the GraphQL API');
+        const reason = unresolved('Merging through the GraphQL API');
         if (reason) return reason;
     }
     if (/(?:^|\/)codex-review\.sh$/.test(cmd.name) && cmd.args[0] === 'merge') {
@@ -6971,7 +6972,9 @@ function noMergeStepReason(
         if (reason) return reason;
     }
     if (cmd.name === 'git' && cmd.args[gitSubcommandIndex(cmd.args)] === 'push') {
-        const pushDir = gitPushDir(cmd.args, dir);
+        // GIT_DIR or GIT_WORK_TREE, set on the command, exported earlier or inherited, points git at another repository.
+        const relocated = ['GIT_DIR', 'GIT_WORK_TREE'].some(name => assignedValue(name, cmd, commands) !== undefined);
+        const pushDir = relocated ? null : gitPushDir(cmd.args, dir);
         const remote = gitRemoteArg(cmd.args);
         // A push to a URL off GitHub reaches no listed repository.
         if (remote && /^(?:[a-z+]+:\/\/|[^@\s]+@)/i.test(remote) && !/github\.com[/:]/i.test(remote)) return null;
