@@ -6556,8 +6556,10 @@ export function noteSendParts(command: string, parts: string[] | null): void {
 // Some repositories belong to another team: agents open draft pull requests there and hand them over, and never
 // merge or push to a protected branch. Which repositories and branches is deployment data in an untracked
 // `merge-scope.local.json`, found like lab-scope.local.json:
-//   {"noMerge": {"<org>/<repo>": ["<protected branch>", …]}}
-// No file refuses nothing. A file that can't be read or parsed refuses every merge it can see.
+//   {"noMerge": {"<org>/<repo>": ["<protected branch>", …]}, "workgroups": ["<workgroup id>", …]}
+// No file refuses nothing. A file that can't be read or parsed refuses every merge it can see. A merge or protected
+// push the guard can tie to a listed repository is refused everywhere; one it can't read is refused only in the
+// workgroups listed (where those repositories are checked out), or everywhere when the file lists none.
 
 export const MERGE_SCOPE_FILE_ENV = 'BOOTSTRAP_MERGE_SCOPE_FILE';
 const MERGE_SCOPE_FILE = 'merge-scope.local.json';
@@ -6567,7 +6569,7 @@ const UNKNOWN_WORD_RE = /[$`]|\{\}/;
 const API_MERGE_RE = /(?:^|[\s/])repos\/(\S+?)\/(?:pulls\/[^/\s]+\/merge|merges)\b/;
 const GRAPHQL_MERGE_RE = /\b(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\b/;
 
-export type MergeScope = Map<string, Set<string>>;
+export type MergeScope = Map<string, Set<string>> & { workgroups?: string[] };
 
 /** Parse a merge-scope file's text, keyed by lower-cased `org/repo`. Null when anything about it is unusable. */
 export function parseMergeScope(text: string): MergeScope | null {
@@ -6579,7 +6581,10 @@ export function parseMergeScope(text: string): MergeScope | null {
     }
     const entries = (raw as { noMerge?: unknown } | null)?.noMerge;
     if (!entries || typeof entries !== 'object' || Array.isArray(entries)) return null;
+    const workgroups = (raw as { workgroups?: unknown }).workgroups;
+    if (workgroups !== undefined && !(Array.isArray(workgroups) && workgroups.every(w => typeof w === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(w)))) return null;
     const scope: MergeScope = new Map();
+    if (workgroups !== undefined) scope.workgroups = workgroups as string[];
     for (const [repo, branches] of Object.entries(entries)) {
         if (!ORG_REPO_RE.test(repo) || !Array.isArray(branches) || branches.length === 0
             || !branches.every((b: unknown) => typeof b === 'string' && /^[A-Za-z0-9._/-]{1,200}$/.test(b))) {
@@ -6803,17 +6808,19 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
     let alone = true;
     const steps: Array<{ cmd: ResolvedCommand; places: Array<string | null>; known: boolean; siblings: ResolvedCommand[]; moved: boolean }> = [];
     let moved = false;
-    const addRuns = (cmd: ResolvedCommand, depth: number): string | null => {
+    let inputRun: string | null = null;
+    const addRuns = (cmd: ResolvedCommand, depth: number): void => {
         for (const { inner, tail } of execRuns(cmd)) {
             const inside = innerSteps(inner, tail);
-            if (inside === RUNS_VARIABLE || depth > 4) return refused(null, 'A command taken from input') ?? `A command xargs, find or git submodule foreach takes from its input may merge or push, so it is refused while merge-scope.local.json lists repositories. ${SIMPLE_COMMAND}`;
+            if (inside === RUNS_VARIABLE || depth > 4) {
+                inputRun = refused(null, 'A command taken from input') ?? `A command xargs, find or git submodule foreach takes from its input may merge or push, so it is refused while merge-scope.local.json lists repositories. ${SIMPLE_COMMAND}`;
+                continue;
+            }
             for (const step of inside) {
                 steps.push({ cmd: step, places: [null], known: false, siblings: inside, moved: true });
-                const reason = addRuns(step, depth + 1);
-                if (reason) return reason;
+                addRuns(step, depth + 1);
             }
         }
-        return null;
     };
     for (const cmd of commands) {
         if (DIRECTORY_CHANGERS.has(cmd.name)) dirs = directoriesAfter(dirs, cmd);
@@ -6821,8 +6828,7 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
         const chdir = cmd.chdir ?? '.';
         const places: Array<string | null> = dirs && !UNKNOWN_WORD_RE.test(chdir) && !chdir.startsWith('~') ? dirs.map(d => pathResolve(d, chdir)) : [null];
         steps.push({ cmd, places, known: alone, siblings: commands, moved });
-        const reason = addRuns(cmd, 0);
-        if (reason) return reason;
+        addRuns(cmd, 0);
         if (!leavesCheckoutAlone(cmd)) alone = false;
         if ((cmd.name === 'git' || cmd.name === 'gh') && !leavesCheckoutAlone(cmd) && !isMergeOrPush(cmd)) moved = true;
     }
@@ -6832,13 +6838,18 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
     const lower = line.toLowerCase();
     const listed = scope === 'unreadable' || [...scope.keys()].some(repo => lower.includes(repo))
         || steps.some(({ places }) => places.some(dir => dir !== null && checkoutRemoteRepos(dir).some(r => r !== null && scope.has(r))));
+    // Outside the listed workgroups, what the guard can't read is let through unless the line ties itself to a listed
+    // repository; what it can tie to one is refused all the same.
+    const lenient = scope !== 'unreadable' && scope.workgroups !== undefined && !listed
+        && !scope.workgroups.includes(process.env.NANOCLAW_WORKGROUP_ID ?? '');
+    if (lenient && inputRun) return null;
     for (const { cmd, places, known, siblings, moved } of steps) {
         for (const dir of places) {
-            const reason = noMergeStepReason(cmd, siblings, dir, scope, refused, line, known || (!listed && !moved && dir !== null));
+            const reason = noMergeStepReason(cmd, siblings, dir, scope, refused, line, known || (!listed && !moved && dir !== null), lenient);
             if (reason) return reason;
         }
     }
-    return null;
+    return inputRun;
 }
 
 const SIMPLE_COMMAND = 'Run the merge or push as a single simple command, from the checkout, with its repository and branch written out.';
@@ -6909,21 +6920,23 @@ function noMergeStepReason(
     line: string,
     // Every command before this one left the checkout alone, so its branch and remotes are what is on disk.
     known: boolean,
+    // Refuse only what can be tied to a listed repository (noMergeReason).
+    lenient: boolean,
 ): string | null {
     if (dir !== null && !known) dir = null;
     const remotesOf = (d: string): Array<string | null> => checkoutRemoteRepos(d);
     // gh ignores a remote off GitHub, so a checkout is unread only when none of its remotes names a GitHub repository.
     const checked = (repos: Array<string | null>, what: string): string | null => {
         const known = repos.filter((r): r is string => r !== null);
-        if (known.length === 0) return scope === 'unreadable' ? refused(null, what) : `${what}: the guard can't read which repository this checkout points at, so it is refused. Name it with -R <owner>/<repo>.`;
+        if (known.length === 0) return scope === 'unreadable' ? refused(null, what) : lenient ? null : `${what}: the guard can't read which repository this checkout points at, so it is refused. Name it with -R <owner>/<repo>.`;
         return known.map(repo => refused(repo, what)).find(Boolean) ?? null;
     };
     const text = cmd.args.join(' ');
-    const unresolved = (what: string) => `${what}: its repository is only known when the command runs, so it is refused. Name the repository literally.`;
-    const unplaced = (what: string) => scope === 'unreadable' ? refused(null, what) : `${what} from a checkout the guard can't read (an earlier command on the line, or a directory it can't place), so it is refused. ${SIMPLE_COMMAND}`;
+    const unresolved = (what: string) => lenient ? null : `${what}: its repository is only known when the command runs, so it is refused. Name the repository literally.`;
+    const unplaced = (what: string) => scope === 'unreadable' ? refused(null, what) : lenient ? null : `${what} from a checkout the guard can't read (an earlier command on the line, or a directory it can't place), so it is refused. ${SIMPLE_COMMAND}`;
     const gh = cmd.name === 'gh' ? ghArgs(cmd.args) : null;
     // gh reads its options anywhere, so an option before the subcommand hides which one it is.
-    if (gh && gh.args[0]?.startsWith('-') && /\b(?:merge|sync|api)\b/.test(text)) return refused(null, 'A gh command with options before its subcommand') ?? `A gh command with options before its subcommand may merge, so it is refused while merge-scope.local.json lists repositories. ${SIMPLE_COMMAND}`;
+    if (gh && !lenient && gh.args[0]?.startsWith('-') && /\b(?:merge|sync|api)\b/.test(text)) return refused(null, 'A gh command with options before its subcommand') ?? `A gh command with options before its subcommand may merge, so it is refused while merge-scope.local.json lists repositories. ${SIMPLE_COMMAND}`;
     // gh treats an empty GH_REPO as unset.
     const ghRepo = assignedValue('GH_REPO', cmd, commands) || undefined;
     if (gh && gh.args[0] === 'pr' && gh.args[1] === 'merge') {
@@ -6975,7 +6988,7 @@ function noMergeStepReason(
                 return refused(repo, `Pushing to ${branches === null ? `every branch, or one the guard cannot read. ${SIMPLE_COMMAND}` : branches.join(', ')}`);
             }
             if (repo === null && branches === null) return unplaced('Pushing to a branch the guard cannot read');
-            if (repo === null && branches !== null) {
+            if (repo === null && branches !== null && !lenient) {
                 const anywhere = [...scope.entries()].find(([, set]) => branches.some(b => set.has(b)));
                 if (anywhere) return refused(anywhere[0], `Pushing to ${branches.join(', ')} from a checkout the guard can't place`);
             }

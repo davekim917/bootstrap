@@ -193,7 +193,44 @@ describe('merge-scope files', () => {
         [{ noMerge: { 'not a repo': ['master'] } }, false],
         [{ noMerge: ['Acme/core'] }, false],
         [{}, false],
+        [{ noMerge: { 'Acme/core': ['master'] }, workgroups: ['acme-wg'] }, true],
+        [{ noMerge: { 'Acme/core': ['master'] }, workgroups: 'acme-wg' }, false],
+        [{ noMerge: { 'Acme/core': ['master'] }, workgroups: ['has space'] }, false],
     ])('%j parses: %p', (scope, ok) => {
         expect(parseMergeScope(JSON.stringify(scope)) !== null).toBe(ok);
+    });
+});
+
+describe('a scope listing workgroups refuses what it cannot read only in them', () => {
+    let scoped = '';
+    let savedWorkgroup: string | undefined;
+    beforeAll(() => {
+        scoped = join(dir, 'merge-scope-workgroups.local.json');
+        writeFileSync(scoped, JSON.stringify({ noMerge: { 'Acme/core': ['master'] }, workgroups: ['acme-wg'] }));
+        savedWorkgroup = process.env.NANOCLAW_WORKGROUP_ID;
+    });
+    afterEach(() => {
+        if (savedWorkgroup === undefined) delete process.env.NANOCLAW_WORKGROUP_ID;
+        else process.env.NANOCLAW_WORKGROUP_ID = savedWorkgroup;
+    });
+    const inWorkgroup = (workgroup: string, command: string, cwd: string) => {
+        process.env[MERGE_SCOPE_FILE_ENV] = scoped;
+        process.env.NANOCLAW_WORKGROUP_ID = workgroup;
+        return action(command, cwd);
+    };
+    test.each([
+        ['a push after a cd the guard cannot follow', 'cd "$CHECKOUT" && git push origin HEAD', 'block', 'allow'],
+        ['a merge whose pull request is only known at run time', 'gh pr merge "$PR" --squash', 'block', 'allow'],
+        ['a merge xargs takes from its input', "printf '12\\n' | xargs gh pr merge --squash", 'block', 'allow'],
+        ['a push to the protected branch of the listed repository', 'git push https://github.com/Acme/core.git HEAD:master', 'block', 'block'],
+        ['a merge naming the listed repository', 'gh pr merge 12 -R Acme/core --squash', 'block', 'block'],
+        ['a merge naming the listed repository after a cd the guard cannot follow', 'cd "$CHECKOUT" && gh pr merge 12 -R Acme/core', 'block', 'block'],
+    ])('%s', (_name, command, listed, elsewhere) => {
+        expect(inWorkgroup('acme-wg', command, other)).toBe(listed);
+        expect(inWorkgroup('another-wg', command, other)).toBe(elsewhere);
+    });
+
+    test('a merge from a checkout of the listed repository is refused everywhere', () => {
+        expect(inWorkgroup('another-wg', 'gh pr merge 12 --squash', theirs)).toBe('block');
     });
 });
