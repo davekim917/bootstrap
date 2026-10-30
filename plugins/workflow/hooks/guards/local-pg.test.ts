@@ -425,6 +425,21 @@ describe('SQL that reaches another server always goes to an approver, scratch or
         expect(verdict(`psql -X -h 127.0.0.1 -p 55432 -d foo_test -c "${sql}"`)).toBe('gate');
     });
 
+    test.each([
+        ['split by a comment', "psql -X -h 127.0.0.1 -p 55432 -d foo_test -c 'CREATE/* x */SERVER prod FOREIGN DATA WRAPPER postgres_fdw'"],
+        ['inside a DO body', "psql -X -h 127.0.0.1 -p 55432 -d foo_test -c \"DO \\$\\$ BEGIN PERFORM dblink_exec('host=db.example.internal', 'DROP TABLE orders'); END \\$\\$\""],
+        ['run by EXECUTE', "psql -X -h 127.0.0.1 -p 55432 -d foo_test -c \"DO \\$\\$ BEGIN EXECUTE 'CREATE SERVER prod FOREIGN DATA WRAPPER postgres_fdw'; END \\$\\$\""],
+    ])('a cross-server construct %s still goes to an approver', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test.each([
+        ['a string literal', "SELECT extname FROM pg_extension WHERE extname = 'dblink'"],
+        ['a comment', 'SELECT 1 /* dblink */'],
+    ])('a mention in %s runs nothing on another server and is not gated for it', (_name, sql) => {
+        expect(verdict(`psql -h db.example.internal -d app -c "${sql}"`)).toBe('allow');
+    });
+
     test('a plain drop on the scratch postgres still needs no approval', () => {
         expect(verdict("psql -X -h 127.0.0.1 -p 55432 -d foo_test -c 'DROP TABLE orders'")).toBe('allow');
     });

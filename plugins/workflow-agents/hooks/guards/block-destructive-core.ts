@@ -5026,6 +5026,14 @@ const CF_DESTRUCTIVE_VERB = /^(?:[a-z]+-)*(?:delete|purge|destroy|remove|reset|r
 const CROSS_SERVER_SQL = /\bdblink\w*|\bpostgres_fdw\b|\bCREATE\s+(?:FOREIGN\s+TABLE|SERVER|USER\s+MAPPING)\b|\bIMPORT\s+FOREIGN\s+SCHEMA\b/i;
 const CROSS_SERVER_REASON = 'PostgreSQL SQL that reaches another server';
 
+/** The cross-server construct `sql` runs, if any: a mention in a string or comment doesn't run, unless DO or EXECUTE runs that string as SQL. */
+function crossServerConstruct(sql: string): string | undefined {
+    const code = stripSqlLiteralsAndComments(sql);
+    const direct = code.match(CROSS_SERVER_SQL)?.[0];
+    if (direct || !/\b(?:DO|EXECUTE)\b/i.test(code)) return direct;
+    return sql.replace(/\/\*[^]*?\*\//g, ' ').match(CROSS_SERVER_SQL)?.[0];
+}
+
 export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     const { name, args } = cmd;
 
@@ -5049,7 +5057,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
             return 'Snowflake SQL with a template can\'t be checked: snow fills it in before it runs.';
         }
         if (name === 'psql') {
-            const link = input.texts.map(t => t.match(CROSS_SERVER_SQL)?.[0]).find(Boolean);
+            const link = input.texts.map(crossServerConstruct).find(Boolean);
             if (link) return `${CROSS_SERVER_REASON} (${link}) can't be checked: what it runs there is not on this line.`;
         }
         if (name === 'snow' && input.texts.some(t => /^\s*!(?:source|load)\s+\w+:\/\//im.test(t))) {
