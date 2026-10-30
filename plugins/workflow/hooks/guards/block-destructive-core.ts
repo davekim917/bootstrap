@@ -6561,6 +6561,14 @@ const SLACK_READ_METHODS = new Set([
     'chat.getPermalink', 'chat.scheduledMessages.list', 'files.info', 'files.list', 'files.remote.info', 'files.remote.list',
     'files.getUploadURLExternal',
 ]);
+// Posting methods by name, for a line that holds the host or base URL in a variable (`${SLACK_API}chat.postMessage`).
+// A bare word can't be told from code (`files.map`), so only these names count there; after `slack.com/api/` every
+// method but a listed read does.
+const SLACK_POST_METHOD_NAMES = new Set([
+    'chat.postMessage', 'chat.postEphemeral', 'chat.update', 'chat.scheduleMessage', 'chat.meMessage', 'chat.delete',
+    'chat.deleteScheduledMessage', 'chat.unfurl', 'files.upload', 'files.uploadV2', 'files.completeUploadExternal',
+    'files.share', 'files.delete', 'files.remote.add', 'files.remote.share', 'files.remote.update', 'files.remote.remove',
+]);
 const isSlackPostMethod = (method: string): boolean => /^(?:chat|files)\./.test(method) && !SLACK_READ_METHODS.has(method);
 const SLACK_API_METHOD_RE = /slack\.com\/api\/([A-Za-z.]+)/g;
 const HTTP_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs']);
@@ -6701,8 +6709,7 @@ function exactSlackPost(command: string): SlackPost | null {
 
 /**
  * Every Slack post a command may make, inside an `onecli run … --` wrapper too. The one exact spelling is read word
- * by word; any other line that names a posting method, or calls an HTTP client with a word only known when it runs,
- * is a post with no readable text under every identity the line may run under: each OneCLI agent it names, and the
+ * by word; any other line that names a posting method is a post with no readable text under every identity the line may run under: each OneCLI agent it names, and the
  * session's own when any client runs unwrapped or the carrier isn't a client at all.
  */
 export function slackPostsOf(command: string): SlackPost[] {
@@ -6716,8 +6723,8 @@ export function slackPostsOf(command: string): SlackPost[] {
     const exact = exactSlackPost(command);
     if (exact) return [exact];
     const clients = commands.filter(c => HTTP_CLIENTS.has(c.name));
-    const method = [...command.matchAll(/\b((?:chat|files)\.[A-Za-z.]*[A-Za-z])\b/g)].map(m => m[1]).find(isSlackPostMethod)
-        ?? (clients.some(c => c.args.some(a => /[$`]/.test(a))) ? 'unknown' : undefined);
+    const method = [...command.matchAll(SLACK_API_METHOD_RE)].map(m => m[1]).find(isSlackPostMethod)
+        ?? [...command.matchAll(/\b((?:chat|files)\.[A-Za-z.]*[A-Za-z])\b/g)].map(m => m[1]).find(m => SLACK_POST_METHOD_NAMES.has(m));
     if (!method) return [];
     const agents = new Set<string | null>();
     for (const c of commands) if (c.onecliAgent !== undefined) agents.add(/[$`]/.test(c.onecliAgent) ? UNKNOWN_ONECLI_AGENT : c.onecliAgent);
