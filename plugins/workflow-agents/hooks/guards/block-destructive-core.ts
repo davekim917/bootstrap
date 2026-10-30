@@ -6678,10 +6678,11 @@ function checkoutBranch(dir: string): string | null {
 
 /**
  * Undefined when no earlier step moves the checked-out branch; null when one does (a switch, a checkout, a branch
- * rename), since what it leaves checked out isn't read.
+ * rename, `gh pr checkout`), since what it leaves checked out isn't read.
  */
 function headAfterSwitches(earlier: ResolvedCommand[]): null | undefined {
     return earlier.some(c => {
+        if (c.name === 'gh') return c.args[0] === 'pr' && ['checkout', 'co'].includes(c.args[1]);
         if (c.name !== 'git') return false;
         const sub = c.args[gitSubcommandIndex(c.args)];
         if (sub === 'switch' || sub === 'checkout') return true;
