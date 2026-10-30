@@ -4564,7 +4564,9 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
         }
         const command = cmd.name === 'psql' ? value(new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*c|--command=?)(.*)$`)) : null;
         if (command) {
-            sql.push(written && command.at === i + 1 ? written[command.at] : `'${command.text.replace(/'/g, `'\\''`)}'`);
+            // The SQL as the shell spelled it, so a $VAR in it still expands when the suggested line runs.
+            const spelled = written && (command.at === i + 1 ? written[command.at] : written[i].replace(new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*c|--command=)`), ''));
+            sql.push(spelled || `'${command.text.replace(/'/g, `'\\''`)}'`);
             i = command.at;
             continue;
         }
