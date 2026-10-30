@@ -16,10 +16,17 @@ interface Fixture {
     tcp6?: Array<[string, string, string]>;
     unix?: Array<[string, string, string]>; // [flags, inode, path]
     procs?: Record<string, Proc>;
-    files?: Record<string, string>;
+    files?: Record<string, string | null>;
     home?: string[];
     noProc?: boolean;
 }
+
+// The files scratch-pg leaves beside the cluster it started, for the default data directory below.
+const SCRATCH_PG_HBA = '# scratch-pg: only the scratch role logs in\nlocal all scratch trust\nhost all scratch 127.0.0.1/32 trust\nlocal all all reject\nhost all all all reject\n';
+const SCRATCH_PG_FILES: Record<string, string> = {
+    '/tmp/embedded-pg/data/pg_hba.conf': SCRATCH_PG_HBA,
+    '/tmp/embedded-pg/state': 'port=55432\nrole=scratch\n',
+};
 
 const tcpTable = (rows: Array<[string, string, string]>) => [
     '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
@@ -33,11 +40,12 @@ const unixTable = (rows: Array<[string, string, string]>) => [
 
 function fixtureHost(f: Fixture): LocalPgHost {
     const procs = f.procs ?? {};
-    const files: Record<string, string> = {
+    const files: Record<string, string | null> = {
         '/proc/net/tcp': tcpTable(f.tcp ?? []),
         '/proc/net/tcp6': tcpTable(f.tcp6 ?? []),
         '/proc/net/unix': unixTable(f.unix ?? []),
         ...Object.fromEntries(Object.entries(procs).map(([pid, p]) => [`/proc/${pid}/comm`, `${p.comm}\n`])),
+        ...SCRATCH_PG_FILES,
         ...f.files,
     };
     const env = f.env ?? { HOME: '/home/tester' };
@@ -419,36 +427,28 @@ describe('dropdb takes the scratch exemption the way psql does', () => {
     });
 });
 
-describe('SQL that reaches another server always goes to an approver, scratch or not', () => {
-    test.each([
-        ['dblink_exec', "SELECT dblink_exec('host=db.example.internal dbname=app', 'DROP TABLE orders')"],
-        ['CREATE EXTENSION dblink', 'CREATE EXTENSION dblink'],
-        ['postgres_fdw', 'CREATE EXTENSION postgres_fdw'],
-        ['CREATE SERVER', "CREATE SERVER prod FOREIGN DATA WRAPPER postgres_fdw OPTIONS (host 'db.example.internal')"],
-        ['CREATE USER MAPPING', "CREATE USER MAPPING FOR CURRENT_USER SERVER prod OPTIONS (user 'app')"],
-        ['IMPORT FOREIGN SCHEMA', 'IMPORT FOREIGN SCHEMA public FROM SERVER prod INTO stage'],
-        ['CREATE FOREIGN TABLE', 'CREATE FOREIGN TABLE orders_remote (id int) SERVER prod'],
-    ])('%s against the scratch postgres', (_name, sql) => {
-        expect(verdict(`psql -X -h 127.0.0.1 -p 55432 -d foo_test -c "${sql}"`)).toBe('gate');
+describe('the exemption applies only to a cluster scratch-pg started', () => {
+    const DROP = "psql -X -h 127.0.0.1 -p 55432 -U harness_user -d postgres -c 'DROP DATABASE x_test'";
+    const withFiles = (files: Record<string, string | null>, cwd?: string): Fixture => ({
+        ...scratch,
+        procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'], cwd } },
+        files,
     });
 
-    test.each([
-        ['as a quoted identifier', `psql -X -h 127.0.0.1 -p 55432 -d foo_test -c 'SELECT "dblink_exec"(\'host=db.example.internal\', \'DROP TABLE orders\')'`],
-        ['split by a comment', "psql -X -h 127.0.0.1 -p 55432 -d foo_test -c 'CREATE/* x */SERVER prod FOREIGN DATA WRAPPER postgres_fdw'"],
-        ['inside a DO body', "psql -X -h 127.0.0.1 -p 55432 -d foo_test -c \"DO \\$\\$ BEGIN PERFORM dblink_exec('host=db.example.internal', 'DROP TABLE orders'); END \\$\\$\""],
-        ['run by EXECUTE', "psql -X -h 127.0.0.1 -p 55432 -d foo_test -c \"DO \\$\\$ BEGIN EXECUTE 'CREATE SERVER prod FOREIGN DATA WRAPPER postgres_fdw'; END \\$\\$\""],
-    ])('a cross-server construct %s still goes to an approver', (_name, command) => {
-        expect(verdict(command)).toBe('gate');
+    test('a cluster scratch-pg started is exempt', () => {
+        expect(verdict(DROP)).toBe('allow');
     });
 
-    test.each([
-        ['a string literal', "SELECT extname FROM pg_extension WHERE extname = 'dblink'"],
-        ['a comment', 'SELECT 1 /* dblink */'],
-    ])('a mention in %s runs nothing on another server and is not gated for it', (_name, sql) => {
-        expect(verdict(`psql -h db.example.internal -d app -c "${sql}"`)).toBe('allow');
-    });
-
-    test('a plain drop on the scratch postgres still needs no approval', () => {
-        expect(verdict("psql -X -h 127.0.0.1 -p 55432 -d foo_test -c 'DROP TABLE orders'")).toBe('allow');
+    test.each<[string, Fixture]>([
+        ['a test harness cluster with initdb\'s own pg_hba.conf', withFiles({ '/tmp/embedded-pg/data/pg_hba.conf': 'local all all trust\nhost all all 127.0.0.1/32 trust\n' })],
+        ['no pg_hba.conf readable', withFiles({ '/tmp/embedded-pg/data/pg_hba.conf': null })],
+        ['scratch-pg pg_hba.conf with a line added', withFiles({ '/tmp/embedded-pg/data/pg_hba.conf': SCRATCH_PG_HBA + 'host all scratch_admin 127.0.0.1/32 trust\n' })],
+        ['a state file naming another role', withFiles({ '/tmp/embedded-pg/state': 'port=55432\nrole=other\n' })],
+        ['no state file', withFiles({ '/tmp/embedded-pg/state': null })],
+        ['a data directory not named data', withFiles({ '/tmp/harness/pgdata/pg_hba.conf': SCRATCH_PG_HBA, '/tmp/harness/state': 'role=scratch\n' }, '/tmp/harness/pgdata')],
+    ])('not exempt, refused toward scratch-pg start --role: %s', (_name, f) => {
+        const v = evaluateBashCommand(DROP, { cwd: '/tmp', localPg: fixtureHost(f) });
+        expect(v.action).toBe('block');
+        expect(v.reason).toContain("scratch-pg start --port <port> --role <the harness's user>");
     });
 });

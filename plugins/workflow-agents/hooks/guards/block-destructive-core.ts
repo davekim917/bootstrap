@@ -4096,8 +4096,9 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
 // the shell each have ways to connect somewhere other than the -h a command shows.
 // So the exemption accepts only a command whose connection needs no emulation of
 // them, and procfs must show every listener it reaches held only by postgres
-// running from a data directory under /tmp: a postgres on loopback can as well be a
-// volume-backed database with real data. Anything else, or anything unreadable, holds.
+// running from a cluster the scratch-postgres helper started under /tmp: a postgres on
+// loopback can as well be a volume-backed database with real data, and any other
+// cluster has a login that can reach one. Anything else, or anything unreadable, holds.
 // `localhost`, an omitted port, connection strings and psqlrc files are refused
 // rather than resolved: NSS, the client build, libpq's own parser and psql's
 // binary-relative startup files decide them, not anything the guard can read.
@@ -4383,14 +4384,24 @@ function isPostgresProcess(host: LocalPgHost, pid: string): boolean {
     return exe !== null && basename(exe.replace(/ \(deleted\)$/, '')) === 'postgres';
 }
 
+// The pg_hba.conf scratch-pg writes: only its NOSUPERUSER login role connects, so the server itself refuses dblink,
+// postgres_fdw, COPY ... PROGRAM and server file access however the SQL is put together. Text checks on the SQL can't
+// promise that (EXECUTE of a concatenated string, \gexec), so a cluster with any other pg_hba.conf, a test harness's
+// superuser cluster included, gets no exemption.
+const SCRATCH_PG_HBA_RE = /^# scratch-pg: only the scratch role logs in\nlocal all ([a-z_][a-z0-9_]{0,62}) trust\nhost all \1 127\.0\.0\.1\/32 trust\nlocal all all reject\nhost all all all reject\n$/;
+
 /**
- * The data directory of a postgres process when it is under /tmp, else null. The postmaster changes into its data
- * directory at start and its children inherit that, so the cwd names it; under /tmp it is scratch that goes with the
- * container, where a volume-backed or system database lives anywhere else.
+ * The data directory of a postgres process when it is a cluster scratch-pg started, else null: under /tmp (scratch
+ * that goes with the container), with scratch-pg's pg_hba.conf and its state file beside it naming the same role.
+ * The postmaster changes into its data directory at start and its children inherit that, so the cwd names it.
  */
 function scratchDataDir(host: LocalPgHost, pid: string): string | null {
     const cwd = host.readLink(`/proc/${pid}/cwd`);
-    return cwd?.startsWith('/tmp/') ? cwd : null;
+    if (!cwd?.startsWith('/tmp/') || basename(cwd) !== 'data') return null;
+    const role = host.readFile(`${cwd}/pg_hba.conf`)?.match(SCRATCH_PG_HBA_RE)?.[1];
+    if (!role) return null;
+    const state = host.readFile(`${dirname(cwd)}/state`);
+    return state?.split('\n').includes(`role=${role}`) ? cwd : null;
 }
 
 /** "<endpoint> (postgres pid N, data <dir>)" when only scratch postgres holds every listener in `inodes`, else null. */
@@ -4595,6 +4606,7 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
         `this ${cmd.name} reaches a database the guard can't name, through a variable, libpq's defaults or a local address it couldn't prove is a scratch Postgres, so it is refused instead of sent for approval.`,
         `If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval (it starts one under /tmp first if none is running: ${SCRATCH_PG} start):`,
         line,
+        `If a test harness started its own Postgres, start that cluster with ${SCRATCH_PG} start --port <port> --role <the harness's user> instead and point the harness at it; its drops then need no approval.`,
         `If it is a real database, write its host out in the command and keep the password out of it: -h <host> -p <port> -U <user> -d <db>, with the password in ~/.pgpass or PGPASSWORD="$VAR", or a postgres:// URL whose host is written out and whose password stays in a variable. That goes to a person for approval.`,
     ].join('\n');
 }
@@ -5025,20 +5037,6 @@ function psqlStatementTexts(text: string): string[] {
 /** Returns gate reason if the command requires approval, null otherwise */
 const CF_DESTRUCTIVE_VERB = /^(?:[a-z]+-)*(?:delete|purge|destroy|remove|reset|revoke|roll|rollback|terminate|clear|rotate|invalidate|replace)(?:[-A-Z][-A-Za-z]*)?$/;
 
-// SQL that has the server connect onward: what runs on the other server is in a string or a remote definition the
-// guard doesn't read, and the scratch exemption proves only where psql connects, not where the server goes next.
-const CROSS_SERVER_SQL = /\bdblink\w*|\bpostgres_fdw\b|\bCREATE\s+(?:FOREIGN\s+TABLE|SERVER|USER\s+MAPPING)\b|\bIMPORT\s+FOREIGN\s+SCHEMA\b/i;
-const CROSS_SERVER_REASON = 'PostgreSQL SQL that reaches another server';
-
-/** The cross-server construct `sql` runs, if any: a mention in a string or comment doesn't run, unless DO or EXECUTE runs that string as SQL. */
-function crossServerConstruct(sql: string): string | undefined {
-    const code = stripSqlLiteralsAndComments(sql);
-    // A quoted identifier names the same function, and stripping blanks it with the literals.
-    const direct = code.match(CROSS_SERVER_SQL)?.[0] ?? sql.match(/"(?:dblink\w*|postgres_fdw)"/i)?.[0];
-    if (direct || !/\b(?:DO|EXECUTE)\b/i.test(code)) return direct;
-    return sql.replace(/\/\*[^]*?\*\//g, ' ').match(CROSS_SERVER_SQL)?.[0];
-}
-
 export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     const { name, args } = cmd;
 
@@ -5060,10 +5058,6 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         const templating = name === 'snow' ? snowTemplating(cmd) : [];
         if (name === 'snow' && !(templating.length && templating.every(t => t === 'NONE')) && input.texts.some(t => unfilledSnowTemplate(t, cmd))) {
             return 'Snowflake SQL with a template can\'t be checked: snow fills it in before it runs.';
-        }
-        if (name === 'psql') {
-            const link = input.texts.map(crossServerConstruct).find(Boolean);
-            if (link) return `${CROSS_SERVER_REASON} (${link}) can't be checked: what it runs there is not on this line.`;
         }
         if (name === 'snow' && input.texts.some(t => /^\s*!(?:source|load)\s+\w+:\/\//im.test(t))) {
             return 'Snowflake SQL that snow fetches from a URL (!source/!load) can\'t be checked before it runs.';
@@ -5970,10 +5964,6 @@ function* gatedSteps(
                 continue;
             }
             if (clientProgramGate(cmd) !== null) {
-                yield { cmd, reason, outer, moves };
-                continue;
-            }
-            if (reason.startsWith(CROSS_SERVER_REASON)) {
                 yield { cmd, reason, outer, moves };
                 continue;
             }
