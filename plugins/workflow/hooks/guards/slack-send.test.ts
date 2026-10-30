@@ -125,6 +125,8 @@ describe('the message text a post carries', () => {
         ['a URL given with --url=', `curl --url=https://slack.com/api/chat.postMessage -d channel=C1 -d text=hello`, 'hello'],
         ['an ANSI-C \\u escape, which the parser leaves as written', `curl https://slack.com/api/chat.postMessage -d channel=C1 --data-urlencode $'text=a \\u2014 b'`, null],
         ['an ANSI-C octal escape, which the parser leaves as written', `curl https://slack.com/api/chat.postMessage -d channel=C1 --data-urlencode $'text=a\\101b'`, null],
+        ['an ANSI-C \\? escape, which the parser leaves as written', `curl https://slack.com/api/chat.postMessage -d channel=C1 --data-urlencode $'text=ready\\?'`, null],
+        ['a multipart value with a trailing newline, which curl drops', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text=ready\n'`, null],
         ['an ANSI-C newline, which the parser decodes', `curl https://slack.com/api/chat.postMessage -d channel=C1 --data-urlencode $'text=a\\nb'`, 'a\nb'],
         ['a multipart value with leading spaces, which curl drops', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text=    if approved:'`, null],
         ['a quoted multipart value after a space, which curl also ends at its closing quote', `curl https://slack.com/api/chat.postMessage -F channel=C1 -F 'text= "Approved" do not deploy yet.'`, null],

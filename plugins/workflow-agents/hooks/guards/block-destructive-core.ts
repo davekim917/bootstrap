@@ -7063,8 +7063,8 @@ function bodyFields(flag: string, value: string): BodyField[] | null {
         if (at < 0) return null;
         const v = value.slice(at + 1);
         // curl reads `;type=`, `;filename=` and the like after a --form value, so a ';' may cut the text short, and a
-        // value opening with '"' is read as a quoted string that ends at its closing quote; curl drops leading spaces.
-        return [{ key: value.slice(0, at), value: flag !== '--form-string' && (/^\s/.test(v) || /^[<@"]/.test(v) || v.includes(';')) ? null : v }];
+        // value opening with '"' is read as a quoted string that ends at its closing quote; curl trims surrounding spaces.
+        return [{ key: value.slice(0, at), value: flag !== '--form-string' && (/^\s|\s$/.test(v) || /^[<@"]/.test(v) || v.includes(';')) ? null : v }];
     }
     if (flag === '--data-urlencode') {
         const at = value.indexOf('=');
@@ -7173,8 +7173,9 @@ export function slackPostsOf(command: string): SlackPost[] {
     for (const cmd of commands) {
         const agent = cmd.onecliAgent === undefined ? null : /[$`]/.test(cmd.onecliAgent) ? UNKNOWN_ONECLI_AGENT : cmd.onecliAgent;
         const post = slackPostIn(cmd.name, cmd.args, agent) ?? carriedPost(cmd.args, agent);
-        // The parser leaves $'…' numeric and control escapes (\u2014, \101, \cA) as written; bash decodes them.
-        if (post) posts.push(/\$'(?:[^'\\]|\\.)*\\[uUxc0-7]/.test(cmd.raw) ? { ...post, text: null } : post);
+        // The parser decodes only \n, \t, \\, \' and \" in $'…'; bash decodes the rest (\u2014, \101, \?), so a post
+        // using any other escape offers no exact text.
+        if (post) posts.push(/\$'(?:[^'\\]|\\.)*\\[^nt'"\\]/.test(cmd.raw) ? { ...post, text: null } : post);
     }
     // A posting URL the commands never carry as a word (held in a variable assignment, say) is still a post the
     // guard can't read: under each OneCLI identity the line names that no read post carries, or under none.
