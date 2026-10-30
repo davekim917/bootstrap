@@ -310,7 +310,11 @@ function catFileOf(script: any): string | null {
     return /^\/[^\s'"$`\\]*$/.test(args[0]) ? args[0] : null;
 }
 
-const ANSI_C_ESCAPES: Record<string, string> = { n: '\n', t: '\t', r: '\r', "'": "'", '"': '"', '\\': '\\', a: '\x07', e: '\x1b' };
+const ANSI_C_ESCAPES: Record<string, string> = {
+    n: '\n', t: '\t', r: '\r', "'": "'", '"': '"', '\\': '\\', '?': '?', a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', v: '\v',
+};
+// bash's numeric $'…' escapes: \xHH, \uHHHH, \UHHHHHHHH and octal \nnn, each as many digits as fit.
+const ANSI_C_NUMERIC: Array<[RegExp, number]> = [[/^x([0-9a-fA-F]{1,2})/, 16], [/^u([0-9a-fA-F]{1,4})/, 16], [/^U([0-9a-fA-F]{1,8})/, 16], [/^([0-7]{1,3})/, 8]];
 
 /** Index just past the `)` that closes the `$(` or `(` starting at `open`. */
 function closeParen(text: string, open: number): number {
@@ -379,10 +383,17 @@ export function evalWord(
             while (j < text.length && text[j] !== "'") {
                 if (text[j] === '\\' && j + 1 < text.length) {
                     const esc = text[j + 1];
-                    const hex = esc === 'x' ? text.slice(j + 2).match(/^[0-9a-fA-F]{1,2}/)?.[0] : undefined;
-                    if (hex) {
-                        literal += String.fromCharCode(parseInt(hex, 16));
-                        j += 2 + hex.length;
+                    const after = text.slice(j + 1);
+                    const numeric = ANSI_C_NUMERIC.map(([re, base]) => [re.exec(after), base] as const).find(([m]) => m !== null);
+                    if (numeric) {
+                        const [m, base] = numeric;
+                        literal += String.fromCodePoint(Math.min(parseInt(m![1], base), 0x10ffff));
+                        j += 1 + m![0].length;
+                        continue;
+                    }
+                    if (esc === 'c' && j + 2 < text.length) {
+                        literal += String.fromCharCode(text.charCodeAt(j + 2) & 0x1f);
+                        j += 3;
                         continue;
                     }
                     literal += ANSI_C_ESCAPES[esc] ?? `\\${esc}`;

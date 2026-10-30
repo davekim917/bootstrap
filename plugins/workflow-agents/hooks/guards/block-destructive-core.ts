@@ -7160,7 +7160,8 @@ export function slackPostsOf(command: string): SlackPost[] {
     for (const cmd of commands) {
         const agent = cmd.onecliAgent === undefined ? null : /[$`]/.test(cmd.onecliAgent) ? UNKNOWN_ONECLI_AGENT : cmd.onecliAgent;
         const post = slackPostIn(cmd.name, cmd.args, agent) ?? carriedPost(cmd.args, agent);
-        if (post) posts.push(post);
+        // The parser leaves $'…' numeric and control escapes (\u2014, \101, \cA) as written; bash decodes them.
+        if (post) posts.push(/\$'(?:[^'\\]|\\.)*\\[uUxc0-7]/.test(cmd.raw) ? { ...post, text: null } : post);
     }
     // A posting URL the commands never carry as a word (held in a variable assignment, say) is still a post the
     // guard can't read: under each OneCLI identity the line names that no read post carries, or under none.
