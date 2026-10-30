@@ -380,6 +380,9 @@ export function evalWord(
         } else if (c === '$' && text[i + 1] === "'") {
             let j = i + 2;
             let literal = '';
+            // \x and octal escapes are bytes, which bash joins and the reader takes as UTF-8; \u and \U are code points.
+            let bytes: number[] = [];
+            const flush = () => { if (bytes.length) literal += new TextDecoder().decode(new Uint8Array(bytes)); bytes = []; };
             while (j < text.length && text[j] !== "'") {
                 if (text[j] === '\\' && j + 1 < text.length) {
                     const esc = text[j + 1];
@@ -387,10 +390,13 @@ export function evalWord(
                     const numeric = ANSI_C_NUMERIC.map(([re, base]) => [re.exec(after), base] as const).find(([m]) => m !== null);
                     if (numeric) {
                         const [m, base] = numeric;
-                        literal += String.fromCodePoint(Math.min(parseInt(m![1], base), 0x10ffff));
+                        const value = parseInt(m![1], base);
+                        if (esc === 'u' || esc === 'U') { flush(); literal += String.fromCodePoint(Math.min(value, 0x10ffff)); }
+                        else bytes.push(value & 0xff);
                         j += 1 + m![0].length;
                         continue;
                     }
+                    flush();
                     if (esc === 'c' && j + 2 < text.length) {
                         literal += String.fromCharCode(text.charCodeAt(j + 2) & 0x1f);
                         j += 3;
@@ -398,8 +404,9 @@ export function evalWord(
                     }
                     literal += ANSI_C_ESCAPES[esc] ?? `\\${esc}`;
                     j += 2;
-                } else literal += text[j++];
+                } else { flush(); literal += text[j++]; }
             }
+            flush();
             out += keepQuotes ? text.slice(i, Math.min(text.length, j + 1)) : literal;
             i = j + 1;
         } else if (c === "'") {
