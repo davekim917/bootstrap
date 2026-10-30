@@ -65,6 +65,7 @@ export interface ResolvedCommand {
     raw: string;                // original text for error messages
     env?: string[];             // NAME=value assignments applied to this command (prefix or `env` wrapper)
     chdir?: string;             // working directory set by an `env -C/--chdir` wrapper
+    onecliAgent?: string;       // the identity an `onecli run --agent <id> --` wrapper runs it under
     hasInputRedirect: boolean;  // true if command has << or <<< redirects
     pos?: number;               // source offset when produced by the AST parser
     stdinTexts?: string[];      // heredoc and here-string text fed to this command
@@ -2284,10 +2285,11 @@ function splitEnvString(text: string): string[] | null {
  * assignments and `env -C` directory picked up on the way. Shared by the top-level resolver and by the commands
  * xargs and find -exec run, so a wrapper is unwrapped the same way wherever it appears.
  */
-export function stripWrappers(word: string, rest: string[]): { name: string; args: string[]; env: string[]; chdir?: string } {
+export function stripWrappers(word: string, rest: string[]): { name: string; args: string[]; env: string[]; chdir?: string; onecliAgent?: string } {
     let name = commandName(word);
     let args = rest;
     let chdir: string | undefined;
+    let onecliAgent: string | undefined;
     const env: string[] = [];
     // Resolve through wrapper commands
     while (WRAPPERS.has(name) && args.length > 0) {
@@ -2361,6 +2363,9 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
             // `onecli run [options] -- <command>` runs the command with credentials injected; nothing else does.
             const split = args.indexOf('--');
             if (args[0] !== 'run' || split < 0) break;
+            const own = args.slice(1, split);
+            const at = own.findIndex(a => a === '--agent' || a.startsWith('--agent='));
+            if (at >= 0) onecliAgent = own[at].startsWith('--agent=') ? own[at].slice('--agent='.length) : own[at + 1];
             skip = split + 1;
         } else if (name === 'npx' || name === 'bunx') {
             // The command follows the flags; -p/--package takes a value.
@@ -2389,7 +2394,7 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
         name = commandName(args[skip]);
         args = args.slice(skip + 1);
     }
-    return { name, args, env, ...(chdir !== undefined ? { chdir } : {}) };
+    return { name, args, env, ...(chdir !== undefined ? { chdir } : {}), ...(onecliAgent !== undefined ? { onecliAgent } : {}) };
 }
 
 const BRACE_EXPANSION_MAX = 1024;
@@ -2475,7 +2480,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const words = blocked ? ['eval'] : (expanded as string[][]).flat();
     const first = blocked || expanded[0]!.length !== 1 || expanded[0]![0] !== wordValue(node.name) ? words[0] ?? '' : node.name.value || '';
     const stripped = stripWrappers(first, words.slice(1));
-    const { name, args, chdir } = stripped;
+    const { name, args, chdir, onecliAgent } = stripped;
     env.push(...stripped.env);
 
     // Check for input redirects (<<, <<<) on the original Command node
@@ -2509,6 +2514,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         raw: rawParts.join(' '),
         env,
         ...(chdir !== undefined ? { chdir } : {}),
+        ...(onecliAgent !== undefined ? { onecliAgent } : {}),
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
         ...(stdinTexts.length ? { stdinTexts } : {}),
@@ -6367,13 +6373,14 @@ export function sleepSync(ms: number): void {
  * host uses even). We compute seq under BEGIN IMMEDIATE to serialize against
  * any concurrent writeMessageOut from the agent-runner process.
  */
-export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'request_prod_gate';
+export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'request_prod_gate' | 'request_send_gate';
 
 export function writeGateRequest(
     label: string,
     summary: string,
     command: string,
     action: GateAction = 'request_destructive_gate',
+    sendParts?: string[],
 ): string {
     // Dynamic import so non-NanoClaw environments (plain Claude Code) never
     // touch bun:sqlite — the module is only present under bun runtime.
@@ -6390,6 +6397,7 @@ export function writeGateRequest(
         // command in its approval record. Truncating here would discard final
         // arguments before the approver or audit trail could inspect them.
         command,
+        ...(sendParts !== undefined ? { sendParts } : {}),
     });
 
     const outbound = new Database(NANOCLAW_OUTBOUND_DB);
@@ -6475,6 +6483,8 @@ export function pollDeliveredTable(requestId: string, timeoutMs: number): GateDe
  *   - 'request_destructive_gate' — the destructive-command gate (default path).
  *   - 'request_bash_gate'        — the generic bash gate (email gate uses this).
  *   - 'request_prod_gate'        — a production change; the host counts only an owner's or admin's click.
+ *   - 'request_send_gate'        — an email or Slack post in a person's name; owner or admin only, and the
+ *                                  host skips the card when they already said "send" to a draft showing it.
  *
  * Fail-closed: if writeGateRequest throws (session DBs in a broken state),
  * returns 'denied'. The CALLER emits the stderr/exit — this function never
@@ -6489,6 +6499,8 @@ export function runGateRequest(
     reason: string,
     opts: {
         action: GateAction;
+        // What a send gate would deliver; the host may accept a person's own "send" to a draft showing all of it.
+        sendParts?: string[];
         onStageError?: (err: unknown) => void;
         // Card title and body. Either one omitted falls back to `reason`.
         label?: string;
@@ -6515,7 +6527,7 @@ export function runGateRequest(
 
     let requestId: string;
     try {
-        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action);
+        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action, opts.sendParts);
     } catch (err) {
         // If we can't even stage the request, the session DBs are in a broken
         // state. Deny rather than silently allowing — the gate is fail-closed.
@@ -6588,5 +6600,281 @@ export function runEmailGate(
     summary?: string,
     toolUseId?: string,
 ): GateDecision {
-    return runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId });
+    const sendParts = sendPartsByCommand.get(command);
+    sendPartsByCommand.delete(command);
+    return runGateRequest(command, reason, {
+        action: 'request_send_gate', onStageError, summary, toolUseId, ...(sendParts ? { sendParts } : {}),
+    });
+}
+
+const sendPartsByCommand = new Map<string, string[]>();
+
+/** Records what a send delivers for its gate request: `evaluateEmailSend` reads the command, `runEmailGate` stages it. */
+export function noteSendParts(command: string, parts: string[] | null): void {
+    if (parts) sendPartsByCommand.set(command, parts);
+    else sendPartsByCommand.delete(command);
+}
+
+// ── Slack posts in a person's name ───────────────────────────────────────────
+// A Slack Web API call made with a person's user token posts as that person. Which workgroups and OneCLI
+// identities hold such a token, and must not post without that person's OK, is deployment data in an
+// untracked `send-scope.local.json`, found like lab-scope.local.json:
+//   {"slack": {"workgroups": ["<workgroup id>"], "onecliAgents": ["<onecli agent id>"]}}
+// No file gates nothing. A file that can't be read or parsed gates every Slack post.
+
+export const SEND_SCOPE_FILE_ENV = 'BOOTSTRAP_SEND_SCOPE_FILE';
+const UNKNOWN_ONECLI_AGENT = '\0unknown';
+const SEND_SCOPE_FILE = 'send-scope.local.json';
+// Every chat.* and files.* method acts in the token's name except these reads; a method Slack adds later gates.
+const SLACK_READ_METHODS = new Set([
+    'chat.getPermalink', 'chat.scheduledMessages.list', 'files.info', 'files.list', 'files.remote.info', 'files.remote.list',
+    'files.getUploadURLExternal',
+]);
+const isSlackPostMethod = (method: string): boolean => /^(?:chat|files)\./.test(method) && !SLACK_READ_METHODS.has(method);
+const SLACK_API_METHOD_RE = /slack\.com\/api\/([A-Za-z.]+)/g;
+const HTTP_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs']);
+const CURL_BODY_FLAGS = new Set(['--data', '--data-raw', '--data-binary', '--data-ascii', '--data-urlencode', '--json', '--form', '--form-string']);
+/** Every curl option a readable post may use, short spellings mapped to their long names; true when it takes a value. */
+const CURL_SHORT: Record<string, string> = {
+    d: '--data', F: '--form', H: '--header', X: '--request', o: '--output', m: '--max-time', w: '--write-out',
+    A: '--user-agent', u: '--user', b: '--cookie', e: '--referer', x: '--proxy',
+    s: '--silent', S: '--show-error', f: '--fail', L: '--location', k: '--insecure', v: '--verbose', i: '--include',
+    g: '--globoff', G: '--get', N: '--no-buffer',
+};
+const CURL_LONG: Record<string, boolean> = {
+    '--data': true, '--data-raw': true, '--data-binary': true, '--data-ascii': true, '--data-urlencode': true, '--json': true,
+    '--form': true, '--form-string': true, '--header': true, '--request': true, '--output': true, '--max-time': true,
+    '--connect-timeout': true, '--retry': true, '--write-out': true, '--user-agent': true, '--user': true, '--url': true,
+    '--cookie': true, '--referer': true, '--proxy': true,
+    '--silent': false, '--show-error': false, '--fail': false, '--fail-with-body': false, '--location': false,
+    '--insecure': false, '--verbose': false, '--include': false, '--globoff': false, '--get': false, '--no-buffer': false,
+    '--compressed': false, '--http1.1': false, '--http2': false, '--no-progress-meter': false,
+};
+
+export interface SendScope {
+    slack: { workgroups: string[]; onecliAgents: string[] };
+}
+
+export interface SlackPost {
+    method: string;
+    /** The message text, when the command states it literally and once; null otherwise. */
+    text: string | null;
+    /** The OneCLI identity named by an `onecli run --agent` wrapper, if any. */
+    onecliAgent: string | null;
+}
+
+/** Parse a send-scope file's text. Null when anything about it is unusable. */
+export function parseSendScope(text: string): SendScope | null {
+    let raw: unknown;
+    try {
+        raw = JSON.parse(text);
+    } catch {
+        return null;
+    }
+    const slack = (raw as { slack?: unknown } | null)?.slack as { workgroups?: unknown; onecliAgents?: unknown } | undefined;
+    const names = (v: unknown) => v === undefined ? [] : Array.isArray(v) && v.every(x => typeof x === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(x)) ? v as string[] : null;
+    if (!slack || typeof slack !== 'object' || Array.isArray(slack)) return null;
+    const workgroups = names(slack.workgroups);
+    const onecliAgents = names(slack.onecliAgents);
+    if (!workgroups || !onecliAgents) return null;
+    return { slack: { workgroups, onecliAgents } };
+}
+
+/** The scope in force: null when no file exists, 'unreadable' when one exists and can't be used. */
+function currentSendScope(): SendScope | null | 'unreadable' {
+    const file = deploymentFilePath(SEND_SCOPE_FILE, SEND_SCOPE_FILE_ENV);
+    if (!file || !existsSync(file)) return null;
+    try {
+        return parseSendScope(readFileSync(file, 'utf-8')) ?? 'unreadable';
+    } catch {
+        return 'unreadable';
+    }
+}
+
+function literal(value: string): boolean {
+    return !/[$`]/.test(value) && !value.startsWith('@');
+}
+
+const SLACK_TEXT_METHODS = new Set(['chat.postMessage', 'chat.update', 'chat.scheduleMessage', 'chat.meMessage']);
+/** Fields that change where or how a message posts, never what it says. Any other field may carry content. */
+const SLACK_ROUTING_FIELDS = new Set([
+    'token', 'channel', 'ts', 'thread_ts', 'reply_broadcast', 'post_at', 'as_user', 'username', 'icon_emoji', 'icon_url',
+    'mrkdwn', 'parse', 'link_names', 'unfurl_links', 'unfurl_media',
+]);
+
+type BodyField = { key: string; value: string | null };
+
+/** The fields one body argument sends; null when they can't all be read from the command line. */
+function bodyFields(flag: string, value: string): BodyField[] | null {
+    if (!literal(value)) return null;
+    if (flag === '--json' || value.trimStart().startsWith('{')) {
+        try {
+            const body = JSON.parse(value) as Record<string, unknown>;
+            if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+            return Object.entries(body).map(([key, v]) => ({ key, value: typeof v === 'string' ? v : null }));
+        } catch {
+            return null;
+        }
+    }
+    if (flag === '--form' || flag === '--form-string') {
+        const at = value.indexOf('=');
+        if (at < 0) return null;
+        const v = value.slice(at + 1);
+        // curl reads `;type=`, `;filename=` and the like after a --form value, so a ';' may cut the text short, and a
+        // value opening with '"' is read as a quoted string that ends at its closing quote; curl trims surrounding spaces.
+        return [{ key: value.slice(0, at), value: flag !== '--form-string' && (/^\s|\s$/.test(v) || /^[<@"]/.test(v) || v.includes(';')) ? null : v }];
+    }
+    if (flag === '--data-urlencode') {
+        const at = value.indexOf('=');
+        return at < 0 ? null : [{ key: value.slice(0, at), value: value.slice(at + 1) }];
+    }
+    const fields: BodyField[] = [];
+    for (const pair of value.split('&')) {
+        const at = pair.indexOf('=');
+        if (at < 0) return null;
+        try {
+            fields.push({ key: decodeURIComponent(pair.slice(0, at)), value: decodeURIComponent(pair.slice(at + 1).replace(/\+/g, ' ')) });
+        } catch {
+            return null;
+        }
+    }
+    return fields;
+}
+
+type CurlOption = { flag: string; value: string | undefined };
+
+/**
+ * A curl command line in one spelling: `--flag=value`, `-Fvalue` and clusters like `-sSd` become separate long
+ * options. Null when it uses an option outside the known set, since an unknown one may add a request or a body.
+ */
+function curlOptions(args: string[]): { options: CurlOption[]; urls: string[] } | null {
+    const options: CurlOption[] = [];
+    const urls: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === '--') {
+            urls.push(...args.slice(i + 1));
+            break;
+        }
+        if (arg.startsWith('--')) {
+            const at = arg.indexOf('=');
+            const flag = at < 0 ? arg : arg.slice(0, at);
+            const takesValue = CURL_LONG[flag];
+            if (takesValue === undefined) return null;
+            const value = takesValue ? (at < 0 ? args[++i] : arg.slice(at + 1)) : undefined;
+            if (takesValue && value === undefined) return null;
+            if (flag === '--url') urls.push(value!);
+            else options.push({ flag, value });
+            continue;
+        }
+        if (!arg.startsWith('-') || arg === '-') {
+            urls.push(arg);
+            continue;
+        }
+        for (let c = 1; c < arg.length; c++) {
+            const flag = CURL_SHORT[arg[c]];
+            if (!flag) return null;
+            if (!CURL_LONG[flag]) {
+                options.push({ flag, value: undefined });
+                continue;
+            }
+            const value = c + 1 < arg.length ? arg.slice(c + 1) : args[++i];
+            if (value === undefined) return null;
+            options.push({ flag, value });
+            break;
+        }
+    }
+    return { options, urls };
+}
+
+function slackPostIn(name: string, args: string[], onecliAgent: string | null): SlackPost | null {
+    if (!HTTP_CLIENTS.has(name)) return null;
+    const methods = args.flatMap(a => [...a.matchAll(SLACK_API_METHOD_RE)].map(m => m[1]));
+    const method = methods.find(isSlackPostMethod);
+    if (!method) return null;
+    const line = name === 'curl' ? curlOptions(args) : null;
+    let readable = SLACK_TEXT_METHODS.has(method) && line !== null && line.urls.length === 1;
+    const fields: BodyField[] = [];
+    for (const { flag, value } of readable ? line!.options : []) {
+        if (!CURL_BODY_FLAGS.has(flag)) continue;
+        const parsed = bodyFields(flag, value!);
+        if (parsed) fields.push(...parsed);
+        else readable = false;
+    }
+    const url = readable ? line!.urls[0].split('#')[0] : '';
+    const query = url.includes('?') ? url.slice(url.indexOf('?') + 1) : undefined;
+    if (readable && query) {
+        const parsed = bodyFields('--data', query);
+        if (parsed) fields.push(...parsed);
+        else readable = false;
+    }
+    const texts = fields.filter(f => f.key === 'text');
+    readable &&= texts.length === 1 && fields.every(f => f.key === 'text' || SLACK_ROUTING_FIELDS.has(f.key));
+    return { method, text: readable ? texts[0].value : null, onecliAgent };
+}
+
+/** A posting URL in the words of a command the guard doesn't read as a client (a wrapper, a shell): a post it can't read. */
+function carriedPost(words: string[], onecliAgent: string | null): SlackPost | null {
+    const method = words.flatMap(w => [...w.matchAll(SLACK_API_METHOD_RE)].map(m => m[1])).find(isSlackPostMethod);
+    return method ? { method, text: null, onecliAgent } : null;
+}
+
+/** Every Slack post a command makes, inside an `onecli run … --` wrapper too. */
+export function slackPostsOf(command: string): SlackPost[] {
+    let commands: ResolvedCommand[];
+    try {
+        commands = extractCommands(command);
+    } catch {
+        return /slack\.com\/api\/(?:chat|files)\./.test(command) ? [{ method: 'unknown', text: null, onecliAgent: null }] : [];
+    }
+    const posts: SlackPost[] = [];
+    for (const cmd of commands) {
+        const agent = cmd.onecliAgent === undefined ? null : /[$`]/.test(cmd.onecliAgent) ? UNKNOWN_ONECLI_AGENT : cmd.onecliAgent;
+        const post = slackPostIn(cmd.name, cmd.args, agent) ?? carriedPost(cmd.args, agent);
+        // The parser decodes only \n, \t, \\, \' and \" in $'…'; bash decodes the rest (\u2014, \101, \?), so a post
+        // using any other escape offers no exact text.
+        if (post) posts.push(/\$'(?:[^'\\]|\\.)*\\[^nt'"\\]/.test(cmd.raw) ? { ...post, text: null } : post);
+    }
+    // A posting URL the commands never carry as a word (held in a variable assignment, say) is still a post the
+    // guard can't read: under each OneCLI identity the line names that no read post carries, or under none.
+    // A host or base URL held in a variable (`${SLACK_API}chat.postMessage`) leaves the method name beside it.
+    const heldMethod = /slack\.com/.test(command)
+        ? [...command.matchAll(/\b((?:chat|files)\.[A-Za-z.]*[A-Za-z])\b/g)].map(m => m[1]).find(isSlackPostMethod)
+        : undefined;
+    const held = carriedPost([command], null) ?? (heldMethod ? { method: heldMethod, text: null, onecliAgent: null } : null);
+    if (held) {
+        const named = [...command.replace(/\\\n/g, ' ').matchAll(/\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/g)]
+            .map(m => m[1].replace(/^(['"])(.*)\1$/, '$2'))
+            .map(n => /[$`]/.test(n) ? UNKNOWN_ONECLI_AGENT : n);
+        // A direct HTTP call whose URL a variable holds may be the post itself, in the session's own name.
+        const direct = posts.length === 0 || commands.some(c => HTTP_CLIENTS.has(c.name) && c.onecliAgent === undefined && c.args.some(w => /[$`]/.test(w)));
+        for (const agent of direct ? [null, ...named] : named) {
+            if (!posts.some(p => p.onecliAgent === agent)) posts.push({ ...held, onecliAgent: agent });
+        }
+    }
+    return posts;
+}
+
+/** True when the line is one command and nothing else, so what a send delivers can be all it does. */
+export function soleCommand(command: string): boolean {
+    try {
+        const commands = extractCommands(command);
+        return commands.length === 1 && commands[0].raw.trim() === command.trim();
+    } catch {
+        return false;
+    }
+}
+
+/** The Slack posts in a command that need their sender's OK under the send scope in force. */
+export function gatedSlackPosts(command: string, workgroupId: string | undefined = process.env.NANOCLAW_WORKGROUP_ID): SlackPost[] {
+    if (!/slack\.com/.test(command)) return [];
+    const posts = slackPostsOf(command);
+    if (posts.length === 0) return [];
+    const scope = currentSendScope();
+    if (scope === null) return [];
+    if (scope === 'unreadable') return posts;
+    const inWorkgroup = workgroupId !== undefined && scope.slack.workgroups.includes(workgroupId);
+    // An identity only known when the command runs may be any listed one.
+    return posts.filter(p => p.onecliAgent === UNKNOWN_ONECLI_AGENT ? scope.slack.onecliAgents.length > 0 || inWorkgroup
+        : p.onecliAgent !== null ? scope.slack.onecliAgents.includes(p.onecliAgent) : inWorkgroup);
 }

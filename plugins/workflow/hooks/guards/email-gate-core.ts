@@ -33,7 +33,7 @@
  * Python/Node SDK calls, SMTP CLIs, and eval/alias/base64-decoded subshells. The
  * only sound place to catch all of those is the egress proxy.
  */
-import { resolveCommand, walkCommandNodes } from './block-destructive-core';
+import { gatedSlackPosts, noteSendParts, resolveCommand, soleCommand, walkCommandNodes } from './block-destructive-core';
 import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, parseShell, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
@@ -496,6 +496,8 @@ export interface EmailGateVerdict {
     label?: string;
     summary?: string;
     reason?: string;
+    /** Everything the send delivers, when the command is that one send stated literally; see `request_send_gate`. */
+    sendParts?: string[];
 }
 
 function normalizedToolName(toolName: string): string {
@@ -677,7 +679,29 @@ export function envelopeFromJsonRaw(segment: string): {
  * The GWS creds account is parsed from the COMMAND string
  * (GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=…/accounts/<slug>.json), NOT from env.
  */
+// The only sends a person's own "send" can stand in for: ones that deliver exactly the text they read and nothing
+// else. A reply quotes the original and may inherit its recipients; a forward carries it.
+const SEND_WORD_SHAPES = new Set(['slack chat.postMessage', 'slack chat.update', 'email send']);
+
+function approvableSendParts(shape: string, parts: string[] | undefined): string[] | undefined {
+    return SEND_WORD_SHAPES.has(shape) ? parts : undefined;
+}
+
 export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateVerdict {
+    const slack = command ? gatedSlackPosts(command) : [];
+    if (slack.length > 0) {
+        const text = slack[0].text;
+        const sendParts = approvableSendParts(`slack ${slack[0].method}`, slack.length === 1 && text !== null && soleCommand(command) ? [text] : undefined);
+        noteSendParts(command, sendParts ?? null);
+        return {
+            action: 'gate',
+            ...(sendParts ? { sendParts } : {}),
+            label: `Slack post in your name (${slack[0].method})`,
+            summary: text === null
+                ? "The agent wants to post to Slack as you. The guard couldn't read the exact text; check the full command before approving."
+                : `The agent wants to post this to Slack as you:\n\n${quoteBlock(clip(text, CARD_SUMMARY_MAX_CHARS))}`,
+        };
+    }
     if (!command || !GWS_EMAIL_SEND_RE.test(command)) return { action: 'allow' };
 
     // Bypass ONLY when the WHOLE command is a single, simple send carrying a real
@@ -808,7 +832,19 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         const list = [...unresolved];
         lines.push(`⚠️ ${list.map(code).join(', ')} ${list.length === 1 ? 'is' : 'are'} only known when the command runs, so the value${list.length === 1 ? '' : 's'} above may differ.`);
     }
-    return { action: 'gate', label, summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
+    // What a person must have seen for their own "send" to stand in for the card: a single literal send only.
+    const literalParts = [flagTo, cc, bcc, subject || undefined].filter((v): v is string => v !== undefined && v !== '');
+    // Only a send the parser read word by word: a regex fallback can't see every flag, an attachment among them.
+    const readable = send !== undefined && send.verb === 'send' && gwsWords === 1 && !generatedWord && !probeFlag && !isHtml && !isRawApi && unresolved.size === 0
+        && attachments.length === 0 && soleCommand(command)
+        && body.text !== null && body.text.trim() !== '' && literalParts.every(v => !/[$`]/.test(v));
+    // Each envelope part carries its role, so the host can match it to the same field of the draft the person saw.
+    const roleParts = ([['to', flagTo], ['cc', cc], ['bcc', bcc]] as const)
+        .flatMap(([role, value]) => value ? value.split(/\s*,\s*/).filter(Boolean).map(addr => `${role}:${addr}`) : [])
+        .concat(subject ? [`subject:${subject}`] : []);
+    const sendParts = approvableSendParts(`email ${action}`, readable && view.commands.length === 1 ? [body.text!, ...roleParts] : undefined);
+    noteSendParts(command, sendParts ?? null);
+    return { action: 'gate', label, summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS), ...(sendParts ? { sendParts } : {}) };
 }
 
 // The regex fallback runs only when the parser finds no send; it is quadratic
@@ -853,6 +889,8 @@ function argTexts(call: GwsGmailCall, flag: string): string[] {
     call.values.forEach((v, i) => {
         if (v === flag && i + 1 < call.texts.length) out.push(call.texts[i + 1]);
         else if (v.startsWith(`${flag}=`)) out.push(call.texts[i].replace(/^[^=]*=/, ''));
+        // A one-letter flag also takes its value attached (`-afile.pdf`), as the gws CLI parser accepts.
+        else if (/^-[A-Za-z]$/.test(flag) && v.length > 2 && v.startsWith(flag)) out.push(call.texts[i].slice(2));
     });
     return out;
 }

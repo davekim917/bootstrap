@@ -306,7 +306,11 @@ function catFileOf(script: any): string | null {
     return /^\/[^\s'"$`\\]*$/.test(args[0]) ? args[0] : null;
 }
 
-const ANSI_C_ESCAPES: Record<string, string> = { n: '\n', t: '\t', r: '\r', "'": "'", '"': '"', '\\': '\\', a: '\x07', e: '\x1b' };
+const ANSI_C_ESCAPES: Record<string, string> = {
+    n: '\n', t: '\t', r: '\r', "'": "'", '"': '"', '\\': '\\', '?': '?', a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', v: '\v',
+};
+// bash's numeric $'…' escapes: \xHH, \uHHHH, \UHHHHHHHH and octal \nnn, each as many digits as fit.
+const ANSI_C_NUMERIC: Array<[RegExp, number]> = [[/^x([0-9a-fA-F]{1,2})/, 16], [/^u([0-9a-fA-F]{1,4})/, 16], [/^U([0-9a-fA-F]{1,8})/, 16], [/^([0-7]{1,3})/, 8]];
 
 /** Index just past the `)` that closes the `$(` or `(` starting at `open`. */
 function closeParen(text: string, open: number): number {
@@ -363,6 +367,8 @@ export function evalWord(
         const c = text[i];
         if (quote === '"') {
             if (c === '"') { quote = ''; if (keepQuotes) out += c; i++; }
+            // A backslash-newline is a line continuation: bash removes both.
+            else if (c === '\\' && text[i + 1] === '\n') { if (keepQuotes) out += '\\\n'; i += 2; }
             else if (c === '\\' && i + 1 < text.length && '"\\$`\n'.includes(text[i + 1])) { if (keepQuotes) out += c; out += text[i + 1]; i += 2; }
             else if (c === '$') dollar();
             else if (c === '`') { const e = text.indexOf('`', i + 1); const end = e < 0 ? text.length : e + 1; out += text.slice(i, end); note(text.slice(i, end)); i = end; }
@@ -370,19 +376,33 @@ export function evalWord(
         } else if (c === '$' && text[i + 1] === "'") {
             let j = i + 2;
             let literal = '';
+            // \x and octal escapes are bytes, which bash joins and the reader takes as UTF-8; \u and \U are code points.
+            let bytes: number[] = [];
+            const flush = () => { if (bytes.length) literal += new TextDecoder().decode(new Uint8Array(bytes)); bytes = []; };
             while (j < text.length && text[j] !== "'") {
                 if (text[j] === '\\' && j + 1 < text.length) {
                     const esc = text[j + 1];
-                    const hex = esc === 'x' ? text.slice(j + 2).match(/^[0-9a-fA-F]{1,2}/)?.[0] : undefined;
-                    if (hex) {
-                        literal += String.fromCharCode(parseInt(hex, 16));
-                        j += 2 + hex.length;
+                    const after = text.slice(j + 1);
+                    const numeric = ANSI_C_NUMERIC.map(([re, base]) => [re.exec(after), base] as const).find(([m]) => m !== null);
+                    if (numeric) {
+                        const [m, base] = numeric;
+                        const value = parseInt(m![1], base);
+                        if (esc === 'u' || esc === 'U') { flush(); literal += String.fromCodePoint(Math.min(value, 0x10ffff)); }
+                        else bytes.push(value & 0xff);
+                        j += 1 + m![0].length;
+                        continue;
+                    }
+                    flush();
+                    if (esc === 'c' && j + 2 < text.length) {
+                        literal += String.fromCharCode(text.charCodeAt(j + 2) & 0x1f);
+                        j += 3;
                         continue;
                     }
                     literal += ANSI_C_ESCAPES[esc] ?? `\\${esc}`;
                     j += 2;
-                } else literal += text[j++];
+                } else { flush(); literal += text[j++]; }
             }
+            flush();
             out += keepQuotes ? text.slice(i, Math.min(text.length, j + 1)) : literal;
             i = j + 1;
         } else if (c === "'") {
@@ -395,6 +415,9 @@ export function evalWord(
             quote = '"';
             if (keepQuotes) out += '"';
             i++;
+        } else if (c === '\\' && text[i + 1] === '\n') {
+            if (keepQuotes) out += '\\\n';
+            i += 2;
         } else if (c === '\\' && i + 1 < text.length) {
             if (keepQuotes) out += c;
             out += text[i + 1];

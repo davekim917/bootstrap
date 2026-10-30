@@ -105,7 +105,7 @@ async function loadWithSpies(opts: { stageThrows?: boolean } = {}) {
             label: string,
             summary: string,
             command: string,
-            action?: 'request_destructive_gate' | 'request_bash_gate',
+            action?: string,
         ): string => {
             staged.push({ label, summary, command, action });
             if (opts.stageThrows) throw new Error('session DBs broken');
@@ -141,12 +141,13 @@ describe('A2 runGateRequest action parameterization', () => {
         expect(staged[0].command).toBe(command);
     });
 
-    test('test_runEmailGate_emits_bash_gate', async () => {
+    // An email goes out in a person's name, so it takes the send gate: owner/admin only, and their own "send" counts.
+    test('test_runEmailGate_emits_send_gate', async () => {
         const { mod, staged } = await loadWithSpies();
         const decision = mod.runEmailGate('gws gmail +send', 'email send');
         expect(decision).toBe('approved');
         expect(staged).toHaveLength(1);
-        expect(staged[0].action).toBe('request_bash_gate');
+        expect(staged[0].action).toBe('request_send_gate');
     });
 
     test('test_runEmailGate_threads_summary_to_card (S-QA2)', async () => {
@@ -162,7 +163,7 @@ describe('A2 runGateRequest action parameterization', () => {
         // label stays the short label; summary is the distinct structured card body
         expect(staged[0].label).toBe('Email send to a@example.com');
         expect(staged[0].summary).toBe('*From:* me\n*To:* a@example.com\n\n*Body:*\n> hi');
-        expect(staged[0].action).toBe('request_bash_gate');
+        expect(staged[0].action).toBe('request_send_gate');
     });
 
     test('runEmailGate without a summary falls back to reason for both (back-compat)', async () => {
