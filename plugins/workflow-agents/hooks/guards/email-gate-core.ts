@@ -686,6 +686,9 @@ export function envelopeFromJsonRaw(segment: string): {
 // The only sends a person's own "send" can stand in for: ones that deliver exactly the text they read and nothing
 // else. A reply quotes the original and may inherit its recipients; a forward carries it.
 const SEND_WORD_SHAPES = new Set(['slack chat.postMessage', 'slack chat.update', 'email send']);
+// The only spellings whose text the guard offers as exact: a single-quoted literal, or a bare word with nothing bash
+// would expand or unescape. Anything else still gates, with a card.
+const LITERAL_WORD_SOURCE = /^(?:'[^']*'|[A-Za-z0-9@._+,:=\/%-]+)$/;
 
 function approvableSendParts(shape: string, parts: string[] | undefined): string[] | undefined {
     return SEND_WORD_SHAPES.has(shape) ? parts : undefined;
@@ -839,7 +842,9 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // What a person must have seen for their own "send" to stand in for the card: a single literal send only.
     const literalParts = [flagTo, cc, bcc, subject || undefined].filter((v): v is string => v !== undefined && v !== '');
     // Only a send the parser read word by word: a regex fallback can't see every flag, an attachment among them.
-    const readable = send !== undefined && send.verb === 'send' && gwsWords === 1 && !generatedWord && !probeFlag && !isHtml && !isRawApi && unresolved.size === 0
+    const readable = send !== undefined && send.verb === 'send' && gwsWords === 1
+        && ['--body', '--to', '--cc', '--bcc', '--subject'].every(flag => argTexts(send, flag).every(t => LITERAL_WORD_SOURCE.test(t)))
+        && argTexts(send, '--body').length === 1 && !generatedWord && !probeFlag && !isHtml && !isRawApi && unresolved.size === 0
         && attachments.length === 0 && soleCommand(command)
         && body.text !== null && body.text.trim() !== '' && literalParts.every(v => !/[$`]/.test(v));
     // Each envelope part carries its role, so the host can match it to the same field of the draft the person saw.

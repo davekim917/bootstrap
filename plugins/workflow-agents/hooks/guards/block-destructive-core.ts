@@ -7007,10 +7007,17 @@ const SLACK_READ_METHODS = new Set([
     'chat.getPermalink', 'chat.scheduledMessages.list', 'files.info', 'files.list', 'files.remote.info', 'files.remote.list',
     'files.getUploadURLExternal',
 ]);
+// Posting methods by name, for a line that holds the host or base URL in a variable (`${SLACK_API}chat.postMessage`).
+// A bare word can't be told from code (`files.map`), so only these names count there; after `slack.com/api/` every
+// method but a listed read does.
+const SLACK_POST_METHOD_NAMES = new Set([
+    'chat.postMessage', 'chat.postEphemeral', 'chat.update', 'chat.scheduleMessage', 'chat.meMessage', 'chat.delete',
+    'chat.deleteScheduledMessage', 'chat.unfurl', 'files.upload', 'files.uploadV2', 'files.completeUploadExternal',
+    'files.share', 'files.delete', 'files.remote.add', 'files.remote.share', 'files.remote.update', 'files.remote.remove',
+]);
 const isSlackPostMethod = (method: string): boolean => /^(?:chat|files)\./.test(method) && !SLACK_READ_METHODS.has(method);
 const SLACK_API_METHOD_RE = /slack\.com\/api\/([A-Za-z.]+)/g;
 const HTTP_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs']);
-const CURL_BODY_FLAGS = new Set(['--data', '--data-raw', '--data-binary', '--data-ascii', '--data-urlencode', '--json', '--form', '--form-string']);
 /** Every curl option a readable post may use, short spellings mapped to their long names; true when it takes a value. */
 const CURL_SHORT: Record<string, string> = {
     d: '--data', F: '--form', H: '--header', X: '--request', o: '--output', m: '--max-time', w: '--write-out',
@@ -7068,55 +7075,11 @@ function currentSendScope(): SendScope | null | 'unreadable' {
     }
 }
 
-function literal(value: string): boolean {
-    return !/[$`]/.test(value) && !value.startsWith('@');
-}
-
-const SLACK_TEXT_METHODS = new Set(['chat.postMessage', 'chat.update', 'chat.scheduleMessage', 'chat.meMessage']);
-/** Fields that change where or how a message posts, never what it says. Any other field may carry content. */
-const SLACK_ROUTING_FIELDS = new Set([
-    'token', 'channel', 'ts', 'thread_ts', 'reply_broadcast', 'post_at', 'as_user', 'username', 'icon_emoji', 'icon_url',
-    'mrkdwn', 'parse', 'link_names', 'unfurl_links', 'unfurl_media',
-]);
-
-type BodyField = { key: string; value: string | null };
-
-/** The fields one body argument sends; null when they can't all be read from the command line. */
-function bodyFields(flag: string, value: string): BodyField[] | null {
-    if (!literal(value)) return null;
-    if (flag === '--json' || value.trimStart().startsWith('{')) {
-        try {
-            const body = JSON.parse(value) as Record<string, unknown>;
-            if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
-            return Object.entries(body).map(([key, v]) => ({ key, value: typeof v === 'string' ? v : null }));
-        } catch {
-            return null;
-        }
-    }
-    if (flag === '--form' || flag === '--form-string') {
-        const at = value.indexOf('=');
-        if (at < 0) return null;
-        const v = value.slice(at + 1);
-        // curl reads `;type=`, `;filename=` and the like after a --form value, so a ';' may cut the text short, and a
-        // value opening with '"' is read as a quoted string that ends at its closing quote; curl trims surrounding spaces.
-        return [{ key: value.slice(0, at), value: flag !== '--form-string' && (/^\s|\s$/.test(v) || /^[<@"]/.test(v) || v.includes(';')) ? null : v }];
-    }
-    if (flag === '--data-urlencode') {
-        const at = value.indexOf('=');
-        return at < 0 ? null : [{ key: value.slice(0, at), value: value.slice(at + 1) }];
-    }
-    const fields: BodyField[] = [];
-    for (const pair of value.split('&')) {
-        const at = pair.indexOf('=');
-        if (at < 0) return null;
-        try {
-            fields.push({ key: decodeURIComponent(pair.slice(0, at)), value: decodeURIComponent(pair.slice(at + 1).replace(/\+/g, ' ')) });
-        } catch {
-            return null;
-        }
-    }
-    return fields;
-}
+// The one Slack spelling whose text the guard offers as exact: `curl` to a literal posting URL, options that add no
+// request or body, and one single-quoted JSON body holding only these fields. Anything else still gates, with a card.
+const EXACT_SLACK_METHODS = new Set(['chat.postMessage', 'chat.update']);
+const EXACT_SLACK_FIELDS = new Set(['channel', 'text', 'thread_ts', 'ts', 'reply_broadcast', 'unfurl_links', 'unfurl_media', 'mrkdwn']);
+const EXACT_CURL_FLAGS = new Set(['--silent', '--show-error', '--fail', '--fail-with-body', '--header', '--request', '--data', '--data-raw', '--data-binary', '--json']);
 
 type CurlOption = { flag: string; value: string | undefined };
 
@@ -7164,72 +7127,59 @@ function curlOptions(args: string[]): { options: CurlOption[]; urls: string[] } 
     return { options, urls };
 }
 
-function slackPostIn(name: string, args: string[], onecliAgent: string | null): SlackPost | null {
-    if (!HTTP_CLIENTS.has(name)) return null;
-    const methods = args.flatMap(a => [...a.matchAll(SLACK_API_METHOD_RE)].map(m => m[1]));
-    const method = methods.find(isSlackPostMethod);
-    if (!method) return null;
-    const line = name === 'curl' ? curlOptions(args) : null;
-    let readable = SLACK_TEXT_METHODS.has(method) && line !== null && line.urls.length === 1;
-    const fields: BodyField[] = [];
-    for (const { flag, value } of readable ? line!.options : []) {
-        if (!CURL_BODY_FLAGS.has(flag)) continue;
-        const parsed = bodyFields(flag, value!);
-        if (parsed) fields.push(...parsed);
-        else readable = false;
+/** The post a line makes when it is the one exact spelling (EXACT_SLACK_METHODS), with its text; else null. */
+function exactSlackPost(command: string): SlackPost | null {
+    if (!soleCommand(command)) return null;
+    const [cmd] = extractCommands(command);
+    if (cmd.name !== 'curl') return null;
+    const line = curlOptions(cmd.args);
+    if (!line || line.urls.length !== 1) return null;
+    const method = /^https:\/\/slack\.com\/api\/([A-Za-z.]+)$/.exec(line.urls[0])?.[1];
+    if (!method || !EXACT_SLACK_METHODS.has(method)) return null;
+    if (line.options.some(o => !EXACT_CURL_FLAGS.has(o.flag) || (o.flag === '--request' && o.value !== 'POST'))) return null;
+    const bodies = line.options.filter(o => o.flag !== '--header' && o.value !== undefined && o.flag !== '--request');
+    const written = [...cmd.raw.matchAll(/(?:^|\s)(?:-d|--data(?:-raw|-binary)?|--json)(?:=|\s+)'([^']*)'(?=\s|$)/g)];
+    if (bodies.length !== 1 || written.length !== 1 || written[0][1] !== bodies[0].value) return null;
+    let body: unknown;
+    try {
+        body = JSON.parse(bodies[0].value!);
+    } catch {
+        return null;
     }
-    const url = readable ? line!.urls[0].split('#')[0] : '';
-    const query = url.includes('?') ? url.slice(url.indexOf('?') + 1) : undefined;
-    if (readable && query) {
-        const parsed = bodyFields('--data', query);
-        if (parsed) fields.push(...parsed);
-        else readable = false;
-    }
-    const texts = fields.filter(f => f.key === 'text');
-    readable &&= texts.length === 1 && fields.every(f => f.key === 'text' || SLACK_ROUTING_FIELDS.has(f.key));
-    return { method, text: readable ? texts[0].value : null, onecliAgent };
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+    const fields = body as Record<string, unknown>;
+    if (typeof fields.text !== 'string' || typeof fields.channel !== 'string' || !Object.keys(fields).every(k => EXACT_SLACK_FIELDS.has(k))) return null;
+    const agent = cmd.onecliAgent === undefined ? null : /[$`]/.test(cmd.onecliAgent) ? UNKNOWN_ONECLI_AGENT : cmd.onecliAgent;
+    return { method, text: fields.text, onecliAgent: agent };
 }
 
-/** A posting URL in the words of a command the guard doesn't read as a client (a wrapper, a shell): a post it can't read. */
-function carriedPost(words: string[], onecliAgent: string | null): SlackPost | null {
-    const method = words.flatMap(w => [...w.matchAll(SLACK_API_METHOD_RE)].map(m => m[1])).find(isSlackPostMethod);
-    return method ? { method, text: null, onecliAgent } : null;
-}
-
-/** Every Slack post a command makes, inside an `onecli run … --` wrapper too. */
+/**
+ * Every Slack post a command may make, inside an `onecli run … --` wrapper too. The one exact spelling is read word
+ * by word; any other line that names a posting method is a post with no readable text under every identity the line may run under: each OneCLI agent it names, and the
+ * session's own when any client runs unwrapped or the carrier isn't a client at all.
+ */
 export function slackPostsOf(command: string): SlackPost[] {
+    if (!/slack\.com/.test(command)) return [];
     let commands: ResolvedCommand[];
     try {
         commands = extractCommands(command);
     } catch {
         return /slack\.com\/api\/(?:chat|files)\./.test(command) ? [{ method: 'unknown', text: null, onecliAgent: null }] : [];
     }
-    const posts: SlackPost[] = [];
-    for (const cmd of commands) {
-        const agent = cmd.onecliAgent === undefined ? null : /[$`]/.test(cmd.onecliAgent) ? UNKNOWN_ONECLI_AGENT : cmd.onecliAgent;
-        const post = slackPostIn(cmd.name, cmd.args, agent) ?? carriedPost(cmd.args, agent);
-        // The parser decodes only \n, \t, \\, \' and \" in $'…'; bash decodes the rest (\u2014, \101, \?), so a post
-        // using any other escape offers no exact text.
-        if (post) posts.push(/\$'(?:[^'\\]|\\.)*\\[^nt'"\\]/.test(cmd.raw) ? { ...post, text: null } : post);
+    const exact = exactSlackPost(command);
+    if (exact) return [exact];
+    const clients = commands.filter(c => HTTP_CLIENTS.has(c.name));
+    const method = [...command.matchAll(SLACK_API_METHOD_RE)].map(m => m[1]).find(isSlackPostMethod)
+        ?? [...command.matchAll(/\b((?:chat|files)\.[A-Za-z.]*[A-Za-z])\b/g)].map(m => m[1]).find(m => SLACK_POST_METHOD_NAMES.has(m));
+    if (!method) return [];
+    const agents = new Set<string | null>();
+    for (const c of commands) if (c.onecliAgent !== undefined) agents.add(/[$`]/.test(c.onecliAgent) ? UNKNOWN_ONECLI_AGENT : c.onecliAgent);
+    for (const m of command.replace(/\\\n/g, ' ').matchAll(/\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/g)) {
+        const name = m[1].replace(/^(['"])(.*)\1$/, '$2');
+        agents.add(/[$`]/.test(name) ? UNKNOWN_ONECLI_AGENT : name);
     }
-    // A posting URL the commands never carry as a word (held in a variable assignment, say) is still a post the
-    // guard can't read: under each OneCLI identity the line names that no read post carries, or under none.
-    // A host or base URL held in a variable (`${SLACK_API}chat.postMessage`) leaves the method name beside it.
-    const heldMethod = /slack\.com/.test(command)
-        ? [...command.matchAll(/\b((?:chat|files)\.[A-Za-z.]*[A-Za-z])\b/g)].map(m => m[1]).find(isSlackPostMethod)
-        : undefined;
-    const held = carriedPost([command], null) ?? (heldMethod ? { method: heldMethod, text: null, onecliAgent: null } : null);
-    if (held) {
-        const named = [...command.replace(/\\\n/g, ' ').matchAll(/\bonecli\s+run\b[^;&|]*?--agent[=\s]+([^\s;&|]+)/g)]
-            .map(m => m[1].replace(/^(['"])(.*)\1$/, '$2'))
-            .map(n => /[$`]/.test(n) ? UNKNOWN_ONECLI_AGENT : n);
-        // A direct HTTP call whose URL a variable holds may be the post itself, in the session's own name.
-        const direct = posts.length === 0 || commands.some(c => HTTP_CLIENTS.has(c.name) && c.onecliAgent === undefined && c.args.some(w => /[$`]/.test(w)));
-        for (const agent of direct ? [null, ...named] : named) {
-            if (!posts.some(p => p.onecliAgent === agent)) posts.push({ ...held, onecliAgent: agent });
-        }
-    }
-    return posts;
+    if (clients.length === 0 || clients.some(c => c.onecliAgent === undefined)) agents.add(null);
+    return [...agents].map(onecliAgent => ({ method, text: null, onecliAgent }));
 }
 
 /** True when the line is one command and nothing else, so what a send delivers can be all it does. */
