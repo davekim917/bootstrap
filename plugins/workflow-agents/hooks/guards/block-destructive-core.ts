@@ -1945,8 +1945,14 @@ function renderCommandOf(words: string[]): string | null {
     return null;
 }
 
+/** A command path from the CLI's tree followed only by help flags: the CLI prints that command's help and runs nothing. */
+function renderHelpOnly(args: string[]): boolean {
+    const at = args.findIndex(a => a.startsWith('-'));
+    return at > 0 && args.slice(at).every(a => a === '-h' || a === '--help') && RENDER_KNOWN.has(args.slice(0, at).join(' '));
+}
+
 export function renderChangeReason(args: string[]): string | null {
-    if (args.every(a => ['-h', '--help', '-v', '--version'].includes(a))) return null;
+    if (args.every(a => ['-h', '--help', '-v', '--version'].includes(a)) || renderHelpOnly(args)) return null;
     const shape = renderShape(args);
     // An expanded word could hold --help=false, so help ends the check only on a line with none.
     if (shape?.help && !shape.expanded) return null;
