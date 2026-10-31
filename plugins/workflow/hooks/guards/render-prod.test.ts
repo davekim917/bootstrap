@@ -305,6 +305,34 @@ describe('a variable is all that keeps a listed dev resource from running freely
     });
 });
 
+describe('help for a command that opens a session or shell', () => {
+    const KV = 'red-prodkeyvalue00000001';
+    test.each([
+        'render ssh --help',
+        'render ssh -h',
+        'render psql --help',
+        'render pgcli -h',
+        'render kv-cli --help',
+    ])('%s needs no approval', (command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['ssh with a target', `render ssh ${PROD} --help`],
+        ['psql with a target', `render psql ${PROD_DB} --help`],
+        ['pgcli with a target', `render pgcli ${PROD_DB} -h`],
+        ['kv-cli with a target', `render kv-cli ${KV} --help`],
+        ['a target after the help flag', `render ssh --help ${PROD}`],
+        ['a command run on the service', `render ssh ${PROD} -- ls --help`],
+        ['help passed through after --', 'render ssh -- --help'],
+        ['a variable beside help', 'render ssh "$S" --help'],
+        ['help given a value', 'render ssh --help=true'],
+        ['another flag beside help', 'render ssh -e production --help'],
+    ])('%s keeps its card', (_label, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+});
+
 describe('which gate a stopped command takes', () => {
     test('a destructive command that touches no Render resource keeps the destructive gate', () => {
         expect(verdict('kubectl delete deployment app')).toBe('gate');
