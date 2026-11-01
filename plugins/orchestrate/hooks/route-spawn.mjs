@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Claude Code PreToolUse hook on Agent/Task: route every sub-agent spawn —
-// autonomous or via /orchestrate — through the dispatch rubric. A confident pick
-// replaces the model the calling agent named itself unless a human asked for it,
-// and fills effort only when the call asks for none. Never blocks. A named role is never
+// autonomous or via /orchestrate — through the dispatch rubric. A model no human
+// named is dropped so the spawn inherits its parent's, and a confident pick fills
+// effort only when the call names none. Never blocks. A named role is never
 // rewritten and never costs a picker call. Any classifier failure or abstention
-// leaves the call's own choices; existing caps remain.
+// adds no effort; existing caps remain.
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,7 +22,7 @@ try {
   // A named role keeps its installed model intent: no pick, no rewrite.
   const named = lib.isNamedRole(input.subagent_type);
   const picked = named ? null : lib.resolveDispatch(await lib.pick(task, 'claude', { timeoutMs: 3000, rubric }), 'claude');
-  const contested = picked?.decision === 'route' && (input.model || input.effort || !lib.isRoleless(input.subagent_type));
+  const contested = !named && (input.model || input.effort || !lib.isRoleless(input.subagent_type));
   const pins = contested ? lib.humanPins(input, lib.humanTurns(event.transcript_path).at(-1) ?? '') : undefined;
   const updated = lib.rewriteClaudeSpawn(input, picked, rubric, pins);
   lib.logDispatch({

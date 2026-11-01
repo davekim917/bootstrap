@@ -20,18 +20,18 @@ import {
 } from './dispatch-lib.mjs';
 
 const rubric = loadRubric();
-const route = (model, effort) => ({ decision: 'route', pick: { model, effort } });
+const route = (effort) => ({ decision: 'route', pick: { effort } });
 const requestBody = (task = 'synthetic transport test') => ({
   model: 'jev-1.13.0',
   state: { task_brief: task },
-  questions: { dispatch: { type: 'choice', criteria: { 'workhorse-medium': 'synthetic' } } },
+  questions: { dispatch: { type: 'choice', criteria: { 'medium': 'synthetic' } } },
 });
 const answer = {
   answers: {
     dispatch: {
-      choice: 'workhorse-medium',
+      choice: 'medium',
       confidence: 0.9,
-      probabilities: { 'workhorse-medium': 0.9, ask: 0.1 },
+      probabilities: { 'medium': 0.9, ask: 0.1 },
     },
   },
 };
@@ -77,20 +77,20 @@ function fakeSpawn({
   return { spawnImpl, calls, wasKilled: () => killed, wasUnrefed: () => unrefed };
 }
 
-test('a roleless spawn with nothing named gets the picked model and effort, and keeps its type', () => {
-  const out = rewriteClaudeSpawn({ description: 'd', prompt: 'p' }, route('opus', 'high'), rubric);
-  assert.deepEqual([out.model, out.effort, out.subagent_type], ['opus', 'high', undefined]);
+test('a roleless spawn with nothing named gets the picked effort and no model, and keeps its type', () => {
+  const out = rewriteClaudeSpawn({ description: 'd', prompt: 'p' }, route('high'), rubric);
+  assert.deepEqual([out.model, out.effort, out.subagent_type], [undefined, 'high', undefined]);
   assert.equal(out.prompt, 'p');
 });
 
 test('general-purpose counts as roleless', () => {
-  const out = rewriteClaudeSpawn({ subagent_type: 'general-purpose', prompt: 'p' }, route('fable', 'low'), rubric);
-  assert.deepEqual([out.model, out.effort, out.subagent_type], ['fable', 'low', 'general-purpose']);
+  const out = rewriteClaudeSpawn({ subagent_type: 'general-purpose', prompt: 'p' }, route('low'), rubric);
+  assert.deepEqual([out.model, out.effort, out.subagent_type], [undefined, 'low', 'general-purpose']);
 });
 
 test('a shim type alone always leaves with an explicit effort field', () => {
   for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) {
-    const out = rewriteClaudeSpawn({ subagent_type: `bootstrap-orchestrate:worker-${level}`, prompt: 'p' }, null, rubric);
+    const out = rewriteClaudeSpawn({ subagent_type: `bootstrap-orchestrate:worker-${level}`, prompt: 'p' }, null, rubric, { effort: true });
     assert.deepEqual([out.effort, out.subagent_type], [level, `bootstrap-orchestrate:worker-${level}`]);
   }
 });
@@ -99,7 +99,25 @@ test('an explicit effort field outranks the shim name, and the shim is renamed t
   const out = rewriteClaudeSpawn({ subagent_type: 'bootstrap-orchestrate:worker-low', effort: 'high', prompt: 'p' }, null, rubric);
   assert.deepEqual([out.effort, out.subagent_type], ['high', 'bootstrap-orchestrate:worker-high']);
   assert.equal(rewriteClaudeSpawn({ subagent_type: 'bootstrap-orchestrate:worker-high', effort: 'high', prompt: 'p' }, null, rubric), null);
-  assert.equal(rewriteClaudeSpawn({ subagent_type: 'general-purpose', effort: 'max', prompt: 'p' }, null, rubric), null);
+  assert.equal(rewriteClaudeSpawn({ subagent_type: 'general-purpose', effort: 'max', prompt: 'p' }, null, rubric, { effort: true }), null);
+});
+
+test('with no model named, an agent-chosen max is capped and a human-chosen max stands', () => {
+  const agent = rewriteClaudeSpawn({ subagent_type: 'general-purpose', effort: 'max', prompt: 'p' }, route('low'), rubric);
+  assert.deepEqual([agent.effort, agent.subagent_type], ['xhigh', 'general-purpose']);
+  const shim = rewriteClaudeSpawn({ subagent_type: 'bootstrap-orchestrate:worker-max', prompt: 'p' }, null, rubric);
+  assert.deepEqual([shim.effort, shim.subagent_type], ['xhigh', 'bootstrap-orchestrate:worker-xhigh']);
+  assert.equal(rewriteClaudeSpawn({ subagent_type: 'general-purpose', effort: 'max', prompt: 'p' }, route('low'), rubric, { effort: true }), null);
+});
+
+test('every rubric option yields an effort or nothing, and never a model, on every runtime', async () => {
+  for (const choice of Object.keys(rubric.options)) {
+    const requestImpl = async () => ({ answers: { dispatch: { choice, confidence: 0.9, probabilities: { [choice]: 0.9 } } } });
+    for (const runtime of ['claude', 'codex']) {
+      const { pick: picked } = await pick('a synthetic brief', runtime, { rubric, requestImpl });
+      assert.deepEqual(Object.keys(picked).sort(), choice === 'ask' ? ['option'] : ['effort', 'option'], choice);
+    }
+  }
 });
 
 // Named roles: built-in, project/user custom (pinned, `inherit` or no model
@@ -109,7 +127,7 @@ const NAMED_ROLES = ['Explore', 'Plan', 'qa-design-critic', 'qa-smoke-worker', '
 
 test('a named role is never rewritten, even on a confident route', () => {
   for (const subagent_type of NAMED_ROLES) {
-    for (const r of [route('opus', 'low'), route('fable', 'high'), route('opus', 'max')]) {
+    for (const r of [route('low'), route('high'), route('max')]) {
       assert.equal(rewriteClaudeSpawn({ subagent_type, prompt: 'p' }, r, rubric), null, subagent_type);
       assert.equal(rewriteClaudeSpawn({ subagent_type, effort: 'max', prompt: 'p' }, r, rubric), null, subagent_type);
     }
@@ -117,7 +135,7 @@ test('a named role is never rewritten, even on a confident route', () => {
 });
 
 test('an explicit tool-call model on a named role is kept as given', () => {
-  assert.equal(rewriteClaudeSpawn({ subagent_type: 'qa-smoke-worker', model: 'fable', prompt: 'p' }, route('opus', 'xhigh'), rubric), null);
+  assert.equal(rewriteClaudeSpawn({ subagent_type: 'qa-smoke-worker', model: 'fable', prompt: 'p' }, route('xhigh'), rubric), null);
 });
 
 test('the installed hook leaves every named role untouched and never consults the picker', () => {
@@ -144,24 +162,27 @@ test('no override preserves a custom role and its native model inheritance', () 
   assert.equal(rewriteClaudeSpawn({ subagent_type: 'qa-adjudicator', prompt: 'p' }, picked, rubric), null);
 });
 
-test('a confident route replaces the model the agent named, keeps the effort it asked for, and fills effort only when none was asked', () => {
+test('a model no human named is dropped so the spawn inherits, with or without a route; effort stands; a route fills only a missing effort', () => {
   const shim = (e) => `bootstrap-orchestrate:worker-${e}`;
   const cases = [
-    [{ model: 'opus', subagent_type: shim('high') }, route('opus', 'low'), {}, ['opus', 'high', shim('high')]],
-    [{ model: 'sonnet', subagent_type: 'general-purpose' }, route('opus', 'low'), {}, ['opus', 'low', 'general-purpose']],
-    [{ model: 'fable', prompt: 'p' }, route('opus', 'xhigh'), { model: true }, ['fable', 'high', undefined]],
-    [{ model: 'sonnet', subagent_type: shim('high') }, route('opus', 'low'), { effort: true }, ['opus', 'high', shim('high')]],
-    [{ model: 'opus', effort: 'max' }, route('opus', 'low'), {}, ['opus', 'xhigh', undefined]],
-    [{ model: 'sonnet', effort: 'xhigh' }, route('opus', 'low'), {}, ['opus', 'xhigh', undefined]],
-    [{ model: 'fable', effort: 'xhigh' }, route('fable', 'low'), {}, ['fable', 'high', undefined]],
-    [{ model: 'opus', effort: 'max' }, route('opus', 'low'), { model: true, effort: true }, ['opus', 'xhigh', undefined]],
-    [{ model: 'opus', subagent_type: shim('high') }, route('opus', 'low'), { model: true, effort: true }, ['opus', 'high', shim('high')]],
+    [{ model: 'opus', subagent_type: shim('high') }, route('low'), {}, [undefined, 'high', shim('high')]],
+    [{ model: 'sonnet', subagent_type: 'general-purpose' }, route('low'), {}, [undefined, 'low', 'general-purpose']],
+    [{ model: 'sonnet', prompt: 'p' }, null, {}, [undefined, undefined, undefined]],
+    [{ model: 'sonnet', prompt: 'p' }, { decision: 'inherit', pick: null }, {}, [undefined, undefined, undefined]],
+    [{ model: 'fable', prompt: 'p' }, route('xhigh'), { model: true }, ['fable', 'high', undefined]],
+    [{ model: 'sonnet', subagent_type: shim('high') }, route('low'), { effort: true }, [undefined, 'high', shim('high')]],
+    [{ model: 'opus', effort: 'max' }, route('low'), {}, [undefined, 'xhigh', undefined]],
+    [{ model: 'sonnet', effort: 'xhigh' }, route('low'), {}, [undefined, 'xhigh', undefined]],
+    [{ model: 'fable', effort: 'xhigh' }, route('low'), { model: true }, ['fable', 'high', undefined]],
+    [{ model: 'opus', effort: 'max' }, route('low'), { model: true, effort: true }, ['opus', 'xhigh', undefined]],
+    [{ model: 'opus', subagent_type: shim('high') }, route('low'), { model: true, effort: true }, ['opus', 'high', shim('high')]],
   ];
   for (const [input, r, pins, expected] of cases) {
     const out = rewriteClaudeSpawn(input, r, rubric, pins);
     assert.deepEqual([out.model, out.effort, out.subagent_type], expected, JSON.stringify([input, pins]));
+    assert.equal('model' in out, expected[0] !== undefined, JSON.stringify(input));
   }
-  assert.equal(rewriteClaudeSpawn({ model: 'opus', effort: 'high', subagent_type: shim('high') }, route('opus', 'low'), rubric, { model: true, effort: true }), null);
+  assert.equal(rewriteClaudeSpawn({ model: 'opus', effort: 'high', subagent_type: shim('high') }, route('low'), rubric, { model: true, effort: true }), null);
 });
 
 test('humanTurns keeps only the turns people wrote', () => {
@@ -232,7 +253,7 @@ test('humanTurns keeps only the turns people wrote', () => {
   assert.deepEqual(humanTurns(undefined, container), []);
 });
 
-test('humanPins: an invocation pins model and effort; outside one, a sole named family pins that model', () => {
+test('humanPins: an invocation pins model and effort; outside one, any family the turn names pins that model', () => {
   const spawn = { model: 'opus', subagent_type: 'bootstrap-orchestrate:worker-high' };
   const cases = [
     ['/orchestrate opus high fix the login bug', { model: true, effort: true }],
@@ -244,7 +265,7 @@ test('humanPins: an invocation pins model and effort; outside one, a sole named 
     ['use an opus subagent to fix it', { model: true, effort: false }],
     ['/orchestrate fable low fix it', { model: false, effort: false }],
     ['orchestrate high availability testing', { model: false, effort: false }],
-    ['compare Opus and Sonnet, then run it at high effort', { model: false, effort: false }],
+    ['compare Opus and Sonnet, then run it at high effort', { model: true, effort: false }],
     ['the earlier attempt failed at high effort, try again', { model: false, effort: false }],
     ['', { model: false, effort: false }],
     ['/orchestrate opus high first task\n/orchestrate second task', { model: false, effort: false }],
@@ -273,11 +294,11 @@ test('humanPins: an invocation pins model and effort; outside one, a sole named 
     ['get claude-opus-5\u2019s take on this', { model: true, effort: false }],
     ['have Opus review it at high effort', { model: true, effort: false }],
     ["I'd like fable to take a look", { model: false, effort: false }],
-    ['opus is overkill; ask fable', { model: false, effort: false }],
+    ['opus is overkill; ask fable', { model: true, effort: false }],
     ["don't use opus here", { model: true, effort: false }],
     ['/orchestrate have opus review it', { model: true, effort: false }],
     ['/orchestrate high have opus review it', { model: true, effort: true }],
-    ['/orchestrate high compare opus and sonnet', { model: false, effort: true }],
+    ['/orchestrate high compare opus and sonnet', { model: true, effort: true }],
     ['ask `opus` to review it', { model: true, effort: false }],
     ['ask "opus" to review it', { model: true, effort: false }],
     ['*opus* please', { model: true, effort: false }],
@@ -293,14 +314,14 @@ test('humanPins: an invocation pins model and effort; outside one, a sole named 
   assert.deepEqual(humanPins({ effort: 'low', subagent_type: 'bootstrap-orchestrate:worker-high' }, '/orchestrate opus high go'), { model: false, effort: false });
   assert.deepEqual(humanPins({ model: 'sonnet', prompt: 'p' }, '/orchestrate opus high go'), { model: false, effort: false });
   for (const text of ['compare Opus/Sonnet', 'compare Opus,Sonnet', 'compare _opus_ and sonnet']) {
-    assert.deepEqual(humanPins({ model: 'sonnet' }, text), { model: false, effort: false }, text);
+    for (const model of ['opus', 'sonnet']) assert.deepEqual(humanPins({ model }, text), { model: true, effort: false }, `${model}: ${text}`);
   }
 });
-test('the installed hook replaces an agent-named model unless a human named it, and keeps the effort the agent asked for', () => {
+test('the installed hook drops an agent-named model unless a human named it, and keeps the effort the agent asked for', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));
   const preload = path.join(root, 'preload.mjs');
   fs.writeFileSync(preload, `globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(${JSON.stringify({
-    answers: { dispatch: { choice: 'workhorse-low', confidence: 0.9, probabilities: { 'workhorse-low': 0.9, ask: 0.1 } } },
+    answers: { dispatch: { choice: 'low', confidence: 0.9, probabilities: { 'low': 0.9, ask: 0.1 } } },
   })}) });`);
   const hook = fileURLToPath(new URL('../../../hooks/route-spawn.mjs', import.meta.url));
   let runs = 0;
@@ -321,33 +342,33 @@ test('the installed hook replaces an agent-named model unless a human named it, 
     return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.updatedInput : null;
   };
   const out = run(['please clean this up']);
-  assert.deepEqual([out.model, out.effort, out.subagent_type], ['opus', 'high', 'bootstrap-orchestrate:worker-high']);
+  assert.deepEqual([out.model, out.effort, out.subagent_type], [undefined, 'high', 'bootstrap-orchestrate:worker-high']);
+  assert.equal('model' in out, false);
   const pinned = run(['/orchestrate opus high clean this up']);
   assert.deepEqual([pinned.model, pinned.effort, pinned.subagent_type], ['opus', 'high', 'bootstrap-orchestrate:worker-high']);
   const namedSonnet = { model: 'sonnet', subagent_type: 'bootstrap-orchestrate:worker-high' };
   const stillPinned = run(['/orchestrate sonnet high clean this up'], namedSonnet);
   assert.deepEqual([stillPinned.model, stillPinned.effort], ['sonnet', 'high']);
   const later = run(['/orchestrate sonnet high clean this up', 'now look at a different issue'], namedSonnet);
-  assert.deepEqual([later.model, later.effort, later.subagent_type], ['opus', 'high', 'bootstrap-orchestrate:worker-high']);
+  assert.deepEqual([later.model, later.effort, later.subagent_type], [undefined, 'high', 'bootstrap-orchestrate:worker-high']);
   const roleless = { subagent_type: 'general-purpose', effort: 'high' };
-  const kept = run(['/orchestrate high clean this up'], roleless);
-  assert.deepEqual([kept.model, kept.effort, kept.subagent_type], ['opus', 'high', 'general-purpose']);
-  const agentChose = run(['please clean this up'], roleless);
-  assert.deepEqual([agentChose.model, agentChose.effort, agentChose.subagent_type], ['opus', 'high', 'general-purpose']);
-  const plainWords = run(['use xhigh effort for this'], { subagent_type: 'general-purpose', effort: 'xhigh' });
-  assert.deepEqual([plainWords.model, plainWords.effort, plainWords.subagent_type], ['opus', 'xhigh', 'general-purpose']);
+  assert.equal(run(['/orchestrate high clean this up'], roleless), null);
+  assert.equal(run(['please clean this up'], roleless), null);
+  assert.equal(run(['use xhigh effort for this'], { subagent_type: 'general-purpose', effort: 'xhigh' }), null);
   const noEffort = run(['please clean this up'], { subagent_type: 'general-purpose' });
-  assert.deepEqual([noEffort.model, noEffort.effort, noEffort.subagent_type], ['opus', 'low', 'general-purpose']);
+  assert.deepEqual([noEffort.model, noEffort.effort, noEffort.subagent_type], [undefined, 'low', 'general-purpose']);
+  const comparison = run(['compare Opus and Sonnet on this'], { model: 'sonnet', subagent_type: 'general-purpose' });
+  assert.deepEqual([comparison.model, comparison.effort, comparison.subagent_type], ['sonnet', 'low', 'general-purpose']);
 });
 
 test('an explicit effort above the cap is lowered; within the cap it is kept', () => {
-  const over = rewriteClaudeSpawn({ model: 'fable', subagent_type: 'bootstrap-orchestrate:worker-max' }, null, rubric);
+  const over = rewriteClaudeSpawn({ model: 'fable', subagent_type: 'bootstrap-orchestrate:worker-max' }, null, rubric, { model: true });
   assert.deepEqual([over.effort, over.subagent_type], ['high', 'bootstrap-orchestrate:worker-high']);
-  const opusMax = rewriteClaudeSpawn({ model: 'opus', subagent_type: 'bootstrap-orchestrate:worker-max' }, null, rubric);
+  const opusMax = rewriteClaudeSpawn({ model: 'opus', subagent_type: 'bootstrap-orchestrate:worker-max' }, null, rubric, { model: true });
   assert.deepEqual([opusMax.effort, opusMax.subagent_type], ['xhigh', 'bootstrap-orchestrate:worker-xhigh']);
-  const opusParam = rewriteClaudeSpawn({ model: 'opus', effort: 'max' }, null, rubric);
+  const opusParam = rewriteClaudeSpawn({ model: 'opus', effort: 'max' }, null, rubric, { model: true });
   assert.deepEqual([opusParam.effort, opusParam.subagent_type], ['xhigh', undefined]);
-  assert.equal(rewriteClaudeSpawn({ model: 'opus', effort: 'xhigh', subagent_type: 'bootstrap-orchestrate:worker-xhigh' }, null, rubric), null);
+  assert.equal(rewriteClaudeSpawn({ model: 'opus', effort: 'xhigh', subagent_type: 'bootstrap-orchestrate:worker-xhigh' }, null, rubric, { model: true }), null);
 });
 
 test('no route (ask / unavailable / null) leaves a spawn untouched', () => {
@@ -357,7 +378,7 @@ test('no route (ask / unavailable / null) leaves a spawn untouched', () => {
 });
 
 test('a usable Jev route is preserved with classifier provenance', () => {
-  const picked = { runtime: 'codex', decision: 'route', pick: { model: 'gpt-6.1-sol', effort: 'high' }, confidence: 0.99 };
+  const picked = { runtime: 'codex', decision: 'route', pick: { effort: 'high' }, confidence: 0.99 };
   assert.deepEqual(resolveDispatch(picked, 'codex'), { ...picked, provenance: 'jev' });
 });
 
@@ -365,8 +386,8 @@ test('unavailable, abstaining, and unusable routes become an actionable native n
   const cases = [
     { decision: 'unavailable', pick: null },
     { decision: 'ask', pick: { option: 'ask', model: 'opus', effort: 'low' } },
-    { decision: 'route', pick: { model: '', effort: 'high' } },
-    { decision: 'route', pick: { model: 'opus', effort: 'unsupported' } },
+    { decision: 'route', pick: { effort: '' } },
+    { decision: 'route', pick: { effort: 'unsupported' } },
   ];
   for (const raw of cases) {
     const claude = resolveDispatch(raw, 'claude');
@@ -388,11 +409,11 @@ test('no override adds no model or effort while independent caps remain', () => 
     { subagent_type: 'bootstrap-orchestrate:worker-low', effort: 'low', prompt: 'p' },
     { subagent_type: 'qa-adjudicator', prompt: 'p' },
   ]) {
-    assert.equal(rewriteClaudeSpawn(input, picked, rubric), null);
+    assert.equal(rewriteClaudeSpawn(input, picked, rubric, { model: true }), null);
   }
   const capped = rewriteClaudeSpawn({
     model: 'fable', subagent_type: 'bootstrap-orchestrate:worker-max', prompt: 'p',
-  }, picked, rubric);
+  }, picked, rubric, { model: true });
   assert.deepEqual([capped.model, capped.effort, capped.subagent_type], [
     'fable', 'high', 'bootstrap-orchestrate:worker-high',
   ]);
@@ -587,10 +608,10 @@ test('malformed or failed wrapper output becomes a generic unavailable reason', 
   }
 });
 
-test('the same successful picker response resolves runtime-specific Claude and Codex routes', async () => {
+test('the same successful picker response gives the same effort on Claude and Codex', async () => {
   const requestImpl = async () => answer;
   const claude = await pick('implement a synthetic transport repair', 'claude', { rubric, requestImpl });
   const codex = await pick('implement a synthetic transport repair', 'codex', { rubric, requestImpl });
-  assert.deepEqual([claude.decision, claude.pick.model, claude.pick.effort], ['route', 'opus', 'medium']);
-  assert.deepEqual([codex.decision, codex.pick.model, codex.pick.effort], ['route', 'gpt-6.1-sol', 'medium']);
+  assert.deepEqual([claude.decision, claude.pick.effort], ['route', 'medium']);
+  assert.deepEqual([codex.decision, codex.pick.effort], ['route', 'medium']);
 });
