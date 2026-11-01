@@ -76,8 +76,6 @@ export interface ShellCommand {
 export interface ShellView {
     commands: ShellCommand[];
     valueAt(name: string, pos: number): ShellValue | undefined;
-    /** The literal words a `for` over `name` gives at `pos`, or null when the loop's value there isn't only those. */
-    loopWords: (name: string, pos: number) => string[] | null;
     commandAt(pos: number): ShellCommand | undefined;
 }
 
@@ -448,7 +446,7 @@ interface VarEvent {
     scope?: [number, number];
 }
 
-const NO_VARIABLES: ShellView = { commands: [], valueAt: () => undefined, loopWords: () => null, commandAt: () => undefined };
+const NO_VARIABLES: ShellView = { commands: [], valueAt: () => undefined, commandAt: () => undefined };
 
 /** Remove a word's shell quoting without expanding anything: `"a $X"` → `a $X`. */
 export function shellUnquote(text: string): string {
@@ -464,13 +462,10 @@ export function shellUnquote(text: string): string {
  * known to leave variables alone. A function definition anywhere turns
  * resolution off.
  */
-// A loop word goes back into a path that is read as shell text, so only characters with no shell meaning count.
-const literalWord = (word: any): boolean => /^[\w./-]+$/.test(String(word.value));
-
 export function viewShell(command: string): ShellView {
     const events: VarEvent[] = [];
     const commands: ShellCommand[] = [];
-    const empty: ShellView = { commands, valueAt: () => undefined, loopWords: () => null, commandAt: () => undefined };
+    const empty: ShellView = { commands, valueAt: () => undefined, commandAt: () => undefined };
     let ast: any;
     try {
         ast = parseShell(command);
@@ -498,18 +493,9 @@ export function viewShell(command: string): ShellView {
             if (latest.name === '*' || (latest.scope && (pos < latest.scope[0] || pos > latest.scope[1]))) return { kind: 'runtime' };
             return latest.value;
         };
-        const loops: Array<{ name: string; pos: number; end: number; words: string[] }> = [];
-        const loopWords = (name: string, pos: number): string[] | null => {
-            if (tooLong || pos < 0) return null;
-            const loop = loops.filter(l => l.name === name && l.pos < pos && pos < l.end).at(-1);
-            // The loop must be the only thing that sets the name: a write after the reader reaches it on the next pass of any enclosing loop.
-            const setters = events.filter(e => e.name === name || e.name === '*');
-            return loop && setters.every(e => e.pos >= 0 && e.pos <= loop.pos) ? loop.words : null;
-        };
         const view: ShellView = {
             commands,
             valueAt,
-            loopWords,
             commandAt: pos => (pos < 0 ? undefined : commands.find(c => c.pos === pos)),
         };
 
@@ -559,13 +545,7 @@ export function viewShell(command: string): ShellView {
             }
             if (n.type === 'For' || n.type === 'Select') {
                 const loopVar = n.name?.text;
-                if (typeof loopVar === 'string') {
-                    taint(loopVar, pos);
-                    const list: any[] = n.wordlist ?? [];
-                    if (n.type === 'For' && list.length && list.every(literalWord)) {
-                        loops.push({ name: loopVar, pos, end: n.end, words: list.map(w => String(w.value)) });
-                    }
-                }
+                if (typeof loopVar === 'string') taint(loopVar, pos);
                 continue;
             }
             if (n.type === 'Assignment') {

@@ -1702,29 +1702,12 @@ function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null 
     return script.paths.get(key)!;
 }
 
-/** The word once for each literal word of the `for` loops around it, or null past the cap on files. */
-function loopExpansions(file: string, cmd: ResolvedCommand): string[] | null {
-    const script = cmd.script;
-    if (!script || cmd.pos === undefined || !file.includes('$')) return [file];
-    script.view ??= viewShell(script.command);
-    let words = [file];
-    for (const name of new Set([...file.matchAll(/\$(?:\{(\w+)\}|(\w+))/g)].map(m => m[1] ?? m[2]))) {
-        const values = script.view.loopWords(name, cmd.pos);
-        if (!values) continue;
-        const variable = new RegExp(String.raw`\$\{${name}\}|\$${name}(?!\w)`, 'g');
-        words = words.flatMap(word => values.map(value => word.replace(variable, () => value)));
-        if (words.length > SQL_FILES_MAX) return null;
-    }
-    return words;
-}
-
 function resolvePathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
     const script = cmd.script;
     const provable = (text: string, pos: number) => provableWord(text, cmd, pos);
-    const targets = (loopExpansions(file, cmd) ?? [null]).map(word => (word === null ? null : provable(word, cmd.pos ?? -1)));
-    if (targets.some(target => target === null)) return null;
-    const absolute = (target: string | null): target is string => !!target?.startsWith('/');
-    if (targets.every(absolute)) return targets;
+    const target = provable(file, cmd.pos ?? -1);
+    if (target === null) return null;
+    if (target.startsWith('/')) return [target];
 
     if ((script?.cds.length ?? 0) > SQL_PATH_STEPS_MAX) return null;
     let dirs = [script?.cwd ?? currentWorkingDir()];
@@ -1747,7 +1730,7 @@ function resolvePathCandidates(file: string, cmd: ResolvedCommand): string[] | n
         if (chdir === null) return null;
         dirs = dirs.map(d => (chdir.startsWith('/') ? chdir : join(d, chdir)));
     }
-    return (targets as string[]).flatMap(target => (target.startsWith('/') ? [target] : dirs.map(d => join(d, target))));
+    return dirs.map(d => join(d, target));
 }
 
 // Platform CLIs → destructive subcommand verbs
@@ -6401,7 +6384,7 @@ function* gatedSteps(
                 continue;
             }
             if (cmd.name === 'snow' && reason.includes(SQL_PATH_UNPROVEN)) {
-                yield { cmd, reason, outer, moves, fix: `${reason} Write each path out, set it to a plain value on the same line (\`F=/path/query.sql; snow sql -f "$F"\`), or loop over written-out words (\`for t in a b; do snow sql -f "$t.sql"; done\`), and the guard reads the files first.` };
+                yield { cmd, reason, outer, moves, fix: `${reason} Write each path out, or set it to a plain value on the same line (\`F=/path/query.sql; snow sql -f "$F"\`), and the guard reads the files first.` };
                 continue;
             }
             yield { cmd, reason: cmd === outer ? renderDevHoldReason(cmd, reason) : reason, outer, moves };
