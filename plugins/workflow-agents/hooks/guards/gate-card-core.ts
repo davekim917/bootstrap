@@ -464,9 +464,8 @@ export function shellUnquote(text: string): string {
  * known to leave variables alone. A function definition anywhere turns
  * resolution off.
  */
-// A loop word goes back into a path that is read as shell text, so a quoted `$` in it would expand a second time.
-const literalWord = (word: any): boolean => !/[$`]/.test(String(word.value)) && (word.parts ?? []).every((part: any) => part?.type === 'Literal'
-    || part?.type === 'SingleQuoted' || (part?.type === 'DoubleQuoted' && (part.parts ?? []).every((inner: any) => inner?.type === 'Literal')));
+// A loop word goes back into a path that is read as shell text, so only characters with no shell meaning count.
+const literalWord = (word: any): boolean => /^[\w./-]+$/.test(String(word.value));
 
 export function viewShell(command: string): ShellView {
     const events: VarEvent[] = [];
