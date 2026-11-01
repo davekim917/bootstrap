@@ -111,6 +111,7 @@ const BASH_BLOCK = [
 
 // Gated (require approval): destructive infra/DB/cloud/IaC/containers/dbt.
 const BASH_GATE = [
+  'curl -X DELETE https://api.render.com/v1/postgres/dpg-example',
   'git push --force{,}',
   'git push origin {main,--force}',
   "psql -h db.example -c {'drop table t',x}",
@@ -276,6 +277,7 @@ const BASH_GATE = [
 // lease-protected force pushes (the sanctioned recovery the MCP git_push tool
 // uses), plain pushes, local branch ops, and `git stash push -f` (not a push).
 const BASH_ALLOW = [
+  'curl https://api.render.com/v1/postgres/dpg-example',
   'mkdir -p src/{a,b}',
   'git clean -n {a,b} -f',
   'ls -la',

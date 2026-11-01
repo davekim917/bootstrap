@@ -53,6 +53,12 @@ describe('Codex local approval transport', () => {
     expect((await runGuard(shell('git status'))).output).toEqual({ continue: true });
   });
 
+  test('holds a raw Render API delete and passes a read', async () => {
+    const url = 'https://api.render.com/v1/postgres/dpg-example';
+    expectDecision(await runGuard(shell(`curl -X DELETE ${url}`)), 'deny', /Render keeps no backup/);
+    expect((await runGuard(shell(`curl ${url}`))).output).toEqual({ continue: true });
+  });
+
   test('denies destructive commands with a hand-off, since Codex rejects ask', async () => {
     const result = await runGuard(shell('terraform destroy'));
     expectDecision(result, 'deny', /terraform/i);
