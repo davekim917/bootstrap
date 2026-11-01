@@ -26,6 +26,8 @@ const DEV = 'srv-devservice0000000001';
 const PROD = 'srv-prodservice000000001';
 const PROD_DB = 'dpg-proddatabase00000001-a';
 const DEV_DB = 'dpg-devdatabase000000001-a';
+const DEV_KV = 'red-devkeyvalue000000001';
+const DEV_CRON = 'crn-devcronjob0000000001';
 
 let dir = '';
 let saved: string | undefined;
@@ -36,7 +38,7 @@ beforeAll(() => {
     savedProfile = process.env.NANOCLAW_INSTRUCTIONS_PROFILE;
     dir = mkdtempSync(join(tmpdir(), 'render-prod-test-'));
     const scopeFile = join(dir, 'dev-scope.local.json');
-    writeFileSync(scopeFile, JSON.stringify({ snowflake: [], render: { resources: [DEV, DEV_DB] } }));
+    writeFileSync(scopeFile, JSON.stringify({ snowflake: [], render: { resources: [DEV, DEV_DB, DEV_KV, DEV_CRON] } }));
     process.env[DEV_SCOPE_FILE_ENV] = scopeFile;
 });
 
@@ -508,6 +510,118 @@ describe('a raw DELETE to the Render API', () => {
         `http ${URL} -o delete`,
         `http ${URL} "Authorization: Bearer $KEY"`,
     ])('%s needs no approval', command => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    const DEV_VAR = `https://api.render.com/v1/services/${DEV}/env-vars/FOO`;
+    const PROD_VAR = `https://api.render.com/v1/services/${PROD}/env-vars/FOO`;
+
+    test.each([
+        `curl -X DELETE ${DEV_VAR}`,
+        `curl -sS -X DELETE ${DEV_VAR}`,
+        `curl -sSXDELETE ${DEV_VAR}`,
+        `curl -sX DELETE ${DEV_VAR}`,
+        `curl --request DELETE ${DEV_VAR}`,
+        `curl -X DELETE ${DEV_VAR} ${DEV_VAR}`,
+        `curl -sS -H "Authorization: Bearer $KEY" -X DELETE ${DEV_VAR}`,
+        `curl -sS --header "Authorization: Bearer \${KEY}" -X DELETE ${DEV_VAR}`,
+        `curl -sS -H "Accept: application/json" -X DELETE ${DEV_VAR}`,
+        `curl -sS -o /dev/null -w "%{http_code}\\n" -X DELETE ${DEV_VAR}`,
+        `curl --silent --show-error --fail --max-time 30 -X DELETE ${DEV_VAR}`,
+        `curl -X DELETE https://api.render.com/v1/services/${DEV}`,
+        `curl -X DELETE https://api.render.com/v1/services/${DEV_CRON}`,
+        `curl -X DELETE api.render.com/v1/services/${DEV}/custom-domains/www.example.net`,
+    ])('%s is on a listed dev resource, so it runs', command => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['a production id', `curl -X DELETE ${PROD_VAR}`],
+        ['a production database', `curl -X DELETE https://api.render.com/v1/postgres/${PROD_DB}`],
+        ['a dev and a production URL', `curl -X DELETE ${DEV_VAR} ${PROD_VAR}`],
+        ['a Render path with no id', `curl -X DELETE ${DEV_VAR} https://api.render.com/v1/services`],
+        ['a production id after a listed one', `curl -X DELETE https://api.render.com/v1/env-groups/${DEV}/services/${PROD}`],
+        ['a later transfer', `curl -X DELETE ${DEV_VAR} --next -X DELETE ${PROD_VAR}`],
+        ['a dot segment', `curl -X DELETE https://api.render.com/v1/services/${DEV}/../other`],
+        ['an escape', `curl -X DELETE https://api.render.com/v1/services/${DEV}/%2e%2e/other`],
+        ['a query', `curl -X DELETE "${DEV_VAR}?x=1"`],
+        ['a login', `curl -X DELETE https://user@api.render.com/v1/services/${DEV}/env-vars/FOO`],
+        ['plain http', `curl -X DELETE http://api.render.com/v1/services/${DEV}/env-vars/FOO`],
+        ['the id in a variable', 'curl -X DELETE https://api.render.com/v1/services/$SVC/env-vars/FOO'],
+        ['the URL in a variable', `U=${DEV_VAR}; curl -X DELETE "$U"`],
+        ['another word unread', `curl -X DELETE ${DEV_VAR} "$OTHER"`],
+        ['a request target', `curl -X DELETE --request-target /v1/postgres/%64pg-x ${DEV_VAR}`],
+        ['a config file', `curl -K extra.cfg -X DELETE ${DEV_VAR}`],
+        ['a config file behind a switch', `curl -4K extra.cfg -X DELETE ${DEV_VAR}`],
+        ['a shortened config option', `curl --conf extra.cfg -X DELETE ${DEV_VAR}`],
+        ['a URL file', `curl -X DELETE --url @urls.txt ${DEV_VAR}`],
+        ['a curl variable', `curl --variable U=x --expand-url '{{U}}' -X DELETE ${DEV_VAR}`],
+        ['an unquoted header variable', `curl -H $X -X DELETE ${DEV_VAR}`],
+        ['an attached header variable', `curl -H"$X" -X DELETE ${DEV_VAR}`],
+        ['a header outside the list', `curl -H "X-Note: yes" -X DELETE ${DEV_VAR}`],
+        ['a bearer header with no spaces', `curl -H Authorization:Bearertoken -X DELETE ${DEV_VAR}`],
+        ['a bearer value that can split', `curl -H Authorization:Bearer$X -X DELETE ${DEV_VAR}`],
+        ['a bearer variable outside the quotes', `curl -H "Authorization: Bearer "$X -X DELETE ${DEV_VAR}`],
+        ['a bearer variable in single-quoted parts', `curl -H 'Authorization: Bearer '$X -X DELETE ${DEV_VAR}`],
+        ['a bearer variable after escaped spaces', `curl -H Authorization:\\ Bearer\\ $X -X DELETE ${DEV_VAR}`],
+        ['a bearer value joined to a split word', `curl -H "Authorization: Bearer x"$IFS"${PROD_VAR}" -X DELETE ${DEV_VAR}`],
+        ['a bearer value from a file', `curl -H "Authorization: Bearer "$(<split.txt) -X DELETE ${DEV_VAR}`],
+        ['two variables in the header', `curl -H "Authorization: Bearer $A$B" -X DELETE ${DEV_VAR}`],
+        ['a header naming a production id', `curl -H "X-Target: ${PROD}" -X DELETE ${DEV_VAR}`],
+        ['a header flag as another flag\'s value', `curl -d -H "$U" -X DELETE ${DEV_VAR}`],
+        ['a timeout that is not a number', `curl --max-time soon -X DELETE ${DEV_VAR}`],
+        ['output to a file', `curl -o ~/.curlrc -X DELETE ${DEV_VAR}`],
+        ['a write-out reading a file', `curl -w @format.txt -X DELETE ${DEV_VAR}`],
+        ['a second method', `curl -X POST -X DELETE ${DEV_VAR}`],
+        ['wget', `wget --method=DELETE ${DEV_VAR}`],
+        ['wget reading a URL file', `wget --method=DELETE -i targets.txt ${DEV_VAR}`],
+        ['HTTPie', `http DELETE ${DEV_VAR}`],
+        ['an environment assignment', `CURL_HOME=/tmp/x curl -X DELETE ${DEV_VAR}`],
+        ['HOME changed', `HOME=/tmp/x curl -X DELETE ${DEV_VAR}`],
+        ['HOME set on the line first', `HOME=/tmp/x; curl -X DELETE ${DEV_VAR}`],
+        ['env', `env CURL_HOME=/tmp/x curl -X DELETE ${DEV_VAR}`],
+        ['sudo', `sudo curl -X DELETE ${DEV_VAR}`],
+        ['a path to another curl', `./curl -X DELETE ${DEV_VAR}`],
+        ['another command first', `printf 'url=x' > ~/.curlrc; curl -X DELETE ${DEV_VAR}`],
+        ['export first', `export CURL_HOME=/tmp/x; curl -X DELETE ${DEV_VAR}`],
+        ['a function named curl', `curl() { ./x; }; curl -X DELETE ${DEV_VAR}`],
+        ['a sourced file', `source x.sh; curl -X DELETE ${DEV_VAR}`],
+        ['a pipeline', `curl -X DELETE ${DEV_VAR} | cat`],
+        ['xargs', `echo x | xargs curl -X DELETE ${DEV_VAR}`],
+        ['find', `find . -name x -exec curl -X DELETE ${DEV_VAR} \\;`],
+        ['a write-out that picks a file', `curl -X DELETE ${DEV_VAR} -w '%output{Makefile}oops'`],
+    ])('%s stays held', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test.each([
+        `xh --resolve api.render.com:10.0.0.1 delete ${URL}`,
+        `http --cert api.render.com/c.pem DELETE ${URL}`,
+        `xh DELETE ${URL} --output GET --resolve api.render.com:10.0.0.1`,
+        `xh DELETE --follow ${URL} --output GET`,
+        `xh --cert=api.render.com/c.pem delete ${URL}`,
+        `xh --cert api.render.com/c.pem delete --follow ${URL}`,
+    ])('%s reads the method ahead of the real URL', command => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test.each([
+        `curl -X DELETE https://api.render.com/v1/postgres/${DEV_DB}`,
+        `curl -X DELETE https://api.render.com/v1/key-value/${DEV_KV}`,
+        `curl -X DELETE https://api.render.com/v1/redis/${DEV_KV}`,
+        `curl -X DELETE https://api.render.com/v1/cron-jobs/${DEV_CRON}`,
+        `render postgres delete ${DEV_DB}`,
+        `render pg delete ${DEV_DB}`,
+        `render keyvalues delete ${DEV_KV}`,
+        `render kv delete ${DEV_KV}`,
+    ])('%s keeps its card, because a deleted datastore has no backup', command => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test.each([
+        `render services delete ${DEV}`,
+        `render postgres suspend ${DEV_DB}`,
+    ])('%s is on a listed dev resource, so it runs', command => {
         expect(verdict(command)).toBe('allow');
     });
 
