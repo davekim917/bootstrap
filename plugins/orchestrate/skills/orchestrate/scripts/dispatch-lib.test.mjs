@@ -144,14 +144,16 @@ test('no override preserves a custom role and its native model inheritance', () 
   assert.equal(rewriteClaudeSpawn({ subagent_type: 'qa-adjudicator', prompt: 'p' }, picked, rubric), null);
 });
 
-test('a confident route replaces what the agent named; a field the human named is kept', () => {
+test('a confident route replaces the model the agent named, keeps the effort it asked for, and fills effort only when none was asked', () => {
   const shim = (e) => `bootstrap-orchestrate:worker-${e}`;
   const cases = [
-    [{ model: 'opus', subagent_type: shim('high') }, route('opus', 'low'), {}, ['opus', 'low', shim('low')]],
+    [{ model: 'opus', subagent_type: shim('high') }, route('opus', 'low'), {}, ['opus', 'high', shim('high')]],
     [{ model: 'sonnet', subagent_type: 'general-purpose' }, route('opus', 'low'), {}, ['opus', 'low', 'general-purpose']],
     [{ model: 'fable', prompt: 'p' }, route('opus', 'xhigh'), { model: true }, ['fable', 'high', undefined]],
     [{ model: 'sonnet', subagent_type: shim('high') }, route('opus', 'low'), { effort: true }, ['opus', 'high', shim('high')]],
-    [{ model: 'opus', effort: 'max' }, route('opus', 'low'), {}, ['opus', 'low', undefined]],
+    [{ model: 'opus', effort: 'max' }, route('opus', 'low'), {}, ['opus', 'xhigh', undefined]],
+    [{ model: 'sonnet', effort: 'xhigh' }, route('opus', 'low'), {}, ['opus', 'xhigh', undefined]],
+    [{ model: 'fable', effort: 'xhigh' }, route('fable', 'low'), {}, ['fable', 'high', undefined]],
     [{ model: 'opus', effort: 'max' }, route('opus', 'low'), { model: true, effort: true }, ['opus', 'xhigh', undefined]],
     [{ model: 'opus', subagent_type: shim('high') }, route('opus', 'low'), { model: true, effort: true }, ['opus', 'high', shim('high')]],
   ];
@@ -294,7 +296,7 @@ test('humanPins: an invocation pins model and effort; outside one, a sole named 
     assert.deepEqual(humanPins({ model: 'sonnet' }, text), { model: false, effort: false }, text);
   }
 });
-test('the installed hook replaces an agent-named model and effort unless a human named them', () => {
+test('the installed hook replaces an agent-named model unless a human named it, and keeps the effort the agent asked for', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));
   const preload = path.join(root, 'preload.mjs');
   fs.writeFileSync(preload, `globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify(${JSON.stringify({
@@ -319,16 +321,23 @@ test('the installed hook replaces an agent-named model and effort unless a human
     return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput.updatedInput : null;
   };
   const out = run(['please clean this up']);
-  assert.deepEqual([out.model, out.effort, out.subagent_type], ['opus', 'low', 'bootstrap-orchestrate:worker-low']);
+  assert.deepEqual([out.model, out.effort, out.subagent_type], ['opus', 'high', 'bootstrap-orchestrate:worker-high']);
   const pinned = run(['/orchestrate opus high clean this up']);
   assert.deepEqual([pinned.model, pinned.effort, pinned.subagent_type], ['opus', 'high', 'bootstrap-orchestrate:worker-high']);
-  const later = run(['/orchestrate opus high clean this up', 'now look at a different issue']);
-  assert.deepEqual([later.model, later.effort, later.subagent_type], ['opus', 'low', 'bootstrap-orchestrate:worker-low']);
+  const namedSonnet = { model: 'sonnet', subagent_type: 'bootstrap-orchestrate:worker-high' };
+  const stillPinned = run(['/orchestrate sonnet high clean this up'], namedSonnet);
+  assert.deepEqual([stillPinned.model, stillPinned.effort], ['sonnet', 'high']);
+  const later = run(['/orchestrate sonnet high clean this up', 'now look at a different issue'], namedSonnet);
+  assert.deepEqual([later.model, later.effort, later.subagent_type], ['opus', 'high', 'bootstrap-orchestrate:worker-high']);
   const roleless = { subagent_type: 'general-purpose', effort: 'high' };
   const kept = run(['/orchestrate high clean this up'], roleless);
   assert.deepEqual([kept.model, kept.effort, kept.subagent_type], ['opus', 'high', 'general-purpose']);
-  const replaced = run(['please clean this up'], roleless);
-  assert.deepEqual([replaced.model, replaced.effort, replaced.subagent_type], ['opus', 'low', 'general-purpose']);
+  const agentChose = run(['please clean this up'], roleless);
+  assert.deepEqual([agentChose.model, agentChose.effort, agentChose.subagent_type], ['opus', 'high', 'general-purpose']);
+  const plainWords = run(['use xhigh effort for this'], { subagent_type: 'general-purpose', effort: 'xhigh' });
+  assert.deepEqual([plainWords.model, plainWords.effort, plainWords.subagent_type], ['opus', 'xhigh', 'general-purpose']);
+  const noEffort = run(['please clean this up'], { subagent_type: 'general-purpose' });
+  assert.deepEqual([noEffort.model, noEffort.effort, noEffort.subagent_type], ['opus', 'low', 'general-purpose']);
 });
 
 test('an explicit effort above the cap is lowered; within the cap it is kept', () => {

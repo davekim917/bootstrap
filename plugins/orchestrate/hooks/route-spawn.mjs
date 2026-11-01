@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Claude Code PreToolUse hook on Agent/Task: route every sub-agent spawn —
 // autonomous or via /orchestrate — through the dispatch rubric. A confident pick
-// replaces the model and effort the calling agent named itself; a field a human
-// asked for in this session is kept. Never blocks. A named role is never
+// replaces the model the calling agent named itself unless a human asked for it,
+// and fills effort only when the call asks for none. Never blocks. A named role is never
 // rewritten and never costs a picker call. Any classifier failure or abstention
 // leaves the call's own choices; existing caps remain.
 import fs from 'node:fs';
