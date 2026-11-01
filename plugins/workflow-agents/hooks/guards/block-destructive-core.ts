@@ -30,8 +30,9 @@
  *
  * Known limitations:
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
- *   - A DELETE to the Render API is seen only from curl, wget and HTTPie or xh on the command line; a script,
- *     a curl config file or a URL held outside the line goes through. Render's own roles are the real control
+ *   - A DELETE to the Render API is seen only from curl, wget, HTTPie and xh with the method and URL readable on
+ *     the line. A script, a curl config file or variable, flags or a URL held in a variable the line doesn't prove,
+ *     xargs supplying the URL, and a disguised URL all go through. Render's own roles are the real control
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
 import { accessSync, closeSync, lstatSync, constants as fsConstants, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
@@ -1971,15 +1972,16 @@ export function renderChangeReason(args: string[]): string | null {
     return `${RENDER_CHANGE_REASON} (render ${words || args.join(' ')}).`;
 }
 
-const RENDER_API_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs']);
+const RENDER_API_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs', 'xhttps']);
 const RENDER_API_URL = /^(?:--url=)?(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^/@]*@)?api\.render\.com\.?(?=[:/?#]|$)/i;
-const LITERAL_URL = /^(?:--url=)?[a-z][a-z0-9+.-]*:\/\/[^$`]*$/i;
-const SHELL_EXPANDS = /[$`]/;
 // curl's single-letter options that take a value: in a bundle like -sSXDELETE, the first one owns the rest of the word.
 const CURL_VALUE_LETTERS = 'AbcCdDeEFHKmoPQrtTuUwxXyYz';
+const HTTP_VERB = /^(?:get|head|post|put|patch|delete|options)$/i;
 
-/** The words a client's command line gives as its HTTP method. curl and wget also take a long option cut short. */
+/** The method words a client's command line gives, in order; the last one wins. wget also takes its option cut short. */
 function httpMethodWords(name: string, args: string[], urlAt: number): string[] {
+    // HTTPie and xh read the method as a bare word ahead of the URL.
+    if (name !== 'curl' && name !== 'wget') return args.slice(0, urlAt).filter(a => HTTP_VERB.test(a));
     const words: string[] = [];
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
@@ -1992,32 +1994,30 @@ function httpMethodWords(name: string, args: string[], urlAt: number): string[] 
             }
             continue;
         }
-        if (name === 'curl' || name === 'wget') {
-            const [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, undefined];
-            if (!(name === 'curl' ? /^--requ?e?s?t?$/ : /^--meth(?:od?)?$/).test(flag)) continue;
-            const value = inline ?? args[++i];
-            if (value !== undefined) words.push(value);
+        const startup = name === 'wget' ? /^(?:-\w*e|--exec\w*=)?\s*method\s*=\s*(.+)$/i.exec(a) : null;
+        if (startup) {
+            words.push(startup[1]);
             continue;
         }
-        // HTTPie and xh read the method as a bare word ahead of the URL. A word after an option is that option's value.
-        if (i < urlAt && (/^delete$/i.test(a) || (SHELL_EXPANDS.test(a) && !args[i - 1]?.startsWith('-')))) words.push(a);
+        const [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, undefined];
+        if (!(name === 'curl' ? /^--(?:expand-)?request$/ : /^--me(?:t(?:h(?:od?)?)?)?$/).test(flag)) continue;
+        const value = inline ?? args[++i];
+        if (value !== undefined) words.push(value);
     }
     return words;
 }
 
 /**
- * Why a raw HTTP client's DELETE to the Render API stops for approval, or null. When the client's own words show no
- * URL (a variable, or xargs supplying it), a line that names the Render API counts, and so does a method in a variable.
+ * Why a raw HTTP client's DELETE to the Render API stops for approval, or null. A variable counts only when the line
+ * proves its value: a method or URL the guard can't read is left to run, since a wrongly held read is the worse failure.
  */
 export function renderApiDeleteReason(cmd: ResolvedCommand): string | null {
     if (!RENDER_API_CLIENTS.has(cmd.name)) return null;
-    const line = cmd.script?.command ?? cmd.raw;
-    if (!/api\.render\.com/i.test(line)) return null;
-    const url = cmd.args.findIndex(a => RENDER_API_URL.test(a));
-    if (url < 0 && cmd.args.some(a => LITERAL_URL.test(a))) return null;
-    const methods = httpMethodWords(cmd.name, cmd.args, url < 0 ? cmd.args.length : url);
-    if (!methods.some(m => /^delete$/i.test(m) || SHELL_EXPANDS.test(m))) return null;
-    return `${RENDER_CHANGE_REASON} (DELETE to the Render API by ${cmd.name}).`;
+    const args = expandedEmitter(cmd)?.args ?? cmd.args;
+    const url = args.findIndex(a => RENDER_API_URL.test(a));
+    if (url < 0) return null;
+    const method = httpMethodWords(cmd.name, args, url).at(-1);
+    return method?.toUpperCase() === 'DELETE' ? `${RENDER_CHANGE_REASON} (DELETE to the Render API by ${cmd.name}).` : null;
 }
 
 const RENDER_RESOURCE_ID_IN_TEXT = new RegExp(String.raw`(?<![a-z0-9-])[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?(?![a-z0-9-])`, 'g');
@@ -6102,7 +6102,7 @@ function awsStep(cmd: ResolvedCommand): StepCard {
 const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
     ...Object.fromEntries([...RENDER_API_CLIENTS].map(client => [client, [
         'Deletes the Render resource or setting named in the step below, calling the API directly.',
-        "Render keeps no backup of a deleted database, so it can't be restored",
+        "some deletes can't be undone: Render keeps no backup of a deleted database",
     ]])),
     'terraform destroy': ['Destroys every resource this Terraform state manages.', "the resources and the data in them can't be brought back"],
     'terraform apply': ['Applies changes without showing the plan first; it can create, change or destroy infrastructure.', "anything it destroys can't be brought back"],
