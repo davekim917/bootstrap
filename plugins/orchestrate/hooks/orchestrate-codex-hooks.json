@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo \"Before spawn_agent: pipe the task into node '${PLUGIN_ROOT}/skills/orchestrate/scripts/pick-dispatch.mjs' --runtime codex. On decision route, use its pick.effort only when neither the user nor you chose an effort, and name a model only when the user named one. Decision inherit means no picker override: preserve the user's choices subject to existing caps, otherwise use normal native judgment and omit fields for the runtime to resolve; set an effort only when you deliberately choose it. Preserve roles and retained workers.\"",
+            "command": "echo \"Before spawn_agent: name a model only when the user named one, and choose the effort yourself. Set an effort only when you deliberately choose it, and omit fields for the runtime to resolve. Preserve roles and retained workers.\"",
             "timeout": 5
           }
         ]

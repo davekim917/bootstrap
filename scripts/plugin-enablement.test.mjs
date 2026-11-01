@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -204,9 +205,9 @@ test('disabled: no sub-agent definition survives without the orchestrate plugin'
 test('the orchestrate plugin registers only its spawn router and no standing directive', () => {
   // Invoke-only for delegation: no SessionStart directive, no always-on file.
   // The one hook it owns is the Claude PreToolUse spawn router on Agent|Task —
-  // it rewrites a sub-agent's model/effort from the dispatch rubric and never
-  // blocks. Codex carries one SessionStart line pointing spawn_agent at the
-  // picker (its PreToolUse cannot read or rewrite a spawn); the Claude-composed
+  // it settles a sub-agent's model/effort from the call and never blocks. Codex
+  // carries one SessionStart line stating the model rule (its PreToolUse cannot
+  // read or rewrite a spawn); the Claude-composed
   // session below still gets no SessionStart output.
   const claude = JSON.parse(fs.readFileSync(path.join(REPO, 'plugins/orchestrate/.claude-plugin/plugin.json'), 'utf8'));
   assert.equal(claude.hooks, './hooks/orchestrate-hooks.json');
@@ -368,16 +369,60 @@ function codexSessionStartCommands(pluginName) {
     .map((hook) => hook.command.replaceAll('${PLUGIN_ROOT}', pluginRoot));
 }
 
-test('orchestrate: the Codex SessionStart hook prints exactly one picker line with a runnable path', () => {
+test('orchestrate: the Codex SessionStart hook prints exactly one line stating the model rule', () => {
   const commands = codexSessionStartCommands('bootstrap-orchestrate');
   assert.equal(commands.length, 1);
   const result = runHookCommand(commands[0], '{}');
   assert.equal(result.exitCode, 0, result.stderr);
   const lines = result.stdout.trim().split('\n');
   assert.equal(lines.length, 1, 'must be one line');
-  const scriptPath = lines[0].match(/node '([^']+pick-dispatch\.mjs)'/)?.[1];
-  assert.ok(scriptPath && fs.existsSync(scriptPath), `picker path must resolve: ${lines[0]}`);
-  assert.match(lines[0], /--runtime codex/);
+  assert.match(lines[0], /name a model only when the user named one/);
+});
+
+test('orchestrate: a spawn opens no connection and starts no transport, whatever credentials or proxy the environment holds', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-no-network-'));
+  const marker = path.join(root, 'network.log');
+  const bin = path.join(root, 'bin');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'onecli'), `#!/bin/sh\necho "onecli $*" >> ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  const preload = path.join(root, 'preload.mjs');
+  fs.writeFileSync(preload, `import fs from 'node:fs';
+import net from 'node:net';
+const note = (what) => fs.appendFileSync(${JSON.stringify(marker)}, what + '\\n');
+globalThis.fetch = async (url) => { note('fetch ' + url); return { ok: true, status: 200, text: async () => '{}' }; };
+const connect = net.Socket.prototype.connect;
+net.Socket.prototype.connect = function (...args) { note('socket'); return connect.apply(this, args); };
+`);
+  const hook = path.join(REPO, 'plugins/orchestrate/hooks/route-spawn.mjs');
+  const proxy = { HTTPS_PROXY: 'http://127.0.0.1:9', https_proxy: 'http://127.0.0.1:9', NODE_USE_ENV_PROXY: '1' };
+  const environments = [
+    { TYPESAFE_API_KEY: 'test-key' },
+    proxy,
+    { TYPESAFE_API_KEY: 'test-key', ...proxy },
+    {},
+  ];
+  for (const env of environments) {
+    for (const tool_input of [
+      { subagent_type: 'general-purpose', prompt: 'rename a variable' },
+      { subagent_type: 'general-purpose', model: 'sonnet', effort: 'high', prompt: 'review this change' },
+    ]) {
+      const r = spawnSync(process.execPath, [hook], {
+        input: JSON.stringify({ tool_name: 'Agent', tool_input }),
+        encoding: 'utf8',
+        timeout: 15000,
+        env: {
+          PATH: `${bin}:${process.env.PATH}`,
+          HOME: root,
+          NODE_OPTIONS: `--import ${preload}`,
+          ORCHESTRATE_DISPATCH_LOG: path.join(root, 'log.jsonl'),
+          ...env,
+        },
+      });
+      assert.equal(r.status, 0, r.stderr);
+      const seen = fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : '';
+      assert.equal(seen, '', JSON.stringify(env));
+    }
+  }
 });
 
 test('wwbd: the Codex SessionStart hook prints the standing directive when run', () => {
