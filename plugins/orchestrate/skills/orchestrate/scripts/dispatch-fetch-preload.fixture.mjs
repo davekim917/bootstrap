@@ -1,9 +1,9 @@
 const ANSWER = {
   answers: {
     dispatch: {
-      choice: 'workhorse-medium',
+      choice: 'medium',
       confidence: 0.9,
-      probabilities: { 'workhorse-medium': 0.9, ask: 0.1 },
+      probabilities: { 'medium': 0.9, ask: 0.1 },
     },
   },
 };

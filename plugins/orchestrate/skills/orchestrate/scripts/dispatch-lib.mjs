@@ -224,11 +224,8 @@ export async function pick(task, runtime, {
     if (!a?.choice || !rubric.options[a.choice]) throw new Error('no usable answer');
     const ranked = Object.entries(a.probabilities ?? {}).sort((x, y) => y[1] - x[1]);
     const resolve = (key) => {
-      const o = rubric.options[key];
-      if (!o?.tier) return { option: key };
-      const tier = rubric.tiers[o.tier];
-      // Caps are enforced here, not trusted to the data.
-      return { option: key, model: tier[runtime], effort: capEffort(o.effort, tier.maxEffort) };
+      const effort = rubric.options[key]?.effort;
+      return effort ? { option: key, effort } : { option: key };
     };
     out.pick = resolve(a.choice);
     out.confidence = a.confidence;
@@ -249,9 +246,7 @@ export async function pick(task, runtime, {
  */
 export function resolveDispatch(picked, runtime) {
   const route = picked?.pick;
-  if (picked?.decision === 'route'
-    && typeof route?.model === 'string' && route.model
-    && EFFORTS.includes(route?.effort)) {
+  if (picked?.decision === 'route' && EFFORTS.includes(route?.effort)) {
     return { ...picked, provenance: 'jev' };
   }
   return {
@@ -304,12 +299,13 @@ function callEffort(input) {
  * Claude Agent-tool input → the input to run, given a pick (or null) and which
  * of the call's explicit fields a human asked for (`pins`, from humanPins).
  *
- * A confident route sets `model`, replacing whatever the calling agent named
- * unless the human named it, and fills `effort` only when the call asks for
- * none. Without a route the call keeps its own choices. Effort always leaves as
- * the Agent call's `effort` field: current Claude Code does not apply a shim's
- * `effort` frontmatter, so
- * a shim type alone runs at the default level. A named role (Explore, Plan,
+ * A model the human did not name is dropped, route or no route, so the spawn
+ * inherits its parent's. The effort the call asks for stands, and a confident
+ * route fills `effort` only when the call asks for none. With no model named
+ * the hook cannot see which model will run, so an agent's own choice takes the
+ * rubric's `agentMaxEffort`. Effort always leaves as the Agent call's `effort`
+ * field: current Claude Code does not apply a shim's `effort` frontmatter, so a
+ * shim type alone runs at the default level. A named role (Explore, Plan,
  * any custom or plugin agent) is never rewritten: Claude Code gives a per-call
  * `model` precedence over the role's own `model` frontmatter (including
  * `inherit`), and a role's effective definition can live where a hook cannot
@@ -322,13 +318,11 @@ export function rewriteClaudeSpawn(input, picked, rubric, pins = {}) {
   const type = typeof input.subagent_type === 'string' ? input.subagent_type : '';
   const shim = SHIM.test(type);
   if (!isRoleless(type) && !shim) return null;
-  const route = picked?.decision === 'route' && picked.pick?.model ? picked.pick : null;
-
-  if (route && !(out.model && pins.model)) out.model = route.model;
-  const asked = callEffort(input);
-  let effort = asked ?? route?.effort;
+  if (out.model && !pins.model) delete out.model;
+  let effort = callEffort(input) ?? (picked?.decision === 'route' ? picked.pick?.effort : undefined);
   const tier = out.model ? tierOf(rubric, 'claude', out.model) : undefined;
   if (effort && tier) effort = capEffort(effort, tier.maxEffort);
+  else if (effort && !pins.effort) effort = capEffort(effort, rubric.agentMaxEffort);
   if (effort) {
     out.effort = effort;
     if (shim) out.subagent_type = `bootstrap-orchestrate:worker-${effort}`;
@@ -408,19 +402,16 @@ const SLASH_INVOCATION = new RegExp(`(?:^|\\n)[ \\t]*(?:@\\S+\\s+)*/orchestrate\
 const PROSE_INVOCATION = new RegExp(`\\buse\\s+an?\\s+${MODEL_TOKEN}\\s+sub-?agent(?:\\s+at\\s+${EFFORT_TOKEN})?`, 'g');
 const NEGATED = /\b(?:not|never|cannot)\b|n't\b/;
 const CLAUSE_BREAK = /[.!?;:\n\u2014]|,\s*(?:but|and|so|then|yet)\b/;
-const ANY_FAMILY = new RegExp(`(?<![a-z0-9])(${FAMILY})(?![a-z])`, 'g');
 // Chat markup may wrap a mention: quotes, backticks, Slack bold/italic/strike, an ellipsis or a dash.
-const MARKUP = `\\s"'\`*_~\u2026\u2014`;
+const MARKUP = `\\s"'\`*_~\u2026\u2014/,`;
 const MODEL_MENTION = new RegExp(
   `(?<![a-z0-9-])(?:claude-)?(${FAMILY})(?:-\\d+(?:\\.\\d+)*)*(?:'s)?(?=[${MARKUP}]|$|[.,;:!?)\\]]+(?:[${MARKUP}]|$))`,
   'g',
 );
 
-/** The one model family `t` names, or undefined when it names none or several. */
-function soleNamedFamily(t) {
-  const any = new Set([...t.matchAll(ANY_FAMILY)].map((m) => m[1]));
-  const named = new Set([...t.matchAll(MODEL_MENTION)].map((m) => m[1]));
-  return any.size === 1 && named.size === 1 ? [...named][0] : undefined;
+/** The model families `t` names. */
+function namedFamilies(t) {
+  return new Set([...t.matchAll(MODEL_MENTION)].map((m) => m[1]));
 }
 
 /**
@@ -429,10 +420,10 @@ function soleNamedFamily(t) {
  * over. When the turn holds one of the skill's invocations, the latest one
  * alone decides both fields, except that one naming no model ("/orchestrate
  * have fable review it") takes the model from its task text by the plain-words
- * rule. Outside an invocation the model is pinned when the turn names exactly
- * one family and the spawn asks for that family ("I'd like fable to take a
- * look"); several families ("compare Opus and Sonnet") leave it to the
- * router. Whether a mention is a request at all ("not opus", "a haiku") is the
+ * rule. Outside an invocation the model is pinned when the turn names the
+ * family the spawn asks for ("I'd like fable to take a look"), one of several
+ * included ("compare Opus and Sonnet"), since an unpinned model is dropped and
+ * the comparison would run on one. Whether a mention is a request at all ("not opus", "a haiku") is the
  * coordinator's reading: the hook parses no wording beyond the invocations.
  * Effort is never read from plain wording ("failed at high effort").
  */
@@ -443,12 +434,12 @@ export function humanPins(input, text) {
   const effort = callEffort(input);
   const prose = [...t.matchAll(PROSE_INVOCATION)];
   const latest = [...t.matchAll(SLASH_INVOCATION), ...prose].sort((a, b) => b.index - a.index)[0];
-  if (!latest) return { model: Boolean(family) && soleNamedFamily(t) === family, effort: false };
+  if (!latest) return { model: Boolean(family) && namedFamilies(t).has(family), effort: false };
   const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(CLAUSE_BREAK).at(-1));
   if (negated) return { model: false, effort: false };
-  const chosen = latest[1] ?? soleNamedFamily(t.slice(latest.index + latest[0].length));
+  const chosen = latest[1] ? new Set([latest[1]]) : namedFamilies(t.slice(latest.index + latest[0].length));
   return {
-    model: Boolean(family) && chosen === family,
+    model: Boolean(family) && chosen.has(family),
     effort: Boolean(effort) && latest?.[2] === effort,
   };
 }

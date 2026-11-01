@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Suggest a sub-agent model + effort for a task brief from references/dispatch-rubric.json.
+// Suggest a sub-agent effort for a task brief from references/dispatch-rubric.json.
 //
 //   echo "<task brief>" | node pick-dispatch.mjs --runtime claude|codex [--actual "<model> <effort>"]
 //
