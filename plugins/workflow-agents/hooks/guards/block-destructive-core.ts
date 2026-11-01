@@ -4044,8 +4044,30 @@ function renderDevHeld(cmd: ResolvedCommand): string[] | null {
         return (shape ? shape.entry.kind === 'proof' && shape.operands.length === 1 : listed.has(cmd.args[1])) ? ids : null;
     }
     if (RENDER_API_CLIENTS.has(cmd.name)) return curlWordsAreKnown(cmd, RENDER_API_ANY_RESOURCE) ? ids : null;
-    // Another client can take its target from a variable the guard can't read.
-    return cmd.args.some(a => /[$`]/.test(a)) ? null : ids;
+    return (cmd.name === 'psql' || cmd.name === 'dropdb') && psqlStaysOnHost(cmd.args) ? ids : null;
+}
+
+const PSQL_VALUE_FLAGS = /^(?:-[Up]|--username|--port)$/;
+const PSQL_NAME = /^\w[\w.-]*$/;
+
+/** Whether psql's one target is its `-h` word: a connection string, a second host, a script or an unknown option could overrule it. */
+function psqlStaysOnHost(args: string[]): boolean {
+    if (args.some(a => /[$`]/.test(a))) return false;
+    let hosts = 0;
+    for (let i = 0; i < args.length; i++) {
+        const [flag, inline] = args[i].startsWith('--') ? args[i].split(/=(.*)/s) : [args[i]];
+        if (flag === '-h' || flag === '--host') {
+            hosts++;
+            if (inline === undefined) i++;
+        } else if (flag === '-c' || flag === '--command') {
+            if (inline === undefined) i++;
+        } else if (flag === '-d' || flag === '--dbname' || PSQL_VALUE_FLAGS.test(flag)) {
+            if (!PSQL_NAME.test(inline ?? args[++i] ?? '')) return false;
+        } else if (!/^-[AtqXw]+$/.test(flag) && !PSQL_NAME.test(flag)) {
+            return false;
+        }
+    }
+    return hosts === 1;
 }
 
 /** What a step held on listed dev resources says instead of calling itself production. */
