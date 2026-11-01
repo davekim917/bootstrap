@@ -499,10 +499,9 @@ export function viewShell(command: string): ShellView {
         const loopWords = (name: string, pos: number): string[] | null => {
             if (tooLong || pos < 0) return null;
             const loop = loops.filter(l => l.name === name && l.pos < pos && pos < l.end).at(-1);
-            // The loop must be the last thing that set the name: anything later in its body replaces the listed word.
-            const setters = events.filter(e => (e.name === name || e.name === '*') && e.pos < pos);
-            if (!loop || events.some(e => e.pos < 0 && (e.name === name || e.name === '*'))) return null;
-            return setters.every(e => e.pos <= loop.pos) ? loop.words : null;
+            // The loop must be the only thing that sets the name: a write after the reader reaches it on the next pass of any enclosing loop.
+            const setters = events.filter(e => e.name === name || e.name === '*');
+            return loop && setters.every(e => e.pos >= 0 && e.pos <= loop.pos) ? loop.words : null;
         };
         const view: ShellView = {
             commands,

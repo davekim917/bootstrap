@@ -246,6 +246,7 @@ describe('a SQL file named through a literal loop or a value on the line', () =>
         ['a loop over a glob', loop('loop/*.sql', '$t')],
         ['a loop word that holds a variable', loop('read_a $OTHER', 'loop/$t.sql')],
         ['a loop word set on the line', `A=read_a; ${loop('$A', 'loop/$t.sql')}`],
+        ['a loop variable written later in an inner loop', `for t in read_a; do for i in 1 2; do snow sql -f "loop/$t.sql"; t=writes; done; done`],
         ['a quoted loop word that reads as a variable', `D=read_a; ${loop("'$D'", 'loop/$t.sql')}`],
         ['a variable from an earlier call', snow('$EARLIER/read_a.sql')],
         ['a loop variable the body replaces', `for t in read_a; do t=writes; ${snow('loop/$t.sql')}; done`],
