@@ -2011,6 +2011,7 @@ const CURL_DEV_HEADER = /^(?:Authorization: Bearer \S+|(?:Accept|Content-Type): 
 // The header as written: only one double-quoted word holding one variable can't split into a new argument.
 const CURL_DEV_VARIABLE_WORD = /^"Authorization: Bearer \$(?:\w+|\{\w+\})"$/;
 // A plain path on one service: anything unusual in it, such as a dot segment, an escape or a query, leaves its id unread.
+const RENDER_API_ANY_RESOURCE = /^(?:https:\/\/)?api\.render\.com\/v1\/[a-z-]+\/[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?(?:\/(?!\.{1,2}(?:\/|$))[\w.-]+)*$/;
 const RENDER_API_RESOURCE = /^(?:https:\/\/)?api\.render\.com\/v1\/services\/((?:srv|crn)-[a-z0-9]{20})(?:\/(?!\.{1,2}(?:\/|$))[\w.-]+)*$/;
 
 /** The method words a client's command line gives, in order; the last one wins. wget also takes its option cut short. */
@@ -2079,13 +2080,13 @@ export function renderApiDeleteReason(cmd: ResolvedCommand): string | null {
 }
 
 /** Whether every word is one a dev-listed curl DELETE may carry. curl has too many options that add a target to list them. */
-function curlWordsAreKnown(cmd: ResolvedCommand): boolean {
+function curlWordsAreKnown(cmd: ResolvedCommand, resource = RENDER_API_RESOURCE): boolean {
     const { args } = cmd;
     const written = argumentWords(cmd);
     if (args.some((a, i) => /[$`]/.test(a) && !CURL_DEV_VARIABLE_WORD.test(written[i]?.word ?? ''))) return false;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (CURL_DEV_SWITCHES.test(a) || RENDER_API_RESOURCE.test(a)) continue;
+        if (CURL_DEV_SWITCHES.test(a) || resource.test(a)) continue;
         const value = args[++i] ?? '';
         const known = (/^(?:-[sSfi]*X|--request)$/.test(a) && value === 'DELETE')
             || (/^(?:-H|--header)$/.test(a) && CURL_DEV_HEADER.test(value))
@@ -4053,15 +4054,15 @@ function renderDevHeld(cmd: ResolvedCommand): string[] | null {
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
     if (!ids.length || !ids.every(id => listed.has(id))) return null;
+    // `--` hands psql or ssh its own arguments, and a backslash runs a program, so either can leave the named resource.
+    if (cmd.args.some(a => a === '--' || a.includes('\\'))) return null;
     if (cmd.name === 'render') {
-        // `--` hands psql or ssh its own arguments, and a backslash runs a program, so either can leave the named resource.
-        if (cmd.args.some(a => a === '--' || a.includes('\\'))) return null;
         const shape = renderShape(cmd.args);
-        if (shape ? shape.entry.kind !== 'proof' || shape.operands.length !== 1 : !listed.has(cmd.args[1])) return null;
-    } else if (RENDER_API_CLIENTS.has(cmd.name) && renderApiDeleteUrls(cmd).some(url => !renderResourceIds([url]).length)) {
-        return null;
+        return (shape ? shape.entry.kind === 'proof' && shape.operands.length === 1 : listed.has(cmd.args[1])) ? ids : null;
     }
-    return ids;
+    if (RENDER_API_CLIENTS.has(cmd.name)) return curlWordsAreKnown(cmd, RENDER_API_ANY_RESOURCE) ? ids : null;
+    // Another client can take its target from a variable the guard can't read.
+    return cmd.args.some(a => /[$`]/.test(a)) ? null : ids;
 }
 
 /** What a step held on listed dev resources says instead of calling itself production. */

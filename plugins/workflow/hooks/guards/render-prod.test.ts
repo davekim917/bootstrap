@@ -227,6 +227,8 @@ describe('a listed dev resource', () => {
         `render deploys list a-service-name --limit 1`,
         `render deploys list ${DEV} --limit all`,
         `render psql a-database-name -c 'select 1'`,
+        `curl -X DELETE https://api.render.com/v1/postgres/${DEV_DB} --config /tmp/requests.conf`,
+        `wget --method=DELETE https://api.render.com/v1/postgres/${DEV_DB}`,
         `echo ${PROD} | xargs render restart ${DEV}`,
         `render restart a-service-name ${DEV}`,
         `curl -X DELETE https://api.render.com/v1/services/${DEV} https://api.render.com/v1/owners/example`,
@@ -266,6 +268,10 @@ describe('a listed dev resource', () => {
         const command = `psql -h ${DEV_HOST} -d app -c 'delete from accounts'`;
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(false);
+    });
+
+    test('psql on a listed host whose real target is in a variable stays a production gate', () => {
+        expect(changesProduction(`psql -h ${DEV_HOST} "$DATABASE_URL" -c 'delete from accounts'`, '/tmp')).toBe(true);
     });
 
     test('psql on an unlisted Render host stays a production gate', () => {
