@@ -32,7 +32,7 @@ async function runGuard(input: unknown, env: Record<string, string> = {}): Promi
   return { status, stderr, output: JSON.parse(stdout) };
 }
 
-function shell(command: string | string[]): Record<string, unknown> {
+function shell(command: unknown): Record<string, unknown> {
   return {
     hook_event_name: 'PreToolUse',
     tool_name: 'exec_command',
@@ -169,6 +169,10 @@ describe('Codex local approval transport', () => {
   test('keeps the word boundaries of an array command', async () => {
     expect((await runGuard(shell(['echo', 'a; rm -rf ~/.codex/skills']))).output).toEqual({ continue: true });
     expectDecision(await runGuard(shell(['bash', '-c', 'echo hi', 'extra'])), 'deny', /inline/i);
+  });
+
+  test('denies a shell command it cannot read', async () => {
+    expectDecision(await runGuard(shell({ script: 'rm -rf /' })), 'deny', /failed closed/i);
   });
 });
 

@@ -3,11 +3,38 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+    commandLineOf,
     evaluateBashCommand,
     evaluateSelfApproval,
     evaluateSnapshotGitMutation,
     evaluateSnowflakeConnector,
 } from './block-destructive-core';
+
+describe('commandLineOf', () => {
+    test.each<[unknown, string]>([
+        ['git status', 'git status'],
+        [undefined, ''],
+        [null, ''],
+        [0, ''],
+        [false, ''],
+        [[], ''],
+        [['git', 'status'], 'git status'],
+        [['psql', '-c', 'DROP TABLE t'], "psql -c 'DROP TABLE t'"],
+        [['rm', '-rf', '#', '/etc'], "rm -rf '#' /etc"],
+        [['echo', "it's"], "echo 'it'\\''s'"],
+        [['/bin/bash', '-lc', 'git status'], 'git status'],
+        [['bash', '-c', 'echo hi', 'extra'], "bash -c 'echo hi' extra"],
+    ])('%j reads as %j', (command, line) => {
+        expect(commandLineOf(command)).toBe(line);
+    });
+
+    test.each<[unknown]>([[{ a: 1 }], [42], [true], [['echo', 1]], [['echo', null]], [[['rm', '-rf']]]])(
+        '%j throws',
+        command => {
+            expect(() => commandLineOf(command)).toThrow(/failed closed/);
+        },
+    );
+});
 
 // ── A1: pure evaluators (self-approval, snowflake connector) ──
 // Ported verbatim from nanoclaw claude.ts:470-484 (SELF_APPROVAL_RE) and

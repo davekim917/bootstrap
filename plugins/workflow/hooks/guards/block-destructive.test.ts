@@ -551,3 +551,27 @@ describe('package runners resolve to the real command', () => {
         expect(exitCode).toBe(0);
     });
 });
+
+// ── Tools that pass command as something other than a string ────────────────
+
+describe('a tool passing command as an array or another non-string', () => {
+    const callTool = (command: unknown) => runHookInput(makeToolInput('mcp__example__exec', { command }));
+
+    test('a harmless array passes', async () => {
+        const { exitCode, stderr } = await callTool(['echo', 'hello']);
+        expect(exitCode).toBe(0);
+        expect(stderr).toBe('');
+    });
+
+    test('a destructive array is blocked by the evaluators, not by the malformed-input path', async () => {
+        const { exitCode, stderr } = await callTool(['bash', '-c', 'rm -rf /']);
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain("'/' is a protected path");
+    });
+
+    test('a value that is neither a string nor an array of strings fails closed', async () => {
+        const { exitCode, stderr } = await callTool({ script: 'rm -rf /' });
+        expect(exitCode).toBe(2);
+        expect(stderr).toMatch(/failed closed/i);
+    });
+});

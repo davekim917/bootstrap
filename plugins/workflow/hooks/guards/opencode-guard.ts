@@ -25,6 +25,7 @@ import { resolve as pathResolve } from 'path';
 import * as core from './block-destructive-core';
 import {
   approvalText,
+  commandLineOf,
   describeGate,
   evaluateBashCommand,
   evaluateGitCloneDestination,
@@ -52,6 +53,7 @@ import { checkEditProtection, EDIT_TOOLS } from './file-protection-core';
 // evaluators — the cycle-4 gap was a stale email primitive passing because only
 // the verdict evaluator was checked.
 const REQUIRED_CORE_FNS = [
+  'commandLineOf',
   'evaluateSelfApproval',
   'evaluateSnowflakeConnector',
   'evaluateGitCloneDestination',
@@ -88,11 +90,6 @@ export function assertCoreExports(
 // 1.15.7 Hooks shape: tool.execute.before(input,{args}), .after(input,{...}).
 type ToolBeforeInput = { tool: string; sessionID: string; callID: string };
 type ToolBeforeOutput = { args: Record<string, unknown> };
-
-function bashCommandOf(args: Record<string, unknown> | undefined): string {
-  const c = args?.command;
-  return typeof c === 'string' ? c : '';
-}
 
 /**
  * Evaluate a bash command and throw (aborting the tool call) if it must be
@@ -242,7 +239,7 @@ export const NanoclawGuard = async (ctx?: { directory?: string }) => {
       if (gateNativeEmailToolOrThrow(input.tool, output.args ?? {})) return;
       // Destructive-command gate (bash).
       if (input.tool !== 'bash') return;
-      gateBashOrThrow(bashCommandOf(output.args), bashCwdOf(output.args, ctx?.directory));
+      gateBashOrThrow(commandLineOf(output.args?.command), bashCwdOf(output.args, ctx?.directory));
     },
   };
 };
