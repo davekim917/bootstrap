@@ -1976,6 +1976,12 @@ const CURL_VALUE_LETTERS = 'AbcCdDeEFHKmoPQrtTuUwxXyYz';
 // curl's long options whose value is free text, so a value can look like a flag. The list is the common ones, not all.
 const CURL_TEXT_OPTIONS = /^--(?:data(?:-\w+)?|json|form(?:-string)?|header|output|cookie|user-agent|referer)$/;
 const HTTP_VERB = /^(?:get|head|post|put|patch|delete|options)$/i;
+const CURL_DEV_SWITCHES = /^(?:-[sSfi]+|-[sSfi]*XDELETE|--silent|--show-error|--fail|--include)$/;
+const CURL_DEV_HEADER = /^(?:Authorization: Bearer \S+|(?:Accept|Content-Type): [\w/.+-]+)$/;
+// The header as written: only one double-quoted word holding one variable can't split into a new argument.
+const CURL_DEV_VARIABLE_WORD = /^"Authorization: Bearer \$(?:\w+|\{\w+\})"$/;
+// A plain path on one service: anything unusual in it, such as a dot segment, an escape or a query, leaves its id unread.
+const RENDER_API_RESOURCE = /^(?:https:\/\/)?api\.render\.com\/v1\/services\/((?:srv|crn)-[a-z0-9]{20})(?:\/(?!\.{1,2}(?:\/|$))[\w.-]+)*$/;
 
 /** The method words a client's command line gives, in order; the last one wins. wget also takes its option cut short. */
 function httpMethodWords(name: string, args: string[], urlAt: number): string[] {
@@ -2022,17 +2028,56 @@ function httpTransfers(name: string, args: string[]): string[][] {
     return transfers;
 }
 
+/** The Render API URLs a raw HTTP client's line sends a DELETE to. */
+function renderApiDeleteUrls(cmd: ResolvedCommand): string[] {
+    return httpTransfers(cmd.name, expandedEmitter(cmd)?.args ?? cmd.args).flatMap(args => {
+        // The first Render word that isn't an option's value is the URL, so a host in --cert or --resolve doesn't move it.
+        const positional = args.findIndex((a, i) => RENDER_API_URL.test(a) && !args[i - 1]?.startsWith('-'));
+        const url = positional >= 0 ? positional : args.findLastIndex(a => RENDER_API_URL.test(a));
+        const deletes = url >= 0 && httpMethodWords(cmd.name, args, url).at(-1)?.toUpperCase() === 'DELETE';
+        return deletes ? args.filter(a => RENDER_API_URL.test(a)) : [];
+    });
+}
+
 /**
  * Why a raw HTTP client's DELETE to the Render API stops for approval, or null. A variable counts only when the line
  * proves its value: a method or URL the guard can't read is left to run, since a wrongly held read is the worse failure.
  */
 export function renderApiDeleteReason(cmd: ResolvedCommand): string | null {
-    if (!RENDER_API_CLIENTS.has(cmd.name)) return null;
-    const deletes = httpTransfers(cmd.name, expandedEmitter(cmd)?.args ?? cmd.args).some(args => {
-        const url = args.findIndex(a => RENDER_API_URL.test(a));
-        return url >= 0 && httpMethodWords(cmd.name, args, url).at(-1)?.toUpperCase() === 'DELETE';
-    });
-    return deletes ? `${RENDER_CHANGE_REASON} (DELETE to the Render API by ${cmd.name}).` : null;
+    if (!RENDER_API_CLIENTS.has(cmd.name) || !renderApiDeleteUrls(cmd).length) return null;
+    return `${RENDER_CHANGE_REASON} (DELETE to the Render API by ${cmd.name}).`;
+}
+
+/** Whether every word is one a dev-listed curl DELETE may carry. curl has too many options that add a target to list them. */
+function curlWordsAreKnown(cmd: ResolvedCommand): boolean {
+    const { args } = cmd;
+    const written = argumentWords(cmd);
+    if (args.some((a, i) => /[$`]/.test(a) && !CURL_DEV_VARIABLE_WORD.test(written[i]?.word ?? ''))) return false;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (CURL_DEV_SWITCHES.test(a) || RENDER_API_RESOURCE.test(a)) continue;
+        const value = args[++i] ?? '';
+        const known = (/^(?:-[sSfi]*X|--request)$/.test(a) && value === 'DELETE')
+            || (/^(?:-H|--header)$/.test(a) && CURL_DEV_HEADER.test(value))
+            || (/^(?:-m|--max-time|--connect-timeout)$/.test(a) && /^\d+$/.test(value))
+            || (/^(?:-o|--output)$/.test(a) && value === '/dev/null')
+            || (/^(?:-w|--write-out)$/.test(a) && /^(?:[\w\\ :]|%\{\w+\})*$/.test(value));
+        if (!known) return false;
+    }
+    return true;
+}
+
+/**
+ * The listed dev resources a raw DELETE to the Render API acts on, or null. It reads only a line that is one curl command
+ * of known words, and every id on it must be listed, so nothing on the line can add a target; the rest keeps the hold.
+ */
+function renderApiDevTarget(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string): string | null {
+    if (cmd.name !== 'curl' || !/^curl\s/.test(cmd.raw) || commands.length !== 1) return null;
+    if (changesShellState(command) || !curlWordsAreKnown(cmd)) return null;
+    const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    const ids = renderApiDeleteUrls(cmd).map(url => RENDER_API_RESOURCE.exec(url)?.[1]);
+    if (!ids.length || !renderResourceIds(cmd.args).every(id => listed.has(id))) return null;
+    return `render resource ${[...new Set(ids)].join(', ')}`;
 }
 
 const RENDER_RESOURCE_ID_IN_TEXT = new RegExp(String.raw`(?<![a-z0-9-])[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?(?![a-z0-9-])`, 'g');
@@ -3914,6 +3959,8 @@ export function parseDevScope(text: string): DevScope | null {
 }
 
 function renderDevTarget(cmd: ResolvedCommand): string | null {
+    // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
+    if (/^(?:postgres|keyvalues) delete$/.test(renderShape(cmd.args)?.command ?? '')) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const target = renderProvenTarget(cmd, r => listed.has(r));
     return target ? `render resource ${target}` : null;
@@ -4238,6 +4285,7 @@ function trustedLoginConnection(cmd: ResolvedCommand): string | null {
  */
 export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
     if (cmd.name === 'render') return topLevel ? renderDevTarget(cmd) : null;
+    if (RENDER_API_CLIENTS.has(cmd.name)) return topLevel ? renderApiDevTarget(cmd, commands, command) : null;
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
     const scope = currentDevScope();
     if (!scope) return null;
