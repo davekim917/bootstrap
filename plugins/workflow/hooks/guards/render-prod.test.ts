@@ -275,6 +275,7 @@ describe('a listed dev resource', () => {
         ['a URL as the database', `psql -h ${DEV_HOST} -d postgresql://prod.example.com/app -c 'delete from accounts'`],
         ['a URL as a word', `psql -h ${DEV_HOST} postgresql://prod.example.com/app -c 'delete from accounts'`],
         ['a connection string', `psql -h ${DEV_HOST} --dbname='host=prod.example.com' -c 'delete from accounts'`],
+        ['a list of hosts', `psql -h ${DEV_HOST},prod.example.com -X -c 'delete from accounts'`],
         ['a second host', `psql -h ${DEV_HOST} -h prod.example.com -c 'delete from accounts'`],
         ['an option the guard does not know', `psql -h ${DEV_HOST} -o out.txt -c 'delete from accounts'`],
         ['a long option the guard does not know', `psql -h ${DEV_HOST} --output=out.txt -c 'delete from accounts'`],

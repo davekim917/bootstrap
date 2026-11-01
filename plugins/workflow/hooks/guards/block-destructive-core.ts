@@ -4040,21 +4040,24 @@ function renderDevHeld(cmd: ResolvedCommand): string[] | null {
         return (shape ? shape.entry.kind === 'proof' && shape.operands.length === 1 : listed.has(cmd.args[1])) ? ids : null;
     }
     if (RENDER_API_CLIENTS.has(cmd.name)) return curlWordsAreKnown(cmd, RENDER_API_ANY_RESOURCE) ? ids : null;
-    return (cmd.name === 'psql' || cmd.name === 'dropdb') && psqlStaysOnHost(cmd.args) ? ids : null;
+    return (cmd.name === 'psql' || cmd.name === 'dropdb') && psqlStaysOnHost(cmd.args, ids) ? ids : null;
 }
 
 const PSQL_VALUE_FLAGS = /^(?:-[Up]|--username|--port)$/;
 const PSQL_NAME = /^\w[\w.-]*$/;
 
-/** Whether psql's one target is its `-h` word: a connection string, a second host, a script or an unknown option could overrule it. */
-function psqlStaysOnHost(args: string[]): boolean {
+const isListedPgHost = (host: string, ids: string[]): boolean =>
+    ids.some(id => host.startsWith(`${id}.`) && /^[a-z0-9-]+-postgres\.render\.com$/.test(host.slice(id.length + 1)));
+
+/** Whether a listed database is psql's one target: a connection string, another host or an unknown option could overrule its `-h` word. */
+function psqlStaysOnHost(args: string[], ids: string[]): boolean {
     if (args.some(a => /[$`]/.test(a))) return false;
     let hosts = 0;
     for (let i = 0; i < args.length; i++) {
         const [flag, inline] = args[i].startsWith('--') ? args[i].split(/=(.*)/s) : [args[i]];
         if (flag === '-h' || flag === '--host') {
             hosts++;
-            if (inline === undefined) i++;
+            if (!isListedPgHost(inline ?? args[++i] ?? '', ids)) return false;
         } else if (flag === '-c' || flag === '--command') {
             if (inline === undefined) i++;
         } else if (flag === '-d' || flag === '--dbname' || PSQL_VALUE_FLAGS.test(flag)) {
