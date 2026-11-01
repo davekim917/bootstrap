@@ -10,6 +10,7 @@ import {
     RENDER_CLI_TREE,
     RENDER_CLI_VERSION,
     changesProduction,
+    describeGate,
     evaluateBashCommand,
     parseDevScope,
 } from './block-destructive-core';
@@ -394,5 +395,123 @@ describe('dev-scope render entries', () => {
         [{ snowflake: [], render: [DEV] }, false],
     ])('%j parses: %p', (scope, ok) => {
         expect(parseDevScope(JSON.stringify(scope)) !== null).toBe(ok);
+    });
+});
+
+describe('a raw DELETE to the Render API', () => {
+    const URL = `https://api.render.com/v1/postgres/${PROD_DB}`;
+
+    test.each([
+        `curl -X DELETE ${URL}`,
+        `curl ${URL} -X DELETE`,
+        `curl -XDELETE ${URL}`,
+        `curl -sSXDELETE ${URL}`,
+        `curl -sX DELETE ${URL}`,
+        `curl --request DELETE ${URL}`,
+        `curl --request=DELETE ${URL}`,
+        `curl --url=${URL} -X DELETE`,
+        'curl -X DELETE https://api.render.com./v1/services/x',
+        `curl -X delete ${URL}`,
+        `curl -X DELETE --url ${URL}`,
+        `curl -sS -H "Authorization: Bearer $KEY" -X DELETE "${URL}"`,
+        'curl -X DELETE https://user@API.RENDER.COM:443/v1/services/x',
+        `onecli run --agent ag-example -- curl -X DELETE ${URL}`,
+        `sudo curl -X DELETE ${URL}`,
+        `x=$(curl -X DELETE ${URL})`,
+        'BASE=https://api.render.com/v1; curl -X DELETE "$BASE/postgres/x"',
+        `M=DELETE; curl -X "$M" ${URL}`,
+        `wget --method=DELETE ${URL}`,
+        `wget --method DELETE -qO- ${URL}`,
+        `wget --meth=delete ${URL}`,
+        `http DELETE ${URL}`,
+        'https DELETE api.render.com/v1/services/x',
+        `http --timeout=3 DELETE ${URL}`,
+        `http -A bearer -a key DELETE ${URL}`,
+        `M=DELETE; http "$M" ${URL}`,
+        `xh DELETE --timeout 3 ${URL}`,
+        `xh delete ${URL}`,
+        `xhs delete ${URL}`,
+        `xhttps delete ${URL}`,
+        `wget --met=DELETE ${URL}`,
+        `wget --me=DELETE ${URL}`,
+        `wget -emethod=DELETE ${URL}`,
+        `wget -qe method=DELETE ${URL}`,
+        `wget -e 'method = DELETE' ${URL}`,
+        `wget -e METHOD=delete ${URL}`,
+        `curl -X DELETE ${URL} --next -X GET https://example.net/x`,
+        `curl -X DELETE ${URL} -: --request POST https://example.net/x`,
+        `curl https://example.net/x --next -X DELETE ${URL}`,
+        `wget -e method=DELETE ${URL}`,
+        `wget --execute=method=delete ${URL}`,
+        `wget --execute method=DELETE ${URL}`,
+        `curl -x http://127.0.0.1:3128 -X DELETE ${URL}`,
+        `curl -X GET -X DELETE ${URL}`,
+        `curl --expand-request DELETE ${URL}`,
+        'BASE=https://api.render.com/v1; curl -x http://127.0.0.1:3128 -X DELETE "$BASE/postgres/x"',
+        'BASE=https://api.render.com/v1; curl -X DELETE "$BASE/a" https://example.net/b',
+    ])('%s stops for a production approval', command => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test.each([
+        `curl ${URL}`,
+        `curl -X GET ${URL}`,
+        `curl -sS -H "Authorization: Bearer $KEY" ${URL}`,
+        `curl -X POST ${URL}/suspend`,
+        `curl -H "X-Note: -X DELETE" ${URL}`,
+        `curl -HXDELETE ${URL}`,
+        `curl -d DELETE ${URL}`,
+        `curl --request-target DELETE ${URL}`,
+        'curl -X DELETE https://api.render.com.example.net/v1/x',
+        'curl -X DELETE https://example.net/api.render.com/x',
+        'curl -X DELETE https://example.net/x',
+        'curl -X DELETE "$TARGET"',
+        `curl -X "$METHOD" ${URL}`,
+        `curl -X DELETE -X GET ${URL}`,
+        `M=GET; curl -X "$M" ${URL}`,
+        `M=POST; curl -X "$M" ${URL}/restart`,
+        `curl -X "\${M:-GET}" ${URL}`,
+        'curl -X DELETE localhost:3000/x && curl https://api.render.com/v1/services',
+        'http DELETE example.net/x; http api.render.com/v1/services',
+        'curl -X DELETE "https://example.net/items/$ID"; curl https://api.render.com/v1/services',
+        'BASE=https://api.render.com/v1; http GET "$BASE/services"',
+        'BASE=https://api.render.com/v1; http POST "$BASE/services/x/deploys"',
+        'U=https://api.render.com/v1/services; xh "$U"',
+        `xh --bearer="$KEY" ${URL}`,
+        `http --auth="$KEY" ${URL}`,
+        `http -A bearer --auth="$KEY" GET ${URL}`,
+        `http --session="$S" GET ${URL}`,
+        `wget ${URL}?method=delete`,
+        'curl -X DELETE https://example.net/x; curl https://api.render.com/v1/services',
+        `wget -qO- ${URL}`,
+        `wget --method=GET ${URL}`,
+        `http ${URL}`,
+        `http GET ${URL}`,
+        `http --auth "$KEY" ${URL}`,
+        `http -A bearer -a "$KEY" GET ${URL}`,
+        `http POST ${URL} name=delete`,
+        `http ${URL} note=DELETE`,
+        `http -a delete GET ${URL}`,
+        `http -a delete PUT ${URL}`,
+        `http -a delete PATCH ${URL}`,
+        `http -a delete HEAD ${URL}`,
+        `http -a delete OPTIONS ${URL}`,
+        `curl -X DELETE https://example.net/x --next ${URL}`,
+        `curl --data-raw -XDELETE ${URL}`,
+        `curl --header -XDELETE ${URL}`,
+        `curl --output -XDELETE ${URL}`,
+        `curl --data method=delete ${URL}`,
+        `wget --post-data 'method=delete' ${URL}`,
+        `wget --method=POST --body-data method=delete ${URL}`,
+        `wget -O method=delete ${URL}`,
+        `http ${URL} -o delete`,
+        `http ${URL} "Authorization: Bearer $KEY"`,
+    ])('%s needs no approval', command => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test('the card says what a delete can lose', () => {
+        expect(describeGate(`curl -sS -X DELETE ${URL}`, 'gated', '/tmp').summary).toContain("some deletes can't be undone: Render keeps no backup of a deleted database");
     });
 });

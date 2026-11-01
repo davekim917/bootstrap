@@ -30,6 +30,10 @@
  *
  * Known limitations:
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
+ *   - A DELETE to the Render API is seen only from curl, wget, HTTPie and xh, with the method and URL written on the
+ *     client's own words or in a variable that a plain assignment or export on the line sets. Scripts, curl config
+ *     files and --variable, flags in a variable, loop variables, function arguments, declare, variables under $(...),
+ *     xargs or find, and disguised URLs all go through. Render's own roles are the real control
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
 import { accessSync, closeSync, lstatSync, constants as fsConstants, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
@@ -1967,6 +1971,72 @@ export function renderChangeReason(args: string[]): string | null {
     }
     const words = shape?.command ?? args.filter(a => !a.startsWith('-')).slice(0, 3).join(' ');
     return `${RENDER_CHANGE_REASON} (render ${words || args.join(' ')}).`;
+}
+
+const RENDER_API_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs', 'xhttps']);
+const RENDER_API_URL = /^(?:--url=)?(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^/@]*@)?api\.render\.com\.?(?=[:/?#]|$)/i;
+// curl's single-letter options that take a value: in a bundle like -sSXDELETE, the first one owns the rest of the word.
+const CURL_VALUE_LETTERS = 'AbcCdDeEFHKmoPQrtTuUwxXyYz';
+// curl's long options whose value is free text, so a value can look like a flag. The list is the common ones, not all.
+const CURL_TEXT_OPTIONS = /^--(?:data(?:-\w+)?|json|form(?:-string)?|header|output|cookie|user-agent|referer)$/;
+const HTTP_VERB = /^(?:get|head|post|put|patch|delete|options)$/i;
+
+/** The method words a client's command line gives, in order; the last one wins. wget also takes its option cut short. */
+function httpMethodWords(name: string, args: string[], urlAt: number): string[] {
+    // HTTPie and xh read the method as a bare word ahead of the URL.
+    if (name !== 'curl' && name !== 'wget') return args.slice(0, urlAt).filter(a => HTTP_VERB.test(a));
+    const words: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (name === 'curl' && /^-[^-]/.test(a)) {
+            for (let c = 1; c < a.length; c++) {
+                if (!CURL_VALUE_LETTERS.includes(a[c])) continue;
+                const value = a.slice(c + 1) || args[++i];
+                if (a[c] === 'X' && value !== undefined) words.push(value);
+                break;
+            }
+            continue;
+        }
+        if (name === 'curl' && CURL_TEXT_OPTIONS.test(a)) {
+            i++;
+            continue;
+        }
+        const startup = name === 'wget' ? /^(?:-\w*?e|--ex\w*=?)(.*)$/.exec(a) : null;
+        if (startup) {
+            const command = /^\s*method\s*=\s*(\S+)\s*$/i.exec(startup[1] || args[++i] || '');
+            if (command) words.push(command[1]);
+            continue;
+        }
+        const [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, undefined];
+        if (!(name === 'curl' ? /^--(?:expand-)?request$/ : /^--me(?:t(?:h(?:od?)?)?)?$/).test(flag)) continue;
+        const value = inline ?? args[++i];
+        if (value !== undefined) words.push(value);
+    }
+    return words;
+}
+
+/** The transfers a client's line makes: curl's --next starts a new one, with its own method and URLs. */
+function httpTransfers(name: string, args: string[]): string[][] {
+    if (name !== 'curl') return [args];
+    const transfers: string[][] = [[]];
+    for (const a of args) {
+        if (a === '--next' || a === '-:') transfers.push([]);
+        else transfers.at(-1)!.push(a);
+    }
+    return transfers;
+}
+
+/**
+ * Why a raw HTTP client's DELETE to the Render API stops for approval, or null. A variable counts only when the line
+ * proves its value: a method or URL the guard can't read is left to run, since a wrongly held read is the worse failure.
+ */
+export function renderApiDeleteReason(cmd: ResolvedCommand): string | null {
+    if (!RENDER_API_CLIENTS.has(cmd.name)) return null;
+    const deletes = httpTransfers(cmd.name, expandedEmitter(cmd)?.args ?? cmd.args).some(args => {
+        const url = args.findIndex(a => RENDER_API_URL.test(a));
+        return url >= 0 && httpMethodWords(cmd.name, args, url).at(-1)?.toUpperCase() === 'DELETE';
+    });
+    return deletes ? `${RENDER_CHANGE_REASON} (DELETE to the Render API by ${cmd.name}).` : null;
 }
 
 const RENDER_RESOURCE_ID_IN_TEXT = new RegExp(String.raw`(?<![a-z0-9-])[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?(?![a-z0-9-])`, 'g');
@@ -5302,6 +5372,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         const change = renderChangeReason(args);
         if (change) return change;
     }
+    const renderDelete = renderApiDeleteReason(cmd);
+    if (renderDelete) return renderDelete;
 
     // Platform CLIs with custom logic
     if (name === 'heroku' && args.some(a => a === 'destroy' || a === 'pg:reset' || a.includes(':destroy'))) {
@@ -6047,6 +6119,10 @@ function awsStep(cmd: ResolvedCommand): StepCard {
 }
 
 const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
+    ...Object.fromEntries([...RENDER_API_CLIENTS].map(client => [client, [
+        'Deletes the Render resource or setting named in the step below, calling the API directly.',
+        "some deletes can't be undone: Render keeps no backup of a deleted database",
+    ]])),
     'terraform destroy': ['Destroys every resource this Terraform state manages.', "the resources and the data in them can't be brought back"],
     'terraform apply': ['Applies changes without showing the plan first; it can create, change or destroy infrastructure.', "anything it destroys can't be brought back"],
     'pulumi destroy': ['Destroys every resource in the stack.', "the resources and the data in them can't be brought back"],

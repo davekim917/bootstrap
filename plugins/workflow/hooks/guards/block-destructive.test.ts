@@ -128,6 +128,7 @@ describe('gated lead patterns (local native approval)', () => {
         ['helm uninstall my-release', 'helm uninstall'],
         // Platforms
         ['render services delete my-service', 'Render'],
+        ['curl -X DELETE https://api.render.com/v1/postgres/dpg-example', 'raw Render API delete'],
         ['railway delete', 'Railway'],
         ['flyctl apps destroy my-app', 'Fly.io'],
         ['fly destroy my-app', 'Fly.io (fly)'],
@@ -260,6 +261,7 @@ describe('rm: non-ephemeral paths redirected to trash', () => {
 
 describe('safe commands pass through', () => {
     test.each([
+        ['curl https://api.render.com/v1/postgres/dpg-example'],
         ['ls -la'],
         ['git status'],
         ['npm install'],
