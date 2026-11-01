@@ -25,6 +25,12 @@ describe('opencode-guard gateBashOrThrow — destructive/git-clone (existing con
     expect(() => gateBashOrThrow('rm important.txt')).toThrow(/trash/);
   });
 
+  test('holds a raw Render API delete and passes a read', () => {
+    const url = 'https://api.render.com/v1/postgres/dpg-example';
+    expect(() => gateBashOrThrow(`curl -X DELETE ${url}`)).toThrow(/Render keeps no backup/);
+    expect(() => gateBashOrThrow(`curl ${url}`)).not.toThrow();
+  });
+
   test('allows a safe command (no throw)', () => {
     expect(() => gateBashOrThrow('ls -la')).not.toThrow();
   });
