@@ -42,7 +42,7 @@ import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, inWorkingTree, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -1218,11 +1218,16 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         if (writesOwnOutput(cmd) || texts.some(t => SQL_CLIENT_FILE_WRITE.test(t))) {
             unreadable ??= `${f}, which the client may write itself`;
         }
-        if (sqlPathCandidates(f, cmd) === null) unreadable ??= `${f}, a path the command line doesn't prove`;
+        const candidates = sqlPathCandidates(f, cmd);
+        if (candidates === null) unreadable ??= `${f}, ${SQL_PATH_UNPROVEN}`;
         const writes = writesTo(f, cmd);
         if (writes === null) {
             unreadable ??= f;
             continue;
+        }
+        // A path a variable names is one the agent chose at run time, so it must exist and stay in the working tree.
+        if (candidates && /[$`]/.test(f) && !writes.length && !candidates.every(path => inWorkingTree(path, cmd.script?.cwd))) {
+            unreadable ??= `${f}, a file that is missing or outside the working tree`;
         }
         for (const written of writes.map(w => flattenInput(w, cmd.script))) {
             if (written.over || !spendTrace(cmd.script, textSize(written.texts) + written.catFiles.length)) {
@@ -1690,6 +1695,8 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] | null {
     return out;
 }
 
+const SQL_PATH_UNPROVEN = "a path the command line doesn't prove";
+
 function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
     const script = cmd.script;
     if (!script || cmd.pos === undefined) return resolvePathCandidates(file, cmd);
@@ -1699,12 +1706,29 @@ function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null 
     return script.paths.get(key)!;
 }
 
+/** The word once for each literal word of the `for` loops around it, or null past the cap on files. */
+function loopExpansions(file: string, cmd: ResolvedCommand): string[] | null {
+    const script = cmd.script;
+    if (!script || cmd.pos === undefined || !file.includes('$')) return [file];
+    script.view ??= viewShell(script.command);
+    let words = [file];
+    for (const name of new Set([...file.matchAll(/\$(?:\{(\w+)\}|(\w+))/g)].map(m => m[1] ?? m[2]))) {
+        const values = script.view.loopWords(name, cmd.pos);
+        if (!values) continue;
+        const variable = new RegExp(String.raw`\$\{${name}\}|\$${name}(?!\w)`, 'g');
+        words = words.flatMap(word => values.map(value => word.replace(variable, () => value)));
+        if (words.length > SQL_FILES_MAX) return null;
+    }
+    return words;
+}
+
 function resolvePathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
     const script = cmd.script;
     const provable = (text: string, pos: number) => provableWord(text, cmd, pos);
-    const target = provable(file, cmd.pos ?? -1);
-    if (target === null) return null;
-    if (target.startsWith('/')) return [target];
+    const targets = (loopExpansions(file, cmd) ?? [null]).map(word => (word === null ? null : provable(word, cmd.pos ?? -1)));
+    if (targets.some(target => target === null)) return null;
+    const absolute = (target: string | null): target is string => !!target?.startsWith('/');
+    if (targets.every(absolute)) return targets;
 
     if ((script?.cds.length ?? 0) > SQL_PATH_STEPS_MAX) return null;
     let dirs = [script?.cwd ?? currentWorkingDir()];
@@ -1727,7 +1751,7 @@ function resolvePathCandidates(file: string, cmd: ResolvedCommand): string[] | n
         if (chdir === null) return null;
         dirs = dirs.map(d => (chdir.startsWith('/') ? chdir : join(d, chdir)));
     }
-    return dirs.map(d => join(d, target));
+    return (targets as string[]).flatMap(target => (target.startsWith('/') ? [target] : dirs.map(d => join(d, target))));
 }
 
 // Platform CLIs → destructive subcommand verbs
@@ -1784,6 +1808,8 @@ const RENDER_PLAIN_OUTPUT = new Set(['json', 'yaml', 'text']);
 const RENDER_EXPANDS = /[[\]*?{}$`~]/;
 export const RENDER_RESOURCE_ID_RE = /^[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?$/;
 export const RENDER_CHANGE_REASON = 'Production change on Render';
+const RENDER_DEV_HOLD = 'Held on dev Render resource';
+const RENDER_DATASTORE_DELETE = /^(?:postgres|keyvalues) delete$/;
 // `render services --help` shows its usage as `render services [subcommand]`: the CLI reads `list` as an argument to
 // `services`, whose children include update and delete, so `services list` is not a leaf there.
 const RENDER_NOT_LEAF = new Set(['services list']);
@@ -3962,12 +3988,90 @@ export function parseDevScope(text: string): DevScope | null {
     return { snowflake: entries as DevScope['snowflake'], render: { resources: resources as string[] } };
 }
 
+/** The words of a render command as the shell passes them, or null when the guard can't line them up with the script. */
+function renderWords(cmd: ResolvedCommand): any[] | null {
+    const script = cmd.script;
+    if (!script || cmd.pos === undefined) return null;
+    let node: any;
+    try {
+        node = walkCommandNodes(parseShell(script.command)).find(n => n.pos === cmd.pos);
+    } catch {
+        return null;
+    }
+    const words: any[] = node?.suffix ?? [];
+    return words.length === cmd.args.length && words.every((w, i) => wordValue(w) === cmd.args[i]) ? words : null;
+}
+
+/** A quoted word that holds no expansion is plain text the remote side reads, so its `$` or `*` is no reason to hold. */
+function renderLiteralArgs(cmd: ResolvedCommand): string[] {
+    const words = renderWords(cmd);
+    if (!words) return cmd.args;
+    return cmd.args.map((arg, i) => {
+        const parts: any[] = words[i].parts ?? [];
+        const literal = parts.length > 0 && parts.every(part => part?.type === 'SingleQuoted'
+            || (part?.type === 'DoubleQuoted' && (part.parts ?? []).every((inner: any) => inner?.type === 'Literal')));
+        return literal ? arg.replace(new RegExp(RENDER_EXPANDS.source, 'g'), '_') : arg;
+    });
+}
+
+/** A read of a listed resource the command table can't take: help on it, its deploy or job list, or one line of SQL. */
+function renderDevRead(args: string[], listed: Set<string>): string | null {
+    const [command, second, third, ...rest] = args;
+    if (args.length === 3 && RENDER_KNOWN.has(command) && listed.has(second) && /^(?:-h|--help)$/.test(third)) return second;
+    const output = (flag: string, value?: string) => /^(?:-o|--output)$/.test(flag) && RENDER_PLAIN_OUTPUT.has(value ?? '');
+    if ((command === 'deploys' || command === 'jobs') && second === 'list' && listed.has(third)) {
+        for (let i = 0; i < rest.length; i += 2) {
+            if (!output(rest[i], rest[i + 1]) && !(rest[i] === '--limit' && /^\d+$/.test(rest[i + 1] ?? ''))) return null;
+        }
+        return third;
+    }
+    if (command !== 'psql' || !listed.has(second)) return null;
+    const flags = args.slice(2);
+    let sql = 0;
+    for (let i = 0; i < flags.length; i += 2) {
+        const value = flags[i + 1];
+        // psql runs a backslash command as its own program, so only plain SQL counts.
+        if (/^(?:-c|--command)$/.test(flags[i]) && value !== undefined && !value.includes('\\')) sql++;
+        else if (!output(flags[i], value)) return null;
+    }
+    return sql === 1 ? second : null;
+}
+
 function renderDevTarget(cmd: ResolvedCommand): string | null {
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
-    if (/^(?:postgres|keyvalues) delete$/.test(renderShape(cmd.args)?.command ?? '')) return null;
+    if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
-    const target = renderProvenTarget(cmd, r => listed.has(r));
+    const args = renderLiteralArgs(cmd);
+    const accepts = (r: string) => listed.has(r);
+    const read = args.some(a => RENDER_EXPANDS.test(a)) ? null : renderDevRead(args, listed);
+    const target = read && renderResourceIds(args).every(accepts) ? read : renderProvenTarget({ ...cmd, args }, accepts);
     return target ? `render resource ${target}` : null;
+}
+
+/** The listed dev resources a held step acts on, when every resource it names is listed; null sends it to the production gate. */
+function renderDevHeld(cmd: ResolvedCommand): string[] | null {
+    const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    const ids = [...new Set(renderResourceIds(cmd.args))];
+    if (!ids.length || !ids.every(id => listed.has(id))) return null;
+    if (cmd.name === 'render') {
+        // `--` hands psql or ssh its own arguments, and a backslash runs a program, so either can leave the named resource.
+        if (cmd.args.some(a => a === '--' || a.includes('\\'))) return null;
+        const shape = renderShape(cmd.args);
+        if (shape ? shape.entry.kind !== 'proof' || shape.operands.length !== 1 : !listed.has(cmd.args[1])) return null;
+    } else if (RENDER_API_CLIENTS.has(cmd.name) && renderApiDeleteUrls(cmd).some(url => !renderResourceIds([url]).length)) {
+        return null;
+    }
+    return ids;
+}
+
+/** What a step held on listed dev resources says instead of calling itself production. */
+function renderDevHoldReason(cmd: ResolvedCommand, reason: string): string {
+    const ids = reason.includes(RENDER_CHANGE_REASON) ? renderDevHeld(cmd) : null;
+    if (!ids) return reason;
+    const shape = renderShape(cmd.args)?.command ?? '';
+    const deletesDatastore = RENDER_DATASTORE_DELETE.test(shape) || renderApiDeleteUrls(cmd).some(url => !RENDER_API_RESOURCE.test(url));
+    const why = deletesDatastore ? 'Render keeps no backup of a deleted datastore' : "the guard can't confirm what this form does there";
+    return `${RENDER_DEV_HOLD} ${ids.join(', ')}: ${why}.`;
 }
 
 /**
@@ -3977,15 +4081,9 @@ function renderDevTarget(cmd: ResolvedCommand): string | null {
  */
 function renderDevExpansionFix(cmd: ResolvedCommand): string | null {
     const script = cmd.script;
-    if (!script || cmd.pos === undefined || !cmd.args.some(a => RENDER_EXPANDS.test(a))) return null;
-    let node: any;
-    try {
-        node = walkCommandNodes(parseShell(script.command)).find(n => n.pos === cmd.pos);
-    } catch {
-        return null;
-    }
-    const words: any[] = node?.suffix ?? [];
-    if (words.length !== cmd.args.length || words.some((w, i) => wordValue(w) !== cmd.args[i])) return null;
+    if (!script || !cmd.args.some(a => RENDER_EXPANDS.test(a))) return null;
+    const words = renderWords(cmd);
+    if (!words) return null;
     script.view ??= viewShell(script.command);
     const unread: string[] = [];
     const args: string[] = [];
@@ -6193,7 +6291,10 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
     const verbs = cmd.args.filter(a => /^[a-z][\w:-]*$/i.test(a)).slice(0, 2);
     const run = code([cmd.name, ...verbs].join(' '));
     const targets = flagValues(cmd.args, ['-target']);
-    const described: [effect: string, loss: string] | undefined = cmd.name === 'terraform' && targets.length
+    const onDev = cmd.name === 'render' && reason.startsWith(RENDER_DEV_HOLD);
+    const described: [effect: string, loss: string] | undefined = onDev
+        ? ['Changes the Render dev resource named in the step below.', "some changes, such as a deleted database, can't be undone"]
+        : cmd.name === 'terraform' && targets.length
         ? [`Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`, "anything it destroys can't be brought back"]
         : GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
             ?? (PLATFORM_DESTRUCTIVE[cmd.name] ? [`Deletes or shuts down the ${cmd.name} resource named in the step below.`, "this can't be undone"] : undefined);
@@ -6302,7 +6403,11 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves, fix: `${reason}: ${unresolved}` };
                 continue;
             }
-            yield { cmd, reason, outer, moves };
+            if (cmd.name === 'snow' && reason.includes(SQL_PATH_UNPROVEN)) {
+                yield { cmd, reason, outer, moves, fix: `${reason} Write each path out, set it to a plain value on the same line (\`F=/path/query.sql; snow sql -f "$F"\`), or loop over written-out words (\`for t in a b; do snow sql -f "$t.sql"; done\`), and the guard reads the files first.` };
+                continue;
+            }
+            yield { cmd, reason: cmd === outer ? renderDevHoldReason(cmd, reason) : reason, outer, moves };
         }
     }
 }
@@ -7060,7 +7165,8 @@ export function changesProduction(command: string, cwd: string = currentWorkingD
     try {
         const commands = extractCommands(command);
         if (commands[0]?.script) commands[0].script.cwd = cwd;
-        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || step.reason.includes(CLIENT_PROGRAM_GATE) || /\brender\b/.test(step.cmd.raw));
+        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => step.reason.includes(CLIENT_PROGRAM_GATE)
+            || (!(step.cmd === step.outer && renderDevHeld(step.cmd)) && (step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || /\brender\b/.test(step.cmd.raw))));
     } catch {
         return /\brender\b/.test(command);
     }

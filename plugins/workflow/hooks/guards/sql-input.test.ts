@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -198,6 +198,66 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
         expect(reason).toContain("can't be checked");
         expect(reason).not.toContain('Destructive');
     }
+});
+
+test('a Snowflake SQL file the line does not prove is refused with the fix, and another client keeps its card', () => {
+    const refused = evaluateBashCommand(`snow sql -c example -f "$SQL_FILE"`, { cwd: '/tmp' });
+    expect(refused.action).toBe('block');
+    expect(refused.reason).toContain('Write each path out');
+    expect(evaluateBashCommand(`for q in *.sql; do snow sql -c example -f "$q"; done`, { cwd: '/tmp' }).action).toBe('block');
+    expect(verdict(`psql -h db.example -f "$SQL_FILE"`)).toBe('gate');
+});
+
+describe('a SQL file named through a literal loop or a value on the line', () => {
+    const snow = (path: string) => `snow sql -c example -f ${path}`;
+    const loop = (words: string, path: string) => `for t in ${words}; do ${snow(path)}; done`;
+    const inDir = (command: string) => evaluateBashCommand(command.replace('DIR', dir), { cwd: dir }).action;
+
+    beforeAll(() => {
+        mkdirSync(join(dir, 'loop'), { recursive: true });
+        for (const name of ['read_a', 'read_b']) writeFileSync(join(dir, 'loop', `${name}.sql`), 'select 1;');
+        writeFileSync(join(dir, 'loop', 'writes.sql'), 'drop table accounts;');
+        symlinkSync('/etc/hostname', join(dir, 'loop', 'outside.sql'));
+    });
+
+    test.each([
+        ['a loop over a path part', loop('read_a read_b', 'loop/$t.sql')],
+        ['a quoted loop word', loop('read_a "read_b"', '"loop/${t}.sql"')],
+        ['a directory set on the line', `D=DIR/loop; ${snow('$D/read_a.sql')}`],
+        ['a directory beside a loop', `D=DIR/loop; ${loop('read_a', '$D/$t.sql')}`],
+        ['two loops', `for d in loop; do ${loop('read_a read_b', '$d/$t.sql')}; done`],
+        ['two loops whose names share a start', `for t in read_; do for tt in a; do ${snow('loop/$t$tt.sql')}; done; done`],
+        ['a file written on the line', `D=DIR/loop; cat > $D/written.sql <<'SQL'\nselect 1;\nSQL\n${snow('$D/written.sql')}`],
+    ])('%s runs on read-only files', (_label, command) => {
+        expect(inDir(command)).toBe('allow');
+    });
+
+    test.each([
+        ['a loop over a path part', loop('read_a writes', 'loop/$t.sql')],
+        ['a directory set on the line', `D=DIR/loop; ${snow('$D/writes.sql')}`],
+        ['a directory beside a loop', `D=DIR/loop; ${loop('read_a writes', '$D/$t.sql')}`],
+    ])('%s holds when one file writes', (_label, command) => {
+        expect(inDir(command)).toBe('gate');
+    });
+
+    test.each([
+        ['a value from a substitution', `D=$(pwd); ${snow('$D/loop/read_a.sql')}`],
+        ['a loop list from a substitution', loop('$(ls)', 'loop/$t.sql')],
+        ['a loop over a glob', loop('loop/*.sql', '$t')],
+        ['a loop word that holds a variable', loop('read_a $OTHER', 'loop/$t.sql')],
+        ['a loop word set on the line', `A=read_a; ${loop('$A', 'loop/$t.sql')}`],
+        ['a variable from an earlier call', snow('$EARLIER/read_a.sql')],
+        ['a loop variable the body replaces', `for t in read_a; do t=writes; ${snow('loop/$t.sql')}; done`],
+        ['a loop variable read after the loop', `for t in read_a; do :; done; ${snow('loop/$t.sql')}`],
+        ['a loop with an eval in its body', `for t in read_a; do eval "t=writes"; ${snow('loop/$t.sql')}; done`],
+        ['a loop in a substitution', `echo $(for t in read_a; do ${snow('loop/$t.sql')}; done)`],
+        ['a path outside the working tree', loop('/etc/hostname', '$t')],
+        ['a symlink out of the working tree', loop('outside', 'loop/$t.sql')],
+        ['a file that is not there', loop('read_a missing', 'loop/$t.sql')],
+        ['more files than the guard reads', loop(Array.from({ length: 17 }, () => 'read_a').join(' '), 'loop/$t.sql')],
+    ])('%s stays held', (_label, command) => {
+        expect(inDir(command)).not.toBe('allow');
+    });
 });
 
 test('SQL reaching a client through a substitution pipe, -init, a template file, env -C, a flag cluster or pushd', () => {

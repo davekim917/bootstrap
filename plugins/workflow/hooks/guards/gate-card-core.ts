@@ -72,6 +72,8 @@ export interface ShellCommand {
 export interface ShellView {
     commands: ShellCommand[];
     valueAt(name: string, pos: number): ShellValue | undefined;
+    /** The literal words a `for` over `name` gives at `pos`, or null when the loop's value there isn't only those. */
+    loopWords: (name: string, pos: number) => string[] | null;
     commandAt(pos: number): ShellCommand | undefined;
 }
 
@@ -442,7 +444,7 @@ interface VarEvent {
     scope?: [number, number];
 }
 
-const NO_VARIABLES: ShellView = { commands: [], valueAt: () => undefined, commandAt: () => undefined };
+const NO_VARIABLES: ShellView = { commands: [], valueAt: () => undefined, loopWords: () => null, commandAt: () => undefined };
 
 /** Remove a word's shell quoting without expanding anything: `"a $X"` → `a $X`. */
 export function shellUnquote(text: string): string {
@@ -458,10 +460,13 @@ export function shellUnquote(text: string): string {
  * known to leave variables alone. A function definition anywhere turns
  * resolution off.
  */
+const literalWord = (word: any): boolean => (word.parts ?? []).every((part: any) => part?.type === 'Literal' || part?.type === 'SingleQuoted'
+    || (part?.type === 'DoubleQuoted' && (part.parts ?? []).every((inner: any) => inner?.type === 'Literal')));
+
 export function viewShell(command: string): ShellView {
     const events: VarEvent[] = [];
     const commands: ShellCommand[] = [];
-    const empty: ShellView = { commands, valueAt: () => undefined, commandAt: () => undefined };
+    const empty: ShellView = { commands, valueAt: () => undefined, loopWords: () => null, commandAt: () => undefined };
     let ast: any;
     try {
         ast = parseShell(command);
@@ -489,9 +494,19 @@ export function viewShell(command: string): ShellView {
             if (latest.name === '*' || (latest.scope && (pos < latest.scope[0] || pos > latest.scope[1]))) return { kind: 'runtime' };
             return latest.value;
         };
+        const loops: Array<{ name: string; pos: number; end: number; words: string[] }> = [];
+        const loopWords = (name: string, pos: number): string[] | null => {
+            if (tooLong || pos < 0) return null;
+            const loop = loops.filter(l => l.name === name && l.pos < pos && pos < l.end).at(-1);
+            // The loop must be the last thing that set the name: anything later in its body replaces the listed word.
+            const setters = events.filter(e => (e.name === name || e.name === '*') && e.pos < pos);
+            if (!loop || events.some(e => e.pos < 0 && (e.name === name || e.name === '*'))) return null;
+            return setters.every(e => e.pos <= loop.pos) ? loop.words : null;
+        };
         const view: ShellView = {
             commands,
             valueAt,
+            loopWords,
             commandAt: pos => (pos < 0 ? undefined : commands.find(c => c.pos === pos)),
         };
 
@@ -541,7 +556,13 @@ export function viewShell(command: string): ShellView {
             }
             if (n.type === 'For' || n.type === 'Select') {
                 const loopVar = n.name?.text;
-                if (typeof loopVar === 'string') taint(loopVar, pos);
+                if (typeof loopVar === 'string') {
+                    taint(loopVar, pos);
+                    const list: any[] = n.wordlist ?? [];
+                    if (n.type === 'For' && list.length && list.every(literalWord)) {
+                        loops.push({ name: loopVar, pos, end: n.end, words: list.map(w => String(w.value)) });
+                    }
+                }
                 continue;
             }
             if (n.type === 'Assignment') {
@@ -631,6 +652,16 @@ function bodyRoots(cwd: string | undefined): string[] {
  * email-shaped file under a working directory qualifies: never a dotfile, a
  * credential-looking path, or anything a symlink points outside those roots.
  */
+/** Whether a path, followed through any symlink, sits under the working directory or the agent's workspace. */
+export function inWorkingTree(path: string, cwd?: string): boolean {
+    try {
+        const real = realpathSync(path);
+        return bodyRoots(cwd).some(root => real === root || real.startsWith(`${root}${sep}`));
+    } catch {
+        return false;
+    }
+}
+
 export function readBodyFile(path: string, cwd?: string): string | null {
     let real: string;
     try {
