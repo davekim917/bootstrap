@@ -3002,6 +3002,25 @@ export function shellScript(shell: string, args: string[]): { text: string; rest
     return null;
 }
 
+/**
+ * The command line a tool call's `command` argument runs. A harness wraps a line as [shell, '-lc', script], so the
+ * script is the line. Any other array is shell-quoted rather than bare-joined, because each word has to stay one word:
+ * `psql -c DROP TABLE t` reads as no SQL at all. A value that is neither of these throws, for the adapter to fail
+ * closed: reading it as no command would turn the guard off for that call.
+ */
+export function commandLineOf(command: unknown): string {
+    if (typeof command === 'string') return command;
+    if (!command) return '';
+    if (!Array.isArray(command) || command.some(word => typeof word !== 'string')) {
+        throw new Error('BLOCKED: Command guard failed closed: `command` is not a string or an array of strings.');
+    }
+    const words: string[] = command;
+    const shell = basename(words[0] ?? '');
+    const script = SHELLS.has(shell) ? shellScript(shell, words.slice(1)) : null;
+    if (script && script.rest === words.length - 1) return script.text;
+    return words.map(w => /^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`).join(' ');
+}
+
 /** The command `words` (a command word and its arguments, as xargs or find -exec take them) runs, past any wrapper. */
 function innerCommand(words: string[], outer: ResolvedCommand): ResolvedCommand | null {
     const [first, ...rest] = words;

@@ -18,6 +18,7 @@ import type { ToolUseInput } from '../lib/types';
 import {
     IS_NANOCLAW,
     approvalText,
+    commandLineOf,
     describeGate,
     evaluateBashCommand,
     evaluateGitCloneDestination,
@@ -30,7 +31,7 @@ import { evaluateEmailSend, evaluateEmailToolCall } from './email-gate-core';
 
 interface GuardToolInput extends ToolUseInput {
     tool_input: {
-        command?: string;
+        command?: unknown;
         [key: string]: unknown;
     };
 }
@@ -107,7 +108,7 @@ function main(): void {
             process.exit(0);
         }
 
-        const command = input.tool_input?.command || '';
+        const command = commandLineOf(input.tool_input?.command);
         if (!command) process.exit(0);
 
         // Runtime-independent evaluator order. Keep this in sync with the
