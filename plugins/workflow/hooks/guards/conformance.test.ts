@@ -31,6 +31,11 @@ import { checkEditProtection } from './file-protection-core';
 // Hard-block (never allowed): file-deletion primitives, shell-wrapper bypass,
 // protected-path rm.
 const BASH_BLOCK = [
+  'rm\\\n -rf /home/x',
+  'rm \\\n -rf /home/x',
+  'r\\\nm -rf /home/x',
+  'sudo\\\n rm -rf /home/x',
+  "bash\\\n -c 'rm -rf /'",
   // Bash brace-expands a word before running it, the command name included.
   'rm -rf {/etc,x}',
   '{rm,-rf,/etc}',
@@ -111,6 +116,24 @@ const BASH_BLOCK = [
 
 // Gated (require approval): destructive infra/DB/cloud/IaC/containers/dbt.
 const BASH_GATE = [
+  // Bash joins a backslash-newline before reading the word, inside a command name or argument alike.
+  'terraform\\\n destroy',
+  'terraform \\\n destroy',
+  'terraform\\\n\\\n destroy',
+  'ter\\\nraform destroy',
+  'terraform des\\\ntroy',
+  'sudo\\\n terraform destroy',
+  'x=$(terraform\\\n destroy)',
+  'git\\\n push --force',
+  'git push\\\n --force',
+  'git pu\\\nsh --force',
+  'git push --for\\\nce origin main',
+  'curl\\\n -X DELETE https://api.render.com/v1/postgres/dpg-example',
+  'curl -X\\\n DELETE https://api.render.com/v1/postgres/dpg-example',
+  'curl -X DELE\\\nTE https://api.render.com/v1/postgres/dpg-example',
+  'curl -X DELETE https://api.ren\\\nder.com/v1/postgres/dpg-example',
+  'wget\\\n --method=DELETE https://api.render.com/v1/postgres/dpg-example',
+  'snow sql -c prod -q "DROP TAB\\\nLE t"',
   'curl -X DELETE https://api.render.com/v1/postgres/dpg-example',
   'git push --force{,}',
   'git push origin {main,--force}',
@@ -277,6 +300,10 @@ const BASH_GATE = [
 // lease-protected force pushes (the sanctioned recovery the MCP git_push tool
 // uses), plain pushes, local branch ops, and `git stash push -f` (not a push).
 const BASH_ALLOW = [
+  'gi\\\nt status',
+  'terraform\\\n plan',
+  // A single-quoted backslash-newline stays as written, so this SQL says nothing destructive.
+  "snow sql -c prod -q 'DROP TAB\\\nLE t'",
   'curl https://api.render.com/v1/postgres/dpg-example',
   'mkdir -p src/{a,b}',
   'git clean -n {a,b} -f',

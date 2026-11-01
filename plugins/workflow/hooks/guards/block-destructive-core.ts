@@ -2706,10 +2706,10 @@ function wordValue(word: any): string {
 
 /**
  * A command name as bash runs it. Bash drops an unquoted backslash before looking the name up, so `\rm` (the usual way
- * to skip an `rm -i` alias) and `r\m` both run `rm`; the parser leaves the backslash in.
+ * to skip an `rm -i` alias) and `r\m` both run `rm`, and a backslash-newline joins the lines; the parser leaves both in.
  */
 function unescapeCommandWord(word: string): string {
-    return word.replace(/\\(.)/gs, '$1');
+    return word.replace(/\\\n/g, '').replace(/\\(.)/gs, '$1');
 }
 
 /** A command word as the rules match it: unescaped, and by basename, so `/bin/rm`, `/opt/homebrew/bin/rm` and `\rm` are all `rm`. */
