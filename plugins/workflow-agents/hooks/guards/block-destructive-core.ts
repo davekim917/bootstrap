@@ -30,9 +30,10 @@
  *
  * Known limitations:
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
- *   - A DELETE to the Render API is seen only from curl, wget, HTTPie and xh with the method and URL readable on
- *     the line. A script, a curl config file or variable, flags or a URL held in a variable the line doesn't prove,
- *     xargs supplying the URL, and a disguised URL all go through. Render's own roles are the real control
+ *   - A DELETE to the Render API is seen only from curl, wget, HTTPie and xh, with the method and URL written on the
+ *     client's own words or in a variable that a plain assignment or export on the line sets. Scripts, curl config
+ *     files and --variable, flags in a variable, loop variables, function arguments, declare, variables under $(...),
+ *     xargs or find, and disguised URLs all go through. Render's own roles are the real control
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
 import { accessSync, closeSync, lstatSync, constants as fsConstants, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
@@ -1976,6 +1977,8 @@ const RENDER_API_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs'
 const RENDER_API_URL = /^(?:--url=)?(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^/@]*@)?api\.render\.com\.?(?=[:/?#]|$)/i;
 // curl's single-letter options that take a value: in a bundle like -sSXDELETE, the first one owns the rest of the word.
 const CURL_VALUE_LETTERS = 'AbcCdDeEFHKmoPQrtTuUwxXyYz';
+// curl's long options whose value is free text, so a value can look like a flag. The list is the common ones, not all.
+const CURL_TEXT_OPTIONS = /^--(?:data(?:-\w+)?|json|form(?:-string)?|header|output|cookie|user-agent|referer)$/;
 const HTTP_VERB = /^(?:get|head|post|put|patch|delete|options)$/i;
 
 /** The method words a client's command line gives, in order; the last one wins. wget also takes its option cut short. */
@@ -1994,9 +1997,14 @@ function httpMethodWords(name: string, args: string[], urlAt: number): string[] 
             }
             continue;
         }
-        const startup = name === 'wget' ? /^(?:-\w*e|--exec\w*=)?\s*method\s*=\s*(.+)$/i.exec(a) : null;
+        if (name === 'curl' && CURL_TEXT_OPTIONS.test(a)) {
+            i++;
+            continue;
+        }
+        const startup = name === 'wget' ? /^(?:-\w*?e|--ex\w*=?)(.*)$/.exec(a) : null;
         if (startup) {
-            words.push(startup[1]);
+            const command = /^\s*method\s*=\s*(\S+)\s*$/i.exec(startup[1] || args[++i] || '');
+            if (command) words.push(command[1]);
             continue;
         }
         const [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, undefined];
@@ -2007,17 +2015,28 @@ function httpMethodWords(name: string, args: string[], urlAt: number): string[] 
     return words;
 }
 
+/** The transfers a client's line makes: curl's --next starts a new one, with its own method and URLs. */
+function httpTransfers(name: string, args: string[]): string[][] {
+    if (name !== 'curl') return [args];
+    const transfers: string[][] = [[]];
+    for (const a of args) {
+        if (a === '--next' || a === '-:') transfers.push([]);
+        else transfers.at(-1)!.push(a);
+    }
+    return transfers;
+}
+
 /**
  * Why a raw HTTP client's DELETE to the Render API stops for approval, or null. A variable counts only when the line
  * proves its value: a method or URL the guard can't read is left to run, since a wrongly held read is the worse failure.
  */
 export function renderApiDeleteReason(cmd: ResolvedCommand): string | null {
     if (!RENDER_API_CLIENTS.has(cmd.name)) return null;
-    const args = expandedEmitter(cmd)?.args ?? cmd.args;
-    const url = args.findIndex(a => RENDER_API_URL.test(a));
-    if (url < 0) return null;
-    const method = httpMethodWords(cmd.name, args, url).at(-1);
-    return method?.toUpperCase() === 'DELETE' ? `${RENDER_CHANGE_REASON} (DELETE to the Render API by ${cmd.name}).` : null;
+    const deletes = httpTransfers(cmd.name, expandedEmitter(cmd)?.args ?? cmd.args).some(args => {
+        const url = args.findIndex(a => RENDER_API_URL.test(a));
+        return url >= 0 && httpMethodWords(cmd.name, args, url).at(-1)?.toUpperCase() === 'DELETE';
+    });
+    return deletes ? `${RENDER_CHANGE_REASON} (DELETE to the Render API by ${cmd.name}).` : null;
 }
 
 const RENDER_RESOURCE_ID_IN_TEXT = new RegExp(String.raw`(?<![a-z0-9-])[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?(?![a-z0-9-])`, 'g');
