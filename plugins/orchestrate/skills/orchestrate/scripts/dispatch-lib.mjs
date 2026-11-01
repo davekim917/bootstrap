@@ -304,10 +304,11 @@ function callEffort(input) {
  * Claude Agent-tool input → the input to run, given a pick (or null) and which
  * of the call's explicit fields a human asked for (`pins`, from humanPins).
  *
- * A confident route sets `model` and `effort`, replacing whatever the calling
- * agent named itself; a field the human named is kept. Without a route the call
- * keeps its own choices. Effort always leaves as the Agent call's `effort`
- * field: current Claude Code does not apply a shim's `effort` frontmatter, so
+ * A confident route sets `model`, replacing whatever the calling agent named
+ * unless the human named it, and fills `effort` only when the call asks for
+ * none. Without a route the call keeps its own choices. Effort always leaves as
+ * the Agent call's `effort` field: current Claude Code does not apply a shim's
+ * `effort` frontmatter, so
  * a shim type alone runs at the default level. A named role (Explore, Plan,
  * any custom or plugin agent) is never rewritten: Claude Code gives a per-call
  * `model` precedence over the role's own `model` frontmatter (including
@@ -325,7 +326,7 @@ export function rewriteClaudeSpawn(input, picked, rubric, pins = {}) {
 
   if (route && !(out.model && pins.model)) out.model = route.model;
   const asked = callEffort(input);
-  let effort = asked && (pins.effort || !route) ? asked : route?.effort;
+  let effort = asked ?? route?.effort;
   const tier = out.model ? tierOf(rubric, 'claude', out.model) : undefined;
   if (effort && tier) effort = capEffort(effort, tier.maxEffort);
   if (effort) {
