@@ -4041,7 +4041,7 @@ function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | 
     if (cmd.args.some(a => a === '--' || a.includes('\\'))) return null;
     if (cmd.name === 'render') {
         const shape = renderShape(cmd.args);
-        return (shape ? shape.entry.kind === 'proof' && shape.operands.length === 1 : listed.has(cmd.args[1])) ? ids : null;
+        return (shape ? shape.entry.kind === 'proof' && shape.operands.length === 1 : !RENDER_EXPANDS.test(cmd.args[0]) && listed.has(cmd.args[1])) ? ids : null;
     }
     if (RENDER_API_CLIENTS.has(cmd.name)) return curlWordsAreKnown(cmd, RENDER_API_ANY_RESOURCE) ? ids : null;
     return pgStaysOnListedHost(cmd, ids, psqlrcAllowed) ? ids : null;
@@ -4053,6 +4053,8 @@ const isListedPgHost = (host: string | undefined, ids: string[]): boolean =>
 /** Whether a listed database is the client's one target, read as strictly as the scratch Postgres exemption reads it. */
 function pgStaysOnListedHost(cmd: ResolvedCommand, ids: string[], psqlrcAllowed: boolean): boolean {
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || LIBPQ_REDIRECT_ENV.some(k => LIVE_LOCAL_PG_HOST.env[k] !== undefined)) return false;
+    const line = cmd.script?.command;
+    if (line === undefined || changesShellState(line) || extractCommands(line).some(c => ENVIRONMENT_CHANGERS.has(c.name))) return false;
     if (!writtenArgs(cmd)?.every(isLiteralShellWord)) return false;
     const target = cmd.name === 'psql' ? psqlTarget(cmd.args) : cmd.name === 'dropdb' ? dropdbTarget(cmd.args) : null;
     return !!target && (psqlrcAllowed || target.noPsqlrc) && isListedPgHost(target.host, ids);
@@ -4060,6 +4062,8 @@ function pgStaysOnListedHost(cmd: ResolvedCommand, ids: string[], psqlrcAllowed:
 
 const renderDeletesDatastore = (cmd: ResolvedCommand): boolean =>
     cmd.name === 'dropdb' || RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '') || renderApiDeleteUrls(cmd).some(url => !RENDER_API_RESOURCE.test(url));
+
+type GatedStep = { cmd: ResolvedCommand; reason: string; outer: ResolvedCommand };
 
 /** What a step held on listed dev resources says instead of calling itself production. */
 function renderDevHoldReason(cmd: ResolvedCommand, reason: string): string {
@@ -6500,6 +6504,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
         if (commands.length > gated.length) {
             lines.push('', `Approving runs the whole command (${commands.length} steps), not only the step${gated.length > 1 ? 's' : ''} described here.`);
         }
+        if (gated.some(onProduction) && !lines[0].includes('production')) lines.unshift('Treat this as production: its target is not listed as dev.', '');
         lines.push(`Guard rule: ${clip(oneLine(reason), 200)}`);
         return { label: clip(label, CARD_LABEL_MAX_CHARS), summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
     } catch {
@@ -7163,6 +7168,11 @@ export function runNanoclawGate(
     return runGateRequest(command, reason, { action, onStageError, toolUseId, ...describeGate(command, reason, cwd) });
 }
 
+const heldOnDev = (step: GatedStep): boolean => step.cmd === step.outer && renderDevHeld(step.cmd) !== null;
+
+const onProduction = (step: GatedStep): boolean => step.reason.includes(CLIENT_PROGRAM_GATE)
+    || (!heldOnDev(step) && (step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || /\brender\b/.test(step.cmd.raw)));
+
 /**
  * Whether a step the gate stops on may change Render production: a render step, or one whose verdict came from a
  * render command it runs (a SQL client's shell escape, inline or from a file). A command the guard cannot read
@@ -7172,8 +7182,7 @@ export function changesProduction(command: string, cwd: string = currentWorkingD
     try {
         const commands = extractCommands(command);
         if (commands[0]?.script) commands[0].script.cwd = cwd;
-        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => step.reason.includes(CLIENT_PROGRAM_GATE)
-            || (!(step.cmd === step.outer && renderDevHeld(step.cmd) && !renderDeletesDatastore(step.cmd)) && (step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || /\brender\b/.test(step.cmd.raw))));
+        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => onProduction(step) || (heldOnDev(step) && renderDeletesDatastore(step.cmd)));
     } catch {
         return /\brender\b/.test(command);
     }

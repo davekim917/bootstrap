@@ -332,6 +332,45 @@ describe('a listed dev resource', () => {
         expect(evaluateBashCommand(command, { cwd: '/tmp' }).action).toBe('gate');
     });
 
+    test.each([
+        ['a variable verb on a dev service', `C="deploys create ${PROD} --commit"; render $C ${DEV}`],
+        ['a variable verb on a dev database', `C="postgres delete"; render $C ${DEV_DB} --confirm`],
+        ['a quoted variable verb', `render "$C" ${DEV}`],
+    ])('%s stays on the production gate', (_label, command) => {
+        const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(action).toBe('gate');
+        expect(reason).not.toContain('Held on dev');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test.each([
+        ['export', `export PGHOSTADDR=203.0.113.10; psql -h ${DEV_HOST} -d app -c 'delete from accounts'`],
+        ['export with -X', `export PGHOSTADDR=203.0.113.10; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['declare -x with -X', `declare -x PGHOSTADDR=203.0.113.10; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['set -a with -X', `set -a; PGHOSTADDR=203.0.113.10; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['a function named psql', `psql() { ./run; }; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+    ])('%s earlier on the line keeps psql on the production gate, with no -X refusal', (_label, command) => {
+        expect(evaluateBashCommand(command, { cwd: '/tmp' }).action).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test.each([
+        `dropdb -h ${PROD_DB}.example-postgres.render.com app`,
+        `psql -h ${PROD_DB}.example-postgres.render.com -d app -c 'delete from accounts'`,
+        `curl -X DELETE https://api.render.com/v1/postgres/${PROD_DB}`,
+        `curl -X DELETE https://api.render.com/v1/services/${PROD}`,
+    ])('the card for %s says production', command => {
+        expect(describeGate(command, 'gated', '/tmp').summary).toMatch(/production/i);
+    });
+
+    test.each([
+        `dropdb -h ${DEV_HOST} app`,
+        `curl -X DELETE https://api.render.com/v1/postgres/${DEV_DB}`,
+        `psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`,
+    ])('the card for %s never says production', command => {
+        expect(describeGate(command, 'gated', '/tmp').summary).not.toMatch(/production/i);
+    });
+
     test('psql on an unlisted Render host stays a production gate', () => {
         expect(changesProduction(`psql -h ${PROD_DB}.example-postgres.render.com -d app -c 'delete from accounts'`, '/tmp')).toBe(true);
     });
