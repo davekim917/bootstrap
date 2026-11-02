@@ -41,7 +41,8 @@ describe('a macro in the project', () => {
         ['a package macro named with its package', 'dbt run-operation pkg.tool'],
         ['a macro with no file, alone on the line', 'dbt run-operation a_dbt_builtin'],
         ['a macro named through a variable', 'dbt run-operation "$M"'],
-        ['an unknown option whose value is not the macro', 'dbt run-operation --some-new-flag drops reads'],
+        ['an option before a read-only macro', 'dbt run-operation --threads 1 reads'],
+        ['a known option whose value matches a macro', 'dbt run-operation reads --target drops'],
     ])('%s runs with no card', (_label, command) => {
         expect(inProject(command).action).toBe('allow');
     });
@@ -54,6 +55,10 @@ describe('a macro in the project', () => {
         ['a package macro', 'dbt run-operation wipe', 'drop schema'],
         ['a package macro named with its package', 'dbt run-operation pkg.wipe', 'drop schema'],
         ['a project named by --project-dir', `cd /tmp && dbt run-operation drops --project-dir PROJECT`, 'DROP TABLE'],
+        ['a switch before the name', 'dbt run-operation --quiet drops', 'DROP TABLE'],
+        ['an unknown option before the name', 'dbt run-operation --future-option on drops', 'DROP TABLE'],
+        ['an option with a value before the name', 'dbt run-operation --threads 1 drops', 'DROP TABLE'],
+        ['a run from a folder inside the project', 'cd PROJECT/macros/ops && dbt run-operation drops', 'DROP TABLE'],
     ])('%s gates and names what it runs', (_label, command, statement) => {
         const verdict = evaluateBashCommand(command.replace('PROJECT', project), { cwd: project });
         expect(verdict.action).toBe('gate');

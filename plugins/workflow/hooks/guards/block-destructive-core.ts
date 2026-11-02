@@ -6076,23 +6076,26 @@ const SQL_BUILT_DROP = /["']\s*drop\s*["']/i;
 const DBT_DRY_RUN_ARG = /(?:^|[{,\s])["']?dry_run["']?\s*:\s*["']?true["']?\s*[,}]/i;
 const DBT_FLAT_ARGS = /^\s*\{[^{}[\]$`]*\}\s*$/;
 
-/** The macro a `dbt run-operation` step names, or null when the line doesn't show it. */
-function dbtMacroName(args: string[]): string | null {
+/** The macros a `dbt run-operation` step may name: an option the guard doesn't know could take the next word or not. */
+function dbtMacroNames(args: string[]): string[] {
+    const names: string[] = [];
     for (let i = args.indexOf('run-operation') + 1; i < args.length; i++) {
         const word = args[i];
-        if (!word.startsWith('-')) return /^[\w.]+$/.test(word) ? word.split('.').pop()! : null;
         if (DBT_VALUE_FLAGS.has(word)) i++;
-        else if (!word.includes('=')) return null;
+        else if (/^[A-Za-z_][\w.]*$/.test(word)) names.push(word.split('.').pop()!);
     }
-    return null;
+    return names;
 }
 
 /** Every macro definition under the project's macro paths and packages, or null when the project can't be read. */
 function dbtProjectMacros(cmd: ResolvedCommand): string[] | null {
     const env = cmd.env?.find(e => e.startsWith('DBT_PROJECT_DIR='))?.slice('DBT_PROJECT_DIR='.length);
-    const dirs = sqlPathCandidates(flagValue(cmd.args, ['--project-dir']) ?? env ?? process.env.DBT_PROJECT_DIR ?? '.', cmd);
-    const dir = dirs?.find(d => existsSync(join(d, 'dbt_project.yml')));
-    if (!dirs || dirs.length !== 1 || !dir) return null;
+    const named = flagValue(cmd.args, ['--project-dir']) ?? env ?? process.env.DBT_PROJECT_DIR;
+    const dirs = sqlPathCandidates(named ?? '.', cmd);
+    if (dirs?.length !== 1) return null;
+    let dir = dirs[0];
+    while (!named && !existsSync(join(dir, 'dbt_project.yml')) && dirname(dir) !== dir) dir = dirname(dir);
+    if (!existsSync(join(dir, 'dbt_project.yml'))) return null;
     const project = readConfigFile(join(dir, 'dbt_project.yml')) ?? '';
     const paths = /^macro-paths:\s*\[(.*)\]\s*$/m.exec(project)?.[1]?.match(/[\w./-]+/g) ?? (/^macro-paths:/m.test(project) ? null : ['macros']);
     if (!paths) return null;
@@ -6124,14 +6127,16 @@ function macroSqlTexts(macro: string): string[] {
 }
 
 function dbtMacroReason(cmd: ResolvedCommand): string | null {
-    const name = dbtMacroName(cmd.args);
-    if (!name) return null;
+    const names = dbtMacroNames(cmd.args);
+    if (!names.length) return null;
+    const definition = new RegExp(`^\\{%-?\\s*macro\\s+(${names.join('|')})\\s*\\(`);
     const line = cmd.script?.command ?? cmd.raw;
     const project = dbtProjectMacros(cmd);
     const named = [...line.match(JINJA_MACRO) ?? [], ...project ?? []]
         .map(macro => macro.replace(/\{#[\s\S]*?#\}/g, ' '))
-        .filter(macro => new RegExp(`^\\{%-?\\s*macro\\s+${name}\\s*\\(`).test(macro));
+        .filter(macro => definition.test(macro));
     for (const macro of named) {
+        const name = definition.exec(macro)![1];
         for (const text of macroSqlTexts(macro)) {
             const found = text.trim() ? findDestructiveSqlStatement(text) : null;
             if (found) return `dbt macro ${name} runs destructive SQL: ${found.statement}`;
@@ -6146,7 +6151,7 @@ function dbtMacroReason(cmd: ResolvedCommand): string | null {
     }
     // A macro missing on a line that does nothing else is dbt's own, or a typo, so refusing it would refuse the retry too.
     const others = (cmd.script?.links.size ?? 1) - (cmd.script?.cds.length ?? 0);
-    return project && !named.length && others > 1 ? `dbt macro ${name} is ${DBT_MACRO_MISSING}, so what it runs can't be checked.` : null;
+    return project && !named.length && others > 1 ? `dbt macro ${names[0]} is ${DBT_MACRO_MISSING}, so what it runs can't be checked.` : null;
 }
 
 function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
