@@ -142,7 +142,7 @@ const XML_ENTITIES = { '&lt;': '<', '&gt;': '>', '&quot;': '"', '&amp;': '&' };
  */
 function addressedEnvelopes(text) {
   return [...text.replace(THREAD_CONTEXT, '').matchAll(ENVELOPE)]
-    .filter(([, attrs]) => !/\bsender_id="system"/.test(attrs) && !/\bfrom="unknown:agent:/.test(attrs))
+    .filter(([, attrs]) => !/\bsender_id="system"|\bsender_is_bot="true"|\bfrom="unknown:agent:/.test(attrs))
     .map(([, , body]) => body.replace(QUOTED_MESSAGE, '').replace(/&(?:lt|gt|quot|amp);/g, (e) => XML_ENTITIES[e]));
 }
 
@@ -152,8 +152,8 @@ function addressedEnvelopes(text) {
  * turns left empty by that. On the host every remaining record is one turn.
  * In a NanoClaw session people only ever reach the agent as `<message>`
  * envelopes, so each envelope addressed to the agent is its own turn and
- * nothing else is: thread context the agent was not addressed in, system and
- * agent senders, tasks and runner notices yield none. An unreadable transcript
+ * nothing else is: thread context the agent was not addressed in, system,
+ * agent and bot senders, tasks and runner notices yield none. An unreadable transcript
  * has no turns.
  */
 export function humanTurns(transcriptPath, { container = 'NANOCLAW_ASSISTANT_NAME' in process.env } = {}) {
