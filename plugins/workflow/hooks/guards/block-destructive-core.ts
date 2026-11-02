@@ -1202,6 +1202,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     // Read each file, plus any text the command writes to it first; follow
     // includes found in what is read, up to a fixed number of files.
     let unreadable: string | null = traceOver ? 'its piped input' : null;
+    const commandFiles = new Set(files);
     const pending = [...preludes, ...files];
     for (const t of texts) pending.push(...sqlIncludes(t, null));
     const seen = new Set<string>();
@@ -1222,8 +1223,11 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
             continue;
         }
         // A path a variable names is one the agent chose at run time, so it must exist and stay in the working tree.
-        if (candidates && /[$`]/.test(f) && !writes.length && !candidates.every(path => inWorkingTree(path, cmd.script?.cwd))) {
-            unreadable ??= `${f}, ${candidates.some(path => existsSync(path)) ? 'a file that is missing or outside the working tree' : SQL_PATH_MISSING}`;
+        // A file snow is told to run that isn't there may be generated on the line, past this check.
+        const named = /[$`]/.test(f);
+        if (candidates && !writes.length) {
+            if ((named || (cmd.name === 'snow' && commandFiles.has(f))) && !candidates.some(path => existsSync(path))) unreadable ??= `${f}, ${SQL_PATH_MISSING}`;
+            else if (named && !candidates.every(path => inWorkingTree(path, cmd.script?.cwd))) unreadable ??= `${f}, a file that is missing or outside the working tree`;
         }
         for (const written of writes.map(w => flattenInput(w, cmd.script))) {
             if (written.over || !spendTrace(cmd.script, textSize(written.texts) + written.catFiles.length)) {

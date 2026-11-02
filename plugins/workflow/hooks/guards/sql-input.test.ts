@@ -183,11 +183,13 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
     ]) {
         expect(evaluateBashCommand(command, { cwd: '/tmp' }).reason ?? '').toContain("can't be checked");
     }
+    const readable = join(dir, 'already-there.sql');
+    writeFileSync(readable, 'select 1;');
     for (const command of [
-        `snow sql -f /tmp/sql-input-never-written.sql | tail -1`,
-        `snow sql -f /tmp/sql-input-never-written.sql; python3 gen.py`,
+        `snow sql -f ${readable} | tail -1`,
+        `snow sql -f ${readable}; python3 gen.py`,
         `snow sql -q "describe table a.b.c" < /dev/null | python3 -c "import json"`,
-        `snow sql -q "select 1"; snow sql -f /tmp/sql-input-never-written.sql`,
+        `snow sql -q "select 1"; snow sql -f ${readable}`,
     ]) {
         expect(verdict(command)).toBe('allow');
     }
@@ -241,14 +243,17 @@ describe('a SQL file named through a value on the line', () => {
     test.each([
         ['a file that is not there', `D=DIR/loop; ${snow('$D/missing.sql')}`],
         ['a file a program generates on the line', `F=DIR/loop/generated.sql; python3 gen.py; timeout 500 ${snow('"$F"')} | tail -5`],
+        ['a written-out path that is not there', snow('DIR/loop/missing.sql')],
+        ['a written-out path a program generates on the line', `python3 gen.py; ${snow('DIR/loop/generated.sql')} | tail -5`],
     ])('%s is refused with the next-call fix', (_label, command) => {
         const refused = evaluateBashCommand(command.replace('DIR', dir), { cwd: dir });
         expect(refused.action).toBe('block');
         expect(refused.reason).toContain('run it in the next');
     });
 
-    test('a file that is not there keeps its card on another client', () => {
+    test('a file that is not there keeps its card on another client, and a written-out one still runs there', () => {
         expect(inDir(`D=DIR/loop; psql -h db.example -f $D/missing.sql`)).toBe('gate');
+        expect(inDir(`psql -h db.example -f DIR/loop/missing.sql`)).toBe('allow');
     });
 
     test.each([
