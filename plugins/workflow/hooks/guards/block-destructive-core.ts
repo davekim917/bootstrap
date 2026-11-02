@@ -4011,7 +4011,7 @@ function renderDevRead(args: string[], listed: Set<string>): string | null {
     for (let i = 0; i < flags.length; i += 2) {
         const value = flags[i + 1];
         // psql runs a backslash command as its own program, so only plain SQL counts.
-        if (/^(?:-c|--command)$/.test(flags[i]) && value !== undefined && !value.includes('\\') && value.search(COPY_PROGRAM) < 0) sql++;
+        if (/^(?:-c|--command)$/.test(flags[i]) && value !== undefined && !value.includes('\\')) sql++;
         else if (!output(flags[i], value)) return null;
     }
     return sql === 1 ? second : null;
@@ -4023,14 +4023,22 @@ function runsAlone(cmd: ResolvedCommand): boolean {
     return line !== undefined && !changesShellState(line) && extractCommands(line).length === 1;
 }
 
+/** Whether what runs can differ from what the line shows: a path or prefix, an earlier change on the line, or SQL that runs a program. */
+function programCanDiffer(cmd: ResolvedCommand): boolean {
+    const line = cmd.script?.command;
+    return line === undefined || !!cmd.env?.length || new RegExp(`(?:^|\\s)\\S*/${cmd.name}\\s`).test(cmd.raw)
+        || changesShellState(line) || extractCommands(line).some(c => ENVIRONMENT_CHANGERS.has(c.name))
+        || cmd.args.some(a => a.search(COPY_PROGRAM) >= 0);
+}
+
 function renderDevTarget(cmd: ResolvedCommand): string | null {
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
-    if ((cmd.env ?? []).length || (cmd.args[0] === 'psql' && !runsAlone(cmd))) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const args = renderLiteralArgs(cmd);
     const accepts = (r: string) => listed.has(r);
-    const read = args.some(a => RENDER_EXPANDS.test(a)) ? null : renderDevRead(args, listed);
+    const unread = args.some(a => RENDER_EXPANDS.test(a)) || programCanDiffer(cmd) || (cmd.args[0] === 'psql' && !runsAlone(cmd));
+    const read = unread ? null : renderDevRead(args, listed);
     const target = read && renderResourceIds(args).every(accepts) ? read : renderProvenTarget({ ...cmd, args }, accepts);
     return target ? `render resource ${target}` : null;
 }
@@ -4041,13 +4049,12 @@ function renderExpansionsAreSql(cmd: ResolvedCommand): boolean {
     const words = renderWords(cmd);
     const quoted = (part: any) => part?.type === 'SingleQuoted' || part?.type === 'DoubleQuoted';
     return !!words && cmd.args.every((a, i) => !RENDER_EXPANDS.test(a)
-        || (cmd.args[0] === 'psql' && /^(?:-c|--command)$/.test(cmd.args[i - 1] ?? '') && !a.includes('@') && !!words[i].parts?.length && words[i].parts.every(quoted)));
+        || (cmd.args[0] === 'psql' && /^(?:-c|--command)$/.test(cmd.args[i - 1] ?? '') && !a.startsWith('$') && !a.includes('@') && !!words[i].parts?.length && words[i].parts.every(quoted)));
 }
 
 /** The listed dev resources a held step acts on, when every resource it names is listed; null names no dev resource it can be sure of. */
 function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
-    // A prefix or a path can change what the client reads, or which program runs.
-    if (!cmd.raw.startsWith(`${cmd.name} `)) return null;
+    if (!cmd.raw.startsWith(`${cmd.name} `) || programCanDiffer(cmd)) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
     if (!ids.length || !ids.every(id => listed.has(id))) return null;
@@ -4068,8 +4075,6 @@ const isListedPgHost = (host: string | undefined, ids: string[]): boolean =>
 /** Whether a listed database is the client's one target, read as strictly as the scratch Postgres exemption reads it. */
 function pgStaysOnListedHost(cmd: ResolvedCommand, ids: string[], psqlrcAllowed: boolean): boolean {
     if (cmd.chdir !== undefined || LIBPQ_REDIRECT_ENV.some(k => LIVE_LOCAL_PG_HOST.env[k] !== undefined)) return false;
-    const line = cmd.script?.command;
-    if (line === undefined || changesShellState(line) || extractCommands(line).some(c => ENVIRONMENT_CHANGERS.has(c.name))) return false;
     if (!writtenArgs(cmd)?.every(isLiteralShellWord)) return false;
     const target = cmd.name === 'psql' ? psqlTarget(cmd.args) : cmd.name === 'dropdb' ? dropdbTarget(cmd.args) : null;
     return !!target && (psqlrcAllowed || target.noPsqlrc) && isListedPgHost(target.host, ids);
@@ -6519,7 +6524,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
         if (commands.length > gated.length) {
             lines.push('', `Approving runs the whole command (${commands.length} steps), not only the step${gated.length > 1 ? 's' : ''} described here.`);
         }
-        if (gated.some(onProduction) && !lines[0].includes('production')) lines.unshift('Treat this as production: its target is not listed as dev.', '');
+        if (gated.some(onProduction) && !lines[0].includes('treat it as production')) lines.unshift('Treat this as production: its target is not listed as dev.', '');
         lines.push(`Guard rule: ${clip(oneLine(reason), 200)}`);
         return { label: clip(label, CARD_LABEL_MAX_CHARS), summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
     } catch {

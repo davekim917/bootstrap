@@ -343,6 +343,15 @@ describe('a listed dev resource', () => {
         ['a glob after the dev id', `render ssh ${DEV} *`],
         ['an unquoted variable as a flag value', `render psql ${DEV_DB} -c $X`],
         ['a variable behind a wrapper', `timeout 5 render ssh ${DEV} $X`],
+        ['a changed path', `PATH=/tmp/x render ssh ${DEV}`],
+        ['a startup file named in the environment', `PSQLRC=evil.rc render psql ${DEV_DB}`],
+        ['an earlier export', `export PATH=/tmp/x; render ssh ${DEV}`],
+        ['an earlier alias', `alias render=./x; render ssh ${DEV}`],
+        ['a sourced file', `source x.sh; render ssh ${DEV}`],
+        ['a function named render', `render() { ./x; }; render ssh ${DEV}`],
+        ['a program run from SQL', `render psql ${DEV_DB} -c "copy (select 1) to program 'id'"`],
+        ['SQL held whole in a variable', `render psql ${DEV_DB} -c "$SQL"`],
+        ['SQL from a substitution', `render psql ${DEV_DB} --command "$(cat q.sql)"`],
         ['a quoted variable after a switch', `X=${PROD}; render restart ${DEV} --confirm "$X"`],
         ['a quoted variable after SQL', `render psql ${DEV_DB} -c '-- note' "$X"`],
         ['every argument as SQL', `render psql ${DEV_DB} -c "$@"`],
@@ -383,6 +392,12 @@ describe('a listed dev resource', () => {
         ['output run as a script', `render psql ${DEV_DB} -c "select 'x'" -o text | sh`],
         ['output as a URL', `curl -X DELETE "$(render psql ${DEV_DB} -c "select 'x'" -o text)"`],
         ['output fed to xargs', `render psql ${DEV_DB} -c 'select 1' -o text | xargs curl -X DELETE`],
+        ['a program run from SQL behind a comment', `render psql ${DEV_DB} -c "copy t to /*x*/ program 'id'"`],
+        ['a relative program', `./render psql ${DEV_DB} -c 'select 1'`],
+        ['an absolute program', `/tmp/x/render psql ${DEV_DB} -c 'select 1'`],
+        ['a relative program listing', `./render deploys list ${DEV}`],
+        ['an earlier export', `export PATH=/tmp/x; render deploys list ${DEV}`],
+        ['a function named render', `render() { ./x; }; render deploys list ${DEV}`],
     ])('render psql with %s does not run freely', (_label, command) => {
         expect(evaluateBashCommand(command, { cwd: '/tmp' }).action).not.toBe('allow');
     });
@@ -407,8 +422,10 @@ describe('a listed dev resource', () => {
         `psql -h ${PROD_DB}.example-postgres.render.com -d app -c 'delete from accounts'`,
         `curl -X DELETE https://api.render.com/v1/postgres/${PROD_DB}`,
         `curl -X DELETE https://api.render.com/v1/services/${PROD}`,
+        `dropdb -h ${PROD_DB}.example-postgres.render.com production`,
+        `psql -h ${PROD_DB}.example-postgres.render.com -X -c 'drop table production'`,
     ])('the card for %s says production', command => {
-        expect(describeGate(command, 'gated', '/tmp').summary).toMatch(/production/i);
+        expect(describeGate(command, 'gated', '/tmp').summary).toMatch(/treat (?:this|it) as production/i);
     });
 
     test.each([
