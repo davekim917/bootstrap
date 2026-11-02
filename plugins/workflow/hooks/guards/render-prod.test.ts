@@ -343,12 +343,52 @@ describe('a listed dev resource', () => {
         ['a glob after the dev id', `render ssh ${DEV} *`],
         ['an unquoted variable as a flag value', `render psql ${DEV_DB} -c $X`],
         ['a variable behind a wrapper', `timeout 5 render ssh ${DEV} $X`],
-        ['a quoted flag value behind a wrapper', `timeout 5 render psql ${DEV_DB} -x "$X"`],
+        ['a quoted variable after a switch', `X=${PROD}; render restart ${DEV} --confirm "$X"`],
+        ['a quoted variable after SQL', `render psql ${DEV_DB} -c '-- note' "$X"`],
+        ['every argument as SQL', `render psql ${DEV_DB} -c "$@"`],
+        ['a quoted variable after a -c that is not SQL', `render restart ${DEV} -c "$X"`],
+        ['an array as SQL', `render psql ${DEV_DB} -c "\${A[@]}"`],
+        ['quoted SQL behind a wrapper', `timeout 5 render psql ${DEV_DB} -c "select $X"`],
     ])('%s stays on the production gate', (_label, command) => {
         const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
         expect(action).toBe('gate');
         expect(reason).not.toContain('Held on dev');
         expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    describe('a raw DELETE on a listed service that something else on the line can redirect', () => {
+        const URL = `https://api.render.com/v1/services/${DEV}/env-vars/FOO`;
+        test.each([
+            ['a config directory', `CURL_HOME=/tmp/x curl -X DELETE ${URL}`],
+            ['a home directory', `HOME=/tmp/x curl -X DELETE ${URL}`],
+            ['env', `env CURL_HOME=/tmp/x curl -X DELETE ${URL}`],
+            ['export', `export CURL_HOME=/tmp/x; curl -X DELETE ${URL}`],
+            ['sudo', `sudo CURL_HOME=/tmp/x curl -X DELETE ${URL}`],
+            ['a written config', `printf 'url=https://example.net\\n' > ~/.curlrc; curl -X DELETE ${URL}`],
+            ['a copied config', `cp prod.cfg ~/.curlrc && curl -X DELETE ${URL}`],
+            ['a relative program', `./curl -X DELETE ${URL}`],
+            ['an absolute program', `/tmp/x/curl -X DELETE ${URL}`],
+            ['a changed path', `PATH=/tmp/x curl -X DELETE ${URL}`],
+            ['a function named curl', `curl() { ./x; }; curl -X DELETE ${URL}`],
+        ])('%s keeps the production gate', (_label, command) => {
+            expect(evaluateBashCommand(command, { cwd: '/tmp' }).action).toBe('gate');
+            expect(changesProduction(command, '/tmp')).toBe(true);
+        });
+    });
+
+    test.each([
+        ['a startup file named in the environment', `PSQLRC=evil.rc render psql ${DEV_DB} -c 'select 1'`],
+        ['the same through env', `env PSQLRC=evil.rc render psql ${DEV_DB} -c 'select 1'`],
+        ['a program run from SQL', `render psql ${DEV_DB} -c "copy (select 1) to program 'id'"`],
+        ['output run as a script', `render psql ${DEV_DB} -c "select 'x'" -o text | sh`],
+        ['output as a URL', `curl -X DELETE "$(render psql ${DEV_DB} -c "select 'x'" -o text)"`],
+        ['output fed to xargs', `render psql ${DEV_DB} -c 'select 1' -o text | xargs curl -X DELETE`],
+    ])('render psql with %s does not run freely', (_label, command) => {
+        expect(evaluateBashCommand(command, { cwd: '/tmp' }).action).not.toBe('allow');
+    });
+
+    test('a listing on a listed service can still be piped', () => {
+        expect(verdict(`render deploys list ${DEV} --limit 1 -o json | jq .`)).toBe('allow');
     });
 
     test.each([

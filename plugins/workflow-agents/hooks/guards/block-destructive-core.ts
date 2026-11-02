@@ -4015,15 +4015,22 @@ function renderDevRead(args: string[], listed: Set<string>): string | null {
     for (let i = 0; i < flags.length; i += 2) {
         const value = flags[i + 1];
         // psql runs a backslash command as its own program, so only plain SQL counts.
-        if (/^(?:-c|--command)$/.test(flags[i]) && value !== undefined && !value.includes('\\')) sql++;
+        if (/^(?:-c|--command)$/.test(flags[i]) && value !== undefined && !value.includes('\\') && value.search(COPY_PROGRAM) < 0) sql++;
         else if (!output(flags[i], value)) return null;
     }
     return sql === 1 ? second : null;
 }
 
+/** Whether this is the line's only command: anything else there can change what it reads, or take what it prints and act on it. */
+function runsAlone(cmd: ResolvedCommand): boolean {
+    const line = cmd.script?.command;
+    return line !== undefined && !changesShellState(line) && extractCommands(line).length === 1;
+}
+
 function renderDevTarget(cmd: ResolvedCommand): string | null {
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
+    if ((cmd.env ?? []).length || (cmd.args[0] === 'psql' && !runsAlone(cmd))) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const args = renderLiteralArgs(cmd);
     const accepts = (r: string) => listed.has(r);
@@ -4032,28 +4039,30 @@ function renderDevTarget(cmd: ResolvedCommand): string | null {
     return target ? `render resource ${target}` : null;
 }
 
-/** Whether each word the guard can't read is a quoted flag value: anywhere else it can be, or split into, another target or flag. */
-function renderExpansionsAreFlagValues(cmd: ResolvedCommand): boolean {
+/** Whether each word the guard can't read is quoted SQL for render psql: anywhere else it can be, or split into, another target or flag. */
+function renderExpansionsAreSql(cmd: ResolvedCommand): boolean {
     if (!cmd.args.some(a => RENDER_EXPANDS.test(a))) return true;
     const words = renderWords(cmd);
     const quoted = (part: any) => part?.type === 'SingleQuoted' || part?.type === 'DoubleQuoted';
     return !!words && cmd.args.every((a, i) => !RENDER_EXPANDS.test(a)
-        || (cmd.args[i - 1]?.startsWith('-') && !!words[i].parts?.length && words[i].parts.every(quoted)));
+        || (cmd.args[0] === 'psql' && /^(?:-c|--command)$/.test(cmd.args[i - 1] ?? '') && !a.includes('@') && !!words[i].parts?.length && words[i].parts.every(quoted)));
 }
 
 /** The listed dev resources a held step acts on, when every resource it names is listed; null names no dev resource it can be sure of. */
 function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
+    // A prefix or a path can change what the client reads, or which program runs.
+    if (!cmd.raw.startsWith(`${cmd.name} `)) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
     if (!ids.length || !ids.every(id => listed.has(id))) return null;
     // `--` hands psql or ssh its own arguments, and a backslash runs a program, so either can leave the named resource.
     if (cmd.args.some(a => a === '--' || a.includes('\\'))) return null;
     if (cmd.name === 'render') {
-        if (!renderExpansionsAreFlagValues(cmd)) return null;
+        if (!renderExpansionsAreSql(cmd)) return null;
         const shape = renderShape(cmd.args);
         return (shape ? shape.entry.kind === 'proof' && shape.operands.length === 1 : !RENDER_EXPANDS.test(cmd.args[0]) && listed.has(cmd.args[1])) ? ids : null;
     }
-    if (RENDER_API_CLIENTS.has(cmd.name)) return curlWordsAreKnown(cmd, RENDER_API_ANY_RESOURCE) ? ids : null;
+    if (RENDER_API_CLIENTS.has(cmd.name)) return runsAlone(cmd) && curlWordsAreKnown(cmd, RENDER_API_ANY_RESOURCE) ? ids : null;
     return pgStaysOnListedHost(cmd, ids, psqlrcAllowed) ? ids : null;
 }
 
@@ -4062,7 +4071,7 @@ const isListedPgHost = (host: string | undefined, ids: string[]): boolean =>
 
 /** Whether a listed database is the client's one target, read as strictly as the scratch Postgres exemption reads it. */
 function pgStaysOnListedHost(cmd: ResolvedCommand, ids: string[], psqlrcAllowed: boolean): boolean {
-    if ((cmd.env ?? []).length || cmd.chdir !== undefined || LIBPQ_REDIRECT_ENV.some(k => LIVE_LOCAL_PG_HOST.env[k] !== undefined)) return false;
+    if (cmd.chdir !== undefined || LIBPQ_REDIRECT_ENV.some(k => LIVE_LOCAL_PG_HOST.env[k] !== undefined)) return false;
     const line = cmd.script?.command;
     if (line === undefined || changesShellState(line) || extractCommands(line).some(c => ENVIRONMENT_CHANGERS.has(c.name))) return false;
     if (!writtenArgs(cmd)?.every(isLiteralShellWord)) return false;
