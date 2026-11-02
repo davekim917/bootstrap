@@ -265,32 +265,34 @@ describe('a listed dev resource', () => {
     });
 
     test('psql on a listed host is held without calling itself production', () => {
-        const command = `psql -h ${DEV_HOST} -d app -c 'delete from accounts'`;
+        const command = `psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`;
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(false);
     });
 
     test.each([
-        ['a variable', `psql -h ${DEV_HOST} "$DATABASE_URL" -c 'delete from accounts'`],
-        ['a URL as the database', `psql -h ${DEV_HOST} -d postgresql://prod.example.com/app -c 'delete from accounts'`],
-        ['a URL as a word', `psql -h ${DEV_HOST} postgresql://prod.example.com/app -c 'delete from accounts'`],
-        ['a connection string', `psql -h ${DEV_HOST} --dbname='host=prod.example.com' -c 'delete from accounts'`],
+        ['a variable', `psql -h ${DEV_HOST} -X "$DATABASE_URL" -c 'delete from accounts'`],
+        ['a URL as the database', `psql -h ${DEV_HOST} -X -d postgresql://prod.example.com/app -c 'delete from accounts'`],
+        ['a URL as a word', `psql -h ${DEV_HOST} -X postgresql://prod.example.com/app -c 'delete from accounts'`],
+        ['a connection string', `psql -h ${DEV_HOST} -X --dbname='host=prod.example.com' -c 'delete from accounts'`],
         ['a list of hosts', `psql -h ${DEV_HOST},prod.example.com -X -c 'delete from accounts'`],
-        ['a second host', `psql -h ${DEV_HOST} -h prod.example.com -c 'delete from accounts'`],
-        ['an option the guard does not know', `psql -h ${DEV_HOST} -o out.txt -c 'delete from accounts'`],
-        ['a long option the guard does not know', `psql -h ${DEV_HOST} --output=out.txt -c 'delete from accounts'`],
+        ['startup files on', `psql -h ${DEV_HOST} -d app -c 'delete from accounts'`],
+        ['a host override in the environment', `PGHOSTADDR=203.0.113.10 psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['a second host', `psql -h ${DEV_HOST} -h prod.example.com -X -c 'delete from accounts'`],
+        ['an option the guard does not know', `psql -h ${DEV_HOST} -X -o out.txt -c 'delete from accounts'`],
+        ['a long option the guard does not know', `psql -h ${DEV_HOST} -X --output=out.txt -c 'delete from accounts'`],
         ['another client', `redis-cli -h ${DEV_KV}.example-keyvalue.render.com FLUSHALL`],
         ['a maintenance connection string', `dropdb -h ${DEV_HOST} --maintenance-db=postgresql://prod.example.com/app app`],
-        ['no host flag', `psql postgresql://${DEV_HOST}/app -c 'delete from accounts'`],
-        ['a variable in the host', `psql -h "${DEV_HOST}$SUFFIX" -c 'delete from accounts'`],
+        ['no host flag', `psql -X postgresql://${DEV_HOST}/app -c 'delete from accounts'`],
+        ['a variable in the host', `psql -h "${DEV_HOST}$SUFFIX" -X -c 'delete from accounts'`],
     ])('psql on a listed host with %s stays a production gate', (_label, command) => {
         expect(changesProduction(command, '/tmp')).toBe(true);
     });
 
     test.each([
         ['spaced flags', `psql -h ${DEV_HOST} -U app -p 5432 -d app -X -c 'delete from accounts'`],
-        ['long flags', `psql --host=${DEV_HOST} --username=app --dbname=app --command='delete from accounts'`],
-        ['a database word', `psql -h ${DEV_HOST} app -c 'delete from accounts'`],
+        ['long flags', `psql --host=${DEV_HOST} --username=app --dbname=app --no-psqlrc --command='delete from accounts'`],
+        ['a database word', `psql -h ${DEV_HOST} -X app -c 'delete from accounts'`],
         ['dropdb', `dropdb -h ${DEV_HOST} app`],
     ])('psql on a listed host with %s is held as dev', (_label, command) => {
         expect(verdict(command)).toBe('gate');

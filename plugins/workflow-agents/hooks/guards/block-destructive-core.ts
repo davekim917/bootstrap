@@ -4044,33 +4044,18 @@ function renderDevHeld(cmd: ResolvedCommand): string[] | null {
         return (shape ? shape.entry.kind === 'proof' && shape.operands.length === 1 : listed.has(cmd.args[1])) ? ids : null;
     }
     if (RENDER_API_CLIENTS.has(cmd.name)) return curlWordsAreKnown(cmd, RENDER_API_ANY_RESOURCE) ? ids : null;
-    return (cmd.name === 'psql' || cmd.name === 'dropdb') && psqlStaysOnHost(cmd.args, ids) ? ids : null;
+    return pgStaysOnListedHost(cmd, ids) ? ids : null;
 }
 
-const PSQL_VALUE_FLAGS = /^(?:-[Up]|--username|--port)$/;
-const PSQL_NAME = /^\w[\w.-]*$/;
+const isListedPgHost = (host: string | undefined, ids: string[]): boolean =>
+    ids.some(id => !!host?.startsWith(`${id}.`) && /^[a-z0-9-]+-postgres\.render\.com$/.test(host.slice(id.length + 1)));
 
-const isListedPgHost = (host: string, ids: string[]): boolean =>
-    ids.some(id => host.startsWith(`${id}.`) && /^[a-z0-9-]+-postgres\.render\.com$/.test(host.slice(id.length + 1)));
-
-/** Whether a listed database is psql's one target: a connection string, another host or an unknown option could overrule its `-h` word. */
-function psqlStaysOnHost(args: string[], ids: string[]): boolean {
-    if (args.some(a => /[$`]/.test(a))) return false;
-    let hosts = 0;
-    for (let i = 0; i < args.length; i++) {
-        const [flag, inline] = args[i].startsWith('--') ? args[i].split(/=(.*)/s) : [args[i]];
-        if (flag === '-h' || flag === '--host') {
-            hosts++;
-            if (!isListedPgHost(inline ?? args[++i] ?? '', ids)) return false;
-        } else if (flag === '-c' || flag === '--command') {
-            if (inline === undefined) i++;
-        } else if (flag === '-d' || flag === '--dbname' || PSQL_VALUE_FLAGS.test(flag)) {
-            if (!PSQL_NAME.test(inline ?? args[++i] ?? '')) return false;
-        } else if (!/^-[AtqXw]+$/.test(flag) && !PSQL_NAME.test(flag)) {
-            return false;
-        }
-    }
-    return hosts === 1;
+/** Whether a listed database is the client's one target, read as strictly as the scratch Postgres exemption reads it. */
+function pgStaysOnListedHost(cmd: ResolvedCommand, ids: string[]): boolean {
+    if ((cmd.env ?? []).length || cmd.chdir !== undefined || LIBPQ_REDIRECT_ENV.some(k => LIVE_LOCAL_PG_HOST.env[k] !== undefined)) return false;
+    if (!writtenArgs(cmd)?.every(isLiteralShellWord)) return false;
+    const target = cmd.name === 'psql' ? psqlTarget(cmd.args) : cmd.name === 'dropdb' ? dropdbTarget(cmd.args) : null;
+    return !!target?.noPsqlrc && isListedPgHost(target.host, ids);
 }
 
 /** What a step held on listed dev resources says instead of calling itself production. */
