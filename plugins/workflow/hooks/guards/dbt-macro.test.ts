@@ -78,6 +78,7 @@ describe('a macro that builds its own drop statements', () => {
         ['a dry run beside a variable that could override it', `dbt run-operation sweep --args "{dry_run: true, $MORE}"`],
         ['a key that only ends in dry_run', `dbt run-operation sweep --args '{not_dry_run: true}'`],
         ['a dry run nested under another key', `dbt run-operation sweep --args '{"dry_run": false, "options": {"dry_run": true}}'`],
+        ['a repeated --args, where dbt keeps the last', `dbt run-operation sweep --args '{dry_run: true}' --args '{dry_run: false}'`],
         ['a dry run only under another key', `dbt run-operation sweep --args '{options: {dry_run: true}}'`],
         ['a repeated key, which leaves the real value unclear', `dbt run-operation sweep --args '{dry_run: true, dry_run: false}'`],
     ])('%s holds', (_label, command) => {
