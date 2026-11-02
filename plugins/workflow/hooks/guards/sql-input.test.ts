@@ -234,9 +234,21 @@ describe('a SQL file named through a value on the line', () => {
     test.each([
         ['a path outside the working tree', `D=/etc; ${snow('$D/hostname')}`],
         ['a symlink out of the working tree', `D=DIR/loop; ${snow('$D/outside.sql')}`],
-        ['a file that is not there', `D=DIR/loop; ${snow('$D/missing.sql')}`],
     ])('%s stays held', (_label, command) => {
         expect(inDir(command)).toBe('gate');
+    });
+
+    test.each([
+        ['a file that is not there', `D=DIR/loop; ${snow('$D/missing.sql')}`],
+        ['a file a program generates on the line', `F=DIR/loop/generated.sql; python3 gen.py; timeout 500 ${snow('"$F"')} | tail -5`],
+    ])('%s is refused with the next-call fix', (_label, command) => {
+        const refused = evaluateBashCommand(command.replace('DIR', dir), { cwd: dir });
+        expect(refused.action).toBe('block');
+        expect(refused.reason).toContain('run it in the next');
+    });
+
+    test('a file that is not there keeps its card on another client', () => {
+        expect(inDir(`D=DIR/loop; psql -h db.example -f $D/missing.sql`)).toBe('gate');
     });
 
     test.each([

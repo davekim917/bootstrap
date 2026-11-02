@@ -738,8 +738,8 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.27.0') {
-  fail(`bootstrap-workflow release must be version 5.27.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.27.1') {
+  fail(`bootstrap-workflow release must be version 5.27.1 (found ${claudeManifest?.version})`);
 }
 if (codexManifest?.version !== '2.27.0') {
   fail(`bootstrap-workflow-agents release must be version 2.27.0 (found ${codexManifest?.version})`);
