@@ -7598,7 +7598,14 @@ function noMergeStepReason(
         if (positional === null && repoOption !== undefined && UNKNOWN_WORD_RE.test(repoOption)) return unresolved('Pushing');
         const remote = positional ?? repoOption ?? null;
         if (remote && UNKNOWN_WORD_RE.test(remote)) return unresolved('Pushing');
-        // A push to a URL off GitHub reaches no listed repository.
+        if (scope === 'unreadable') return refused(null, 'Pushing');
+        // A recursive push also pushes each submodule to its own remote, wherever the parent goes, on a branch the guard
+        // can't read.
+        for (const sub of pushDir ? pushedSubmoduleRepos(cmd.args, pushDir) : []) {
+            if (sub === null) return unplaced('Pushing submodules');
+            if (scope.has(sub)) return refused(sub, 'Pushing submodules');
+        }
+        // The parent's own push to a URL off GitHub reaches no listed repository.
         if (remote && /^(?:[a-z+]+:\/\/|[^@\s]+@)/i.test(remote) && !/github\.com[/:]/i.test(remote)) return null;
         // With no remote named, git picks one from the branch's push or upstream config, so every remote may be it. Any
         // word that is not a URL is a configured remote's name (`team/upstream` included) or a local path, never `org/repo`.
@@ -7607,12 +7614,6 @@ function noMergeStepReason(
             : !pushDir ? [null]
             : remote ? [checkoutRemoteRepo(pushDir, remote)] : remotesOf(pushDir);
         const branches = pushedBranches(cmd.args, pushDir ? checkoutBranch(pushDir) : null);
-        if (scope === 'unreadable') return refused(null, 'Pushing');
-        // A recursive push also pushes each submodule to its own remote, on a branch the guard can't read.
-        for (const sub of pushDir ? pushedSubmoduleRepos(cmd.args, pushDir) : []) {
-            if (sub === null) return unplaced('Pushing submodules');
-            if (scope.has(sub)) return refused(sub, 'Pushing submodules');
-        }
         for (const repo of repos) {
             const protectedHere = repo !== null ? scope.get(repo) : undefined;
             if (protectedHere && (branches === null || branches.some(b => protectedHere.has(b)))) {

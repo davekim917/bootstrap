@@ -126,6 +126,12 @@ describe('a listed repository refuses every merge and protected-branch push', ()
             writeFileSync(join(parent, '.gitmodules'), '[submodule "core"]\n\tpath = core\n\turl = ../core.git\n');
             return parent;
         }],
+        ['a recursive push whose parent goes off GitHub', 'git push --recurse-submodules=on-demand file:///srv/mirror/parent.git master', () => {
+            const parent = join(dir, 'ours-with-sub-offgh');
+            checkout(parent, 'git@github.com:example/ours.git', 'master');
+            writeFileSync(join(parent, '.gitmodules'), '[submodule "core"]\n\tpath = core\n\turl = https://github.com/Acme/core.git\n');
+            return parent;
+        }],
         ['a fork sync through the REST endpoint', 'gh api -X POST repos/Acme/core/merge-upstream -f branch=master', () => theirs],
         ['a protected push whose positional remote outranks --repo', 'git push --repo=fork origin HEAD:master', () => {
             const forked = join(dir, 'core-with-fork');
