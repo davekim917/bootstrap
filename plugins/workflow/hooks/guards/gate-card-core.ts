@@ -449,6 +449,49 @@ export function shellUnquote(text: string): string {
     return evalWord(text, NO_VARIABLES, 0).value;
 }
 
+
+// Nothing on the command list runs a file. A note is a text format outside any dot-path, since tools read dot-paths as
+// configuration: a Markdown file under .claude/commands can hold shell lines.
+const NOTE_FILE = /^(?!(?:.*\/)?\.[^./])[\w@%+=:,./-]+\.(?:md|txt|log)$/;
+const NOTE_LINE_COMMANDS = new Set(['cat', 'cd', 'echo', 'true', ':', 'mkdir', 'date', 'ls', 'head', 'tail', 'wc']);
+
+/** The quoted heredoc of a step whose only writes are to note files, or null. */
+function storedHeredoc(node: any, command: string): any {
+    const heredoc = node.redirects.find((r: any) => r.operator === '<<' || r.operator === '<<-');
+    if (!heredoc?.heredocQuoted) return null;
+    const writes = node.redirects.filter((r: any) => r !== heredoc);
+    if (!writes.every((r: any) => r.operator === '>' || r.operator === '>>')) return null;
+    const files = writes.map((r: any) => command.slice(r.target.pos, r.target.end)).filter((f: string) => f !== '/dev/null');
+    return files.length && files.every((f: string) => NOTE_FILE.test(f)) ? heredoc : null;
+}
+
+/**
+ * `command` with the body removed from each quoted heredoc written to a note file, for the checks that scan raw text:
+ * a saved note quoting a command is not that command. It applies only when every step on the line comes from a short
+ * list that runs no file, with no substitution left once the bodies are gone. Anything else returns unchanged, whole:
+ * a heredoc that feeds a pipe, shell or client still reads as commands.
+ */
+export function withoutStoredHeredocs(command: string): string {
+    if (!HEREDOC_OPERATOR.test(command)) return command;
+    let script: any;
+    try {
+        script = parseShell(command);
+    } catch {
+        return command;
+    }
+    const steps = (script?.commands ?? []).flatMap((s: any) => (s.command?.type === 'AndOr' ? s.command.commands : [s.command]));
+    if (!steps.every((n: any) => n?.type === 'Command' && !n.prefix.length && NOTE_LINE_COMMANDS.has(n.name?.text))) return command;
+    let text = command;
+    for (const node of [...steps].reverse()) {
+        const heredoc = storedHeredoc(node, command);
+        if (!heredoc) continue;
+        const start = command.indexOf('\n', heredoc.end) + 1;
+        if (!command.startsWith(`${heredoc.content}${heredoc.target?.text}`, start)) return command;
+        text = text.slice(0, start) + text.slice(start + heredoc.content.length);
+    }
+    return /\\\n|\$[({]|`|[<>]\(/.test(text) ? command : text;
+}
+
 /**
  * Parse `command` into its simple commands and the variables it provably sets.
  * Only a top-level assignment counts, alone or in an `&&` chain (then only for
@@ -631,6 +674,16 @@ function bodyRoots(cwd: string | undefined): string[] {
  * email-shaped file under a working directory qualifies: never a dotfile, a
  * credential-looking path, or anything a symlink points outside those roots.
  */
+/** Whether a path, followed through any symlink, sits under the working directory or the agent's workspace. */
+export function inWorkingTree(path: string, cwd?: string): boolean {
+    try {
+        const real = realpathSync(path);
+        return bodyRoots(cwd).some(root => real === root || real.startsWith(`${root}${sep}`));
+    } catch {
+        return false;
+    }
+}
+
 export function readBodyFile(path: string, cwd?: string): string | null {
     let real: string;
     try {
