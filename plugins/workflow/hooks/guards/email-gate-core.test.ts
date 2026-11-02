@@ -846,6 +846,7 @@ describe('evaluateEmailSend — a quoted heredoc saved as a note is data', () =>
             `${note("cat > send.md <<'EOF'")}\nls | while read f; do bash "$f"; done`,
             `${note("cat > send.md <<'EOF'")}\necho "$(bash send.md)"`,
             `${note("cat > send.md <<'EOF'")}\necho \`bash send.md\``,
+            `${note("cat > send.md <<'EOF'")}\necho "$\\\n(bash send.md)"`,
             `${note("cat > send.md <<'EOF'")}\ncat <(bash send.md)`,
             `${note("cat > send.md <<'EOF'")}\nPATH=/tmp/x ls`,
         ]) {

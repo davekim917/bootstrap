@@ -489,7 +489,7 @@ export function withoutStoredHeredocs(command: string): string {
         if (!command.startsWith(`${heredoc.content}${heredoc.target?.text}`, start)) return command;
         text = text.slice(0, start) + text.slice(start + heredoc.content.length);
     }
-    return /\$\(|`|[<>]\(/.test(text) ? command : text;
+    return /\\\n|\$\(|`|[<>]\(/.test(text) ? command : text;
 }
 
 /**
