@@ -82,6 +82,9 @@ describe('which Slack calls stop for approval', () => {
         ['a post through a Slack host the environment already holds', 'acme', `curl "$SLACK_HOST/api/chat.postMessage" --json '{"channel":"C1","text":"hello"}'`, 'gate'],
         ['an unquoted host variable', 'acme', `curl $SLACK_HOST/api/chat.postMessage -d channel=C1 -d text=hello`, 'gate'],
         ['a listed identity posting through a trimmed base URL', undefined, `onecli run --agent ag-acme -- curl "\${SLACK_API%/}/chat.postMessage" --json '{"channel":"C1","text":"hi"}'`, 'gate'],
+        ['a listed identity posting with the method held in a variable', undefined, `METHOD=chat.postMessage; onecli run --agent ag-acme -- curl "$SLACK_API/$METHOD" --json '{"channel":"C1","text":"hello"}'`, 'gate'],
+        ['a post with the method held in a variable', 'acme', `METHOD=chat.postMessage\ncurl "$SLACK_API/$METHOD" --json '{"channel":"C1","text":"hello"}'`, 'gate'],
+        ['a method name in a script beside a curl of another variable URL', 'acme', `rg -n 'chat.postMessage' src/ && curl -sS "$STATUS_URL"`, 'allow'],
         ['a file path under a variable that only looks like a method', 'acme', `cat "$HOME/files.txt" "$LOGS/chat.log"`, 'allow'],
         ['a post run by a shell', 'acme', `bash -lc 'curl https://slack.com/api/chat.postMessage -d text=hello'`, 'gate'],
     ] as Array<[string, string | undefined, string, 'allow' | 'gate']>)('%s', (_label, workgroup, command, expected) => {

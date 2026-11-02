@@ -7278,9 +7278,15 @@ function exactSlackPost(command: string): SlackPost | null {
 // (`"$SLACK_HOST/api/chat.postMessage"`, `"${SLACK_API%/}/chat.postMessage"`: a base URL already in the environment).
 // A method name alone is often code or a search, not a call.
 const MAY_POST_TO_SLACK = /slack\.com|\$[^\s;&|]*?(?:chat|files)\.[A-Za-z]/;
+// A posting method held in its own variable (`METHOD=chat.postMessage; curl "$SLACK_API/$METHOD"`): the line assigns a
+// posting method and runs an HTTP client on a word only known at run time.
+const POST_METHOD_NAME_RE = new RegExp(`\\b\\w+=["']?[^\\s;&|]*\\b(?:${[...SLACK_POST_METHOD_NAMES].map(m => m.replace(/\./g, '\\.')).join('|')})\\b`);
+const CLIENT_ON_VARIABLE_RE = /(?:^|[\s;&|(/])(?:curl|wget|https?|xhs?)\s[^;&|\n]*[$`]/;
+const mayPostToSlack = (command: string): boolean =>
+    MAY_POST_TO_SLACK.test(command) || (POST_METHOD_NAME_RE.test(command) && CLIENT_ON_VARIABLE_RE.test(command));
 
 export function slackPostsOf(command: string): SlackPost[] {
-    if (!MAY_POST_TO_SLACK.test(command)) return [];
+    if (!mayPostToSlack(command)) return [];
     let commands: ResolvedCommand[];
     try {
         commands = extractCommands(command);
@@ -7317,7 +7323,7 @@ export function soleCommand(command: string): boolean {
 
 /** The Slack posts in a command that need their sender's OK under the send scope in force. */
 export function gatedSlackPosts(command: string, workgroupId: string | undefined = process.env.NANOCLAW_WORKGROUP_ID): SlackPost[] {
-    if (!MAY_POST_TO_SLACK.test(command)) return [];
+    if (!mayPostToSlack(command)) return [];
     const posts = slackPostsOf(command);
     if (posts.length === 0) return [];
     const scope = currentSendScope();
