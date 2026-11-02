@@ -7278,9 +7278,10 @@ function exactSlackPost(command: string): SlackPost | null {
  * by word; any other line that names a posting method is a post with no readable text under every identity the line may run under: each OneCLI agent it names, and the
  * session's own when any client runs unwrapped or the carrier isn't a client at all.
  */
-// A line that may post to Slack: it names the host, or a method after a variable (`"$SLACK_API/chat.postMessage"`, a
-// base URL already in the environment). A method name alone is often code or a search, not a call.
-const MAY_POST_TO_SLACK = /slack\.com|\$\{?\w+\}?["']?\/?(?:chat|files)\.[A-Za-z]/;
+// A line that may post to Slack: it names the host, or a method later in a word that expands a variable
+// (`"$SLACK_HOST/api/chat.postMessage"`, `"${SLACK_API%/}/chat.postMessage"`: a base URL already in the environment).
+// A method name alone is often code or a search, not a call.
+const MAY_POST_TO_SLACK = /slack\.com|\$[^\s;&|]*?(?:chat|files)\.[A-Za-z]/;
 
 export function slackPostsOf(command: string): SlackPost[] {
     if (!MAY_POST_TO_SLACK.test(command)) return [];
