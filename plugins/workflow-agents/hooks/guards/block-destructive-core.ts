@@ -5644,6 +5644,10 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (name === 'dbt' && ['run', 'build'].includes(args[0]) && args.includes('--full-refresh')) {
         return 'dbt --full-refresh drops and recreates tables.';
     }
+    if (name === 'dbt' && args.includes('run-operation')) {
+        const reason = dbtMacroReason(cmd);
+        if (reason) return reason;
+    }
 
     // ── dd (disk overwrite) ──────────────────────────────────────────────
 
@@ -6065,6 +6069,95 @@ function defaultDbtTarget(dir: string | undefined, cmd: ResolvedCommand): string
     return null;
 }
 
+const DBT_MACRO_MISSING = "a macro that isn't there yet";
+const DBT_VALUE_FLAGS = new Set(['--args', '--vars', '--target', '-t', '--profile', '--profiles-dir', '--project-dir', '--target-path', '--log-path']);
+const DBT_MACROS_MAX_FILES = 2000;
+const JINJA_MACRO = /\{%-?\s*macro\s+(\w+)\s*\([\s\S]*?\{%-?\s*endmacro\s*-?%\}/g;
+const JINJA_TAG = /\{%[\s\S]*?%\}|\{\{[\s\S]*?\}\}/g;
+const JINJA_STRING = /(["'])((?:\\.|(?!\1)[^\\])*)\1/g;
+const DBT_ADAPTER_WRITE = /\badapter\.(?:drop_relation|drop_schema|truncate_relation)\b/;
+const SQL_BUILT_DROP = /["']\s*drop\s*["']/i;
+const DBT_DRY_RUN_ARG = /(?:^|[{,\s])["']?dry_run["']?\s*:\s*["']?true["']?\s*[,}]/i;
+const DBT_FLAT_ARGS = /^\s*\{[^{}[\]$`]*\}\s*$/;
+
+/** The macros a `dbt run-operation` step may name: an option the guard doesn't know could take the next word or not. */
+function dbtMacroNames(args: string[]): string[] {
+    const names: string[] = [];
+    for (let i = args.indexOf('run-operation') + 1; i < args.length; i++) {
+        const word = args[i];
+        if (DBT_VALUE_FLAGS.has(word)) i++;
+        else if (/^[A-Za-z_][\w.]*$/.test(word)) names.push(word.split('.').pop()!);
+    }
+    return names;
+}
+
+/** Every macro definition under the project's macro paths and packages, or null when the project can't be read. */
+function dbtProjectMacros(cmd: ResolvedCommand): string[] | null {
+    const env = cmd.env?.find(e => e.startsWith('DBT_PROJECT_DIR='))?.slice('DBT_PROJECT_DIR='.length);
+    const named = flagValue(cmd.args, ['--project-dir']) ?? env ?? process.env.DBT_PROJECT_DIR;
+    const dirs = sqlPathCandidates(named ?? '.', cmd);
+    if (dirs?.length !== 1) return null;
+    let dir = dirs[0];
+    while (!named && !existsSync(join(dir, 'dbt_project.yml')) && dirname(dir) !== dir) dir = dirname(dir);
+    if (!existsSync(join(dir, 'dbt_project.yml'))) return null;
+    const project = readConfigFile(join(dir, 'dbt_project.yml')) ?? '';
+    const paths = /^macro-paths:\s*\[(.*)\]\s*$/m.exec(project)?.[1]?.match(/[\w./-]+/g) ?? (/^macro-paths:/m.test(project) ? null : ['macros']);
+    if (!paths) return null;
+    const pending = [...paths, 'dbt_packages'].map(p => join(dir, p));
+    const macros: string[] = [];
+    for (let seen = 0; pending.length; seen++) {
+        if (seen > DBT_MACROS_MAX_FILES) return null;
+        const path = pending.pop()!;
+        try {
+            const st = statSync(path);
+            if (st.isDirectory()) pending.push(...readdirSync(path).map(n => join(path, n)));
+            else if (path.endsWith('.sql') && st.size <= SQL_FILE_MAX_BYTES) macros.push(...readFileSync(path, 'utf-8').match(JINJA_MACRO) ?? []);
+        } catch {
+            continue;
+        }
+    }
+    return macros;
+}
+
+/**
+ * What a macro would run, for the SQL scanner. Its statements sit in Jinja strings (`run_query('DROP TABLE t')`), which
+ * the scanner reads as data, and in its template text, so each is handed over on its own. This doesn't render Jinja: a
+ * statement built by a macro it calls, or from pieces, isn't seen.
+ */
+function macroSqlTexts(macro: string): string[] {
+    const tags = macro.match(JINJA_TAG) ?? [];
+    const strings = tags.flatMap(tag => [...tag.matchAll(JINJA_STRING)].map(m => m[2]));
+    return [macro.replace(/\{%[\s\S]*?%\}/g, ' ; ').replace(/\{\{[\s\S]*?\}\}/g, 'x'), ...strings];
+}
+
+function dbtMacroReason(cmd: ResolvedCommand): string | null {
+    const names = dbtMacroNames(cmd.args);
+    if (!names.length) return null;
+    const definition = new RegExp(`^\\{%-?\\s*macro\\s+(${names.join('|')})\\s*\\(`);
+    const line = cmd.script?.command ?? cmd.raw;
+    const project = dbtProjectMacros(cmd);
+    const named = [...line.match(JINJA_MACRO) ?? [], ...project ?? []]
+        .map(macro => macro.replace(/\{#[\s\S]*?#\}/g, ' '))
+        .filter(macro => definition.test(macro));
+    for (const macro of named) {
+        const name = definition.exec(macro)![1];
+        for (const text of macroSqlTexts(macro)) {
+            const found = text.trim() ? findDestructiveSqlStatement(text) : null;
+            if (found) return `dbt macro ${name} runs destructive SQL: ${found.statement}`;
+        }
+        const adapter = DBT_ADAPTER_WRITE.exec(macro)?.[0];
+        if (adapter) return `dbt macro ${name} calls ${adapter}.`;
+        const [args = '', repeated] = flagValues(cmd.args, ['--args']);
+        const dryRun = !repeated && DBT_FLAT_ARGS.test(args) && args.match(/dry_run/gi)?.length === 1 && DBT_DRY_RUN_ARG.test(args);
+        if (SQL_BUILT_DROP.test(macro) && !dryRun) {
+            return `dbt macro ${name} builds DROP statements, and --args doesn't set dry_run true on the line.`;
+        }
+    }
+    // A macro missing on a line that does nothing else is dbt's own, or a typo, so refusing it would refuse the retry too.
+    const others = (cmd.script?.links.size ?? 1) - (cmd.script?.cds.length ?? 0);
+    return project && !named.length && others > 1 ? `dbt macro ${names[0]} is ${DBT_MACRO_MISSING}, so what it runs can't be checked.` : null;
+}
+
 function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
     const models = flagList(cmd.args, ['--select', '-s', '--models', '-m']);
     const selector = flagValue(cmd.args, ['--selector']);
@@ -6447,6 +6540,10 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves, fix: `${reason} Write each path out, or set it to a plain value on the same line (\`F=/path/query.sql; snow sql -f "$F"\`), and the guard reads the files first.` };
                 continue;
             }
+            if (cmd.name === 'dbt' && reason.includes(DBT_MACRO_MISSING)) {
+                yield { cmd, reason, outer, moves, fix: `${reason} Write the macro in one call, then run it in the next, and the guard reads it first.` };
+                continue;
+            }
             if (cmd.name === 'snow' && reason.includes(SQL_PATH_MISSING)) {
                 yield { cmd, reason, outer, moves, fix: `${reason} Write the file in one call, then run it in the next with its path written out, and the guard reads it first.` };
                 continue;
@@ -6509,7 +6606,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             const dirBefore = directoryBefore(raw, outer, moves);
             const step: StepCard =
                 sqlDialect ? sqlStep(sqlDialect, cmd)
-                : cmd.name === 'dbt' ? dbtStep(cmd, dirBefore)
+                : cmd.name === 'dbt' && !cmd.args.includes('run-operation') ? dbtStep(cmd, dirBefore)
                 : cmd.name === 'git-clean' ? gitCleanStep({ ...cmd, args: ['clean', ...cmd.args] })
                 : cmd.name === 'git' ? (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean' ? gitCleanStep(cmd) : gitPushStep(cmd))
                 : cmd.name === 'aws' ? awsStep(cmd)
