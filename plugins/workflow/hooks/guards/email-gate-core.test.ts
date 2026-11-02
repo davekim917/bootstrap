@@ -761,3 +761,120 @@ describe('purity — no I/O imports', () => {
         expect([...EMAIL_BYPASS_FLAGS].sort()).toEqual(['--draft', '--dry-run', '--help', '-h']);
     });
 });
+
+describe('evaluateEmailSend — a quoted heredoc saved as a note is data', () => {
+    const SEND = 'gws gmail +send --to a@example.com --subject x --body y';
+    const note = (open: string, body = SEND) => `${open}\n${body}\nEOF`;
+    const verdict = (command: string) => [command, evaluateEmailSend(command, INTERACTIVE).action];
+
+    test('a saved note quoting a send asks nobody', () => {
+        for (const command of [
+            `cd /workspace/notes && ${note("cat >> STATE.md <<'EOF'")}\necho ok`,
+            note("cat > note.txt <<'EOF'"),
+            note("cat <<'EOF' > run.log"),
+            note('cat > note.md <<"EOF"'),
+            note('cat > note.md <<\\EOF'),
+            note("cat >> /workspace/notes/a.md <<'EOF'"),
+            note("cat >> ../note.md <<'EOF'"),
+            note("cat >> ./notes/../a.md <<'EOF'"),
+            note("cat > note.md <<'EOF' 2>/dev/null"),
+            `mkdir -p n && ${note("cat > n/a.md <<'EOF'")}\ntail -3 n/a.md`,
+            `${note("cat > a.md <<'EOF'")}\n${note("cat > b.md <<'EOF'")}\nwc -l a.md b.md`,
+        ]) {
+            expect(verdict(command)).toEqual([command, 'allow']);
+        }
+    });
+
+    test('a heredoc that can reach a shell, a client or a device still gates', () => {
+        for (const command of [
+            note("cat <<'EOF' | bash"),
+            note("cat > note.md <<'EOF' | sh"),
+            note("bash <<'EOF'"),
+            note("sh <<'EOF'"),
+            note("python3 - <<'EOF'"),
+            note("ssh host <<'EOF'"),
+            note("psql -h db.example <<'EOF'"),
+            note("snow sql -i <<'EOF'"),
+            note("cat >> .bashrc <<'EOF'"),
+            note("cat >> ~/.bashrc <<'EOF'"),
+            note("cat > .git/hooks/pre-commit <<'EOF'"),
+            note("cat > .notes.md <<'EOF'"),
+            note("cat > .claude/commands/mail.md <<'EOF'"),
+            note("cat > work/.claude/skills/m/SKILL.md <<'EOF'"),
+            note("cat > /dev/fd/3 <<'EOF'"),
+            note("cat > \"$F\" <<'EOF'"),
+            note("cat > $F.md <<'EOF'"),
+            note("cat > >(bash) <<'EOF'"),
+            note("/tmp/x/cat > note.md <<'EOF'"),
+            note("FOO=1 cat > note.md <<'EOF'"),
+            `exec 3> >(bash); ${note("cat >&3 <<'EOF'")}`,
+            `exec > >(bash); ${note("cat > note.md <<'EOF'")}`,
+            `printf -v 'BASH_CMDS[cat]' /bin/bash; ${note("cat > note.md <<'EOF'")}`,
+            `echo "\${BASH_CMDS[cat]:=/bin/bash}"; ${note("cat > note.md <<'EOF'")}`,
+            `cat() { bash; }; ${note("cat > note.md <<'EOF'")}`,
+            `echo "$(${note("cat > note.md <<'EOF'")}\n)"`,
+            `if true; then ${note("cat > note.md <<'EOF'")}\nfi`,
+            `( ${note("cat > note.md <<'EOF'")}\n)`,
+            `${note("cat > a.md <<'EOF'; cat > b.md <<'EOF'")}\nEOF`,
+            note("cat > note.md <<'EOF' <<'END'").replace(/EOF$/, 'EOF\nnote\nEND'),
+            note("cat > note.md <<$'EOF'"),
+            note("cat > note.md <<-'EOF'", `\t${SEND}`).replace(/EOF$/, '\tEOF'),
+        ]) {
+            expect(verdict(command)).toEqual([command, 'gate']);
+        }
+    });
+
+    test('a file that could be run is not a note, whether or not this line runs it', () => {
+        for (const command of [
+            note("cat > send.sh <<'EOF'"),
+            note("cat > mailer.py <<'EOF'"),
+            note("cat > Makefile <<'EOF'"),
+            note("cat > package.json <<'EOF'"),
+            `${note("cat > mailer.py <<'EOF'")}\npython3 -m mailer`,
+            `${note("cat > mailer.js <<'EOF'")}\nnode mailer`,
+            `${note("cat > Makefile <<'EOF'")}\nmake send`,
+        ]) {
+            expect(verdict(command)).toEqual([command, 'gate']);
+        }
+    });
+
+    test('a note on a line that could run it stays a send', () => {
+        for (const command of [
+            `${note("cat > send.txt <<'EOF'")}\nbash send.txt`,
+            `${note("cat > send.txt <<'EOF'")}\npython3 send.txt`,
+            `${note("cat > tools/send.md <<'EOF'")}\ncd tools && . ./send.md`,
+            `${note("cat > send.md <<'EOF'")}\nls | xargs -n1 bash`,
+            `${note("cat > send.md <<'EOF'")}\nls | while read f; do bash "$f"; done`,
+            `${note("cat > send.md <<'EOF'")}\necho "$(bash send.md)"`,
+            `${note("cat > send.md <<'EOF'")}\necho \`bash send.md\``,
+            `${note("cat > send.md <<'EOF'")}\necho "$\\\n(bash send.md)"`,
+            `${note("cat > send.md <<'EOF'")}\ncat <(bash send.md)`,
+            `${note("cat > send.md <<'EOF'")}\nPATH=/tmp/x ls`,
+        ]) {
+            expect(verdict(command)).toEqual([command, 'gate']);
+        }
+    });
+
+    test('a heredoc that writes no file is outside this rule', () => {
+        for (const command of [note("cat <<'EOF'"), note("cat > /dev/null <<'EOF'")]) {
+            expect(verdict(command)).toEqual([command, 'gate']);
+        }
+    });
+
+    test('an unquoted heredoc still gates, since its substitutions run', () => {
+        for (const body of [`$(${SEND})`, `\`${SEND}\``, SEND]) {
+            const command = note('cat >> note.md <<EOF', body);
+            expect(verdict(command)).toEqual([command, 'gate']);
+        }
+    });
+
+    test('a real send beside a saved note still gates', () => {
+        const command = `${note("cat >> note.md <<'EOF'", 'noted')}\n${SEND}`;
+        expect(verdict(command)).toEqual([command, 'gate']);
+    });
+
+    test('text the parser never reached stays a send', () => {
+        const command = `${note("cat > note.md <<'EOF'")}\n)\n${SEND}`;
+        expect(verdict(command)).toEqual([command, 'gate']);
+    });
+});
