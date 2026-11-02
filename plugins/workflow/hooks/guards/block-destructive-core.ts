@@ -7124,7 +7124,8 @@ const MERGE_SCOPE_FILE = 'merge-scope.local.json';
 const GITHUB_REPO_IN_TEXT_RE = /github\.com(?::\d+)?[/:]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?=[/?#\s]|$)/;
 // A word only known when the command runs: a variable, a substitution, or what xargs or find fills in.
 const UNKNOWN_WORD_RE = /[$`]|\{\}/;
-const API_MERGE_RE = /(?:^|[\s/])repos\/(\S+?)\/(?:pulls\/[^/\s]+\/merge|merges)\b/;
+// `merge-upstream` syncs a fork's branch from its upstream: a merge into the fork.
+const API_MERGE_RE = /(?:^|[\s/])repos\/(\S+?)\/(?:pulls\/[^/\s]+\/merge|merges|merge-upstream)\b/;
 const GRAPHQL_MERGE_RE = /\b(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\b/;
 
 export type MergeScope = Map<string, Set<string>> & { workgroups?: string[] };
@@ -7516,7 +7517,7 @@ function noMergeStepReason(
     const api = apiClient ? apiMergeTarget(text, ghRepo, dir, remotesOf) : undefined;
     if (api === 'unresolved') return unresolved('Merging through the API');
     // An endpoint written only into a variable (ENDPOINT=repos/…/merge; gh api "$ENDPOINT") is a merge the words don't show.
-    if (api === undefined && apiClient && cmd.args.some(a => UNKNOWN_WORD_RE.test(a)) && /repos\/\S+?\/(?:pulls\/[^/\s]+\/merge|merges)\b/.test(line)) return unresolved('Merging through the API');
+    if (api === undefined && apiClient && cmd.args.some(a => UNKNOWN_WORD_RE.test(a)) && /repos\/\S+?\/(?:pulls\/[^/\s]+\/merge|merges|merge-upstream)\b/.test(line)) return unresolved('Merging through the API');
     if (api === 'unplaced') return unplaced('Merging through the API');
     const apiReason = api !== undefined ? checked(api, 'Merging through the API') : null;
     if (apiReason) return apiReason;
@@ -7536,10 +7537,11 @@ function noMergeStepReason(
         // GIT_DIR or GIT_WORK_TREE, set on the command, exported earlier or inherited, points git at another repository.
         const relocated = ['GIT_DIR', 'GIT_WORK_TREE'].some(name => assignedValue(name, cmd, commands) !== undefined);
         const pushDir = relocated ? null : gitPushDir(cmd.args, dir);
-        // `--repo=<remote>` names the destination as the positional would.
+        // `--repo=<remote>` names the destination only when no positional repository does; git prefers the positional.
         const repoOption = cmd.args.slice(gitSubcommandIndex(cmd.args) + 1).map((a, i, rest) => a === '--repo' ? rest[i + 1] : a.startsWith('--repo=') ? a.slice(7) : undefined).find(v => v !== undefined);
-        if (repoOption !== undefined && UNKNOWN_WORD_RE.test(repoOption)) return unresolved('Pushing');
-        const remote = repoOption ?? gitRemoteArg(cmd.args);
+        const positional = gitRemoteArg(pushArgsWithoutValues(cmd.args));
+        if (positional === null && repoOption !== undefined && UNKNOWN_WORD_RE.test(repoOption)) return unresolved('Pushing');
+        const remote = positional ?? repoOption ?? null;
         // A push to a URL off GitHub reaches no listed repository.
         if (remote && /^(?:[a-z+]+:\/\/|[^@\s]+@)/i.test(remote) && !/github\.com[/:]/i.test(remote)) return null;
         // With no remote named, git picks one from the branch's push or upstream config, so every remote may be it.
@@ -7562,11 +7564,10 @@ function noMergeStepReason(
         }
     }
     if (gh && gh.args[0] === 'repo' && gh.args[1] === 'sync') {
-        // `gh repo sync [<destination>]` updates the destination (the checkout's repository when none is named).
+        // `gh repo sync <destination>` updates that repository on GitHub; with none it updates only the local checkout.
         const destination = gh.args.slice(2).find(a => !a.startsWith('-') && !['--branch', '-b', '--source', '-s'].includes(gh.args[gh.args.indexOf(a) - 1]));
         if (destination !== undefined && UNKNOWN_WORD_RE.test(destination)) return unresolved('Syncing a repository');
-        const reason = destination !== undefined ? refused(githubRepoOf(destination), 'Syncing a repository')
-            : dir === null ? unplaced('Syncing a repository') : checked(remotesOf(dir), 'Syncing a repository');
+        const reason = destination !== undefined ? refused(githubRepoOf(destination), 'Syncing a repository') : null;
         if (reason) return reason;
     }
     return null;

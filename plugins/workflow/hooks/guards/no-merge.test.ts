@@ -92,7 +92,13 @@ describe('a listed repository refuses every merge and protected-branch push', ()
             return tracking;
         }],
         ['a repository sync into the listed repository', 'gh repo sync Acme/core --branch master', () => other],
-        ['a repository sync from inside the listed checkout', 'gh repo sync --branch master', () => theirs],
+        ['a fork sync through the REST endpoint', 'gh api -X POST repos/Acme/core/merge-upstream -f branch=master', () => theirs],
+        ['a protected push whose positional remote outranks --repo', 'git push --repo=fork origin HEAD:master', () => {
+            const forked = join(dir, 'core-with-fork');
+            checkout(forked, 'https://github.com/Acme/core.git', 'feature-x');
+            writeFileSync(join(forked, '.git', 'config'), `[remote "origin"]\n\turl = https://github.com/Acme/core.git\n[remote "fork"]\n\turl = git@github.com:example/core.git\n`);
+            return forked;
+        }],
         ['a protected push in every submodule', "git submodule foreach 'git push origin master'", () => other],
         ['a protected push from a find match directory', 'find LISTED_DIR -maxdepth 0 -exec git -C {} push origin HEAD:master \\;', () => other],
         ['a protected push after a cd inside an executor script', "find . -maxdepth 0 -exec sh -c 'cd LISTED_DIR && git push origin HEAD:master' \\;", () => other],
@@ -169,6 +175,8 @@ describe('everything else is untouched', () => {
         ['a tags-only push from the protected branch', 'git push origin --tags', () => join(dir, 'core-on-master')],
         ['a push to a repository off GitHub', 'git push https://gitlab.com/example/ours.git HEAD:master', () => theirs],
         ['a draft pull request', 'gh pr create --draft --title t --body b', () => theirs],
+        ['a sync of the local checkout, which pushes nothing', 'gh repo sync --branch master', () => theirs],
+        ['a push to an unlisted remote named by position over a listed --repo', 'git push --repo=origin fork HEAD:master', () => join(dir, 'core-with-fork')],
         ['a merge in another repository', 'gh pr merge 12 --squash', () => other],
         ['a merge naming another repository from their checkout', 'gh pr merge 12 -R example/ours', () => theirs],
         ['a merge with a subject held in a variable', 'gh pr merge 12 --squash --subject "$TITLE"', () => other],
