@@ -336,6 +336,14 @@ describe('a listed dev resource', () => {
         ['a variable verb on a dev service', `C="deploys create ${PROD} --commit"; render $C ${DEV}`],
         ['a variable verb on a dev database', `C="postgres delete"; render $C ${DEV_DB} --confirm`],
         ['a quoted variable verb', `render "$C" ${DEV}`],
+        ['a variable after the dev id', `X=${PROD}; render restart ${DEV} $X`],
+        ['a variable holding psql arguments', `X="-- -h prod.example.com"; render psql ${DEV_DB} $X`],
+        ['a substitution after the dev id', `render restart ${DEV} $(cat more-ids)`],
+        ['a quoted variable after the dev id', `render ssh ${DEV} "$X"`],
+        ['a glob after the dev id', `render ssh ${DEV} *`],
+        ['an unquoted variable as a flag value', `render psql ${DEV_DB} -c $X`],
+        ['a variable behind a wrapper', `timeout 5 render ssh ${DEV} $X`],
+        ['a quoted flag value behind a wrapper', `timeout 5 render psql ${DEV_DB} -x "$X"`],
     ])('%s stays on the production gate', (_label, command) => {
         const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
         expect(action).toBe('gate');

@@ -4028,6 +4028,15 @@ function renderDevTarget(cmd: ResolvedCommand): string | null {
     return target ? `render resource ${target}` : null;
 }
 
+/** Whether each word the guard can't read is a quoted flag value: anywhere else it can be, or split into, another target or flag. */
+function renderExpansionsAreFlagValues(cmd: ResolvedCommand): boolean {
+    if (!cmd.args.some(a => RENDER_EXPANDS.test(a))) return true;
+    const words = renderWords(cmd);
+    const quoted = (part: any) => part?.type === 'SingleQuoted' || part?.type === 'DoubleQuoted';
+    return !!words && cmd.args.every((a, i) => !RENDER_EXPANDS.test(a)
+        || (cmd.args[i - 1]?.startsWith('-') && !!words[i].parts?.length && words[i].parts.every(quoted)));
+}
+
 /** The listed dev resources a held step acts on, when every resource it names is listed; null names no dev resource it can be sure of. */
 function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
@@ -4036,6 +4045,7 @@ function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | 
     // `--` hands psql or ssh its own arguments, and a backslash runs a program, so either can leave the named resource.
     if (cmd.args.some(a => a === '--' || a.includes('\\'))) return null;
     if (cmd.name === 'render') {
+        if (!renderExpansionsAreFlagValues(cmd)) return null;
         const shape = renderShape(cmd.args);
         return (shape ? shape.entry.kind === 'proof' && shape.operands.length === 1 : !RENDER_EXPANDS.test(cmd.args[0]) && listed.has(cmd.args[1])) ? ids : null;
     }
@@ -7084,7 +7094,7 @@ export function pollDeliveredTable(requestId: string, timeoutMs: number): GateDe
  * `opts.action` selects the host-side handler the staged request routes to:
  *   - 'request_destructive_gate' — the destructive-command gate (default path).
  *   - 'request_bash_gate'        — the generic bash gate (email gate uses this).
- *   - 'request_prod_gate'        — a production change; the host counts only an owner's or admin's click.
+ *   - 'request_prod_gate'        — a production change or a deleted dev datastore; the host counts only an owner's or admin's click.
  *
  * Fail-closed: if writeGateRequest throws (session DBs in a broken state),
  * returns 'denied'. The CALLER emits the stderr/exit — this function never
@@ -7170,9 +7180,9 @@ const onProduction = (step: GatedStep): boolean => step.reason.includes(CLIENT_P
     || (!heldOnDev(step) && (step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || /\brender\b/.test(step.cmd.raw)));
 
 /**
- * Whether a step the gate stops on may change Render production: a render step, or one whose verdict came from a
- * render command it runs (a SQL client's shell escape, inline or from a file). A command the guard cannot read
- * counts if it names render.
+ * Whether the gate needs an owner's or admin's click: a step that may change Render production, being a render step or
+ * one whose verdict came from a render command it runs (a SQL client's shell escape, inline or from a file), or one that
+ * deletes a listed dev datastore. A command the guard cannot read counts if it names render.
  */
 export function changesProduction(command: string, cwd: string = currentWorkingDir()): boolean {
     try {
