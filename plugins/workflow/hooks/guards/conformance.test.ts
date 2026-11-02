@@ -397,7 +397,6 @@ const GIT_CLONE_BLOCK = [
 ];
 const GIT_CLONE_ALLOW = [
   "cat >> STATE.md <<'EOF'\ngit clone https://github.com/x/y /workspace/agent/y\nEOF",
-  "git clone https://github.com/x/y /tmp/y; cat >> STATE.md <<'EOF'\nnot under /workspace/agent\nEOF",
   'git clone https://github.com/a/b /tmp/scratch',
   'git status',
   'git pull origin main',

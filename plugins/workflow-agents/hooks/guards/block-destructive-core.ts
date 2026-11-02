@@ -604,9 +604,8 @@ export function evaluateSnapshotGitMutation(command: string): { action: 'allow' 
 export type GitCloneVerdict = { action: 'allow' | 'block'; reason?: string };
 
 export function evaluateGitCloneDestination(command: string): GitCloneVerdict {
-    const text = withoutStoredHeredocs(command);
-    if (!text || !GIT_CLONE_RE.test(text)) return { action: 'allow' };
-    if (GIT_CLONE_MANAGED_DIR_RE.test(text)) {
+    if (!command || !GIT_CLONE_RE.test(withoutStoredHeredocs(command))) return { action: 'allow' };
+    if (GIT_CLONE_MANAGED_DIR_RE.test(command)) {
         return { action: 'block', reason: GIT_CLONE_BLOCK_REASON };
     }
     return { action: 'allow' };

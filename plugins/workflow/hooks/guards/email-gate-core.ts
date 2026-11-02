@@ -677,10 +677,8 @@ export function envelopeFromJsonRaw(segment: string): {
  * The GWS creds account is parsed from the COMMAND string
  * (GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=…/accounts/<slug>.json), NOT from env.
  */
-export function evaluateEmailSend(rawCommand: string, env: EnvSnapshot): EmailGateVerdict {
-    if (!rawCommand || !GWS_EMAIL_SEND_RE.test(rawCommand)) return { action: 'allow' };
-    const command = withoutStoredHeredocs(rawCommand);
-    if (!GWS_EMAIL_SEND_RE.test(command)) return { action: 'allow' };
+export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateVerdict {
+    if (!command || !GWS_EMAIL_SEND_RE.test(withoutStoredHeredocs(command))) return { action: 'allow' };
 
     // Bypass ONLY when the WHOLE command is a single, simple send carrying a real
     // bypass flag — no shell separators, no metacharacters, no second command.
