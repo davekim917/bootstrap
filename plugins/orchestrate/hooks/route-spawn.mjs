@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Claude Code PreToolUse hook on Agent/Task: settle every sub-agent spawn,
 // autonomous or via /orchestrate. A model no human named is dropped so the spawn
-// inherits its parent's, and the effort the call names stands, within the caps.
+// inherits its parent's, and the agent and the sub-agent are told which model runs.
+// The effort the call names stands, within the caps.
 // Never blocks, never opens a connection. A named role is never rewritten.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,6 +21,8 @@ try {
   const contested = !named && (input.model || input.effort || !lib.isRoleless(input.subagent_type));
   const pins = contested ? lib.humanPins(input, lib.humanTurns(event.transcript_path).at(-1) ?? '') : undefined;
   const updated = lib.rewriteClaudeSpawn(input, pins);
+  const dropped = Boolean(updated && input.model && !('model' in updated));
+  const notice = dropped ? lib.droppedModelNotice(input.model, lib.inheritedModel(event.transcript_path)) : undefined;
   lib.logDispatch({
     source: 'spawn-hook',
     task: task.slice(0, 2000),
@@ -27,9 +30,14 @@ try {
     after: updated ? { model: updated.model ?? null, effort: updated.effort ?? null, subagent_type: updated.subagent_type ?? null } : null,
     ...(named ? { decision: 'named-role' } : {}),
     ...(pins ? { humanPins: pins } : {}),
+    ...(notice ? { notice } : {}),
   });
   if (updated) {
-    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput: updated } }));
+    // The spawning agent hears it through the tool call's context, the sub-agent as its prompt's first line.
+    const updatedInput = notice ? { ...updated, prompt: `${notice}\n\n${updated.prompt ?? ''}` } : updated;
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'PreToolUse', updatedInput, ...(notice ? { additionalContext: notice } : {}) },
+    }));
   }
 } catch {
   // The spawn proceeds unchanged.
