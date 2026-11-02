@@ -7239,6 +7239,9 @@ function pushedSubmoduleRepos(args: string[], dir: string): Array<string | null>
     const flags = args.filter(a => a.startsWith('--recurse-submodules') || a === '--no-recurse-submodules');
     const last = flags.at(-1);
     let mode = last === '--no-recurse-submodules' ? 'no' : last?.split('=')[1];
+    for (let i = 0; mode === undefined && i < args.length - 1; i++) {
+        if (args[i] === '-c') mode = /^push\.recursesubmodules=(.*)$/i.exec(args[i + 1])?.[1].toLowerCase();
+    }
     const dirs = gitDirsOf(dir);
     if (!dirs) return mode === 'on-demand' || mode === 'only' ? [null] : [];
     if (mode === undefined) {
@@ -7258,7 +7261,14 @@ function pushedSubmoduleRepos(args: string[], dir: string): Array<string | null>
     } catch {
         return [];
     }
-    return [...modules.matchAll(/^\s*url\s*=\s*(.+)$/gm)].map(m => githubRepoOf(m[1].trim()));
+    // A relative URL (`../core.git`) names a sibling of the parent's own repository on the same owner.
+    const owners = checkoutRemoteRepos(dir).map(r => r?.split('/')[0] ?? null);
+    return [...modules.matchAll(/^\s*url\s*=\s*(.+)$/gm)].flatMap(m => {
+        const url = m[1].trim();
+        const sibling = /^\.\.\/([\w.-]+?)(?:\.git)?\/?$/.exec(url)?.[1];
+        if (url.startsWith('.')) return sibling ? owners.map(o => (o ? `${o}/${sibling}`.toLowerCase() : null)) : [null];
+        return [githubRepoOf(url)];
+    });
 }
 
 /** The branch a checkout has out, or null when detached or unreadable. */
@@ -7397,9 +7407,9 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
         }
     };
     for (const cmd of commands) {
-        if (DIRECTORY_CHANGERS.has(cmd.name)) dirs = directoriesAfter(dirs, cmd);
+        if (DIRECTORY_CHANGERS.has(cmd.name)) dirs = directoriesAfter(dirs, { ...cmd, args: cmd.args.map(tildeExpanded) });
         // After a cd the step may run in any of the directories it could have reached; each one is checked.
-        const chdir = cmd.chdir ?? '.';
+        const chdir = tildeExpanded(cmd.chdir ?? '.');
         const places: Array<string | null> = dirs && !UNKNOWN_WORD_RE.test(chdir) && !chdir.startsWith('~') ? dirs.map(d => pathResolve(d, chdir)) : [null];
         steps.push({ cmd, places, known: alone, siblings: commands, moved });
         addRuns(cmd, 0);
@@ -7463,17 +7473,28 @@ function apiMergeTarget(
  * Every directory a step can name as its checkout: where it runs, and for git each -C, --git-dir and --work-tree it
  * gives, whatever the guard can or can't tell about the state they hold.
  */
+/** A literal `~` or `~/…` word as the shell expands it; any other word unchanged. */
+function tildeExpanded(word: string): string {
+    const home = process.env.HOME || homedir();
+    return word === '~' ? home : word.startsWith('~/') ? join(home, word.slice(2)) : word;
+}
+
 function namedCheckouts(cmd: ResolvedCommand, dir: string | null): string[] {
     if (dir === null) return [];
     const found = [dir];
     if (cmd.name !== 'git') return found;
+    for (const assignment of cmd.env ?? []) {
+        const value = /^GIT_(?:DIR|WORK_TREE)=(.+)$/.exec(assignment)?.[1];
+        if (value && !UNKNOWN_WORD_RE.test(value)) found.push(pathResolve(dir, tildeExpanded(value)), dirname(pathResolve(dir, tildeExpanded(value))));
+    }
     let at = dir;
     const sub = gitSubcommandIndex(cmd.args);
     for (let i = 0; i < sub; i++) {
         const a = cmd.args[i];
         const flag = /^(-C|--git-dir|--work-tree)(?:=(.*))?$/.exec(a);
         if (!flag) continue;
-        const value = flag[2] ?? cmd.args[++i];
+        const given = flag[2] ?? cmd.args[++i];
+        const value = given === undefined ? undefined : tildeExpanded(given);
         if (value === undefined || UNKNOWN_WORD_RE.test(value) || value.startsWith('~')) continue;
         const named = pathResolve(at, value);
         if (flag[1] === '-C') at = named;
@@ -7488,7 +7509,7 @@ function gitPushDir(args: string[], dir: string | null): string | null {
     for (let i = 0; i < sub; i++) {
         // git keeps its own directory under --work-tree, so only -C says where the repository is.
         if (/^--(?:git-dir|work-tree)(?:=|$)/.test(args[i])) return null;
-        const value = args[i] === '-C' ? args[++i] : undefined;
+        const value = args[i] === '-C' ? tildeExpanded(args[++i] ?? '') : undefined;
         if (value === undefined) continue;
         if (at === null || UNKNOWN_WORD_RE.test(value) || value.startsWith('~')) return null;
         at = pathResolve(at, value);

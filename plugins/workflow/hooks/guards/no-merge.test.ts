@@ -114,6 +114,18 @@ describe('a listed repository refuses every merge and protected-branch push', ()
             writeFileSync(join(parent, '.gitmodules'), '[submodule "core"]\n\tpath = core\n\turl = git@github.com:Acme/core.git\n');
             return parent;
         }],
+        ['a push that recurses into the listed submodule by inline config', 'git -c push.recurseSubmodules=on-demand push origin master', () => {
+            const parent = join(dir, 'ours-with-sub-inline');
+            checkout(parent, 'git@github.com:example/ours.git', 'master');
+            writeFileSync(join(parent, '.gitmodules'), '[submodule "core"]\n\tpath = core\n\turl = https://github.com/Acme/core.git\n');
+            return parent;
+        }],
+        ['a recursive push into a submodule named by a URL relative to its parent', 'git push --recurse-submodules=on-demand origin master', () => {
+            const parent = join(dir, 'app-with-sibling-sub');
+            checkout(parent, 'https://github.com/Acme/app.git', 'master');
+            writeFileSync(join(parent, '.gitmodules'), '[submodule "core"]\n\tpath = core\n\turl = ../core.git\n');
+            return parent;
+        }],
         ['a fork sync through the REST endpoint', 'gh api -X POST repos/Acme/core/merge-upstream -f branch=master', () => theirs],
         ['a protected push whose positional remote outranks --repo', 'git push --repo=fork origin HEAD:master', () => {
             const forked = join(dir, 'core-with-fork');
@@ -269,6 +281,19 @@ describe('a scope listing workgroups refuses what it cannot read only in them', 
 
     test('a merge from a checkout of the listed repository is refused everywhere', () => {
         expect(inWorkgroup('another-wg', 'gh pr merge 12 --squash', theirs)).toBe('block');
+    });
+
+    test('a protected push into a checkout of the listed repository named by GIT_DIR or a ~ path is refused everywhere', () => {
+        const savedHome = process.env.HOME;
+        process.env.HOME = dir;
+        try {
+            expect(inWorkgroup('another-wg', `GIT_DIR=${theirs}/.git git push origin HEAD:master`, other)).toBe('block');
+            expect(inWorkgroup('another-wg', 'cd ~/core && git switch master && git push origin HEAD:master', other)).toBe('block');
+            expect(inWorkgroup('another-wg', 'git -C ~/core switch master && git -C ~/core push origin HEAD:master', other)).toBe('block');
+        } finally {
+            if (savedHome === undefined) delete process.env.HOME;
+            else process.env.HOME = savedHome;
+        }
     });
 
     test('a protected push into a checkout of the listed repository named by -C is refused everywhere', () => {
