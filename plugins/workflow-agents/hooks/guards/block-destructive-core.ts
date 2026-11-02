@@ -7411,7 +7411,7 @@ function noMergeReason(commands: ResolvedCommand[], cwd: string, line: string): 
     // edit or a build before a push in a checkout of no listed repository keeps what is on disk.
     const lower = line.toLowerCase();
     const listed = scope === 'unreadable' || [...scope.keys()].some(repo => lower.includes(repo))
-        || steps.some(({ places }) => places.some(dir => dir !== null && checkoutRemoteRepos(dir).some(r => r !== null && scope.has(r))));
+        || steps.some(({ cmd, places }) => places.some(dir => namedCheckouts(cmd, dir).some(d => checkoutRemoteRepos(d).some(r => r !== null && scope.has(r)))));
     // Outside the listed workgroups, what the guard can't read is let through unless the line ties itself to a listed
     // repository; what it can tie to one is refused all the same.
     const lenient = scope !== 'unreadable' && scope.workgroups !== undefined && !listed
@@ -7459,6 +7459,29 @@ function apiMergeTarget(
 }
 
 /** The directory a git push runs in from `dir`, after every `-C` before its subcommand; null when unknown. */
+/**
+ * Every directory a step can name as its checkout: where it runs, and for git each -C, --git-dir and --work-tree it
+ * gives, whatever the guard can or can't tell about the state they hold.
+ */
+function namedCheckouts(cmd: ResolvedCommand, dir: string | null): string[] {
+    if (dir === null) return [];
+    const found = [dir];
+    if (cmd.name !== 'git') return found;
+    let at = dir;
+    const sub = gitSubcommandIndex(cmd.args);
+    for (let i = 0; i < sub; i++) {
+        const a = cmd.args[i];
+        const flag = /^(-C|--git-dir|--work-tree)(?:=(.*))?$/.exec(a);
+        if (!flag) continue;
+        const value = flag[2] ?? cmd.args[++i];
+        if (value === undefined || UNKNOWN_WORD_RE.test(value) || value.startsWith('~')) continue;
+        const named = pathResolve(at, value);
+        if (flag[1] === '-C') at = named;
+        found.push(named, dirname(named));
+    }
+    return found;
+}
+
 function gitPushDir(args: string[], dir: string | null): string | null {
     let at = dir;
     const sub = gitSubcommandIndex(args);

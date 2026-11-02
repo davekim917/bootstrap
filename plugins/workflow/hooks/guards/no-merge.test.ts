@@ -270,4 +270,10 @@ describe('a scope listing workgroups refuses what it cannot read only in them', 
     test('a merge from a checkout of the listed repository is refused everywhere', () => {
         expect(inWorkgroup('another-wg', 'gh pr merge 12 --squash', theirs)).toBe('block');
     });
+
+    test('a protected push into a checkout of the listed repository named by -C is refused everywhere', () => {
+        const command = `git -C ${theirs} switch master && git -C ${theirs} push origin HEAD:master`;
+        expect(inWorkgroup('another-wg', command, other)).toBe('block');
+        expect(inWorkgroup('another-wg', `git --git-dir=${theirs}/.git switch master && git -C ${theirs} push origin HEAD:master`, other)).toBe('block');
+    });
 });
