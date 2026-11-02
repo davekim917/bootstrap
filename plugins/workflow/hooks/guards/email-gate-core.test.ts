@@ -810,6 +810,7 @@ describe('evaluateEmailSend — a quoted heredoc saved as a note is data', () =>
             `exec 3> >(bash); ${note("cat >&3 <<'EOF'")}`,
             `exec > >(bash); ${note("cat > note.md <<'EOF'")}`,
             `printf -v 'BASH_CMDS[cat]' /bin/bash; ${note("cat > note.md <<'EOF'")}`,
+            `echo "\${BASH_CMDS[cat]:=/bin/bash}"; ${note("cat > note.md <<'EOF'")}`,
             `cat() { bash; }; ${note("cat > note.md <<'EOF'")}`,
             `echo "$(${note("cat > note.md <<'EOF'")}\n)"`,
             `if true; then ${note("cat > note.md <<'EOF'")}\nfi`,
