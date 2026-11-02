@@ -107,10 +107,12 @@ const LAB_TARGETS: Array<[string, string]> = [
 
 // (command, cwd) pairs whose target is NOT a lab target. These must keep today's
 // verdict in a lab room exactly as outside it.
+// A database the line doesn't name is refused toward the scratch-postgres helper, in a lab room as outside it.
+const REFUSED_NON_LAB_TARGETS = new Set(['psql "$DATABASE_URL" -c "DROP TABLE users"']);
 const NON_LAB_TARGETS: Array<[string, string]> = [
   // prod / dev databases
-  ['psql -d app_prod -c "DROP TABLE users"', LAB_WORKTREE],
-  ['psql -d app_dev -c "TRUNCATE events"', LAB_WORKTREE],
+  ['psql -h db.example -d app_prod -c "DROP TABLE users"', LAB_WORKTREE],
+  ['psql -h db.example -d app_dev -c "TRUNCATE events"', LAB_WORKTREE],
   ['psql postgresql://app_admin:pw@example.com/app_prod -c "DROP TABLE t"', LAB_WORKTREE],
   // a runtime-constructed target has no visible lab signal — fails closed
   ['psql "$DATABASE_URL" -c "DROP TABLE users"', LAB_WORKTREE],
@@ -203,13 +205,13 @@ describe('lab session + lab target → allow', () => {
 
   test('a shell command a lab psql runs is not exempt with it', () => {
     inLab();
-    const command = `psql -d lab_app -c 'DROP TABLE scratch' -c '\\! psql -d app_prod -c "DROP TABLE users"'`;
+    const command = `psql -d lab_app -c 'DROP TABLE scratch' -c '\\! psql -h db.example -d app_prod -c "DROP TABLE users"'`;
     expect(evaluateBashCommand(command, { cwd: LAB_WORKTREE }).action).toBe('gate');
   });
 
   test('a non-lab gate alongside a lab gate still holds', () => {
     inLab();
-    const command = 'psql -d lab_app -c "DROP TABLE users" && psql -d app_prod -c "DROP TABLE users"';
+    const command = 'psql -d lab_app -c "DROP TABLE users" && psql -h db.example -d app_prod -c "DROP TABLE users"';
     expect(evaluateBashCommand(command, { cwd: LAB_WORKTREE }).action).toBe('gate');
   });
 
@@ -271,9 +273,12 @@ describe('lab session + lab target → allow', () => {
 
 describe('lab session + non-lab target → unchanged', () => {
   for (const [command, cwd] of NON_LAB_TARGETS) {
-    test(`still gates: ${command}`, () => {
+    test(`same verdict in a lab room as out of one: ${command}`, () => {
+      const outside = evaluateBashCommand(command, { cwd }).action;
       inLab();
-      expect(evaluateBashCommand(command, { cwd }).action).toBe('gate');
+      const inside = evaluateBashCommand(command, { cwd }).action;
+      expect(inside).toBe(outside);
+      expect(inside).toBe(REFUSED_NON_LAB_TARGETS.has(command) ? 'block' : 'gate');
     });
   }
 
@@ -321,10 +326,12 @@ describe('tier 1 is never exempted, lab or not', () => {
 });
 
 describe('non-lab session + lab target → unchanged', () => {
+  // Outside a lab room a lab database named without a host is an unnamed local target, refused toward scratch-pg.
+  const NO_HOST = new Set(['psql -d lab_app -c "DROP TABLE users"', 'psql --dbname=lab_app -c "TRUNCATE events"', 'psql -U lab_app_admin -d lab_app -c "DELETE FROM sessions"']);
   for (const [command, cwd] of LAB_TARGETS) {
-    test(`still gates: ${command}`, () => {
+    test(`still not exempt: ${command}`, () => {
       outsideLab();
-      expect(evaluateBashCommand(command, { cwd }).action).toBe('gate');
+      expect(evaluateBashCommand(command, { cwd }).action).toBe(NO_HOST.has(command) ? 'block' : 'gate');
     });
   }
 
@@ -336,7 +343,7 @@ describe('non-lab session + lab target → unchanged', () => {
 
   test('a neighbouring profile does not inherit the exemption', () => {
     process.env[PROFILE] = 'labs';
-    expect(evaluateBashCommand('psql -d lab_app -c "DROP TABLE users"', { cwd: LAB_WORKTREE }).action).toBe('gate');
+    expect(evaluateBashCommand('psql -h db.example -d lab_app -c "DROP TABLE users"', { cwd: LAB_WORKTREE }).action).toBe('gate');
   });
 });
 

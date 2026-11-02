@@ -3,7 +3,17 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { DEV_SCOPE_FILE_ENV, changesProduction, evaluateBashCommand, parseDevScope } from './block-destructive-core';
+import { spawnSync } from 'child_process';
+
+import {
+    DEV_SCOPE_FILE_ENV,
+    RENDER_CLI_TREE,
+    RENDER_CLI_VERSION,
+    changesProduction,
+    describeGate,
+    evaluateBashCommand,
+    parseDevScope,
+} from './block-destructive-core';
 
 /**
  * RENDER PRODUCTION CHANGES. Every Render command except a short read-only list
@@ -16,6 +26,8 @@ const DEV = 'srv-devservice0000000001';
 const PROD = 'srv-prodservice000000001';
 const PROD_DB = 'dpg-proddatabase00000001-a';
 const DEV_DB = 'dpg-devdatabase000000001-a';
+const DEV_KV = 'red-devkeyvalue000000001';
+const DEV_CRON = 'crn-devcronjob0000000001';
 
 let dir = '';
 let saved: string | undefined;
@@ -26,7 +38,7 @@ beforeAll(() => {
     savedProfile = process.env.NANOCLAW_INSTRUCTIONS_PROFILE;
     dir = mkdtempSync(join(tmpdir(), 'render-prod-test-'));
     const scopeFile = join(dir, 'dev-scope.local.json');
-    writeFileSync(scopeFile, JSON.stringify({ snowflake: [], render: { resources: [DEV, DEV_DB] } }));
+    writeFileSync(scopeFile, JSON.stringify({ snowflake: [], render: { resources: [DEV, DEV_DB, DEV_KV, DEV_CRON] } }));
     process.env[DEV_SCOPE_FILE_ENV] = scopeFile;
 });
 
@@ -57,6 +69,9 @@ describe('reading Render needs no approval', () => {
         'render workspace set tea-workspace000000000001',
         'render whoami -o json',
         'render --version',
+        'render --help',
+        'render -h',
+        'render --help 2>&1 | head -40',
         `render jobs create ${PROD} --help`,
         `render services delete ${PROD} --help`,
         'render services -e evm-environment000000001 -o json',
@@ -84,6 +99,97 @@ describe('reading Render needs no approval', () => {
         `render services instances ${PROD} -o interactive`,
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
+    });
+});
+
+describe('a read whose command is complete before a variable needs no approval', () => {
+    test.each([
+        ['a deploy listing per service in a loop, piped to python', `for s in ${PROD} ${DEV}; do render deploys list "$s" -o json | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["status"])'; done`],
+        ['a deploy listing with an unquoted variable', 'render deploys list $s -o json'],
+        ['a job listing with --output=', 'render jobs list ${SVC} --output=json'],
+        ['logs for a service held in a variable', 'render logs -r $SVC --limit 20'],
+        ['a database read', 'render postgres get $DB -o json'],
+        ['help on a listing with no variable', 'render deploys list --help'],
+    ])('%s', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['a listing with no output format', 'render deploys list $s'],
+        ['the output format given before the variable, which can override it', 'render deploys list -o json $s'],
+        ['a global output format before the command', 'render -o json deploys list $s'],
+        ['the output format itself a variable', 'render deploys list $s -o $FMT'],
+        ['a variable where a subcommand could go', 'render deploys $s -o json'],
+        ['services list, which the CLI reads as services with an argument', 'render services list $s -o json'],
+        ['a variable after a mutating command', 'render deploys create $s --confirm'],
+        ['help beside a variable that could turn it off', 'render deploys list --help $s'],
+        ['top-level help beside a variable that could name a command', 'render --help $s'],
+        ['a dev deploy whose flag value is a variable that could split into a production id', `render deploys create ${DEV} --commit $C --confirm`],
+    ])('still needs approval: %s', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test('a listing refused for its output format says where -o goes', () => {
+        expect(evaluateBashCommand('render deploys list -o json $s', { cwd: '/tmp' }).reason).toContain(
+            'Add -o json (or yaml/text), after the last variable, to read it without approval.',
+        );
+    });
+});
+
+describe('a render line naming no CLI command is refused with a pointer to the help, not carded', () => {
+    test.each([
+        ['a subcommand the CLI lacks', `render services get ${PROD} -o json`, 'services get'],
+        ['a top-level command the CLI lacks', `render env-vars list ${PROD} -o json`, 'env-vars'],
+        ['the same line in a loop over a variable', 'for s in a b; do render services get "$s" -o json; done', 'services get'],
+        ['a quoted command word', 'render "services" get', 'services get'],
+        ['an attached output value after the stray word', 'render services get -ojson', 'services get'],
+        ['a global flag before the command', 'render -o json services get', 'services get'],
+        ['a known flag between the command and the stray word', 'render services --include-previews get', 'services get'],
+        ['a flag value between them', 'render services -e evm-environment000000001 get', 'services get'],
+        ['a stray word under a parent that only prints help', `render jobs get ${PROD}`, 'jobs get'],
+        ['a stray word two levels down', 'render workflows tasks bogus', 'workflows tasks bogus'],
+        ['an alias', 'render pg show', 'pg show'],
+        ['a services menu named with a dev id it ignores', `render services ${DEV} -o interactive`, `services ${DEV}`],
+        ['an inherited object key as a command', 'render constructor', 'constructor'],
+        ['another inherited object key', 'render toString', 'toString'],
+    ])('%s', (_name, command, words) => {
+        const v = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(v.action).toBe('block');
+        expect(v.reason).toContain(`\`render ${words}\` isn't a Render CLI command (Render CLI ${RENDER_CLI_VERSION})`);
+        expect(v.reason).toContain('render --help');
+    });
+
+    test.each([
+        ['a CLI write command the guard does not classify', `render services update ${PROD} --name new-name`],
+        ['a datastore create', 'render postgres create --name db'],
+        ['an early-access command', 'render ea sandboxes exec sbx-1'],
+        ['a workflow start', `render workflows start ${PROD}`],
+        ['a psql session', `render psql ${PROD_DB}`],
+        ['an operand after a leaf command', `render deploys create ${PROD} get`],
+        ['an operand after restart', 'render restart get'],
+        ['a flag outside the table before the word', 'render services --bogus get'],
+        ['a variable before the word', 'render $cmd get'],
+        ['a -- passthrough', 'render -- services get'],
+    ])('a line that may be a real command keeps its card: %s', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test.each([
+        ['services list, which the CLI reads as services with an argument', 'render services list -o json'],
+        ['an open read with a filter word', 'render logs get'],
+        ['help on an unknown subcommand', 'render deploys foo --help'],
+        ['local CLI state', 'render workspace bogus'],
+    ])('a read stays allowed: %s', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    const live = spawnSync('render', ['--version'], { encoding: 'utf8' });
+    test.skipIf(/^render v(\S+)/m.exec(live.stdout ?? '')?.[1] !== RENDER_CLI_VERSION)('the tree matches the installed CLI of the pinned version', () => {
+        const out = spawnSync('bash', [join(import.meta.dir, '../../../../scripts/render-cli-tree.sh')], { encoding: 'utf8' });
+        expect(out.status).toBe(0);
+        const [version, ...paths] = out.stdout.trim().split('\n');
+        expect(version).toBe(RENDER_CLI_VERSION);
+        expect(paths).toEqual([...RENDER_CLI_TREE].sort());
     });
 });
 
@@ -122,7 +228,6 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a listing forced interactive with an equals sign', 'render services -o=interactive'],
         ['a listing whose output mode comes from the environment', 'RENDER_OUTPUT=interactive render services'],
         ['a shell whose flag the guard would misread as taking a value', `render ssh -e production-api ${DEV} -o interactive`],
-        ['a services menu named with a dev id it ignores', `render services ${DEV} -o interactive`],
         ['a projects menu named with a dev id it ignores', `render projects ${DEV} -o interactive`],
         ['psql on a dev database, which reads startup files', `render psql ${DEV_DB} -c 'select 1' -o text`],
         ['a workflow start on a dev id, which opens an input form', `render workflows start ${DEV}`],
@@ -152,8 +257,6 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a task run start', `render workflows tasks runs start ${PROD}`],
         ['a version release', `render workflows versions release ${PROD}`],
         ['a listing forced into interactive mode', 'render services -o interactive'],
-        ['an inherited object key as a command', 'render constructor'],
-        ['another inherited object key', 'render toString'],
     ])('%s', (_label, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
@@ -168,6 +271,68 @@ describe('a Render resource listed as dev changes freely', () => {
         `render jobs create --start-command "node job.js" ${DEV}`,
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
+    });
+});
+
+describe('a variable is all that keeps a listed dev resource from running freely', () => {
+    test.each([
+        ['a job whose start command holds a variable', `render jobs create ${DEV} --start-command "echo $B64"`, '`$B64`'],
+        ['a command substitution', `render jobs create ${DEV} --start-command "sh -c $(cat job.sh)" -o json`, '`$(cat job.sh)`'],
+        ['a variable inside a flag given with =', `render jobs create ${DEV} "--start-command=$CMD"`, '`$CMD`'],
+        ['a command substitution longer than a clipped name', `render jobs create ${DEV} --start-command "$(cat /workspace/scripts/render-start-command.sh)"`, '`$(cat /workspace/scripts/render-start-command.sh)`'],
+        ['a value built by a substitution earlier on the line', `B64=$(base64 -w0 job.sh); render jobs create ${DEV} --start-command "echo $B64"`, '`$B64`'],
+    ])('%s is refused with the variable named', (_label, command, named) => {
+        const result = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(result.action).toBe('block');
+        expect(result.reason).toContain(`${DEV} is listed as dev, but ${named} can't be read`);
+        expect(result.reason).not.toContain('Production change');
+    });
+
+    test.each([
+        ['the target in a variable', `render jobs create "$S" --start-command "echo hi"`],
+        ['a variable as a second operand', `render jobs create ${DEV} "$X" --start-command "echo hi"`],
+        ['a variable that could hold flags', `render jobs create ${DEV} $FLAGS`],
+        ['an unquoted variable, which can split into several words', `render jobs create ${DEV} --start-command=$CMD`],
+        ['a variable on a target not listed as dev', `render jobs create ${PROD} --start-command "echo $B64"`],
+        ['a variable beside an unlisted id', `render jobs create ${DEV} --start-command "curl ${PROD}/$X"`],
+        ['a single-quoted dollar, which is literal text', `render jobs create ${DEV} --start-command 'echo $PORT'`],
+        ['a variable beside a single-quoted dollar', `render jobs create ${DEV} --start-command "echo $A"'$B'`],
+        ['a variable the line sets, which the guard already reads', `B64=abc; render jobs create ${DEV} --start-command "echo $B64"`],
+        ['a variable the line sets to words with a space', `CMD='echo hello'; render jobs create ${DEV} --start-command "$CMD"`],
+        ['the positional arguments, which stay several words in quotes', `render jobs create ${DEV} --start-command "$@"`],
+        ['an array splat, which stays several words in quotes', `render jobs create ${DEV} --start-command "${'$'}{ARGS[@]}"`],
+        ['a glob, which no rewrite removes', `render jobs create ${DEV} --start-command "echo *"`],
+        ['a variable behind a wrapper', `timeout 5 render jobs create ${DEV} --start-command "echo $B64"`],
+    ])('%s keeps its card', (_label, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+});
+
+describe('help for a command that opens a session or shell', () => {
+    const KV = 'red-prodkeyvalue00000001';
+    test.each([
+        'render ssh --help',
+        'render ssh -h',
+        'render psql --help',
+        'render pgcli -h',
+        'render kv-cli --help',
+    ])('%s needs no approval', (command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['ssh with a target', `render ssh ${PROD} --help`],
+        ['psql with a target', `render psql ${PROD_DB} --help`],
+        ['pgcli with a target', `render pgcli ${PROD_DB} -h`],
+        ['kv-cli with a target', `render kv-cli ${KV} --help`],
+        ['a target after the help flag', `render ssh --help ${PROD}`],
+        ['a command run on the service', `render ssh ${PROD} -- ls --help`],
+        ['help passed through after --', 'render ssh -- --help'],
+        ['a variable beside help', 'render ssh "$S" --help'],
+        ['help given a value', 'render ssh --help=true'],
+        ['another flag beside help', 'render ssh -e production --help'],
+    ])('%s keeps its card', (_label, command) => {
+        expect(verdict(command)).toBe('gate');
     });
 });
 
@@ -232,5 +397,235 @@ describe('dev-scope render entries', () => {
         [{ snowflake: [], render: [DEV] }, false],
     ])('%j parses: %p', (scope, ok) => {
         expect(parseDevScope(JSON.stringify(scope)) !== null).toBe(ok);
+    });
+});
+
+describe('a raw DELETE to the Render API', () => {
+    const URL = `https://api.render.com/v1/postgres/${PROD_DB}`;
+
+    test.each([
+        `curl -X DELETE ${URL}`,
+        `curl ${URL} -X DELETE`,
+        `curl -XDELETE ${URL}`,
+        `curl -sSXDELETE ${URL}`,
+        `curl -sX DELETE ${URL}`,
+        `curl --request DELETE ${URL}`,
+        `curl --request=DELETE ${URL}`,
+        `curl --url=${URL} -X DELETE`,
+        'curl -X DELETE https://api.render.com./v1/services/x',
+        `curl -X delete ${URL}`,
+        `curl -X DELETE --url ${URL}`,
+        `curl -sS -H "Authorization: Bearer $KEY" -X DELETE "${URL}"`,
+        'curl -X DELETE https://user@API.RENDER.COM:443/v1/services/x',
+        `onecli run --agent ag-example -- curl -X DELETE ${URL}`,
+        `sudo curl -X DELETE ${URL}`,
+        `x=$(curl -X DELETE ${URL})`,
+        'BASE=https://api.render.com/v1; curl -X DELETE "$BASE/postgres/x"',
+        `M=DELETE; curl -X "$M" ${URL}`,
+        `wget --method=DELETE ${URL}`,
+        `wget --method DELETE -qO- ${URL}`,
+        `wget --meth=delete ${URL}`,
+        `http DELETE ${URL}`,
+        'https DELETE api.render.com/v1/services/x',
+        `http --timeout=3 DELETE ${URL}`,
+        `http -A bearer -a key DELETE ${URL}`,
+        `M=DELETE; http "$M" ${URL}`,
+        `xh DELETE --timeout 3 ${URL}`,
+        `xh delete ${URL}`,
+        `xhs delete ${URL}`,
+        `xhttps delete ${URL}`,
+        `wget --met=DELETE ${URL}`,
+        `wget --me=DELETE ${URL}`,
+        `wget -emethod=DELETE ${URL}`,
+        `wget -qe method=DELETE ${URL}`,
+        `wget -e 'method = DELETE' ${URL}`,
+        `wget -e METHOD=delete ${URL}`,
+        `curl -X DELETE ${URL} --next -X GET https://example.net/x`,
+        `curl -X DELETE ${URL} -: --request POST https://example.net/x`,
+        `curl https://example.net/x --next -X DELETE ${URL}`,
+        `wget -e method=DELETE ${URL}`,
+        `wget --execute=method=delete ${URL}`,
+        `wget --execute method=DELETE ${URL}`,
+        `curl -x http://127.0.0.1:3128 -X DELETE ${URL}`,
+        `curl -X GET -X DELETE ${URL}`,
+        `curl --expand-request DELETE ${URL}`,
+        'BASE=https://api.render.com/v1; curl -x http://127.0.0.1:3128 -X DELETE "$BASE/postgres/x"',
+        'BASE=https://api.render.com/v1; curl -X DELETE "$BASE/a" https://example.net/b',
+    ])('%s stops for a production approval', command => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test.each([
+        `curl ${URL}`,
+        `curl -X GET ${URL}`,
+        `curl -sS -H "Authorization: Bearer $KEY" ${URL}`,
+        `curl -X POST ${URL}/suspend`,
+        `curl -H "X-Note: -X DELETE" ${URL}`,
+        `curl -HXDELETE ${URL}`,
+        `curl -d DELETE ${URL}`,
+        `curl --request-target DELETE ${URL}`,
+        'curl -X DELETE https://api.render.com.example.net/v1/x',
+        'curl -X DELETE https://example.net/api.render.com/x',
+        'curl -X DELETE https://example.net/x',
+        'curl -X DELETE "$TARGET"',
+        `curl -X "$METHOD" ${URL}`,
+        `curl -X DELETE -X GET ${URL}`,
+        `M=GET; curl -X "$M" ${URL}`,
+        `M=POST; curl -X "$M" ${URL}/restart`,
+        `curl -X "\${M:-GET}" ${URL}`,
+        'curl -X DELETE localhost:3000/x && curl https://api.render.com/v1/services',
+        'http DELETE example.net/x; http api.render.com/v1/services',
+        'curl -X DELETE "https://example.net/items/$ID"; curl https://api.render.com/v1/services',
+        'BASE=https://api.render.com/v1; http GET "$BASE/services"',
+        'BASE=https://api.render.com/v1; http POST "$BASE/services/x/deploys"',
+        'U=https://api.render.com/v1/services; xh "$U"',
+        `xh --bearer="$KEY" ${URL}`,
+        `http --auth="$KEY" ${URL}`,
+        `http -A bearer --auth="$KEY" GET ${URL}`,
+        `http --session="$S" GET ${URL}`,
+        `wget ${URL}?method=delete`,
+        'curl -X DELETE https://example.net/x; curl https://api.render.com/v1/services',
+        `wget -qO- ${URL}`,
+        `wget --method=GET ${URL}`,
+        `http ${URL}`,
+        `http GET ${URL}`,
+        `http --auth "$KEY" ${URL}`,
+        `http -A bearer -a "$KEY" GET ${URL}`,
+        `http POST ${URL} name=delete`,
+        `http ${URL} note=DELETE`,
+        `http -a delete GET ${URL}`,
+        `http -a delete PUT ${URL}`,
+        `http -a delete PATCH ${URL}`,
+        `http -a delete HEAD ${URL}`,
+        `http -a delete OPTIONS ${URL}`,
+        `curl -X DELETE https://example.net/x --next ${URL}`,
+        `curl --data-raw -XDELETE ${URL}`,
+        `curl --header -XDELETE ${URL}`,
+        `curl --output -XDELETE ${URL}`,
+        `curl --data method=delete ${URL}`,
+        `wget --post-data 'method=delete' ${URL}`,
+        `wget --method=POST --body-data method=delete ${URL}`,
+        `wget -O method=delete ${URL}`,
+        `http ${URL} -o delete`,
+        `http ${URL} "Authorization: Bearer $KEY"`,
+    ])('%s needs no approval', command => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    const DEV_VAR = `https://api.render.com/v1/services/${DEV}/env-vars/FOO`;
+    const PROD_VAR = `https://api.render.com/v1/services/${PROD}/env-vars/FOO`;
+
+    test.each([
+        `curl -X DELETE ${DEV_VAR}`,
+        `curl -sS -X DELETE ${DEV_VAR}`,
+        `curl -sSXDELETE ${DEV_VAR}`,
+        `curl -sX DELETE ${DEV_VAR}`,
+        `curl --request DELETE ${DEV_VAR}`,
+        `curl -X DELETE ${DEV_VAR} ${DEV_VAR}`,
+        `curl -sS -H "Authorization: Bearer $KEY" -X DELETE ${DEV_VAR}`,
+        `curl -sS --header "Authorization: Bearer \${KEY}" -X DELETE ${DEV_VAR}`,
+        `curl -sS -H "Accept: application/json" -X DELETE ${DEV_VAR}`,
+        `curl -sS -o /dev/null -w "%{http_code}\\n" -X DELETE ${DEV_VAR}`,
+        `curl --silent --show-error --fail --max-time 30 -X DELETE ${DEV_VAR}`,
+        `curl -X DELETE https://api.render.com/v1/services/${DEV}`,
+        `curl -X DELETE https://api.render.com/v1/services/${DEV_CRON}`,
+        `curl -X DELETE api.render.com/v1/services/${DEV}/custom-domains/www.example.net`,
+    ])('%s is on a listed dev resource, so it runs', command => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['a production id', `curl -X DELETE ${PROD_VAR}`],
+        ['a production database', `curl -X DELETE https://api.render.com/v1/postgres/${PROD_DB}`],
+        ['a dev and a production URL', `curl -X DELETE ${DEV_VAR} ${PROD_VAR}`],
+        ['a Render path with no id', `curl -X DELETE ${DEV_VAR} https://api.render.com/v1/services`],
+        ['a production id after a listed one', `curl -X DELETE https://api.render.com/v1/env-groups/${DEV}/services/${PROD}`],
+        ['a later transfer', `curl -X DELETE ${DEV_VAR} --next -X DELETE ${PROD_VAR}`],
+        ['a dot segment', `curl -X DELETE https://api.render.com/v1/services/${DEV}/../other`],
+        ['an escape', `curl -X DELETE https://api.render.com/v1/services/${DEV}/%2e%2e/other`],
+        ['a query', `curl -X DELETE "${DEV_VAR}?x=1"`],
+        ['a login', `curl -X DELETE https://user@api.render.com/v1/services/${DEV}/env-vars/FOO`],
+        ['plain http', `curl -X DELETE http://api.render.com/v1/services/${DEV}/env-vars/FOO`],
+        ['the id in a variable', 'curl -X DELETE https://api.render.com/v1/services/$SVC/env-vars/FOO'],
+        ['the URL in a variable', `U=${DEV_VAR}; curl -X DELETE "$U"`],
+        ['another word unread', `curl -X DELETE ${DEV_VAR} "$OTHER"`],
+        ['a request target', `curl -X DELETE --request-target /v1/postgres/%64pg-x ${DEV_VAR}`],
+        ['a config file', `curl -K extra.cfg -X DELETE ${DEV_VAR}`],
+        ['a config file behind a switch', `curl -4K extra.cfg -X DELETE ${DEV_VAR}`],
+        ['a shortened config option', `curl --conf extra.cfg -X DELETE ${DEV_VAR}`],
+        ['a URL file', `curl -X DELETE --url @urls.txt ${DEV_VAR}`],
+        ['a curl variable', `curl --variable U=x --expand-url '{{U}}' -X DELETE ${DEV_VAR}`],
+        ['an unquoted header variable', `curl -H $X -X DELETE ${DEV_VAR}`],
+        ['an attached header variable', `curl -H"$X" -X DELETE ${DEV_VAR}`],
+        ['a header outside the list', `curl -H "X-Note: yes" -X DELETE ${DEV_VAR}`],
+        ['a bearer header with no spaces', `curl -H Authorization:Bearertoken -X DELETE ${DEV_VAR}`],
+        ['a bearer value that can split', `curl -H Authorization:Bearer$X -X DELETE ${DEV_VAR}`],
+        ['a bearer variable outside the quotes', `curl -H "Authorization: Bearer "$X -X DELETE ${DEV_VAR}`],
+        ['a bearer variable in single-quoted parts', `curl -H 'Authorization: Bearer '$X -X DELETE ${DEV_VAR}`],
+        ['a bearer variable after escaped spaces', `curl -H Authorization:\\ Bearer\\ $X -X DELETE ${DEV_VAR}`],
+        ['a bearer value joined to a split word', `curl -H "Authorization: Bearer x"$IFS"${PROD_VAR}" -X DELETE ${DEV_VAR}`],
+        ['a bearer value from a file', `curl -H "Authorization: Bearer "$(<split.txt) -X DELETE ${DEV_VAR}`],
+        ['two variables in the header', `curl -H "Authorization: Bearer $A$B" -X DELETE ${DEV_VAR}`],
+        ['a header naming a production id', `curl -H "X-Target: ${PROD}" -X DELETE ${DEV_VAR}`],
+        ['a header flag as another flag\'s value', `curl -d -H "$U" -X DELETE ${DEV_VAR}`],
+        ['a timeout that is not a number', `curl --max-time soon -X DELETE ${DEV_VAR}`],
+        ['output to a file', `curl -o ~/.curlrc -X DELETE ${DEV_VAR}`],
+        ['a write-out reading a file', `curl -w @format.txt -X DELETE ${DEV_VAR}`],
+        ['a second method', `curl -X POST -X DELETE ${DEV_VAR}`],
+        ['wget', `wget --method=DELETE ${DEV_VAR}`],
+        ['wget reading a URL file', `wget --method=DELETE -i targets.txt ${DEV_VAR}`],
+        ['HTTPie', `http DELETE ${DEV_VAR}`],
+        ['an environment assignment', `CURL_HOME=/tmp/x curl -X DELETE ${DEV_VAR}`],
+        ['HOME changed', `HOME=/tmp/x curl -X DELETE ${DEV_VAR}`],
+        ['HOME set on the line first', `HOME=/tmp/x; curl -X DELETE ${DEV_VAR}`],
+        ['env', `env CURL_HOME=/tmp/x curl -X DELETE ${DEV_VAR}`],
+        ['sudo', `sudo curl -X DELETE ${DEV_VAR}`],
+        ['a path to another curl', `./curl -X DELETE ${DEV_VAR}`],
+        ['another command first', `printf 'url=x' > ~/.curlrc; curl -X DELETE ${DEV_VAR}`],
+        ['export first', `export CURL_HOME=/tmp/x; curl -X DELETE ${DEV_VAR}`],
+        ['a function named curl', `curl() { ./x; }; curl -X DELETE ${DEV_VAR}`],
+        ['a sourced file', `source x.sh; curl -X DELETE ${DEV_VAR}`],
+        ['a pipeline', `curl -X DELETE ${DEV_VAR} | cat`],
+        ['xargs', `echo x | xargs curl -X DELETE ${DEV_VAR}`],
+        ['find', `find . -name x -exec curl -X DELETE ${DEV_VAR} \\;`],
+        ['a write-out that picks a file', `curl -X DELETE ${DEV_VAR} -w '%output{Makefile}oops'`],
+    ])('%s stays held', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test.each([
+        `xh --resolve api.render.com:10.0.0.1 delete ${URL}`,
+        `http --cert api.render.com/c.pem DELETE ${URL}`,
+        `xh DELETE ${URL} --output GET --resolve api.render.com:10.0.0.1`,
+        `xh DELETE --follow ${URL} --output GET`,
+        `xh --cert=api.render.com/c.pem delete ${URL}`,
+        `xh --cert api.render.com/c.pem delete --follow ${URL}`,
+    ])('%s reads the method ahead of the real URL', command => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test.each([
+        `curl -X DELETE https://api.render.com/v1/postgres/${DEV_DB}`,
+        `curl -X DELETE https://api.render.com/v1/key-value/${DEV_KV}`,
+        `curl -X DELETE https://api.render.com/v1/redis/${DEV_KV}`,
+        `curl -X DELETE https://api.render.com/v1/cron-jobs/${DEV_CRON}`,
+        `render postgres delete ${DEV_DB}`,
+        `render pg delete ${DEV_DB}`,
+        `render keyvalues delete ${DEV_KV}`,
+        `render kv delete ${DEV_KV}`,
+    ])('%s keeps its card, because a deleted datastore has no backup', command => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test.each([
+        `render services delete ${DEV}`,
+        `render postgres suspend ${DEV_DB}`,
+    ])('%s is on a listed dev resource, so it runs', command => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test('the card says what a delete can lose', () => {
+        expect(describeGate(`curl -sS -X DELETE ${URL}`, 'gated', '/tmp').summary).toContain("some deletes can't be undone: Render keeps no backup of a deleted database");
     });
 });

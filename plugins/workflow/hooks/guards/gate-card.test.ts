@@ -98,7 +98,7 @@ describe('destructive approval description', () => {
         },
         {
             name: 'a single-quoted $X is SQL text, not a shell variable',
-            command: `X=1; psql -c 'delete from t where id = $X'`,
+            command: `X=1; psql -h db.example -c 'delete from t where id = $X'`,
             label: 'Delete rows from PostgreSQL table t',
             has: ['where `id = $X`'],
         },
@@ -247,7 +247,7 @@ describe('destructive approval description', () => {
 
 describe('SQL descriptions claim no WHERE only for a statement the guard parsed whole', () => {
     // A psql heredoc writes a dollar-quoted literal as `\$tag\$` so the shell passes `$tag$` through.
-    const heredocUpdate = String.raw`psql "$DB_URL" <<SQL
+    const heredocUpdate = String.raw`psql -h db.example "$DB_URL" <<SQL
 BEGIN;
 UPDATE app.users SET role='X', access=\$ua\$[{"scope":"reports","level":"read"}]\$ua\$::jsonb, updated_at=now() WHERE id = 1 AND tenant_id='t' RETURNING id;
 COMMIT;
@@ -259,7 +259,7 @@ UPDATE app.users
  WHERE id = 7 AND access = '{"admin": false}'::jsonb
 RETURNING id, access->'admin' AS admin;
 EOF
-psql "$DB_URL" -f grant.sql`;
+psql -h db.example "$DB_URL" -f grant.sql`;
 
     test.each([
         ['a dollar-quoted literal written for an unquoted heredoc', heredocUpdate, "`id = 1 AND tenant_id='t'`"],
@@ -272,12 +272,12 @@ psql "$DB_URL" -f grant.sql`;
         expect(c.summary).toContain("The guard couldn't fully parse this statement");
         expect(c.summary).toContain(`Read another way, it is limited to rows where ${where}.`);
         expect(c.summary.split('\n')[0]).toBe(
-            "Changes rows in the table `app.users` in a PostgreSQL database (the guard couldn't tell which rows); only a backup can bring back what it deletes or overwrites.",
+            "Changes rows in the table `app.users` in the PostgreSQL database on `db.example` (the guard couldn't tell which rows); only a backup can bring back what it deletes or overwrites.",
         );
     });
 
     test("another statement's WHERE on the same table is never borrowed", () => {
-        const c = card(String.raw`V=$(cat ./v.txt); psql "$DB_URL" <<SQL
+        const c = card(String.raw`V=$(cat ./v.txt); psql -h db.example "$DB_URL" <<SQL
 UPDATE app.t SET v = \$q\$${'$'}{V}\$q\$;
 UPDATE app.t SET v = 1 WHERE id = 7;
 SQL`);
@@ -286,13 +286,13 @@ SQL`);
     });
 
     test('a literal that never closes is described as not parsed, and gates as before', () => {
-        const c = card(`psql -c "UPDATE app.users SET note = 'unterminated WHERE id = 1"`);
+        const c = card(`psql -h db.example -c "UPDATE app.users SET note = 'unterminated WHERE id = 1"`);
         expect(c.summary).not.toContain('every row');
         expect(c.summary).toContain("The guard couldn't fully parse this statement");
     });
 
     test('a DELETE whose WHERE sits after a literal that never closes names no rows', () => {
-        const c = card(`psql -c "DELETE FROM app.sessions WHERE note = 'open"`);
+        const c = card(`psql -h db.example -c "DELETE FROM app.sessions WHERE note = 'open"`);
         expect(c.summary).not.toContain('every row');
         expect(c.summary).not.toContain('where `');
         expect(c.summary).toContain("The guard couldn't fully parse this statement");
@@ -305,21 +305,21 @@ SQL`);
     });
 
     test("a DELETE's condition is its own WHERE, not one inside a literal or a subquery", () => {
-        expect(card(`psql -c "DELETE FROM app.t RETURNING 'WHERE x'"`).summary).toContain('every row in `app.t` (no WHERE clause)');
-        expect(card(`psql -c "DELETE FROM app.t USING (SELECT id FROM app.u WHERE gone) g RETURNING 1"`).summary)
+        expect(card(`psql -h db.example -c "DELETE FROM app.t RETURNING 'WHERE x'"`).summary).toContain('every row in `app.t` (no WHERE clause)');
+        expect(card(`psql -h db.example -c "DELETE FROM app.t USING (SELECT id FROM app.u WHERE gone) g RETURNING 1"`).summary)
             .toContain('chosen by a condition inside a subquery');
     });
 
     test('a statement that runs twice is listed twice, though each reading of the input finds it', () => {
-        const c = card(`psql -c 'UPDATE app.balances SET amount = amount / 2; UPDATE app.balances SET amount = amount / 2;'`);
+        const c = card(`psql -h db.example -c 'UPDATE app.balances SET amount = amount / 2; UPDATE app.balances SET amount = amount / 2;'`);
         expect(c.label).toBe('Update every row in PostgreSQL table app.balances (+1 more)');
         expect(c.summary.split('\n')[0]).toContain('plus 1 more statement that can delete or overwrite data');
-        const heredoc = card('psql <<SQL\nUPDATE app.balances SET amount = 0;\nSQL');
+        const heredoc = card('psql -h db.example <<SQL\nUPDATE app.balances SET amount = 0;\nSQL');
         expect(heredoc.label).toBe('Update every row in PostgreSQL table app.balances');
     });
 
     test('a statement after block words is described by its verb', () => {
-        const c = card(`psql -c "DO \\$\\$ BEGIN DELETE FROM app.t WHERE id = 3; END \\$\\$"`);
+        const c = card(`psql -h db.example -c "DO \\$\\$ BEGIN DELETE FROM app.t WHERE id = 3; END \\$\\$"`);
         expect(c.label).toBe('Delete rows from PostgreSQL table app.t');
         expect(c.summary).toContain('where `id = 3`');
     });
