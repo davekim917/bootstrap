@@ -6078,6 +6078,7 @@ const JINJA_STRING = /(["'])((?:\\.|(?!\1)[^\\])*)\1/g;
 const DBT_ADAPTER_WRITE = /\badapter\.(?:drop_relation|drop_schema|truncate_relation)\b/;
 const SQL_BUILT_DROP = /["']\s*drop\s*["']/i;
 const DBT_DRY_RUN_ARG = /(?:^|[{,\s])["']?dry_run["']?\s*:\s*["']?true["']?\s*[,}]/i;
+const DBT_FLAT_ARGS = /^\s*\{[^{}[\]$`]*\}\s*$/;
 
 /** The macro a `dbt run-operation` step names, or null when the line doesn't show it. */
 function dbtMacroName(args: string[]): string | null {
@@ -6142,7 +6143,8 @@ function dbtMacroReason(cmd: ResolvedCommand): string | null {
         const adapter = DBT_ADAPTER_WRITE.exec(macro)?.[0];
         if (adapter) return `dbt macro ${name} calls ${adapter}.`;
         const args = flagValue(cmd.args, ['--args']) ?? '';
-        if (SQL_BUILT_DROP.test(macro) && (/[$`]/.test(args) || !DBT_DRY_RUN_ARG.test(args))) {
+        const dryRun = DBT_FLAT_ARGS.test(args) && args.match(/dry_run/gi)?.length === 1 && DBT_DRY_RUN_ARG.test(args);
+        if (SQL_BUILT_DROP.test(macro) && !dryRun) {
             return `dbt macro ${name} builds DROP statements, and --args doesn't set dry_run true on the line.`;
         }
     }
