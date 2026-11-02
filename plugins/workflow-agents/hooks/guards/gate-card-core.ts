@@ -367,7 +367,8 @@ export function evalWord(
         const c = text[i];
         if (quote === '"') {
             if (c === '"') { quote = ''; if (keepQuotes) out += c; i++; }
-            else if (c === '\\' && i + 1 < text.length && '"\\$`\n'.includes(text[i + 1])) { if (keepQuotes) out += c; out += text[i + 1]; i += 2; }
+            else if (c === '\\' && text[i + 1] === '\n') i += 2;
+            else if (c === '\\' && i + 1 < text.length && '"\\$`'.includes(text[i + 1])) { if (keepQuotes) out += c; out += text[i + 1]; i += 2; }
             else if (c === '$') dollar();
             else if (c === '`') { const e = text.indexOf('`', i + 1); const end = e < 0 ? text.length : e + 1; out += text.slice(i, end); note(text.slice(i, end)); i = end; }
             else { out += c; i++; }
@@ -399,6 +400,8 @@ export function evalWord(
             quote = '"';
             if (keepQuotes) out += '"';
             i++;
+        } else if (c === '\\' && text[i + 1] === '\n') {
+            i += 2;
         } else if (c === '\\' && i + 1 < text.length) {
             if (keepQuotes) out += c;
             out += text[i + 1];

@@ -4,7 +4,7 @@ import { PLATFORM_DESTRUCTIVE, evaluateBashCommand } from './block-destructive-c
 // One command per checkGatedCommand rule. A rule added there without a row here, or without its words in
 // RUNTIME_PROBES, lets xargs input or a find match supply those words unseen.
 const GATED_BY_RULE: string[][] = [
-    ['psql', '-c', 'DROP TABLE users'],
+    ['psql', '-h', 'db.example', '-c', 'DROP TABLE users'],
     ['snow', 'sql', '-q', 'DROP TABLE prod.orders'],
     ['mongosh', '--eval', 'db.users.drop()'],
     ['redis-cli', 'FLUSHALL'],
@@ -24,7 +24,12 @@ const GATED_BY_RULE: string[][] = [
     ['docker', 'system', 'prune'],
     ['docker', 'volume', 'rm', 'data'],
     ['helm', 'uninstall', 'app'],
-    ...Object.entries(PLATFORM_DESTRUCTIVE).flatMap(([cli, verbs]) => [...verbs].map(verb => [cli, verb, 'x'])),
+    // `render delete x` and the like are not Render CLI commands, so the guard refuses them outright; render's rule is
+    // exercised with commands the CLI has.
+    ...Object.entries(PLATFORM_DESTRUCTIVE).filter(([cli]) => cli !== 'render').flatMap(([cli, verbs]) => [...verbs].map(verb => [cli, verb, 'x'])),
+    ['render', 'services', 'delete', 'x'],
+    ['render', 'restart', 'x'],
+    ['render', 'deploys', 'create', 'x'],
     ['heroku', 'pg:reset'],
     ['vercel', 'remove', 'app'],
     ['netlify', 'sites:delete'],

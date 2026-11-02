@@ -26,6 +26,10 @@
  *
  * Known limitations:
  *   - Interpreter-based deletion (python -c os.remove, perl -e unlink) is not detected
+ *   - A DELETE to the Render API is seen only from curl, wget, HTTPie and xh, with the method and URL written on the
+ *     client's own words or in a variable that a plain assignment or export on the line sets. Scripts, curl config
+ *     files and --variable, flags in a variable, loop variables, function arguments, declare, variables under $(...),
+ *     xargs or find, and disguised URLs all go through. Render's own roles are the real control
  *   - mv, cp /dev/null, and redirect-based truncation (> file) are not in scope
  */
 import { accessSync, closeSync, lstatSync, constants as fsConstants, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, existsSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
@@ -1777,8 +1781,86 @@ const RENDER_PLAIN_OUTPUT = new Set(['json', 'yaml', 'text']);
 const RENDER_EXPANDS = /[[\]*?{}$`~]/;
 export const RENDER_RESOURCE_ID_RE = /^[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?$/;
 export const RENDER_CHANGE_REASON = 'Production change on Render';
+// `render services --help` shows its usage as `render services [subcommand]`: the CLI reads `list` as an argument to
+// `services`, whose children include update and delete, so `services list` is not a leaf there.
+const RENDER_NOT_LEAF = new Set(['services list']);
 
-interface RenderShape { command: string; entry: RenderEntry; operands: string[]; output: string | undefined; help: boolean }
+// Every command path of the Render CLI the agent image installs, as `scripts/render-cli-tree.sh` prints it run in that
+// image. A word the CLI doesn't know there is not a command: it only errors, prints help, or (after `services`) is
+// ignored, so a line naming one is refused with a pointer to the help instead of carded as a production change.
+export const RENDER_CLI_VERSION = '2.28.0';
+export const RENDER_CLI_TREE: ReadonlySet<string> = new Set([
+    'blueprints', 'blueprints validate', 'completion', 'completion bash', 'completion fish', 'completion powershell',
+    'completion zsh', 'deploys', 'deploys cancel', 'deploys create', 'deploys list', 'docs', 'ea', 'ea objects',
+    'ea objects delete', 'ea objects get', 'ea objects list', 'ea objects put', 'ea sandboxes', 'ea sandboxes copy',
+    'ea sandboxes create', 'ea sandboxes exec', 'ea sandboxes list', 'ea sandboxes snapshots',
+    'ea sandboxes snapshots create', 'ea sandboxes snapshots delete', 'ea sandboxes snapshots get',
+    'ea sandboxes snapshots list', 'ea sandboxes stop', 'ea sandbox-groups', 'ea sandbox-groups list',
+    'environments', 'help', 'jobs', 'jobs cancel', 'jobs create', 'jobs list', 'keyvalues', 'keyvalues create',
+    'keyvalues delete', 'keyvalues get', 'keyvalues list', 'keyvalues resume', 'keyvalues suspend',
+    'keyvalues update', 'kv-cli', 'login', 'logout', 'logs', 'pgcli', 'postgres', 'postgres create',
+    'postgres delete', 'postgres get', 'postgres list', 'postgres resume', 'postgres suspend', 'postgres update',
+    'projects', 'psql', 'restart', 'services', 'services create', 'services delete', 'services instances',
+    'services update', 'skills', 'skills install', 'skills list', 'skills remove', 'skills update', 'ssh', 'whoami',
+    'workflows', 'workflows cancel', 'workflows create', 'workflows dev', 'workflows init', 'workflows list',
+    'workflows start', 'workflows tasks', 'workflows tasks list', 'workflows tasks runs',
+    'workflows tasks runs cancel', 'workflows tasks runs list', 'workflows tasks runs show',
+    'workflows tasks runs start', 'workflows versions', 'workflows versions list', 'workflows versions release',
+    'workspace', 'workspace current', 'workspaces', 'workspace set',
+]);
+const RENDER_KNOWN = new Set([...RENDER_CLI_TREE, ...RENDER_COMMANDS.keys()]);
+
+/** Null once a shell expansion, `--` or a flag outside the table comes first: what follows can't be read as a command. */
+export function renderUnknownCommand(args: string[]): string | null {
+    const written: string[] = [];
+    let node = '';
+    let flags: RenderFlags = RENDER_GLOBAL;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--' || RENDER_EXPANDS.test(a)) return null;
+        if (a === '-h' || a === '--help') continue;
+        if (a.startsWith('-') && a !== '-') {
+            const at = a.startsWith('--') ? a.indexOf('=') : -1;
+            const flag = a.startsWith('--') ? (at < 0 ? a : a.slice(0, at)) : RENDER_SHORT.get(a[1]);
+            const arity = flag && Object.hasOwn(flags, flag) ? flags[flag] : undefined;
+            if (!arity) return null;
+            if (arity === 'value' && (a.startsWith('--') ? at < 0 : a.length === 2)) {
+                const value = args[++i];
+                if (value === undefined || RENDER_EXPANDS.test(value)) return null;
+            }
+            continue;
+        }
+        let word = node === '' ? RENDER_ALIASES.get(a) ?? a : a === 'ls' ? 'list' : a;
+        if (node === 'workflows' && word === 'runs') word = 'tasks runs';
+        const next = node === '' ? word : `${node} ${word}`;
+        written.push(a);
+        if (!RENDER_KNOWN.has(next)) return written.join(' ');
+        node = next;
+        if (![...RENDER_KNOWN].some(c => c.startsWith(`${node} `))) return null;
+        flags = { ...RENDER_GLOBAL, ...RENDER_COMMANDS.get(node)?.flags };
+    }
+    return null;
+}
+
+/**
+ * Whether a word the shell expands can stand after `command`. It may become any number of words, flags included, so it
+ * is read only after a read whose command path is already complete: one with no subcommand left for it to become.
+ */
+function renderExpansionSafe(command: string): boolean {
+    return RENDER_COMMANDS.get(command)!.kind !== 'proof' && !RENDER_NOT_LEAF.has(command)
+        && ![...RENDER_COMMANDS.keys()].some(c => c.startsWith(`${command} `));
+}
+
+interface RenderShape {
+    command: string;
+    entry: RenderEntry;
+    operands: string[];
+    output: string | undefined;
+    help: boolean;
+    expanded: boolean;
+    /** The output flag in force was given after the last expanded word, so no expansion can override it. */
+    outputAfterExpansion: boolean;
+}
 
 /**
  * A render line read word by word against its own command's flags: the command its leading words name (aliases
@@ -1792,9 +1874,24 @@ function renderShape(args: string[]): RenderShape | null {
     let help = false;
     let flagsFor: RenderFlags = RENDER_GLOBAL;
     let command: string | null = null;
+    let expandedAt = -1;
+    let outputAt = -1;
+    const resolve = (): boolean => {
+        if (command !== null) return true;
+        command = renderCommandOf(words);
+        if (command === null) return false;
+        flagsFor = { ...RENDER_GLOBAL, ...RENDER_COMMANDS.get(command)!.flags };
+        return true;
+    };
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (RENDER_EXPANDS.test(a) || a === '--') return null;
+        if (a === '--') return null;
+        if (RENDER_EXPANDS.test(a)) {
+            if (!resolve() || !renderExpansionSafe(command!)) return null;
+            expandedAt = i;
+            words.push(a);
+            continue;
+        }
         if (a === '-h' || a === '--help') {
             help = true;
             continue;
@@ -1806,11 +1903,7 @@ function renderShape(args: string[]): RenderShape | null {
         const at = a.startsWith('--') ? a.indexOf('=') : -1;
         const flag = a.startsWith('--') ? (at < 0 ? a : a.slice(0, at)) : RENDER_SHORT.get(a[1]);
         if (!flag) return null;
-        if (command === null && !(flag in RENDER_GLOBAL)) {
-            command = renderCommandOf(words);
-            if (command === null) return null;
-            flagsFor = { ...RENDER_GLOBAL, ...RENDER_COMMANDS.get(command)!.flags };
-        }
+        if (command === null && !(flag in RENDER_GLOBAL) && !resolve()) return null;
         const arity = Object.hasOwn(flagsFor, flag) ? flagsFor[flag] : undefined;
         if (!arity) return null;
         if (arity === 'switch') {
@@ -1818,12 +1911,25 @@ function renderShape(args: string[]): RenderShape | null {
             continue;
         }
         const value = a.startsWith('--') ? (at < 0 ? args[++i] : a.slice(at + 1)) : a.length > 2 ? a.slice(2).replace(/^=/, '') : args[++i];
-        if (value === undefined || RENDER_EXPANDS.test(value)) return null;
+        if (value === undefined) return null;
+        if (RENDER_EXPANDS.test(value)) {
+            if (command === null || !renderExpansionSafe(command)) return null;
+            expandedAt = i;
+        }
+        if (flag === '--output') outputAt = i;
         values.set(flag, value);
     }
-    command ??= renderCommandOf(words);
-    if (command === null) return null;
-    return { command, entry: RENDER_COMMANDS.get(command)!, operands: words.slice(command.split(' ').length), output: values.get('--output'), help };
+    if (!resolve()) return null;
+    const found: string = command!;
+    return {
+        command: found,
+        entry: RENDER_COMMANDS.get(found)!,
+        operands: words.slice(found.split(' ').length),
+        output: values.get('--output'),
+        help,
+        expanded: expandedAt >= 0,
+        outputAfterExpansion: outputAt > expandedAt,
+    };
 }
 
 /** The longest known command the leading words name, with `ls` read as `list`; null when they name none. */
@@ -1840,20 +1946,139 @@ function renderCommandOf(words: string[]): string | null {
     return null;
 }
 
+/** A command path from the CLI's tree followed only by help flags: the CLI prints that command's help and runs nothing. */
+function renderHelpOnly(args: string[]): boolean {
+    const at = args.findIndex(a => a.startsWith('-'));
+    return at > 0 && args.slice(at).every(a => a === '-h' || a === '--help') && RENDER_KNOWN.has(args.slice(0, at).join(' '));
+}
+
 export function renderChangeReason(args: string[]): string | null {
-    if (args.length === 0 || (args.length === 1 && (args[0] === '-v' || args[0] === '--version'))) return null;
+    if (args.every(a => ['-h', '--help', '-v', '--version'].includes(a)) || renderHelpOnly(args)) return null;
     const shape = renderShape(args);
-    if (shape?.help) return null;
+    // An expanded word could hold --help=false, so help ends the check only on a line with none.
+    if (shape?.help && !shape.expanded) return null;
     if (shape && shape.entry.kind !== 'proof') {
         const subcommand = !RENDER_OPEN_READS.has(shape.command.split(' ')[0]) && shape.operands.length > 0
             && [...RENDER_COMMANDS.keys()].some(c => c.startsWith(`${shape.command} `));
         if (!subcommand) {
-            if (shape.entry.kind === 'read' || RENDER_PLAIN_OUTPUT.has(shape.output ?? '')) return null;
-            return `${RENDER_CHANGE_REASON} possible: render ${shape.command} can open an interactive menu that deploys. Add -o json (or yaml/text) to read it without approval.`;
+            if (shape.entry.kind === 'read' || (RENDER_PLAIN_OUTPUT.has(shape.output ?? '') && shape.outputAfterExpansion)) return null;
+            const where = shape.expanded ? ', after the last variable,' : '';
+            return `${RENDER_CHANGE_REASON} possible: render ${shape.command} can open an interactive menu that deploys. Add -o json (or yaml/text)${where} to read it without approval.`;
         }
     }
     const words = shape?.command ?? args.filter(a => !a.startsWith('-')).slice(0, 3).join(' ');
     return `${RENDER_CHANGE_REASON} (render ${words || args.join(' ')}).`;
+}
+
+const RENDER_API_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs', 'xhttps']);
+const RENDER_API_URL = /^(?:--url=)?(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^/@]*@)?api\.render\.com\.?(?=[:/?#]|$)/i;
+// curl's single-letter options that take a value: in a bundle like -sSXDELETE, the first one owns the rest of the word.
+const CURL_VALUE_LETTERS = 'AbcCdDeEFHKmoPQrtTuUwxXyYz';
+// curl's long options whose value is free text, so a value can look like a flag. The list is the common ones, not all.
+const CURL_TEXT_OPTIONS = /^--(?:data(?:-\w+)?|json|form(?:-string)?|header|output|cookie|user-agent|referer)$/;
+const HTTP_VERB = /^(?:get|head|post|put|patch|delete|options)$/i;
+const CURL_DEV_SWITCHES = /^(?:-[sSfi]+|-[sSfi]*XDELETE|--silent|--show-error|--fail|--include)$/;
+const CURL_DEV_HEADER = /^(?:Authorization: Bearer \S+|(?:Accept|Content-Type): [\w/.+-]+)$/;
+// The header as written: only one double-quoted word holding one variable can't split into a new argument.
+const CURL_DEV_VARIABLE_WORD = /^"Authorization: Bearer \$(?:\w+|\{\w+\})"$/;
+// A plain path on one service: anything unusual in it, such as a dot segment, an escape or a query, leaves its id unread.
+const RENDER_API_RESOURCE = /^(?:https:\/\/)?api\.render\.com\/v1\/services\/((?:srv|crn)-[a-z0-9]{20})(?:\/(?!\.{1,2}(?:\/|$))[\w.-]+)*$/;
+
+/** The method words a client's command line gives, in order; the last one wins. wget also takes its option cut short. */
+function httpMethodWords(name: string, args: string[], urlAt: number): string[] {
+    // HTTPie and xh read the method as a bare word ahead of the URL.
+    if (name !== 'curl' && name !== 'wget') return args.slice(0, urlAt).filter(a => HTTP_VERB.test(a));
+    const words: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (name === 'curl' && /^-[^-]/.test(a)) {
+            for (let c = 1; c < a.length; c++) {
+                if (!CURL_VALUE_LETTERS.includes(a[c])) continue;
+                const value = a.slice(c + 1) || args[++i];
+                if (a[c] === 'X' && value !== undefined) words.push(value);
+                break;
+            }
+            continue;
+        }
+        if (name === 'curl' && CURL_TEXT_OPTIONS.test(a)) {
+            i++;
+            continue;
+        }
+        const startup = name === 'wget' ? /^(?:-\w*?e|--ex\w*=?)(.*)$/.exec(a) : null;
+        if (startup) {
+            const command = /^\s*method\s*=\s*(\S+)\s*$/i.exec(startup[1] || args[++i] || '');
+            if (command) words.push(command[1]);
+            continue;
+        }
+        const [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, undefined];
+        if (!(name === 'curl' ? /^--(?:expand-)?request$/ : /^--me(?:t(?:h(?:od?)?)?)?$/).test(flag)) continue;
+        const value = inline ?? args[++i];
+        if (value !== undefined) words.push(value);
+    }
+    return words;
+}
+
+/** The transfers a client's line makes: curl's --next starts a new one, with its own method and URLs. */
+function httpTransfers(name: string, args: string[]): string[][] {
+    if (name !== 'curl') return [args];
+    const transfers: string[][] = [[]];
+    for (const a of args) {
+        if (a === '--next' || a === '-:') transfers.push([]);
+        else transfers.at(-1)!.push(a);
+    }
+    return transfers;
+}
+
+/** The Render API URLs a raw HTTP client's line sends a DELETE to. */
+function renderApiDeleteUrls(cmd: ResolvedCommand): string[] {
+    return httpTransfers(cmd.name, expandedEmitter(cmd)?.args ?? cmd.args).flatMap(args => {
+        // The first Render word that isn't an option's value is the URL, so a host in --cert or --resolve doesn't move it.
+        const positional = args.findIndex((a, i) => RENDER_API_URL.test(a) && !args[i - 1]?.startsWith('-'));
+        const url = positional >= 0 ? positional : args.findLastIndex(a => RENDER_API_URL.test(a));
+        const deletes = url >= 0 && httpMethodWords(cmd.name, args, url).at(-1)?.toUpperCase() === 'DELETE';
+        return deletes ? args.filter(a => RENDER_API_URL.test(a)) : [];
+    });
+}
+
+/**
+ * Why a raw HTTP client's DELETE to the Render API stops for approval, or null. A variable counts only when the line
+ * proves its value: a method or URL the guard can't read is left to run, since a wrongly held read is the worse failure.
+ */
+export function renderApiDeleteReason(cmd: ResolvedCommand): string | null {
+    if (!RENDER_API_CLIENTS.has(cmd.name) || !renderApiDeleteUrls(cmd).length) return null;
+    return `${RENDER_CHANGE_REASON} (DELETE to the Render API by ${cmd.name}).`;
+}
+
+/** Whether every word is one a dev-listed curl DELETE may carry. curl has too many options that add a target to list them. */
+function curlWordsAreKnown(cmd: ResolvedCommand): boolean {
+    const { args } = cmd;
+    const written = argumentWords(cmd);
+    if (args.some((a, i) => /[$`]/.test(a) && !CURL_DEV_VARIABLE_WORD.test(written[i]?.word ?? ''))) return false;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (CURL_DEV_SWITCHES.test(a) || RENDER_API_RESOURCE.test(a)) continue;
+        const value = args[++i] ?? '';
+        const known = (/^(?:-[sSfi]*X|--request)$/.test(a) && value === 'DELETE')
+            || (/^(?:-H|--header)$/.test(a) && CURL_DEV_HEADER.test(value))
+            || (/^(?:-m|--max-time|--connect-timeout)$/.test(a) && /^\d+$/.test(value))
+            || (/^(?:-o|--output)$/.test(a) && value === '/dev/null')
+            || (/^(?:-w|--write-out)$/.test(a) && /^(?:[\w\\ :]|%\{\w+\})*$/.test(value));
+        if (!known) return false;
+    }
+    return true;
+}
+
+/**
+ * The listed dev resources a raw DELETE to the Render API acts on, or null. It reads only a line that is one curl command
+ * of known words, and every id on it must be listed, so nothing on the line can add a target; the rest keeps the hold.
+ */
+function renderApiDevTarget(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string): string | null {
+    if (cmd.name !== 'curl' || !/^curl\s/.test(cmd.raw) || commands.length !== 1) return null;
+    if (changesShellState(command) || !curlWordsAreKnown(cmd)) return null;
+    const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    const ids = renderApiDeleteUrls(cmd).map(url => RENDER_API_RESOURCE.exec(url)?.[1]);
+    if (!ids.length || !renderResourceIds(cmd.args).every(id => listed.has(id))) return null;
+    return `render resource ${[...new Set(ids)].join(', ')}`;
 }
 
 const RENDER_RESOURCE_ID_IN_TEXT = new RegExp(String.raw`(?<![a-z0-9-])[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?(?![a-z0-9-])`, 'g');
@@ -2532,10 +2757,10 @@ function wordValue(word: any): string {
 
 /**
  * A command name as bash runs it. Bash drops an unquoted backslash before looking the name up, so `\rm` (the usual way
- * to skip an `rm -i` alias) and `r\m` both run `rm`; the parser leaves the backslash in.
+ * to skip an `rm -i` alias) and `r\m` both run `rm`, and a backslash-newline joins the lines; the parser leaves both in.
  */
 function unescapeCommandWord(word: string): string {
-    return word.replace(/\\(.)/gs, '$1');
+    return word.replace(/\\\n/g, '').replace(/\\(.)/gs, '$1');
 }
 
 /** A command word as the rules match it: unescaped, and by basename, so `/bin/rm`, `/opt/homebrew/bin/rm` and `\rm` are all `rm`. */
@@ -2892,6 +3117,25 @@ export function shellScript(shell: string, args: string[]): { text: string; rest
         }
     }
     return null;
+}
+
+/**
+ * The command line a tool call's `command` argument runs. A harness wraps a line as [shell, '-lc', script], so the
+ * script is the line. Any other array is shell-quoted rather than bare-joined, because each word has to stay one word:
+ * `psql -c DROP TABLE t` reads as no SQL at all. A value that is neither of these throws, for the adapter to fail
+ * closed: reading it as no command would turn the guard off for that call.
+ */
+export function commandLineOf(command: unknown): string {
+    if (typeof command === 'string') return command;
+    if (!command) return '';
+    if (!Array.isArray(command) || command.some(word => typeof word !== 'string')) {
+        throw new Error('BLOCKED: Command guard failed closed: `command` is not a string or an array of strings.');
+    }
+    const words: string[] = command;
+    const shell = basename(words[0] ?? '');
+    const script = SHELLS.has(shell) ? shellScript(shell, words.slice(1)) : null;
+    if (script && script.rest === words.length - 1) return script.text;
+    return words.map(w => /^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`).join(' ');
 }
 
 /** The command `words` (a command word and its arguments, as xargs or find -exec take them) runs, past any wrapper. */
@@ -3721,9 +3965,66 @@ export function parseDevScope(text: string): DevScope | null {
 }
 
 function renderDevTarget(cmd: ResolvedCommand): string | null {
+    // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
+    if (/^(?:postgres|keyvalues) delete$/.test(renderShape(cmd.args)?.command ?? '')) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const target = renderProvenTarget(cmd, r => listed.has(r));
     return target ? `render resource ${target}` : null;
+}
+
+/**
+ * Why a render proof command on a listed dev resource is refused rather than carded: its only obstacle is a variable or
+ * command substitution the guard can't read, which writing out clears. Null when anything else stands in the way, or
+ * when a word is literal text (a single-quoted `$`), which no rewrite can drop.
+ */
+function renderDevExpansionFix(cmd: ResolvedCommand): string | null {
+    const script = cmd.script;
+    if (!script || cmd.pos === undefined || !cmd.args.some(a => RENDER_EXPANDS.test(a))) return null;
+    let node: any;
+    try {
+        node = walkCommandNodes(parseShell(script.command)).find(n => n.pos === cmd.pos);
+    } catch {
+        return null;
+    }
+    const words: any[] = node?.suffix ?? [];
+    if (words.length !== cmd.args.length || words.some((w, i) => wordValue(w) !== cmd.args[i])) return null;
+    script.view ??= viewShell(script.command);
+    const unread: string[] = [];
+    const args: string[] = [];
+    for (let i = 0; i < cmd.args.length; i++) {
+        if (!RENDER_EXPANDS.test(cmd.args[i])) {
+            args.push(cmd.args[i]);
+            continue;
+        }
+        let written = '';
+        for (const part of words[i].parts ?? []) {
+            if (part?.type === 'Literal' || part?.type === 'SingleQuoted') {
+                written += String(part.value ?? '');
+                continue;
+            }
+            // Unquoted, an expansion can split into several words, a second operand or a flag among them.
+            if (part?.type !== 'DoubleQuoted') return null;
+            for (const inner of part.parts ?? []) {
+                if (inner?.type === 'Literal') {
+                    written += String(inner.value ?? '');
+                    continue;
+                }
+                const text = String(inner?.text ?? '');
+                // "$@" and "${a[@]}" stay several words inside quotes.
+                if (text.includes('@')) return null;
+                if (!evalWord(`"${text}"`, script.view, words[i].pos).unresolved.length) return null;
+                if (!unread.includes(text)) unread.push(text);
+                // `_` can't appear in a resource id, so a written-out operand never reads as a listed one.
+                written += '_';
+            }
+        }
+        args.push(written);
+    }
+    const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    const target = renderProvenTarget({ ...cmd, args }, r => listed.has(r));
+    if (target === null) return null;
+    const named = unread.map(u => `\`${clip(u, 80)}\``).join(', ');
+    return `${target} is listed as dev, but ${named} can't be read before the command runs, so the guard can't see what it does. Write the value out (a secret belongs in the service's environment instead) and it runs without approval.`;
 }
 
 function currentDevScope(): DevScope | null {
@@ -3990,6 +4291,7 @@ function trustedLoginConnection(cmd: ResolvedCommand): string | null {
  */
 export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
     if (cmd.name === 'render') return topLevel ? renderDevTarget(cmd) : null;
+    if (RENDER_API_CLIENTS.has(cmd.name)) return topLevel ? renderApiDevTarget(cmd, commands, command) : null;
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
     const scope = currentDevScope();
     if (!scope) return null;
@@ -4051,8 +4353,9 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
 // the shell each have ways to connect somewhere other than the -h a command shows.
 // So the exemption accepts only a command whose connection needs no emulation of
 // them, and procfs must show every listener it reaches held only by postgres
-// running from a data directory under /tmp: a postgres on loopback can as well be a
-// volume-backed database with real data. Anything else, or anything unreadable, holds.
+// running from a cluster the scratch-postgres helper started under /tmp: a postgres on
+// loopback can as well be a volume-backed database with real data, and any other
+// cluster has a login that can reach one. Anything else, or anything unreadable, holds.
 // `localhost`, an omitted port, connection strings and psqlrc files are refused
 // rather than resolved: NSS, the client build, libpq's own parser and psql's
 // binary-relative startup files decide them, not anything the guard can read.
@@ -4088,7 +4391,9 @@ const LIVE_LOCAL_PG_HOST: LocalPgHost = {
     readLink: (p) => readOr(() => readlinkSync(p), ''),
 };
 
-const PSQL_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}(?:/[^\\s'"$\`\\\\]*/)?psql\\s`);
+const PG_CLIENT_UNDER_SAFE_WRAPPERS_RE: Record<string, RegExp> = Object.fromEntries(
+    ['psql', 'dropdb'].map(name => [name, new RegExp(`${SAFE_WRAPPERS_PREFIX}(?:/[^\\s'"$\`\\\\]*/)?${name}\\s`)]),
+);
 // What else the line may run. Not printf (`-v` assigns), sort (`-o`) or tee, which write; and not a second psql, whose
 // `\!` could stop the checked postgres and start a forwarder before this one connects.
 const LOCAL_PG_LINE_COMMANDS = new Set(['cd', 'pushd', 'popd', 'echo', 'cat', 'head', 'tail', 'grep', 'wc', 'true']);
@@ -4103,9 +4408,15 @@ const LINE_EXPANSION_RE = /[$`]|[<>]\(/;
 const PLAIN_LINE_NODES = new Set(['Script', 'Statement', 'Command', 'Pipeline', 'AndOr']);
 
 const PSQL_SHORT_FLAGS = 'XqtA1eabEnwWx';
+// The long psql flags the scratch-postgres helper passes through; it refuses any other.
+const SCRATCH_PG_LONG_FLAGS = new Set(['--no-psqlrc', '--quiet', '--tuples-only', '--no-align', '--single-transaction', '--echo-queries', '--echo-all', '--echo-errors', '--echo-hidden', '--no-readline', '--no-password', '--expanded', '--csv']);
 const PSQL_SHORT_VALUES: Record<string, string> = { c: '--command', d: '--dbname', h: '--host', p: '--port', U: '--username', v: '--set' };
 const PSQL_LONG_FLAGS = new Set(['--no-psqlrc', '--quiet', '--tuples-only', '--no-align', '--single-transaction', '--echo-queries', '--echo-all', '--echo-errors', '--echo-hidden', '--no-readline', '--no-password', '--password', '--expanded', '--csv']);
 const PSQL_LONG_VALUES = new Set(['--command', '--dbname', '--host', '--port', '--username', '--set', '--variable']);
+const DROPDB_SHORT_FLAGS = 'eifwW';
+const DROPDB_SHORT_VALUES: Record<string, string> = { h: '--host', p: '--port', U: '--username' };
+const DROPDB_LONG_FLAGS = new Set(['--echo', '--interactive', '--force', '--no-password', '--password', '--if-exists']);
+const DROPDB_LONG_VALUES = new Set(['--host', '--port', '--username']);
 
 /** True when the shell passes `text` (one argument as written) through unchanged: no expansion, glob or escape. */
 function isLiteralShellWord(text: string): boolean {
@@ -4224,6 +4535,46 @@ function psqlTarget(args: string[]): { host?: string; port?: string; noPsqlrc: b
     return { host: last.get('--host'), port: last.get('--port'), noPsqlrc };
 }
 
+/**
+ * The host and port dropdb connects to, read the way it reads its options (the last of a repeated option wins). Null
+ * when an option is one the guard doesn't place (`--maintenance-db` takes a connection string), or the line names
+ * anything but one plain database.
+ */
+function dropdbTarget(args: string[]): { host?: string; port?: string; noPsqlrc: boolean } | null {
+    const last = new Map<string, string>();
+    const positionals: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') {
+            positionals.push(...args.slice(i + 1));
+            break;
+        }
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const option = eq < 0 ? a : a.slice(0, eq);
+            if (eq < 0 && DROPDB_LONG_FLAGS.has(option)) continue;
+            const value = eq < 0 ? args[++i] : a.slice(eq + 1);
+            if (!DROPDB_LONG_VALUES.has(option) || value === undefined) return null;
+            last.set(option, value);
+            continue;
+        }
+        if (a.length > 1 && a.startsWith('-')) {
+            for (let j = 1; j < a.length; j++) {
+                if (DROPDB_SHORT_FLAGS.includes(a[j])) continue;
+                const option = DROPDB_SHORT_VALUES[a[j]];
+                const value = j + 1 < a.length ? a.slice(j + 1) : args[++i];
+                if (!option || value === undefined) return null;
+                last.set(option, value);
+                break;
+            }
+            continue;
+        }
+        positionals.push(a);
+    }
+    if (positionals.length !== 1 || !/^[A-Za-z0-9_.-]+$/.test(positionals[0])) return null;
+    return { host: last.get('--host'), port: last.get('--port'), noPsqlrc: true };
+}
+
 /** A /proc/net/tcp{,6} address in network byte order as hex; the kernel prints each 32-bit word in host order. */
 function procNetAddress(hex: string): string {
     if (endianness() === 'BE') return hex.toLowerCase();
@@ -4292,14 +4643,26 @@ function isPostgresProcess(host: LocalPgHost, pid: string): boolean {
     return exe !== null && basename(exe.replace(/ \(deleted\)$/, '')) === 'postgres';
 }
 
+// The pg_hba.conf scratch-pg writes: only its NOSUPERUSER login role connects, so the server itself refuses dblink,
+// postgres_fdw, COPY ... PROGRAM and server file access however the SQL is put together. Text checks on the SQL can't
+// promise that (EXECUTE of a concatenated string, \gexec), so a cluster with any other pg_hba.conf, a test harness's
+// superuser cluster included, gets no exemption. The files are trusted as written: a cluster built to imitate them,
+// or a pg_hba.conf swapped after a reload, passes. The exemption stops a mistaken drop, not a deliberate forgery.
+// `all` and the other user-column keywords match more than one role, so they are never the scratch role.
+const SCRATCH_PG_HBA_RE = /^# scratch-pg: only the scratch role logs in\nlocal all ((?!(?:all|sameuser|samerole|samegroup|replication|public|none)\b)[a-z_][a-z0-9_]{0,62}) trust\nhost all \1 127\.0\.0\.1\/32 trust\nlocal all all reject\nhost all all all reject\n$/;
+
 /**
- * The data directory of a postgres process when it is under /tmp, else null. The postmaster changes into its data
- * directory at start and its children inherit that, so the cwd names it; under /tmp it is scratch that goes with the
- * container, where a volume-backed or system database lives anywhere else.
+ * The data directory of a postgres process when it is a cluster scratch-pg started, else null: under /tmp (scratch
+ * that goes with the container), with scratch-pg's pg_hba.conf and its state file beside it naming the same role.
+ * The postmaster changes into its data directory at start and its children inherit that, so the cwd names it.
  */
 function scratchDataDir(host: LocalPgHost, pid: string): string | null {
     const cwd = host.readLink(`/proc/${pid}/cwd`);
-    return cwd?.startsWith('/tmp/') ? cwd : null;
+    if (!cwd?.startsWith('/tmp/') || basename(cwd) !== 'data') return null;
+    const role = host.readFile(`${cwd}/pg_hba.conf`)?.match(SCRATCH_PG_HBA_RE)?.[1];
+    if (!role) return null;
+    const state = host.readFile(`${dirname(cwd)}/state`);
+    return state?.split('\n').includes(`role=${role}`) ? cwd : null;
 }
 
 /** "<endpoint> (postgres pid N, data <dir>)" when only scratch postgres holds every listener in `inodes`, else null. */
@@ -4334,8 +4697,9 @@ export function localPgTargetOf(
     host: LocalPgHost = LIVE_LOCAL_PG_HOST,
     assumeNoPsqlrc = false,
 ): string | null {
-    if (cmd.name !== 'psql' || host.platform !== 'linux') return null;
-    if ((cmd.env ?? []).length || cmd.chdir !== undefined || !PSQL_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
+    const underWrappers = PG_CLIENT_UNDER_SAFE_WRAPPERS_RE[cmd.name];
+    if (!underWrappers || host.platform !== 'linux') return null;
+    if ((cmd.env ?? []).length || cmd.chdir !== undefined || !underWrappers.test(cmd.raw)) return null;
     // Each neighbour by its own name with no wrapper: `npx cat` resolves to cat but runs a package.
     const plain = (c: ResolvedCommand) => LOCAL_PG_LINE_COMMANDS.has(c.name) && (c.raw === c.name || c.raw.startsWith(`${c.name} `));
     if (!commands.every(c => c === cmd || plain(c)) || LINE_EXPANSION_RE.test(command)) return null;
@@ -4344,7 +4708,7 @@ export function localPgTargetOf(
     const written = writtenArgs(cmd);
     if (!written || !written.every(isLiteralShellWord) || cmd.args.some(a => a.includes('\\'))) return null;
 
-    const target = psqlTarget(cmd.args);
+    const target = cmd.name === 'psql' ? psqlTarget(cmd.args) : dropdbTarget(cmd.args);
     if (!target || (!target.noPsqlrc && !assumeNoPsqlrc)) return null;
     if (!target.host || !target.port || !/^\d{1,5}$/.test(target.port)) return null;
     const port = Number(target.port);
@@ -4359,6 +4723,164 @@ export function localPgTargetOf(
     }
     if (target.host !== '127.0.0.1' && target.host !== '::1') return null;
     return postgresListening(host, `${target.host}:${port}`, tcpListenerInodes(host, target.host, port));
+}
+
+const LOCAL_PG_URI_RE = /^postgres(?:ql)?:\/\/(?:([A-Za-z0-9_.-]+)(:[^@/?#\s'"]*)?@)?(localhost|127\.0\.0\.1|\[::1\]):(\d{1,5})\/([A-Za-z0-9_.-]+)$/;
+const LOCAL_PG_HOST_LOCALHOST_RE = /(^|\s)(-h\s*|--host[=\s]\s*)(['"]?)localhost\3(?=\s|;|&|\||$)/g;
+
+/**
+ * The psql line rewritten into the form the scratch-Postgres exemption reads, when a connection URI or `localhost`,
+ * neither of which the guard resolves, is all that keeps it from the exemption; null otherwise. The rewrite is
+ * returned only after the unchanged exemption accepts it, so a hint never names a command that still needs approval.
+ * A password in the URI is left out of the rewrite.
+ */
+export function localPgRewriteOf(
+    cmd: ResolvedCommand,
+    command: string,
+    host: LocalPgHost = LIVE_LOCAL_PG_HOST,
+): { line: string; endpoint: string; via: 'a connection string' | '`localhost`'; pgpass?: string } | null {
+    if (cmd.name !== 'psql') return null;
+    const addX = !cmd.args.some(a => a === '--no-psqlrc' || /^-[A-Za-z]*X/.test(a));
+    const candidates: Array<{ line: string; via: 'a connection string' | '`localhost`'; pgpass?: string }> = [];
+    const uris = cmd.args
+        .map(a => a.replace(/^(?:--dbname=|-d)(?=postgres)/, ''))
+        .filter(a => /^postgres(?:ql)?:\/\//.test(a));
+    if (uris.length === 1) {
+        const m = LOCAL_PG_URI_RE.exec(uris[0]);
+        if (!m) return null;
+        const [, user, password, uriHost, port, db] = m;
+        const at = command.indexOf(uris[0]);
+        const quote = command[at - 1];
+        const quoted = (quote === "'" || quote === '"') && command[at + uris[0].length] === quote;
+        const start = quoted ? at - 1 : at;
+        const end = at + uris[0].length + (quoted ? 1 : 0);
+        const addrs = uriHost === 'localhost' ? ['127.0.0.1', '::1'] : [uriHost.replace(/^\[|\]$/g, '')];
+        for (const addr of addrs) {
+            const flags = `${db}${addX ? ' -X' : ''} -h ${addr} -p ${port}${user ? ` -U ${user}` : ''}`;
+            // libpq matches a ~/.pgpass line on the host exactly as given, so the line names the rewritten address.
+            const pgpass = password === undefined ? undefined : `${addr}:${port}:${db}:${user ?? '*'}:<password>`;
+            candidates.push({ line: command.slice(0, start) + flags + command.slice(end), via: 'a connection string', pgpass });
+        }
+    } else if (uris.length === 0) {
+        const hits = [...command.matchAll(LOCAL_PG_HOST_LOCALHOST_RE)];
+        if (hits.length !== 1) return null;
+        for (const addr of ['127.0.0.1', '::1']) {
+            const line = command.replace(LOCAL_PG_HOST_LOCALHOST_RE, (_m, lead: string, flag: string) => `${lead}${flag}${addr}${addX ? ' -X' : ''}`);
+            candidates.push({ line, via: '`localhost`' });
+        }
+    } else return null;
+    for (const candidate of candidates) {
+        const rewritten = extractCommands(candidate.line);
+        const psqls = rewritten.filter(c => c.name === 'psql');
+        if (psqls.length !== 1) continue;
+        const endpoint = localPgTargetOf(psqls[0], rewritten, candidate.line, host);
+        if (endpoint !== null) return { ...candidate, endpoint };
+    }
+    return null;
+}
+
+const SCRATCH_PG = '/app/skills/scratch-postgres/scratch-pg';
+const LOCAL_PG_HOST_RE = /^(?:localhost|127(?:\.\d{1,3}){3}|::1|\[::1\]|0\.0\.0\.0)$/i;
+const PG_URI_HOSTS_RE = /^postgres(?:ql)?:\/\/(?:[^@/?#]*@)?([^/?#]*)/;
+const PG_CONNINFO_HOST_RE = /(?:^|\s)host(?:addr)?\s*=\s*'?([^\s']+)/g;
+const PG_PLAIN_DB_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function isRemotePgHost(host: string): boolean {
+    return host !== '' && !host.startsWith('/') && !LOCAL_PG_HOST_RE.test(host);
+}
+
+/**
+ * For a top-level psql or dropdb outside the scratch exemption: null when the line writes out a database server
+ * outside this container (an -h, a postgres:// URL, a host= connection string or a PGHOST prefix, each as a literal),
+ * which goes to an approver as before. Otherwise the line reaches a server the guard can't name, through a variable,
+ * libpq's defaults or a loopback address it couldn't prove is scratch, and the returned text refuses it with both ways
+ * forward: the scratch-pg helper for a scratch database, a written-out host for a real one.
+ */
+export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
+    if (cmd.name !== 'psql' && cmd.name !== 'dropdb') return null;
+    const written = writtenArgs(cmd);
+    // Without the words as written (a brace expansion moved them), the parsed value decides, which keeps the approver.
+    const literal = (i: number) => written === null || isLiteralShellWord(written[i]);
+    for (const assignment of cmd.env ?? []) {
+        const m = assignment.match(/^PGHOST(?:ADDR)?=(.*)$/);
+        if (m && !/[$`]/.test(m[1]) && m[1].split(',').some(isRemotePgHost)) return null;
+    }
+    let explicitDb: string | undefined;
+    let positionalDb: string | undefined;
+    const sql: string[] = [];
+    const otherValue = cmd.name === 'psql'
+        ? new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*[UpvfoLPTFR]|--(?:username|port|set|variable|file|output|log-file|pset|table-attr|field-separator|record-separator)=?)(.*)$`)
+        : new RegExp(`^(?:-[${DROPDB_SHORT_FLAGS}]*[pU]|--(?:username|port)=?)(.*)$`);
+    // The psql options scratch-pg accepts carry into the suggested line as written: -1 and ON_ERROR_STOP decide
+    // whether a failed statement rolls back the ones before it.
+    const kept: string[] = [];
+    const spelledAt = (at: number) => written?.[at] ?? `'${cmd.args[at].replace(/'/g, `'\\''`)}'`;
+    for (let i = 0; i < cmd.args.length; i++) {
+        const a = cmd.args[i];
+        if (cmd.name === 'psql' && (new RegExp(`^-[${PSQL_SHORT_FLAGS}]+$`).test(a) || SCRATCH_PG_LONG_FLAGS.has(a))) {
+            kept.push(spelledAt(i));
+            continue;
+        }
+        const value = (option: RegExp): { text: string; at: number } | null => {
+            const m = a.match(option);
+            if (!m) return null;
+            if (m[1]) return { text: m[1], at: i };
+            return i + 1 < cmd.args.length ? { text: cmd.args[i + 1], at: i + 1 } : null;
+        };
+        const host = value(new RegExp(`^(?:-[${cmd.name === 'psql' ? PSQL_SHORT_FLAGS : DROPDB_SHORT_FLAGS}]*h|--host=?)(.*)$`));
+        if (host) {
+            if (literal(host.at) && host.text.split(',').some(isRemotePgHost)) return null;
+            i = host.at;
+            continue;
+        }
+        const command = cmd.name === 'psql' ? value(new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*c|--command=?)(.*)$`)) : null;
+        if (command) {
+            // The SQL as the shell spelled it, so a $VAR in it still expands when the suggested line runs.
+            const spelled = written && (command.at === i + 1 ? written[command.at] : written[i].replace(new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*c|--command=)`), ''));
+            sql.push(spelled || `'${command.text.replace(/'/g, `'\\''`)}'`);
+            i = command.at;
+            continue;
+        }
+        const other = value(otherValue);
+        if (other) {
+            if (cmd.name === 'psql' && /^(?:-v|--set|--variable)/.test(a)) kept.push(...(other.at === i ? [spelledAt(i)] : [spelledAt(i), spelledAt(other.at)]));
+            i = other.at;
+            continue;
+        }
+        const maintenance = cmd.name === 'dropdb' ? value(/^--maintenance-db=?(.*)$/) : null;
+        const explicit = maintenance ?? value(/^(?:-d|--dbname=?)(.*)$/);
+        const named = explicit ?? (a.startsWith('-') ? null : { text: a, at: i });
+        if (!named) continue;
+        const text = named.text;
+        // The host as written: a URL whose password comes from a variable still names its host.
+        // `--opt=value` writes the option and its value as one word; the value alone is what libpq reads.
+        const word = named.at === i && text !== a ? text : (written?.[named.at] ?? text);
+        const shown = word.replace(/^(['"])([^]*)\1$/, '$2');
+        // A URL's host list (`h1:p1,h2:p2`) and every host= or hostaddr= of a connection string: libpq may use any.
+        const uriHosts = shown.match(PG_URI_HOSTS_RE)?.[1].split(',').map(h => h.replace(/^\[([^\]]*)\].*$|:\d*$/, '$1')) ?? [];
+        // Every `@host` too: libpq's userinfo runs to the last @, which can hide the host a simple reading finds.
+        const atHosts = shown.startsWith('postgres') ? [...shown.matchAll(/@(\[[^\]]*\]|[^:/?#,@]+)/g)].map(m => m[1].replace(/^\[|\]$/g, '')) : [];
+        const queryHosts = shown.startsWith('postgres')
+            ? [...shown.matchAll(/[?&](?:host|hostaddr)=([^&#]*)/gi)].flatMap(m => m[1].split(','))
+            : [];
+        const shownHosts = [...uriHosts, ...atHosts, ...queryHosts, ...[...shown.matchAll(PG_CONNINFO_HOST_RE)].flatMap(m => m[1].split(','))];
+        if (shownHosts.some(h => !/[$`\\]/.test(h) && isRemotePgHost(h))) return null;
+        const db = PG_PLAIN_DB_RE.test(text) ? text : (written?.[named.at] ?? text).match(/\/([A-Za-z_][A-Za-z0-9_]*)['"]?$/)?.[1];
+        if (explicit && !maintenance) explicitDb = db ?? explicitDb;
+        else if (!explicit) positionalDb ??= db;
+        if (named.at > i) i = named.at;
+    }
+    const target = explicitDb ?? positionalDb ?? '<db>';
+    const line = cmd.name === 'dropdb'
+        ? `${SCRATCH_PG} dropdb ${target}`
+        : [`${SCRATCH_PG} psql ${target}`, ...kept, sql.length ? sql.map(s => `-c ${s}`).join(' ') : "-c '<sql>'"].join(' ');
+    return [
+        `this ${cmd.name} reaches a database the guard can't name, through a variable, libpq's defaults or a local address it couldn't prove is a scratch Postgres, so it is refused instead of sent for approval.`,
+        `If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval (it starts one under /tmp first if none is running: ${SCRATCH_PG} start):`,
+        line,
+        `If a test harness started its own Postgres, start that cluster with ${SCRATCH_PG} start --port <port> --role <the harness's user> instead and point the harness at it; its drops then need no approval.`,
+        `If it is a real database, write its host out in the command and keep the password out of it: -h <host> -p <port> -U <user> -d <db>, with the password in ~/.pgpass or PGPASSWORD="$VAR", or a postgres:// URL whose host is written out and whose password stays in a variable. That goes to a person for approval.`,
+    ].join('\n');
 }
 
 // ── Git hook bypass ──────────────────────────────────────────────────────────
@@ -4833,6 +5355,11 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         return 'Destructive Redis command detected (FLUSHDB/FLUSHALL).';
     }
 
+    // dropdb reads help and version only as its first argument; anywhere else they are options or the database.
+    if (name === 'dropdb' && !['--help', '-?', '--version', '-V'].includes(args[0])) {
+        return 'dropdb drops a whole PostgreSQL database';
+    }
+
     // ── Cloud providers ──────────────────────────────────────────────────
 
     if (name === 'aws') {
@@ -4895,6 +5422,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         const change = renderChangeReason(args);
         if (change) return change;
     }
+    const renderDelete = renderApiDeleteReason(cmd);
+    if (renderDelete) return renderDelete;
 
     // Platform CLIs with custom logic
     if (name === 'heroku' && args.some(a => a === 'destroy' || a === 'pg:reset' || a.includes(':destroy'))) {
@@ -5640,6 +6169,10 @@ function awsStep(cmd: ResolvedCommand): StepCard {
 }
 
 const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
+    ...Object.fromEntries([...RENDER_API_CLIENTS].map(client => [client, [
+        'Deletes the Render resource or setting named in the step below, calling the API directly.',
+        "some deletes can't be undone: Render keeps no backup of a deleted database",
+    ]])),
     'terraform destroy': ['Destroys every resource this Terraform state manages.', "the resources and the data in them can't be brought back"],
     'terraform apply': ['Applies changes without showing the plan first; it can create, change or destroy infrastructure.', "anything it destroys can't be brought back"],
     'pulumi destroy': ['Destroys every resource in the stack.', "the resources and the data in them can't be brought back"],
@@ -5740,6 +6273,35 @@ function* gatedSteps(
                     cmd, reason, outer, moves,
                     fix: `${reason}: psql against the scratch Postgres at ${withoutPsqlrc} runs without approval only with -X (--no-psqlrc), since a psqlrc file can connect somewhere other than the -h shown. Run the same command again with -X added.`,
                 };
+                continue;
+            }
+            const rewrite = cmd === outer ? localPgRewriteOf(cmd, command, localPg) : null;
+            if (rewrite !== null) {
+                const password = rewrite.pgpass
+                    ? `\nThe password is left out: add the line ${rewrite.pgpass} to ~/.pgpass (mode 0600), since an environment prefix such as PGPASSWORD= also needs approval.`
+                    : '';
+                yield {
+                    cmd, reason, outer, moves,
+                    fix: `${reason}: psql reaches the scratch Postgres at ${rewrite.endpoint} through ${rewrite.via}, which the guard does not resolve, so as written it needs approval. This runs without approval:\n${rewrite.line}${password}`,
+                };
+                continue;
+            }
+            const unknown = cmd.name === 'render' ? renderUnknownCommand(cmd.args) : null;
+            if (unknown !== null) {
+                yield {
+                    cmd, reason, outer, moves,
+                    fix: `\`render ${unknown}\` isn't a Render CLI command (Render CLI ${RENDER_CLI_VERSION}): the CLI errors, prints its help, or ignores the word. Check \`render --help\`, or use the Render REST API for reads.`,
+                };
+                continue;
+            }
+            const devExpansion = cmd === outer && cmd.name === 'render' ? renderDevExpansionFix(cmd) : null;
+            if (devExpansion !== null) {
+                yield { cmd, reason, outer, moves, fix: devExpansion };
+                continue;
+            }
+            const unresolved = cmd === outer ? unresolvedPgTargetFix(cmd) : null;
+            if (unresolved !== null) {
+                yield { cmd, reason, outer, moves, fix: `${reason}: ${unresolved}` };
                 continue;
             }
             yield { cmd, reason, outer, moves };
@@ -7176,9 +7738,10 @@ function exactSlackPost(command: string): SlackPost | null {
  * by word; any other line that names a posting method is a post with no readable text under every identity the line may run under: each OneCLI agent it names, and the
  * session's own when any client runs unwrapped or the carrier isn't a client at all.
  */
-// A line that may post to Slack: it names the host, or a method after a variable (`"$SLACK_API/chat.postMessage"`, a
-// base URL already in the environment). A method name alone is often code or a search, not a call.
-const MAY_POST_TO_SLACK = /slack\.com|\$\{?\w+\}?["']?\/?(?:chat|files)\.[A-Za-z]/;
+// A line that may post to Slack: it names the host, or a method later in a word that expands a variable
+// (`"$SLACK_HOST/api/chat.postMessage"`, `"${SLACK_API%/}/chat.postMessage"`: a base URL already in the environment).
+// A method name alone is often code or a search, not a call.
+const MAY_POST_TO_SLACK = /slack\.com|\$[^\s;&|]*?(?:chat|files)\.[A-Za-z]/;
 
 export function slackPostsOf(command: string): SlackPost[] {
     if (!MAY_POST_TO_SLACK.test(command)) return [];

@@ -2,7 +2,7 @@ import { describe, test, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { gateBashOrThrow, assertCoreExports, bashCwdOf } from './opencode-guard';
+import { gateBashOrThrow, assertCoreExports, bashCwdOf, NanoclawGuard } from './opencode-guard';
 
 // Regression guard for the OpenCode plugin's bash gate wrapper. The full
 // decision matrix is covered by block-destructive.test.ts (shared core); these
@@ -23,6 +23,12 @@ describe('opencode-guard gateBashOrThrow — destructive/git-clone (existing con
 
   test('throws on rm of a non-ephemeral path (trash redirect)', () => {
     expect(() => gateBashOrThrow('rm important.txt')).toThrow(/trash/);
+  });
+
+  test('holds a raw Render API delete and passes a read', () => {
+    const url = 'https://api.render.com/v1/postgres/dpg-example';
+    expect(() => gateBashOrThrow(`curl -X DELETE ${url}`)).toThrow(/Render keeps no backup/);
+    expect(() => gateBashOrThrow(`curl ${url}`)).not.toThrow();
   });
 
   test('allows a safe command (no throw)', () => {
@@ -212,6 +218,7 @@ describe('B2 email gate', () => {
 // ── B3: fail-closed core-export validation ──
 describe('B3 export validation (present ≠ correct)', () => {
   const completeCore = (): Record<string, unknown> => ({
+    commandLineOf: () => '',
     evaluateSelfApproval: () => ({ action: 'allow' }),
     evaluateSnowflakeConnector: () => ({ action: 'allow' }),
     evaluateGitCloneDestination: () => ({ action: 'allow' }),
@@ -235,6 +242,10 @@ describe('B3 export validation (present ≠ correct)', () => {
     const missingNative = completeEmail();
     delete missingNative.evaluateEmailToolCall;
     expect(() => assertCoreExports(completeCore(), missingNative)).toThrow(/evaluateEmailToolCall/);
+
+    const noCommandReader = completeCore();
+    delete noCommandReader.commandLineOf;
+    expect(() => assertCoreExports(noCommandReader, completeEmail())).toThrow(/commandLineOf/);
   });
 
   test('test_oc_export_validation_throws_on_missing_gate_wrapper', () => {
@@ -341,5 +352,17 @@ describe('opencode-guard checks bash against its execution directory', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('opencode-guard reads a non-string bash command through the shared core', () => {
+  const runBash = async (command: unknown) => {
+    const hooks = await NanoclawGuard();
+    return hooks['tool.execute.before']({ tool: 'bash', sessionID: 's', callID: 'c' }, { args: { command } });
+  };
+
+  test('evaluates an array, and fails closed on a value it cannot read', async () => {
+    await expect(runBash(['rm', '-rf', '/etc'])).rejects.toThrow(/protected path/);
+    await expect(runBash({ script: 'rm -rf /etc' })).rejects.toThrow(/failed closed/i);
   });
 });

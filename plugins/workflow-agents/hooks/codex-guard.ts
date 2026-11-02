@@ -9,10 +9,11 @@
  * command, so an approval-tier command is denied with a hand-off to the user.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
-import { basename, dirname, join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import {
     IS_NANOCLAW,
     approvalText,
+    commandLineOf,
     describeGate,
     evaluateBashCommand,
     evaluateGitCloneDestination,
@@ -21,8 +22,6 @@ import {
     evaluateSnowflakeConnector,
     runEmailGate,
     runNanoclawGate,
-    SHELLS,
-    shellScript,
 } from './guards/block-destructive-core';
 import { evaluateEmailSend, evaluateEmailToolCall } from './guards/email-gate-core';
 import { checkEditProtection, EDIT_TOOLS } from './guards/file-protection-core';
@@ -74,20 +73,6 @@ export function findFreshTeamAutoSentinel(
         if (parent === projectDir) return null;
         projectDir = parent;
     }
-}
-
-function commandFromInput(toolInput: Record<string, unknown> = {}): string {
-    const command = toolInput.command ?? toolInput.cmd;
-    if (typeof command === 'string') return command;
-    if (Array.isArray(command)) {
-        const words = command.map(String);
-        // An argv of [shell, '-lc', script] is how a harness wraps a command line, so the script is what the agent ran.
-        const shell = basename(words[0] ?? '');
-        const script = SHELLS.has(shell) ? shellScript(shell, words.slice(1)) : null;
-        if (script && script.rest === words.length - 1) return script.text;
-        return words.map(w => /^[\w@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`).join(' ');
-    }
-    return '';
 }
 
 /** Where the shell command runs: the tool's `workdir`, relative to the hook cwd, else the hook cwd. */
@@ -220,7 +205,7 @@ function main(): void {
         }
 
         if (input.tool_name && !SHELL_TOOLS.has(input.tool_name)) emitContinue();
-        const command = commandFromInput(input.tool_input ?? {});
+        const command = commandLineOf(input.tool_input?.command ?? input.tool_input?.cmd);
         if (!command) emitContinue();
 
         const selfApproval = evaluateSelfApproval(command);

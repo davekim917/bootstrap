@@ -15,9 +15,9 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.19.0 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.19.0 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.3.1 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
+| Claude Code | `bootstrap-workflow` | 5.28.0 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.28.0 | The same, runtime-neutral |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.6.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.3.3 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
@@ -33,8 +33,8 @@ tells a session to reach for a sub-agent, and nothing gates a session that reads
 source, runs a check, or implements a fix itself.
 
 `bootstrap-orchestrate` adds no standing delegation directive or dispatch-first gate.
-Its hooks only route the model/effort of sub-agent spawns and validate explicit Codex context;
-the Codex `SessionStart` entry is a one-line reminder for the opt-in picker. Invoke the
+Its hooks only settle the model/effort of sub-agent spawns and validate explicit Codex context;
+the Codex `SessionStart` entry is a one-line reminder that only the user names a model. Invoke the
 skill when you want one sub-agent to do all the work in a single thread —
 `/orchestrate opus high <task>`, or "use an opus subagent at high effort to …".
 
@@ -57,17 +57,15 @@ A parameterized delegation prompt, and nothing else.
 ```
 
 The first two words are the model and the effort when they look like one; everything
-after is the task. Leave either out and a confident usable Jev route sets it; on Claude Code it also
-replaces a model or effort the coordinator named itself, since only the user's own choices are kept. When Jev is
-unavailable, abstains, or returns no usable route, the workflow adds no override: the coordinator
-may make its normal task-based choice, or leave the field omitted for the runtime's native
-inheritance and configuration. It dispatches ONE
+after is the task. Only the user chooses a model: leave it out and the sub-agent inherits the coordinator's,
+and on Claude Code the spawn hook drops a model the coordinator named itself. The coordinator chooses effort; left
+out, the runtime's native default applies. Settling a spawn sends nothing off the machine. It dispatches ONE
 sub-agent, hands it the brief, and keeps that same sub-agent for every later round.
 
 | Parameter | Meaning | Default |
 |---|---|---|
-| `{model}` | the sub-agent's model, as this runtime names it | confident picker route, normal coordinator choice, or native inheritance |
-| `{effort_level}` | the effort the sub-agent runs at | confident picker route, deliberate coordinator choice, or native configuration |
+| `{model}` | the sub-agent's model, as this runtime names it | native inheritance |
+| `{effort_level}` | the effort the sub-agent runs at | deliberate coordinator choice, or native configuration |
 | `{rounds}` | coordinate→delegate cycles before stopping | 3 |
 | `{done}` | the completion signal | the deliverable is complete with acceptance evidence |
 
@@ -105,30 +103,29 @@ a Codex-shaped manifest cannot ship agents, and OpenCode would not read `model: 
 or `effort` from one anyway. The skill therefore degrades out loud rather than pinning an
 effort it cannot pin.
 
-Picker abstention or failure does not choose a model or effort. Output records `decision: "inherit"`,
-`pick: null`, and `provenance: "native"` so a raw low-confidence suggestion cannot be mistaken for
-an effective route. Existing explicit choices stay intact subject to the existing compatibility
-caps; a coordinator may still deliberately select a normal model, role, or effort from the
-task. On a confident route, the Claude Code hook keeps an explicit model or effort only when a
+Explicit choices stay intact subject to the existing compatibility
+caps; a coordinator may still deliberately select a normal role or effort from the
+task. The Claude Code hook keeps an explicit model only when a
 human chose it in their latest turn of the session transcript (user turns, minus tool results, skill loads, harness
 notices and, in a NanoClaw container, system- or agent-sent `<message>` envelopes and the quoted
 original of a reply). When that turn holds
 one of the skill's invocations — `/orchestrate <model> <effort> …` (an `@mention` may precede it) or
-"use a <model> subagent at <effort> …" — the latest one decides both fields; one that names no model
-(`/orchestrate have fable review it`) takes the model from its task text by the rule below. Otherwise a turn that
-names exactly one model family ("I'd like fable to take a look", also in quotes, backticks or
+"use a <model> subagent at <effort> …" — the latest one decides the model; one that names no model
+(`/orchestrate have fable review it`) takes it from its task text by the rule below. Otherwise a turn that
+names a model family ("I'd like fable to take a look", "compare Opus and Sonnet", also in quotes, backticks or
 Slack markup) keeps an explicit model of that
-family; several families ("compare Opus and Sonnet") keep none, and plain wording never keeps an
-effort. The hook parses no other wording: whether a mention is a request ("not opus", "write a
-haiku") is the coordinator's reading. The rest take the route. Fields it leaves omitted follow the client's native inheritance and configuration rather
+family. The hook parses no other wording: whether a mention is a request ("not opus", "write a
+haiku") is the coordinator's reading. Any other model is dropped, so the spawn inherits its parent's. The effort a
+call asks for stands, capped at `xhigh` when no model is named and the human did not choose it through an
+invocation. Fields it leaves omitted follow the client's native inheritance and configuration rather
 than a workflow-owned fallback.
 
 A named role is never rewritten. Claude Code gives a per-call `model` precedence over a role's
 own `model` frontmatter, `inherit` included, and a role's effective definition can live where a
-hook cannot read it (managed settings, `--agents`). So the spawn hook fills model and effort only
+hook cannot read it (managed settings, `--agents`). So the spawn hook drops a model and caps effort only
 for a roleless spawn (`general-purpose` or no type) or an effort shim; any other `subagent_type` —
-built-ins such as `Explore`, project/user custom roles, plugin roles — keeps its installed model
-and costs no picker call. To route a named role, name its model in the call.
+built-ins such as `Explore`, project/user custom roles, plugin roles — keeps its installed model.
+To run a named role on another model, name it in the call.
 
 On the Codex row: `spawn_agent` accepts `model` and `reasoning_effort` (`SpawnAgentArgs`,
 codex-rs 0.154.0, `core/src/tools/handlers/multi_agents/spawn.rs:229-230`), exposed by
@@ -139,8 +136,8 @@ The one thing the plugin ships besides the skill is five near-empty agent defini
 list an `effort` frontmatter field, but measured on Claude Code 2.1.310 a dispatch to
 any shim with no `effort` parameter runs at the default level, while the `Agent`
 tool's per-call `effort` parameter (Claude Code 2.1.292 or later) is honored on every
-type. So every dispatch passes `effort` explicitly, and the shim name only labels the level. While the rubric is active,
-the spawn hook also gives any shim call an `effort` field matching the level it runs
+type. So every dispatch passes `effort` explicitly, and the shim name only labels the level.
+The spawn hook also gives any shim call an `effort` field matching the level it runs
 at (renaming the shim to match), but the hook fails open, so the skill never relies
 on it. Each shim keeps its `effort`
 frontmatter, sets `model: inherit` so the dispatch still chooses the model, and
@@ -242,9 +239,9 @@ debugging, judgment-heavy review — to a sub-agent, and keep that same sub-agen
 the whole task. Independent review still starts in a fresh context, because a reviewer
 is chosen for independence from the artifact's author.
 
-There is no approved model floor and no named worker role. Pick the model and the
-effort at dispatch from the task shape, record what you actually picked, and retain it
-for that sub-agent's build/test/fix loop. `shared/workflow-contract.md` carries the
+There is no approved model floor and no named worker role. Pick the effort at dispatch
+from the task shape, name a model only when the user did, record what you actually
+picked, and retain it for that sub-agent's build/test/fix loop. `shared/workflow-contract.md` carries the
 effort rubric: `low` for mechanical work, the dispatched default for bounded
 implementation, `high` for debugging without a known root cause or a trust-boundary
 change, `xhigh` when `high` did not resolve it, `max` only on evidence that `xhigh`
@@ -326,12 +323,7 @@ it — run the `add` above (or add the stanza by hand) once per host.
 Container Claude agents need no NanoClaw change. `discoverPlugins` walks `~/plugins` three levels
 deep for a `.claude-plugin/plugin.json` and hands each hit to the SDK as a `plugins:` entry, which
 is what loads a plugin's declared hooks; `plugins/bootstrap/plugins/wwbd` matches at the third
-level. For both Claude and Codex mappings, the shared picker keeps a container's inherited, scoped
-native HTTPS proxy and never replaces it with the host's default OneCLI agent. Only a plain host
-picker with neither inherited proxy nor direct authentication uses that existing OneCLI agent for
-the fixed TypeSafe request. A container whose scoped route is missing gets an unavailable pick; it
-cannot borrow the host identity. The guard recognizes Docker/Podman marker files and NanoClaw's
-existing per-spawn `NANOCLAW_ASSISTANT_NAME` environment marker.
+level.
 Neither plugin ships a `nanoclaw-plugin.json`, and neither should: that file's
 `preToolUseGuards` is a de-duplication signal telling NanoClaw to stand down one of its OWN
 built-in gates, and `bash-email` is the only value anything consumes. `check-plugin-boundaries`
@@ -483,7 +475,7 @@ Claude, Codex/NanoClaw, or OpenCode sessions after cleanup so cached definitions
   checks. `check-plugin-boundaries` enforces that closed list — the `SessionStart` entry that used
   to install a worker role into the user's Codex home went with the role. `wwbd` declares
   `SessionStart` only, for its standing directive; `bootstrap-orchestrate` uses only its bounded
-  spawn routing, context validation, and Codex picker-reminder hooks.
+  spawn settling, context validation, and Codex model-reminder hooks.
 - Planning and review artifacts are workflow contracts, not filesystem safety boundaries.
 
 ## Repository structure

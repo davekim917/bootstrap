@@ -738,18 +738,18 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.19.0') {
-  fail(`bootstrap-workflow release must be version 5.19.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.28.0') {
+  fail(`bootstrap-workflow release must be version 5.28.0 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.19.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.19.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.28.0') {
+  fail(`bootstrap-workflow-agents release must be version 2.28.0 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
-if (orchestrateClaudeManifest?.version !== '3.3.1') {
-  fail(`bootstrap-orchestrate release must be version 3.3.1 (found ${orchestrateClaudeManifest?.version})`);
+if (orchestrateClaudeManifest?.version !== '3.6.0') {
+  fail(`bootstrap-orchestrate release must be version 3.6.0 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '3.3.1') {
-  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.3.1 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '3.6.0') {
+  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.6.0 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -1110,10 +1110,10 @@ for (const filePath of activeContractFiles) {
       (entries[0].hooks ?? []).every((h) => typeof h.command === 'string' && h.command.includes('route-spawn.mjs'));
     if (!ok) fail('plugins/orchestrate/hooks/orchestrate-hooks.json may register only the PreToolUse Agent|Task spawn router');
   }
-  // Codex: retain the picker reminder and add only the deny-only context guard.
+  // Codex: retain the model-rule reminder and add only the deny-only context guard.
   // It inspects explicit context fields, never encrypted task text or model/effort.
   if (orchestrateCodexManifest?.hooks !== './hooks/orchestrate-codex-hooks.json') {
-    fail('plugins/orchestrate/.codex-plugin/plugin.json must declare exactly ./hooks/orchestrate-codex-hooks.json (the spawn-picker line)');
+    fail('plugins/orchestrate/.codex-plugin/plugin.json must declare exactly ./hooks/orchestrate-codex-hooks.json (the model-rule line)');
   } else {
     const codexHooks = JSON.parse(fs.readFileSync(path.join(repoRoot, 'plugins/orchestrate/hooks/orchestrate-codex-hooks.json'), 'utf8')).hooks ?? {};
     const cmds = (codexHooks.SessionStart ?? []).flatMap((g) => g.hooks ?? []);
@@ -1126,10 +1126,9 @@ for (const filePath of activeContractFiles) {
       context[0].hooks[0].timeout === 5 && context[0].hooks[0].async !== true &&
       cmds.length === 1 &&
       typeof cmds[0].command === 'string' &&
-      cmds[0].command.includes('pick-dispatch.mjs') &&
-      cmds[0].command.includes('--runtime codex') &&
+      cmds[0].command.includes('name a model only when the user named one') &&
       !cmds[0].command.includes('always-on');
-    if (!okCodex) fail('plugins/orchestrate/hooks/orchestrate-codex-hooks.json must register the SessionStart picker and exact native Codex context guard');
+    if (!okCodex) fail('plugins/orchestrate/hooks/orchestrate-codex-hooks.json must register the SessionStart model rule and exact native Codex context guard');
   }
   if (exists('plugins/workflow/always-on.md')) {
     fail('plugins/workflow/always-on.md must not exist; the orchestrate directive was removed, not relocated');
