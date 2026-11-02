@@ -92,6 +92,15 @@ describe('a listed repository refuses every merge and protected-branch push', ()
             return tracking;
         }],
         ['a repository sync into the listed repository', 'gh repo sync Acme/core --branch master', () => other],
+        ['a protected push to a GitHub URL whose host a variable holds', 'git push "https://$GH_HOST/Acme/core.git" HEAD:master', () => other],
+        ['a protected push through a remote whose name has a slash', 'git push team/upstream HEAD:master', () => {
+            const slashed = join(dir, 'ours-team-remote');
+            checkout(slashed, 'git@github.com:example/ours.git', 'feature-x');
+            writeFileSync(join(slashed, '.git', 'config'), `[remote "origin"]\n\turl = git@github.com:example/ours.git\n[remote "team/upstream"]\n\turl = https://github.com/Acme/core.git\n`);
+            return slashed;
+        }],
+        ['a protected push spelled heads/<branch>', 'git push origin heads/master', () => theirs],
+        ['a protected push spelled refs/heads/<branch> as the destination', 'git push origin HEAD:refs/heads/master', () => theirs],
         ['a fork sync through the REST endpoint', 'gh api -X POST repos/Acme/core/merge-upstream -f branch=master', () => theirs],
         ['a protected push whose positional remote outranks --repo', 'git push --repo=fork origin HEAD:master', () => {
             const forked = join(dir, 'core-with-fork');

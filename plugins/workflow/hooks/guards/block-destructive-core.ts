@@ -7319,7 +7319,7 @@ function pushedBranches(args: string[], current: string | null): string[] | null
     for (const spec of refspecs) {
         // A bare ':' pushes every branch that matches one on the remote.
         if (spec.replace(/^\+/, '') === ':') return null;
-        const target = (spec.includes(':') ? spec.slice(spec.indexOf(':') + 1) : spec).replace(/^\+/, '').replace(/^refs\/heads\//, '');
+        const target = (spec.includes(':') ? spec.slice(spec.indexOf(':') + 1) : spec).replace(/^\+/, '').replace(/^(?:refs\/)?heads\//, '');
         if (target === 'HEAD' || target === '@' || target === '') {
             if (!current) return null;
             names.push(current);
@@ -7542,10 +7542,12 @@ function noMergeStepReason(
         const positional = gitRemoteArg(pushArgsWithoutValues(cmd.args));
         if (positional === null && repoOption !== undefined && UNKNOWN_WORD_RE.test(repoOption)) return unresolved('Pushing');
         const remote = positional ?? repoOption ?? null;
+        if (remote && UNKNOWN_WORD_RE.test(remote)) return unresolved('Pushing');
         // A push to a URL off GitHub reaches no listed repository.
         if (remote && /^(?:[a-z+]+:\/\/|[^@\s]+@)/i.test(remote) && !/github\.com[/:]/i.test(remote)) return null;
-        // With no remote named, git picks one from the branch's push or upstream config, so every remote may be it.
-        const repos: Array<string | null> = remote && (REPO_URL_RE.test(remote) || ORG_REPO_RE.test(remote))
+        // With no remote named, git picks one from the branch's push or upstream config, so every remote may be it. Any
+        // word that is not a URL is a configured remote's name (`team/upstream` included) or a local path, never `org/repo`.
+        const repos: Array<string | null> = remote && REPO_URL_RE.test(remote)
             ? [githubRepoOf(remote)]
             : !pushDir ? [null]
             : remote ? [checkoutRemoteRepo(pushDir, remote)] : remotesOf(pushDir);
