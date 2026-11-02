@@ -244,13 +244,24 @@ describe('a listed dev resource', () => {
         [`render psql ${DEV_DB} -c 'select 1' -o interactive`, DEV_DB],
         [`render ssh ${DEV}`, DEV],
         [`render ssh ${DEV} --help --ephemeral`, DEV],
-        [`render postgres delete ${DEV_DB}`, DEV_DB],
-        [`render kv delete ${DEV_KV}`, DEV_KV],
-        [`curl -X DELETE https://api.render.com/v1/postgres/${DEV_DB}`, DEV_DB],
     ])('%s is held as dev, naming the resource', (command, id) => {
         const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
         expect(action).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(false);
+        expect(reason).toContain(id);
+        const card = describeGate(command, reason!, '/tmp');
+        expect(`${reason} ${card.label} ${card.summary}`).not.toMatch(/production/i);
+    });
+
+    test.each([
+        [`render postgres delete ${DEV_DB}`, DEV_DB],
+        [`render kv delete ${DEV_KV}`, DEV_KV],
+        [`curl -X DELETE https://api.render.com/v1/postgres/${DEV_DB}`, DEV_DB],
+        [`curl -X DELETE https://api.render.com/v1/redis/${DEV_KV}`, DEV_KV],
+    ])('%s keeps the owner-or-admin gate while its card names the dev resource', (command, id) => {
+        const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(action).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
         expect(reason).toContain(id);
         const card = describeGate(command, reason!, '/tmp');
         expect(`${reason} ${card.label} ${card.summary}`).not.toMatch(/production/i);
@@ -293,10 +304,32 @@ describe('a listed dev resource', () => {
         ['spaced flags', `psql -h ${DEV_HOST} -U app -p 5432 -d app -X -c 'delete from accounts'`],
         ['long flags', `psql --host=${DEV_HOST} --username=app --dbname=app --no-psqlrc --command='delete from accounts'`],
         ['a database word', `psql -h ${DEV_HOST} -X app -c 'delete from accounts'`],
-        ['dropdb', `dropdb -h ${DEV_HOST} app`],
     ])('psql on a listed host with %s is held as dev', (_label, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(false);
+    });
+
+    test('dropdb on a listed host keeps the owner-or-admin gate', () => {
+        const command = `dropdb -h ${DEV_HOST} app`;
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test('psql on a listed host without -X is refused, naming the fix, and with it is held as dev', () => {
+        const without = `psql -h ${DEV_HOST} -d app -c 'delete from accounts'`;
+        const { action, reason } = evaluateBashCommand(without, { cwd: '/tmp' });
+        expect(action).toBe('block');
+        expect(reason).toContain('Add -X');
+        expect(reason).toContain(DEV_DB);
+        expect(evaluateBashCommand(without.replace('-d app', '-X -d app'), { cwd: '/tmp' }).action).toBe('gate');
+    });
+
+    test.each([
+        ['an unlisted host', `psql -h ${PROD_DB}.example-postgres.render.com -d app -c 'delete from accounts'`],
+        ['a connection string', `psql -h ${DEV_HOST} --dbname='host=prod.example.com' -c 'delete from accounts'`],
+        ['a variable', `psql -h ${DEV_HOST} "$DATABASE_URL" -c 'delete from accounts'`],
+    ])('psql without -X on %s stays a card, because -X would not make it dev', (_label, command) => {
+        expect(evaluateBashCommand(command, { cwd: '/tmp' }).action).toBe('gate');
     });
 
     test('psql on an unlisted Render host stays a production gate', () => {

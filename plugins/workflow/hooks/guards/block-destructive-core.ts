@@ -4028,8 +4028,8 @@ function renderDevTarget(cmd: ResolvedCommand): string | null {
     return target ? `render resource ${target}` : null;
 }
 
-/** The listed dev resources a held step acts on, when every resource it names is listed; null sends it to the production gate. */
-function renderDevHeld(cmd: ResolvedCommand): string[] | null {
+/** The listed dev resources a held step acts on, when every resource it names is listed; null names no dev resource it can be sure of. */
+function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
     if (!ids.length || !ids.every(id => listed.has(id))) return null;
@@ -4040,28 +4040,36 @@ function renderDevHeld(cmd: ResolvedCommand): string[] | null {
         return (shape ? shape.entry.kind === 'proof' && shape.operands.length === 1 : listed.has(cmd.args[1])) ? ids : null;
     }
     if (RENDER_API_CLIENTS.has(cmd.name)) return curlWordsAreKnown(cmd, RENDER_API_ANY_RESOURCE) ? ids : null;
-    return pgStaysOnListedHost(cmd, ids) ? ids : null;
+    return pgStaysOnListedHost(cmd, ids, psqlrcAllowed) ? ids : null;
 }
 
 const isListedPgHost = (host: string | undefined, ids: string[]): boolean =>
     ids.some(id => !!host?.startsWith(`${id}.`) && /^[a-z0-9-]+-postgres\.render\.com$/.test(host.slice(id.length + 1)));
 
 /** Whether a listed database is the client's one target, read as strictly as the scratch Postgres exemption reads it. */
-function pgStaysOnListedHost(cmd: ResolvedCommand, ids: string[]): boolean {
+function pgStaysOnListedHost(cmd: ResolvedCommand, ids: string[], psqlrcAllowed: boolean): boolean {
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || LIBPQ_REDIRECT_ENV.some(k => LIVE_LOCAL_PG_HOST.env[k] !== undefined)) return false;
     if (!writtenArgs(cmd)?.every(isLiteralShellWord)) return false;
     const target = cmd.name === 'psql' ? psqlTarget(cmd.args) : cmd.name === 'dropdb' ? dropdbTarget(cmd.args) : null;
-    return !!target?.noPsqlrc && isListedPgHost(target.host, ids);
+    return !!target && (psqlrcAllowed || target.noPsqlrc) && isListedPgHost(target.host, ids);
 }
+
+const renderDeletesDatastore = (cmd: ResolvedCommand): boolean =>
+    cmd.name === 'dropdb' || RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '') || renderApiDeleteUrls(cmd).some(url => !RENDER_API_RESOURCE.test(url));
 
 /** What a step held on listed dev resources says instead of calling itself production. */
 function renderDevHoldReason(cmd: ResolvedCommand, reason: string): string {
     const ids = reason.includes(RENDER_CHANGE_REASON) ? renderDevHeld(cmd) : null;
     if (!ids) return reason;
-    const shape = renderShape(cmd.args)?.command ?? '';
-    const deletesDatastore = RENDER_DATASTORE_DELETE.test(shape) || renderApiDeleteUrls(cmd).some(url => !RENDER_API_RESOURCE.test(url));
-    const why = deletesDatastore ? 'Render keeps no backup of a deleted datastore' : "the guard can't confirm what this form does there";
+    const why = renderDeletesDatastore(cmd) ? 'Render keeps no backup of a deleted datastore' : "the guard can't confirm what this form does there";
     return `${RENDER_DEV_HOLD} ${ids.join(', ')}: ${why}.`;
+}
+
+/** The refusal for a psql that only -X keeps off the dev hold: a card would leave the agent waiting on a person for a fix of its own. */
+function renderDevPsqlFix(cmd: ResolvedCommand): string | null {
+    if (cmd.name !== 'psql' || renderDevHeld(cmd)) return null;
+    const ids = renderDevHeld(cmd, true);
+    return ids && `Add -X: psql on dev database ${ids.join(', ')} is read as dev only with -X (--no-psqlrc), since a psqlrc file can connect somewhere other than the -h shown. Run the same command again with -X added.`;
 }
 
 /**
@@ -6364,6 +6372,11 @@ function* gatedSteps(
                 };
                 continue;
             }
+            const psqlFix = cmd === outer ? renderDevPsqlFix(cmd) : null;
+            if (psqlFix !== null) {
+                yield { cmd, reason, outer, moves, fix: psqlFix };
+                continue;
+            }
             const rewrite = cmd === outer ? localPgRewriteOf(cmd, command, localPg) : null;
             if (rewrite !== null) {
                 const password = rewrite.pgpass
@@ -7156,7 +7169,7 @@ export function changesProduction(command: string, cwd: string = currentWorkingD
         const commands = extractCommands(command);
         if (commands[0]?.script) commands[0].script.cwd = cwd;
         return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => step.reason.includes(CLIENT_PROGRAM_GATE)
-            || (!(step.cmd === step.outer && renderDevHeld(step.cmd)) && (step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || /\brender\b/.test(step.cmd.raw))));
+            || (!(step.cmd === step.outer && renderDevHeld(step.cmd) && !renderDeletesDatastore(step.cmd)) && (step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || /\brender\b/.test(step.cmd.raw))));
     } catch {
         return /\brender\b/.test(command);
     }
