@@ -286,3 +286,65 @@ test('capEffort lowers only above the cap', () => {
   assert.equal(capEffort('low', 'high'), 'low');
   assert.equal(capEffort('weird', 'high'), 'weird');
 });
+
+/** Runs the installed hook on one spawn after one human turn and a reply from `parent`; returns its hookSpecificOutput. */
+function spawnHookRunner() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));
+  const hook = fileURLToPath(new URL('../../../hooks/route-spawn.mjs', import.meta.url));
+  let runs = 0;
+  const run = (human, toolInput, { parent = 'claude-opus-5-5', env = {} } = {}) => {
+    const transcript = path.join(root, `t-${runs++}.jsonl`);
+    const records = [{ type: 'user', message: { role: 'user', content: human } }];
+    if (parent) records.push({ type: 'assistant', message: { role: 'assistant', model: parent, content: [{ type: 'text', text: 'ok' }] } });
+    fs.writeFileSync(transcript, records.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    const r = spawnSync(process.execPath, [hook], {
+      input: JSON.stringify({
+        tool_name: 'Agent',
+        transcript_path: transcript,
+        tool_input: { subagent_type: 'general-purpose', description: 'review the spec', prompt: 'Read brief.md.', ...toolInput },
+      }),
+      encoding: 'utf8',
+      timeout: 15000,
+      env: { PATH: process.env.PATH, HOME: root, ORCHESTRATE_DISPATCH_LOG: path.join(root, 'log.jsonl'), ...env },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    return r.stdout ? JSON.parse(r.stdout).hookSpecificOutput : null;
+  };
+  return run;
+}
+
+test('the installed hook tells the agent and the sub-agent when it drops the model the agent asked for', () => {
+  const run = spawnHookRunner();
+  const notice =
+    'Model note: this sub-agent was requested on fable, and that was dropped, so it runs on claude-opus-5-5. ' +
+    'Only a model a person names in their latest message applies. ' +
+    'Name claude-opus-5-5, not fable, in anything that says which model did this work.';
+
+  const dropped = run('Thanks, now get it reviewed.', { model: 'fable' });
+  assert.equal(dropped.additionalContext, notice);
+  assert.equal(dropped.updatedInput.prompt, `${notice}\n\nRead brief.md.`);
+  assert.equal('model' in dropped.updatedInput, false);
+
+  const override = run('Thanks, now get it reviewed.', { model: 'fable' }, { env: { CLAUDE_CODE_SUBAGENT_MODEL: 'claude-sonnet-5-5' } });
+  assert.match(override.additionalContext, /so it runs on claude-sonnet-5-5\. .* Name claude-sonnet-5-5, not fable,/);
+
+  const unknown = run('Thanks, now get it reviewed.', { model: 'fable' }, { parent: null });
+  assert.equal(
+    unknown.additionalContext,
+    "Model note: this sub-agent was requested on fable, and that was dropped, so it runs on this session's own model. " +
+      "Only a model a person names in their latest message applies. Don't name fable in anything that says which model did this work.",
+  );
+
+});
+
+test('the installed hook adds no model note when a person named the model or no model was asked for', () => {
+  const run = spawnHookRunner();
+  assert.equal(run('Use a fable subagent to review it.', { model: 'fable' }), null);
+  const named = run('Use a fable subagent to review it.', { model: 'fable', effort: 'xhigh' });
+  assert.deepEqual([named.updatedInput.model, named.updatedInput.effort, named.updatedInput.prompt], ['fable', 'high', 'Read brief.md.']);
+  assert.equal('additionalContext' in named, false);
+
+  const effortOnly = run('Thanks, now get it reviewed.', { effort: 'max' });
+  assert.deepEqual([effortOnly.updatedInput.effort, effortOnly.updatedInput.prompt], ['xhigh', 'Read brief.md.']);
+  assert.equal('additionalContext' in effortOnly, false);
+});

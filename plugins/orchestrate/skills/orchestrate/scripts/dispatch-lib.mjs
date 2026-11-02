@@ -87,6 +87,40 @@ export function rewriteClaudeSpawn(input, pins = {}) {
   return changed ? out : null;
 }
 
+/**
+ * The model a sub-agent with no model of its own runs on: Claude Code's sub-agent override when one is set, else the
+ * model of the session's latest reply in its transcript. Undefined when neither is known.
+ */
+export function inheritedModel(transcriptPath, env = process.env) {
+  if (env.CLAUDE_CODE_SUBAGENT_MODEL) return env.CLAUDE_CODE_SUBAGENT_MODEL;
+  let lines;
+  try {
+    lines = fs.readFileSync(transcriptPath, 'utf8').split('\n');
+  } catch {
+    return undefined;
+  }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"type":"assistant"')) continue;
+    try {
+      const model = JSON.parse(lines[i])?.message?.model;
+      if (typeof model === 'string' && model && !model.startsWith('<')) return model;
+    } catch {
+      // A torn line is skipped.
+    }
+  }
+  return undefined;
+}
+
+/** What the spawning agent and its sub-agent are told when the model the agent asked for was dropped. */
+export function droppedModelNotice(requested, running) {
+  const runs = running ? `runs on ${running}` : "runs on this session's own model";
+  const name = running ? `Name ${running}, not ${requested},` : `Don't name ${requested}`;
+  return (
+    `Model note: this sub-agent was requested on ${requested}, and that was dropped, so it ${runs}. ` +
+    `Only a model a person names in their latest message applies. ${name} in anything that says which model did this work.`
+  );
+}
+
 const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
 const MODEL_MAX_EFFORT = { fable: 'high', opus: 'xhigh' };
 const AGENT_MAX_EFFORT = 'xhigh';

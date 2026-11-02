@@ -17,7 +17,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 |---|---|---:|---|
 | Claude Code | `bootstrap-workflow` | 5.27.0 | The seven `team-*` skills and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.27.0 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.6.0 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.6.1 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.3.3 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
@@ -115,7 +115,8 @@ one of the skill's invocations — `/orchestrate <model> <effort> …` (an `@men
 names a model family ("I'd like fable to take a look", "compare Opus and Sonnet", also in quotes, backticks or
 Slack markup) keeps an explicit model of that
 family. The hook parses no other wording: whether a mention is a request ("not opus", "write a
-haiku") is the coordinator's reading. Any other model is dropped, so the spawn inherits its parent's. The effort a
+haiku") is the coordinator's reading. Any other model is dropped, so the spawn inherits its parent's, and the hook says so: the spawning agent gets a
+note naming the model asked for and the model that runs, and the sub-agent's prompt opens with it. The effort a
 call asks for stands, capped at `xhigh` when no model is named and the human did not choose it through an
 invocation. Fields it leaves omitted follow the client's native inheritance and configuration rather
 than a workflow-owned fallback.
