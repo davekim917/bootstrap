@@ -388,6 +388,7 @@ const BASH_ALLOW = [
 // pure /tmp clones and non-clone commands are allowed. Order-independent: a
 // managed-dir reference ANYWHERE alongside `git clone` blocks the whole command.
 const GIT_CLONE_BLOCK = [
+  "cat > clone.sh <<'EOF'\ngit clone https://github.com/x/y /workspace/agent/y\nEOF\nbash clone.sh",
   'git clone https://github.com/a/b /workspace/agent/b',
   'git clone https://github.com/a/b /workspace/agent/repos/b',
   'git clone https://github.com/a/b /workspace/worktrees/b',
@@ -395,6 +396,8 @@ const GIT_CLONE_BLOCK = [
   'git clone https://github.com/a/b /tmp/x && mv /tmp/x /workspace/agent/stolen',
 ];
 const GIT_CLONE_ALLOW = [
+  "cat >> STATE.md <<'EOF'\ngit clone https://github.com/x/y /workspace/agent/y\nEOF",
+  "git clone https://github.com/x/y /tmp/y; cat >> STATE.md <<'EOF'\nnot under /workspace/agent\nEOF",
   'git clone https://github.com/a/b /tmp/scratch',
   'git status',
   'git pull origin main',
@@ -417,11 +420,13 @@ const SELF_APPROVAL_ALLOW = ['ls -la', 'git status', 'echo hello'];
 // Ad-hoc Python snowflake.connector exec is blocked (steer to `snow sql`);
 // the snow CLI, grep, pip, and bare echoes allow. Pure on `command`.
 const SNOWFLAKE_BLOCK = [
+  "cat > run.sh <<'EOF'\npython3 -c 'import snowflake.connector'\nEOF\nbash run.sh",
   "python -c 'import snowflake.connector'",
   'python3 -c "from snowflake.connector import connect"',
   'python -c "import snowflake_connector"',
 ];
 const SNOWFLAKE_ALLOW = [
+  "cat >> STATE.md <<'EOF'\npython3 -c 'import snowflake.connector'\nEOF",
   'snow sql -q "select 1"',
   'grep snowflake.connector requirements.txt',
   'pip install snowflake-connector-python',
@@ -433,11 +438,18 @@ const SNOWFLAKE_ALLOW = [
 // faithful to evaluateEmailSend's policy. The gate verdict depends on the env
 // snapshot, so each row pins the (command, env) pair.
 const EMAIL_GATE = [
+  "cat <<'EOF' | bash\ngws gmail +send --to a@example.com --subject hi\nEOF",
+  'cat >> STATE.md <<EOF\n$(gws gmail +send --to a@example.com --subject hi)\nEOF',
   'gws gmail +send --to a@example.com --subject hi',
   'gws gmail +reply --to a@example.com',
   'gws gmail users messages send --json \'{"raw":"x"}\'',
 ];
-const EMAIL_ALLOW = ['ls -la', 'git status', 'gws gmail +send --to a@example.com --dry-run'];
+const EMAIL_ALLOW = [
+  'ls -la',
+  'git status',
+  'gws gmail +send --to a@example.com --dry-run',
+  "cat >> STATE.md <<'EOF'\ngws gmail +send --to a@example.com --subject hi\nEOF\necho ok",
+];
 
 describe('parity contract — destructive bash', () => {
   for (const cmd of BASH_BLOCK) {

@@ -42,7 +42,7 @@ import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, inWorkingTree, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, inWorkingTree, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -604,8 +604,9 @@ export function evaluateSnapshotGitMutation(command: string): { action: 'allow' 
 export type GitCloneVerdict = { action: 'allow' | 'block'; reason?: string };
 
 export function evaluateGitCloneDestination(command: string): GitCloneVerdict {
-    if (!command || !GIT_CLONE_RE.test(command)) return { action: 'allow' };
-    if (GIT_CLONE_MANAGED_DIR_RE.test(command)) {
+    const text = withoutStoredHeredocs(command);
+    if (!text || !GIT_CLONE_RE.test(text)) return { action: 'allow' };
+    if (GIT_CLONE_MANAGED_DIR_RE.test(text)) {
         return { action: 'block', reason: GIT_CLONE_BLOCK_REASON };
     }
     return { action: 'allow' };
@@ -656,7 +657,7 @@ export const SNOWFLAKE_CONNECTOR_BLOCK_REASON =
 
 export function evaluateSnowflakeConnector(command: string): { action: 'allow' | 'block'; reason?: string } {
     if (!command) return { action: 'allow' };
-    if (SNOWFLAKE_CONNECTOR_EXEC_RE.test(command)) {
+    if (SNOWFLAKE_CONNECTOR_EXEC_RE.test(withoutStoredHeredocs(command))) {
         return { action: 'block', reason: SNOWFLAKE_CONNECTOR_BLOCK_REASON };
     }
     return { action: 'allow' };

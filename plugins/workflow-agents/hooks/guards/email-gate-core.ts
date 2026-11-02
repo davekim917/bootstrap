@@ -38,7 +38,7 @@
  * only sound place to catch all of those is the egress proxy.
  */
 import { resolveCommand, walkCommandNodes } from './block-destructive-core';
-import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, parseShell, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView } from './gate-card-core';
+import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, parseShell, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
 // `gws gmail users (messages|drafts) send` (raw API form).
@@ -657,7 +657,7 @@ export function envelopeFromJsonRaw(segment: string): {
  * on the command string and the env snapshot.
  *
  * Decision ordering:
- *   1. Not an email send (GWS_EMAIL_SEND_RE miss) → allow.
+ *   1. Not an email send (GWS_EMAIL_SEND_RE miss once stored heredoc bodies are removed) → allow.
  *   2. Every command bash runs is gws help, dry-run, draft or read, or a read-only
  *      filter whose quoted arguments merely hold the send text (probeOnlyCommand) → allow.
  *   3. WHOLE command is a single, simple send carrying a real bypass flag
@@ -681,8 +681,10 @@ export function envelopeFromJsonRaw(segment: string): {
  * The GWS creds account is parsed from the COMMAND string
  * (GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=…/accounts/<slug>.json), NOT from env.
  */
-export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateVerdict {
-    if (!command || !GWS_EMAIL_SEND_RE.test(command)) return { action: 'allow' };
+export function evaluateEmailSend(rawCommand: string, env: EnvSnapshot): EmailGateVerdict {
+    if (!rawCommand || !GWS_EMAIL_SEND_RE.test(rawCommand)) return { action: 'allow' };
+    const command = withoutStoredHeredocs(rawCommand);
+    if (!GWS_EMAIL_SEND_RE.test(command)) return { action: 'allow' };
 
     // Bypass ONLY when the WHOLE command is a single, simple send carrying a real
     // bypass flag — no shell separators, no metacharacters, no second command.

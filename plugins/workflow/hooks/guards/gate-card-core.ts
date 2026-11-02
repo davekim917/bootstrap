@@ -449,6 +449,60 @@ export function shellUnquote(text: string): string {
     return evalWord(text, NO_VARIABLES, 0).value;
 }
 
+
+const FILE_WORD = /^[\w@%+=:,./-]+$/;
+const DEVICE_FILE = /^\/(?:dev|proc|sys)\//;
+
+/** A word naming one regular file: literal, and no dot-file a shell, client or hook would read back as commands. */
+function storableFile(word: string): boolean {
+    return FILE_WORD.test(word) && !DEVICE_FILE.test(word)
+        && !word.split('/').some(part => part.startsWith('.') && part !== '.' && part !== '..');
+}
+
+/** The heredoc and target files of a bare `cat` or `tee` that only stores a quoted heredoc; null for anything else. */
+function storedHeredoc(node: any, command: string): { heredoc: any; files: any[] } | null {
+    if (node.prefix.length || !['cat', 'tee'].includes(node.name?.text)) return null;
+    const heredoc = node.redirects.find((r: any) => r.operator === '<<' || r.operator === '<<-');
+    if (!heredoc?.heredocQuoted) return null;
+    const writes = node.redirects.filter((r: any) => r !== heredoc);
+    if (!writes.every((r: any) => (r.operator === '>' || r.operator === '>>') && r.fileDescriptor === undefined)) return null;
+    if (node.name.text === 'cat' && node.suffix.length) return null;
+    const source = (word: any) => command.slice(word.pos, word.end);
+    const files = [...node.suffix, ...writes.map((r: any) => r.target)].filter((w: any) => source(w) !== '/dev/null');
+    return files.length && files.every((w: any) => storableFile(source(w))) ? { heredoc, files } : null;
+}
+
+/**
+ * `command` with the bodies removed from every heredoc that can only be stored, for the checks that scan raw text:
+ * a saved note quoting a command is not that command. Such a heredoc is quoted, so nothing in it expands, and sits on
+ * a bare `cat` or `tee` writing regular files that no other part of the line names, so nothing on the line runs them.
+ * Anything else returns unchanged, whole: a heredoc that feeds a pipe, shell or client still reads as commands.
+ */
+export function withoutStoredHeredocs(command: string): string {
+    if (!HEREDOC_OPERATOR.test(command)) return command;
+    let script: any;
+    try {
+        script = parseShell(command);
+    } catch {
+        return command;
+    }
+    const steps = (script?.commands ?? []).flatMap((s: any) => (s.command?.type === 'AndOr' ? s.command.commands : [s.command]));
+    if (!steps.every((n: any) => n?.type === 'Command' || n?.type === 'Pipeline')) return command;
+    const stored = steps.filter((n: any) => n.type === 'Command').map((n: any) => storedHeredoc(n, command))
+        .filter(Boolean) as { heredoc: any; files: any[] }[];
+    const bodies: [number, number][] = [];
+    for (const { heredoc } of stored) {
+        const start = command.indexOf('\n', heredoc.end) + 1;
+        if (!start || !command.startsWith(`${heredoc.content}${heredoc.target?.text}`, start)) return command;
+        bodies.push([start, start + String(heredoc.content).length]);
+    }
+    const files = stored.flatMap(s => s.files);
+    const without = (spans: [number, number][]) => [...spans].sort((a, b) => b[0] - a[0])
+        .reduce((text, [from, to]) => text.slice(0, from) + text.slice(to), command);
+    const elsewhere = without([...bodies, ...files.map((w): [number, number] => [w.pos, w.end])]);
+    return files.some(w => elsewhere.includes(command.slice(w.pos, w.end).split('/').at(-1)!)) ? command : without(bodies);
+}
+
 /**
  * Parse `command` into its simple commands and the variables it provably sets.
  * Only a top-level assignment counts, alone or in an `&&` chain (then only for
