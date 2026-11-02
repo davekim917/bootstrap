@@ -42,7 +42,7 @@ import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, inWorkingTree, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -1218,11 +1218,16 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         if (writesOwnOutput(cmd) || texts.some(t => SQL_CLIENT_FILE_WRITE.test(t))) {
             unreadable ??= `${f}, which the client may write itself`;
         }
-        if (sqlPathCandidates(f, cmd) === null) unreadable ??= `${f}, a path the command line doesn't prove`;
+        const candidates = sqlPathCandidates(f, cmd);
+        if (candidates === null) unreadable ??= `${f}, ${SQL_PATH_UNPROVEN}`;
         const writes = writesTo(f, cmd);
         if (writes === null) {
             unreadable ??= f;
             continue;
+        }
+        // A path a variable names is one the agent chose at run time, so it must exist and stay in the working tree.
+        if (candidates && /[$`]/.test(f) && !writes.length && !candidates.every(path => inWorkingTree(path, cmd.script?.cwd))) {
+            unreadable ??= `${f}, a file that is missing or outside the working tree`;
         }
         for (const written of writes.map(w => flattenInput(w, cmd.script))) {
             if (written.over || !spendTrace(cmd.script, textSize(written.texts) + written.catFiles.length)) {
@@ -1690,6 +1695,8 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] | null {
     return out;
 }
 
+const SQL_PATH_UNPROVEN = "a path the command line doesn't prove";
+
 function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
     const script = cmd.script;
     if (!script || cmd.pos === undefined) return resolvePathCandidates(file, cmd);
@@ -1784,6 +1791,8 @@ const RENDER_PLAIN_OUTPUT = new Set(['json', 'yaml', 'text']);
 const RENDER_EXPANDS = /[[\]*?{}$`~]/;
 export const RENDER_RESOURCE_ID_RE = /^[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?$/;
 export const RENDER_CHANGE_REASON = 'Production change on Render';
+const RENDER_DEV_HOLD = 'Held on dev Render resource';
+const RENDER_DATASTORE_DELETE = /^(?:postgres|keyvalues) delete$/;
 // `render services --help` shows its usage as `render services [subcommand]`: the CLI reads `list` as an argument to
 // `services`, whose children include update and delete, so `services list` is not a leaf there.
 const RENDER_NOT_LEAF = new Set(['services list']);
@@ -1985,6 +1994,7 @@ const CURL_DEV_HEADER = /^(?:Authorization: Bearer \S+|(?:Accept|Content-Type): 
 // The header as written: only one double-quoted word holding one variable can't split into a new argument.
 const CURL_DEV_VARIABLE_WORD = /^"Authorization: Bearer \$(?:\w+|\{\w+\})"$/;
 // A plain path on one service: anything unusual in it, such as a dot segment, an escape or a query, leaves its id unread.
+const RENDER_API_ANY_RESOURCE = /^(?:https:\/\/)?api\.render\.com\/v1\/[a-z-]+\/[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?(?:\/(?!\.{1,2}(?:\/|$))[\w.-]+)*$/;
 const RENDER_API_RESOURCE = /^(?:https:\/\/)?api\.render\.com\/v1\/services\/((?:srv|crn)-[a-z0-9]{20})(?:\/(?!\.{1,2}(?:\/|$))[\w.-]+)*$/;
 
 /** The method words a client's command line gives, in order; the last one wins. wget also takes its option cut short. */
@@ -2053,13 +2063,13 @@ export function renderApiDeleteReason(cmd: ResolvedCommand): string | null {
 }
 
 /** Whether every word is one a dev-listed curl DELETE may carry. curl has too many options that add a target to list them. */
-function curlWordsAreKnown(cmd: ResolvedCommand): boolean {
+function curlWordsAreKnown(cmd: ResolvedCommand, resource = RENDER_API_RESOURCE): boolean {
     const { args } = cmd;
     const written = argumentWords(cmd);
     if (args.some((a, i) => /[$`]/.test(a) && !CURL_DEV_VARIABLE_WORD.test(written[i]?.word ?? ''))) return false;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        if (CURL_DEV_SWITCHES.test(a) || RENDER_API_RESOURCE.test(a)) continue;
+        if (CURL_DEV_SWITCHES.test(a) || resource.test(a)) continue;
         const value = args[++i] ?? '';
         const known = (/^(?:-[sSfi]*X|--request)$/.test(a) && value === 'DELETE')
             || (/^(?:-H|--header)$/.test(a) && CURL_DEV_HEADER.test(value))
@@ -3962,12 +3972,136 @@ export function parseDevScope(text: string): DevScope | null {
     return { snowflake: entries as DevScope['snowflake'], render: { resources: resources as string[] } };
 }
 
+/** The words of a render command as the shell passes them, or null when the guard can't line them up with the script. */
+function renderWords(cmd: ResolvedCommand): any[] | null {
+    const script = cmd.script;
+    if (!script || cmd.pos === undefined) return null;
+    let node: any;
+    try {
+        node = walkCommandNodes(parseShell(script.command)).find(n => n.pos === cmd.pos);
+    } catch {
+        return null;
+    }
+    const words: any[] = node?.suffix ?? [];
+    return words.length === cmd.args.length && words.every((w, i) => wordValue(w) === cmd.args[i]) ? words : null;
+}
+
+/** A quoted word that holds no expansion is plain text the remote side reads, so its `$` or `*` is no reason to hold. */
+function renderLiteralArgs(cmd: ResolvedCommand): string[] {
+    const words = renderWords(cmd);
+    if (!words) return cmd.args;
+    return cmd.args.map((arg, i) => {
+        const parts: any[] = words[i].parts ?? [];
+        const literal = parts.length > 0 && parts.every(part => part?.type === 'SingleQuoted'
+            || (part?.type === 'DoubleQuoted' && (part.parts ?? []).every((inner: any) => inner?.type === 'Literal')));
+        return literal ? arg.replace(new RegExp(RENDER_EXPANDS.source, 'g'), '_') : arg;
+    });
+}
+
+/** A read of a listed resource the command table can't take: help on it, its deploy or job list, or one line of SQL. */
+function renderDevRead(args: string[], listed: Set<string>): string | null {
+    const [command, second, third, ...rest] = args;
+    if (args.length === 3 && RENDER_KNOWN.has(command) && listed.has(second) && /^(?:-h|--help)$/.test(third)) return second;
+    const output = (flag: string, value?: string) => /^(?:-o|--output)$/.test(flag) && RENDER_PLAIN_OUTPUT.has(value ?? '');
+    if ((command === 'deploys' || command === 'jobs') && second === 'list' && listed.has(third)) {
+        for (let i = 0; i < rest.length; i += 2) {
+            if (!output(rest[i], rest[i + 1]) && !(rest[i] === '--limit' && /^\d+$/.test(rest[i + 1] ?? ''))) return null;
+        }
+        return third;
+    }
+    if (command !== 'psql' || !listed.has(second)) return null;
+    const flags = args.slice(2);
+    let sql = 0;
+    for (let i = 0; i < flags.length; i += 2) {
+        const value = flags[i + 1];
+        // psql runs a backslash command as its own program, so only plain SQL counts.
+        if (/^(?:-c|--command)$/.test(flags[i]) && value !== undefined && !value.includes('\\')) sql++;
+        else if (!output(flags[i], value)) return null;
+    }
+    return sql === 1 ? second : null;
+}
+
+/** Whether this is the line's only command: anything else there can change what it reads, or take what it prints and act on it. */
+function runsAlone(cmd: ResolvedCommand): boolean {
+    const line = cmd.script?.command;
+    return line !== undefined && !changesShellState(line) && extractCommands(line).length === 1;
+}
+
+/** Whether what runs can differ from what the line shows: a path or prefix, an earlier change on the line, or SQL that runs a program. */
+function programCanDiffer(cmd: ResolvedCommand): boolean {
+    const line = cmd.script?.command;
+    return line === undefined || !!cmd.env?.length || new RegExp(`(?:^|\\s)\\S*/${cmd.name}\\s`).test(cmd.raw)
+        || changesShellState(line) || extractCommands(line).some(c => ENVIRONMENT_CHANGERS.has(c.name))
+        || cmd.args.some(a => a.search(COPY_PROGRAM) >= 0);
+}
+
 function renderDevTarget(cmd: ResolvedCommand): string | null {
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
-    if (/^(?:postgres|keyvalues) delete$/.test(renderShape(cmd.args)?.command ?? '')) return null;
+    if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
-    const target = renderProvenTarget(cmd, r => listed.has(r));
+    const args = renderLiteralArgs(cmd);
+    const accepts = (r: string) => listed.has(r);
+    const unread = args.some(a => RENDER_EXPANDS.test(a)) || programCanDiffer(cmd) || (cmd.args[0] === 'psql' && !runsAlone(cmd));
+    const read = unread ? null : renderDevRead(args, listed);
+    const target = read && renderResourceIds(args).every(accepts) ? read : renderProvenTarget({ ...cmd, args }, accepts);
     return target ? `render resource ${target}` : null;
+}
+
+/** Whether each word the guard can't read is quoted SQL for render psql: anywhere else it can be, or split into, another target or flag. */
+function renderExpansionsAreSql(cmd: ResolvedCommand): boolean {
+    if (!cmd.args.some(a => RENDER_EXPANDS.test(a))) return true;
+    const words = renderWords(cmd);
+    const quoted = (part: any) => part?.type === 'SingleQuoted' || part?.type === 'DoubleQuoted';
+    return !!words && cmd.args.every((a, i) => !RENDER_EXPANDS.test(a)
+        || (cmd.args[0] === 'psql' && /^(?:-c|--command)$/.test(cmd.args[i - 1] ?? '') && !a.startsWith('$') && !a.includes('@') && !!words[i].parts?.length && words[i].parts.every(quoted)));
+}
+
+/** The listed dev resources a held step acts on, when every resource it names is listed; null names no dev resource it can be sure of. */
+function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
+    if (!cmd.raw.startsWith(`${cmd.name} `) || programCanDiffer(cmd)) return null;
+    const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    const ids = [...new Set(renderResourceIds(cmd.args))];
+    if (!ids.length || !ids.every(id => listed.has(id))) return null;
+    // `--` hands psql or ssh its own arguments, and a backslash runs a program, so either can leave the named resource.
+    if (cmd.args.some(a => a === '--' || a.includes('\\'))) return null;
+    if (cmd.name === 'render') {
+        if (!renderExpansionsAreSql(cmd)) return null;
+        const shape = renderShape(cmd.args);
+        return (shape ? shape.entry.kind === 'proof' && shape.operands.length === 1 : !RENDER_EXPANDS.test(cmd.args[0]) && listed.has(cmd.args[1])) ? ids : null;
+    }
+    if (RENDER_API_CLIENTS.has(cmd.name)) return runsAlone(cmd) && curlWordsAreKnown(cmd, RENDER_API_ANY_RESOURCE) ? ids : null;
+    return pgStaysOnListedHost(cmd, ids, psqlrcAllowed) ? ids : null;
+}
+
+const isListedPgHost = (host: string | undefined, ids: string[]): boolean =>
+    ids.some(id => !!host?.startsWith(`${id}.`) && /^[a-z0-9-]+-postgres\.render\.com$/.test(host.slice(id.length + 1)));
+
+/** Whether a listed database is the client's one target, read as strictly as the scratch Postgres exemption reads it. */
+function pgStaysOnListedHost(cmd: ResolvedCommand, ids: string[], psqlrcAllowed: boolean): boolean {
+    if (cmd.chdir !== undefined || LIBPQ_REDIRECT_ENV.some(k => LIVE_LOCAL_PG_HOST.env[k] !== undefined)) return false;
+    if (!writtenArgs(cmd)?.every(isLiteralShellWord)) return false;
+    const target = cmd.name === 'psql' ? psqlTarget(cmd.args) : cmd.name === 'dropdb' ? dropdbTarget(cmd.args) : null;
+    return !!target && (psqlrcAllowed || target.noPsqlrc) && isListedPgHost(target.host, ids);
+}
+
+const renderDeletesDatastore = (cmd: ResolvedCommand): boolean =>
+    cmd.name === 'dropdb' || RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '') || renderApiDeleteUrls(cmd).some(url => !RENDER_API_RESOURCE.test(url));
+
+type GatedStep = { cmd: ResolvedCommand; reason: string; outer: ResolvedCommand };
+
+/** What a step held on listed dev resources says instead of calling itself production. */
+function renderDevHoldReason(cmd: ResolvedCommand, reason: string): string {
+    const ids = reason.includes(RENDER_CHANGE_REASON) ? renderDevHeld(cmd) : null;
+    if (!ids) return reason;
+    const why = renderDeletesDatastore(cmd) ? 'Render keeps no backup of a deleted datastore' : "the guard can't confirm what this form does there";
+    return `${RENDER_DEV_HOLD} ${ids.join(', ')}: ${why}.`;
+}
+
+/** The refusal for a psql that only -X keeps off the dev hold: a card would leave the agent waiting on a person for a fix of its own. */
+function renderDevPsqlFix(cmd: ResolvedCommand): string | null {
+    if (cmd.name !== 'psql' || renderDevHeld(cmd)) return null;
+    const ids = renderDevHeld(cmd, true);
+    return ids && `Add -X: psql on dev database ${ids.join(', ')} is read as dev only with -X (--no-psqlrc), since a psqlrc file can connect somewhere other than the -h shown. Run the same command again with -X added.`;
 }
 
 /**
@@ -3977,15 +4111,9 @@ function renderDevTarget(cmd: ResolvedCommand): string | null {
  */
 function renderDevExpansionFix(cmd: ResolvedCommand): string | null {
     const script = cmd.script;
-    if (!script || cmd.pos === undefined || !cmd.args.some(a => RENDER_EXPANDS.test(a))) return null;
-    let node: any;
-    try {
-        node = walkCommandNodes(parseShell(script.command)).find(n => n.pos === cmd.pos);
-    } catch {
-        return null;
-    }
-    const words: any[] = node?.suffix ?? [];
-    if (words.length !== cmd.args.length || words.some((w, i) => wordValue(w) !== cmd.args[i])) return null;
+    if (!script || !cmd.args.some(a => RENDER_EXPANDS.test(a))) return null;
+    const words = renderWords(cmd);
+    if (!words) return null;
     script.view ??= viewShell(script.command);
     const unread: string[] = [];
     const args: string[] = [];
@@ -6193,7 +6321,10 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
     const verbs = cmd.args.filter(a => /^[a-z][\w:-]*$/i.test(a)).slice(0, 2);
     const run = code([cmd.name, ...verbs].join(' '));
     const targets = flagValues(cmd.args, ['-target']);
-    const described: [effect: string, loss: string] | undefined = cmd.name === 'terraform' && targets.length
+    const onDev = cmd.name === 'render' && reason.startsWith(RENDER_DEV_HOLD);
+    const described: [effect: string, loss: string] | undefined = onDev
+        ? ['Changes the Render dev resource named in the step below.', "some changes, such as a deleted database, can't be undone"]
+        : cmd.name === 'terraform' && targets.length
         ? [`Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`, "anything it destroys can't be brought back"]
         : GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
             ?? (PLATFORM_DESTRUCTIVE[cmd.name] ? [`Deletes or shuts down the ${cmd.name} resource named in the step below.`, "this can't be undone"] : undefined);
@@ -6273,6 +6404,11 @@ function* gatedSteps(
                 };
                 continue;
             }
+            const psqlFix = cmd === outer ? renderDevPsqlFix(cmd) : null;
+            if (psqlFix !== null) {
+                yield { cmd, reason, outer, moves, fix: psqlFix };
+                continue;
+            }
             const rewrite = cmd === outer ? localPgRewriteOf(cmd, command, localPg) : null;
             if (rewrite !== null) {
                 const password = rewrite.pgpass
@@ -6302,7 +6438,11 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves, fix: `${reason}: ${unresolved}` };
                 continue;
             }
-            yield { cmd, reason, outer, moves };
+            if (cmd.name === 'snow' && reason.includes(SQL_PATH_UNPROVEN)) {
+                yield { cmd, reason, outer, moves, fix: `${reason} Write each path out, or set it to a plain value on the same line (\`F=/path/query.sql; snow sql -f "$F"\`), and the guard reads the files first.` };
+                continue;
+            }
+            yield { cmd, reason: cmd === outer ? renderDevHoldReason(cmd, reason) : reason, outer, moves };
         }
     }
 }
@@ -6388,6 +6528,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
         if (commands.length > gated.length) {
             lines.push('', `Approving runs the whole command (${commands.length} steps), not only the step${gated.length > 1 ? 's' : ''} described here.`);
         }
+        if (gated.some(onProduction) && !lines[0].includes('treat it as production')) lines.unshift('Treat this as production: its target is not listed as dev.', '');
         lines.push(`Guard rule: ${clip(oneLine(reason), 200)}`);
         return { label: clip(label, CARD_LABEL_MAX_CHARS), summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
     } catch {
@@ -6971,7 +7112,7 @@ export function pollDeliveredTable(requestId: string, timeoutMs: number): GateDe
  * `opts.action` selects the host-side handler the staged request routes to:
  *   - 'request_destructive_gate' — the destructive-command gate (default path).
  *   - 'request_bash_gate'        — the generic bash gate (email gate uses this).
- *   - 'request_prod_gate'        — a production change; the host counts only an owner's or admin's click.
+ *   - 'request_prod_gate'        — a production change or a deleted dev datastore; the host counts only an owner's or admin's click.
  *
  * Fail-closed: if writeGateRequest throws (session DBs in a broken state),
  * returns 'denied'. The CALLER emits the stderr/exit — this function never
@@ -7051,16 +7192,21 @@ export function runNanoclawGate(
     return runGateRequest(command, reason, { action, onStageError, toolUseId, ...describeGate(command, reason, cwd) });
 }
 
+const heldOnDev = (step: GatedStep): boolean => step.cmd === step.outer && renderDevHeld(step.cmd) !== null;
+
+const onProduction = (step: GatedStep): boolean => step.reason.includes(CLIENT_PROGRAM_GATE)
+    || (!heldOnDev(step) && (step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || /\brender\b/.test(step.cmd.raw)));
+
 /**
- * Whether a step the gate stops on may change Render production: a render step, or one whose verdict came from a
- * render command it runs (a SQL client's shell escape, inline or from a file). A command the guard cannot read
- * counts if it names render.
+ * Whether the gate needs an owner's or admin's click: a step that may change Render production, being a render step or
+ * one whose verdict came from a render command it runs (a SQL client's shell escape, inline or from a file), or one that
+ * deletes a listed dev datastore. A command the guard cannot read counts if it names render.
  */
 export function changesProduction(command: string, cwd: string = currentWorkingDir()): boolean {
     try {
         const commands = extractCommands(command);
         if (commands[0]?.script) commands[0].script.cwd = cwd;
-        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || step.reason.includes(CLIENT_PROGRAM_GATE) || /\brender\b/.test(step.cmd.raw));
+        return [...gatedSteps(commands, command, cwd, isLabSession(), false)].some(step => onProduction(step) || (heldOnDev(step) && renderDeletesDatastore(step.cmd)));
     } catch {
         return /\brender\b/.test(command);
     }

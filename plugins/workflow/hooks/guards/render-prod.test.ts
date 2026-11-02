@@ -193,6 +193,258 @@ describe('a render line naming no CLI command is refused with a pointer to the h
     });
 });
 
+describe('a listed dev resource', () => {
+    const DEV_HOST = `${DEV_DB}.example-postgres.render.com`;
+
+    test.each([
+        `render deploys list ${DEV} --limit 1`,
+        `render deploys list ${DEV} --limit 1 -o json`,
+        `render jobs list ${DEV} -o text`,
+        `render psql ${DEV_DB} -c 'select 1'`,
+        `render psql ${DEV_DB} --command 'select 1' -o text`,
+        `render psql ${DEV_DB} -c 'delete from scratch where id = 1'`,
+        `render ssh ${DEV} --help`,
+        `render pgcli ${DEV_DB} -h`,
+        `render jobs create ${DEV} --start-command "echo \\$VAR"`,
+        `render jobs create ${DEV} --start-command 'echo $PORT'`,
+        `render jobs create ${DEV} --start-command "echo *"`,
+    ])('%s runs', command => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        `render deploys list ${PROD} --limit 1`,
+        `render deploys list ${PROD} --limit 1 -o json`,
+        `render jobs list ${PROD} --limit 1`,
+        `render psql ${PROD_DB} -c 'select 1'`,
+        `render ssh ${PROD} --help`,
+        `render jobs create ${PROD} --start-command "echo \\$VAR"`,
+        `render deploys list ${DEV} --limit "$N"`,
+        `render deploys list ${DEV} --limit 1 ${PROD}`,
+        `render deploys list ${DEV} --confirm`,
+        `render psql ${DEV_DB} -c "select '${PROD}'"`,
+        `render ssh ${DEV} ${PROD} --help`,
+        `render deploys list a-service-name --limit 1`,
+        `render deploys list ${DEV} --limit all`,
+        `render psql a-database-name -c 'select 1'`,
+        `curl -X DELETE https://api.render.com/v1/postgres/${DEV_DB} --config /tmp/requests.conf`,
+        `wget --method=DELETE https://api.render.com/v1/postgres/${DEV_DB}`,
+        `echo ${PROD} | xargs render restart ${DEV}`,
+        `render restart a-service-name ${DEV}`,
+        `curl -X DELETE https://api.render.com/v1/services/${DEV} https://api.render.com/v1/owners/example`,
+    ])('%s stays a production gate', command => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test.each([
+        [`render psql ${DEV_DB}`, DEV_DB],
+        [`render psql ${DEV_DB} -c "select $X"`, DEV_DB],
+        [`render psql ${DEV_DB} -c 'select 1' -c 'select 2'`, DEV_DB],
+        [`render psql ${DEV_DB} -c 'select 1' -o interactive`, DEV_DB],
+        [`render ssh ${DEV}`, DEV],
+        [`render ssh ${DEV} --help --ephemeral`, DEV],
+    ])('%s is held as dev, naming the resource', (command, id) => {
+        const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(action).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(false);
+        expect(reason).toContain(id);
+        const card = describeGate(command, reason!, '/tmp');
+        expect(`${reason} ${card.label} ${card.summary}`).not.toMatch(/production/i);
+    });
+
+    test.each([
+        [`render postgres delete ${DEV_DB}`, DEV_DB],
+        [`render kv delete ${DEV_KV}`, DEV_KV],
+        [`curl -X DELETE https://api.render.com/v1/postgres/${DEV_DB}`, DEV_DB],
+        [`curl -X DELETE https://api.render.com/v1/redis/${DEV_KV}`, DEV_KV],
+    ])('%s keeps the owner-or-admin gate while its card names the dev resource', (command, id) => {
+        const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(action).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+        expect(reason).toContain(id);
+        const card = describeGate(command, reason!, '/tmp');
+        expect(`${reason} ${card.label} ${card.summary}`).not.toMatch(/production/i);
+    });
+
+    test('help on a word the CLI does not know is not a read', () => {
+        expect(verdict(`render not-a-command ${DEV} --help`)).not.toBe('allow');
+    });
+
+    test('a deleted datastore says why it is held', () => {
+        expect(evaluateBashCommand(`render postgres delete ${DEV_DB}`, { cwd: '/tmp' }).reason).toContain('no backup');
+    });
+
+    test('psql on a listed host is held without calling itself production', () => {
+        const command = `psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`;
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(false);
+    });
+
+    test.each([
+        ['a variable', `psql -h ${DEV_HOST} -X "$DATABASE_URL" -c 'delete from accounts'`],
+        ['a URL as the database', `psql -h ${DEV_HOST} -X -d postgresql://prod.example.com/app -c 'delete from accounts'`],
+        ['a URL as a word', `psql -h ${DEV_HOST} -X postgresql://prod.example.com/app -c 'delete from accounts'`],
+        ['a connection string', `psql -h ${DEV_HOST} -X --dbname='host=prod.example.com' -c 'delete from accounts'`],
+        ['a list of hosts', `psql -h ${DEV_HOST},prod.example.com -X -c 'delete from accounts'`],
+        ['startup files on', `psql -h ${DEV_HOST} -d app -c 'delete from accounts'`],
+        ['a host override in the environment', `PGHOSTADDR=203.0.113.10 psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['a second host', `psql -h ${DEV_HOST} -h prod.example.com -X -c 'delete from accounts'`],
+        ['an option the guard does not know', `psql -h ${DEV_HOST} -X -o out.txt -c 'delete from accounts'`],
+        ['a long option the guard does not know', `psql -h ${DEV_HOST} -X --output=out.txt -c 'delete from accounts'`],
+        ['another client', `redis-cli -h ${DEV_KV}.example-keyvalue.render.com FLUSHALL`],
+        ['a maintenance connection string', `dropdb -h ${DEV_HOST} --maintenance-db=postgresql://prod.example.com/app app`],
+        ['no host flag', `psql -X postgresql://${DEV_HOST}/app -c 'delete from accounts'`],
+        ['a variable in the host', `psql -h "${DEV_HOST}$SUFFIX" -X -c 'delete from accounts'`],
+    ])('psql on a listed host with %s stays a production gate', (_label, command) => {
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test.each([
+        ['spaced flags', `psql -h ${DEV_HOST} -U app -p 5432 -d app -X -c 'delete from accounts'`],
+        ['long flags', `psql --host=${DEV_HOST} --username=app --dbname=app --no-psqlrc --command='delete from accounts'`],
+        ['a database word', `psql -h ${DEV_HOST} -X app -c 'delete from accounts'`],
+    ])('psql on a listed host with %s is held as dev', (_label, command) => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(false);
+    });
+
+    test('dropdb on a listed host keeps the owner-or-admin gate', () => {
+        const command = `dropdb -h ${DEV_HOST} app`;
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test('psql on a listed host without -X is refused, naming the fix, and with it is held as dev', () => {
+        const without = `psql -h ${DEV_HOST} -d app -c 'delete from accounts'`;
+        const { action, reason } = evaluateBashCommand(without, { cwd: '/tmp' });
+        expect(action).toBe('block');
+        expect(reason).toContain('Add -X');
+        expect(reason).toContain(DEV_DB);
+        expect(evaluateBashCommand(without.replace('-d app', '-X -d app'), { cwd: '/tmp' }).action).toBe('gate');
+    });
+
+    test.each([
+        ['an unlisted host', `psql -h ${PROD_DB}.example-postgres.render.com -d app -c 'delete from accounts'`],
+        ['a connection string', `psql -h ${DEV_HOST} --dbname='host=prod.example.com' -c 'delete from accounts'`],
+        ['a variable', `psql -h ${DEV_HOST} "$DATABASE_URL" -c 'delete from accounts'`],
+    ])('psql without -X on %s stays a card, because -X would not make it dev', (_label, command) => {
+        expect(evaluateBashCommand(command, { cwd: '/tmp' }).action).toBe('gate');
+    });
+
+    test.each([
+        ['a variable verb on a dev service', `C="deploys create ${PROD} --commit"; render $C ${DEV}`],
+        ['a variable verb on a dev database', `C="postgres delete"; render $C ${DEV_DB} --confirm`],
+        ['a quoted variable verb', `render "$C" ${DEV}`],
+        ['a variable after the dev id', `X=${PROD}; render restart ${DEV} $X`],
+        ['a variable holding psql arguments', `X="-- -h prod.example.com"; render psql ${DEV_DB} $X`],
+        ['a substitution after the dev id', `render restart ${DEV} $(cat more-ids)`],
+        ['a quoted variable after the dev id', `render ssh ${DEV} "$X"`],
+        ['a glob after the dev id', `render ssh ${DEV} *`],
+        ['an unquoted variable as a flag value', `render psql ${DEV_DB} -c $X`],
+        ['a variable behind a wrapper', `timeout 5 render ssh ${DEV} $X`],
+        ['a changed path', `PATH=/tmp/x render ssh ${DEV}`],
+        ['a startup file named in the environment', `PSQLRC=evil.rc render psql ${DEV_DB}`],
+        ['an earlier export', `export PATH=/tmp/x; render ssh ${DEV}`],
+        ['an earlier alias', `alias render=./x; render ssh ${DEV}`],
+        ['a sourced file', `source x.sh; render ssh ${DEV}`],
+        ['a function named render', `render() { ./x; }; render ssh ${DEV}`],
+        ['a program run from SQL', `render psql ${DEV_DB} -c "copy (select 1) to program 'id'"`],
+        ['SQL held whole in a variable', `render psql ${DEV_DB} -c "$SQL"`],
+        ['SQL from a substitution', `render psql ${DEV_DB} --command "$(cat q.sql)"`],
+        ['a quoted variable after a switch', `X=${PROD}; render restart ${DEV} --confirm "$X"`],
+        ['a quoted variable after SQL', `render psql ${DEV_DB} -c '-- note' "$X"`],
+        ['every argument as SQL', `render psql ${DEV_DB} -c "$@"`],
+        ['a quoted variable after a -c that is not SQL', `render restart ${DEV} -c "$X"`],
+        ['an array as SQL', `render psql ${DEV_DB} -c "\${A[@]}"`],
+        ['quoted SQL behind a wrapper', `timeout 5 render psql ${DEV_DB} -c "select $X"`],
+    ])('%s stays on the production gate', (_label, command) => {
+        const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(action).toBe('gate');
+        expect(reason).not.toContain('Held on dev');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    describe('a raw DELETE on a listed service that something else on the line can redirect', () => {
+        const URL = `https://api.render.com/v1/services/${DEV}/env-vars/FOO`;
+        test.each([
+            ['a config directory', `CURL_HOME=/tmp/x curl -X DELETE ${URL}`],
+            ['a home directory', `HOME=/tmp/x curl -X DELETE ${URL}`],
+            ['env', `env CURL_HOME=/tmp/x curl -X DELETE ${URL}`],
+            ['export', `export CURL_HOME=/tmp/x; curl -X DELETE ${URL}`],
+            ['sudo', `sudo CURL_HOME=/tmp/x curl -X DELETE ${URL}`],
+            ['a written config', `printf 'url=https://example.net\\n' > ~/.curlrc; curl -X DELETE ${URL}`],
+            ['a copied config', `cp prod.cfg ~/.curlrc && curl -X DELETE ${URL}`],
+            ['a relative program', `./curl -X DELETE ${URL}`],
+            ['an absolute program', `/tmp/x/curl -X DELETE ${URL}`],
+            ['a changed path', `PATH=/tmp/x curl -X DELETE ${URL}`],
+            ['a function named curl', `curl() { ./x; }; curl -X DELETE ${URL}`],
+        ])('%s keeps the production gate', (_label, command) => {
+            expect(evaluateBashCommand(command, { cwd: '/tmp' }).action).toBe('gate');
+            expect(changesProduction(command, '/tmp')).toBe(true);
+        });
+    });
+
+    test.each([
+        ['a startup file named in the environment', `PSQLRC=evil.rc render psql ${DEV_DB} -c 'select 1'`],
+        ['the same through env', `env PSQLRC=evil.rc render psql ${DEV_DB} -c 'select 1'`],
+        ['a program run from SQL', `render psql ${DEV_DB} -c "copy (select 1) to program 'id'"`],
+        ['output run as a script', `render psql ${DEV_DB} -c "select 'x'" -o text | sh`],
+        ['output as a URL', `curl -X DELETE "$(render psql ${DEV_DB} -c "select 'x'" -o text)"`],
+        ['output fed to xargs', `render psql ${DEV_DB} -c 'select 1' -o text | xargs curl -X DELETE`],
+        ['a program run from SQL behind a comment', `render psql ${DEV_DB} -c "copy t to /*x*/ program 'id'"`],
+        ['a relative program', `./render psql ${DEV_DB} -c 'select 1'`],
+        ['an absolute program', `/tmp/x/render psql ${DEV_DB} -c 'select 1'`],
+        ['a relative program listing', `./render deploys list ${DEV}`],
+        ['an earlier export', `export PATH=/tmp/x; render deploys list ${DEV}`],
+        ['a function named render', `render() { ./x; }; render deploys list ${DEV}`],
+    ])('render psql with %s does not run freely', (_label, command) => {
+        expect(evaluateBashCommand(command, { cwd: '/tmp' }).action).not.toBe('allow');
+    });
+
+    test('a listing on a listed service can still be piped', () => {
+        expect(verdict(`render deploys list ${DEV} --limit 1 -o json | jq .`)).toBe('allow');
+    });
+
+    test.each([
+        ['export', `export PGHOSTADDR=203.0.113.10; psql -h ${DEV_HOST} -d app -c 'delete from accounts'`],
+        ['export with -X', `export PGHOSTADDR=203.0.113.10; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['declare -x with -X', `declare -x PGHOSTADDR=203.0.113.10; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['set -a with -X', `set -a; PGHOSTADDR=203.0.113.10; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['a function named psql', `psql() { ./run; }; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+    ])('%s earlier on the line keeps psql on the production gate, with no -X refusal', (_label, command) => {
+        expect(evaluateBashCommand(command, { cwd: '/tmp' }).action).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test.each([
+        `dropdb -h ${PROD_DB}.example-postgres.render.com app`,
+        `psql -h ${PROD_DB}.example-postgres.render.com -d app -c 'delete from accounts'`,
+        `curl -X DELETE https://api.render.com/v1/postgres/${PROD_DB}`,
+        `curl -X DELETE https://api.render.com/v1/services/${PROD}`,
+        `dropdb -h ${PROD_DB}.example-postgres.render.com production`,
+        `psql -h ${PROD_DB}.example-postgres.render.com -X -c 'drop table production'`,
+    ])('the card for %s says production', command => {
+        expect(describeGate(command, 'gated', '/tmp').summary).toMatch(/treat (?:this|it) as production/i);
+    });
+
+    test.each([
+        `dropdb -h ${DEV_HOST} app`,
+        `curl -X DELETE https://api.render.com/v1/postgres/${DEV_DB}`,
+        `psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`,
+    ])('the card for %s never says production', command => {
+        expect(describeGate(command, 'gated', '/tmp').summary).not.toMatch(/production/i);
+    });
+
+    test('psql on an unlisted Render host stays a production gate', () => {
+        expect(changesProduction(`psql -h ${PROD_DB}.example-postgres.render.com -d app -c 'delete from accounts'`, '/tmp')).toBe(true);
+    });
+
+    test('a program run through psql stays a production gate', () => {
+        expect(changesProduction(`psql -h ${DEV_HOST} -c '\\! render restart "$S"'`, '/tmp')).toBe(true);
+    });
+});
+
 describe('changing a Render resource not listed as dev is a production change', () => {
     test.each([
         ['a one-off job', `render jobs create ${PROD} --confirm -o json --start-command "node job.js"`],
@@ -217,7 +469,6 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a subcommand held in a variable', `A=update; render services "$A" ${PROD} --plan pro`],
         ['a shell escape on a dev database', `render psql ${DEV_DB} -c '\\! render restart srv-"prodservice000000001"'`],
         ['psql arguments passed through on a dev database', `render psql ${DEV_DB} -c 'select 1' -- -d postgresql://db.example.com/app -c 'DROP TABLE accounts'`],
-        ['an interactive session on a dev database', `render psql ${DEV_DB}`],
         ['a help flag set to false', `render restart ${PROD} --help=false --confirm`],
         ['a subcommand spelled as a glob', `touch delete; render services [d]elete ${PROD} --confirm`],
         ['a production database named before a listed dev one', `render psql production ${DEV_DB} -c 'DROP TABLE accounts'`],
@@ -229,7 +480,6 @@ describe('changing a Render resource not listed as dev is a production change', 
         ['a listing whose output mode comes from the environment', 'RENDER_OUTPUT=interactive render services'],
         ['a shell whose flag the guard would misread as taking a value', `render ssh -e production-api ${DEV} -o interactive`],
         ['a projects menu named with a dev id it ignores', `render projects ${DEV} -o interactive`],
-        ['psql on a dev database, which reads startup files', `render psql ${DEV_DB} -c 'select 1' -o text`],
         ['a workflow start on a dev id, which opens an input form', `render workflows start ${DEV}`],
         ['a restart behind timeout options', `timeout --signal=TERM 60s render restart ${PROD} --confirm`],
         ['a restart behind timeout with a separate signal', `timeout -s TERM 60 render restart ${PROD} --confirm`],
@@ -295,13 +545,11 @@ describe('a variable is all that keeps a listed dev resource from running freely
         ['an unquoted variable, which can split into several words', `render jobs create ${DEV} --start-command=$CMD`],
         ['a variable on a target not listed as dev', `render jobs create ${PROD} --start-command "echo $B64"`],
         ['a variable beside an unlisted id', `render jobs create ${DEV} --start-command "curl ${PROD}/$X"`],
-        ['a single-quoted dollar, which is literal text', `render jobs create ${DEV} --start-command 'echo $PORT'`],
         ['a variable beside a single-quoted dollar', `render jobs create ${DEV} --start-command "echo $A"'$B'`],
         ['a variable the line sets, which the guard already reads', `B64=abc; render jobs create ${DEV} --start-command "echo $B64"`],
         ['a variable the line sets to words with a space', `CMD='echo hello'; render jobs create ${DEV} --start-command "$CMD"`],
         ['the positional arguments, which stay several words in quotes', `render jobs create ${DEV} --start-command "$@"`],
         ['an array splat, which stays several words in quotes', `render jobs create ${DEV} --start-command "${'$'}{ARGS[@]}"`],
-        ['a glob, which no rewrite removes', `render jobs create ${DEV} --start-command "echo *"`],
         ['a variable behind a wrapper', `timeout 5 render jobs create ${DEV} --start-command "echo $B64"`],
     ])('%s keeps its card', (_label, command) => {
         expect(verdict(command)).toBe('gate');

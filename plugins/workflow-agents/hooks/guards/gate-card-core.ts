@@ -635,6 +635,16 @@ function bodyRoots(cwd: string | undefined): string[] {
  * email-shaped file under a working directory qualifies: never a dotfile, a
  * credential-looking path, or anything a symlink points outside those roots.
  */
+/** Whether a path, followed through any symlink, sits under the working directory or the agent's workspace. */
+export function inWorkingTree(path: string, cwd?: string): boolean {
+    try {
+        const real = realpathSync(path);
+        return bodyRoots(cwd).some(root => real === root || real.startsWith(`${root}${sep}`));
+    } catch {
+        return false;
+    }
+}
+
 export function readBodyFile(path: string, cwd?: string): string | null {
     let real: string;
     try {
