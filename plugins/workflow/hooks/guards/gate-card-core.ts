@@ -450,9 +450,10 @@ export function shellUnquote(text: string): string {
 }
 
 
-// Nothing on this list runs a file, and none of these extensions is one a shell, client or hook reads as commands.
-const NOTE_FILE = /^[\w@%+=:,./-]+\.(?:md|txt|log)$/;
-const NOTE_LINE_COMMANDS = new Set(['cat', 'cd', 'echo', 'printf', 'true', ':', 'mkdir', 'date', 'ls', 'head', 'tail', 'wc']);
+// Nothing on the command list runs a file. A note is a text format outside any dot-path, since tools read dot-paths as
+// configuration: a Markdown file under .claude/commands can hold shell lines.
+const NOTE_FILE = /^(?!(?:.*\/)?\.[^./])[\w@%+=:,./-]+\.(?:md|txt|log)$/;
+const NOTE_LINE_COMMANDS = new Set(['cat', 'cd', 'echo', 'true', ':', 'mkdir', 'date', 'ls', 'head', 'tail', 'wc']);
 
 /** The quoted heredoc of a step whose only writes are to note files, or null. */
 function storedHeredoc(node: any, command: string): any {
