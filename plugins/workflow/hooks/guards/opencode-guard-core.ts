@@ -142,7 +142,7 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
     const reason = verdict.reason ?? 'requires approval';
 
     // No gate-file shortcut: the /tmp marker was agent-writable and nothing ever
-    // wrote it legitimately (nanoclaw #858). The session-DB gate is the only path.
+    // wrote it legitimately. The session-DB gate is the only path.
     if (IS_NANOCLAW) {
       // session-DB approval gate: blocks until the host's approver decides (or 60-min timeout).
       const decision = runNanoclawGate(command, reason, undefined, undefined, cwd);
