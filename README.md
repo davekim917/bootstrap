@@ -15,7 +15,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.27.2 | The seven `team-*` skills and the safety gates |
+| Claude Code | `bootstrap-workflow` | 5.27.3 | The seven `team-*` skills and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.27.2 | The same, runtime-neutral |
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.6.2 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |

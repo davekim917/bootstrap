@@ -82,7 +82,7 @@ async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'app
     // Belt-and-suspenders: never let a real DB poll run.
     pollDeliveredTable: (): 'approved' | 'denied' | 'timeout' => decision,
   }));
-  const { NanoclawGuard } = await import('./opencode-guard');
+  const { NanoclawGuard } = await import('./opencode-guard-core');
   const hooks = await NanoclawGuard();
   const before = hooks['tool.execute.before'] as BeforeHook;
   const runBash = (command: string) =>
@@ -307,7 +307,7 @@ async function expectEntrypointFailsClosed(
   brokenEmail?: Record<string, unknown>,
   pattern = /fail-closed/i,
 ): Promise<void> {
-  const og = await import('./opencode-guard');
+  const og = await import('./opencode-guard-core');
   const realValidator = og.assertCoreExports;
   const spy = spyOn(og, 'assertCoreExports').mockImplementation(() =>
     realValidator(brokenCore ?? (REAL_CORE as Record<string, unknown>), brokenEmail ?? (REAL_EMAIL as Record<string, unknown>)),
@@ -354,7 +354,7 @@ describe('test_oc_dispatch_fail_closed_on_absent_core', () => {
 
   test('a complete core lets the entrypoint construct (control — no false-positive fail-closed)', async () => {
     // Sanity: with both cores intact, the entrypoint constructs the hook object.
-    const og = await import('./opencode-guard');
+    const og = await import('./opencode-guard-core');
     const hooks = await og.NanoclawGuard();
     expect(typeof hooks['tool.execute.before']).toBe('function');
   });

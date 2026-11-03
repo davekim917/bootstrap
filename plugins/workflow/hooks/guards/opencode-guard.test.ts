@@ -2,7 +2,7 @@ import { describe, test, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { gateBashOrThrow, assertCoreExports, bashCwdOf, NanoclawGuard } from './opencode-guard';
+import { gateBashOrThrow, assertCoreExports, bashCwdOf, NanoclawGuard } from './opencode-guard-core';
 
 // Regression guard for the OpenCode plugin's bash gate wrapper. The full
 // decision matrix is covered by block-destructive.test.ts (shared core); these
@@ -155,7 +155,7 @@ async function loadGuardWithEmailStub(decision: 'approved' | 'denied' | 'timeout
     // Guard against the test accidentally hitting a real DB poll.
     pollDeliveredTable: (): 'approved' | 'denied' | 'timeout' => decision,
   }));
-  const guard = await import('./opencode-guard');
+  const guard = await import('./opencode-guard-core');
   return { guard, stages, stagedActions };
 }
 
@@ -299,7 +299,7 @@ describe('B4 full-chain composition', () => {
       runNanoclawGate: (): 'approved' => 'approved',
       pollDeliveredTable: (): 'approved' => 'approved',
     }));
-    const { NanoclawGuard } = await import('./opencode-guard');
+    const { NanoclawGuard } = await import('./opencode-guard-core');
     const hooks = await NanoclawGuard();
     const before = hooks['tool.execute.before'];
 
