@@ -21,7 +21,8 @@
 // GitNexus MCP tools and skills are already available to opencode; only this
 // advisory is missing.
 
-import { resolve as pathResolve } from 'path';
+import { writeFileSync } from 'fs';
+import { join, resolve as pathResolve } from 'path';
 import * as core from './block-destructive-core';
 import {
   approvalText,
@@ -217,10 +218,22 @@ export function bashCwdOf(args: Record<string, unknown> | undefined, directory: 
   return directory;
 }
 
+/**
+ * OpenCode logs a plugin that throws while loading and serves on without its hooks, so the NanoClaw runner asks each
+ * plugin it requires to leave a receipt in this directory once the hooks are built, and refuses to run without one.
+ */
+const LOAD_RECEIPT_DIR = 'NANOCLAW_OPENCODE_PLUGIN_RECEIPTS';
+
+function writeLoadReceipt(): void {
+  const dir = process.env[LOAD_RECEIPT_DIR];
+  if (dir) writeFileSync(join(dir, 'nanoclaw-guard'), new Date().toISOString());
+}
+
 export const NanoclawGuard = async (ctx?: { directory?: string }) => {
   // Fail-closed: refuse to operate against a malformed core (B3). Throws here so
   // the guard never silently fails-open on a missing evaluator or gate primitive.
   assertCoreExports();
+  writeLoadReceipt();
   return {
     'tool.execute.before': async (input: ToolBeforeInput, output: ToolBeforeOutput) => {
       // File-protection: block edits to protected paths (.env, lockfiles, .git,

@@ -1,5 +1,5 @@
-import { describe, test, expect, mock, afterEach, beforeEach } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync } from 'fs';
+import { describe, test, expect, mock, afterEach, beforeEach, spyOn } from 'bun:test';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { gateBashOrThrow, assertCoreExports, bashCwdOf, NanoclawGuard } from './opencode-guard-core';
@@ -364,5 +364,36 @@ describe('opencode-guard reads a non-string bash command through the shared core
   test('evaluates an array, and fails closed on a value it cannot read', async () => {
     await expect(runBash(['rm', '-rf', '/etc'])).rejects.toThrow(/protected path/);
     await expect(runBash({ script: 'rm -rf /etc' })).rejects.toThrow(/failed closed/i);
+  });
+});
+
+describe('opencode-guard leaves a load receipt for the NanoClaw runner', () => {
+  const saved = process.env.NANOCLAW_OPENCODE_PLUGIN_RECEIPTS;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.NANOCLAW_OPENCODE_PLUGIN_RECEIPTS;
+    else process.env.NANOCLAW_OPENCODE_PLUGIN_RECEIPTS = saved;
+  });
+
+  test('building the hooks writes nanoclaw-guard into the receipt directory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'oc-receipts-'));
+    process.env.NANOCLAW_OPENCODE_PLUGIN_RECEIPTS = dir;
+    await NanoclawGuard();
+    expect(readdirSync(dir)).toEqual(['nanoclaw-guard']);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a core that fails its check leaves no receipt', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'oc-receipts-'));
+    process.env.NANOCLAW_OPENCODE_PLUGIN_RECEIPTS = dir;
+    const og = await import('./opencode-guard-core');
+    const real = og.assertCoreExports;
+    const spy = spyOn(og, 'assertCoreExports').mockImplementation(() => real({}));
+    try {
+      await expect(og.NanoclawGuard()).rejects.toThrow(/fail-closed/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(readdirSync(dir)).toEqual([]);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
