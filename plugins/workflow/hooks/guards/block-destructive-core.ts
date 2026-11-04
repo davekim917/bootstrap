@@ -4852,6 +4852,92 @@ export function localPgTargetOf(
     return postgresListening(host, `${target.host}:${port}`, tcpListenerInodes(host, target.host, port));
 }
 
+// ── Local scratch Redis exemption ────────────────────────────────────────────
+// FLUSHALL or FLUSHDB against a throwaway redis-server the session started in its own container runs without approval.
+// It is read as strictly as the scratch Postgres exemption: the same plain line with no expansion, and procfs must show
+// every listener on the port bound to loopback only and held only by a system redis binary whose data directory (redis
+// changes into it at start) is under /tmp. A redis on every address, or one saving to a mounted directory, can hold
+// data that outlives the container; an ssh, socat or renamed binary on the port can reach any redis. A change made by
+// another process between this check and redis-cli connecting is not ruled out.
+
+// Where a distribution installs redis-server; on Debian it is a link to redis-check-rdb, which /proc/<pid>/exe shows.
+const SYSTEM_REDIS_EXES = new Set(['/usr/bin/redis-server', '/usr/bin/redis-check-rdb', '/usr/local/bin/redis-server']);
+// /proc/net addresses, network byte order, that only a connection from inside this network namespace reaches.
+const LOOPBACK_ONLY_ADDRESSES: Record<string, Set<string>> = {
+    '/proc/net/tcp': new Set(['7f000001']),
+    '/proc/net/tcp6': new Set(['0'.repeat(31) + '1', '00000000000000000000ffff7f000001']),
+};
+
+/** The port of `redis-cli [-h 127.0.0.1|::1] -p <port> [-n <db>] FLUSHALL|FLUSHDB [ASYNC|SYNC]`, else null. */
+function redisFlushTarget(args: string[]): { host: string; port: number } | null {
+    let host = '127.0.0.1';
+    let port: string | undefined;
+    let i = 0;
+    for (; i < args.length && args[i].startsWith('-'); i += 2) {
+        const value = args[i + 1];
+        if (value === undefined) return null;
+        if (args[i] === '-h') host = value;
+        else if (args[i] === '-p') port = value;
+        else if (args[i] !== '-n' || !/^\d{1,5}$/.test(value)) return null;
+    }
+    const rest = args.slice(i).map(a => a.toUpperCase());
+    if (!['FLUSHALL', 'FLUSHDB'].includes(rest[0]) || rest.length > 2 || (rest[1] && !['ASYNC', 'SYNC'].includes(rest[1]))) return null;
+    if ((host !== '127.0.0.1' && host !== '::1') || !port || !/^\d{1,5}$/.test(port)) return null;
+    const n = Number(port);
+    return n >= 1 && n <= 65535 ? { host, port: n } : null;
+}
+
+/** "<endpoint> (redis pid N, data <dir>)" when every listener on `port` is loopback-only scratch redis, else null. */
+function redisListening(host: LocalPgHost, endpoint: string, port: number): string | null {
+    const inodes: string[] = [];
+    for (const [file, loopback] of Object.entries(LOOPBACK_ONLY_ADDRESSES)) {
+        const table = host.readFile(file);
+        if (table === null) return null;
+        for (const line of table.split('\n').slice(1)) {
+            const f = line.trim().split(/\s+/);
+            const local = f[1]?.match(/^([0-9A-Fa-f]+):([0-9A-Fa-f]{4})$/);
+            if (!local || f[3] !== '0A' || parseInt(local[2], 16) !== port) continue;
+            if (!loopback.has(procNetAddress(local[1]))) return null;
+            inodes.push(f[9]);
+        }
+    }
+    if (!inodes.length || inodes.some(i => !/^[1-9]\d*$/.test(i))) return null;
+    const holders = socketHolders(host, new Set(inodes));
+    if (!holders) return null;
+    const pids = new Set<string>();
+    const dirs = new Set<string>();
+    for (const inode of inodes) {
+        const held = holders.get(inode);
+        if (!held?.length) return null;
+        for (const pid of held) {
+            const cwd = host.readLink(`/proc/${pid}/cwd`);
+            if (!SYSTEM_REDIS_EXES.has(host.readLink(`/proc/${pid}/exe`) ?? '')) return null;
+            if (!cwd?.startsWith('/tmp/') || pathNormalize(cwd) !== cwd) return null;
+            pids.add(pid);
+            dirs.add(cwd);
+        }
+    }
+    return `${endpoint} (redis pid ${[...pids].join(', ')}, data ${[...dirs].join(', ')})`;
+}
+
+/** The local scratch redis a top-level `redis-cli … FLUSHALL|FLUSHDB` is exempt against, or null. */
+export function localRedisTargetOf(
+    cmd: ResolvedCommand,
+    commands: ResolvedCommand[],
+    command: string,
+    host: LocalPgHost = LIVE_LOCAL_PG_HOST,
+): string | null {
+    if (cmd.name !== 'redis-cli' || host.platform !== 'linux') return null;
+    if ((cmd.env ?? []).length || cmd.chdir !== undefined || !cmd.raw.startsWith('redis-cli ')) return null;
+    const plain = (c: ResolvedCommand) => LOCAL_PG_LINE_COMMANDS.has(c.name) && (c.raw === c.name || c.raw.startsWith(`${c.name} `));
+    if (!commands.every(c => c === cmd || plain(c)) || LINE_EXPANSION_RE.test(command)) return null;
+    if (!isPlainLine(command) || mayWriteFiles(command)) return null;
+    const written = writtenArgs(cmd);
+    if (!written || !written.every(isLiteralShellWord) || cmd.args.some(a => a.includes('\\'))) return null;
+    const target = redisFlushTarget(cmd.args);
+    return target ? redisListening(host, `${target.host}:${target.port}`, target.port) : null;
+}
+
 const LOCAL_PG_URI_RE = /^postgres(?:ql)?:\/\/(?:([A-Za-z0-9_.-]+)(:[^@/?#\s'"]*)?@)?(localhost|127\.0\.0\.1|\[::1\]):(\d{1,5})\/([A-Za-z0-9_.-]+)$/;
 const LOCAL_PG_HOST_LOCALHOST_RE = /(^|\s)(-h\s*|--host[=\s]\s*)(['"]?)localhost\3(?=\s|;|&|\||$)/g;
 
@@ -6477,6 +6563,11 @@ function* gatedSteps(
             const local = cmd === outer ? localPgTargetOf(cmd, commands, command, localPg) : null;
             if (local !== null) {
                 if (log) console.error(`local-pg: allowed ${cmd.name} against ${local}`);
+                continue;
+            }
+            const redis = cmd === outer ? localRedisTargetOf(cmd, commands, command, localPg) : null;
+            if (redis !== null) {
+                if (log) console.error(`local-redis: allowed ${cmd.name} against ${redis}`);
                 continue;
             }
             if (lab) {
