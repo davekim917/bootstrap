@@ -361,6 +361,24 @@ describe('evaluateEmailSend — gate decision', () => {
         }
     });
 
+    test('a dry-run carrying a command or process substitution anywhere, however it is quoted, asks', () => {
+        for (const cmd of [
+            `gws gmail +send --to a@example.com --body "'$(gws gmail +send --to b@example.com --body hi)'" --dry-run`,
+            `gws gmail +send --to a@example.com --body "'\`gws gmail +send --to b@example.com\`'" --dry-run`,
+            `gws gmail +send --to a@example.com --body <(gws gmail +send --to b@example.com --body hi) --dry-run`,
+        ]) {
+            expect([cmd, evaluateEmailSend(cmd, INTERACTIVE).action]).toEqual([cmd, 'gate']);
+        }
+        // The probe check reads quotes with a parser, so text that only looks like a substitution still passes there.
+        for (const cmd of [
+            'gws gmail +send --to a@example.com --body hi --dry-run',
+            'gws gmail +send --to a@example.com --body "cost is $5" --dry-run',
+            "gws gmail +send --to a@example.com --body '$(literal text)' --dry-run",
+        ]) {
+            expect([cmd, evaluateEmailSend(cmd, INTERACTIVE).action]).toEqual([cmd, 'allow']);
+        }
+    });
+
     test('test_email_bypass_quoted_param_expansion_still_bypasses (codex #126 P1 — no over-block)', () => {
         // Only command substitution executes. Bare parameter expansion in double
         // quotes ($VAR / ${VAR} / $5) substitutes a value without running a command,
