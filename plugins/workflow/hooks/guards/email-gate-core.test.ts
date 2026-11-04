@@ -912,6 +912,7 @@ describe('evaluateEmailSend — what else the command runs, so the card can leav
             [`${CREDS}\n${BODY}\n${REPLY}`, []],
             [`${CREDS.replace('export ', '')} ${SEND}`, []],
             [`BODY="Hi Pat"; ${SEND.replace('"Can you confirm the file works?"', '"$BODY"')}`, []],
+            [`${SEND.replace('"Can you confirm the file works?"', "\"<div style='color:#222'><p>See <a href='https://docs.example/x'>the doc</a>.<br>Sam</p></div>\"")} --html`, []],
             [`${CREDS} && ${SEND} 2>&1 | tail -7`, ['shows the agent only part of what the send prints: `tail -7`']],
             [`set -euo pipefail\n${SEND}\necho sent`, ['`set -euo pipefail`', '`echo sent`']],
             [`mkdir -p /workspace/agent/out\n${SEND}`, ['creates folder `out` in the workspace']],
@@ -980,13 +981,24 @@ describe('evaluateEmailSend — what else the command runs, so the card can leav
             SEND.replace('--subject Hi', "--subject $'Hi\\x21'"),
             SEND.replace('--subject Hi', '--subject ~pat'),
             SEND.replace('--subject Hi', '--subject Hi\\ there'),
+            SEND.replace('+send', '+forward').replace('--subject Hi', '--message-id 18f0aa11bb22cc33'),
+            SEND.replace('+send', '+send --message-id 18f0aa11bb22cc33'),
+            `BODY=safe; ${SEND.replace('--body "Can you confirm the file works?"', "'--body=$BODY'")}`,
+            SEND.replace('--subject Hi', '--subject "Hi\nBcc: lee@example.com"'),
+            `${CREDS.replace('/home/node/.config/gws/accounts/example-co.json', '/home/node/accounts/decoy.json/accounts/real.json')}\n${SEND}`,
+            `${SEND.replace('"Can you confirm the file works?"', '"<p>Hi</p><!-- token=abc -->"')} --html`,
+            `${SEND.replace('"Can you confirm the file works?"', "\"<p>Hi</p><img src='https://pixel.example/t.gif'>\"")} --html`,
+            `${SEND.replace('"Can you confirm the file works?"', "\"<p data-x='abc'>Hi</p>\"")} --html`,
+            `${SEND.replace('"Can you confirm the file works?"', `"<p>Hi</p>${' '.repeat(20000)}<p>end</p>"`)} --html`,
+            `${SEND} 2>&1 | head -n 1 | grep '${'x'.repeat(150)}'`,
+            `echo '${'x'.repeat(200)}'\n${SEND}`,
         ]) {
             expect(alsoRuns(command)).toEqual([command, 'gate', undefined]);
         }
     });
 
-    test('a native email tool call is the whole request, so nothing else runs', () => {
-        const v = evaluateEmailToolCall('send_email', { to: 'pat@example.com', subject: 'Hi', body: 'Thanks' }, INTERACTIVE);
-        expect(v.alsoRuns).toEqual([]);
+    test('a native email tool call keeps its card as it was, since its summary leaves fields out', () => {
+        const input = { to: 'pat@example.com', bcc: 'lee@example.com', from: 'other@example.com', attachments: ['a.txt'], body: 'hi' };
+        expect(evaluateEmailToolCall('send_email', input, INTERACTIVE).alsoRuns).toBeUndefined();
     });
 });
