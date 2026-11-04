@@ -881,8 +881,11 @@ const RUNS_A_COMMAND = /\$\(|`|[<>]\(/;
 const WORKSPACE_PATH = /^\/workspace(?:\/[\w@%+=:,-][\w@%+=:,.-]*)+\/?$/;
 // A note the card may name: a text format nothing on a command line runs.
 const NOTE_EXTENSION = /\.(?:md|txt|log|html?|eml)$/;
-// Filters that only trim what the send prints back to the agent.
-const OUTPUT_FILTERS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq', 'wc', 'cut', 'tr', 'uniq']);
+// Filters that only trim what the send prints back to the agent; none takes a file to write (uniq's OUTPUT operand does).
+const OUTPUT_FILTERS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq', 'wc', 'cut', 'tr']);
+const CREDENTIALS_VAR = 'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE';
+// The summary names the sending account from this path, so only one it reads whole may go unshown.
+const CREDENTIALS_ASSIGNMENT = new RegExp(`^${CREDENTIALS_VAR}=[^\\s'"$\`\\\\]*/accounts/[\\w.-]+\\.json$`);
 const STEP_LINE_MAX_CHARS = 160;
 
 type Step = { kind: 'line'; text: string } | { kind: 'folders'; paths: string[] } | { kind: 'note'; path: string; append: boolean };
@@ -898,9 +901,13 @@ function plainStep(node: any): { name: string; args: string[] } | null {
     return { name, args };
 }
 
-/** The send's own command: the bare word gws, no wrapper (`env`, `timeout`, …) the summary would not show. */
+/**
+ * The send's own command: the bare word gws, no wrapper (`env`, `timeout`, …) the summary would not show, and no
+ * argument the shell splits, globs or brace-expands into something other than the text the summary read.
+ */
 function sendStepIsPlain(node: any): boolean {
-    return node?.type === 'Command' && node.name?.text === 'gws' && outputOnlyRedirects(node) && (node.prefix || []).every(assignsOnly);
+    return node?.type === 'Command' && node.name?.text === 'gws' && outputOnlyRedirects(node)
+        && (node.prefix || []).every(assignsOnly) && (node.suffix || []).every(wordIsFixed);
 }
 
 function outputFilterIsPlain(node: any): boolean {
@@ -956,6 +963,8 @@ function otherSteps(command: string, sendPos: number): string[] | null {
     const steps: Step[] = [];
     let sends = 0;
     let unread = command;
+    let credentialsSet = 0;
+    const setsCredentials = (words: any[]) => words.filter(w => CREDENTIALS_ASSIGNMENT.test(String(w?.text ?? ''))).length;
     for (const entry of script.commands ?? []) {
         if (entry?.type !== 'Statement' || entry.background || (entry.redirects || []).length) return null;
         const node = entry.command;
@@ -966,12 +975,15 @@ function otherSteps(command: string, sendPos: number): string[] | null {
                 const [first, ...filters] = step.commands;
                 if (step.negated || step.time || first?.pos !== sendPos || !sendStepIsPlain(first) || !filters.every(outputFilterIsPlain)) return null;
                 sends++;
+                credentialsSet += setsCredentials(first.prefix || []);
                 const shown = oneLine(command.slice(filters[0].pos, step.end));
                 steps.push({ kind: 'line', text: `shows the agent only part of what the send prints: ${code(clip(shown, 80))}` });
             } else if (step?.type === 'Command' && step.pos === sendPos) {
                 if (!sendStepIsPlain(step)) return null;
                 sends++;
+                credentialsSet += setsCredentials(step.prefix || []);
             } else {
+                if (step?.name?.text === 'export' && sends === 0) credentialsSet += setsCredentials(step.suffix || []);
                 const described = describeStep(step, command);
                 if (!described) return null;
                 if (described.kind === 'note') {
@@ -987,7 +999,11 @@ function otherSteps(command: string, sendPos: number): string[] | null {
     // One check over all the text left (words, redirects, heredocs), quoted or not; an inert `$(` in single quotes only
     // costs the card its shortcut.
     if (RUNS_A_COMMAND.test(unread)) return null;
-    const notes = steps.flatMap(s => (s.kind === 'note' ? [s.path] : []));
+    // The summary reads the account from the first time the command names the credentials file, heredocs included, so
+    // the name may appear only once, set plainly before or on the send.
+    const credentialsNamed = command.split(CREDENTIALS_VAR).length - 1;
+    if (credentialsNamed > 1 || credentialsNamed !== credentialsSet) return null;
+    const notes =steps.flatMap(s => (s.kind === 'note' ? [s.path] : []));
     const lines: string[] = [];
     for (const s of steps) {
         if (s.kind === 'note') lines.push(`${s.append ? 'adds to' : 'writes'} ${code(basename(s.path))} in the workspace`);

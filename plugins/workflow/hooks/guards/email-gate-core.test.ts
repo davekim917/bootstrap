@@ -910,6 +910,7 @@ describe('evaluateEmailSend — what else the command runs, so the card can leav
         for (const [command, lines] of [
             [SEND, []],
             [`${CREDS}\n${BODY}\n${REPLY}`, []],
+            [`${CREDS.replace('export ', '')} ${SEND}`, []],
             [`${CREDS} && ${SEND} 2>&1 | tail -7`, ['shows the agent only part of what the send prints: `tail -7`']],
             [`set -euo pipefail\n${SEND}\necho sent`, ['`set -euo pipefail`', '`echo sent`']],
             [`mkdir -p /workspace/agent/out\n${SEND}`, ['creates folder `out` in the workspace']],
@@ -956,6 +957,15 @@ describe('evaluateEmailSend — what else the command runs, so the card can leav
             `timeout 30 ${SEND}`,
             `command ${SEND}`,
             `BODY="hi \`id\`"\n${REPLY}`,
+            SEND.replace('"Can you confirm the file works?"', 'README.m?'),
+            SEND.replace('pat@example.com', '{pat,lee}@example.com'),
+            `${BODY}\n${REPLY.replace('"$BODY"', '$BODY')}`,
+            `${CREDS}\n${CREDS.replace('example-co', 'other-co')}\n${SEND}`,
+            `${CREDS.replace('export ', '')}\n${SEND}`,
+            `${SEND}\n${CREDS}`,
+            `${CREDS.replace(/=.*/, '=/tmp/creds.json')}\n${SEND}`,
+            `cat > /workspace/agent/n.md <<'EOF'\n${CREDS}\nEOF\n${CREDS.replace('example-co', 'other-co')}\n${SEND}`,
+            `${SEND} 2>&1 | uniq /dev/stdin /workspace/agent/run.sh`,
         ]) {
             expect(alsoRuns(command)).toEqual([command, 'gate', undefined]);
         }
