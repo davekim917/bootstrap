@@ -123,6 +123,8 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
     action: 'gate';
     reason: string;
     summary?: string;
+    deny?: string;
+    pureSend?: boolean;
 } {
     const verdict = evaluateEmailSend(command, {
         isScheduledTask: process.env.NANOCLAW_IS_SCHEDULED_TASK === '1',
@@ -133,6 +135,8 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
         action: 'gate',
         reason: verdict.label ?? verdict.reason ?? 'Outbound email send requires approval.',
         summary: verdict.summary,
+        deny: verdict.deny,
+        pureSend: verdict.pureSend,
     };
 }
 
@@ -229,9 +233,16 @@ function main(): void {
         }
 
         const cwd = shellCwd(input);
+
         const destructive = evaluateBashCommand(command, { cwd });
         if (destructive.action === 'block') {
             emitDeny(destructive.reason, 'Destructive command blocked.');
+        }
+
+        // An email send sharing its command is refused after any hard block and before any gate asks, so no approval is spent on it.
+        const email = emailReason(command, cwd);
+        if (email.action === 'gate' && email.deny) {
+            emitDeny(email.deny, email.reason);
         }
 
         if (destructive.action === 'gate') {
@@ -262,7 +273,6 @@ function main(): void {
             }
         }
 
-        const email = emailReason(command, cwd);
         if (email.action === 'gate') {
             if (!IS_NANOCLAW) {
                 emitNeedsHumanApproval(`${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`);
@@ -271,7 +281,7 @@ function main(): void {
             let staged = true;
             const decision = runEmailGate(command, email.reason, () => {
                 staged = false;
-            }, email.summary, toolUseId);
+            }, email.summary, toolUseId, email.pureSend);
             if (!staged) {
                 emitDeny(`${email.reason} — could not stage the NanoClaw approval request.`, email.reason);
             }

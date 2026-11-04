@@ -177,12 +177,13 @@ describe('native local approval flow', () => {
         expect(result.stderr).toMatch(/self-approval/i);
     });
 
-    test('a combined destructive email command discloses both effects in one approval', async () => {
+    test('a destructive verb sharing its command with an email send is refused before any approval', async () => {
         const result = await runHook(
             'terraform destroy && gws gmail +send --to ops@example.com --subject done',
         );
-        expectNativeAsk(result, /also requires outbound-email approval/i);
-        expect(result.permissionDecisionReason).toContain('ops@example.com');
+        expect(result.exitCode).toBe(2);
+        expect(result.permissionDecision).toBeUndefined();
+        expect(result.stderr).toContain('Email send refused: run it as its own Bash command');
     });
 
     test('an email-only send asks for native approval', async () => {

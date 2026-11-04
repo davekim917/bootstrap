@@ -154,12 +154,11 @@ describe('Codex local approval transport', () => {
     expect(result.output).toEqual({ continue: true });
   });
 
-  test('discloses destructive and email effects in one approval', async () => {
+  test('refuses a destructive verb sharing its command with an email send before any approval', async () => {
     const result = await runGuard(
       shell('terraform destroy && gws gmail +send --to ops@example.com --subject done'),
     );
-    expectDecision(result, 'deny', /also requires outbound-email approval/i);
-    expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain('ops@example.com');
+    expectDecision(result, 'deny', /Email send refused: run it as its own Bash command/);
   });
 
   test('accepts array-form command inputs', async () => {

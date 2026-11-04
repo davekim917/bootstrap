@@ -115,6 +115,14 @@ export interface EmailGateVerdict {
     label?: string;
     summary?: string;
     reason?: string;
+    /**
+     * Set when the send shares its command with other steps, or with words this module can't read exactly as bash
+     * will: the adapter refuses the command with this text instead of asking. A consumer that predates the field
+     * still asks, with the command on the card.
+     */
+    deny?: string;
+    /** The command is the send alone and the summary shows all of it, so the card can leave the command off. */
+    pureSend?: boolean;
 }
 
 function normalizedToolName(toolName: string): string {
@@ -326,16 +334,34 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         if (quoted) return quoted[2];
         return scanned.match(new RegExp(`${flag}\\s+(\\S+)`))?.[1];
     };
-    const flagTo = matchFlag('--to');
-    const envelope = !flagTo ? envelopeFromJsonRaw(command) : {};
-    const subject = matchFlag('--subject') ?? envelope.subject ?? '';
-    const cc = matchFlag('--cc') ?? envelope.cc;
-    const bcc = matchFlag('--bcc') ?? envelope.bcc;
-    const removed = matchFlag('--remove');
-    const messageId = matchFlag('--message-id');
-    const alias = matchFlag('--from');
-    const attachments = send ? [...argTexts(send, '-a'), ...argTexts(send, '--attach')].map(evaluated) : [];
-    const isHtml = send ? send.values.includes('--html') : /\s--html(?:\s|$)/.test(scanned);
+    // A command in the one shape is read exactly by it, even where the shell view's parser fails (an apostrophe in a
+    // heredoc is enough); the summary then comes from the shape, and the shell view, when it parsed, must agree.
+    const shape = sendShape(command);
+    const exact = shape?.complete && shape.verb !== null ? shape : null;
+    const exactOption = (name: string) => exact?.options.get(name)?.join(', ');
+    const exactAttachments = [...(exact?.options.get('-a') ?? []), ...(exact?.options.get('--attach') ?? [])];
+    const viewRead = {
+        to: matchFlag('--to'),
+        subject: matchFlag('--subject'),
+        cc: matchFlag('--cc'),
+        bcc: matchFlag('--bcc'),
+        removed: matchFlag('--remove'),
+        messageId: matchFlag('--message-id'),
+        alias: matchFlag('--from'),
+        attachments: send ? [...argTexts(send, '-a'), ...argTexts(send, '--attach')].map(evaluated) : [],
+        isHtml: send ? send.values.includes('--html') : /\s--html(?:\s|$)/.test(scanned),
+    };
+    const flagTo = exact ? exactOption('--to') : viewRead.to;
+    // A raw-API payload names its own envelope; for a helper call it would be text that merely looks like one.
+    const envelope = !flagTo && !exact ? envelopeFromJsonRaw(command) : {};
+    const subject = (exact ? exactOption('--subject') : viewRead.subject) ?? envelope.subject ?? '';
+    const cc = (exact ? exactOption('--cc') : viewRead.cc) ?? envelope.cc;
+    const bcc = (exact ? exactOption('--bcc') : viewRead.bcc) ?? envelope.bcc;
+    const removed = exact ? exactOption('--remove') : viewRead.removed;
+    const messageId = exact ? exactOption('--message-id') : viewRead.messageId;
+    const alias = exact ? exactOption('--from') : viewRead.alias;
+    const attachments = exact ? exactAttachments : viewRead.attachments;
+    const isHtml = exact ? exact.html : viewRead.isHtml;
     // Parse the sending identity from GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE.
     // Path convention: /home/node/.config/gws/accounts/<slug>.json.
     // The slug is the human-facing account name the user configured.
@@ -343,7 +369,9 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const credsMatch = command.match(
         /GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=\S*?\/accounts\/([\w.-]+)\.json/,
     );
-    const fromAccount = credsMatch?.[1] ?? 'default';
+    // A command in the one shape names the account in exactly one place, which the scan above could miss for a
+    // credentials-looking string inside the body.
+    const fromAccount = shape ? shape.account ?? 'default' : credsMatch?.[1] ?? 'default';
     // Anchor to the four allowed helper verbs only — the prior `\+(\w[\w-]*)`
     // could capture spurious `+ABC` substrings from a base64 payload in the
     // raw-API form. Falls back to "send" for the raw form (which has no +verb).
@@ -393,15 +421,21 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     if (attachments.length) lines.push(`Attachments: ${attachments.map(a => code(inline(a))).join(', ')}`);
 
     const bodyText = send ? argTexts(send, '--body')[0] : matchFlag('--body');
-    const body = send || bodyText === undefined
+    const resolved = send || bodyText === undefined
         ? resolveBody(bodyText, view, send?.pos ?? Infinity, env.cwd, evaluated)
         : { text: bodyText };
+    // The shape reads its body exactly, a heredoc included, which the shell view can't read into a variable (and its
+    // parser may not read at all, an apostrophe in the heredoc being enough).
+    const body = shape?.body !== undefined ? { text: shape.body } : resolved;
     lines.push('');
+    let bodyCut = false;
     if (body.text !== null) {
         const text = isHtml ? htmlToText(body.text) : body.text.trim();
         const header = `Message${isHtml ? ' (HTML, shown as text)' : ''}:`;
         const used = lines.join('\n').length + header.length + 120;
-        lines.push(header, quoteBlock(clip(text || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used))));
+        const shown = clip(text || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used));
+        bodyCut = shown !== (text || '(empty)');
+        lines.push(header, quoteBlock(shown));
         if (body.note) lines.push(body.note);
     } else if (isRawApi) {
         lines.push('Message: not shown. This send passes a raw MIME message, so the text is only visible inside the encoded payload. Decline and ask the agent to show the draft if you need to read it first.');
@@ -412,7 +446,247 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         const list = [...unresolved];
         lines.push(`⚠️ ${list.map(code).join(', ')} ${list.length === 1 ? 'is' : 'are'} only known when the command runs, so the value${list.length === 1 ? '' : 's'} above may differ.`);
     }
-    return { action: 'gate', label, summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
+    const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
+    if (!shape) return { action: 'gate', label, summary, deny: SEND_ALONE };
+    const viewAgrees = !send || (viewRead.to === exactOption('--to') && viewRead.subject === exactOption('--subject')
+        && viewRead.cc === exactOption('--cc') && viewRead.bcc === exactOption('--bcc') && viewRead.removed === exactOption('--remove')
+        && viewRead.messageId === exactOption('--message-id') && viewRead.alias === exactOption('--from')
+        && viewRead.attachments.join('\n') === exactAttachments.join('\n') && viewRead.isHtml === exact?.html
+        && (resolved.text === null || resolved.text === exact?.body));
+    const agree = exact !== null && viewAgrees && action === exact.verb;
+    const fields = [flagTo, subject, cc, bcc, removed, messageId, alias, ...attachments];
+    // An HTML body never qualifies: the summary shows it as text, and what that drops (styles, structure, a <style>
+    // block) can change what the recipient reads.
+    const pureSend = agree && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
+        && fields.every(v => !v || (inline(v) === v && !v.includes('`'))) && gwsWords === 1 && !generatedWord && !probeFlag
+        && !unresolved.size && body.text !== null && !bodyCut && !isHtml && bodyShownAsIs(body.text) && summary === lines.join('\n');
+    return { action: 'gate', label, summary, ...(pureSend ? { pureSend } : {}) };
+}
+
+/** The card shows the body as written: no edge whitespace trimmed, no `<` defused against chat pings. */
+function bodyShownAsIs(text: string): boolean {
+    return text === text.trim() && quoteBlock(text) === text.split('\n').map(line => `> ${line}`).join('\n');
+}
+
+export const SEND_ALONE =
+    'Email send refused: run it as its own Bash command. That command may hold only the gws gmail call, with ' +
+    'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE set on it or exported on the line before, and, for the text, one ' +
+    "BODY=$(cat <<'EOF' … EOF) or BODY='…' line before it. Make any folder, draft file or other step in a separate " +
+    'Bash call first. Write values plainly: no globs, ~, $\'…\', escapes, command substitution or other variables. ' +
+    'It may end with 2>&1 | tail -N or | head -N.';
+
+// ── The one shape a send may take ──
+// A general shell parser can't prove a summary matches what bash runs; bash rewrites words in too many ways. So a send
+// is its own command in a small grammar: unconditional lines, words bash leaves as written apart from a whole
+// "$BODY", and a quoted heredoc only to fill the body.
+
+const SHAPE_PLAIN = /^[\w@%+=:,./-]+/;
+// Options whose values the summary shows; `--format` only shapes what gws prints back.
+const SHAPE_OPTIONS = new Set(['--to', '--cc', '--bcc', '--subject', '--body', '--from', '--message-id', '--remove', '--format', '-a', '--attach']);
+const SHAPE_REPEATABLE = new Set(['-a', '--attach']);
+const SHAPE_CREDENTIALS = /^GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=(?:(?!\/accounts\/)[^\s'"$`\\])*\/accounts\/([\w.-]+)\.json$/;
+
+interface ShapeWord {
+    source: string;
+    value: string;
+    variable: string | null;
+}
+
+interface ShapeStatement {
+    words: ShapeWord[];
+    pipe: ShapeWord[] | null;
+    stderrToStdout: boolean;
+    heredoc: { name: string; value: string } | null;
+}
+
+interface SendShape {
+    verb: 'send' | 'reply' | 'reply-all' | 'forward' | null;
+    options: Map<string, string[]>;
+    html: boolean;
+    body?: string;
+    account: string | null;
+    /** Every option is one the summary shows, each single-valued one given once. */
+    complete: boolean;
+}
+
+/** One word: a plain run, single-quoted text, double-quoted text with no expansion, or exactly "$NAME". */
+function shapeWord(command: string, i: number): { word: ShapeWord; end: number } | null {
+    let j = i;
+    const assignment = /^[A-Za-z_]\w*=/.exec(command.slice(j, j + 256));
+    const prefix = assignment && /['"]/.test(command[j + assignment[0].length] ?? '') ? assignment[0] : '';
+    j += prefix.length;
+    let value: string;
+    let variable: string | null = null;
+    if (command[j] === "'") {
+        const close = command.indexOf("'", j + 1);
+        if (close < 0) return null;
+        value = command.slice(j + 1, close);
+        j = close + 1;
+    } else if (command[j] === '"') {
+        const close = command.indexOf('"', j + 1);
+        if (close < 0) return null;
+        const inner = command.slice(j + 1, close);
+        const named = /^\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})$/.exec(inner);
+        if (named && !prefix) {
+            variable = named[1] ?? named[2];
+            value = '';
+        } else if (/^[^$`\\!]*$/.test(inner)) {
+            value = inner;
+        } else {
+            return null;
+        }
+        j = close + 1;
+    } else {
+        const run = SHAPE_PLAIN.exec(command.slice(j));
+        if (!run) return null;
+        value = run[0];
+        j += run[0].length;
+    }
+    // Two pieces joined into one word (`'a'"b"`, `x'y'`) are refused rather than read.
+    if (j < command.length && !/[ \t\n;|]/.test(command[j])) return null;
+    return { word: { source: command.slice(i, j), value: prefix + value, variable }, end: j };
+}
+
+function shapeStatements(command: string): ShapeStatement[] | null {
+    // bash drops a NUL and may read other control characters differently (a NUL inside a heredoc's last line ends it early).
+    if (/[\x00-\x08\x0b-\x1f\x7f]/.test(command)) return null;
+    const statements: ShapeStatement[] = [];
+    const blank = (): ShapeStatement => ({ words: [], pipe: null, stderrToStdout: false, heredoc: null });
+    let current = blank();
+    let words = current.words;
+    const flush = (): boolean => {
+        if (current.words.length || current.heredoc) statements.push(current);
+        else if (current.pipe || current.stderrToStdout) return false;
+        current = blank();
+        words = current.words;
+        return true;
+    };
+    let i = 0;
+    while (i < command.length) {
+        const c = command[i];
+        if (c === ' ' || c === '\t') {
+            i++;
+        } else if (c === '\n' || c === ';') {
+            // bash refuses a `;` with nothing before it (`;;`, a leading `;`); a blank line is fine.
+            if (c === ';' && !current.words.length && !current.heredoc) return null;
+            if (!flush()) return null;
+            i++;
+        } else if (c === '|') {
+            if (current.pipe || !current.words.length) return null;
+            current.pipe = [];
+            words = current.pipe;
+            i++;
+        } else if (command.startsWith('2>&1', i) && /^(?:[ \t\n;|]|$)/.test(command.slice(i + 4, i + 5))) {
+            if (current.stderrToStdout || current.pipe || !current.words.length) return null;
+            current.stderrToStdout = true;
+            i += 4;
+        } else {
+            const heredoc = !current.words.length && !current.heredoc
+                ? /^([A-Za-z_]\w*)=\$\(cat <<'([A-Za-z_]+)'\n/.exec(command.slice(i, i + 300))
+                : null;
+            if (heredoc) {
+                const bodyStart = i + heredoc[0].length;
+                const close = `\n${heredoc[2]}\n)`;
+                const at = command.indexOf(close, bodyStart - 1);
+                if (at < 0) return null;
+                const text = command.slice(bodyStart, Math.max(bodyStart, at));
+                // bash ends the heredoc at the first line that is the delimiter alone.
+                if (text.split('\n').includes(heredoc[2])) return null;
+                // Command substitution drops the trailing newlines.
+                current.heredoc = { name: heredoc[1], value: text.replace(/\n+$/, '') };
+                i = at + close.length;
+                if (i < command.length && !/[ \t\n;]/.test(command[i])) return null;
+                continue;
+            }
+            const read = shapeWord(command, i);
+            if (!read) return null;
+            words.push(read.word);
+            i = read.end;
+        }
+    }
+    return flush() ? statements : null;
+}
+
+const credentialsAccount = (word: ShapeWord | undefined): string | null => (word ? SHAPE_CREDENTIALS.exec(word.source)?.[1] ?? null : null);
+
+/**
+ * The send, read from the command, when the command is one optional credentials export, one optional body assignment,
+ * then the gws gmail call with nothing after it but `2>&1` and one head or tail; null for anything else.
+ */
+function sendShape(command: string): SendShape | null {
+    const statements = shapeStatements(command);
+    const send = statements?.at(-1);
+    if (!statements || !send || send.heredoc) return null;
+    let account: string | null = null;
+    let body: { name: string; value: string } | null = null;
+    for (const s of statements.slice(0, -1)) {
+        if (s.pipe || s.stderrToStdout) return null;
+        // Only BODY: assigning any other name could change the account (the credentials file) or the program run (PATH).
+        if (s.heredoc?.name === 'BODY' && !s.words.length && !body) {
+            body = s.heredoc;
+        } else if (s.words.length === 2 && !s.heredoc && s.words[0].source === 'export' && account === null) {
+            account = credentialsAccount(s.words[1]);
+            if (account === null) return null;
+        } else if (s.words.length === 1 && !s.heredoc && !body && /^BODY=['"]/.test(s.words[0].source)) {
+            body = { name: 'BODY', value: s.words[0].value.slice('BODY='.length) };
+        } else {
+            return null;
+        }
+    }
+    let words = send.words;
+    if (/^[A-Za-z_]\w*=/.test(words[0]?.source ?? '')) {
+        if (account !== null) return null;
+        account = credentialsAccount(words[0]);
+        if (account === null) return null;
+        words = words.slice(1);
+    }
+    if (words[0]?.source !== 'gws' || words[1]?.source !== 'gmail') return null;
+    const pipe = send.pipe?.map(w => w.source).join(' ');
+    if (pipe !== undefined && !/^(?:head|tail) (?:-\d+|-n \d+)$/.test(pipe)) return null;
+    let rest = words.slice(2);
+    let verb: SendShape['verb'];
+    const helper = /^\+(send|reply|reply-all|forward)$/.exec(rest[0]?.source ?? '');
+    if (helper) {
+        verb = helper[1] as SendShape['verb'];
+        rest = rest.slice(1);
+    } else if (rest[0]?.source === 'users' && /^(?:messages|drafts)$/.test(rest[1]?.source ?? '') && rest[2]?.source === 'send') {
+        verb = null;
+        rest = rest.slice(3);
+    } else {
+        return null;
+    }
+    const options = new Map<string, string[]>();
+    let html = false;
+    let complete = verb !== null;
+    let bodyUsed = false;
+    for (let k = 0; k < rest.length; k++) {
+        const word = rest[k];
+        if (word.variable !== null) {
+            if (rest[k - 1]?.source !== '--body' || word.variable !== body?.name) return null;
+            bodyUsed = true;
+            continue;
+        }
+        if (!complete) continue;
+        if (word.source === '--html') {
+            if (html) complete = false;
+            html = true;
+            continue;
+        }
+        const value = rest[k + 1];
+        if (!SHAPE_OPTIONS.has(word.source) || !value || (options.has(word.source) && !SHAPE_REPEATABLE.has(word.source))) {
+            complete = false;
+            continue;
+        }
+        k++;
+        if (value.variable !== null) {
+            if (word.source !== '--body' || value.variable !== body?.name) return null;
+            bodyUsed = true;
+        }
+        options.set(word.source, [...(options.get(word.source) ?? []), value.variable !== null ? body!.value : value.value]);
+    }
+    // A variable set and never read is a step of its own.
+    if (body && !bodyUsed) return null;
+    return { verb, options, html, account, complete, body: options.get('--body')?.[0] };
 }
 
 // The regex fallback runs only when the parser finds no send; it is quadratic

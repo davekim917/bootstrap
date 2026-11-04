@@ -228,13 +228,12 @@ describe('test_oc_dispatch_action_per_gate', () => {
     expect(stagedActions).toEqual(['request_destructive_gate']);
   });
 
-  test('an approved destructive verb that also sends email stages BOTH, in order', async () => {
-    // After the destructive gate is approved, the chain falls through to the
-    // email gate (per gateBashOrThrow step 5's fall-through). Both actions must
-    // stage, destructive first, then email.
+  test('a destructive verb sharing its command with an email send is refused before either gate stages', async () => {
     const { runBash, stagedActions } = await loadEntrypoint('approved');
-    await runBash('terraform destroy -auto-approve && gws gmail +send --to a@example.com');
-    expect(stagedActions).toEqual(['request_destructive_gate', 'request_bash_gate']);
+    await expect(runBash('terraform destroy -auto-approve && gws gmail +send --to a@example.com')).rejects.toThrow(
+      /Email send refused: run it as its own Bash command/,
+    );
+    expect(stagedActions).toEqual([]);
   });
 });
 
@@ -276,13 +275,10 @@ describe('test_oc_dispatch_chain_order', () => {
     );
   });
 
-  test('destructive gate fires before email even when both are present (gate, not block)', async () => {
-    // A gated (not hard-blocked) destructive verb + an email send: the
-    // destructive gate stages first; only after approval does email stage.
+  test('an email send on its own stages only the email gate', async () => {
     const { runBash, stagedActions } = await loadEntrypoint('approved');
-    await runBash('terraform destroy -auto-approve && gws gmail +send --to a@example.com');
-    expect(stagedActions[0]).toBe('request_destructive_gate');
-    expect(stagedActions[1]).toBe('request_bash_gate');
+    await runBash('gws gmail +send --to a@example.com --subject hi --body ok');
+    expect(stagedActions).toEqual(['request_bash_gate']);
   });
 });
 

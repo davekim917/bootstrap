@@ -139,6 +139,13 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
     throw new Error(verdict.reason ?? 'Blocked by nanoclaw destructive-action gate.');
   }
 
+  // An email send sharing its command is refused after any hard block and before any gate asks, so no approval is spent on it.
+  const emailVerdict = evaluateEmailSend(command, {
+    isScheduledTask: process.env.NANOCLAW_IS_SCHEDULED_TASK === '1',
+    cwd,
+  });
+  if (emailVerdict.action === 'gate' && emailVerdict.deny) throw new Error(`BLOCKED: ${emailVerdict.deny}`);
+
   if (verdict.action === 'gate') {
     const reason = verdict.reason ?? 'requires approval';
 
@@ -172,17 +179,13 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
   //    (scheduled-task bypass, --dry-run/--draft/--help bypass, gate otherwise)
   //    is encoded in evaluateEmailSend — we only consume its verdict (no
   //    OpenCode-local email policy). Fail-closed on denied / timeout.
-  const emailVerdict = evaluateEmailSend(command, {
-    isScheduledTask: process.env.NANOCLAW_IS_SCHEDULED_TASK === '1',
-    cwd,
-  });
   if (emailVerdict.action === 'gate') {
     const reason = emailVerdict.label ?? emailVerdict.reason ?? 'Email send requires approval';
     // Thread the structured card body (from/to/cc/bcc/body) so OpenCode's
     // approval card matches Claude's in-tree card instead of repeating the short
     // label (S-QA2 parity). runEmailGate stages a request_bash_gate approval and
     // polls for the decision; it fail-closes to 'denied' if it cannot stage.
-    const decision = runEmailGate(command, reason, undefined, emailVerdict.summary);
+    const decision = runEmailGate(command, reason, undefined, emailVerdict.summary, undefined, emailVerdict.pureSend);
     if (decision === 'approved') return;
     const detail =
       decision === 'denied'
