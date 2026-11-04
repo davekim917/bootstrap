@@ -759,8 +759,19 @@ const BLOCK_LEAD_MAX_STRIPS = 16;
 // Inside a scripting block a statement can start after any of these, and a lead's condition can hold a CASE expression
 // with THENs of its own, so every one is tried as a statement start.
 const SCRIPT_BOUNDARY = /\b(?:BEGIN|THEN|ELSE|DO|LOOP|REPEAT)\b/gi;
+// The leads a boundary keyword can be followed by that don't end in one themselves: every other lead (IF/CASE/WHEN …
+// THEN, FOR/WHILE … DO) ends in a boundary keyword that is tried on its own.
+const BOUNDARY_LEAD = /\s*(?:DECLARE\b\s*)?(?:(?:(?:LET\s+)?[A-Za-z_][\w$]*(?:\s+[A-Za-z_][\w$]*)?\s*(?::=|\bDEFAULT\b)\s*)?(?:ASYNC\s*)?\(\s*)*/iy;
+const BOUNDARY_WORD = /([A-Za-z]+)\s*(\()?/y;
+// A generated CASE mapping can hold thousands of THENs. Each candidate costs a constant-time look at the word after
+// it, and only one a statement verb follows is scanned to the end of the statement; past either cap the statement
+// holds, so the scan stays linear in its length.
+const SCRIPT_CANDIDATES_MAX = 500;
+const SCRIPT_STATEMENTS_MAX = 32;
+const TOO_COMPLEX = 'SQL too complex to scan';
 
 const UPDATE_LEADING = /^UPDATE\b/i;
+const STATEMENT_VERBS = new Set(['UPDATE', ...DESTRUCTIVE_SQL_PATTERNS.map(p => /^\^([A-Z]+)/.exec(p.rx.source)![1])]);
 const HAS_WHERE = /\bWHERE\b/i;
 
 // Cheap superset prefilter — if none of these verbs appear anywhere in the
@@ -946,10 +957,18 @@ export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | n
     }
     const found = checkStatement(trimmed, isCTE);
     if (found || !scripted) return found;
+    let candidates = 0;
+    let statements = 0;
     for (const m of whole.matchAll(SCRIPT_BOUNDARY)) {
-        let tail = whole.slice(m.index + m[0].length).trim();
-        for (let i = 0; i < BLOCK_LEAD_MAX_STRIPS && BLOCK_LEAD.test(tail); i++) tail = tail.replace(BLOCK_LEAD, '').trim();
-        const inner = checkStatement(tail, isCTE);
+        if (++candidates > SCRIPT_CANDIDATES_MAX) return { pattern: TOO_COMPLEX, statement: whole.slice(0, STATEMENT_PREVIEW_CHARS) };
+        BOUNDARY_LEAD.lastIndex = m.index + m[0].length;
+        BOUNDARY_LEAD.exec(whole);
+        const at = BOUNDARY_LEAD.lastIndex;
+        BOUNDARY_WORD.lastIndex = at;
+        const word = BOUNDARY_WORD.exec(whole);
+        if (!word || word[2] || !STATEMENT_VERBS.has(word[1].toUpperCase())) continue;
+        if (++statements > SCRIPT_STATEMENTS_MAX) return { pattern: TOO_COMPLEX, statement: whole.slice(0, STATEMENT_PREVIEW_CHARS) };
+        const inner = checkStatement(whole.slice(at), isCTE);
         if (inner) return inner;
     }
     return null;

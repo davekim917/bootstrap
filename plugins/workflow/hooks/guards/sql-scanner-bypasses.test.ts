@@ -90,6 +90,21 @@ describe('the same constructs around safe SQL pass', () => {
     });
 });
 
+describe('a scripting statement too large to scan one start at a time holds, quickly', () => {
+    const cases: Array<[string, string]> = [
+        ['10,000 CASE branches', `BEGIN SELECT CASE ${'WHEN x = 1 THEN TRUNCATE(x, 2) '.repeat(10_000)}ELSE 0 END FROM t; END;`],
+        ['10,000 CASE branches each followed by a statement verb', `BEGIN SELECT CASE ${'WHEN x = 1 THEN ALTER '.repeat(10_000)}ELSE 0 END FROM t; END;`],
+        ['600 statement verbs after THEN', `BEGIN CASE WHEN TRUE THEN ${'UPDATE t SET a = 1 WHERE id = 1 ELSE '.repeat(600)}SELECT 1; END CASE; END;`],
+    ];
+    test.each(cases)('%s', (_name, sql) => {
+        const started = performance.now();
+        const result = evaluate(sql);
+        expect(performance.now() - started).toBeLessThan(1000);
+        expect(result.action).toBe('gate');
+        expect(result.reason).toContain('SQL too complex to scan');
+    });
+});
+
 describe('a psql DO body is still scanned when it holds a backslash', () => {
     test('DO with a backslash in the body', () => {
         const file = join(dir, `q${n++}.sql`);
