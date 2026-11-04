@@ -911,6 +911,7 @@ describe('evaluateEmailSend — what else the command runs, so the card can leav
             [SEND, []],
             [`${CREDS}\n${BODY}\n${REPLY}`, []],
             [`${CREDS.replace('export ', '')} ${SEND}`, []],
+            [`BODY="Hi Pat"; ${SEND.replace('"Can you confirm the file works?"', '"$BODY"')}`, []],
             [`${CREDS} && ${SEND} 2>&1 | tail -7`, ['shows the agent only part of what the send prints: `tail -7`']],
             [`set -euo pipefail\n${SEND}\necho sent`, ['`set -euo pipefail`', '`echo sent`']],
             [`mkdir -p /workspace/agent/out\n${SEND}`, ['creates folder `out` in the workspace']],
@@ -972,6 +973,13 @@ describe('evaluateEmailSend — what else the command runs, so the card can leav
             `https_proxy=http://proxy.example:8080\n${SEND}`,
             `SSL_CERT_FILE=/workspace/agent/ca.pem\n${SEND}`,
             `UNUSED=1\n${SEND}`,
+            `BODY=~; ${SEND.replace('"Can you confirm the file works?"', '"$BODY"')}`,
+            `BODY=$'\\u0041'; ${SEND.replace('"Can you confirm the file works?"', '"$BODY"')}`,
+            `BODY="a\\"b"; ${SEND.replace('"Can you confirm the file works?"', '"$BODY"')}`,
+            `BODY='a'"b"; ${SEND.replace('"Can you confirm the file works?"', '"$BODY"')}`,
+            SEND.replace('--subject Hi', "--subject $'Hi\\x21'"),
+            SEND.replace('--subject Hi', '--subject ~pat'),
+            SEND.replace('--subject Hi', '--subject Hi\\ there'),
         ]) {
             expect(alsoRuns(command)).toEqual([command, 'gate', undefined]);
         }

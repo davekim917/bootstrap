@@ -863,13 +863,16 @@ function flagsAllDescribed(call: GwsGmailCall): boolean {
 const CONNECTION_VARIABLES = /^(?:https?_proxy|all_proxy|no_proxy|ftp_proxy|ssl_\w+|curl_\w+|requests_ca_bundle|openssl_\w+|rust_\w+)$/i;
 
 /**
- * A plain `NAME=value` on its own the card need not show: one the send reads as `$NAME`. Its value is checked as text,
- * not with `wordIsLiteral`: the shell neither splits nor globs an assignment's value, and the parser gives a quoted
- * value spanning lines no parts.
+ * The word shapes whose value the summary's evaluator reads exactly as bash does: single-quoted text, double-quoted
+ * text expanding nothing but `$NAME`, or a run of characters bash gives no meaning. It is an allowlist because bash
+ * has more ways to rewrite a word (tilde, ANSI-C and locale quoting, escapes, globs, braces) than any list of refusals.
  */
+const FAITHFUL_WORD = /^(?:'[^']*'|"(?:[^"$`\\]|\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\}))*"|[\w@%+=:,./-]+)$/;
+
+/** A plain `NAME=value` on its own the card need not show: one the send reads as `$NAME`, in a faithful shape. */
 function assignsOnly(p: any, consumed: Set<string>): boolean {
     return p?.type === 'Assignment' && consumed.has(p.name) && probeMaySet(p.name) && !CONNECTION_VARIABLES.test(p.name)
-        && !p.append && !p.array && typeof p.value?.text === 'string';
+        && !p.append && !p.array && FAITHFUL_WORD.test(String(p.value?.text ?? ''));
 }
 
 /** Every redirect points one output descriptor at another or writes to /dev/null: nothing is read in, nothing expanded. */
@@ -909,13 +912,12 @@ function plainStep(node: any): { name: string; args: string[] } | null {
 
 /**
  * The send's own command: the bare word gws, no wrapper (`env`, `timeout`, …) the summary would not show, no setting
- * before it but the credentials file the summary names, and no argument the shell splits, globs or brace-expands into
- * something other than the text the summary read.
+ * before it but the credentials file the summary names, and every argument in a faithful shape.
  */
 function sendStepIsPlain(node: any): boolean {
     return node?.type === 'Command' && node.name?.text === 'gws' && outputOnlyRedirects(node)
         && (node.prefix || []).every((p: any) => CREDENTIALS_ASSIGNMENT.test(String(p?.text ?? '')))
-        && (node.suffix || []).every(wordIsFixed);
+        && (node.suffix || []).every((w: any) => FAITHFUL_WORD.test(String(w?.text ?? '')));
 }
 
 function outputFilterIsPlain(node: any): boolean {
