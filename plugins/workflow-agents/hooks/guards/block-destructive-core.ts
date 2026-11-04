@@ -85,7 +85,6 @@ export interface ResolvedCommand {
 export interface ScriptContext {
     writes: FileWrite[];        // what echo/printf/cat/tee write to files
     pipedInto: Map<number, PipedInput>; // what the previous stage of a pipeline feeds each command, by command offset
-    pipesOut?: Set<number>;     // offsets of the commands whose output a pipeline feeds to its next stage
     cds: CdStep[];              // every cd/pushd/popd, in source order
     links: Map<number, ChainLink>; // where each top-level command sits in its &&/|| chain, by command offset
     command: string;            // the whole command line, for resolving variables
@@ -3408,7 +3407,6 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
     const byPos = new Map<number, ResolvedCommand>();
     for (const c of commands) if (c.pos !== undefined) byPos.set(c.pos, c);
     const pipedInto = new Map<number, PipedInput>();
-    const pipesOut = new Set<number>();
     const links = new Map<number, ChainLink>();
     let chains = 0;
 
@@ -3426,7 +3424,6 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             if (i === 0) return;
             const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [], emitters: [] };
             for (const up of stageCommands(stages[i - 1])) {
-                if (up.pos !== undefined) pipesOut.add(up.pos);
                 if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
                 const fed = up.pos === undefined ? undefined : pipedInto.get(up.pos);
                 input.texts.push(...emittedText(up));
@@ -3484,7 +3481,7 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             // `pushd DIR` changes directory like `cd DIR`; `pushd +N`/`-N` rotates the stack to a directory unknown here.
             target: (c.name === 'cd' || c.name === 'pushd') && c.args.length === 1 && !/^(?:-|[+-]\d+)$/.test(c.args[0]) ? c.args[0] : undefined,
         }));
-    return { writes, pipedInto, pipesOut, cds, links, command };
+    return { writes, pipedInto, cds, links, command };
 }
 
 // A SQL client's own ways of writing a file: psql's \o, \w, \g, \copy, \lo_export and a \! shell command; snow's GET; COPY … TO and INTO OUTFILE,
@@ -5904,17 +5901,20 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     return null;
 }
 
+// The redirects a stdout-only dd may carry: stdout or stderr, written or appended, to /dev/null or a plain relative file.
+const DD_LOCAL_REDIRECTS = /^(?:\s+[12]?>>?\s*(?:\/dev\/null|(?!\.\.(?:\/|\s|$))[\w.,+-][\w.,+-]*(?:\/(?!\.\.(?:\/|\s|$))[\w.,+-]+)*))*\s*$/;
+
 /**
- * True when a dd names no `of=` and its stdout goes nowhere but the terminal, /dev/null or a plain relative file in the
- * directory the line runs in: not piped on (`| tee /dev/sda`), not a device, not outside the working directory.
+ * True when a dd names no `of=` and is the whole command line, followed by nothing but redirects of its own stdout or
+ * stderr to /dev/null or a plain relative file. A pipe, a group, a subshell, a function, an earlier `exec >` or a
+ * descriptor copy (`1>&2`) can each send its output somewhere the command's own redirects don't show.
  */
 function ddWritesOnlyHere(cmd: ResolvedCommand): boolean {
     const { args, script } = cmd;
-    if (cmd.pos === undefined || !script || cmd.chdir || script.cds.length) return false;
+    if (!script || cmd.chdir) return false;
     if (args.some(a => a.startsWith('of=') || !/^[\w=.,/+:-]+$/.test(a))) return false;
-    if (script.pipesOut?.has(cmd.pos)) return false;
-    return (cmd.stdoutFiles ?? []).every(target =>
-        target === '/dev/null' || (/^[\w.,+-][\w.,/+-]*$/.test(target) && !target.split('/').includes('..')));
+    const line = script.command.trim();
+    return line.startsWith(cmd.raw) && DD_LOCAL_REDIRECTS.test(line.slice(cmd.raw.length));
 }
 
 // ── Approval description ─────────────────────────────────────────────────────
