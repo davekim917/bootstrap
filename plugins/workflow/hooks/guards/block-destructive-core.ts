@@ -749,7 +749,8 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
 // Control-flow words that can open a statement inside a scripting block
 // (Snowflake Scripting, PL/pgSQL, T-SQL). Stripped before matching, so the
 // statement they lead into is checked like a top-level one.
-const BLOCK_LEAD = /^(?:(?:BEGIN|ELSE|LOOP|DO|REPEAT)\b\s*|(?:EXCEPTION\s+)?(?:IF|ELSEIF|ELSIF|WHEN)\b[\s\S]*?\bTHEN\b\s*|(?:FOR|WHILE)\b[\s\S]*?\b(?:DO|LOOP)\b\s*)/i;
+// A Snowflake Scripting RESULTSET assignment or ASYNC child job runs the statement in its parentheses.
+const BLOCK_LEAD = /^(?:(?:BEGIN|ELSE|LOOP|DO|REPEAT)\b\s*|(?:EXCEPTION\s+)?(?:IF|ELSEIF|ELSIF|CASE|WHEN)\b[\s\S]*?\bTHEN\b\s*|(?:FOR|WHILE)\b[\s\S]*?\b(?:DO|LOOP)\b\s*|(?:(?:LET\s+)?[A-Za-z_][\w$]*(?:\s+[A-Za-z_][\w$]*)?\s*(?::=|\bDEFAULT\b)\s*)?(?:ASYNC\s*)?\(\s*)/i;
 const BLOCK_LEAD_MAX_STRIPS = 16;
 
 const UPDATE_LEADING = /^UPDATE\b/i;
@@ -766,7 +767,10 @@ const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTE
 const WITH_LEADING = /^WITH\b/i;
 const WITH_PREFIX = /^WITH\s+(?:RECURSIVE\s+)?/i;
 const CTE_NAME_AS = /^(?:"\s*"|"[^"]*"|`[^`]*`|[A-Za-z_][\w$]*)\s*(?:\([^)]*\))?\s+AS\s+/i;
-const EXECUTE_IMMEDIATE = /(?:EXECUTE\s+IMMEDIATE|\bDO(?:\s+LANGUAGE\s+\w+)?)\s+/gi;
+const EXECUTE_IMMEDIATE = /\b(?:(EXECUTE\s+IMMEDIATE)\b\s*|DO(?:\s+LANGUAGE\s+\w+)?\s+)/gi;
+// What may follow the one literal an EXECUTE IMMEDIATE runs; anything else (`||`, a function call) builds the SQL at run time.
+const EXECUTE_IMMEDIATE_END = /^(?:$|;|\)|USING\b)/i;
+const UNREADABLE_EXECUTE_IMMEDIATE = "EXECUTE IMMEDIATE of SQL the guard can't read";
 const DOLLAR_TAG = /^\$([A-Za-z0-9_]*)\$/;
 
 const STATEMENT_PREVIEW_CHARS = 200;
@@ -951,21 +955,25 @@ export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | n
 }
 
 /**
- * Find every `EXECUTE IMMEDIATE '...'` literal and return its contents. The
- * keyword scan runs against `skeleton` (already stripped, offsets preserved)
- * so an EXECUTE IMMEDIATE appearing inside a string or comment doesn't
- * trigger recursion. The returned bodies come from `originalSql` so the
- * literal contents are real SQL the recursion can scan.
+ * Find every `EXECUTE IMMEDIATE '...'` literal and return its contents, unescaped. The keyword scan runs against
+ * `skeleton` (already stripped, offsets preserved) so an EXECUTE IMMEDIATE inside a string or comment doesn't trigger
+ * recursion; the bodies come from `originalSql`. An EXECUTE IMMEDIATE whose argument is not one whole literal (a
+ * variable, a stage file, a concatenation) is returned in `unreadable` as its offsets up to the statement's end.
  */
-export function findExecuteImmediateLiterals(originalSql: string, skeleton: string): string[] {
+export function findExecuteImmediateLiterals(
+    originalSql: string,
+    skeleton: string,
+): { literals: string[]; unreadable: Array<{ start: number; end: number }> } {
     const literals: string[] = [];
+    const unreadable: Array<{ start: number; end: number }> = [];
     EXECUTE_IMMEDIATE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = EXECUTE_IMMEDIATE.exec(skeleton)) !== null) {
+        const isExecute = m[1] !== undefined;
         const litStart = m.index + m[0].length;
-        if (litStart >= originalSql.length) continue;
         const c = originalSql[litStart];
         let body: string | null = null;
+        let litEnd = -1;
 
         if (c === "'" || c === '"' || c === '`') {
             let i = litStart + 1;
@@ -974,20 +982,30 @@ export function findExecuteImmediateLiterals(originalSql: string, skeleton: stri
                 if (originalSql[i] === c) break;
                 i++;
             }
-            body = originalSql.slice(litStart + 1, i);
+            if (i < originalSql.length) {
+                body = originalSql.slice(litStart + 1, i).split(c + c).join(c);
+                litEnd = i + 1;
+            }
         } else if (c === '$') {
             const tagMatch = originalSql.slice(litStart).match(DOLLAR_TAG);
             if (tagMatch) {
                 const tag = tagMatch[0];
                 const tagStart = litStart + tag.length;
                 const close = originalSql.indexOf(tag, tagStart);
-                if (close >= 0) body = originalSql.slice(tagStart, close);
+                if (close >= 0) {
+                    body = originalSql.slice(tagStart, close);
+                    litEnd = close + tag.length;
+                }
             }
         }
 
         if (body !== null) literals.push(body);
+        if (isExecute && (body === null || !EXECUTE_IMMEDIATE_END.test(skeleton.slice(litEnd).trimStart()))) {
+            const semi = skeleton.indexOf(';', m.index);
+            unreadable.push({ start: m.index, end: semi < 0 ? skeleton.length : semi });
+        }
     }
-    return literals;
+    return { literals, unreadable };
 }
 
 /**
@@ -1015,7 +1033,12 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0): Des
         }
     }
 
-    for (const literal of findExecuteImmediateLiterals(sql, skeleton)) {
+    const dynamic = findExecuteImmediateLiterals(sql, skeleton);
+    const opaque = dynamic.unreadable[0];
+    if (opaque) {
+        return { pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: sql.slice(opaque.start, opaque.end).trim().slice(0, STATEMENT_PREVIEW_CHARS) };
+    }
+    for (const literal of dynamic.literals) {
         const inner = findDestructiveSqlStatement(literal, depth + 1);
         if (inner) {
             return { pattern: `EXECUTE IMMEDIATE → ${inner.pattern}`, statement: inner.statement };
@@ -5796,13 +5819,53 @@ const UNANCHORED_DESTRUCTIVE_SQL = [
  */
 function destructiveKeywordAnywhere(sql: string): DestructiveMatch | null {
     const collapsed = sql.replace(/\/\*[\s\S]*?(?:\*\/|$)|(?:--|\/\/)[^\n]*/g, ' ');
-    for (const text of [sql, collapsed]) {
+    for (const text of [sql, collapsed, snowCommentsAsSpace(sql)]) {
         for (const { rx, label } of UNANCHORED_DESTRUCTIVE_SQL) {
             const m = rx.exec(text);
             if (m) return { pattern: label, statement: oneLine(text.slice(m.index, m.index + 200)) };
         }
     }
     return null;
+}
+
+/**
+ * `sql` with each comment read as one space, the way Snowflake lexes it: `--`, `//` and `/* *\/` outside a literal,
+ * where a `'` literal takes backslash escapes and `$$` quotes. Literals are kept, so a comment opener inside one
+ * (`'--'`) does not swallow the code after it.
+ */
+function snowCommentsAsSpace(sql: string): string {
+    let out = '';
+    let i = 0;
+    while (i < sql.length) {
+        const c = sql[i];
+        const c2 = sql.slice(i, i + 2);
+        let end: number;
+        if (c2 === '--' || c2 === '//') {
+            const nl = sql.indexOf('\n', i);
+            i = nl < 0 ? sql.length : nl;
+            out += ' ';
+            continue;
+        }
+        if (c2 === '/*') {
+            const close = sql.indexOf('*/', i + 2);
+            i = close < 0 ? sql.length : close + 2;
+            out += ' ';
+            continue;
+        }
+        if (c2 === '$$') {
+            const close = sql.indexOf('$$', i + 2);
+            end = close < 0 ? sql.length : close + 2;
+        } else if (c === "'" || c === '"') {
+            end = i + 1;
+            while (end < sql.length && sql[end] !== c) end += c === "'" && sql[end] === '\\' ? 2 : 1;
+            end = Math.min(end + 1, sql.length);
+        } else {
+            end = i + 1;
+        }
+        out += sql.slice(i, end);
+        i = end;
+    }
+    return out;
 }
 
 /** A destructive statement as the description reads it. `statement` is what the gate saw, for decisions keyed on it. */
@@ -5862,7 +5925,12 @@ function destructiveStatements(sql: string, depth = 0, outerParsed = true): Foun
             }
         }
     }
-    for (const literal of findExecuteImmediateLiterals(sql, lexed.skeleton)) {
+    const dynamic = findExecuteImmediateLiterals(sql, lexed.skeleton);
+    for (const { start, end } of dynamic.unreadable) {
+        const text = sql.slice(start, end).trimEnd();
+        found.push({ pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: text.trim(), text, skeleton: lexed.skeleton.slice(start, start + text.length), parsed: false });
+    }
+    for (const literal of dynamic.literals) {
         found.push(...destructiveStatements(literal, depth + 1, outerParsed && lexed.openAt < 0));
     }
     return found;
