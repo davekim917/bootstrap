@@ -716,7 +716,11 @@ export const SAFE_PATH_PATTERNS = [
 // findDestructiveSqlStatement) — so substrings inside `'%DROP TABLE%'` and
 // keyword-like identifiers in `"DROP TABLE archive"` do not match.
 const DDL_DROP_TARGETS =
-    '(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION|OWNED|TRIGGER|INDEX|MATERIALIZED\\s+VIEW)';
+    '(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION|OWNED|TRIGGER|INDEX|MATERIALIZED\\s+VIEW|TAG)';
+
+// Objects an ALTER can name before a policy clause, so `ALTER TABLE policy ...` is a table, not a policy kind.
+const POLICY_HOST_OBJECTS =
+    '(?:TABLE|VIEW|SCHEMA|DATABASE|TAG|ACCOUNT|USER|ROLE|WAREHOUSE|STAGE|MATERIALIZED|DYNAMIC|EXTERNAL|ICEBERG|EVENT|HYBRID)';
 
 export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: new RegExp(`^DROP\\s+${DDL_DROP_TARGETS}\\b`, 'i'), label: 'DROP' },
@@ -733,6 +737,17 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^ALTER\b[\s\S]*\bSWAP\s+WITH\b/i, label: 'ALTER ... SWAP WITH' },
     { rx: /^ALTER\b[\s\S]*\bRENAME\s+TO\b/i, label: 'ALTER ... RENAME TO' },
     { rx: /^GRANT\s+OWNERSHIP\b/i, label: 'GRANT OWNERSHIP' },
+    // Snowflake names every policy kind `<kind> POLICY` (MASKING, ROW ACCESS, PROJECTION, AGGREGATION, JOIN, ...), or
+    // `<kind>_POLICY` as an account or user parameter. A tag carries the masking policies applied through it, and a
+    // policy can branch on the tag's value, so setting, unsetting or dropping a tag can expose what it masked. FORCE
+    // swaps out the policy already attached; a plain SET with nothing there attaches protection and passes.
+    { rx: /^DROP\s+(?:[A-Z]+\s+){1,2}POLICY\b/i, label: 'DROP POLICY' },
+    { rx: new RegExp(`^ALTER\\s+(?!${POLICY_HOST_OBJECTS}\\s)(?:[A-Z]+\\s+){1,2}POLICY\\b`, 'i'), label: 'ALTER POLICY' },
+    { rx: /^ALTER\b[\s\S]*\bUNSET\s+(?:[A-Z]+\s+){0,2}(?:POLICY|TAG)\b/i, label: 'ALTER ... UNSET POLICY' },
+    { rx: /^ALTER\b[\s\S]*\bUNSET\b[\s\S]*\b[A-Z]+_POLICY\b/i, label: 'ALTER ... UNSET POLICY' },
+    { rx: /^ALTER\b[\s\S]*\bSET\s+(?:[A-Z]+\s+){1,2}POLICY\b[\s\S]*?(?<![.\w])FORCE\s*(?:,|$)/i, label: 'ALTER ... SET POLICY FORCE' },
+    { rx: /^ALTER\b[\s\S]*\bSET\b[\s\S]*\b[A-Z]+_POLICY\s*=/i, label: 'ALTER ... SET POLICY parameter' },
+    { rx: /^ALTER\b[\s\S]*\bSET\s+TAG\b/i, label: 'ALTER ... SET TAG' },
 ];
 
 // Control-flow words that can open a statement inside a scripting block
