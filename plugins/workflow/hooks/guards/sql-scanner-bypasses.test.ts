@@ -30,6 +30,13 @@ const HIDDEN: Array<[string, (stmt: string) => string]> = [
     ['a || concatenation in EXECUTE IMMEDIATE', s => `EXECUTE IMMEDIATE '${s.slice(0, 4)}' || '${s.slice(4)}'`],
     ['a nested || concatenation', s => `EXECUTE IMMEDIATE $$ BEGIN EXECUTE IMMEDIATE '${s.slice(0, 4)}' || '${s.slice(4)}'; END; $$`],
     ['nested doubled quotes', s => `EXECUTE IMMEDIATE 'EXECUTE IMMEDIATE ''${s}'''`],
+    ['a CASE expression in a CASE condition', s => `BEGIN CASE WHEN CASE WHEN TRUE THEN TRUE ELSE FALSE END THEN ${s}; END CASE; END;`],
+    ['a CASE expression in an IF condition', s => `BEGIN IF (CASE WHEN TRUE THEN 1 ELSE 0 END = 1) THEN ${s}; END IF; END;`],
+    ['a RESULTSET declaration', s => `DECLARE r RESULTSET DEFAULT (${s}); BEGIN RETURN TABLE(r); END;`],
+    ['a nested block after a label', s => `BEGIN <<inner>> BEGIN ${s}; END inner; END;`],
+    ['a hex escape in EXECUTE IMMEDIATE', s => `EXECUTE IMMEDIATE '\\x${s.charCodeAt(0).toString(16)}${s.slice(1)}'`],
+    ['a unicode escape in EXECUTE IMMEDIATE', s => `EXECUTE IMMEDIATE '\\u00${s.charCodeAt(0).toString(16)}${s.slice(1)}'`],
+    ['a // comment inside EXECUTE IMMEDIATE', s => `EXECUTE // note\n IMMEDIATE '${s.slice(0, 4)}' || '${s.slice(4)}'`],
 ];
 
 describe('a destructive statement hidden behind scripting, comments or dynamic SQL is held', () => {
@@ -67,6 +74,9 @@ describe('the same constructs around safe SQL pass', () => {
         ["EXECUTE IMMEDIATE 'SELECT 1' ;"],
         ["EXECUTE IMMEDIATE 'EXECUTE IMMEDIATE ''SELECT ''''DROP TABLE t'''' AS phrase'''"],
         ["SELECT 'DROP TABLE t' || ' is just text' AS phrase"],
+        ['BEGIN SELECT CASE WHEN amount > 0 THEN TRUNCATE(amount, 2) ELSE 0 END FROM example_db.core.orders; END;'],
+        ["SELECT 'https://example.com/report' AS link // where it came from"],
+        ["EXECUTE IMMEDIATE 'SELECT 1' // a note"],
     ])('%s', (sql) => {
         expect(evaluate(sql).action).toBe('allow');
     });

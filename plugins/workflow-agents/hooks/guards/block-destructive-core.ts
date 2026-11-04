@@ -724,7 +724,7 @@ const POLICY_HOST_OBJECTS =
 
 export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: new RegExp(`^DROP\\s+${DDL_DROP_TARGETS}\\b`, 'i'), label: 'DROP' },
-    { rx: /^TRUNCATE\b/i, label: 'TRUNCATE' },
+    { rx: /^TRUNCATE\b(?!\s*\()/i, label: 'TRUNCATE' },
     { rx: /^DELETE\s+FROM\b/i, label: 'DELETE FROM' },
     // Replacing any object drops the one there: a database or schema with everything in it, a stage with its files, a
     // role or share with its grants.
@@ -754,8 +754,11 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
 // (Snowflake Scripting, PL/pgSQL, T-SQL). Stripped before matching, so the
 // statement they lead into is checked like a top-level one.
 // A Snowflake Scripting RESULTSET assignment or ASYNC child job runs the statement in its parentheses.
-const BLOCK_LEAD = /^(?:(?:BEGIN|ELSE|LOOP|DO|REPEAT)\b\s*|(?:EXCEPTION\s+)?(?:IF|ELSEIF|ELSIF|CASE|WHEN)\b[\s\S]*?\bTHEN\b\s*|(?:FOR|WHILE)\b[\s\S]*?\b(?:DO|LOOP)\b\s*|(?:(?:LET\s+)?[A-Za-z_][\w$]*(?:\s+[A-Za-z_][\w$]*)?\s*(?::=|\bDEFAULT\b)\s*)?(?:ASYNC\s*)?\(\s*)/i;
+const BLOCK_LEAD = /^(?:(?:BEGIN|DECLARE|ELSE|LOOP|DO|REPEAT)\b\s*|(?:EXCEPTION\s+)?(?:IF|ELSEIF|ELSIF|CASE|WHEN)\b[\s\S]*?\bTHEN\b\s*|(?:FOR|WHILE)\b[\s\S]*?\b(?:DO|LOOP)\b\s*|(?:(?:LET\s+)?[A-Za-z_][\w$]*(?:\s+[A-Za-z_][\w$]*)?\s*(?::=|\bDEFAULT\b)\s*)?(?:ASYNC\s*)?\(\s*)/i;
 const BLOCK_LEAD_MAX_STRIPS = 16;
+// Inside a scripting block a statement can start after any of these, and a lead's condition can hold a CASE expression
+// with THENs of its own, so every one is tried as a statement start.
+const SCRIPT_BOUNDARY = /\b(?:BEGIN|THEN|ELSE|DO|LOOP|REPEAT)\b/gi;
 
 const UPDATE_LEADING = /^UPDATE\b/i;
 const HAS_WHERE = /\bWHERE\b/i;
@@ -772,8 +775,9 @@ const WITH_LEADING = /^WITH\b/i;
 const WITH_PREFIX = /^WITH\s+(?:RECURSIVE\s+)?/i;
 const CTE_NAME_AS = /^(?:"\s*"|"[^"]*"|`[^`]*`|[A-Za-z_][\w$]*)\s*(?:\([^)]*\))?\s+AS\s+/i;
 const EXECUTE_IMMEDIATE = /\b(?:(EXECUTE\s+IMMEDIATE)\b\s*|DO(?:\s+LANGUAGE\s+\w+)?\s+)/gi;
-// What may follow the one literal an EXECUTE IMMEDIATE runs; anything else (`||`, a function call) builds the SQL at run time.
-const EXECUTE_IMMEDIATE_END = /^(?:$|;|\)|USING\b)/i;
+// What may follow the one literal an EXECUTE IMMEDIATE runs; anything else (`||`, a function call) builds the SQL at run
+// time. A `//` comment ends it here because snow text holding `//` is scanned again as Snowflake lexes it.
+const EXECUTE_IMMEDIATE_END = /^(?:$|;|\)|USING\b|\/\/)/i;
 const UNREADABLE_EXECUTE_IMMEDIATE = "EXECUTE IMMEDIATE of SQL the guard can't read";
 const DOLLAR_TAG = /^\$([A-Za-z0-9_]*)\$/;
 
@@ -933,10 +937,25 @@ export function decomposeSqlSegment(skel: string): Array<{ body: string; isCTE: 
 }
 
 export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | null {
-    let trimmed = body.trim();
+    const whole = body.trim();
+    let trimmed = whole;
+    let scripted = false;
     for (let i = 0; i < BLOCK_LEAD_MAX_STRIPS && BLOCK_LEAD.test(trimmed); i++) {
         trimmed = trimmed.replace(BLOCK_LEAD, '').trim();
+        scripted = true;
     }
+    const found = checkStatement(trimmed, isCTE);
+    if (found || !scripted) return found;
+    for (const m of whole.matchAll(SCRIPT_BOUNDARY)) {
+        let tail = whole.slice(m.index + m[0].length).trim();
+        for (let i = 0; i < BLOCK_LEAD_MAX_STRIPS && BLOCK_LEAD.test(tail); i++) tail = tail.replace(BLOCK_LEAD, '').trim();
+        const inner = checkStatement(tail, isCTE);
+        if (inner) return inner;
+    }
+    return null;
+}
+
+function checkStatement(trimmed: string, isCTE: boolean): DestructiveMatch | null {
     if (!trimmed) return null;
     const preview = trimmed.slice(0, STATEMENT_PREVIEW_CHARS);
 
@@ -1003,6 +1022,8 @@ export function findExecuteImmediateLiterals(
             }
         }
 
+        // Snowflake decodes `\x44`, `\u0044` and the like in a quoted literal, so its SQL is not the text the guard reads.
+        if (body !== null && c === "'" && body.includes('\\')) body = null;
         if (body !== null) literals.push(body);
         if (isExecute && (body === null || !EXECUTE_IMMEDIATE_END.test(skeleton.slice(litEnd).trimStart()))) {
             const semi = skeleton.indexOf(';', m.index);
@@ -5818,12 +5839,16 @@ const UNANCHORED_DESTRUCTIVE_SQL = [
 ];
 
 /**
- * A destructive keyword anywhere in `sql`, inside literals and comments too, and with every comment also read as the
- * whitespace it may stand for between two keywords: for text the scanner can't split.
+ * For text the scanner can't split: the full scan of `sql` as Snowflake lexes it, then a destructive keyword anywhere,
+ * inside literals and comments too, and with every comment also read as the whitespace it may stand for between two
+ * keywords.
  */
 function destructiveKeywordAnywhere(sql: string): DestructiveMatch | null {
+    const lexed = snowCommentsAsSpace(sql);
+    const scanned = findDestructiveSqlStatement(lexed);
+    if (scanned) return scanned;
     const collapsed = sql.replace(/\/\*[\s\S]*?(?:\*\/|$)|(?:--|\/\/)[^\n]*/g, ' ');
-    for (const text of [sql, collapsed, snowCommentsAsSpace(sql)]) {
+    for (const text of [sql, collapsed, lexed]) {
         for (const { rx, label } of UNANCHORED_DESTRUCTIVE_SQL) {
             const m = rx.exec(text);
             if (m) return { pattern: label, statement: oneLine(text.slice(m.index, m.index + 200)) };
