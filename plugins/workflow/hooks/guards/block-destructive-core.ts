@@ -5679,8 +5679,31 @@ function psqlStatementTexts(text: string): string[] {
 /** Returns gate reason if the command requires approval, null otherwise */
 const CF_DESTRUCTIVE_VERB = /^(?:[a-z]+-)*(?:delete|purge|destroy|remove|reset|revoke|roll|rollback|terminate|clear|rotate|invalidate|replace)(?:[-A-Z][-A-Za-z]*)?$/;
 
+// Disk and memory devices: a write to one overwrites it. The standard streams and /dev/null are not among them.
+const DISK_DEVICE = /\/dev\/(?:sd|hd|vd|xvd|nvme|mmcblk|md\d|dm-|loop|nbd|rbd|zd|disk\/|mapper\/|(?:mem|kmem|port|root)\b)/;
+// Commands that only read a device's metadata.
+const DEVICE_READERS = new Set(['lsblk', 'blkid', 'df', 'ls', 'stat', 'findmnt', 'file', 'smartctl', 'udevadm', 'readlink', 'realpath']);
+
+/**
+ * A reason to hold when the command line names a disk device anywhere, unless the whole line is one command that only
+ * reads device metadata. A redirect on a group or subshell, an earlier `exec >`, a variable or a quoted path can each
+ * aim a write at a device that no single command's arguments or redirects show, so the line is read as a whole, with
+ * quotes and backslashes taken out.
+ */
+function diskDeviceWrite(cmd: ResolvedCommand): string | null {
+    const line = (cmd.script?.command ?? '').replace(/["'\\]/g, '');
+    if (!DISK_DEVICE.test(line)) return null;
+    const quiet = line.replace(/[ \t][12]?>[ \t]*\/dev\/null\b/g, ' ').trim();
+    const reader = quiet.split(/[ \t]+/)[0];
+    if (!/[;&|<>`$(){}\n\r]/.test(quiet) && DEVICE_READERS.has(reader) && cmd.name === reader) return null;
+    return 'This command line names a disk device, and a write to one overwrites it: whatever was on it can\'t be recovered.';
+}
+
 export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     const { name, args } = cmd;
+
+    const device = diskDeviceWrite(cmd);
+    if (device) return device;
 
     // ── Databases ────────────────────────────────────────────────────────
 
