@@ -38,5 +38,5 @@ When `/update-container` reports drift:
 6. Bump both workflow plugin patch versions.
 
 The workflow supplies `{{REVIEW_COLLECTION_GUIDANCE}}` at runtime. That keeps the vendored prompt
-byte-identical while allowing the reviewer to scope repository reads to the supplied diff and its
-direct callers/contracts.
+byte-identical while scoping the reviewer to the supplied bundle: the diff, its direct callers and
+the contracts it touches.
