@@ -883,9 +883,9 @@ describe('evaluateEmailSend — a quoted heredoc saved as a note is data', () =>
 describe('evaluateEmailSend — a send runs as its own command, or is refused', () => {
     const CREDS = 'export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/example-co.json';
     const PREFIX = 'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/example-co.json';
-    const HEREDOC_BODY = "BODY=$(cat <<'EOF'\n<p>Hi Pat,</p>\n<p>Can you confirm the file works?</p>\nEOF\n)";
-    const QUOTED_BODY = "BODY='<p>Hi Pat,</p>\n<p>Can you confirm the file works?</p>'";
-    const REPLY = 'gws gmail +reply --message-id 18f0aa11bb22cc33 --cc "lee@example.com" --body "$BODY" --html';
+    const HEREDOC_BODY = "BODY=$(cat <<'EOF'\nHi Pat,\n\nCan you confirm the file works?\nEOF\n)";
+    const QUOTED_BODY = "BODY='Hi Pat,\n\nCan you confirm the file works?'";
+    const REPLY = 'gws gmail +reply --message-id 18f0aa11bb22cc33 --cc "lee@example.com" --body "$BODY"';
     const SEND = 'gws gmail +send --to pat@example.com --subject Hi --body "Can you confirm the file works?"';
     const DIR = '/workspace/workgroup/artifacts/acme-followup';
     const DRAFT = `mkdir -p ${DIR}; cat > ${DIR}/nudge_pat_20261104.md <<'EOF'\nHi Pat,\n\nCan you confirm the file works?\nEOF`;
@@ -918,17 +918,29 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             SEND,
             `${SEND} | head -n 3`,
             `BODY="Hi Pat"\n${withBody('"$BODY"')}`,
-            `BODY='<div><p>Hi Pat,</p><p>Can you confirm the file works?<br>Thanks,<br>Sam</p></div>'\n${withBody('"$BODY"')} --html`,
-            `BODY='<p>Fish &amp; chips at the caf&#233; &#8212; A & B</p>'\n${withBody('"$BODY"')} --html`,
         ]) {
             expect(verdict(command)).toEqual([command, 'gate', false, true]);
         }
     });
 
-    test('a link is shown with its real target, so text that names another address cannot hide it', () => {
-        const command = `BODY='<p>Pay at <a href="https://pay.example/real">https://bank.example</a></p>'\n${withBody('"$BODY"')} --html`;
+    test("a heredoc body the shell parser can't read (an apostrophe) is still read whole, attachments and all", () => {
+        const command = `${CREDS}\nBODY=$(cat <<'EOF'\nHi Dana,\n\nIt's the May baseline.\nEOF\n)\n${withBody('"$BODY"')} -a /workspace/agent/send/May_Baseline.xlsx --format json 2>&1 | tail -8`;
         const v = evaluateEmailSend(command, INTERACTIVE);
-        expect([v.pureSend, v.summary?.includes('https://bank.example (https://pay.example/real)')]).toEqual([true, true]);
+        expect([v.pureSend, v.deny]).toEqual([true, undefined]);
+        expect(v.summary).toContain("> It's the May baseline.");
+        expect(v.summary).toContain('Attachments: `/workspace/agent/send/May_Baseline.xlsx`');
+    });
+
+    test('an HTML body never drops the command, however plain its markup', () => {
+        for (const html of [
+            '<p>Hi Pat,</p><p>Can you confirm the file works?</p>',
+            '<p>Pay at <a href="https://pay.example/real">https://bank.example</a></p>',
+            '<p><a href="https://bank.example">Transfer $10<br>000 to vendor</a></p>',
+            '<ol><li>Approve</li><li>Pay</li></ol>',
+        ]) {
+            const command = `${CREDS}\nBODY='${html}'\n${withBody('"$BODY"')} --html`;
+            expect(verdict(command)).toEqual([command, 'gate', false, false]);
+        }
     });
 
     test('the From line follows the credentials path the command sets, and nothing else', () => {

@@ -734,16 +734,33 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         if (quoted) return quoted[2];
         return scanned.match(new RegExp(`${flag}\\s+(\\S+)`))?.[1];
     };
-    const flagTo = matchFlag('--to');
+    // A command in the one shape is read exactly by it, even where the shell view's parser fails (an apostrophe in a
+    // heredoc is enough); the summary then comes from the shape, and the shell view, when it parsed, must agree.
+    const shape = sendShape(command);
+    const exact = shape?.complete && shape.verb !== null ? shape : null;
+    const exactOption = (name: string) => exact?.options.get(name)?.join(', ');
+    const exactAttachments = [...(exact?.options.get('-a') ?? []), ...(exact?.options.get('--attach') ?? [])];
+    const viewRead = {
+        to: matchFlag('--to'),
+        subject: matchFlag('--subject'),
+        cc: matchFlag('--cc'),
+        bcc: matchFlag('--bcc'),
+        removed: matchFlag('--remove'),
+        messageId: matchFlag('--message-id'),
+        alias: matchFlag('--from'),
+        attachments: send ? [...argTexts(send, '-a'), ...argTexts(send, '--attach')].map(evaluated) : [],
+        isHtml: send ? send.values.includes('--html') : /\s--html(?:\s|$)/.test(scanned),
+    };
+    const flagTo = exact ? exactOption('--to') : viewRead.to;
     const envelope = !flagTo ? envelopeFromJsonRaw(command) : {};
-    const subject = matchFlag('--subject') ?? envelope.subject ?? '';
-    const cc = matchFlag('--cc') ?? envelope.cc;
-    const bcc = matchFlag('--bcc') ?? envelope.bcc;
-    const removed = matchFlag('--remove');
-    const messageId = matchFlag('--message-id');
-    const alias = matchFlag('--from');
-    const attachments = send ? [...argTexts(send, '-a'), ...argTexts(send, '--attach')].map(evaluated) : [];
-    const isHtml = send ? send.values.includes('--html') : /\s--html(?:\s|$)/.test(scanned);
+    const subject = (exact ? exactOption('--subject') : viewRead.subject) ?? envelope.subject ?? '';
+    const cc = (exact ? exactOption('--cc') : viewRead.cc) ?? envelope.cc;
+    const bcc = (exact ? exactOption('--bcc') : viewRead.bcc) ?? envelope.bcc;
+    const removed = exact ? exactOption('--remove') : viewRead.removed;
+    const messageId = exact ? exactOption('--message-id') : viewRead.messageId;
+    const alias = exact ? exactOption('--from') : viewRead.alias;
+    const attachments = exact ? exactAttachments : viewRead.attachments;
+    const isHtml = exact ? exact.html : viewRead.isHtml;
     // Parse the sending identity from GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE.
     // Path convention: /home/node/.config/gws/accounts/<slug>.json.
     // The slug is the human-facing account name the user configured.
@@ -753,7 +770,6 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     );
     // A command in the one shape names the account in exactly one place, which the scan above could miss for a
     // credentials-looking string inside the body.
-    const shape = sendShape(command);
     const fromAccount = shape ? shape.account ?? 'default' : credsMatch?.[1] ?? 'default';
     // Anchor to the four allowed helper verbs only — the prior `\+(\w[\w-]*)`
     // could capture spurious `+ABC` substrings from a base64 payload in the
@@ -807,8 +823,9 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const resolved = send || bodyText === undefined
         ? resolveBody(bodyText, view, send?.pos ?? Infinity, env.cwd, evaluated)
         : { text: bodyText };
-    // The shell view can't read a heredoc body into a variable; the shape reads exactly that one form.
-    const body = resolved.text === null && shape?.body !== undefined ? { text: shape.body } : resolved;
+    // The shape reads its body exactly, a heredoc included, which the shell view can't read into a variable (and its
+    // parser may not read at all, an apostrophe in the heredoc being enough).
+    const body = shape?.body !== undefined ? { text: shape.body } : resolved;
     lines.push('');
     let bodyCut = false;
     if (body.text !== null) {
@@ -830,16 +847,19 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     }
     const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
     if (!shape) return { action: 'gate', label, summary, deny: SEND_ALONE };
-    // Two readers of one command, the shell view behind the summary and the shape, must agree on every field.
-    const option = (name: string) => shape.options.get(name)?.join(', ');
-    const agree = flagTo === option('--to') && (subject || undefined) === option('--subject') && cc === option('--cc')
-        && bcc === option('--bcc') && removed === option('--remove') && messageId === option('--message-id')
-        && alias === option('--from') && attachments.join('\n') === [...(shape.options.get('-a') ?? []), ...(shape.options.get('--attach') ?? [])].join('\n')
-        && isHtml === shape.html && body.text === (shape.body ?? null) && action === shape.verb;
+    // When the shell view parsed the send, it must read every field as the shape does.
+    const viewAgrees = !send || (viewRead.to === exactOption('--to') && viewRead.subject === exactOption('--subject')
+        && viewRead.cc === exactOption('--cc') && viewRead.bcc === exactOption('--bcc') && viewRead.removed === exactOption('--remove')
+        && viewRead.messageId === exactOption('--message-id') && viewRead.alias === exactOption('--from')
+        && viewRead.attachments.join('\n') === exactAttachments.join('\n') && viewRead.isHtml === exact?.html
+        && (resolved.text === null || resolved.text === exact?.body));
+    const agree = exact !== null && viewAgrees && action === exact.verb;
     const fields = [flagTo, subject, cc, bcc, removed, messageId, alias, ...attachments];
-    const pureSend = agree && shape.complete && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
+    // An HTML body never qualifies: the summary shows it as text, and what that drops (styles, structure, a <style>
+    // block) can change what the recipient reads.
+    const pureSend = agree && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
         && fields.every(v => !v || (inline(v) === v && !v.includes('`'))) && gwsWords === 1 && !generatedWord && !probeFlag
-        && !unresolved.size && body.text !== null && !bodyCut && (!isHtml || htmlShownWhole(body.text)) && summary === lines.join('\n');
+        && !unresolved.size && body.text !== null && !bodyCut && !isHtml && summary === lines.join('\n');
     return { action: 'gate', label, summary, ...(pureSend ? { pureSend } : {}) };
 }
 
@@ -860,51 +880,6 @@ const SHAPE_PLAIN = /^[\w@%+=:,./-]+/;
 const SHAPE_OPTIONS = new Set(['--to', '--cc', '--bcc', '--subject', '--body', '--from', '--message-id', '--remove', '--format', '-a', '--attach']);
 const SHAPE_REPEATABLE = new Set(['-a', '--attach']);
 const SHAPE_CREDENTIALS = /^GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=(?:(?!\/accounts\/)[^\s'"$`\\])*\/accounts\/([\w.-]+)\.json$/;
-
-// Tags with no attribute, whose text htmlToText shows as the recipient reads it. An allowlist, because CSS, a <style>
-// block, `hidden`, <font color> or <details> can each hide text from the recipient that the summary still shows.
-const PLAIN_HTML_TAG = /^<\/?(?:p|div|span|b|strong|i|em|u|ul|ol|li|blockquote)>$|^<br ?\/?>$/i;
-// A link whose target htmlToText prints beside its text.
-const LINK_OPEN = /^<a href=(?:"(?:https?:\/\/|mailto:)[^\s"'<>]*"|'(?:https?:\/\/|mailto:)[^\s"'<>]*')>$/i;
-
-// The references htmlToText decodes as a browser does. A browser also decodes a legacy name with no `;` (`&copy 2026`)
-// and maps &#128;–&#159; to Windows-1252 (`&#128;` is €), which htmlToText does not.
-const SHOWN_ENTITY = /^&(amp|lt|gt|quot|apos|nbsp|mdash|ndash|hellip|rsquo|lsquo|rdquo|ldquo|bull|#\d{1,7}|#x[0-9a-fA-F]{1,6});/;
-
-function entitiesShownWhole(html: string): boolean {
-    for (const m of html.matchAll(/&/g)) {
-        const rest = html.slice(m.index, m.index + 16);
-        if (/^&(?:\s|$)/.test(rest)) continue;
-        const ref = SHOWN_ENTITY.exec(rest)?.[1];
-        if (!ref) return false;
-        if (ref[0] !== '#') continue;
-        const n = ref[1] === 'x' ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10);
-        if (!(n === 10 || (n >= 32 && n <= 126) || (n >= 160 && n < 0xd800) || (n >= 0xe000 && n < 0x110000))) return false;
-    }
-    return true;
-}
-
-/**
- * True when the summary's text of an HTML body is what the recipient reads: allowed tags only, no attribute but a
- * link's http(s) or mailto target, links neither nested nor left open, no entity that decodes to markup, and within
- * the length htmlToText reads.
- */
-function htmlShownWhole(html: string): boolean {
-    if (html.length > 20_000 || /[<>]/.test(htmlToText(html)) || !entitiesShownWhole(html)) return false;
-    let inLink = false;
-    for (const tag of html.match(/<[^>]*>?/g) ?? []) {
-        if (LINK_OPEN.test(tag)) {
-            if (inLink) return false;
-            inLink = true;
-        } else if (/^<\/a>$/i.test(tag)) {
-            if (!inLink) return false;
-            inLink = false;
-        } else if (!PLAIN_HTML_TAG.test(tag)) {
-            return false;
-        }
-    }
-    return !inLink;
-}
 
 interface ShapeWord {
     source: string;
