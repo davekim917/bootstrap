@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${PLUGIN_ROOT}/hooks/codex-guard.ts\" PreToolUse",
+            "command": "bash \"${PLUGIN_ROOT}/hooks/codex-guard.sh\" PreToolUse",
             "timeout": 3660
           }
         ]
