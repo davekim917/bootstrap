@@ -20,6 +20,9 @@ function evaluate(sql: string) {
 
 const DESTRUCTIVE = ['DROP TABLE example_db.core.orders', 'ALTER MASKING POLICY mask_email SET BODY -> val'];
 
+const nested = (stmt: string, levels: number): string =>
+    levels === 0 ? stmt : nested(`EXECUTE IMMEDIATE '${stmt.replace(/'/g, "''")}'`, levels - 1);
+
 const HIDDEN: Array<[string, (stmt: string) => string]> = [
     ['a searched CASE branch', s => `BEGIN CASE WHEN TRUE THEN ${s}; END CASE; END;`],
     ['a simple CASE branch', s => `BEGIN CASE (1) WHEN 1 THEN ${s}; END CASE; END;`],
@@ -37,6 +40,9 @@ const HIDDEN: Array<[string, (stmt: string) => string]> = [
     ['a hex escape in EXECUTE IMMEDIATE', s => `EXECUTE IMMEDIATE '\\x${s.charCodeAt(0).toString(16)}${s.slice(1)}'`],
     ['a unicode escape in EXECUTE IMMEDIATE', s => `EXECUTE IMMEDIATE '\\u00${s.charCodeAt(0).toString(16)}${s.slice(1)}'`],
     ['a // comment inside EXECUTE IMMEDIATE', s => `EXECUTE // note\n IMMEDIATE '${s.slice(0, 4)}' || '${s.slice(4)}'`],
+    ['a // comment before || in a nested literal', s => `EXECUTE IMMEDIATE $$ BEGIN EXECUTE IMMEDIATE '${s.slice(0, 4)}' // note\n || '${s.slice(4)}'; END; $$`],
+    ["a backslash-escaped quote before EXECUTE IMMEDIATE", s => `SELECT 'a\\''; EXECUTE IMMEDIATE '${s.slice(0, 4)}' || '${s.slice(4)}'`],
+    ['EXECUTE IMMEDIATE nested past the recursion limit', s => nested(s, 5)],
 ];
 
 describe('a destructive statement hidden behind scripting, comments or dynamic SQL is held', () => {
@@ -55,6 +61,7 @@ describe('EXECUTE IMMEDIATE of SQL the guard cannot read is held', () => {
         ['BEGIN EXECUTE IMMEDIATE :stmt; END;'],
         ['EXECUTE IMMEDIATE FROM @example_stage/job.sql'],
         ["EXECUTE IMMEDIATE CONCAT('SEL', 'ECT 1')"],
+        ['BEGIN EXECUTE IMMEDIATE "STMT"; END;'],
     ])('%s', (sql) => {
         const result = evaluate(sql);
         expect(result.action).toBe('gate');
@@ -77,7 +84,16 @@ describe('the same constructs around safe SQL pass', () => {
         ['BEGIN SELECT CASE WHEN amount > 0 THEN TRUNCATE(amount, 2) ELSE 0 END FROM example_db.core.orders; END;'],
         ["SELECT 'https://example.com/report' AS link // where it came from"],
         ["EXECUTE IMMEDIATE 'SELECT 1' // a note"],
+        [nested('SELECT 1', 4)],
     ])('%s', (sql) => {
         expect(evaluate(sql).action).toBe('allow');
+    });
+});
+
+describe('a psql DO body is still scanned when it holds a backslash', () => {
+    test('DO with a backslash in the body', () => {
+        const file = join(dir, `q${n++}.sql`);
+        writeFileSync(file, "DO 'BEGIN DROP TABLE t; RAISE NOTICE ''a\\b''; END';");
+        expect(evaluateBashCommand(`psql -h db.example -f ${file}`, { cwd: dir }).action).toBe('gate');
     });
 });

@@ -998,7 +998,8 @@ export function findExecuteImmediateLiterals(
         let body: string | null = null;
         let litEnd = -1;
 
-        if (c === "'" || c === '"' || c === '`') {
+        // In Snowflake a double-quoted name after EXECUTE IMMEDIATE is a variable, not a literal.
+        if (c === "'" || (!isExecute && (c === '"' || c === '`'))) {
             let i = litStart + 1;
             while (i < originalSql.length) {
                 if (originalSql[i] === c && originalSql[i + 1] === c) { i += 2; continue; }
@@ -1023,7 +1024,7 @@ export function findExecuteImmediateLiterals(
         }
 
         // Snowflake decodes `\x44`, `\u0044` and the like in a quoted literal, so its SQL is not the text the guard reads.
-        if (body !== null && c === "'" && body.includes('\\')) body = null;
+        if (isExecute && body !== null && c === "'" && body.includes('\\')) body = null;
         if (body !== null) literals.push(body);
         if (isExecute && (body === null || !EXECUTE_IMMEDIATE_END.test(skeleton.slice(litEnd).trimStart()))) {
             const semi = skeleton.indexOf(';', m.index);
@@ -1047,8 +1048,8 @@ export function findExecuteImmediateLiterals(
  *     everything
  */
 export function findDestructiveSqlStatement(sql: string, depth: number = 0): DestructiveMatch | null {
-    if (depth > SQL_RECURSION_LIMIT) return null;
     if (!SQL_PREFILTER.test(sql)) return null;
+    if (depth > SQL_RECURSION_LIMIT) return { pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: sql.trim().slice(0, STATEMENT_PREVIEW_CHARS) };
 
     const skeleton = stripSqlLiteralsAndComments(sql);
     for (const segment of skeleton.split(';')) {
@@ -1064,7 +1065,7 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0): Des
         return { pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: sql.slice(opaque.start, opaque.end).trim().slice(0, STATEMENT_PREVIEW_CHARS) };
     }
     for (const literal of dynamic.literals) {
-        const inner = findDestructiveSqlStatement(literal, depth + 1);
+        const inner = findDestructiveSqlStatement(literal, depth + 1) ?? findDestructiveSqlStatement(snowCommentsAsSpace(literal), depth + 1);
         if (inner) {
             return { pattern: `EXECUTE IMMEDIATE → ${inner.pattern}`, statement: inner.statement };
         }
@@ -5885,9 +5886,20 @@ function snowCommentsAsSpace(sql: string): string {
             const close = sql.indexOf('$$', i + 2);
             end = close < 0 ? sql.length : close + 2;
         } else if (c === "'" || c === '"') {
+            // A backslash-escaped quote is written doubled, so the scanner that reads this output pairs quotes the same way.
+            let literal = c;
             end = i + 1;
-            while (end < sql.length && sql[end] !== c) end += c === "'" && sql[end] === '\\' ? 2 : 1;
-            end = Math.min(end + 1, sql.length);
+            while (end < sql.length && sql[end] !== c) {
+                if (c === "'" && sql[end] === '\\' && end + 1 < sql.length) {
+                    literal += sql[end + 1] === "'" ? "''" : sql.slice(end, end + 2);
+                    end += 2;
+                } else {
+                    literal += sql[end++];
+                }
+            }
+            out += literal + (end < sql.length ? c : '');
+            i = Math.min(end + 1, sql.length);
+            continue;
         } else {
             end = i + 1;
         }
@@ -5942,7 +5954,11 @@ function sqlStatements(
 }
 
 function destructiveStatements(sql: string, depth = 0, outerParsed = true): FoundStatement[] {
-    if (depth > SQL_RECURSION_LIMIT || !SQL_PREFILTER.test(sql)) return [];
+    if (!SQL_PREFILTER.test(sql)) return [];
+    if (depth > SQL_RECURSION_LIMIT) {
+        const text = sql.trim();
+        return [{ pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: text, text, skeleton: stripSqlLiteralsAndComments(text), parsed: false }];
+    }
     const found: FoundStatement[] = [];
     const lexed = sqlSkeleton(sql);
     for (const { segment, original, text, skeleton, parsed } of sqlStatements(sql, outerParsed, lexed)) {
