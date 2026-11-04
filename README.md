@@ -207,8 +207,7 @@ Claude-authored artifact reviews use (high default, explicit validated overrides
 codex exec \
   --ignore-user-config \
   -c 'model_reasoning_effort="high"' \
-  --ephemeral \
-  --yolo
+  -s read-only
 ```
 
 Codex-authored artifact reviews use:
@@ -226,9 +225,11 @@ claude -p \
 ```
 
 Each external reviewer runs in the foreground with a 60-minute process ceiling. For Codex,
-`--yolo` avoids the inner sandbox that cannot create namespaces inside nested Docker; the NanoClaw
-container is the external isolation boundary, while the review contract remains non-mutating and
-supplies its source bundle on stdin. Missing or unauthenticated CLIs, unsupported flags, timeouts,
+`-s read-only` is the write boundary: `--ignore-user-config` drops the user config's guard hooks, so
+the sandbox is what keeps a reviewer steered by the content it reviews from changing anything. Where
+Codex's sandbox cannot start (a container without user namespaces), every command the reviewer tries
+fails and it reviews the stdin bundle alone, so the bundle carries the diff's direct callers and the
+contracts it touches. Missing or unauthenticated CLIs, unsupported flags, timeouts,
 non-zero exits, and malformed or empty output are recorded distinctly in `run.md`. The workflow
 does not retry automatically or call a same-family pass “diverse.” Manual work asks the user
 whether to proceed with degraded coverage; `/team-auto` stops once.

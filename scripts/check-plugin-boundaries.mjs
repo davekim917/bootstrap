@@ -950,8 +950,7 @@ const crossModelTokens = [
   'codex exec',
   '--ignore-user-config',
   'model_reasoning_effort="high"',
-  '--ephemeral',
-  '--yolo',
+  '-s read-only',
   '3600000',
   '60-minute',
   'claude -p',
@@ -973,6 +972,10 @@ for (const contractPath of [
   const content = readText(contractPath);
   const forbiddenTokens = [
     '--sandbox',
+    '--yolo',
+    // A rollout is the only record that a refused run took no action, which account rotation needs.
+    '--ephemeral',
+    'CODEX_FALLBACK_HOMES',
     '10-minute',
     'danger-full-access',
     '--dangerously-skip-permissions',
@@ -984,7 +987,7 @@ for (const contractPath of [
   ];
   const forbidden = forbiddenTokens.filter((token) => content?.includes(token));
   if (forbidden.length > 0) {
-    fail(`${contractPath}: cross-model review must use the nested-container-compatible --yolo transport and 60-minute ceiling`);
+    fail(`${contractPath}: cross-model review must keep the read-only Codex sandbox and 60-minute ceiling (found ${forbidden.join(', ')})`);
   }
 }
 
