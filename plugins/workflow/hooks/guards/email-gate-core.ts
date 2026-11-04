@@ -847,9 +847,9 @@ export const SEND_ALONE =
     'It may end with 2>&1 | tail -N or | head -N.';
 
 // ── The one shape a send may take ──
-// A general shell parser can't prove a summary matches what bash runs: each review of one found another rewrite it
-// missed. So a send is its own command in a small grammar: unconditional lines, words bash leaves as written apart
-// from a whole "$NAME", and a quoted heredoc only to fill the body.
+// A general shell parser can't prove a summary matches what bash runs; bash rewrites words in too many ways. So a send
+// is its own command in a small grammar: unconditional lines, words bash leaves as written apart from a whole
+// "$BODY", and a quoted heredoc only to fill the body.
 
 const SHAPE_PLAIN = /^[\w@%+=:,./-]+/;
 // Options whose values the summary shows; `--format` only shapes what gws prints back.
@@ -857,13 +857,32 @@ const SHAPE_OPTIONS = new Set(['--to', '--cc', '--bcc', '--subject', '--body', '
 const SHAPE_REPEATABLE = new Set(['-a', '--attach']);
 const SHAPE_CREDENTIALS = /^GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=(?:(?!\/accounts\/)[^\s'"$`\\])*\/accounts\/([\w.-]+)\.json$/;
 
-// Tags htmlToText turns into text with nothing the recipient gets left out. No link (its target may differ from its
-// text) and no style value that could load anything (`url(`): plain CSS characters only.
-const SHOWN_HTML_TAG = /^<\/?(?:p|div|span|br|b|i|u|strong|em|ul|ol|li|h[1-6]|blockquote)(?: style="[\w\s#%,.:;-]*")?\s*\/?>$/i;
+// Tags with no attribute, whose text htmlToText shows as the recipient reads it. An allowlist, because CSS, a <style>
+// block, `hidden`, <font color> or <details> can each hide text from the recipient that the summary still shows.
+const PLAIN_HTML_TAG = /^<\/?(?:p|div|span|b|strong|i|em|u|ul|ol|li|blockquote)>$|^<br ?\/?>$/i;
+// A link whose target htmlToText prints beside its text.
+const LINK_OPEN = /^<a href=(?:"(?:https?:\/\/|mailto:)[^\s"'<>]*"|'(?:https?:\/\/|mailto:)[^\s"'<>]*')>$/i;
 
-/** True when the summary's text of an HTML body holds everything in it: no comment, no other tag, within htmlToText's length. */
+/**
+ * True when the summary's text of an HTML body is what the recipient reads: allowed tags only, no attribute but a
+ * link's http(s) or mailto target, links neither nested nor left open, no entity that decodes to markup, and within
+ * the length htmlToText reads.
+ */
 function htmlShownWhole(html: string): boolean {
-    return html.length <= 20_000 && !html.includes('<!--') && (html.match(/<[^>]*>?/g) ?? []).every(tag => SHOWN_HTML_TAG.test(tag));
+    if (html.length > 20_000 || /[<>]/.test(htmlToText(html))) return false;
+    let inLink = false;
+    for (const tag of html.match(/<[^>]*>?/g) ?? []) {
+        if (LINK_OPEN.test(tag)) {
+            if (inLink) return false;
+            inLink = true;
+        } else if (/^<\/a>$/i.test(tag)) {
+            if (!inLink) return false;
+            inLink = false;
+        } else if (!PLAIN_HTML_TAG.test(tag)) {
+            return false;
+        }
+    }
+    return !inLink;
 }
 
 interface ShapeWord {
@@ -945,6 +964,8 @@ function shapeStatements(command: string): ShapeStatement[] | null {
         if (c === ' ' || c === '\t') {
             i++;
         } else if (c === '\n' || c === ';') {
+            // bash refuses a `;` with nothing before it (`;;`, a leading `;`); a blank line is fine.
+            if (c === ';' && !current.words.length && !current.heredoc) return null;
             if (!flush()) return null;
             i++;
         } else if (c === '|') {
@@ -997,14 +1018,14 @@ function sendShape(command: string): SendShape | null {
     let body: { name: string; value: string } | null = null;
     for (const s of statements.slice(0, -1)) {
         if (s.pipe || s.stderrToStdout) return null;
-        if (s.heredoc && !s.words.length && !body) {
+        // Only BODY: assigning any other name could change the account (the credentials file) or the program run (PATH).
+        if (s.heredoc?.name === 'BODY' && !s.words.length && !body) {
             body = s.heredoc;
         } else if (s.words.length === 2 && s.words[0].source === 'export' && account === null) {
             account = credentialsAccount(s.words[1]);
             if (account === null) return null;
-        } else if (s.words.length === 1 && !s.heredoc && !body && /^[A-Za-z_]\w*='/.test(s.words[0].source)) {
-            const eq = s.words[0].value.indexOf('=');
-            body = { name: s.words[0].value.slice(0, eq), value: s.words[0].value.slice(eq + 1) };
+        } else if (s.words.length === 1 && !s.heredoc && !body && /^BODY=['"]/.test(s.words[0].source)) {
+            body = { name: 'BODY', value: s.words[0].value.slice('BODY='.length) };
         } else {
             return null;
         }

@@ -914,9 +914,20 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             expect(v.summary).toContain('Cc: lee@example.com');
             expect(v.summary).toContain('> Can you confirm the file works?');
         }
-        for (const command of [SEND, `${SEND} | head -n 3`, `BODY='<div style="color:#222"><p>Hi</p></div>'\n${withBody('"$BODY"')} --html`]) {
+        for (const command of [
+            SEND,
+            `${SEND} | head -n 3`,
+            `BODY="Hi Pat"\n${withBody('"$BODY"')}`,
+            `BODY='<div><p>Hi Pat,</p><p>Can you confirm the file works?<br>Thanks,<br>Sam</p></div>'\n${withBody('"$BODY"')} --html`,
+        ]) {
             expect(verdict(command)).toEqual([command, 'gate', false, true]);
         }
+    });
+
+    test('a link is shown with its real target, so text that names another address cannot hide it', () => {
+        const command = `BODY='<p>Pay at <a href="https://pay.example/real">https://bank.example</a></p>'\n${withBody('"$BODY"')} --html`;
+        const v = evaluateEmailSend(command, INTERACTIVE);
+        expect([v.pureSend, v.summary?.includes('https://bank.example (https://pay.example/real)')]).toEqual([true, true]);
     });
 
     test('the From line follows the credentials path the command sets, and nothing else', () => {
@@ -936,7 +947,19 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             `${SEND} --thread-id t1`,
             `${SEND} --body "a different text"`,
             `${SEND} --html --html`,
-            withBody(`"<p>See <a href='https://docs.example/x'>the doc</a></p>"`) + ' --html',
+            ...[
+                '<p>I <span style="display:none">do not </span>authorize payment.</p>',
+                '<style>.x{display:none}</style><p>I <span class="x">do not </span>authorize payment.</p>',
+                '<p>I <font color="white">do not </font>authorize payment.</p>',
+                '<p>I <span hidden>do not </span>authorize payment.</p>',
+                '<div style="font-family:Arial"><p>Hi</p></div>',
+                '<p>&lt;b&gt;bold&lt;/b&gt;</p>',
+                '<p><a href="https://a.example/x"><a href="https://b.example/y">t</a></a></p>',
+                '<p><a href="https://a.example/x">open link</p>',
+                '<p><a href="javascript:alert(1)">t</a></p>',
+                '<p><a href = "https://a.example/x">t</a></p>',
+                '<h1>Hi</h1>',
+            ].map(html => `BODY='${html}'\n${withBody('"$BODY"')} --html`),
             `BODY='<p>Hi</p><!-- token=abc -->'\n${withBody('"$BODY"')} --html`,
             SEND.replace('--body "Can you confirm the file works?"', "'--body=Can you confirm the file works?'"),
             withBody(`"<p>Hi</p><img src='https://pixel.example/t.gif'>"`) + ' --html',
@@ -1004,6 +1027,13 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             `BODY=$(cat <<'EOF'\nhi\nEOF\nmore\nEOF\n)\n${withBody('"$BODY"')}`,
             `BODY='unused'\n${SEND}`,
             `${SEND} # sent`,
+            `${CREDS}\nGOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE='/home/node/.config/gws/accounts/personal.json'\n${withBody('"$GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"')}`,
+            `PATH='/tmp/bin'\n${withBody('"$PATH"')}`,
+            `MSG='hi'\n${withBody('"$MSG"')}`,
+            `MSG=$(cat <<'EOF'\nhi\nEOF\n)\n${withBody('"$MSG"')}`,
+            `${SEND};;`,
+            `;${SEND}`,
+            `${CREDS};;\n${SEND}`,
         ]) {
             expect(verdict(command)).toEqual([command, 'gate', true, false]);
         }
