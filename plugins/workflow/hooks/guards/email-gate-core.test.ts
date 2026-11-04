@@ -919,6 +919,7 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             `${SEND} | head -n 3`,
             `BODY="Hi Pat"\n${withBody('"$BODY"')}`,
             `BODY='<div><p>Hi Pat,</p><p>Can you confirm the file works?<br>Thanks,<br>Sam</p></div>'\n${withBody('"$BODY"')} --html`,
+            `BODY='<p>Fish &amp; chips at the caf&#233; &#8212; A & B</p>'\n${withBody('"$BODY"')} --html`,
         ]) {
             expect(verdict(command)).toEqual([command, 'gate', false, true]);
         }
@@ -959,6 +960,10 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
                 '<p><a href="javascript:alert(1)">t</a></p>',
                 '<p><a href = "https://a.example/x">t</a></p>',
                 '<h1>Hi</h1>',
+                '<p>Transfer &#128;100.</p>',
+                '<p>&copy 2026</p>',
+                '<p>&AMP; more</p>',
+                '<p>&eacute;t&eacute;</p>',
             ].map(html => `BODY='${html}'\n${withBody('"$BODY"')} --html`),
             `BODY='<p>Hi</p><!-- token=abc -->'\n${withBody('"$BODY"')} --html`,
             SEND.replace('--body "Can you confirm the file works?"', "'--body=Can you confirm the file works?'"),
@@ -1034,6 +1039,8 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             `${SEND};;`,
             `;${SEND}`,
             `${CREDS};;\n${SEND}`,
+            `BODY=$(cat <<'true'\nhi\ntr${String.fromCharCode(0)}ue\ntouch /tmp/side-effect\ntrue\n)\n${withBody('"$BODY"')}`,
+            `${SEND}${String.fromCharCode(13)}`,
         ]) {
             expect(verdict(command)).toEqual([command, 'gate', true, false]);
         }

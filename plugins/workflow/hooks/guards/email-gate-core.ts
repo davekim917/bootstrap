@@ -863,13 +863,30 @@ const PLAIN_HTML_TAG = /^<\/?(?:p|div|span|b|strong|i|em|u|ul|ol|li|blockquote)>
 // A link whose target htmlToText prints beside its text.
 const LINK_OPEN = /^<a href=(?:"(?:https?:\/\/|mailto:)[^\s"'<>]*"|'(?:https?:\/\/|mailto:)[^\s"'<>]*')>$/i;
 
+// The references htmlToText decodes as a browser does. A browser also decodes a legacy name with no `;` (`&copy 2026`)
+// and maps &#128;–&#159; to Windows-1252 (`&#128;` is €), which htmlToText does not.
+const SHOWN_ENTITY = /^&(amp|lt|gt|quot|apos|nbsp|mdash|ndash|hellip|rsquo|lsquo|rdquo|ldquo|bull|#\d{1,7}|#x[0-9a-fA-F]{1,6});/;
+
+function entitiesShownWhole(html: string): boolean {
+    for (const m of html.matchAll(/&/g)) {
+        const rest = html.slice(m.index, m.index + 16);
+        if (/^&(?:\s|$)/.test(rest)) continue;
+        const ref = SHOWN_ENTITY.exec(rest)?.[1];
+        if (!ref) return false;
+        if (ref[0] !== '#') continue;
+        const n = ref[1] === 'x' ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10);
+        if (!(n === 10 || (n >= 32 && n <= 126) || (n >= 160 && n < 0xd800) || (n >= 0xe000 && n < 0x110000))) return false;
+    }
+    return true;
+}
+
 /**
  * True when the summary's text of an HTML body is what the recipient reads: allowed tags only, no attribute but a
  * link's http(s) or mailto target, links neither nested nor left open, no entity that decodes to markup, and within
  * the length htmlToText reads.
  */
 function htmlShownWhole(html: string): boolean {
-    if (html.length > 20_000 || /[<>]/.test(htmlToText(html))) return false;
+    if (html.length > 20_000 || /[<>]/.test(htmlToText(html)) || !entitiesShownWhole(html)) return false;
     let inLink = false;
     for (const tag of html.match(/<[^>]*>?/g) ?? []) {
         if (LINK_OPEN.test(tag)) {
@@ -947,6 +964,8 @@ function shapeWord(command: string, i: number): { word: ShapeWord; end: number }
 }
 
 function shapeStatements(command: string): ShapeStatement[] | null {
+    // bash drops a NUL and may read other control characters differently (a NUL inside a heredoc's last line ends it early).
+    if (/[\x00-\x08\x0b-\x1f\x7f]/.test(command)) return null;
     const statements: ShapeStatement[] = [];
     const blank = (): ShapeStatement => ({ words: [], pipe: null, stderrToStdout: false, heredoc: null });
     let current = blank();
