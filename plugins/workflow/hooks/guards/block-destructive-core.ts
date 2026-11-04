@@ -712,7 +712,7 @@ export const SAFE_PATH_PATTERNS = [
 // findDestructiveSqlStatement) — so substrings inside `'%DROP TABLE%'` and
 // keyword-like identifiers in `"DROP TABLE archive"` do not match.
 const DDL_DROP_TARGETS =
-    '(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION|OWNED|TRIGGER|INDEX|MATERIALIZED\\s+VIEW)';
+    '(?:TABLE|SCHEMA|DATABASE|VIEW|PROCEDURE|FUNCTION|OWNED|TRIGGER|INDEX|MATERIALIZED\\s+VIEW|TAG)';
 
 export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: new RegExp(`^DROP\\s+${DDL_DROP_TARGETS}\\b`, 'i'), label: 'DROP' },
@@ -729,6 +729,13 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^ALTER\b[\s\S]*\bSWAP\s+WITH\b/i, label: 'ALTER ... SWAP WITH' },
     { rx: /^ALTER\b[\s\S]*\bRENAME\s+TO\b/i, label: 'ALTER ... RENAME TO' },
     { rx: /^GRANT\s+OWNERSHIP\b/i, label: 'GRANT OWNERSHIP' },
+    // Snowflake names every policy kind `<kind> POLICY` (MASKING, ROW ACCESS, PROJECTION, AGGREGATION, JOIN, ...), and a
+    // tag carries the masking policies applied through it, so unsetting or dropping a tag strips them. FORCE swaps out
+    // the policy already attached; a plain SET with nothing there attaches protection and passes.
+    { rx: /^DROP\s+(?:[A-Z]+\s+){1,2}POLICY\b/i, label: 'DROP POLICY' },
+    { rx: /^ALTER\s+(?:[A-Z]+\s+){1,2}POLICY\b/i, label: 'ALTER POLICY' },
+    { rx: /^ALTER\b[\s\S]*\bUNSET\s+(?:[A-Z]+\s+){0,2}(?:POLICY|TAG)\b/i, label: 'ALTER ... UNSET POLICY' },
+    { rx: /^ALTER\b[\s\S]*\bSET\s+(?:[A-Z]+\s+){1,2}POLICY\b[\s\S]*\bFORCE\b/i, label: 'ALTER ... SET POLICY FORCE' },
 ];
 
 // Control-flow words that can open a statement inside a scripting block
