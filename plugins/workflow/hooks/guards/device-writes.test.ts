@@ -24,6 +24,10 @@ describe('a command line that can write to a disk device is held', () => {
         ['target=/dev/sda; cat disk.img > "$target"'],
         ['cat disk.img > "/dev/sd"a'],
         ['cat disk.img > /dev/mmcblk0'],
+        ['lsblk /dev/sda\ncp disk.img /dev/sda'],
+        ['lsblk /dev/sda\r\ncp disk.img /dev/sda'],
+        ['ls /dev/sda >/dev/null\ncat disk.img > /dev/sda'],
+        ['stat /dev/sda\n\ndd if=disk.img > /dev/sda'],
     ])('%s', (command) => {
         const result = evaluate(command);
         expect(result.action).toBe('gate');

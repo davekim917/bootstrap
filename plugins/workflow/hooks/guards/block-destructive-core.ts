@@ -5690,18 +5690,19 @@ const DEVICE_READERS = new Set(['lsblk', 'blkid', 'df', 'ls', 'stat', 'findmnt',
  * aim a write at a device that no single command's arguments or redirects show, so the line is read as a whole, with
  * quotes and backslashes taken out.
  */
-function diskDeviceWrite(script: ScriptContext | undefined): string | null {
-    const line = (script?.command ?? '').replace(/["'\\]/g, '');
+function diskDeviceWrite(cmd: ResolvedCommand): string | null {
+    const line = (cmd.script?.command ?? '').replace(/["'\\]/g, '');
     if (!DISK_DEVICE.test(line)) return null;
-    const quiet = line.replace(/\s[12]?>\s*\/dev\/null\b/g, ' ').trim();
-    if (!/[;&|<>`$(){}]/.test(quiet) && DEVICE_READERS.has(quiet.split(/\s+/)[0])) return null;
+    const quiet = line.replace(/[ \t][12]?>[ \t]*\/dev\/null\b/g, ' ').trim();
+    const reader = quiet.split(/[ \t]+/)[0];
+    if (!/[;&|<>`$(){}\n\r]/.test(quiet) && DEVICE_READERS.has(reader) && cmd.name === reader) return null;
     return 'This command line names a disk device, and a write to one overwrites it: whatever was on it can\'t be recovered.';
 }
 
 export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     const { name, args } = cmd;
 
-    const device = diskDeviceWrite(cmd.script);
+    const device = diskDeviceWrite(cmd);
     if (device) return device;
 
     // ── Databases ────────────────────────────────────────────────────────
