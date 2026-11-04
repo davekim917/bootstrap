@@ -76,9 +76,9 @@ describe('any other redis, listener or line still goes to approval', () => {
         ['socat renamed redis-server under /tmp', { tcp: [[LOOPBACK4, PORT_HEX, '9303']], procs: { 5101: { exe: '/tmp/bin/redis-server', cwd: '/tmp/walk-redis', sockets: ['9303'] } } }],
         ['a redis whose data directory is a mounted workspace', { ...sandbox, procs: { 4400: { ...sandbox.procs[4400], cwd: '/workspace/agent' } } }],
         ['a redis listening on every address', { tcp: [[ANY4, PORT_HEX, '9304']], procs: { 4400: { ...sandbox.procs[4400], sockets: ['9304'] } } }],
-        ['a tunnel on the IPv6 wildcard beside the sandbox redis', {
+        ['the sandbox redis also listening on the IPv6 wildcard', {
             tcp: [[LOOPBACK4, PORT_HEX, '9301']], tcp6: [['0'.repeat(32), PORT_HEX, '9305']],
-            procs: { 4400: sandbox.procs[4400], 5102: { exe: '/usr/bin/ssh', cwd: '/tmp', sockets: ['9305'] } },
+            procs: { 4400: { ...sandbox.procs[4400], sockets: ['9301', '9305'] } },
         }],
         ['nothing listening on the port', { procs: {} }],
     ])('%s', (_name, f) => {
