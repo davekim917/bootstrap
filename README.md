@@ -15,8 +15,8 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.34.0 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.34.0 | The same, runtime-neutral |
+| Claude Code | `bootstrap-workflow` | 5.34.1 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.34.1 | The same, runtime-neutral |
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.6.2 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
@@ -207,8 +207,7 @@ Claude-authored artifact reviews use (high default, explicit validated overrides
 codex exec \
   --ignore-user-config \
   -c 'model_reasoning_effort="high"' \
-  --ephemeral \
-  --yolo
+  -s read-only
 ```
 
 Codex-authored artifact reviews use:
@@ -226,9 +225,11 @@ claude -p \
 ```
 
 Each external reviewer runs in the foreground with a 60-minute process ceiling. For Codex,
-`--yolo` avoids the inner sandbox that cannot create namespaces inside nested Docker; the NanoClaw
-container is the external isolation boundary, while the review contract remains non-mutating and
-supplies its source bundle on stdin. Missing or unauthenticated CLIs, unsupported flags, timeouts,
+`-s read-only` is the write boundary: `--ignore-user-config` drops the user config's guard hooks, so
+the sandbox is what keeps a reviewer steered by the content it reviews from changing anything. Where
+Codex's sandbox cannot start (a container without user namespaces), every command the reviewer tries
+fails and it reviews the stdin bundle alone, so the bundle carries the diff's direct callers and the
+contracts it touches. Missing or unauthenticated CLIs, unsupported flags, timeouts,
 non-zero exits, and malformed or empty output are recorded distinctly in `run.md`. The workflow
 does not retry automatically or call a same-family pass “diverse.” Manual work asks the user
 whether to proceed with degraded coverage; `/team-auto` stops once.

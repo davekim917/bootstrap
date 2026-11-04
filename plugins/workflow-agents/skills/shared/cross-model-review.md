@@ -8,7 +8,10 @@ concurrency, lifecycle and migration changes, or materially uncertain technical 
 
 Use one independent reviewer from another model family by default. Add reviewers or specialist
 lenses only when a changed trust boundary or domain risk justifies them. The reviewer receives the
-source bundle, not the lead model's conclusions, and must not mutate the target.
+source bundle, not the lead model's conclusions, and must not mutate the target. The source bundle
+is the artifact plus what judging it needs: for a diff, the full text of each function or section it
+changes, the direct callers of anything it changes, and the contracts it touches (types, schemas,
+interfaces, tests, documented invariants). A reviewer may be unable to open anything else.
 
 Before launching a review, claim the exact repository/PR/head review slot in the workgroup's
 review ledger. Reuse an active exact-head receipt instead of launching a second general review from
@@ -23,14 +26,16 @@ When the artifact author is Claude, invoke Codex with settings that do not inher
 `config.toml`:
 
 ```sh
-codex exec --ignore-user-config -c 'model_reasoning_effort="high"' --ephemeral --yolo
+codex exec --ignore-user-config -c 'model_reasoning_effort="high"' -s read-only
 ```
 
 The command names no model on purpose. Codex has no model aliases (`-m sol` is rejected), so any id written here goes stale at the next release; with the user config ignored, Codex uses its own current default. Record the id the run reports (the `model:` line of the run header) as the reviewer, never an alias, and stop if that id is a small tier.
 
-If Codex answers with its usage limit and `CODEX_FALLBACK_HOMES` is set (a colon-separated list of
-spare Codex logins), rerun the same command with `CODEX_HOME` set to each listed home in turn before
-treating Codex as unavailable. A usage limit on one login says nothing about the others.
+If Codex answers with its usage limit, record `nonzero-exit` and treat Codex as unavailable for this
+review. Never rerun it yourself with a different `CODEX_HOME`: a host that has spare Codex logins
+rotates through them inside the `codex` it installs, which first checks that the other login runs the
+same guard hooks and that the refused run took no action. A hand-rolled retry skips both checks and
+can repeat whatever the first run already did.
 
 When the artifact author is Codex, invoke Claude with:
 
@@ -44,10 +49,14 @@ background or detach the child process: keeping it attached preserves lifecycle,
 complete output. A review that needs more than ten minutes is still healthy; classify it as
 `timeout` only if the 60-minute ceiling is actually reached.
 
-`--yolo` is required because Codex's inner sandbox cannot create its namespaces inside nested
-Docker. NanoClaw's container is the external isolation boundary for that invocation. This transport
-choice does not change the reviewer contract: review only the supplied source bundle, do not edit
-files or invoke side-effecting tools, and return the requested verdict. Preserve execution mode, permissions and persistence flags. High effort is the default.
+`-s read-only` is the reviewer's write boundary. `--ignore-user-config` also drops every guard hook
+the user config would load, so the sandbox, not the prompt, is what stops a reviewer steered by the
+content it reviews from changing anything. Never replace it with a sandbox or approval bypass.
+Inside a container that cannot create user namespaces, Codex's sandbox cannot start: each shell
+command the reviewer tries fails and nothing is written, so it reviews the stdin bundle alone. That is
+the contract anyway, which is why the bundle must carry the callers and contracts named above. Review
+only the supplied source bundle, do not edit files or invoke side-effecting tools, and return the
+requested verdict. Preserve execution mode, permissions and persistence flags. High effort is the default.
 An explicit reviewer effort override is allowed only after validating support against the actual
 CLI/model and passing it through its native flag/config field. Record the requested and effective
 setting; never emulate an effort change with prompt wording. Unsupported settings are a preflight
@@ -75,7 +84,7 @@ Send the vendored prompt at `references/codex-adversarial-prompt.md` verbatim, f
 four substitution markers (below), and enforce its schema at the CLI boundary rather than in prose:
 
 ```sh
-codex exec --ignore-user-config -c 'model_reasoning_effort="high"' --ephemeral --yolo \
+codex exec --ignore-user-config -c 'model_reasoning_effort="high"' -s read-only \
   --output-schema references/codex-review-output.schema.json \
   --output-last-message <path-to-write-the-final-JSON-response>
 ```
@@ -103,12 +112,13 @@ placeholders rather than rewriting or replacing it:
   own `<attack_surface>` — report the finding class once with every affected call site and name the
   primitive (the writer, the spawner, the migrator) where the invariant belongs, never one call site
   per round.
-- `{{REVIEW_COLLECTION_GUIDANCE}}` — scope-limiting instructions: read only the supplied diff and
-  its direct callers/contracts; do not edit files or run side-effecting commands. `--yolo` disables
-  sandboxing entirely, so — unlike the read-only-sandboxed invocation this guidance was originally
-  written for — nothing at the OS level stops Codex from reading or touching files outside the
-  change. This text is the only thing enforcing scope; do not weaken it.
-- `{{REVIEW_INPUT}}` — the source bundle: the raw plan, or the approved plan plus implementation diff.
+- `{{REVIEW_COLLECTION_GUIDANCE}}` — scope-limiting instructions: review the supplied bundle; read
+  nothing outside the diff and its direct callers/contracts; do not edit files or run side-effecting
+  commands. `-s read-only` stops writes, not reads, and where the sandbox cannot start every command
+  fails, so tell the reviewer that the bundle is complete and a failed command is not a finding.
+- `{{REVIEW_INPUT}}` — the source bundle as defined above: the raw plan, or the approved plan plus the
+  implementation diff, its changed functions in full, their direct callers and the contracts it
+  touches.
 
 Reject empty output, malformed or invalid JSON, a verdict outside `approve`/`needs-attention`, or
 findings missing any schema-required field (`severity`, `title`, `body`, `file`, `line_start`,
