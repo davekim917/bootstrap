@@ -947,6 +947,15 @@ describe('evaluateEmailSend — what else the command runs, so the card can leav
             `${SEND} --body "a different text"`,
             `${SEND} --to lee@example.com`,
             `${SEND} --params '{"userId":"other"}'`,
+            `${SEND} <<EOF\n$(touch /tmp/side-effect)\nEOF`,
+            `${SEND} < <(id)`,
+            `${SEND} <<< "$(id)"`,
+            `${SEND} < /workspace/agent/in.txt`,
+            `${SEND} 2>&1 | tail -3 < <(id)`,
+            `env PATH=/tmp/bin ${SEND}`,
+            `timeout 30 ${SEND}`,
+            `command ${SEND}`,
+            `BODY="hi \`id\`"\n${REPLY}`,
         ]) {
             expect(alsoRuns(command)).toEqual([command, 'gate', undefined]);
         }

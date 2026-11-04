@@ -859,13 +859,23 @@ function flagsAllDescribed(call: GwsGmailCall): boolean {
 }
 
 /**
- * A plain `NAME=value` the card need not show. The shell neither splits nor globs an assignment's value, so only a
- * substitution in it runs anything; any `$(`, backtick or `<(` in its text is refused, quoted or not.
+ * A plain `NAME=value` the card need not show. Its value is checked as text, not with `wordIsLiteral`: the shell
+ * neither splits nor globs an assignment's value, and the parser gives a quoted value spanning lines no parts.
  */
 function assignsOnly(p: any): boolean {
-    return p?.type === 'Assignment' && probeMaySet(p.name) && !p.append && !p.array
-        && typeof p.value?.text === 'string' && !/\$\(|`|[<>]\(/.test(p.value.text);
+    return p?.type === 'Assignment' && probeMaySet(p.name) && !p.append && !p.array && typeof p.value?.text === 'string';
 }
+
+/** Every redirect points one output descriptor at another or writes to /dev/null: nothing is read in, nothing expanded. */
+function outputOnlyRedirects(node: any): boolean {
+    return (node.redirects || []).every((r: any) => {
+        const target = String(r?.target?.text ?? '');
+        return r?.operator === '>&' ? /^(?:\d+|-)$/.test(target) : WRITE_REDIRECTS.has(r?.operator) && target === '/dev/null';
+    });
+}
+
+// Text that makes the shell run a command of its own: command and process substitution, and arithmetic.
+const RUNS_A_COMMAND = /\$\(|`|[<>]\(/;
 
 // An absolute path under /workspace whose segments are not dot-paths (tools read those as configuration).
 const WORKSPACE_PATH = /^\/workspace(?:\/[\w@%+=:,-][\w@%+=:,.-]*)+\/?$/;
@@ -888,19 +898,14 @@ function plainStep(node: any): { name: string; args: string[] } | null {
     return { name, args };
 }
 
-/** The send's own command: gws reached directly, with only allowed settings before it and no file written. */
+/** The send's own command: the bare word gws, no wrapper (`env`, `timeout`, …) the summary would not show. */
 function sendStepIsPlain(node: any): boolean {
-    if (node?.type !== 'Command' || !gwsReachedDirectly(node) || !redirectsWriteNothing(node)) return false;
-    if (!(node.prefix || []).every(assignsOnly)) return false;
-    // A substitution runs a command of its own, which the summary does not describe.
-    return (node.suffix || []).every((w: any) => !(w?.parts ?? []).some(function runs(p: any): boolean {
-        return p?.type === 'CommandExpansion' || p?.type === 'ProcessSubstitution' || (p?.parts ?? []).some(runs);
-    }));
+    return node?.type === 'Command' && node.name?.text === 'gws' && outputOnlyRedirects(node) && (node.prefix || []).every(assignsOnly);
 }
 
 function outputFilterIsPlain(node: any): boolean {
     const step = plainStep(node);
-    return !!step && OUTPUT_FILTERS.has(step.name) && optionsAllowed(step.name, step.args) && redirectsWriteNothing(node);
+    return !!step && OUTPUT_FILTERS.has(step.name) && optionsAllowed(step.name, step.args) && outputOnlyRedirects(node);
 }
 
 /** What a step other than the send does, or null when it is none of the shapes the card can describe. */
@@ -921,7 +926,7 @@ function describeStep(node: any, command: string): Step | null {
     if (name === 'set') return !redirects.length && args.every(a => PROBE_SET_OPTIONS.test(a)) ? raw() : null;
     if (name === 'true' || name === ':' || name === 'echo' || name === 'printf') {
         const options = name === 'printf' ? !args.some(a => a.startsWith('-')) : optionsAllowed(name, args);
-        return options && redirectsWriteNothing(node) ? raw() : null;
+        return options && outputOnlyRedirects(node) ? raw() : null;
     }
     if (name === 'mkdir') {
         const paths = args.filter(a => a !== '-p' && a !== '--parents');
@@ -979,6 +984,9 @@ function otherSteps(command: string, sendPos: number): string[] | null {
     }
     // The parser and bash must agree there is one gws call: a second one, however it is hidden, needs the command shown.
     if (sends !== 1 || (unread.match(/(?:^|[\s;&|(`{!])gws(?=\s)/g) ?? []).length !== 1) return null;
+    // One check over all the text left (words, redirects, heredocs), quoted or not; an inert `$(` in single quotes only
+    // costs the card its shortcut.
+    if (RUNS_A_COMMAND.test(unread)) return null;
     const notes = steps.flatMap(s => (s.kind === 'note' ? [s.path] : []));
     const lines: string[] = [];
     for (const s of steps) {
