@@ -858,12 +858,18 @@ function flagsAllDescribed(call: GwsGmailCall): boolean {
     return true;
 }
 
+// Settings that change where or how gws connects without changing its command line. The probe deny list leaves them
+// out because a probe sends nothing; an assignment to one already exported reaches gws even without `export`.
+const CONNECTION_VARIABLES = /^(?:https?_proxy|all_proxy|no_proxy|ftp_proxy|ssl_\w+|curl_\w+|requests_ca_bundle|openssl_\w+|rust_\w+)$/i;
+
 /**
- * A plain `NAME=value` the card need not show. Its value is checked as text, not with `wordIsLiteral`: the shell
- * neither splits nor globs an assignment's value, and the parser gives a quoted value spanning lines no parts.
+ * A plain `NAME=value` on its own the card need not show: one the send reads as `$NAME`. Its value is checked as text,
+ * not with `wordIsLiteral`: the shell neither splits nor globs an assignment's value, and the parser gives a quoted
+ * value spanning lines no parts.
  */
-function assignsOnly(p: any): boolean {
-    return p?.type === 'Assignment' && probeMaySet(p.name) && !p.append && !p.array && typeof p.value?.text === 'string';
+function assignsOnly(p: any, consumed: Set<string>): boolean {
+    return p?.type === 'Assignment' && consumed.has(p.name) && probeMaySet(p.name) && !CONNECTION_VARIABLES.test(p.name)
+        && !p.append && !p.array && typeof p.value?.text === 'string';
 }
 
 /** Every redirect points one output descriptor at another or writes to /dev/null: nothing is read in, nothing expanded. */
@@ -902,12 +908,14 @@ function plainStep(node: any): { name: string; args: string[] } | null {
 }
 
 /**
- * The send's own command: the bare word gws, no wrapper (`env`, `timeout`, …) the summary would not show, and no
- * argument the shell splits, globs or brace-expands into something other than the text the summary read.
+ * The send's own command: the bare word gws, no wrapper (`env`, `timeout`, …) the summary would not show, no setting
+ * before it but the credentials file the summary names, and no argument the shell splits, globs or brace-expands into
+ * something other than the text the summary read.
  */
 function sendStepIsPlain(node: any): boolean {
     return node?.type === 'Command' && node.name?.text === 'gws' && outputOnlyRedirects(node)
-        && (node.prefix || []).every(assignsOnly) && (node.suffix || []).every(wordIsFixed);
+        && (node.prefix || []).every((p: any) => CREDENTIALS_ASSIGNMENT.test(String(p?.text ?? '')))
+        && (node.suffix || []).every(wordIsFixed);
 }
 
 function outputFilterIsPlain(node: any): boolean {
@@ -916,10 +924,10 @@ function outputFilterIsPlain(node: any): boolean {
 }
 
 /** What a step other than the send does, or null when it is none of the shapes the card can describe. */
-function describeStep(node: any, command: string): Step | null {
+function describeStep(node: any, command: string, consumed: Set<string>): Step | null {
     if (node?.type !== 'Command') return null;
     if (!node.name) {
-        const sets = (node.prefix || []).every(assignsOnly);
+        const sets = (node.prefix || []).every((p: any) => assignsOnly(p, consumed));
         return sets && !(node.redirects || []).length ? { kind: 'line', text: '' } : null;
     }
     const step = plainStep(node);
@@ -928,12 +936,12 @@ function describeStep(node: any, command: string): Step | null {
     const redirects: any[] = node.redirects || [];
     const raw = (): Step => ({ kind: 'line', text: code(clip(oneLine(command.slice(node.pos, node.end)), STEP_LINE_MAX_CHARS - 2)) });
     if (name === 'export') {
-        return !redirects.length && args.every(a => probeMaySet(a.split('=')[0])) ? { kind: 'line', text: '' } : null;
+        return !redirects.length && args.length && args.every(a => CREDENTIALS_ASSIGNMENT.test(a)) ? { kind: 'line', text: '' } : null;
     }
     if (name === 'set') return !redirects.length && args.every(a => PROBE_SET_OPTIONS.test(a)) ? raw() : null;
-    if (name === 'true' || name === ':' || name === 'echo' || name === 'printf') {
-        const options = name === 'printf' ? !args.some(a => a.startsWith('-')) : optionsAllowed(name, args);
-        return options && outputOnlyRedirects(node) ? raw() : null;
+    // printf is not here: `%n` and `-v` assign a variable the summary would not see.
+    if (name === 'true' || name === ':' || name === 'echo') {
+        return optionsAllowed(name, args) && outputOnlyRedirects(node) ? raw() : null;
     }
     if (name === 'mkdir') {
         const paths = args.filter(a => a !== '-p' && a !== '--parents');
@@ -965,6 +973,13 @@ function otherSteps(command: string, sendPos: number): string[] | null {
     let unread = command;
     let credentialsSet = 0;
     const setsCredentials = (words: any[]) => words.filter(w => CREDENTIALS_ASSIGNMENT.test(String(w?.text ?? ''))).length;
+    const send = (script.commands ?? [])
+        .flatMap((entry: any) => (entry?.command?.type === 'AndOr' ? entry.command.commands : [entry?.command]))
+        .map((step: any) => (step?.type === 'Pipeline' ? step.commands[0] : step))
+        .find((step: any) => step?.type === 'Command' && step.pos === sendPos);
+    if (!send) return null;
+    // The variables the send's words read; an assignment to any other is not feeding the send.
+    const consumed = new Set([...command.slice(send.pos, send.end).matchAll(/\$\{?([A-Za-z_]\w*)/g)].map(m => m[1]));
     for (const entry of script.commands ?? []) {
         if (entry?.type !== 'Statement' || entry.background || (entry.redirects || []).length) return null;
         const node = entry.command;
@@ -984,7 +999,7 @@ function otherSteps(command: string, sendPos: number): string[] | null {
                 credentialsSet += setsCredentials(step.prefix || []);
             } else {
                 if (step?.name?.text === 'export' && sends === 0) credentialsSet += setsCredentials(step.suffix || []);
-                const described = describeStep(step, command);
+                const described = describeStep(step, command, consumed);
                 if (!described) return null;
                 if (described.kind === 'note') {
                     const heredoc = (step.redirects as any[]).find(r => r.operator === '<<' || r.operator === '<<-');

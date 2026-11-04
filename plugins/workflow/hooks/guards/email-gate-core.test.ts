@@ -966,6 +966,12 @@ describe('evaluateEmailSend — what else the command runs, so the card can leav
             `${CREDS.replace(/=.*/, '=/tmp/creds.json')}\n${SEND}`,
             `cat > /workspace/agent/n.md <<'EOF'\n${CREDS}\nEOF\n${CREDS.replace('example-co', 'other-co')}\n${SEND}`,
             `${SEND} 2>&1 | uniq /dev/stdin /workspace/agent/run.sh`,
+            `BODY=hello; printf '%n' BODY; ${SEND.replace('"Can you confirm the file works?"', '"$BODY"')}`,
+            `export HTTPS_PROXY=http://proxy.example:8080\n${SEND}`,
+            `HTTPS_PROXY=http://proxy.example:8080 ${SEND}`,
+            `https_proxy=http://proxy.example:8080\n${SEND}`,
+            `SSL_CERT_FILE=/workspace/agent/ca.pem\n${SEND}`,
+            `UNUSED=1\n${SEND}`,
         ]) {
             expect(alsoRuns(command)).toEqual([command, 'gate', undefined]);
         }
