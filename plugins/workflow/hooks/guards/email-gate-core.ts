@@ -748,7 +748,8 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         isHtml: send ? send.values.includes('--html') : /\s--html(?:\s|$)/.test(scanned),
     };
     const flagTo = exact ? exactOption('--to') : viewRead.to;
-    const envelope = !flagTo ? envelopeFromJsonRaw(command) : {};
+    // A raw-API payload names its own envelope; for a helper call it would be text that merely looks like one.
+    const envelope = !flagTo && !exact ? envelopeFromJsonRaw(command) : {};
     const subject = (exact ? exactOption('--subject') : viewRead.subject) ?? envelope.subject ?? '';
     const cc = (exact ? exactOption('--cc') : viewRead.cc) ?? envelope.cc;
     const bcc = (exact ? exactOption('--bcc') : viewRead.bcc) ?? envelope.bcc;
@@ -843,7 +844,6 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     }
     const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
     if (!shape) return { action: 'gate', label, summary, deny: SEND_ALONE };
-    // When the shell view parsed the send, it must read every field as the shape does.
     const viewAgrees = !send || (viewRead.to === exactOption('--to') && viewRead.subject === exactOption('--subject')
         && viewRead.cc === exactOption('--cc') && viewRead.bcc === exactOption('--bcc') && viewRead.removed === exactOption('--remove')
         && viewRead.messageId === exactOption('--message-id') && viewRead.alias === exactOption('--from')
@@ -855,8 +855,13 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // block) can change what the recipient reads.
     const pureSend = agree && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
         && fields.every(v => !v || (inline(v) === v && !v.includes('`'))) && gwsWords === 1 && !generatedWord && !probeFlag
-        && !unresolved.size && body.text !== null && !bodyCut && !isHtml && summary === lines.join('\n');
+        && !unresolved.size && body.text !== null && !bodyCut && !isHtml && bodyShownAsIs(body.text) && summary === lines.join('\n');
     return { action: 'gate', label, summary, ...(pureSend ? { pureSend } : {}) };
+}
+
+/** The card shows the body as written: no edge whitespace trimmed, no `<` defused against chat pings. */
+function bodyShownAsIs(text: string): boolean {
+    return text === text.trim() && quoteBlock(text) === text.split('\n').map(line => `> ${line}`).join('\n');
 }
 
 export const SEND_ALONE =
@@ -1015,7 +1020,7 @@ function sendShape(command: string): SendShape | null {
         // Only BODY: assigning any other name could change the account (the credentials file) or the program run (PATH).
         if (s.heredoc?.name === 'BODY' && !s.words.length && !body) {
             body = s.heredoc;
-        } else if (s.words.length === 2 && s.words[0].source === 'export' && account === null) {
+        } else if (s.words.length === 2 && !s.heredoc && s.words[0].source === 'export' && account === null) {
             account = credentialsAccount(s.words[1]);
             if (account === null) return null;
         } else if (s.words.length === 1 && !s.heredoc && !body && /^BODY=['"]/.test(s.words[0].source)) {

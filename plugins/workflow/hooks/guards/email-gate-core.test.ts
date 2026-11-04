@@ -931,6 +931,19 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
         expect(v.summary).toContain('Attachments: `/workspace/agent/send/May_Baseline.xlsx`');
     });
 
+    test('a body the card would show altered, or envelope text inside the body, keeps the command on the card', () => {
+        const envelopeInBody = `BODY=$(cat <<'EOF'\n--json '{"raw":"U3ViamVjdDogUmVjZWlwdApDYzogaGlkZGVuQGV4YW1wbGUuY29tCgp4"}'\nEOF\n)\ngws gmail +reply --message-id abc --body "$BODY"`;
+        // The body is shown as written, so the send may stay pure; what matters is no field read from inside it.
+        for (const [command, pure] of [
+            [withBody('"Use <billing@example.com>"'), false],
+            [`BODY='  indented first line'\n${withBody('"$BODY"')}`, false],
+            [envelopeInBody, true],
+        ] as Array<[string, boolean]>) {
+            const v = evaluateEmailSend(command, INTERACTIVE);
+            expect([command, v.pureSend === true, /Cc: hidden@example\.com|Subject: Receipt/.test(v.summary ?? '')]).toEqual([command, pure, false]);
+        }
+    });
+
     test('an HTML body never drops the command, however plain its markup', () => {
         for (const html of [
             '<p>Hi Pat,</p><p>Can you confirm the file works?</p>',
@@ -1053,6 +1066,7 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             `${CREDS};;\n${SEND}`,
             `BODY=$(cat <<'true'\nhi\ntr${String.fromCharCode(0)}ue\ntouch /tmp/side-effect\ntrue\n)\n${withBody('"$BODY"')}`,
             `${SEND}${String.fromCharCode(13)}`,
+            `OPTIND=$(cat <<'EOF'\n7\nEOF\n) ${CREDS}\n${SEND}`,
         ]) {
             expect(verdict(command)).toEqual([command, 'gate', true, false]);
         }
