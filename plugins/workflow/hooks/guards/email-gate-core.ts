@@ -34,7 +34,7 @@
  * only sound place to catch all of those is the egress proxy.
  */
 import { resolveCommand, walkCommandNodes } from './block-destructive-core';
-import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, oneLine, parseShell, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
+import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, parseShell, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
 // `gws gmail users (messages|drafts) send` (raw API form).
@@ -403,23 +403,6 @@ function gwsProbeFlag(node: any, args: string[]): string | null {
 
 const GWS_HELP_FLAGS = new Set(['--help', '-h']);
 
-function plainScript(command: string): any | null {
-    if ((command.match(/\(/g) ?? []).length > PROBE_PARENS_MAX) return null;
-    // A `{VAR}>file` redirect assigns VAR (PATH included) outside any assignment word.
-    if (/\{[A-Za-z_]\w*\}\s*[<>]/.test(command)) return null;
-    if (VALUE_EVALUATING_EXPANSION.test(command)) return null;
-    let script: any;
-    try {
-        script = parseShell(command);
-    } catch {
-        return null;
-    }
-    if (script?.errors?.length || !onlyPlainCommands(script)) return null;
-    // unbash stops at a stray `)` or `}` without reporting an error, leaving the rest of the line unread.
-    if (!/^[\s;&]*(?:#[^\n]*)?\s*$/.test(command.slice(script?.commands?.at(-1)?.end ?? 0))) return null;
-    return script;
-}
-
 /**
  * True when a command sends no mail: every command bash would run in it
  * (conditions, pipelines, substitutions and function bodies included) is a gws
@@ -434,8 +417,19 @@ function plainScript(command: string): any | null {
  * parse error) is not a probe.
  */
 export function probeOnlyCommand(command: string): boolean {
-    const script = plainScript(command);
-    if (!script) return false;
+    if ((command.match(/\(/g) ?? []).length > PROBE_PARENS_MAX) return false;
+    // A `{VAR}>file` redirect assigns VAR (PATH included) outside any assignment word; a probe never needs one.
+    if (/\{[A-Za-z_]\w*\}\s*[<>]/.test(command)) return false;
+    if (VALUE_EVALUATING_EXPANSION.test(command)) return false;
+    let script: any;
+    try {
+        script = parseShell(command);
+    } catch {
+        return false;
+    }
+    if (script?.errors?.length || !onlyPlainCommands(script)) return false;
+    // unbash stops at a stray `)` or `}` without reporting an error, leaving the rest of the line unread.
+    if (!/^[\s;&]*(?:#[^\n]*)?\s*$/.test(command.slice(script?.commands?.at(-1)?.end ?? 0))) return false;
     let gwsCalls = 0;
     let gwsCallsBesideHelp = 0;
     let changesDirectory = false;
@@ -503,10 +497,13 @@ export interface EmailGateVerdict {
     summary?: string;
     reason?: string;
     /**
-     * Present only when the summary describes everything the command runs: one plain line per step besides the
-     * send, possibly none. The card then leaves the command out; without it, the card shows the command.
+     * Set when the send shares its command with other steps, or with words this module can't read exactly as bash
+     * will: the adapter refuses the command with this text instead of asking. A consumer that predates the field
+     * still asks, with the command on the card.
      */
-    alsoRuns?: string[];
+    deny?: string;
+    /** The command is the send alone and the summary shows all of it, so the card can leave the command off. */
+    pureSend?: boolean;
 }
 
 function normalizedToolName(toolName: string): string {
@@ -750,7 +747,10 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const credsMatch = command.match(
         /GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=\S*?\/accounts\/([\w.-]+)\.json/,
     );
-    const fromAccount = credsMatch?.[1] ?? 'default';
+    // A command in the one shape names the account in exactly one place, which the scan above could miss for a
+    // credentials-looking string inside the body.
+    const shape = sendShape(command);
+    const fromAccount = shape ? shape.account ?? 'default' : credsMatch?.[1] ?? 'default';
     // Anchor to the four allowed helper verbs only — the prior `\+(\w[\w-]*)`
     // could capture spurious `+ABC` substrings from a base64 payload in the
     // raw-API form. Falls back to "send" for the raw form (which has no +verb).
@@ -800,9 +800,11 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     if (attachments.length) lines.push(`Attachments: ${attachments.map(a => code(inline(a))).join(', ')}`);
 
     const bodyText = send ? argTexts(send, '--body')[0] : matchFlag('--body');
-    const body = send || bodyText === undefined
+    const resolved = send || bodyText === undefined
         ? resolveBody(bodyText, view, send?.pos ?? Infinity, env.cwd, evaluated)
         : { text: bodyText };
+    // The shell view can't read a heredoc body into a variable; the shape reads exactly that one form.
+    const body = resolved.text === null && shape?.body !== undefined ? { text: shape.body } : resolved;
     lines.push('');
     let bodyCut = false;
     if (body.text !== null) {
@@ -823,210 +825,244 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         lines.push(`⚠️ ${list.map(code).join(', ')} ${list.length === 1 ? 'is' : 'are'} only known when the command runs, so the value${list.length === 1 ? '' : 's'} above may differ.`);
     }
     const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
-    // Every field shown on one line, as given: `inline` folds a line break, which a header value may carry.
-    const fieldsWhole = [flagTo, subject, cc, bcc, removed, messageId, alias, ...attachments].every(v => !v || !/[\r\n]/.test(v));
-    const described = send?.helper && send.verb !== 'forward' && (!messageId || threadRecipients) && flagsAllDescribed(send) && fieldsWhole && gwsWords === 1
-        && !generatedWord && !probeFlag && !unresolved.size && body.text !== null && !bodyCut
-        && (!isHtml || htmlShownWhole(body.text)) && summary === lines.join('\n');
-    const alsoRuns = described && send ? otherSteps(command, send.pos) : null;
-    return { action: 'gate', label, summary, ...(alsoRuns ? { alsoRuns } : {}) };
+    if (!shape) return { action: 'gate', label, summary, deny: SEND_ALONE };
+    // Two readers of one command, the shell view behind the summary and the shape, must agree on every field.
+    const option = (name: string) => shape.options.get(name)?.join(', ');
+    const agree = flagTo === option('--to') && (subject || undefined) === option('--subject') && cc === option('--cc')
+        && bcc === option('--bcc') && removed === option('--remove') && messageId === option('--message-id')
+        && alias === option('--from') && attachments.join('\n') === [...(shape.options.get('-a') ?? []), ...(shape.options.get('--attach') ?? [])].join('\n')
+        && isHtml === shape.html && body.text === (shape.body ?? null) && action === shape.verb;
+    const fields = [flagTo, subject, cc, bcc, removed, messageId, alias, ...attachments];
+    const pureSend = agree && shape.complete && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
+        && fields.every(v => !v || (inline(v) === v && !v.includes('`'))) && gwsWords === 1 && !generatedWord && !probeFlag
+        && !unresolved.size && body.text !== null && !bodyCut && (!isHtml || htmlShownWhole(body.text)) && summary === lines.join('\n');
+    return { action: 'gate', label, summary, ...(pureSend ? { pureSend } : {}) };
 }
 
-// The helper-verb options the summary shows, by how often each may appear. `--format` only shapes what gws prints back.
-// `--message-id` is shown only for a reply, and a forward's message is never shown, so a forward is never described.
-const DESCRIBED_ONCE = new Set(['--to', '--cc', '--bcc', '--subject', '--body', '--from', '--message-id', '--remove', '--format']);
-const DESCRIBED_REPEATABLE = new Set(['-a', '--attach']);
+export const SEND_ALONE =
+    'Email send refused: run it as its own Bash command. That command may hold only the gws gmail call, with ' +
+    'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE set on it or exported on the line before, and, for the text, one ' +
+    "BODY=$(cat <<'EOF' … EOF) or BODY='…' line before it. Make any folder, draft file or other step in a separate " +
+    'Bash call first. Write values plainly: no globs, ~, $\'…\', escapes, command substitution or other variables. ' +
+    'It may end with 2>&1 | tail -N or | head -N.';
 
-/**
- * True when every argument of the send is an option the summary shows, in `--name value` form, each single-valued one
- * given once: the summary shows the first of two `--body` values, which need not be the one sent, and reads an
- * equals form from its quoted source.
- */
-function flagsAllDescribed(call: GwsGmailCall): boolean {
-    const seen = new Set<string>();
-    for (let i = 0; i < call.values.length; i++) {
-        const name = call.values[i];
-        if (name === '--html') continue;
-        const once = DESCRIBED_ONCE.has(name);
-        if (!once && !DESCRIBED_REPEATABLE.has(name)) return false;
-        if (once && seen.has(name)) return false;
-        seen.add(name);
-        if (++i >= call.values.length) return false;
-    }
-    return true;
-}
+// ── The one shape a send may take ──
+// A general shell parser can't prove a summary matches what bash runs: each review of one found another rewrite it
+// missed. So a send is its own command in a small grammar: unconditional lines, words bash leaves as written apart
+// from a whole "$NAME", and a quoted heredoc only to fill the body.
 
-// The tags htmlToText turns into text without dropping anything the recipient gets.
-const SHOWN_HTML_TAG = /^<\/?(?:p|div|span|br|b|i|u|strong|em|ul|ol|li|h[1-6]|blockquote|a)(?:\s+(?:style|href)\s*=\s*(?:"[^"<>]*"|'[^'<>]*'))*\s*\/?>$/i;
+const SHAPE_PLAIN = /^[\w@%+=:,./-]+/;
+// Options whose values the summary shows; `--format` only shapes what gws prints back.
+const SHAPE_OPTIONS = new Set(['--to', '--cc', '--bcc', '--subject', '--body', '--from', '--message-id', '--remove', '--format', '-a', '--attach']);
+const SHAPE_REPEATABLE = new Set(['-a', '--attach']);
+const SHAPE_CREDENTIALS = /^GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=(?:(?!\/accounts\/)[^\s'"$`\\])*\/accounts\/([\w.-]+)\.json$/;
 
-/**
- * True when the summary's text of an HTML body holds everything in it: no comment, no tag or attribute htmlToText
- * drops (an image, a script, a hidden data attribute), and not past the length htmlToText reads.
- */
+// Tags htmlToText turns into text with nothing the recipient gets left out. No link (its target may differ from its
+// text) and no style value that could load anything (`url(`): plain CSS characters only.
+const SHOWN_HTML_TAG = /^<\/?(?:p|div|span|br|b|i|u|strong|em|ul|ol|li|h[1-6]|blockquote)(?: style="[\w\s#%,.:;-]*")?\s*\/?>$/i;
+
+/** True when the summary's text of an HTML body holds everything in it: no comment, no other tag, within htmlToText's length. */
 function htmlShownWhole(html: string): boolean {
     return html.length <= 20_000 && !html.includes('<!--') && (html.match(/<[^>]*>?/g) ?? []).every(tag => SHOWN_HTML_TAG.test(tag));
 }
 
-// Settings that change where or how gws connects without changing its command line. The probe deny list leaves them
-// out because a probe sends nothing; an assignment to one already exported reaches gws even without `export`.
-const CONNECTION_VARIABLES = /^(?:https?_proxy|all_proxy|no_proxy|ftp_proxy|ssl_\w+|curl_\w+|requests_ca_bundle|openssl_\w+|rust_\w+)$/i;
+interface ShapeWord {
+    source: string;
+    value: string;
+    variable: string | null;
+}
+
+interface ShapeStatement {
+    words: ShapeWord[];
+    pipe: ShapeWord[] | null;
+    stderrToStdout: boolean;
+    heredoc: { name: string; value: string } | null;
+}
+
+interface SendShape {
+    verb: 'send' | 'reply' | 'reply-all' | 'forward' | null;
+    options: Map<string, string[]>;
+    html: boolean;
+    body?: string;
+    account: string | null;
+    /** Every option is one the summary shows, each single-valued one given once. */
+    complete: boolean;
+}
+
+/** One word: a plain run, single-quoted text, double-quoted text with no expansion, or exactly "$NAME". */
+function shapeWord(command: string, i: number): { word: ShapeWord; end: number } | null {
+    let j = i;
+    const assignment = /^[A-Za-z_]\w*=/.exec(command.slice(j, j + 256));
+    const prefix = assignment && /['"]/.test(command[j + assignment[0].length] ?? '') ? assignment[0] : '';
+    j += prefix.length;
+    let value: string;
+    let variable: string | null = null;
+    if (command[j] === "'") {
+        const close = command.indexOf("'", j + 1);
+        if (close < 0) return null;
+        value = command.slice(j + 1, close);
+        j = close + 1;
+    } else if (command[j] === '"') {
+        const close = command.indexOf('"', j + 1);
+        if (close < 0) return null;
+        const inner = command.slice(j + 1, close);
+        const named = /^\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})$/.exec(inner);
+        if (named && !prefix) {
+            variable = named[1] ?? named[2];
+            value = '';
+        } else if (/^[^$`\\!]*$/.test(inner)) {
+            value = inner;
+        } else {
+            return null;
+        }
+        j = close + 1;
+    } else {
+        const run = SHAPE_PLAIN.exec(command.slice(j));
+        if (!run) return null;
+        value = run[0];
+        j += run[0].length;
+    }
+    // Two pieces joined into one word (`'a'"b"`, `x'y'`) are refused rather than read.
+    if (j < command.length && !/[ \t\n;|]/.test(command[j])) return null;
+    return { word: { source: command.slice(i, j), value: prefix + value, variable }, end: j };
+}
+
+function shapeStatements(command: string): ShapeStatement[] | null {
+    const statements: ShapeStatement[] = [];
+    const blank = (): ShapeStatement => ({ words: [], pipe: null, stderrToStdout: false, heredoc: null });
+    let current = blank();
+    let words = current.words;
+    const flush = (): boolean => {
+        if (current.words.length || current.heredoc) statements.push(current);
+        else if (current.pipe || current.stderrToStdout) return false;
+        current = blank();
+        words = current.words;
+        return true;
+    };
+    let i = 0;
+    while (i < command.length) {
+        const c = command[i];
+        if (c === ' ' || c === '\t') {
+            i++;
+        } else if (c === '\n' || c === ';') {
+            if (!flush()) return null;
+            i++;
+        } else if (c === '|') {
+            if (current.pipe || !current.words.length) return null;
+            current.pipe = [];
+            words = current.pipe;
+            i++;
+        } else if (command.startsWith('2>&1', i) && /^(?:[ \t\n;|]|$)/.test(command.slice(i + 4, i + 5))) {
+            if (current.stderrToStdout || current.pipe || !current.words.length) return null;
+            current.stderrToStdout = true;
+            i += 4;
+        } else {
+            const heredoc = !current.words.length && !current.heredoc
+                ? /^([A-Za-z_]\w*)=\$\(cat <<'([A-Za-z_]+)'\n/.exec(command.slice(i, i + 300))
+                : null;
+            if (heredoc) {
+                const bodyStart = i + heredoc[0].length;
+                const close = `\n${heredoc[2]}\n)`;
+                const at = command.indexOf(close, bodyStart - 1);
+                if (at < 0) return null;
+                const text = command.slice(bodyStart, Math.max(bodyStart, at));
+                // bash ends the heredoc at the first line that is the delimiter alone.
+                if (text.split('\n').includes(heredoc[2])) return null;
+                // Command substitution drops the trailing newlines.
+                current.heredoc = { name: heredoc[1], value: text.replace(/\n+$/, '') };
+                i = at + close.length;
+                if (i < command.length && !/[ \t\n;]/.test(command[i])) return null;
+                continue;
+            }
+            const read = shapeWord(command, i);
+            if (!read) return null;
+            words.push(read.word);
+            i = read.end;
+        }
+    }
+    return flush() ? statements : null;
+}
+
+const credentialsAccount = (word: ShapeWord | undefined): string | null => (word ? SHAPE_CREDENTIALS.exec(word.source)?.[1] ?? null : null);
 
 /**
- * The word shapes whose value the summary's evaluator reads exactly as bash does: single-quoted text, double-quoted
- * text expanding nothing but `$NAME`, or a run of characters bash gives no meaning. It is an allowlist because bash
- * has more ways to rewrite a word (tilde, ANSI-C and locale quoting, escapes, globs, braces) than any list of refusals.
+ * The send, read from the command, when the command is one optional credentials export, one optional body assignment,
+ * then the gws gmail call with nothing after it but `2>&1` and one head or tail; null for anything else.
  */
-const FAITHFUL_WORD = /^(?:'[^']*'|"(?:[^"$`\\]|\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\}))*"|[\w@%+=:,./-]+)$/;
-
-function assignsOnly(p: any, consumed: Set<string>): boolean {
-    return p?.type === 'Assignment' && consumed.has(p.name) && probeMaySet(p.name) && !CONNECTION_VARIABLES.test(p.name)
-        && !p.append && !p.array && FAITHFUL_WORD.test(String(p.value?.text ?? ''));
-}
-
-function outputOnlyRedirects(node: any): boolean {
-    return (node.redirects || []).every((r: any) => {
-        const target = String(r?.target?.text ?? '');
-        return r?.operator === '>&' ? /^(?:\d+|-)$/.test(target) : WRITE_REDIRECTS.has(r?.operator) && target === '/dev/null';
-    });
-}
-
-const RUNS_A_COMMAND = /\$\(|`|[<>]\(/;
-
-// An absolute path under /workspace whose segments are not dot-paths (tools read those as configuration).
-const WORKSPACE_PATH = /^\/workspace(?:\/[\w@%+=:,-][\w@%+=:,.-]*)+\/?$/;
-// A note the card may name: a text format nothing on a command line runs.
-const NOTE_EXTENSION = /\.(?:md|txt|log|html?|eml)$/;
-// Filters that only trim what the send prints back to the agent; none takes a file to write (uniq's OUTPUT operand does).
-const OUTPUT_FILTERS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq', 'wc', 'cut', 'tr']);
-const CREDENTIALS_VAR = 'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE';
-// The summary names the sending account from this path, so only one it reads whole may go unshown.
-const CREDENTIALS_ASSIGNMENT = new RegExp(`^${CREDENTIALS_VAR}=(?:(?!/accounts/)[^\\s'"$\`\\\\])*/accounts/[\\w.-]+\\.json$`);
-const STEP_LINE_MAX_CHARS = 160;
-
-type Step = { kind: 'line'; text: string } | { kind: 'folders'; paths: string[] } | { kind: 'note'; path: string; append: boolean };
-
-const basename = (path: string): string => path.replace(/\/+$/, '').split('/').pop() ?? path;
-
-function plainStep(node: any): { name: string; args: string[] } | null {
-    if (node?.type !== 'Command' || !node.name || (node.prefix || []).length) return null;
-    const words = [node.name, ...(node.suffix || [])];
-    if (!words.every(wordIsLiteral)) return null;
-    const [name, ...args] = words.map((w: any) => String(w.value ?? w.text ?? ''));
-    return { name, args };
-}
-
-function sendStepIsPlain(node: any): boolean {
-    return node?.type === 'Command' && node.name?.text === 'gws' && outputOnlyRedirects(node)
-        && (node.prefix || []).every((p: any) => CREDENTIALS_ASSIGNMENT.test(String(p?.text ?? '')))
-        && (node.suffix || []).every((w: any) => FAITHFUL_WORD.test(String(w?.text ?? '')));
-}
-
-function outputFilterIsPlain(node: any): boolean {
-    const step = plainStep(node);
-    return !!step && OUTPUT_FILTERS.has(step.name) && optionsAllowed(step.name, step.args) && outputOnlyRedirects(node);
-}
-
-function describeStep(node: any, command: string, consumed: Set<string>): Step | null {
-    if (node?.type !== 'Command') return null;
-    if (!node.name) {
-        const sets = (node.prefix || []).every((p: any) => assignsOnly(p, consumed));
-        return sets && !(node.redirects || []).length ? { kind: 'line', text: '' } : null;
-    }
-    const step = plainStep(node);
-    if (!step) return null;
-    const { name, args } = step;
-    const redirects: any[] = node.redirects || [];
-    const raw = (): Step => ({ kind: 'line', text: code(oneLine(command.slice(node.pos, node.end))) });
-    if (name === 'export') {
-        return !redirects.length && args.length && args.every(a => CREDENTIALS_ASSIGNMENT.test(a)) ? { kind: 'line', text: '' } : null;
-    }
-    if (name === 'set') return !redirects.length && args.every(a => PROBE_SET_OPTIONS.test(a)) ? raw() : null;
-    // printf is not here: `%n` and `-v` assign a variable the summary would not see.
-    if (name === 'true' || name === ':' || name === 'echo') {
-        return optionsAllowed(name, args) && outputOnlyRedirects(node) ? raw() : null;
-    }
-    if (name === 'mkdir') {
-        const paths = args.filter(a => a !== '-p' && a !== '--parents');
-        return !redirects.length && paths.length && paths.every(p => WORKSPACE_PATH.test(p)) ? { kind: 'folders', paths } : null;
-    }
-    if (name === 'cat' && !args.length && redirects.length === 2) {
-        const heredoc = redirects.find(r => r.operator === '<<' || r.operator === '<<-');
-        const write = redirects.find(r => r.operator === '>' || r.operator === '>>');
-        // An unquoted heredoc expands its body, so a substitution in it would run.
-        const inert = heredoc && (heredoc.heredocQuoted || !/[$`\\]/.test(heredoc.content ?? ''));
-        const path = String(write?.target?.value ?? '');
-        if (inert && write && (write.fileDescriptor ?? 1) === 1 && write.target?.text === path && WORKSPACE_PATH.test(path) && NOTE_EXTENSION.test(path)) {
-            return { kind: 'note', path, append: write.operator === '>>' };
+function sendShape(command: string): SendShape | null {
+    const statements = shapeStatements(command);
+    const send = statements?.at(-1);
+    if (!statements || !send || send.heredoc) return null;
+    let account: string | null = null;
+    let body: { name: string; value: string } | null = null;
+    for (const s of statements.slice(0, -1)) {
+        if (s.pipe || s.stderrToStdout) return null;
+        if (s.heredoc && !s.words.length && !body) {
+            body = s.heredoc;
+        } else if (s.words.length === 2 && s.words[0].source === 'export' && account === null) {
+            account = credentialsAccount(s.words[1]);
+            if (account === null) return null;
+        } else if (s.words.length === 1 && !s.heredoc && !body && /^[A-Za-z_]\w*='/.test(s.words[0].source)) {
+            const eq = s.words[0].value.indexOf('=');
+            body = { name: s.words[0].value.slice(0, eq), value: s.words[0].value.slice(eq + 1) };
+        } else {
+            return null;
         }
     }
-    return null;
-}
-
-/** One plain line per step of `command` besides the send at `sendPos`, or null when any step needs the command shown. */
-function otherSteps(command: string, sendPos: number): string[] | null {
-    const script = plainScript(command);
-    if (!script) return null;
-    const steps: Step[] = [];
-    let sends = 0;
-    let unread = command;
-    let credentialsSet = 0;
-    const setsCredentials = (words: any[]) => words.filter(w => CREDENTIALS_ASSIGNMENT.test(String(w?.text ?? ''))).length;
-    const send = (script.commands ?? [])
-        .flatMap((entry: any) => (entry?.command?.type === 'AndOr' ? entry.command.commands : [entry?.command]))
-        .map((step: any) => (step?.type === 'Pipeline' ? step.commands[0] : step))
-        .find((step: any) => step?.type === 'Command' && step.pos === sendPos);
-    if (!send) return null;
-    const consumed = new Set([...command.slice(send.pos, send.end).matchAll(/\$\{?([A-Za-z_]\w*)/g)].map(m => m[1]));
-    for (const entry of script.commands ?? []) {
-        if (entry?.type !== 'Statement' || entry.background || (entry.redirects || []).length) return null;
-        const node = entry.command;
-        const chain = node?.type !== 'AndOr' ? [node] : node.operators.every((op: string) => op === '&&') ? node.commands : null;
-        if (!chain) return null;
-        for (const step of chain) {
-            if (step?.type === 'Pipeline') {
-                const [first, ...filters] = step.commands;
-                if (step.negated || step.time || first?.pos !== sendPos || !sendStepIsPlain(first) || !filters.every(outputFilterIsPlain)) return null;
-                sends++;
-                credentialsSet += setsCredentials(first.prefix || []);
-                const shown = oneLine(command.slice(filters[0].pos, step.end));
-                steps.push({ kind: 'line', text: `shows the agent only part of what the send prints: ${code(shown)}` });
-            } else if (step?.type === 'Command' && step.pos === sendPos) {
-                if (!sendStepIsPlain(step)) return null;
-                sends++;
-                credentialsSet += setsCredentials(step.prefix || []);
-            } else {
-                if (step?.name?.text === 'export' && sends === 0) credentialsSet += setsCredentials(step.suffix || []);
-                const described = describeStep(step, command, consumed);
-                if (!described) return null;
-                if (described.kind === 'note') {
-                    const heredoc = (step.redirects as any[]).find(r => r.operator === '<<' || r.operator === '<<-');
-                    unread = unread.replace(heredoc.content, '');
-                }
-                steps.push(described);
-            }
+    let words = send.words;
+    if (/^[A-Za-z_]\w*=/.test(words[0]?.source ?? '')) {
+        if (account !== null) return null;
+        account = credentialsAccount(words[0]);
+        if (account === null) return null;
+        words = words.slice(1);
+    }
+    if (words[0]?.source !== 'gws' || words[1]?.source !== 'gmail') return null;
+    const pipe = send.pipe?.map(w => w.source).join(' ');
+    if (pipe !== undefined && !/^(?:head|tail) (?:-\d+|-n \d+)$/.test(pipe)) return null;
+    let rest = words.slice(2);
+    let verb: SendShape['verb'];
+    const helper = /^\+(send|reply|reply-all|forward)$/.exec(rest[0]?.source ?? '');
+    if (helper) {
+        verb = helper[1] as SendShape['verb'];
+        rest = rest.slice(1);
+    } else if (rest[0]?.source === 'users' && /^(?:messages|drafts)$/.test(rest[1]?.source ?? '') && rest[2]?.source === 'send') {
+        verb = null;
+        rest = rest.slice(3);
+    } else {
+        return null;
+    }
+    const options = new Map<string, string[]>();
+    let html = false;
+    let complete = verb !== null;
+    let bodyUsed = false;
+    for (let k = 0; k < rest.length; k++) {
+        const word = rest[k];
+        if (word.variable !== null) {
+            if (rest[k - 1]?.source !== '--body' || word.variable !== body?.name) return null;
+            bodyUsed = true;
+            continue;
         }
+        if (!complete) continue;
+        if (word.source === '--html') {
+            if (html) complete = false;
+            html = true;
+            continue;
+        }
+        const value = rest[k + 1];
+        if (!SHAPE_OPTIONS.has(word.source) || !value || (options.has(word.source) && !SHAPE_REPEATABLE.has(word.source))) {
+            complete = false;
+            continue;
+        }
+        k++;
+        if (value.variable !== null) {
+            if (word.source !== '--body' || value.variable !== body?.name) return null;
+            bodyUsed = true;
+        }
+        options.set(word.source, [...(options.get(word.source) ?? []), value.variable !== null ? body!.value : value.value]);
     }
-    // The parser and bash must agree there is one gws call: a second one, however it is hidden, needs the command shown.
-    if (sends !== 1 || (unread.match(/(?:^|[\s;&|(`{!])gws(?=\s)/g) ?? []).length !== 1) return null;
-    // One check over all the text left (words, redirects, heredocs), quoted or not; an inert `$(` in single quotes only
-    // costs the card its shortcut.
-    if (RUNS_A_COMMAND.test(unread)) return null;
-    // The summary reads the account from the first time the command names the credentials file, heredocs included, so
-    // the name may appear only once, set plainly before or on the send.
-    const credentialsNamed = command.split(CREDENTIALS_VAR).length - 1;
-    if (credentialsNamed > 1 || credentialsNamed !== credentialsSet) return null;
-    const notes =steps.flatMap(s => (s.kind === 'note' ? [s.path] : []));
-    const lines: string[] = [];
-    for (const s of steps) {
-        if (s.kind === 'note') lines.push(`${s.append ? 'adds to' : 'writes'} ${code(basename(s.path))} in the workspace`);
-        else if (s.kind === 'folders') {
-            // A folder made only to hold a note written here is part of writing that note.
-            const shown = s.paths.filter(p => !notes.some(n => n.startsWith(p.replace(/\/+$/, '') + '/')));
-            if (shown.length) lines.push(`creates folder ${shown.map(p => code(basename(p))).join(', ')} in the workspace`);
-        } else if (s.text) lines.push(s.text);
-    }
-    // A line cut short could hide what its step does, so one too long to show whole keeps the command on the card.
-    return lines.every(l => l.length <= STEP_LINE_MAX_CHARS) ? lines : null;
+    // A variable set and never read is a step of its own.
+    if (body && !bodyUsed) return null;
+    return { verb, options, html, account, complete, body: options.get('--body')?.[0] };
 }
 
 // The regex fallback runs only when the parser finds no send; it is quadratic

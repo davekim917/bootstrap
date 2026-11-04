@@ -69,7 +69,8 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
     action: 'gate';
     reason: string;
     summary?: string;
-    alsoRuns?: string[];
+    deny?: string;
+    pureSend?: boolean;
 } {
     const verdict = evaluateEmailSend(command, {
         isScheduledTask: process.env.NANOCLAW_IS_SCHEDULED_TASK === '1',
@@ -80,7 +81,8 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
         action: 'gate',
         reason: verdict.label ?? verdict.reason ?? 'Outbound email send requires approval.',
         summary: verdict.summary,
-        alsoRuns: verdict.alsoRuns,
+        deny: verdict.deny,
+        pureSend: verdict.pureSend,
     };
 }
 
@@ -103,8 +105,6 @@ function main(): void {
                 reason,
                 undefined,
                 nativeEmail.summary,
-                undefined,
-                nativeEmail.alsoRuns,
             );
             if (decision !== 'approved') {
                 block(`${reason} — ${deniedDetail(decision)}`, reason);
@@ -137,9 +137,16 @@ function main(): void {
         // repo it would actually reach. The core falls back to process.cwd().
         const cwd = typeof input.cwd === 'string' ? input.cwd : undefined;
 
+
         const destructive = evaluateBashCommand(command, { cwd });
         if (destructive.action === 'block') {
             block(destructive.reason, 'Destructive command blocked.');
+        }
+
+        // An email send sharing its command is refused after any hard block and before any gate asks, so no approval is spent on it.
+        const email = emailReason(command, cwd);
+        if (email.action === 'gate' && email.deny) {
+            block(email.deny, email.reason);
         }
 
         if (destructive.action === 'gate') {
@@ -170,13 +177,12 @@ function main(): void {
             }
         }
 
-        const email = emailReason(command, cwd);
         if (email.action === 'gate') {
             if (!IS_NANOCLAW) {
                 ask(`${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`);
             }
 
-            const decision = runEmailGate(command, email.reason, undefined, email.summary, undefined, email.alsoRuns);
+            const decision = runEmailGate(command, email.reason, undefined, email.summary, undefined, email.pureSend);
             if (decision !== 'approved') {
                 block(`${email.reason} — ${deniedDetail(decision)}`, email.reason);
             }
