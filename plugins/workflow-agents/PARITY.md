@@ -65,6 +65,8 @@ Hand-maintained, because the Claude plugin has no counterpart to generate them f
 
 - `hooks/workflow-hooks.json` and `hooks/codex-guard.ts` — Codex's hook manifest resolves
   `${PLUGIN_ROOT}`, not `${CLAUDE_PLUGIN_ROOT}`, so the two manifests cannot be one file.
+- `hooks/codex-guard.sh` — Codex runs the tool when a hook times out or crashes and has no
+  `onFailure: block`, so the manifest runs the guard through this wrapper, which denies on both.
 - `scripts/ownership.mjs` — the ownership marker, kept only so
   `scripts/retire-bootstrap-agents.mjs` can recognise role files this plugin wrote into users'
   Codex homes before 5.7.0. Nothing writes one now. The string is frozen: rewording it orphans
