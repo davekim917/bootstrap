@@ -69,6 +69,7 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
     action: 'gate';
     reason: string;
     summary?: string;
+    alsoRuns?: string[];
 } {
     const verdict = evaluateEmailSend(command, {
         isScheduledTask: process.env.NANOCLAW_IS_SCHEDULED_TASK === '1',
@@ -79,6 +80,7 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
         action: 'gate',
         reason: verdict.label ?? verdict.reason ?? 'Outbound email send requires approval.',
         summary: verdict.summary,
+        alsoRuns: verdict.alsoRuns,
     };
 }
 
@@ -101,6 +103,8 @@ function main(): void {
                 reason,
                 undefined,
                 nativeEmail.summary,
+                undefined,
+                nativeEmail.alsoRuns,
             );
             if (decision !== 'approved') {
                 block(`${reason} — ${deniedDetail(decision)}`, reason);
@@ -172,7 +176,7 @@ function main(): void {
                 ask(`${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`);
             }
 
-            const decision = runEmailGate(command, email.reason, undefined, email.summary);
+            const decision = runEmailGate(command, email.reason, undefined, email.summary, undefined, email.alsoRuns);
             if (decision !== 'approved') {
                 block(`${email.reason} — ${deniedDetail(decision)}`, email.reason);
             }

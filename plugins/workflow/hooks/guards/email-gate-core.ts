@@ -34,7 +34,7 @@
  * only sound place to catch all of those is the egress proxy.
  */
 import { resolveCommand, walkCommandNodes } from './block-destructive-core';
-import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, parseShell, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
+import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, oneLine, parseShell, quoteBlock, readBodyFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
 // `gws gmail users (messages|drafts) send` (raw API form).
@@ -416,20 +416,30 @@ const GWS_HELP_FLAGS = new Set(['--help', '-h']);
  * a name built at run time, a word the shell could split into extra options, a
  * parse error) is not a probe.
  */
-export function probeOnlyCommand(command: string): boolean {
-    if ((command.match(/\(/g) ?? []).length > PROBE_PARENS_MAX) return false;
-    // A `{VAR}>file` redirect assigns VAR (PATH included) outside any assignment word; a probe never needs one.
-    if (/\{[A-Za-z_]\w*\}\s*[<>]/.test(command)) return false;
-    if (VALUE_EVALUATING_EXPANSION.test(command)) return false;
+/**
+ * The parsed command when it is a list of plain commands the parser read to the end, with nothing that sets a variable
+ * or runs code outside an assignment word; null otherwise.
+ */
+function plainScript(command: string): any | null {
+    if ((command.match(/\(/g) ?? []).length > PROBE_PARENS_MAX) return null;
+    // A `{VAR}>file` redirect assigns VAR (PATH included) outside any assignment word.
+    if (/\{[A-Za-z_]\w*\}\s*[<>]/.test(command)) return null;
+    if (VALUE_EVALUATING_EXPANSION.test(command)) return null;
     let script: any;
     try {
         script = parseShell(command);
     } catch {
-        return false;
+        return null;
     }
-    if (script?.errors?.length || !onlyPlainCommands(script)) return false;
+    if (script?.errors?.length || !onlyPlainCommands(script)) return null;
     // unbash stops at a stray `)` or `}` without reporting an error, leaving the rest of the line unread.
-    if (!/^[\s;&]*(?:#[^\n]*)?\s*$/.test(command.slice(script?.commands?.at(-1)?.end ?? 0))) return false;
+    if (!/^[\s;&]*(?:#[^\n]*)?\s*$/.test(command.slice(script?.commands?.at(-1)?.end ?? 0))) return null;
+    return script;
+}
+
+export function probeOnlyCommand(command: string): boolean {
+    const script = plainScript(command);
+    if (!script) return false;
     let gwsCalls = 0;
     let gwsCallsBesideHelp = 0;
     let changesDirectory = false;
@@ -496,6 +506,11 @@ export interface EmailGateVerdict {
     label?: string;
     summary?: string;
     reason?: string;
+    /**
+     * Present only when the summary describes everything the command runs: one plain line per step besides the
+     * send, possibly none. The card then leaves the command out; without it, the card shows the command.
+     */
+    alsoRuns?: string[];
 }
 
 function normalizedToolName(toolName: string): string {
@@ -590,11 +605,13 @@ export function evaluateEmailToolCall(
         lines.push('', header, quoteBlock(clip((isHtml ? htmlToText(body) : body.slice(0, 20_000).trim()) || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used))));
     }
 
+    const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
     return {
         action: 'gate',
         label,
         reason: label,
-        summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS),
+        summary,
+        ...(summary === lines.join('\n') ? { alsoRuns: [] } : {}),
     };
 }
 
@@ -793,11 +810,14 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         ? resolveBody(bodyText, view, send?.pos ?? Infinity, env.cwd, evaluated)
         : { text: bodyText };
     lines.push('');
+    let bodyCut = false;
     if (body.text !== null) {
         const text = isHtml ? htmlToText(body.text) : body.text.trim();
         const header = `Message${isHtml ? ' (HTML, shown as text)' : ''}:`;
         const used = lines.join('\n').length + header.length + 120;
-        lines.push(header, quoteBlock(clip(text || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used))));
+        const shown = clip(text || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used));
+        bodyCut = shown !== (text || '(empty)');
+        lines.push(header, quoteBlock(shown));
         if (body.note) lines.push(body.note);
     } else if (isRawApi) {
         lines.push('Message: not shown. This send passes a raw MIME message, so the text is only visible inside the encoded payload. Decline and ask the agent to show the draft if you need to read it first.');
@@ -808,7 +828,168 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         const list = [...unresolved];
         lines.push(`⚠️ ${list.map(code).join(', ')} ${list.length === 1 ? 'is' : 'are'} only known when the command runs, so the value${list.length === 1 ? '' : 's'} above may differ.`);
     }
-    return { action: 'gate', label, summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
+    const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
+    const described = send?.helper && flagsAllDescribed(send) && gwsWords === 1 && !generatedWord && !probeFlag
+        && !unresolved.size && body.text !== null && !bodyCut && summary === lines.join('\n');
+    const alsoRuns = described && send ? otherSteps(command, send.pos) : null;
+    return { action: 'gate', label, summary, ...(alsoRuns ? { alsoRuns } : {}) };
+}
+
+// The helper-verb options the summary shows, by how often each may appear. `--format` only shapes what gws prints back.
+const DESCRIBED_ONCE = new Set(['--to', '--cc', '--bcc', '--subject', '--body', '--from', '--message-id', '--remove', '--format']);
+const DESCRIBED_REPEATABLE = new Set(['-a', '--attach']);
+
+/**
+ * True when every argument of the send is an option the summary shows, each single-valued one given once: the summary
+ * shows the first of two `--body` values, which need not be the one sent.
+ */
+function flagsAllDescribed(call: GwsGmailCall): boolean {
+    const seen = new Set<string>();
+    for (let i = 0; i < call.values.length; i++) {
+        const v = call.values[i];
+        if (v === '--html') continue;
+        const name = v.split('=')[0];
+        const once = DESCRIBED_ONCE.has(name);
+        if (!once && !DESCRIBED_REPEATABLE.has(name)) return false;
+        if (once && seen.has(name)) return false;
+        seen.add(name);
+        if (!v.includes('=') && ++i >= call.values.length) return false;
+    }
+    return true;
+}
+
+/**
+ * A plain `NAME=value` the card need not show. The shell neither splits nor globs an assignment's value, so only a
+ * substitution in it runs anything; any `$(`, backtick or `<(` in its text is refused, quoted or not.
+ */
+function assignsOnly(p: any): boolean {
+    return p?.type === 'Assignment' && probeMaySet(p.name) && !p.append && !p.array
+        && typeof p.value?.text === 'string' && !/\$\(|`|[<>]\(/.test(p.value.text);
+}
+
+// An absolute path under /workspace whose segments are not dot-paths (tools read those as configuration).
+const WORKSPACE_PATH = /^\/workspace(?:\/[\w@%+=:,-][\w@%+=:,.-]*)+\/?$/;
+// A note the card may name: a text format nothing on a command line runs.
+const NOTE_EXTENSION = /\.(?:md|txt|log|html?|eml)$/;
+// Filters that only trim what the send prints back to the agent.
+const OUTPUT_FILTERS = new Set(['head', 'tail', 'grep', 'egrep', 'fgrep', 'jq', 'wc', 'cut', 'tr', 'uniq']);
+const STEP_LINE_MAX_CHARS = 160;
+
+type Step = { kind: 'line'; text: string } | { kind: 'folders'; paths: string[] } | { kind: 'note'; path: string; append: boolean };
+
+const basename = (path: string): string => path.replace(/\/+$/, '').split('/').pop() ?? path;
+
+/** A plain command whose name and arguments are the same text however the shell runs, with nothing set before it. */
+function plainStep(node: any): { name: string; args: string[] } | null {
+    if (node?.type !== 'Command' || !node.name || (node.prefix || []).length) return null;
+    const words = [node.name, ...(node.suffix || [])];
+    if (!words.every(wordIsLiteral)) return null;
+    const [name, ...args] = words.map((w: any) => String(w.value ?? w.text ?? ''));
+    return { name, args };
+}
+
+/** The send's own command: gws reached directly, with only allowed settings before it and no file written. */
+function sendStepIsPlain(node: any): boolean {
+    if (node?.type !== 'Command' || !gwsReachedDirectly(node) || !redirectsWriteNothing(node)) return false;
+    if (!(node.prefix || []).every(assignsOnly)) return false;
+    // A substitution runs a command of its own, which the summary does not describe.
+    return (node.suffix || []).every((w: any) => !(w?.parts ?? []).some(function runs(p: any): boolean {
+        return p?.type === 'CommandExpansion' || p?.type === 'ProcessSubstitution' || (p?.parts ?? []).some(runs);
+    }));
+}
+
+function outputFilterIsPlain(node: any): boolean {
+    const step = plainStep(node);
+    return !!step && OUTPUT_FILTERS.has(step.name) && optionsAllowed(step.name, step.args) && redirectsWriteNothing(node);
+}
+
+/** What a step other than the send does, or null when it is none of the shapes the card can describe. */
+function describeStep(node: any, command: string): Step | null {
+    if (node?.type !== 'Command') return null;
+    if (!node.name) {
+        const sets = (node.prefix || []).every(assignsOnly);
+        return sets && !(node.redirects || []).length ? { kind: 'line', text: '' } : null;
+    }
+    const step = plainStep(node);
+    if (!step) return null;
+    const { name, args } = step;
+    const redirects: any[] = node.redirects || [];
+    const raw = (): Step => ({ kind: 'line', text: code(clip(oneLine(command.slice(node.pos, node.end)), STEP_LINE_MAX_CHARS - 2)) });
+    if (name === 'export') {
+        return !redirects.length && args.every(a => probeMaySet(a.split('=')[0])) ? { kind: 'line', text: '' } : null;
+    }
+    if (name === 'set') return !redirects.length && args.every(a => PROBE_SET_OPTIONS.test(a)) ? raw() : null;
+    if (name === 'true' || name === ':' || name === 'echo' || name === 'printf') {
+        const options = name === 'printf' ? !args.some(a => a.startsWith('-')) : optionsAllowed(name, args);
+        return options && redirectsWriteNothing(node) ? raw() : null;
+    }
+    if (name === 'mkdir') {
+        const paths = args.filter(a => a !== '-p' && a !== '--parents');
+        return !redirects.length && paths.length && paths.every(p => WORKSPACE_PATH.test(p)) ? { kind: 'folders', paths } : null;
+    }
+    if (name === 'cat' && !args.length && redirects.length === 2) {
+        const heredoc = redirects.find(r => r.operator === '<<' || r.operator === '<<-');
+        const write = redirects.find(r => r.operator === '>' || r.operator === '>>');
+        // An unquoted heredoc expands its body, so a substitution in it would run.
+        const inert = heredoc && (heredoc.heredocQuoted || !/[$`\\]/.test(heredoc.content ?? ''));
+        const path = String(write?.target?.value ?? '');
+        if (inert && write && (write.fileDescriptor ?? 1) === 1 && write.target?.text === path && WORKSPACE_PATH.test(path) && NOTE_EXTENSION.test(path)) {
+            return { kind: 'note', path, append: write.operator === '>>' };
+        }
+    }
+    return null;
+}
+
+/**
+ * One plain line for each step of `command` besides the send at `sendPos`, when every step is one the card can show
+ * without the command: the send, assignments and exports it may read, a folder made or a note written in the
+ * workspace from a heredoc, `set` options, a plain print, and filters on the send's output. Null for anything else.
+ */
+function otherSteps(command: string, sendPos: number): string[] | null {
+    const script = plainScript(command);
+    if (!script) return null;
+    const steps: Step[] = [];
+    let sends = 0;
+    let unread = command;
+    for (const entry of script.commands ?? []) {
+        if (entry?.type !== 'Statement' || entry.background || (entry.redirects || []).length) return null;
+        const node = entry.command;
+        const chain = node?.type !== 'AndOr' ? [node] : node.operators.every((op: string) => op === '&&') ? node.commands : null;
+        if (!chain) return null;
+        for (const step of chain) {
+            if (step?.type === 'Pipeline') {
+                const [first, ...filters] = step.commands;
+                if (step.negated || step.time || first?.pos !== sendPos || !sendStepIsPlain(first) || !filters.every(outputFilterIsPlain)) return null;
+                sends++;
+                const shown = oneLine(command.slice(filters[0].pos, step.end));
+                steps.push({ kind: 'line', text: `shows the agent only part of what the send prints: ${code(clip(shown, 80))}` });
+            } else if (step?.type === 'Command' && step.pos === sendPos) {
+                if (!sendStepIsPlain(step)) return null;
+                sends++;
+            } else {
+                const described = describeStep(step, command);
+                if (!described) return null;
+                if (described.kind === 'note') {
+                    const heredoc = (step.redirects as any[]).find(r => r.operator === '<<' || r.operator === '<<-');
+                    unread = unread.replace(heredoc.content, '');
+                }
+                steps.push(described);
+            }
+        }
+    }
+    // The parser and bash must agree there is one gws call: a second one, however it is hidden, needs the command shown.
+    if (sends !== 1 || (unread.match(/(?:^|[\s;&|(`{!])gws(?=\s)/g) ?? []).length !== 1) return null;
+    const notes = steps.flatMap(s => (s.kind === 'note' ? [s.path] : []));
+    const lines: string[] = [];
+    for (const s of steps) {
+        if (s.kind === 'note') lines.push(`${s.append ? 'adds to' : 'writes'} ${code(basename(s.path))} in the workspace`);
+        else if (s.kind === 'folders') {
+            // A folder made only to hold a note written here is part of writing that note.
+            const shown = s.paths.filter(p => !notes.some(n => n.startsWith(p.replace(/\/+$/, '') + '/')));
+            if (shown.length) lines.push(`creates folder ${shown.map(p => code(basename(p))).join(', ')} in the workspace`);
+        } else if (s.text) lines.push(s.text);
+    }
+    return lines.map(l => clip(l, STEP_LINE_MAX_CHARS));
 }
 
 // The regex fallback runs only when the parser finds no send; it is quadratic

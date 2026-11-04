@@ -121,6 +121,7 @@ interface StagedCall {
     summary: string;
     command: string;
     action: string | undefined;
+    alsoRuns?: string[];
 }
 
 async function loadWithSpies(opts: { stageThrows?: boolean } = {}) {
@@ -133,8 +134,9 @@ async function loadWithSpies(opts: { stageThrows?: boolean } = {}) {
             summary: string,
             command: string,
             action?: 'request_destructive_gate' | 'request_bash_gate',
+            alsoRuns?: string[],
         ): string => {
-            staged.push({ label, summary, command, action });
+            staged.push({ label, summary, command, action, alsoRuns });
             if (opts.stageThrows) throw new Error('session DBs broken');
             return 'gate-test-id';
         },
@@ -190,6 +192,13 @@ describe('A2 runGateRequest action parameterization', () => {
         expect(staged[0].label).toBe('Email send to a@example.com');
         expect(staged[0].summary).toBe('*From:* me\n*To:* a@example.com\n\n*Body:*\n> hi');
         expect(staged[0].action).toBe('request_bash_gate');
+    });
+
+    test("runEmailGate stages the verdict's list of other steps as given, and none when it has none", async () => {
+        const { mod, staged } = await loadWithSpies();
+        mod.runEmailGate('gws gmail +send', 'email send', undefined, 'summary', undefined, ['writes `a.md` in the workspace']);
+        mod.runEmailGate('gws gmail +send', 'email send', undefined, 'summary');
+        expect(staged.map(s => s.alsoRuns)).toEqual([['writes `a.md` in the workspace'], undefined]);
     });
 
     test('runEmailGate without a summary falls back to reason for both (back-compat)', async () => {

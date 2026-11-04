@@ -182,7 +182,7 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
     // approval card matches Claude's in-tree card instead of repeating the short
     // label (S-QA2 parity). runEmailGate stages a request_bash_gate approval and
     // polls for the decision; it fail-closes to 'denied' if it cannot stage.
-    const decision = runEmailGate(command, reason, undefined, emailVerdict.summary);
+    const decision = runEmailGate(command, reason, undefined, emailVerdict.summary, undefined, emailVerdict.alsoRuns);
     if (decision === 'approved') return;
     const detail =
       decision === 'denied'
@@ -203,7 +203,7 @@ export function gateNativeEmailToolOrThrow(
   if (verdict.action === 'allow') return false;
 
   const reason = verdict.label ?? verdict.reason ?? 'Outbound email send requires approval.';
-  const decision = runEmailGate(`tool:${toolName}`, reason, undefined, verdict.summary);
+  const decision = runEmailGate(`tool:${toolName}`, reason, undefined, verdict.summary, undefined, verdict.alsoRuns);
   if (decision === 'approved') return true;
   const detail = decision === 'denied'
     ? 'Cancelled by user. Do not retry — acknowledge briefly.'

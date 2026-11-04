@@ -7211,6 +7211,7 @@ export function writeGateRequest(
     summary: string,
     command: string,
     action: GateAction = 'request_destructive_gate',
+    alsoRuns?: string[],
 ): string {
     // Dynamic import so non-NanoClaw environments (plain Claude Code) never
     // touch bun:sqlite — the module is only present under bun runtime.
@@ -7227,6 +7228,7 @@ export function writeGateRequest(
         // command in its approval record. Truncating here would discard final
         // arguments before the approver or audit trail could inspect them.
         command,
+        ...(alsoRuns ? { alsoRuns } : {}),
     });
 
     const outbound = new Database(NANOCLAW_OUTBOUND_DB);
@@ -7335,6 +7337,8 @@ export function runGateRequest(
         // tool call share ONE approval card instead of raising one each — see
         // `claimGateRequest`. Omitted, behaviour is exactly as before.
         toolUseId?: string;
+        // The email gate's list of the command's other steps; present only when the summary describes the whole command.
+        alsoRuns?: string[];
     },
 ): GateDecision {
     const key = opts.toolUseId ? gateClaimKey(opts.toolUseId, opts.action) : null;
@@ -7352,7 +7356,7 @@ export function runGateRequest(
 
     let requestId: string;
     try {
-        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action);
+        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action, opts.alsoRuns);
     } catch (err) {
         // If we can't even stage the request, the session DBs are in a broken
         // state. Deny rather than silently allowing — the gate is fail-closed.
@@ -7421,7 +7425,9 @@ export function changesProduction(command: string, cwd: string = currentWorkingD
  * 3rd). The optional 4th `summary` carries evaluateEmailSend's structured card
  * body (from/to/cc/bcc/body); when omitted, the card falls back to `reason` for
  * both label and summary. Threading summary gives OpenCode's approval card the
- * same structured content as Claude's in-tree card (S-QA2 parity).
+ * same structured content as Claude's in-tree card (S-QA2 parity). The 6th
+ * `alsoRuns` is the verdict's own, passed through untouched: the host leaves the
+ * command off the card only when it is present.
  */
 export function runEmailGate(
     command: string,
@@ -7429,8 +7435,9 @@ export function runEmailGate(
     onStageError?: (err: unknown) => void,
     summary?: string,
     toolUseId?: string,
+    alsoRuns?: string[],
 ): GateDecision {
-    return runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId });
+    return runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId, alsoRuns });
 }
 
 // ── Repositories agents never merge into ─────────────────────────────────────

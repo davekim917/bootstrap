@@ -123,6 +123,7 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
     action: 'gate';
     reason: string;
     summary?: string;
+    alsoRuns?: string[];
 } {
     const verdict = evaluateEmailSend(command, {
         isScheduledTask: process.env.NANOCLAW_IS_SCHEDULED_TASK === '1',
@@ -133,6 +134,7 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
         action: 'gate',
         reason: verdict.label ?? verdict.reason ?? 'Outbound email send requires approval.',
         summary: verdict.summary,
+        alsoRuns: verdict.alsoRuns,
     };
 }
 
@@ -181,7 +183,7 @@ function main(): void {
             let staged = true;
             const decision = runEmailGate(`tool:${input.tool_name}`, reason, () => {
                 staged = false;
-            }, nativeEmail.summary, toolUseId);
+            }, nativeEmail.summary, toolUseId, nativeEmail.alsoRuns);
             if (!staged) {
                 emitDeny(`${reason} — could not stage the NanoClaw approval request.`, reason);
             }
@@ -271,7 +273,7 @@ function main(): void {
             let staged = true;
             const decision = runEmailGate(command, email.reason, () => {
                 staged = false;
-            }, email.summary, toolUseId);
+            }, email.summary, toolUseId, email.alsoRuns);
             if (!staged) {
                 emitDeny(`${email.reason} — could not stage the NanoClaw approval request.`, email.reason);
             }
