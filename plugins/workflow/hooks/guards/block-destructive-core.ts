@@ -81,6 +81,7 @@ export interface ResolvedCommand {
 export interface ScriptContext {
     writes: FileWrite[];        // what echo/printf/cat/tee write to files
     pipedInto: Map<number, PipedInput>; // what the previous stage of a pipeline feeds each command, by command offset
+    pipesOut?: Set<number>;     // offsets of the commands whose output a pipeline feeds to its next stage
     cds: CdStep[];              // every cd/pushd/popd, in source order
     links: Map<number, ChainLink>; // where each top-level command sits in its &&/|| chain, by command offset
     command: string;            // the whole command line, for resolving variables
@@ -773,7 +774,7 @@ const HAS_WHERE = /\bWHERE\b/i;
 // Cheap superset prefilter — if none of these verbs appear anywhere in the
 // SQL arg, no destructive pattern can match. Skips the full strip+scan
 // pipeline on SELECT-only queries (the common case).
-const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE|GRANT)\b/i;
+const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE|GRANT|PROCEDURE|DO)\b/i;
 
 // Hoisted to module scope — these regexes are matched per-segment / per-call
 // inside the SQL scanner; defining them inline would recompile on every
@@ -781,11 +782,16 @@ const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTE
 const WITH_LEADING = /^WITH\b/i;
 const WITH_PREFIX = /^WITH\s+(?:RECURSIVE\s+)?/i;
 const CTE_NAME_AS = /^(?:"\s*"|"[^"]*"|`[^`]*`|[A-Za-z_][\w$]*)\s*(?:\([^)]*\))?\s+AS\s+/i;
-const EXECUTE_IMMEDIATE = /\b(?:(EXECUTE\s+IMMEDIATE)\b\s*|DO(?:\s+LANGUAGE\s+\w+)?\s+)/gi;
+// Snowflake's EXECUTE IMMEDIATE, a Postgres DO block, and, inside a DO body, PL/pgSQL's EXECUTE.
+const DYNAMIC_SQL = /\b(?:(EXECUTE\s+IMMEDIATE)\b\s*|DO(?:\s+LANGUAGE\s+(\w+))?\s+|(EXECUTE)\b\s*)/gi;
+const ROUTINE = /\b(?:(AS\s+PROCEDURE)|CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:SECURE|TEMP|TEMPORARY)\s+)*(?:PROCEDURE|FUNCTION))\b/gi;
+const BODY_AS = /\bAS\s*(?=['$])/gi;
+const SQL_BODY_LANGUAGE = /^(?:SQL|PLPGSQL)$/i;
 // What may follow the one literal an EXECUTE IMMEDIATE runs; anything else (`||`, a function call) builds the SQL at run
 // time. A `//` comment ends it here because snow text holding `//` is scanned again as Snowflake lexes it.
-const EXECUTE_IMMEDIATE_END = /^(?:$|;|\)|USING\b|\/\/)/i;
+const EXECUTE_IMMEDIATE_END = /^(?:$|;|\)|USING\b|INTO\b|\/\/)/i;
 const UNREADABLE_EXECUTE_IMMEDIATE = "EXECUTE IMMEDIATE of SQL the guard can't read";
+const UNREADABLE_BODY = "a procedure or DO body the guard can't read";
 const DOLLAR_TAG = /^\$([A-Za-z0-9_]*)\$/;
 
 const STATEMENT_PREVIEW_CHARS = 200;
@@ -829,7 +835,7 @@ export function stripSqlLiteralsAndComments(sql: string): string {
  * stripSqlLiteralsAndComments, plus where the first literal or comment that never closes starts (-1 when every one
  * closes). From there to the end the skeleton is blank, so no statement there was read.
  */
-export function sqlSkeleton(sql: string): { skeleton: string; openAt: number } {
+export function sqlSkeleton(sql: string, backslashEscapes = false): { skeleton: string; openAt: number } {
     const out: string[] = [];
     let openAt = -1;
     let i = 0;
@@ -855,9 +861,15 @@ export function sqlSkeleton(sql: string): { skeleton: string; openAt: number } {
         if (c === "'" || c === '"' || c === '`') {
             const quote = c;
             const start = i;
+            // A Postgres E'...' string takes backslash escapes, so `E'\''` is one quote and the string ends after it.
+            const escapes = (backslashEscapes && quote !== '`') || (quote === "'" && /[Ee]/.test(sql[i - 1] ?? '') && !/[\w$]/.test(sql[i - 2] ?? ''));
             let closed = false;
             i += 1;
             while (i < sql.length) {
+                if (escapes && sql[i] === '\\') {
+                    i += 2;
+                    continue;
+                }
                 if (sql[i] === quote && sql[i + 1] === quote) {
                     i += 2; // SQL doubled-quote escape
                     continue;
@@ -992,60 +1004,122 @@ function checkStatement(trimmed: string, isCTE: boolean): DestructiveMatch | nul
     return null;
 }
 
+interface DynamicBody {
+    body: string;
+    /** A DO body, or SQL a DO body runs: PL/pgSQL, whose EXECUTE runs a string. */
+    plpgsql: boolean;
+}
+
+interface UnreadableBody {
+    start: number;
+    end: number;
+    label: string;
+}
+
 /**
- * Find every `EXECUTE IMMEDIATE '...'` literal and return its contents, unescaped. The keyword scan runs against
- * `skeleton` (already stripped, offsets preserved) so an EXECUTE IMMEDIATE inside a string or comment doesn't trigger
- * recursion; the bodies come from `originalSql`. An EXECUTE IMMEDIATE whose argument is not one whole literal (a
- * variable, a stage file, a concatenation) is returned in `unreadable` as its offsets up to the statement's end.
+ * The literal starting at `at` in `sql` and the offset after it, or null when none starts there or it never closes.
+ * `decoded` is true when the database would decode a backslash escape in it, so its text is not what runs.
+ */
+function literalAt(sql: string, at: number, backslash: boolean, quotedDecodes: boolean): { body: string; end: number; decoded: boolean } | null {
+    let c = sql[at];
+    let start = at;
+    let escapes = backslash;
+    if ((c === 'E' || c === 'e') && sql[at + 1] === "'") {
+        start = at + 1;
+        c = "'";
+        escapes = true;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+        let i = start + 1;
+        while (i < sql.length) {
+            if (escapes && sql[i] === '\\') { i += 2; continue; }
+            if (sql[i] === c && sql[i + 1] === c) { i += 2; continue; }
+            if (sql[i] === c) break;
+            i++;
+        }
+        if (i >= sql.length) return null;
+        const raw = sql.slice(start + 1, i);
+        return { body: raw.split(c + c).join(c), end: i + 1, decoded: (escapes || (quotedDecodes && c === "'")) && raw.includes('\\') };
+    }
+    const tag = c === '$' ? sql.slice(at).match(DOLLAR_TAG)?.[0] : undefined;
+    if (!tag) return null;
+    const close = sql.indexOf(tag, at + tag.length);
+    return close < 0 ? null : { body: sql.slice(at + tag.length, close), end: close + tag.length, decoded: false };
+}
+
+/**
+ * Every body of SQL that `originalSql` runs from a string: an EXECUTE IMMEDIATE literal, a DO block, an anonymous
+ * procedure (`WITH p AS PROCEDURE … AS '<body>' CALL p()`), and, in a PL/pgSQL body, an EXECUTE literal. The keyword
+ * scan runs against `skeleton` (literals and comments blanked, offsets preserved) and the bodies come from
+ * `originalSql`, unescaped. A body the guard can't read, because it is built at run time, written in another
+ * language, or carries backslash escapes the database decodes, is returned in `unreadable` up to its statement's end.
  */
 export function findExecuteImmediateLiterals(
     originalSql: string,
     skeleton: string,
-): { literals: string[]; unreadable: Array<{ start: number; end: number }> } {
-    const literals: string[] = [];
-    const unreadable: Array<{ start: number; end: number }> = [];
-    EXECUTE_IMMEDIATE.lastIndex = 0;
+    { plpgsql = false, backslash = false }: { plpgsql?: boolean; backslash?: boolean } = {},
+): { literals: DynamicBody[]; unreadable: UnreadableBody[] } {
+    const literals: DynamicBody[] = [];
+    const unreadable: UnreadableBody[] = [];
+    const statementEnd = (from: number) => {
+        const semi = skeleton.indexOf(';', from);
+        return semi < 0 ? skeleton.length : semi;
+    };
+    DYNAMIC_SQL.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = EXECUTE_IMMEDIATE.exec(skeleton)) !== null) {
-        const isExecute = m[1] !== undefined;
-        const litStart = m.index + m[0].length;
-        const c = originalSql[litStart];
-        let body: string | null = null;
-        let litEnd = -1;
-
+    while ((m = DYNAMIC_SQL.exec(skeleton)) !== null) {
+        const isDo = m[1] === undefined && m[3] === undefined;
+        if (m[3] !== undefined && !plpgsql) continue;
+        const at = m.index + m[0].length;
         // In Snowflake a double-quoted name after EXECUTE IMMEDIATE is a variable, not a literal.
-        if (c === "'" || (!isExecute && (c === '"' || c === '`'))) {
-            let i = litStart + 1;
-            while (i < originalSql.length) {
-                if (originalSql[i] === c && originalSql[i + 1] === c) { i += 2; continue; }
-                if (originalSql[i] === c) break;
-                i++;
+        const quoted = isDo || originalSql[at] === "'" || originalSql[at] === '$' || /^[Ee]'/.test(originalSql.slice(at, at + 2));
+        // A DO body is Postgres, whose plain strings take no backslash escapes, whichever reading this is.
+        const literal = quoted ? literalAt(originalSql, at, backslash && !isDo, !isDo) : null;
+        if (isDo) {
+            if (!literal) {
+                if (/^[Ee]'/.test(originalSql.slice(at, at + 2))) unreadable.push({ start: m.index, end: statementEnd(m.index), label: UNREADABLE_BODY });
+                continue;
             }
-            if (i < originalSql.length) {
-                body = originalSql.slice(litStart + 1, i).split(c + c).join(c);
-                litEnd = i + 1;
+            const language = m[2] ?? /^\s*LANGUAGE\s+(\w+)/i.exec(skeleton.slice(literal.end))?.[1];
+            if (literal.decoded || (language && !SQL_BODY_LANGUAGE.test(language))) {
+                unreadable.push({ start: m.index, end: statementEnd(m.index), label: UNREADABLE_BODY });
+                continue;
             }
-        } else if (c === '$') {
-            const tagMatch = originalSql.slice(litStart).match(DOLLAR_TAG);
-            if (tagMatch) {
-                const tag = tagMatch[0];
-                const tagStart = litStart + tag.length;
-                const close = originalSql.indexOf(tag, tagStart);
-                if (close >= 0) {
-                    body = originalSql.slice(tagStart, close);
-                    litEnd = close + tag.length;
-                }
-            }
+            literals.push({ body: literal.body, plpgsql: true });
+            continue;
         }
-
         // Snowflake decodes `\x44`, `\u0044` and the like in a quoted literal, so its SQL is not the text the guard reads.
-        if (isExecute && body !== null && c === "'" && body.includes('\\')) body = null;
-        if (body !== null) literals.push(body);
-        if (isExecute && (body === null || !EXECUTE_IMMEDIATE_END.test(skeleton.slice(litEnd).trimStart()))) {
-            const semi = skeleton.indexOf(';', m.index);
-            unreadable.push({ start: m.index, end: semi < 0 ? skeleton.length : semi });
-        }
+        const readable = literal && !literal.decoded && EXECUTE_IMMEDIATE_END.test(skeleton.slice(literal.end).trimStart());
+        if (literal && !literal.decoded) literals.push({ body: literal.body, plpgsql });
+        if (!readable) unreadable.push({ start: m.index, end: statementEnd(m.index), label: UNREADABLE_EXECUTE_IMMEDIATE });
     }
+
+    // An anonymous procedure runs its body now. A created routine runs it at a later CALL the guard never sees, so its
+    // SQL body is read at creation; a body in another language, which no SQL scan reads, is left to that call.
+    const routines = [...skeleton.matchAll(ROUTINE)];
+    routines.forEach((r, i) => {
+        const runsNow = r[1] !== undefined;
+        const end = Math.min(statementEnd(r.index), routines[i + 1]?.index ?? skeleton.length);
+        BODY_AS.lastIndex = r.index + r[0].length;
+        const as = BODY_AS.exec(skeleton);
+        const literal = as && as.index < end ? literalAt(originalSql, as.index + as[0].length, backslash, true) : null;
+        const language = /\bLANGUAGE\s+(\w+)/i.exec(skeleton.slice(r.index, end))?.[1];
+        if (language && !SQL_BODY_LANGUAGE.test(language)) {
+            if (runsNow) unreadable.push({ start: r.index, end, label: UNREADABLE_BODY });
+            return;
+        }
+        if (!literal) {
+            const atomic = /\bBEGIN\s+ATOMIC\b/i.exec(skeleton.slice(r.index));
+            if (atomic) literals.push({ body: originalSql.slice(r.index + atomic.index + atomic[0].length), plpgsql: false });
+            else if (runsNow) unreadable.push({ start: r.index, end, label: UNREADABLE_BODY });
+            return;
+        }
+        if (literal.decoded) {
+            unreadable.push({ start: r.index, end, label: UNREADABLE_BODY });
+            return;
+        }
+        literals.push({ body: literal.body, plpgsql: /^PLPGSQL$/i.test(language ?? '') });
+    });
     return { literals, unreadable };
 }
 
@@ -1062,27 +1136,32 @@ export function findExecuteImmediateLiterals(
  *   - `UPDATE ... WHERE 1=1` — syntactically has WHERE; semantically rewrites
  *     everything
  */
-export function findDestructiveSqlStatement(sql: string, depth: number = 0): DestructiveMatch | null {
+export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpgsql = false): DestructiveMatch | null {
     if (!SQL_PREFILTER.test(sql)) return null;
     if (depth > SQL_RECURSION_LIMIT) return { pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: sql.trim().slice(0, STATEMENT_PREVIEW_CHARS) };
 
-    const skeleton = stripSqlLiteralsAndComments(sql);
-    for (const segment of skeleton.split(';')) {
-        for (const { body, isCTE } of decomposeSqlSegment(segment)) {
-            const match = checkSqlBody(body, isCTE);
-            if (match) return match;
+    // MySQL and Snowflake read a backslash in a quoted string as an escape, so text holding one is read both ways.
+    const readings = sql.includes('\\') ? [false, true] : [false];
+    for (const backslash of readings) {
+        const skeleton = sqlSkeleton(sql, backslash).skeleton;
+        for (const segment of skeleton.split(';')) {
+            for (const { body, isCTE } of decomposeSqlSegment(segment)) {
+                const match = checkSqlBody(body, isCTE);
+                if (match) return match;
+            }
         }
-    }
 
-    const dynamic = findExecuteImmediateLiterals(sql, skeleton);
-    const opaque = dynamic.unreadable[0];
-    if (opaque) {
-        return { pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: sql.slice(opaque.start, opaque.end).trim().slice(0, STATEMENT_PREVIEW_CHARS) };
-    }
-    for (const literal of dynamic.literals) {
-        const inner = findDestructiveSqlStatement(literal, depth + 1) ?? findDestructiveSqlStatement(snowCommentsAsSpace(literal), depth + 1);
-        if (inner) {
-            return { pattern: `EXECUTE IMMEDIATE → ${inner.pattern}`, statement: inner.statement };
+        const dynamic = findExecuteImmediateLiterals(sql, skeleton, { plpgsql, backslash });
+        const opaque = dynamic.unreadable[0];
+        if (opaque) {
+            return { pattern: opaque.label, statement: sql.slice(opaque.start, opaque.end).trim().slice(0, STATEMENT_PREVIEW_CHARS) };
+        }
+        for (const literal of dynamic.literals) {
+            const inner = findDestructiveSqlStatement(literal.body, depth + 1, literal.plpgsql)
+                ?? findDestructiveSqlStatement(snowCommentsAsSpace(literal.body), depth + 1, literal.plpgsql);
+            if (inner) {
+                return { pattern: `EXECUTE IMMEDIATE → ${inner.pattern}`, statement: inner.statement };
+            }
         }
     }
 
@@ -3325,6 +3404,7 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
     const byPos = new Map<number, ResolvedCommand>();
     for (const c of commands) if (c.pos !== undefined) byPos.set(c.pos, c);
     const pipedInto = new Map<number, PipedInput>();
+    const pipesOut = new Set<number>();
     const links = new Map<number, ChainLink>();
     let chains = 0;
 
@@ -3342,6 +3422,7 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             if (i === 0) return;
             const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [], emitters: [] };
             for (const up of stageCommands(stages[i - 1])) {
+                if (up.pos !== undefined) pipesOut.add(up.pos);
                 if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
                 const fed = up.pos === undefined ? undefined : pipedInto.get(up.pos);
                 input.texts.push(...emittedText(up));
@@ -3399,7 +3480,7 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             // `pushd DIR` changes directory like `cd DIR`; `pushd +N`/`-N` rotates the stack to a directory unknown here.
             target: (c.name === 'cd' || c.name === 'pushd') && c.args.length === 1 && !/^(?:-|[+-]\d+)$/.test(c.args[0]) ? c.args[0] : undefined,
         }));
-    return { writes, pipedInto, cds, links, command };
+    return { writes, pipedInto, pipesOut, cds, links, command };
 }
 
 // A SQL client's own ways of writing a file: psql's \o, \w, \g, \copy, \lo_export and a \! shell command; snow's GET; COPY … TO and INTO OUTFILE,
@@ -5812,11 +5893,24 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
 
     // ── dd (disk overwrite) ──────────────────────────────────────────────
 
-    if (name === 'dd' && args.some(a => a.startsWith('if='))) {
+    if (name === 'dd' && args.some(a => a.startsWith('if=')) && !ddWritesOnlyHere(cmd)) {
         return 'dd with input file — potential disk overwrite.';
     }
 
     return null;
+}
+
+/**
+ * True when a dd names no `of=` and its stdout goes nowhere but the terminal, /dev/null or a plain relative file in the
+ * directory the line runs in: not piped on (`| tee /dev/sda`), not a device, not outside the working directory.
+ */
+function ddWritesOnlyHere(cmd: ResolvedCommand): boolean {
+    const { args, script } = cmd;
+    if (cmd.pos === undefined || !script || cmd.chdir || script.cds.length) return false;
+    if (args.some(a => a.startsWith('of=') || !/^[\w=.,/+:-]+$/.test(a))) return false;
+    if (script.pipesOut?.has(cmd.pos)) return false;
+    return (cmd.stdoutFiles ?? []).every(target =>
+        target === '/dev/null' || (/^[\w.,+-][\w.,/+-]*$/.test(target) && !target.split('/').includes('..')));
 }
 
 // ── Approval description ─────────────────────────────────────────────────────
@@ -5968,7 +6062,7 @@ function sqlStatements(
     return out;
 }
 
-function destructiveStatements(sql: string, depth = 0, outerParsed = true): FoundStatement[] {
+function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgsql = false): FoundStatement[] {
     if (!SQL_PREFILTER.test(sql)) return [];
     if (depth > SQL_RECURSION_LIMIT) {
         const text = sql.trim();
@@ -5985,13 +6079,13 @@ function destructiveStatements(sql: string, depth = 0, outerParsed = true): Foun
             }
         }
     }
-    const dynamic = findExecuteImmediateLiterals(sql, lexed.skeleton);
-    for (const { start, end } of dynamic.unreadable) {
+    const dynamic = findExecuteImmediateLiterals(sql, lexed.skeleton, { plpgsql });
+    for (const { start, end, label } of dynamic.unreadable) {
         const text = sql.slice(start, end).trimEnd();
-        found.push({ pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: text.trim(), text, skeleton: lexed.skeleton.slice(start, start + text.length), parsed: false });
+        found.push({ pattern: label, statement: text.trim(), text, skeleton: lexed.skeleton.slice(start, start + text.length), parsed: false });
     }
     for (const literal of dynamic.literals) {
-        found.push(...destructiveStatements(literal, depth + 1, outerParsed && lexed.openAt < 0));
+        found.push(...destructiveStatements(literal.body, depth + 1, outerParsed && lexed.openAt < 0, literal.plpgsql));
     }
     return found;
 }

@@ -688,10 +688,13 @@ const claudeGateHook = readJson('plugins/workflow/hooks/workflow-hooks.json')?.h
 if (!(claudeGateHook?.timeout > GATE_WAIT_SECONDS) || claudeGateHook?.onFailure !== 'block') {
   fail(`the Claude block-destructive hook needs a timeout above ${GATE_WAIT_SECONDS}s and onFailure: block`);
 }
+// Codex has no onFailure: a hook that times out or crashes lets the tool run. codex-guard.sh denies on both, so its
+// watchdog must fire after the approval wait and before Codex's own timeout.
 const codexGateHook = codexHookManifest?.hooks?.PreToolUse?.flatMap((entry) => entry.hooks ?? [])
-  .find((hook) => hook.command?.includes('codex-guard.ts'));
-if (!(codexGateHook?.timeout > GATE_WAIT_SECONDS)) {
-  fail(`the Codex guard hook needs a timeout above ${GATE_WAIT_SECONDS}s`);
+  .find((hook) => hook.command?.includes('codex-guard.sh'));
+const codexWatchdog = Number(/^WATCHDOG_SECONDS=(\d+)$/m.exec(readText('plugins/workflow-agents/hooks/codex-guard.sh') ?? '')?.[1]);
+if (!(codexWatchdog > GATE_WAIT_SECONDS && codexGateHook?.timeout > codexWatchdog)) {
+  fail(`the Codex guard hook needs codex-guard.sh's watchdog above ${GATE_WAIT_SECONDS}s and the hook timeout above the watchdog`);
 }
 
 // SessionStart is GONE, and the allowlist is now a single event. It existed to
@@ -718,7 +721,7 @@ if (unexpectedHookEvents.length > 0) {
   fail(`plugins/workflow-agents/hooks/workflow-hooks.json contains unexpected hook events: ${unexpectedHookEvents.join(', ')}`);
 }
 
-if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.ts')) {
+if (!codexHookManifestText.includes('${PLUGIN_ROOT}/hooks/codex-guard.sh')) {
   fail('plugins/workflow-agents/hooks/workflow-hooks.json must resolve its guard through native ${PLUGIN_ROOT}');
 }
 
@@ -738,11 +741,11 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.31.0') {
-  fail(`bootstrap-workflow release must be version 5.31.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.32.0') {
+  fail(`bootstrap-workflow release must be version 5.32.0 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.31.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.31.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.32.0') {
+  fail(`bootstrap-workflow-agents release must be version 2.32.0 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
 if (orchestrateClaudeManifest?.version !== '3.6.2') {
