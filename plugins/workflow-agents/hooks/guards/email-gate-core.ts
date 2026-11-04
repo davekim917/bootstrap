@@ -381,7 +381,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     } else if (generatedWord) {
         lines.push('⚠️ A command name here is built when the command runs, so it may send mail this description cannot see. Check the full command.', '');
     } else if (probeFlag) {
-        lines.push(`⚠️ This send carries ${code(probeFlag)}, which on its own sends nothing. The gate still asks because the command is more than one gws call of plain words; check the full command.`, '');
+        lines.push(`⚠️ This send carries ${code(probeFlag)}, which on its own sends nothing. The gate still asks because it could not confirm that flag takes effect: the command holds other shell syntax, or the flag may be another option's value. Check the full command.`, '');
     }
     lines.push(`From: ${inline(fromAccount)}${alias ? ` (as ${inline(alias)})` : ''}`, `To: ${to}`);
     if (cc) lines.push(`Cc: ${inline(cc)}`);

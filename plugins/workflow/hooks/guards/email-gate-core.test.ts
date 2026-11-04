@@ -150,6 +150,8 @@ describe('evaluateEmailSend — gate decision', () => {
             `${help} | cat`,
             `${help} && gws gmail +send --to victim@example.com --body x`,
             `${help} | sh`,
+            `${help} | python3 -c "import sys"`,
+            'gws gmail +send --dry-run --to a@example.com; bash -c "x"',
             'gws gmail +send --subject --help 2>&1 | head -60',
             "gws gmail users messages send --help | sed -n '1,180p'",
             'export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/primary.json; timeout 60 gws gmail +send --help 2>&1 | head -20',
