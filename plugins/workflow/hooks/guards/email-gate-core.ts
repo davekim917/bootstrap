@@ -33,7 +33,7 @@
  * Python/Node SDK calls, SMTP CLIs, and eval/alias/base64-decoded subshells. The
  * only sound place to catch all of those is the egress proxy.
  */
-import { CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
+import { CARD_SUMMARY_MAX_CHARS, clip, code, defuse, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
 // `gws gmail users (messages|drafts) send` (raw API form).
@@ -102,8 +102,8 @@ export interface EnvSnapshot {
     isScheduledTask: boolean;
     /** Working directory of the tool call; a body file under it may be shown. */
     cwd?: string;
-    /** Where the host mounts the gws accounts read-only, each with its `<account>.signature.html`; tests point it elsewhere. */
-    gwsAccountsDir?: string;
+    /** Where the host keeps each account's `<account>.signature.html` read-only; tests point it elsewhere. */
+    signaturesDir?: string;
 }
 
 /** Verdict for the email gate. On `gate`, `label` + `summary`
@@ -429,14 +429,14 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     let bodyCut = false;
     let formatted: { text: string; signed: boolean } | null = null;
     if (body.text !== null) {
-        const signature = signatureOnFile(shape?.credentialsFile ?? null, shape?.account ?? null, env.gwsAccountsDir ?? GWS_ACCOUNTS_DIR);
+        const signature = signatureOnFile(shape?.account ?? null, env.signaturesDir ?? SIGNATURES_DIR);
         formatted = isHtml ? formattedText(body.text, signature) : null;
         const text = formatted ? formatted.text : isHtml ? htmlToText(body.text) : body.text.trim();
         const header = `Message${formatted ? ' (formatted)' : isHtml ? ' (HTML, shown as text)' : ''}:`;
         const used = lines.join('\n').length + header.length + 120;
         const shown = clip(text || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used));
         bodyCut = shown !== (text || '(empty)');
-        lines.push(header, quoteBlock(shown));
+        lines.push(header, messageBlock(shown));
         if (formatted?.signed) lines.push(`Signature: ${inline(fromAccount)}'s Gmail signature, as the host keeps it on file`);
         if (body.note) lines.push(body.note);
     } else if (isRawApi) {
@@ -456,10 +456,10 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         && viewRead.attachments.join('\n') === exactAttachments.join('\n') && viewRead.isHtml === exact?.html
         && (resolved.text === null || resolved.text === exact?.body));
     const agree = exact !== null && viewAgrees && action === exact.verb;
-    const shownPlain = [flagTo, subject, cc, bcc, removed, alias];
+    const shownPlain = [fromAccount, flagTo, subject, cc, bcc, removed, alias];
     const shownAsCode = [messageId, ...attachments];
     // HTML qualifies only as a formatted body: the summary can't show what other markup or styling would change.
-    const bodyFaithful = isHtml ? formatted !== null && bodyShownAsIs(formatted.text) : body.text !== null && bodyShownAsIs(body.text) && !BIDI_CONTROL.test(body.text);
+    const bodyFaithful = isHtml ? formatted !== null && bodyShownAsIs(formatted.text) : body.text !== null && bodyShownAsIs(body.text);
     const pureSend = agree && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
         && shownPlain.every(v => !v || (inline(v) === v && chatLiteral(v)))
         && shownAsCode.every(v => !v || (inline(v) === v && !v.includes('`'))) && gwsWords === 1 && !generatedWord && !probeFlag
@@ -467,22 +467,35 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     return { action: 'gate', label, summary, ...(pureSend ? { pureSend } : {}) };
 }
 
-/** The card shows the body as written: no edge whitespace trimmed, no `<` defused against chat pings. */
+// The card reaches the approver as chat Markdown. A code block shows the body literally; a line that opens or closes a
+// fence would end it early, so such a body is shown quoted instead and never stands in for the command.
+const FENCE_LINE = /^\s*(?:`{3,}|~{3,})/m;
+
+function messageBlock(text: string): string {
+    return FENCE_LINE.test(text) ? quoteBlock(text) : ['```', defuse(text), '```'].join('\n');
+}
+
+/**
+ * The card shows the body as written: no edge whitespace trimmed, no fence line, no `<` defused against chat pings, and
+ * nothing a chat client might decode as an entity.
+ */
 function bodyShownAsIs(text: string): boolean {
-    return text === text.trim() && quoteBlock(text) === text.split('\n').map(line => `> ${line}`).join('\n') && chatLiteral(text);
+    return text === text.trim() && !FENCE_LINE.test(text) && defuse(text) === text && !BIDI_CONTROL.test(text) && !/&#?\w+;/.test(text);
 }
 
-// The card reaches the approver as chat Markdown, which would restyle or rewrite these: emphasis and code markers,
-// escapes, link brackets, table pipes, entities, emoji codes, and lines that start a heading, quote, ordered list or rule.
+// Fields are shown as plain text, where chat Markdown would restyle or rewrite emphasis and code markers, escapes,
+// link brackets, table pipes, entities and emoji codes.
 const CHAT_SYNTAX = /[*_~`\\|[\]]|&#?\w+;|:[a-z0-9_+-]+:/i;
-const CHAT_LINE_SYNTAX = /^\s*(?:#|>|\+\s|\d+[.)](?:\s|$)|[-=]{2,}\s*$)/;
 
-/** True when chat Markdown would show this text exactly as written. */
+/** True when chat Markdown would show this one-line field exactly as written. */
 export function chatLiteral(text: string): boolean {
-    return !CHAT_SYNTAX.test(text) && !text.split('\n').some(line => CHAT_LINE_SYNTAX.test(line));
+    return !CHAT_SYNTAX.test(text);
 }
 
-const GWS_ACCOUNTS_DIR = '/home/node/.config/gws/accounts';
+// The session's host-owned directory, read-only, at a path whose every ancestor is a mountpoint or root-owned, so an
+// agent can neither write it nor rename a parent away and recreate it. (A path under the agent's home, like the gws
+// accounts directory, can be replaced that way even when the directory itself is mounted read-only.)
+const SIGNATURES_DIR = '/workspace/.host/email-signatures';
 // The email-composition skill's wrapper. A formatted body is this one fixed style, which hides nothing, around text.
 export const FORMATTED_WRAPPER =
     '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#222">';
@@ -602,7 +615,7 @@ const SHAPE_PLAIN = /^[\w@%+=:,./-]+/;
 // Options whose values the summary shows; `--format` only shapes what gws prints back.
 const SHAPE_OPTIONS = new Set(['--to', '--cc', '--bcc', '--subject', '--body', '--from', '--message-id', '--remove', '--format', '-a', '--attach']);
 const SHAPE_REPEATABLE = new Set(['-a', '--attach']);
-const SHAPE_CREDENTIALS = /^GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=(?:(?!\/accounts\/)[^\s'"$`\\])*\/accounts\/([\w.-]+)\.json$/;
+const SHAPE_CREDENTIALS = /^GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=(?:(?!\/accounts\/)[^\s'"$`\\])*\/accounts\/([\w.@+-]+)\.json$/;
 
 interface ShapeWord {
     source: string;
@@ -623,7 +636,6 @@ interface SendShape {
     html: boolean;
     body?: string;
     account: string | null;
-    credentialsFile: string | null;
     /** Every option is one the summary shows, each single-valued one given once. */
     complete: boolean;
 }
@@ -726,9 +738,9 @@ function shapeStatements(command: string): ShapeStatement[] | null {
     return flush() ? statements : null;
 }
 
-function credentials(word: ShapeWord | undefined): { account: string; file: string } | null {
+function credentials(word: ShapeWord | undefined): { account: string } | null {
     const match = word ? SHAPE_CREDENTIALS.exec(word.source) : null;
-    return match ? { account: match[1], file: match[0].slice('GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE='.length) } : null;
+    return match ? { account: match[1] } : null;
 }
 
 /**
@@ -739,7 +751,7 @@ function sendShape(command: string): SendShape | null {
     const statements = shapeStatements(command);
     const send = statements?.at(-1);
     if (!statements || !send || send.heredoc) return null;
-    let creds: { account: string; file: string } | null = null;
+    let creds: { account: string } | null = null;
     let body: { name: string; value: string } | null = null;
     for (const s of statements.slice(0, -1)) {
         if (s.pipe || s.stderrToStdout) return null;
@@ -808,7 +820,7 @@ function sendShape(command: string): SendShape | null {
     }
     // A variable set and never read is a step of its own.
     if (body && !bodyUsed) return null;
-    return { verb, options, html, account: creds?.account ?? null, credentialsFile: creds?.file ?? null, complete, body: options.get('--body')?.[0] };
+    return { verb, options, html, account: creds?.account ?? null, complete, body: options.get('--body')?.[0] };
 }
 
 // The regex fallback runs only when the parser finds no send; it is quadratic
