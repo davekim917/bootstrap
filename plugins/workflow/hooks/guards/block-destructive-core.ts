@@ -5928,6 +5928,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
 // ── Operator override of a safety check ──────────────────────────────────────
 // A flag a tool offers so a person can override its own safety check. It is read
 // on every command, not a list of tools: the flag means the same on any script.
+// It is not a RUNTIME_PROBES word: any xargs or find could then be handed one, and
+// every one of them would hold.
 export const OPERATOR_OVERRIDE_FLAGS = ['--accept-drop', '--allow-drop', '--skip-guard', '--skip-guards', '--no-verify', '--force-publish'];
 const OPERATOR_OVERRIDE_LEAD = 'This command overrides a safety check the tool itself applies';
 // Their words are patterns to find, so searching for one of these flags is not passing it.
@@ -5938,11 +5940,14 @@ const GIT_COMMIT_VALUE_CLUSTER = /^-[A-Za-z]*[mFCct]$/;
 function operatorOverrideFlag(cmd: ResolvedCommand): string | null {
     if (TEXT_SEARCHERS.has(cmd.name)) return null;
     const words = argumentWords(cmd, true);
+    const commit = cmd.name === 'git' && cmd.args[gitSubcommandIndex(cmd.args)] === 'commit' ? gitSubcommandIndex(cmd.args) : -1;
     for (let i = 0; i < cmd.args.length; i++) {
         const before = cmd.args[i - 1];
-        if (cmd.name === 'git' && before !== undefined && (GIT_COMMIT_VALUE_LONG.has(before) || GIT_COMMIT_VALUE_CLUSTER.test(before))) continue;
+        if (commit >= 0 && i > commit + 1 && (GIT_COMMIT_VALUE_LONG.has(before) || GIT_COMMIT_VALUE_CLUSTER.test(before))) continue;
         const expanded = words[i] ? expandWords([words[i]], cmd)?.[0] : undefined;
-        const tokens = [cmd.args[i], ...(expanded?.split(/\s+/) ?? [])];
+        // Only an unquoted value splits into several arguments.
+        const quoted = words[i] && /^(?:"[\s\S]*"|'[\s\S]*')$/.test(words[i].word);
+        const tokens = [cmd.args[i], ...(expanded === undefined ? [] : quoted ? [expanded] : expanded.split(/\s+/))];
         const flag = OPERATOR_OVERRIDE_FLAGS.find(f => tokens.some(t => t === f || t.startsWith(`${f}=`)));
         if (flag) return flag;
     }

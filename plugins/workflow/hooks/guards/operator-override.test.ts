@@ -21,6 +21,7 @@ const HELD: Array<[command: string, flag: string]> = [
   ['FLAG=--accept-drop; python load_records.py $FLAG run-42', '--accept-drop'],
   ['OPTS="--skip-guard --verbose"; node migrate.js $OPTS', '--skip-guard'],
   ['python load_records.py "--accept-drop" run-42', '--accept-drop'],
+  ["git -c alias.load='!python load_records.py' load -m --accept-drop", '--accept-drop'],
 ];
 
 const ALLOWED = [
@@ -37,6 +38,7 @@ const ALLOWED = [
   'grep -rn -e --accept-drop scripts/',
   'rg -- --skip-guard src/',
   'FLAG=--verbose; python load_records.py $FLAG run-42',
+  'FLAG=--accept-drop; echo "mention $FLAG in docs"',
 ];
 
 describe('an operator-override flag holds for approval', () => {
