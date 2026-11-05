@@ -44,6 +44,11 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
         ]);
     });
 
+    test("a link's edge spaces still separate the words around it on the card, as in a mail client", () => {
+        const v = evaluateEmailSend(command(formatted('<p>The money is now<a href="https://example.com/status"> here</a>.</p>')), ENV);
+        expect([v.pureSend, v.summary?.split('\n').at(-1)]).toEqual([true, '> The money is now here (https://example.com/status).']);
+    });
+
     test("the account's signature exactly as the host keeps it is allowed after the wrapper, and named on the card", () => {
         const v = evaluateEmailSend(command(`${formatted('<p>Hi Pat,</p>')}\n${SIGNATURE}`), ENV);
         expect([v.pureSend, v.summary?.split('\n').at(-1)]).toEqual([true, "Signature: example-co's Gmail signature, as the host keeps it on file"]);

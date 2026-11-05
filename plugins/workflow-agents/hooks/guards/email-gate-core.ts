@@ -500,8 +500,10 @@ export function formattedText(html: string, signature: string | null): { text: s
     const skipSpace = (): void => {
         while (html[i] === ' ' || html[i] === '\n') i++;
     };
-    // Inline content up to `close`: text, the five escape entities, and, where allowed, `<br>` and links.
-    const inline = (close: string, inBlock: boolean): string | null => {
+    // Whitespace is collapsed once, over a whole composed line, as a mail client does: a link's edge spaces still separate words.
+    const shownLine = (line: string): string => line.replace(/[ \t\n]+/g, ' ').trim();
+    // Inline content up to `close`, unnormalized: text, the five escape entities, and, where allowed, `<br>` and links.
+    const inline = (close: string, inBlock: boolean): string[] | null => {
         const lines: string[] = [''];
         for (;;) {
             if (take(close)) break;
@@ -517,9 +519,9 @@ export function formattedText(html: string, signature: string | null): { text: s
                 const href = html.slice(i, end);
                 if (!FORMATTED_HREF.test(href)) return null;
                 i = end + 2;
-                const label = inline('</a>', false);
-                if (!label) return null;
-                lines[lines.length - 1] += label === href ? href : `${label} (${href})`;
+                const label = inline('</a>', false)?.join('');
+                if (label === undefined || !shownLine(label)) return null;
+                lines[lines.length - 1] += shownLine(label) === href ? label : `${label} (${href})`;
                 continue;
             }
             if (html[i] === '&') {
@@ -531,8 +533,11 @@ export function formattedText(html: string, signature: string | null): { text: s
             }
             lines[lines.length - 1] += html[i++];
         }
-        const shown = lines.map(line => line.replace(/[ \t\n]+/g, ' ').trim());
-        return shown.every(Boolean) ? shown.join('\n') : null;
+        return lines;
+    };
+    const shownBlock = (lines: string[] | null): string | null => {
+        const shown = lines?.map(shownLine);
+        return shown?.every(Boolean) ? shown.join('\n') : null;
     };
     skipSpace();
     if (!take(FORMATTED_WRAPPER)) return null;
@@ -541,14 +546,14 @@ export function formattedText(html: string, signature: string | null): { text: s
         skipSpace();
         if (take('</div>')) break;
         if (take('<p>')) {
-            const paragraph = inline('</p>', true);
+            const paragraph = shownBlock(inline('</p>', true));
             if (paragraph === null) return null;
             blocks.push(paragraph);
         } else if (take('<ul>')) {
             const items: string[] = [];
             for (skipSpace(); !take('</ul>'); skipSpace()) {
                 if (!take('<li>')) return null;
-                const item = inline('</li>', false);
+                const item = shownBlock(inline('</li>', false));
                 if (item === null) return null;
                 items.push(`- ${item}`);
             }
