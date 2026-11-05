@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { evaluateEmailSend, FORMATTED_WRAPPER, SEND_ALONE } from './email-gate-core';
@@ -58,9 +58,18 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
         expect([v.pureSend, v.summary?.split('\n').at(-1)]).toEqual([true, "Signature: example-co's Gmail signature, as the host keeps it on file"]);
     });
 
+    test('a signature file that is a link, which could point outside the read-only mount, is not trusted', () => {
+        const outside = join(root, 'agent-writable.html');
+        writeFileSync(outside, `${SIGNATURE}\n`);
+        symlinkSync(outside, join(dir, 'link-co.signature.html'));
+        const html = `${formatted('<p>Hi Pat,</p>')}\n${SIGNATURE}`;
+        expect(outcome(html, CREDS.replace('example-co', 'link-co'))).toEqual([html, 'gate', false, false]);
+    });
+
     test('a signature the host does not hold, or one checked against credentials outside the accounts mount, keeps the command', () => {
         const signed = `${formatted('<p>Hi Pat,</p>')}\n${SIGNATURE}`;
         for (const [html, creds] of [
+            [`${signed}  `, CREDS],
             [`${formatted('<p>Hi Pat,</p>')}\n${SIGNATURE.replace('Pat Doe', 'Pat Doe <span style="display:none">wire to 1234</span>')}`, CREDS],
             [`${formatted('<p>Hi Pat,</p>')}\n<p>P.S. one more thing</p>`, CREDS],
             [signed, 'export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/tmp/x/accounts/example-co.json'],

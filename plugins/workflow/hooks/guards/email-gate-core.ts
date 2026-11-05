@@ -569,7 +569,7 @@ export function formattedText(html: string, signature: string | null): { text: s
     }
     if (!blocks.length) return null;
     skipSpace();
-    const rest = html.slice(i).trimEnd();
+    const rest = html.slice(i);
     if (rest && rest !== signature) return null;
     return { text: blocks.join('\n\n'), signed: rest !== '' };
 }

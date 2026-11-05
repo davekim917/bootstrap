@@ -9,7 +9,7 @@
  * runs. Output is plain text because each harness shows it in its own approval
  * surface (a native permission prompt, a chat card, a hand-off message).
  */
-import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'fs';
+import { closeSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { extname, resolve as pathResolve, sep } from 'path';
 import { parse } from 'unbash';
@@ -697,8 +697,11 @@ export function signatureOnFile(credentialsFile: string | null, account: string 
     if (!credentialsFile || !account || credentialsFile !== `${dir}/${account}.json`) return null;
     try {
         const path = `${dir}/${account}.signature.html`;
-        if (!statSync(path).isFile() || statSync(path).size > 64 * 1024) return null;
-        return readFileSync(path, 'utf8').trim() || null;
+        // A link could point outside the read-only mount, at a file the agent can write.
+        const stat = lstatSync(path);
+        if (!stat.isFile() || stat.size > 64 * 1024) return null;
+        // The host writes the signature followed by one newline; the rest is compared byte for byte.
+        return readFileSync(path, 'utf8').replace(/\n$/, '') || null;
     } catch {
         return null;
     }
