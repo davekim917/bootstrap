@@ -15,7 +15,7 @@
       "name": "bootstrap-orchestrate",
       "source": "./plugins/orchestrate",
       "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Also sets the effort and lifetime of every sub-agent spawn.",
-      "version": "3.7.0"
+      "version": "3.8.0"
     },
     {
       "name": "wwbd",

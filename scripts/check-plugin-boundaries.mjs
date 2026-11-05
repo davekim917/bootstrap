@@ -748,11 +748,11 @@ if (codexManifest?.version !== '2.35.0') {
   fail(`bootstrap-workflow-agents release must be version 2.35.0 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
-if (orchestrateClaudeManifest?.version !== '3.7.0') {
-  fail(`bootstrap-orchestrate release must be version 3.7.0 (found ${orchestrateClaudeManifest?.version})`);
+if (orchestrateClaudeManifest?.version !== '3.8.0') {
+  fail(`bootstrap-orchestrate release must be version 3.8.0 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '3.7.0') {
-  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.7.0 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '3.8.0') {
+  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.8.0 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -1095,27 +1095,30 @@ for (const filePath of activeContractFiles) {
       fail(`${activationPath} must not exist; plugins/orchestrate has no standing directive`);
     }
   }
-  // The one hook allowed: the Claude spawn router (PreToolUse on Agent|Task),
-  // which rewrites a sub-agent's model/effort and never activates or gates a
-  // session. Anything else under hooks/ — a SessionStart directive above all —
-  // restores the pressure the operator turned off.
+  // The two hooks allowed: the Claude spawn router (PreToolUse on Agent|Task),
+  // which rewrites a sub-agent's model/effort, and the revive guard (PreToolUse
+  // on SendMessage), which refuses only a message to the session's own stale
+  // helper. Neither activates a session or gates direct work. Anything else
+  // under hooks/ — a SessionStart directive above all — restores the pressure
+  // the operator turned off.
   if (orchestrateClaudeManifest?.hooks !== undefined && orchestrateClaudeManifest.hooks !== './hooks/orchestrate-hooks.json') {
     fail('plugins/orchestrate/.claude-plugin/plugin.json may declare only ./hooks/orchestrate-hooks.json (the spawn router)');
   }
   if (exists('plugins/orchestrate/hooks')) {
     const files = fs.readdirSync(path.join(repoRoot, 'plugins/orchestrate/hooks')).sort();
-    if (JSON.stringify(files) !== JSON.stringify(['orchestrate-codex-hooks.json', 'orchestrate-hooks.json', 'require-codex-context.mjs', 'require-codex-context.test.mjs', 'route-spawn.mjs'])) {
-      fail(`plugins/orchestrate/hooks must hold only the two hook manifests, route-spawn.mjs, require-codex-context.mjs and its test (never hooks/hooks.json: Claude Code auto-loads it, and listing it in the manifest too fails the whole plugin load) (found ${files.join(', ')})`);
+    if (JSON.stringify(files) !== JSON.stringify(['orchestrate-codex-hooks.json', 'orchestrate-hooks.json', 'require-codex-context.mjs', 'require-codex-context.test.mjs', 'revive-guard.mjs', 'route-spawn.mjs'])) {
+      fail(`plugins/orchestrate/hooks must hold only the two hook manifests, route-spawn.mjs, revive-guard.mjs, require-codex-context.mjs and its test (never hooks/hooks.json: Claude Code auto-loads it, and listing it in the manifest too fails the whole plugin load) (found ${files.join(', ')})`);
     }
     const registered = JSON.parse(fs.readFileSync(path.join(repoRoot, 'plugins/orchestrate/hooks/orchestrate-hooks.json'), 'utf8')).hooks ?? {};
     const events = Object.keys(registered);
     const entries = registered.PreToolUse ?? [];
+    const runs = (entry, script) => (entry?.hooks ?? []).length > 0 && entry.hooks.every((h) => typeof h.command === 'string' && h.command.includes(script));
     const ok =
       JSON.stringify(events) === JSON.stringify(['PreToolUse']) &&
-      entries.length === 1 &&
-      entries[0].matcher === 'Agent|Task' &&
-      (entries[0].hooks ?? []).every((h) => typeof h.command === 'string' && h.command.includes('route-spawn.mjs'));
-    if (!ok) fail('plugins/orchestrate/hooks/orchestrate-hooks.json may register only the PreToolUse Agent|Task spawn router');
+      entries.length === 2 &&
+      entries[0].matcher === 'Agent|Task' && runs(entries[0], 'route-spawn.mjs') &&
+      entries[1].matcher === '^SendMessage$' && runs(entries[1], 'revive-guard.mjs');
+    if (!ok) fail('plugins/orchestrate/hooks/orchestrate-hooks.json may register only the PreToolUse Agent|Task spawn router and the ^SendMessage$ revive guard');
   }
   // Codex: retain the model-rule reminder and add only the deny-only context guard.
   // It inspects explicit context fields, never encrypted task text or model/effort.
