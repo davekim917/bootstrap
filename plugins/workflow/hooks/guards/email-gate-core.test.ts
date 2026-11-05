@@ -858,7 +858,7 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
         }
     });
 
-    test('an HTML body never drops the command, however plain its markup', () => {
+    test('an HTML body outside the formatted wrapper keeps the command, however plain its markup', () => {
         for (const html of [
             '<p>Hi Pat,</p><p>Can you confirm the file works?</p>',
             '<p>Pay at <a href="https://pay.example/real">https://bank.example</a></p>',

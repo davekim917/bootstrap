@@ -5,7 +5,7 @@
  * runs. Output is plain text because each harness shows it in its own approval
  * surface (a native permission prompt, a chat card, a hand-off message).
  */
-import { closeSync, openSync, readSync, realpathSync, statSync } from 'fs';
+import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { extname, resolve as pathResolve, sep } from 'path';
 import { parse } from 'unbash';
@@ -681,6 +681,22 @@ export function inWorkingTree(path: string, cwd?: string): boolean {
         return bodyRoots(cwd).some(root => real === root || real.startsWith(`${root}${sep}`));
     } catch {
         return false;
+    }
+}
+
+/**
+ * The account's Gmail signature as the host keeps it beside the account's credentials, or null. Read only when the send
+ * uses that account's credentials file in the accounts directory, which the host mounts read-only, so an agent can't
+ * write the copy its send is checked against.
+ */
+export function signatureOnFile(credentialsFile: string | null, account: string | null, dir: string): string | null {
+    if (!credentialsFile || !account || credentialsFile !== `${dir}/${account}.json`) return null;
+    try {
+        const path = `${dir}/${account}.signature.html`;
+        if (!statSync(path).isFile() || statSync(path).size > 64 * 1024) return null;
+        return readFileSync(path, 'utf8').trim() || null;
+    } catch {
+        return null;
     }
 }
 
