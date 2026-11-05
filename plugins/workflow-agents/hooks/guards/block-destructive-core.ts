@@ -5947,8 +5947,9 @@ function operatorOverrideFlag(cmd: ResolvedCommand): string | null {
         const before = cmd.args[i - 1];
         if (commit >= 0 && i > commit + 1 && (GIT_COMMIT_VALUE_LONG.has(before) || GIT_COMMIT_VALUE_CLUSTER.test(before))) continue;
         const expanded = words[i] ? expandWords([words[i]], cmd)?.[0] : undefined;
-        // Only an unquoted value splits into several arguments.
-        const quoted = words[i] && /^(?:"[\s\S]*"|'[\s\S]*')$/.test(words[i].word);
+        // Only a word that is one quoted span keeps its value whole; a word mixing quoted and unquoted parts is split,
+        // which can hold on a flag it does not pass but never passes one unseen.
+        const quoted = words[i] && /^(?:"(?:[^"\\]|\\[\s\S])*"|'[^']*')$/.test(words[i].word);
         const tokens = [cmd.args[i], ...(expanded === undefined ? [] : quoted ? [expanded] : expanded.split(/\s+/))];
         const flag = OPERATOR_OVERRIDE_FLAGS.find(f => tokens.some(t => t === f || t.startsWith(`${f}=`)));
         if (flag) return flag;

@@ -20,6 +20,8 @@ const HELD: Array<[command: string, flag: string]> = [
   ["env -S 'python load_records.py --accept-drop run-42'", '--accept-drop'],
   ['FLAG=--accept-drop; python load_records.py $FLAG run-42', '--accept-drop'],
   ['OPTS="--skip-guard --verbose"; node migrate.js $OPTS', '--skip-guard'],
+  ['OPTS="--skip-guard --verbose"; node migrate.js ""$OPTS""', '--skip-guard'],
+  [`OPTS="--skip-guard --verbose"; node migrate.js ''$OPTS''`, '--skip-guard'],
   ['python load_records.py "--accept-drop" run-42', '--accept-drop'],
   ["git -c alias.load='!python load_records.py' load -m --accept-drop", '--accept-drop'],
 ];
