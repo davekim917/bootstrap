@@ -53,34 +53,42 @@ export function helperAliases(file) {
   }
 }
 
-/** The last user or assistant record of a transcript, read from its end; undefined when that record is torn. */
+/**
+ * The last user or assistant record of a transcript, read from its end; undefined when that record is torn, or when
+ * the file grew during the read, since a record appended meanwhile could be newer than the one found.
+ */
 function lastTurnRecord(file) {
   let fd;
   try {
     fd = fs.openSync(file, 'r');
     const size = fs.fstatSync(fd).size;
-    for (let want = TAIL_START_BYTES; ; want *= 2) {
-      const len = Math.min(want, size, TAIL_MAX_BYTES);
-      const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, size - len);
-      const lines = buf.toString('utf8').split('\n');
-      if (len < size) lines.shift();
-      for (let i = lines.length - 1; i >= 0; i--) {
-        if (!lines[i].trim()) continue;
-        let rec;
-        try {
-          rec = JSON.parse(lines[i]);
-        } catch {
-          return undefined;
-        }
-        if (rec?.type === 'user' || rec?.type === 'assistant') return rec;
-      }
-      if (len >= size || len >= TAIL_MAX_BYTES) return undefined;
-    }
+    const rec = lastTurnRecordUpTo(fd, size);
+    return fs.fstatSync(fd).size === size ? rec : undefined;
   } catch {
     return undefined;
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function lastTurnRecordUpTo(fd, size) {
+  for (let want = TAIL_START_BYTES; ; want *= 2) {
+    const len = Math.min(want, size, TAIL_MAX_BYTES);
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, size - len);
+    const lines = buf.toString('utf8').split('\n');
+    if (len < size) lines.shift();
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].trim()) continue;
+      let rec;
+      try {
+        rec = JSON.parse(lines[i]);
+      } catch {
+        return undefined;
+      }
+      if (rec?.type === 'user' || rec?.type === 'assistant') return rec;
+    }
+    if (len >= size || len >= TAIL_MAX_BYTES) return undefined;
   }
 }
 
