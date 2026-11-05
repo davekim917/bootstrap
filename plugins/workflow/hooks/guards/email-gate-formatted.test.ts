@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test';
+import { createHash } from 'crypto';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -12,8 +13,22 @@ mkdirSync(accounts);
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const SIGNATURE = '<div dir="ltr"><b>Pat Doe</b><br><img src="https://example.com/logo.png" width="96"></div>';
 writeFileSync(join(signatures, 'example-co.signature.html'), `${SIGNATURE}\n`);
+// Every account here has a confirmed sender, so each case below keeps or drops the command for the reason it names.
+const identities: Record<string, { account: string; mailbox: string }> = {};
+for (const [account, mailbox] of [
+    ['example-co', 'team@example.com'],
+    ['link-co', 'link@example.com'],
+    ['beside-co', 'beside@example.com'],
+    ['other-co', 'other@example.com'],
+    ['pat@example.com', 'pat@example.com'],
+]) {
+    const bytes = `{"refresh_token":"${account}"}`;
+    writeFileSync(join(accounts, `${account}.json`), bytes);
+    identities[createHash('sha256').update(bytes).digest('hex')] = { account, mailbox };
+}
+writeFileSync(join(signatures, 'identities.json'), JSON.stringify(identities));
 const ENV = { isScheduledTask: false, signaturesDir: signatures };
-const CREDS = 'export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/example-co.json';
+const CREDS = `export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${accounts}/example-co.json`;
 const SEND = 'gws gmail +send --to pat@example.com --subject Hi --body "$BODY" --html';
 const command = (html: string, creds = CREDS) => `${creds}\nBODY=$(cat <<'EOF'\n${html}\nEOF\n)\n${SEND}`;
 const formatted = (...inner: string[]) => [FORMATTED_WRAPPER, ...inner, '</div>'].join('\n');
@@ -103,7 +118,7 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
 
     test("the account's signature exactly as the host keeps it is allowed after the wrapper, and named on the card", () => {
         const v = evaluateEmailSend(command(`${formatted('<p>Hi Pat,</p>')}\n${SIGNATURE}`), ENV);
-        expect([v.pureSend, v.summary?.split('\n').at(-1)]).toEqual([true, "Signature: example-co's Gmail signature, as the host keeps it on file"]);
+        expect([v.pureSend, v.summary?.split('\n').at(-1)]).toEqual([true, "Signature: team@example.com's Gmail signature, as the host keeps it on file"]);
     });
 
     test('only the trusted signatures directory counts: a link there, or a copy beside the credentials, is not trusted', () => {
@@ -130,7 +145,22 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
 
     test('an email-style account name reads its credentials, so the send is not refused', () => {
         const v = evaluateEmailSend(command(formatted('<p>Hi Pat,</p>'), CREDS.replace('example-co', 'pat@example.com')), ENV);
-        expect([v.deny, v.summary?.split('\n')[0]]).toEqual([undefined, 'From: pat@example.com']);
+        expect([v.deny, v.pureSend, v.summary?.split('\n')[0]]).toEqual([undefined, true, 'From: pat@example.com']);
+    });
+
+    test("a renamed copy of an account's credentials cards as that account, and its signature is that account's", () => {
+        writeFileSync(join(accounts, 'renamed.json'), '{"refresh_token":"example-co"}');
+        writeFileSync(join(signatures, 'renamed.signature.html'), '<b>Someone else</b>\n');
+        const renamed = CREDS.replace('example-co', 'renamed');
+        const signed = (signature: string) => command(`${formatted('<p>Hi Pat,</p>')}\n${signature}`, renamed);
+
+        const v = evaluateEmailSend(signed(SIGNATURE), ENV);
+        expect([v.pureSend, v.summary?.split('\n')[0], v.summary?.split('\n').at(-1)]).toEqual([
+            true,
+            'From: team@example.com',
+            "Signature: team@example.com's Gmail signature, as the host keeps it on file",
+        ]);
+        expect(evaluateEmailSend(signed('<b>Someone else</b>'), ENV).pureSend).toBeUndefined();
     });
 
     test('any other markup, attribute, entity or style keeps the command on the card', () => {

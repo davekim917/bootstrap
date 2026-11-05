@@ -1,4 +1,8 @@
-import { describe, test, expect } from 'bun:test';
+import { afterAll, describe, test, expect } from 'bun:test';
+import { createHash } from 'crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
     evaluateEmailSend,
     evaluateEmailToolCall,
@@ -795,8 +799,21 @@ describe('evaluateEmailSend — a quoted heredoc saved as a note is data', () =>
 });
 
 describe('evaluateEmailSend — a send runs as its own command, or is refused', () => {
-    const CREDS = 'export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/example-co.json';
-    const PREFIX = 'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/example-co.json';
+    const root = mkdtempSync(join(tmpdir(), 'gws-identity-'));
+    const accounts = join(root, 'accounts');
+    const signaturesDir = join(root, 'email-signatures');
+    mkdirSync(accounts);
+    mkdirSync(signaturesDir);
+    afterAll(() => rmSync(root, { recursive: true, force: true }));
+    const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
+    writeFileSync(join(accounts, 'example-co.json'), '{"refresh_token":"e"}');
+    writeFileSync(join(accounts, 'unknown-co.json'), '{"refresh_token":"u"}');
+    writeFileSync(join(signaturesDir, 'identities.json'), JSON.stringify({
+        [sha256('{"refresh_token":"e"}')]: { account: 'example-co', mailbox: 'team@example.com' },
+    }));
+    const INTERACTIVE = { isScheduledTask: false, signaturesDir };
+    const CREDS = `export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${accounts}/example-co.json`;
+    const PREFIX = `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${accounts}/example-co.json`;
     const HEREDOC_BODY = "BODY=$(cat <<'EOF'\nHi Pat,\n\nCan you confirm the file works?\nEOF\n)";
     const QUOTED_BODY = "BODY='Hi Pat,\n\nCan you confirm the file works?'";
     const REPLY = 'gws gmail +reply --message-id 18f0aa11bb22cc33 --cc "lee@example.com" --body "$BODY"';
@@ -824,14 +841,14 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
         ]) {
             const v = evaluateEmailSend(command, INTERACTIVE);
             expect([command, v.action, v.deny, v.pureSend]).toEqual([command, 'gate', undefined, true]);
-            expect(v.summary).toContain('From: example-co');
+            expect(v.summary).toContain('From: team@example.com');
             expect(v.summary).toContain('Cc: lee@example.com');
             expect(v.summary).toContain('Message:\n```\nHi Pat,\n\nCan you confirm the file works?\n```');
         }
         for (const command of [
-            SEND,
-            `${SEND} | head -n 3`,
-            `BODY="Hi Pat"\n${withBody('"$BODY"')}`,
+            `${CREDS}\n${SEND}`,
+            `${CREDS}\n${SEND} | head -n 3`,
+            `${CREDS}\nBODY="Hi Pat"\n${withBody('"$BODY"')}`,
         ]) {
             expect(verdict(command)).toEqual([command, 'gate', false, true]);
         }
@@ -846,7 +863,7 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
     });
 
     test('a body the card would show altered, or envelope text inside the body, keeps the command on the card', () => {
-        const envelopeInBody = `BODY=$(cat <<'EOF'\n--json '{"raw":"U3ViamVjdDogUmVjZWlwdApDYzogaGlkZGVuQGV4YW1wbGUuY29tCgp4"}'\nEOF\n)\ngws gmail +reply --message-id abc --body "$BODY"`;
+        const envelopeInBody = `${CREDS}\nBODY=$(cat <<'EOF'\n--json '{"raw":"U3ViamVjdDogUmVjZWlwdApDYzogaGlkZGVuQGV4YW1wbGUuY29tCgp4"}'\nEOF\n)\ngws gmail +reply --message-id abc --body "$BODY"`;
         // The body is shown as written, so the send may stay pure; what matters is no field read from inside it.
         for (const [command, pure] of [
             [withBody('"Use <billing@example.com>"'), false],
@@ -870,13 +887,28 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
         }
     });
 
-    test('the From line follows the credentials path the command sets, and nothing else', () => {
+    test("the From line names the mailbox the host recorded for the credentials' bytes, whatever the file is called", () => {
+        writeFileSync(join(accounts, 'other-co.json'), '{"refresh_token":"e"}');
         for (const command of [`${CREDS.replace('example-co', 'other-co')}\n${SEND}`, `${PREFIX.replace('example-co', 'other-co')} ${SEND}`]) {
             const v = evaluateEmailSend(command, INTERACTIVE);
-            expect([command, v.pureSend, v.summary?.split('\n')[0]]).toEqual([command, true, 'From: other-co']);
+            expect([command, v.pureSend, v.summary?.split('\n')[0]]).toEqual([command, true, 'From: team@example.com']);
         }
-        const decoy = `BODY='GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=/home/node/.config/gws/accounts/decoy.json'\n${withBody('"$BODY"')}`;
-        expect(evaluateEmailSend(decoy, INTERACTIVE).summary?.split('\n')[0]).toBe('From: default');
+        const unconfirmed = (command: string) => {
+            const v = evaluateEmailSend(command, INTERACTIVE);
+            return [command, v.pureSend, v.summary?.split('\n')[0]];
+        };
+        const note = ' (not confirmed: the host holds no mailbox for these credentials)';
+        for (const [command, from] of [
+            [`${CREDS.replace('example-co', 'unknown-co')}\n${SEND}`, 'unknown-co'],
+            [`${CREDS.replace('example-co', 'missing-co')}\n${SEND}`, 'missing-co'],
+            [`export GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=./accounts/example-co.json\n${SEND}`, 'example-co'],
+            [SEND, 'default'],
+            [`BODY='GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${accounts}/example-co.json'\n${withBody('"$BODY"')}`, 'default'],
+        ]) {
+            expect(unconfirmed(command)).toEqual([command, undefined, `From: ${from}${note}`]);
+        }
+        expect(unconfirmed(`${CREDS}\n${SEND}`)[2]).toBe('From: team@example.com');
+        expect(evaluateEmailSend(`${CREDS}\n${SEND}`, { isScheduledTask: false, signaturesDir: join(root, 'nowhere') }).pureSend).toBeUndefined();
     });
 
     test('a send alone that the summary cannot show whole still asks, with the command on the card', () => {
@@ -953,7 +985,7 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             `${CREDS}\n${CREDS.replace('example-co', 'other-co')}\n${SEND}`,
             `${CREDS}\n${PREFIX} ${SEND}`,
             `${PREFIX}\n${SEND}`,
-            `${CREDS.replace('/home/node/.config/gws/accounts/example-co.json', '/home/node/accounts/decoy.json/accounts/real.json')}\n${SEND}`,
+            `${CREDS.replace(/=.*/, '=/home/node/accounts/decoy.json/accounts/real.json')}\n${SEND}`,
             `${CREDS.replace(/=.*/, '=/tmp/creds.json')}\n${SEND}`,
             withBody('README.m?'),
             SEND.replace('pat@example.com', '{pat,lee}@example.com'),
