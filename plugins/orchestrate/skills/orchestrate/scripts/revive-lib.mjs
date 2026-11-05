@@ -42,7 +42,18 @@ export function helperTranscript(transcriptPath, to) {
   return newest && fs.existsSync(newest.file) ? newest.file : undefined;
 }
 
-/** The last user or assistant record of a transcript, read from its end. */
+/** The names a person may use for a helper: its agent id and the name it was spawned with. */
+export function helperAliases(file) {
+  const id = path.basename(file).replace(/^agent-/, '').replace(/\.jsonl$/, '');
+  try {
+    const name = JSON.parse(fs.readFileSync(file.replace(/\.jsonl$/, '.meta.json'), 'utf8'))?.name;
+    return typeof name === 'string' && name ? [id, name] : [id];
+  } catch {
+    return [id];
+  }
+}
+
+/** The last user or assistant record of a transcript, read from its end; undefined when that record is torn. */
 function lastTurnRecord(file) {
   let fd;
   try {
@@ -56,12 +67,13 @@ function lastTurnRecord(file) {
       if (len < size) lines.shift();
       for (let i = lines.length - 1; i >= 0; i--) {
         if (!lines[i].includes('"type":"user"') && !lines[i].includes('"type":"assistant"')) continue;
+        let rec;
         try {
-          const rec = JSON.parse(lines[i]);
-          if (rec?.type === 'user' || rec?.type === 'assistant') return rec;
+          rec = JSON.parse(lines[i]);
         } catch {
-          // A torn line is skipped.
+          return undefined;
         }
+        if (rec?.type === 'user' || rec?.type === 'assistant') return rec;
       }
       if (len >= size || len >= TAIL_MAX_BYTES) return undefined;
     }
@@ -73,15 +85,13 @@ function lastTurnRecord(file) {
 }
 
 /**
- * Why a message to this helper would be a costly revive, or undefined when it is not: the helper ended its last
- * turn on a final answer more than the cache window ago. A helper still mid-turn (its last record a tool call or
- * an incoming message) is working, not stale, however long ago that record was written.
+ * Why a message to this helper would be a costly revive, or undefined when it is not: the helper's last record is
+ * a final answer (`end_turn`) written more than the cache window ago. Anything else (a tool call, an incoming
+ * message, a reply cut off mid-stream, a torn line) is not evidence the helper finished, so it is not stale.
  */
 export function staleHelper(file, now = Date.now()) {
   const last = lastTurnRecord(file);
-  if (last?.type !== 'assistant') return undefined;
-  const content = last.message?.content;
-  if (Array.isArray(content) && content.some((b) => b?.type === 'tool_use')) return undefined;
+  if (last?.type !== 'assistant' || last.message?.stop_reason !== 'end_turn') return undefined;
   const idle = now - Date.parse(last.timestamp);
   if (!(idle > CACHE_WINDOW_MS)) return undefined;
   const u = last.message?.usage ?? {};

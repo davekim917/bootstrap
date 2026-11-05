@@ -21,7 +21,8 @@ try {
   const stale = file ? revive.staleHelper(file) : undefined;
   if (!stale) process.exit(0);
   const latest = dispatch.humanTurns(event.transcript_path).at(-1) ?? '';
-  const named = latest.toLowerCase().includes(to.toLowerCase());
+  const said = latest.toLowerCase();
+  const named = [to, ...revive.helperAliases(file)].some((alias) => said.includes(alias.toLowerCase()));
   dispatch.logDispatch({ source: 'revive-guard', to, ...stale, decision: named ? 'person-named' : 'refused' });
   if (named) process.exit(0);
   process.stdout.write(JSON.stringify({

@@ -15,13 +15,13 @@ const usage = (tokens) => ({ input_tokens: 2, cache_read_input_tokens: tokens - 
 /** A helper that took its brief and ended on a final answer `minutesAgo` minutes ago. */
 const finished = (minutesAgo, tokens = 400_000) => [
   { type: 'user', timestamp: at(minutesAgo + 5), message: { role: 'user', content: 'Review the spec.' } },
-  { type: 'assistant', timestamp: at(minutesAgo), message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }], usage: usage(tokens) } },
+  { type: 'assistant', timestamp: at(minutesAgo), message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }], stop_reason: 'end_turn', usage: usage(tokens) } },
 ];
 
 /** A helper whose last record is a tool call it is still waiting on. */
 const working = (minutesAgo) => [
   { type: 'user', timestamp: at(minutesAgo + 5), message: { role: 'user', content: 'Run the build.' } },
-  { type: 'assistant', timestamp: at(minutesAgo), message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }], usage: usage(90_000) } },
+  { type: 'assistant', timestamp: at(minutesAgo), message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }], stop_reason: 'tool_use', usage: usage(90_000) } },
 ];
 
 /** A session directory laid out as Claude Code writes it: <id>.jsonl beside <id>/subagents/agent-<agentId>.{jsonl,meta.json}. */
@@ -53,6 +53,18 @@ test('a helper that finished past the one-hour cache is stale; a warm or still-w
   const trailing = [...finished(90), { type: 'api-request', timestamp: at(1) }, { type: 'system', timestamp: at(1) }];
   assert.equal(staleHelper(s.add('a4', {}, trailing))?.idleMinutes, 90);
   assert.equal(staleHelper(path.join(s.root, 'missing.jsonl')), undefined);
+});
+
+test('a helper is stale only on positive evidence that its last turn ended', () => {
+  const s = session();
+  const thinkingOnly = [
+    finished(200)[0],
+    { type: 'assistant', timestamp: at(150), message: { role: 'assistant', content: [{ type: 'thinking', thinking: '…' }], stop_reason: null, usage: usage(300_000) } },
+  ];
+  assert.equal(staleHelper(s.add('b1', {}, thinkingOnly)), undefined);
+  const torn = s.add('b2', {}, finished(90));
+  fs.appendFileSync(torn, '{"type":"user","timestamp":"' + at(1) + '","message":{"role":"user","content":"one more');
+  assert.equal(staleHelper(torn), undefined);
 });
 
 test('a helper whose last turn is far behind a long tail of records is still read', () => {
@@ -106,5 +118,8 @@ test('the installed guard refuses a message to a stale helper and lets every oth
   assert.equal(send('another-session'), null);
 
   s.humanSays('Go back to standing-helper and ask it again.');
+  assert.equal(send('standing-helper'), null);
+  assert.equal(send('a3333333'), null);
+  s.humanSays('Resume a3333333 for this.');
   assert.equal(send('standing-helper'), null);
 });
