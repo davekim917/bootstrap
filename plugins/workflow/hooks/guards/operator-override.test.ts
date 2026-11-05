@@ -54,6 +54,20 @@ describe('an operator-override flag holds for approval', () => {
   }
 });
 
+describe('more expansions than the guard traces', () => {
+  const many = Array.from({ length: 300 }, () => '$X').join(' ');
+
+  test('hold when the line names an override flag', () => {
+    const verdict = evaluateBashCommand(`X=ok; FLAG=--accept-drop; python load_records.py ${many} $FLAG`, { cwd: '/tmp' });
+    expect(verdict.action).toBe('gate');
+    expect(verdict.reason).toContain('safety-override flag');
+  });
+
+  test('run when the line names none', () => {
+    expect(evaluateBashCommand(`X=ok; python load_records.py ${many}`, { cwd: '/tmp' }).action).toBe('allow');
+  });
+});
+
 describe('the same command without the flag runs', () => {
   for (const command of ALLOWED) {
     test(`allows: ${command}`, () => {

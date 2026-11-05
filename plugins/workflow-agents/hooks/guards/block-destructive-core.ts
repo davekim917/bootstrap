@@ -5922,6 +5922,9 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     }
 
     const override = operatorOverrideFlag(cmd);
+    if (override === OVERRIDE_UNCHECKED) {
+        return 'This command line names a safety-override flag and has more variable expansions than the guard traces, so it can\'t tell whether the command passes the flag.';
+    }
     if (override) {
         return `${OPERATOR_OVERRIDE_LEAD} (${override}): the tool put that check there to stop a run like this, and only a person may decide to go past it.`;
     }
@@ -5939,14 +5942,27 @@ const TEXT_SEARCHERS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack']);
 const GIT_COMMIT_VALUE_CLUSTER = /^-[A-Za-z]*[mFCct]$/;
 
 /** The override flag `cmd` passes, as a whole word or as `--flag=value`; a git commit message is not passing one. */
-function operatorOverrideFlag(cmd: ResolvedCommand): string | null {
+const OVERRIDE_UNCHECKED = Symbol('override unchecked');
+
+/**
+ * Past the expansion budget a variable can't be read, so the command can't be shown free of a flag: it holds when the
+ * line names one anywhere, quotes and backslashes taken out.
+ */
+function overrideFlagNamedOnLine(cmd: ResolvedCommand): boolean {
+    const line = (cmd.script?.command ?? cmd.raw).replace(/["'\\]/g, '');
+    return OPERATOR_OVERRIDE_FLAGS.some(f => line.includes(f));
+}
+
+function operatorOverrideFlag(cmd: ResolvedCommand): string | typeof OVERRIDE_UNCHECKED | null {
     if (TEXT_SEARCHERS.has(cmd.name)) return null;
     const words = argumentWords(cmd, true);
     const commit = cmd.name === 'git' && cmd.args[gitSubcommandIndex(cmd.args)] === 'commit' ? gitSubcommandIndex(cmd.args) : -1;
     for (let i = 0; i < cmd.args.length; i++) {
         const before = cmd.args[i - 1];
         if (commit >= 0 && i > commit + 1 && (GIT_COMMIT_VALUE_LONG.has(before) || GIT_COMMIT_VALUE_CLUSTER.test(before))) continue;
-        const expanded = words[i] ? expandWords([words[i]], cmd)?.[0] : undefined;
+        const expansion = words[i] ? expandWords([words[i]], cmd) : [];
+        if (expansion === null && overrideFlagNamedOnLine(cmd)) return OVERRIDE_UNCHECKED;
+        const expanded = expansion?.[0];
         // Only a word that is one quoted span keeps its value whole; a word mixing quoted and unquoted parts is split,
         // which can hold on a flag it does not pass but never passes one unseen.
         const quoted = words[i] && /^(?:"(?:[^"\\]|\\[\s\S])*"|'[^']*')$/.test(words[i].word);
@@ -7001,7 +7017,8 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             const cmd = evaluated(raw, unresolved);
             const sqlDialect = SQL_CLIS[cmd.name] ?? (cmd.name === 'snow' && cmd.args[0] === 'sql' ? 'Snowflake' : null);
             const dirBefore = directoryBefore(raw, outer, moves);
-            const override = why.startsWith(OPERATOR_OVERRIDE_LEAD) ? operatorOverrideFlag(raw) : null;
+            const found = why.startsWith(OPERATOR_OVERRIDE_LEAD) ? operatorOverrideFlag(raw) : null;
+            const override = typeof found === 'string' ? found : null;
             const step: StepCard =
                 override ? overrideStep(cmd, override)
                 : sqlDialect ? sqlStep(sqlDialect, cmd)
