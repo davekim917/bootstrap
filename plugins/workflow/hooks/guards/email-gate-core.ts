@@ -415,6 +415,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     }
     lines.push(
         `From: ${inline(fromAccount)}${alias ? ` (as ${inline(alias)})` : ''}${sender ? '' : ' (not confirmed: the host holds no mailbox for these credentials)'}`,
+        ...(envelope.from ? [`From header in the message: ${inline(envelope.from)}`] : []),
         `To: ${to}`,
     );
     if (cc) lines.push(`Cc: ${inline(cc)}`);

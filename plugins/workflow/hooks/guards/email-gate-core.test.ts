@@ -866,8 +866,8 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
         const envelopeInBody = `${CREDS}\nBODY=$(cat <<'EOF'\n--json '{"raw":"U3ViamVjdDogUmVjZWlwdApDYzogaGlkZGVuQGV4YW1wbGUuY29tCgp4"}'\nEOF\n)\ngws gmail +reply --message-id abc --body "$BODY"`;
         // The body is shown as written, so the send may stay pure; what matters is no field read from inside it.
         for (const [command, pure] of [
-            [withBody('"Use <billing@example.com>"'), false],
-            [`BODY='  indented first line'\n${withBody('"$BODY"')}`, false],
+            [`${CREDS}\n${withBody('"Use <billing@example.com>"')}`, false],
+            [`${CREDS}\nBODY='  indented first line'\n${withBody('"$BODY"')}`, false],
             [envelopeInBody, true],
         ] as Array<[string, boolean]>) {
             const v = evaluateEmailSend(command, INTERACTIVE);
@@ -908,7 +908,29 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             expect(unconfirmed(command)).toEqual([command, undefined, `From: ${from}${note}`]);
         }
         expect(unconfirmed(`${CREDS}\n${SEND}`)[2]).toBe('From: team@example.com');
+        for (const entry of [
+            { account: 'example-co', mailbox: '' },
+            { account: 'example-co', mailbox: 'not-a-mailbox' },
+            { account: '', mailbox: 'team@example.com' },
+            { account: '../x', mailbox: 'team@example.com' },
+            'team@example.com',
+        ]) {
+            const malformed = join(root, 'malformed');
+            mkdirSync(malformed, { recursive: true });
+            writeFileSync(join(malformed, 'identities.json'), JSON.stringify({ [sha256('{"refresh_token":"e"}')]: entry }));
+            const v = evaluateEmailSend(`${CREDS}\n${SEND}`, { isScheduledTask: false, signaturesDir: malformed });
+            expect([entry, v.pureSend, v.summary?.split('\n')[0]]).toEqual([entry, undefined, `From: example-co${note}`]);
+        }
         expect(evaluateEmailSend(`${CREDS}\n${SEND}`, { isScheduledTask: false, signaturesDir: join(root, 'nowhere') }).pureSend).toBeUndefined();
+    });
+
+    test("a raw message's own From header is shown beside the account it is sent with", () => {
+        const raw = Buffer.from('From: alias@example.com\r\nTo: pat@example.com\r\nSubject: Hi\r\n\r\nHello').toString('base64url');
+        const v = evaluateEmailSend(`${CREDS}\ngws gmail users messages send --json '{"raw":"${raw}"}'`, INTERACTIVE);
+        expect([v.pureSend, v.summary?.split('\n').slice(0, 2)]).toEqual([
+            undefined,
+            ['From: team@example.com', 'From header in the message: alias@example.com'],
+        ]);
     });
 
     test('a send alone that the summary cannot show whole still asks, with the command on the card', () => {
@@ -944,7 +966,7 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             SEND.replace('pat@example.com', '"pat@example.com  lee@example.com"'),
             `${SEND} --attach "/workspace/agent/public  report.pdf"`,
             SEND.replace('--subject Hi', '--subject "Hi\nBcc: lee@example.com"'),
-        ]) {
+        ].map(c => `${CREDS}\n${c}`)) {
             expect(verdict(command)).toEqual([command, 'gate', false, false]);
         }
     });

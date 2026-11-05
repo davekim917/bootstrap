@@ -716,7 +716,8 @@ export function senderOnFile(credentialsFile: string | null, dir: string): { acc
         if (!map.isFile() || map.size > 1024 * 1024) return null;
         const identities = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
         const entry = Object.hasOwn(identities, hash) ? identities[hash] as { account?: unknown; mailbox?: unknown } : null;
-        return typeof entry?.account === 'string' && typeof entry.mailbox === 'string'
+        return typeof entry?.account === 'string' && /^[\w.@+-]+$/.test(entry.account)
+            && typeof entry.mailbox === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(entry.mailbox)
             ? { account: entry.account, mailbox: entry.mailbox }
             : null;
     } catch {
