@@ -5921,7 +5921,71 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         return 'dd with input file — potential disk overwrite.';
     }
 
+    const override = operatorOverrideFlag(cmd);
+    if (override === OVERRIDE_UNCHECKED) {
+        return 'This command line names a safety-override flag and has more variable expansions than the guard traces, so it can\'t tell whether the command passes the flag.';
+    }
+    if (override) {
+        return `${OPERATOR_OVERRIDE_LEAD} (${override}): the tool put that check there to stop a run like this, and only a person may decide to go past it.`;
+    }
+
     return null;
+}
+
+// ── Operator override of a safety check ──────────────────────────────────────
+// A flag a tool offers so a person can override its own safety check. It is read
+// on every command, not a list of tools: the flag means the same on any script.
+export const OPERATOR_OVERRIDE_FLAGS = ['--accept-drop', '--allow-drop', '--skip-guard', '--skip-guards', '--no-verify', '--force-publish'];
+const OPERATOR_OVERRIDE_LEAD = 'This command overrides a safety check the tool itself applies';
+// Their words are patterns to find, so searching for one of these flags is not passing it.
+const TEXT_SEARCHERS = new Set(['grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack']);
+const GIT_COMMIT_VALUE_CLUSTER = /^-[A-Za-z]*[mFCct]$/;
+
+/** The override flag `cmd` passes, as a whole word or as `--flag=value`; a git commit message is not passing one. */
+const OVERRIDE_UNCHECKED = Symbol('override unchecked');
+
+/**
+ * Past the expansion budget a variable can't be read, so the command can't be shown free of a flag: it holds when the
+ * line names one anywhere, quotes and backslashes taken out.
+ */
+function overrideFlagNamedOnLine(cmd: ResolvedCommand): boolean {
+    const line = (cmd.script?.command ?? cmd.raw).replace(/["'\\]/g, '');
+    return OPERATOR_OVERRIDE_FLAGS.some(f => line.includes(f));
+}
+
+function operatorOverrideFlag(cmd: ResolvedCommand): string | typeof OVERRIDE_UNCHECKED | null {
+    if (TEXT_SEARCHERS.has(cmd.name)) return null;
+    const words = argumentWords(cmd, true);
+    const commit = cmd.name === 'git' && cmd.args[gitSubcommandIndex(cmd.args)] === 'commit' ? gitSubcommandIndex(cmd.args) : -1;
+    for (let i = 0; i < cmd.args.length; i++) {
+        const before = cmd.args[i - 1];
+        if (commit >= 0 && i > commit + 1 && (GIT_COMMIT_VALUE_LONG.has(before) || GIT_COMMIT_VALUE_CLUSTER.test(before))) continue;
+        const expansion = words[i] ? expandWords([words[i]], cmd) : [];
+        if (expansion === null && overrideFlagNamedOnLine(cmd)) return OVERRIDE_UNCHECKED;
+        const expanded = expansion?.[0];
+        // Only a word that is one quoted span keeps its value whole. Any other value is split by IFS, which a script can
+        // set to any character, so it passes a flag wherever one stands between non-word characters. That can hold on
+        // a flag the command does not pass, but never passes one unseen.
+        const quoted = words[i] && /^(?:"(?:[^"\\]|\\[\s\S])*"|'[^']*')$/.test(words[i].word);
+        const whole = expanded !== undefined && quoted ? [cmd.args[i], expanded] : [cmd.args[i]];
+        const flag = OPERATOR_OVERRIDE_FLAGS.find(f => whole.some(t => t === f || t.startsWith(`${f}=`))
+            || (expanded !== undefined && !quoted && new RegExp(`(?:^|[^\\w-])${f}(?:$|[^\\w-])`).test(expanded)));
+        if (flag) return flag;
+    }
+    return null;
+}
+
+function overrideStep(cmd: ResolvedCommand, flag: string): StepCard {
+    const verbs = cmd.args.filter(a => /^[a-z][\w:-]*$/i.test(a)).slice(0, 2);
+    const run = [cmd.name, ...verbs].join(' ');
+    return {
+        label: `Run ${run} with ${flag}`,
+        lines: [`If you approve: it runs with ${code(flag)}, so the tool skips a safety check it applies on its own.`],
+        plain: {
+            what: `Runs ${code(run)} with ${code(flag)}, which overrides a safety check the tool itself applies`,
+            loss: 'the check is there to stop a run like this one, so find out what it would have refused before approving',
+        },
+    };
 }
 
 // The redirects a stdout-only dd may carry: stdout or stderr, written or appended, to /dev/null or a plain relative file.
@@ -6955,8 +7019,11 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             const cmd = evaluated(raw, unresolved);
             const sqlDialect = SQL_CLIS[cmd.name] ?? (cmd.name === 'snow' && cmd.args[0] === 'sql' ? 'Snowflake' : null);
             const dirBefore = directoryBefore(raw, outer, moves);
+            const found = why.startsWith(OPERATOR_OVERRIDE_LEAD) ? operatorOverrideFlag(raw) : null;
+            const override = typeof found === 'string' ? found : null;
             const step: StepCard =
-                sqlDialect ? sqlStep(sqlDialect, cmd)
+                override ? overrideStep(cmd, override)
+                : sqlDialect ? sqlStep(sqlDialect, cmd)
                 : cmd.name === 'dbt' && !cmd.args.includes('run-operation') ? dbtStep(cmd, dirBefore)
                 : cmd.name === 'git-clean' ? gitCleanStep({ ...cmd, args: ['clean', ...cmd.args] })
                 : cmd.name === 'git' ? (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean' ? gitCleanStep(cmd) : gitPushStep(cmd))
