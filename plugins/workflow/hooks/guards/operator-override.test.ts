@@ -1,11 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { describeGate, evaluateBashCommand, OPERATOR_OVERRIDE_FLAGS } from './block-destructive-core';
 
-/**
- * OPERATOR OVERRIDE — a flag a tool offers so a person can override its own
- * safety check holds for approval, whatever the tool.
- */
-
 const HELD: Array<[command: string, flag: string]> = [
   ['python load_records.py --accept-drop run-42', '--accept-drop'],
   ['python load_records.py --accept-drop=run-42', '--accept-drop'],
