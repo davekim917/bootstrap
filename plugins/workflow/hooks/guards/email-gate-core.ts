@@ -238,7 +238,7 @@ export function envelopeFromJsonRaw(segment: string): {
     cc?: string;
     bcc?: string;
 } {
-    const m = segment.match(/--json\s+(['"])((?:(?!\1).)*)\1/);
+    const m = segment.match(/--json\s+(['"])((?:(?!\1)[\s\S])*)\1/);
     if (!m) return {};
     let payload: unknown;
     try {

@@ -928,11 +928,14 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
 
     test("a raw message's own From header is shown beside the account it is sent with", () => {
         const raw = Buffer.from('From: alias@example.com\r\nTo: pat@example.com\r\nSubject: Hi\r\n\r\nHello').toString('base64url');
-        const v = evaluateEmailSend(`${CREDS}\ngws gmail users messages send --json '{"raw":"${raw}"}'`, INTERACTIVE);
-        expect([v.pureSend, v.summary?.split('\n').slice(0, 2)]).toEqual([
-            undefined,
-            ['From: team@example.com', 'From header in the message: alias@example.com'],
-        ]);
+        for (const json of [JSON.stringify({ raw }), JSON.stringify({ raw }, null, 2)]) {
+            const v = evaluateEmailSend(`${CREDS}\ngws gmail users messages send --json '${json}'`, INTERACTIVE);
+            expect([json, v.pureSend, v.summary?.split('\n').slice(0, 3)]).toEqual([
+                json,
+                undefined,
+                ['From: team@example.com', 'From header in the message: alias@example.com', 'To: pat@example.com'],
+            ]);
+        }
     });
 
     test('a send alone that the summary cannot show whole still asks, with the command on the card', () => {
