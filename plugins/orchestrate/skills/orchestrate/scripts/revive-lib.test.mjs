@@ -65,6 +65,9 @@ test('a helper is stale only on positive evidence that its last turn ended', () 
   const torn = s.add('b2', {}, finished(90));
   fs.appendFileSync(torn, '{"type":"user","timestamp":"' + at(1) + '","message":{"role":"user","content":"one more');
   assert.equal(staleHelper(torn), undefined);
+  const tornEarly = s.add('b3', {}, finished(90));
+  fs.appendFileSync(tornEarly, '{"parentUuid":');
+  assert.equal(staleHelper(tornEarly), undefined);
 });
 
 test('a helper whose last turn is far behind a long tail of records is still read', () => {

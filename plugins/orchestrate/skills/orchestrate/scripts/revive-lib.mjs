@@ -66,7 +66,7 @@ function lastTurnRecord(file) {
       const lines = buf.toString('utf8').split('\n');
       if (len < size) lines.shift();
       for (let i = lines.length - 1; i >= 0; i--) {
-        if (!lines[i].includes('"type":"user"') && !lines[i].includes('"type":"assistant"')) continue;
+        if (!lines[i].trim()) continue;
         let rec;
         try {
           rec = JSON.parse(lines[i]);
