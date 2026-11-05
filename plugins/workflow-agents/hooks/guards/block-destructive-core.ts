@@ -5932,8 +5932,6 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
 // ── Operator override of a safety check ──────────────────────────────────────
 // A flag a tool offers so a person can override its own safety check. It is read
 // on every command, not a list of tools: the flag means the same on any script.
-// It is not a RUNTIME_PROBES word: any xargs or find could then be handed one, and
-// every one of them would hold.
 export const OPERATOR_OVERRIDE_FLAGS = ['--accept-drop', '--allow-drop', '--skip-guard', '--skip-guards', '--no-verify', '--force-publish'];
 const OPERATOR_OVERRIDE_LEAD = 'This command overrides a safety check the tool itself applies';
 // Their words are patterns to find, so searching for one of these flags is not passing it.
