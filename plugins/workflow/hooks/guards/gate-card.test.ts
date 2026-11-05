@@ -398,7 +398,7 @@ BODY='<div style="font-size:14px">
 gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
         const v = evaluateEmailSend(command, INTERACTIVE);
         expect(v.action).toBe('gate');
-        expect(v.summary).toContain("> Hi Sam,\n> \n> The export isn't ready & will ship Friday.");
+        expect(v.summary).toContain("```\nHi Sam,\n\nThe export isn't ready & will ship Friday.\n```");
         expect(v.summary).not.toContain('$BODY');
         expect(v.summary).not.toContain('<p>');
     });
@@ -455,7 +455,7 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
 
     test('still resolves past commands that cannot change variables', () => {
         const v = evaluateEmailSend(`B='kept'; cd /tmp; echo hi | grep h; printf '%s' x; gws gmail +send --to a@example.com --body "$B"`, INTERACTIVE);
-        expect(v.summary).toContain('> kept');
+        expect(v.summary).toContain('```\nkept\n```');
     });
 
     test('a generated command word gets no reassurance', () => {
@@ -471,8 +471,8 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
 
     test('an ANSI-C quoted body renders its escapes', () => {
         const v = evaluateEmailSend(`gws gmail +send --to a@example.com --body $'line one\\nit\\'s two'`, INTERACTIVE);
-        expect(v.summary).toContain("> line one\n> it's two");
-        expect(evaluateEmailSend(`gws gmail +send --to a@example.com --body $'\\x41BC'`, INTERACTIVE).summary).toContain('> ABC');
+        expect(v.summary).toContain("```\nline one\nit's two\n```");
+        expect(evaluateEmailSend(`gws gmail +send --to a@example.com --body $'\\x41BC'`, INTERACTIVE).summary).toContain('```\nABC\n```');
     });
 
     test('shows the body bash would send, not a value set somewhere it does not reach', () => {
@@ -483,7 +483,7 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
 
     test("a single-quoted '$B' body is sent literally", () => {
         const v = evaluateEmailSend(`B=secret; gws gmail +send --to a@example.com --body '$B'`, INTERACTIVE);
-        expect(v.summary).toContain('> $B');
+        expect(v.summary).toContain('```\n$B\n```');
         expect(v.summary).not.toContain('secret');
     });
 
@@ -491,7 +491,7 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
         const file = join(scratch, 'reply.html');
         writeFileSync(file, '<p>Draft from a file.</p>');
         const v = evaluateEmailSend(`BODY=$(cat ${file})\ngws gmail +send --to a@example.com --body "$BODY" --html`, INTERACTIVE);
-        expect(v.summary).toContain('> Draft from a file.');
+        expect(v.summary).toContain('```\nDraft from a file.\n```');
         expect(v.summary).toContain(`Read from \`${file}\``);
     });
 
@@ -578,7 +578,7 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
             'gws gmail +send --to a@example.com --subject "Hi\nTo: someone@else" --body "FYI <!channel> <@U123> <https://evil.test|https://bank.test>"',
             INTERACTIVE,
         );
-        expect(v.summary).toContain('> FYI ‹!channel> ‹@U123> ‹https://evil.test|https://bank.test>');
+        expect(v.summary).toContain('```\nFYI ‹!channel> ‹@U123> ‹https://evil.test|https://bank.test>\n```');
         expect(v.summary).toContain('Subject: Hi To: someone@else');
     });
 

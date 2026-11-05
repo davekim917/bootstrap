@@ -9,7 +9,7 @@
  * runs. Output is plain text because each harness shows it in its own approval
  * surface (a native permission prompt, a chat card, a hand-off message).
  */
-import { closeSync, openSync, readSync, realpathSync, statSync } from 'fs';
+import { closeSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { extname, resolve as pathResolve, sep } from 'path';
 import { parse } from 'unbash';
@@ -46,7 +46,7 @@ export function code(text: string): string {
 
 // Slack turns `<!channel>`, `<@U…>`, `<#C…>` and `<url|label>` into pings and
 // links when a harness posts the text there.
-function defuse(text: string): string {
+export function defuse(text: string): string {
     return text.replace(/<(?=[!@#a-z])/gi, '‹');
 }
 
@@ -685,6 +685,21 @@ export function inWorkingTree(path: string, cwd?: string): boolean {
         return bodyRoots(cwd).some(root => real === root || real.startsWith(`${root}${sep}`));
     } catch {
         return false;
+    }
+}
+
+/** The account's Gmail signature as the host keeps it in `dir`, a directory the agent can't write or replace, or null. */
+export function signatureOnFile(account: string | null, dir: string): string | null {
+    if (!account) return null;
+    try {
+        const path = `${dir}/${account}.signature.html`;
+        // A link could point at a file the agent can write.
+        const stat = lstatSync(path);
+        if (!stat.isFile() || stat.size > 64 * 1024) return null;
+        // The host writes the signature followed by one newline; the rest is compared byte for byte.
+        return readFileSync(path, 'utf8').replace(/\n$/, '') || null;
+    } catch {
+        return null;
     }
 }
 

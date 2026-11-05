@@ -826,7 +826,7 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             expect([command, v.action, v.deny, v.pureSend]).toEqual([command, 'gate', undefined, true]);
             expect(v.summary).toContain('From: example-co');
             expect(v.summary).toContain('Cc: lee@example.com');
-            expect(v.summary).toContain('> Can you confirm the file works?');
+            expect(v.summary).toContain('Message:\n```\nHi Pat,\n\nCan you confirm the file works?\n```');
         }
         for (const command of [
             SEND,
@@ -841,7 +841,7 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
         const command = `${CREDS}\nBODY=$(cat <<'EOF'\nHi Dana,\n\nIt's the May baseline.\nEOF\n)\n${withBody('"$BODY"')} -a /workspace/agent/send/May_Baseline.xlsx --format json 2>&1 | tail -8`;
         const v = evaluateEmailSend(command, INTERACTIVE);
         expect([v.pureSend, v.deny]).toEqual([true, undefined]);
-        expect(v.summary).toContain("> It's the May baseline.");
+        expect(v.summary).toContain("```\nHi Dana,\n\nIt's the May baseline.\n```");
         expect(v.summary).toContain('Attachments: `/workspace/agent/send/May_Baseline.xlsx`');
     });
 
@@ -858,7 +858,7 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
         }
     });
 
-    test('an HTML body never drops the command, however plain its markup', () => {
+    test('an HTML body outside the formatted wrapper keeps the command, however plain its markup', () => {
         for (const html of [
             '<p>Hi Pat,</p><p>Can you confirm the file works?</p>',
             '<p>Pay at <a href="https://pay.example/real">https://bank.example</a></p>',
