@@ -11,7 +11,9 @@ lenses only when a changed trust boundary or domain risk justifies them. The rev
 source bundle, not the lead model's conclusions, and must not mutate the target. The source bundle
 is the artifact plus what judging it needs: for a diff, the full text of each function or section it
 changes, the direct callers of anything it changes, and the contracts it touches (types, schemas,
-interfaces, tests, documented invariants). A reviewer may be unable to open anything else.
+interfaces, tests, documented invariants); with the **Bolted-on** lens selected, also the existing
+dispatcher, sibling variants and same-concern systems (logger, retry, config reader) the change sits
+beside. A reviewer may be unable to open anything else.
 
 Before launching a review, claim the exact repository/PR/head review slot in the workgroup's
 review ledger. Reuse an active exact-head receipt instead of launching a second general review from
@@ -256,10 +258,11 @@ Applied when the changed surface warrants:
   - *variant copy* — a near-copy of a file, component or function for one variant;
   - *re-derived alias* — a local or alias recomputing a value the code already has;
   - *second system* — a new logger, counter, retry, config reader or tracker beside an existing one;
-  - *nothing-else-changed test* — a test whose only job is asserting that nothing else changed.
+  - *workaround-pinning test* — a test that only pins the bolted-on path as separate, not a
+    behaviour pin a fold-in must keep.
 
-  A fold-in that changes an existing test states the contract change it makes. The check reads the
-  diff and the code it touches, never production data.
+  A fold-in that changes an existing test states the contract change it makes. The check reads
+  repository code, where the existing system usually lives outside the diff, never production data.
 
 ## Preflight and evidence
 

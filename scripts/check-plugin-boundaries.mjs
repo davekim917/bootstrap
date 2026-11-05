@@ -560,6 +560,14 @@ for (const plugin of ['test-audit', 'wwbd', 'workflow', 'workflow-agents']) {
   }
 }
 
+for (const plugin of ['workflow', 'workflow-agents']) {
+  requireTextTokens(
+    `plugins/${plugin}/LICENSE-MAKE-NATIVE`,
+    ['Copyright (c) 2026 Sloyd', 'Permission is hereby granted, free of charge'],
+    'the make-native license notice',
+  );
+}
+
 // Codex does not expand ${CLAUDE_PLUGIN_ROOT}, so comment-rule ships a separate Codex hook file.
 const commentRuleClaudeManifest = readJson('plugins/comment-rule/.claude-plugin/plugin.json');
 const commentRuleCodexManifest = readJson('plugins/comment-rule/.codex-plugin/plugin.json');
