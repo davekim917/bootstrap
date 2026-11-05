@@ -44,6 +44,7 @@ const CHECKS = [
   { name: 'split    (orchestrate enable/disable proof)', argv: ['--test', 'scripts/plugin-enablement.test.mjs'] },
   { name: 'contracts (parity-lint tests)', argv: ['--test', 'evals/harness/parity-lint.test.mjs'] },
   { name: 'router   (spawn-router rewrite tests)', argv: ['--test', 'plugins/orchestrate/skills/orchestrate/scripts/dispatch-lib.test.mjs'] },
+  { name: 'revive   (stale-helper guard tests)', argv: ['--test', 'plugins/orchestrate/skills/orchestrate/scripts/revive-lib.test.mjs'] },
   { name: 'skills:contract (parity-lint --all)', argv: ['evals/harness/parity-lint.mjs', '--all'] },
   { name: 'bounds   (check-plugin-boundaries)', argv: ['scripts/check-plugin-boundaries.mjs'] },
 ];

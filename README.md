@@ -17,7 +17,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 |---|---|---:|---|
 | Claude Code | `bootstrap-workflow` | 5.35.0 | The seven `team-*` skills and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.35.0 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.7.0 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.8.0 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.3.3 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
@@ -43,7 +43,14 @@ live helper re-reads its whole context, so a standing assistant is the costly sh
 only the user picks a model. On Claude Code the spawn hook enforces the effort rule for
 roleless spawns whether or not the skill loaded: a call that names no effort gets `high`,
 or the parent's own level when that is lower, because a sub-agent left unset inherits its
-parent's level and an `xhigh` session would otherwise pass `xhigh` to every helper. Invoke
+parent's level and an `xhigh` session would otherwise pass `xhigh` to every helper. A
+second hook, on `SendMessage`, refuses a message to one of the session's own helpers that
+ended its last turn more than an hour ago: Claude Code caches a sub-agent's prompt for an
+hour, so that message would re-write the helper's whole history at the cache-write price.
+The refusal tells the agent to spawn a fresh one-shot helper with a self-contained brief. A
+helper that is still mid-turn, or warm, is never refused, so a retained owner working
+through its rounds is unaffected, and a person who names the helper in their latest message
+can still have it resumed. Invoke
 the skill when you want one sub-agent to do all the work in a single thread —
 `/orchestrate opus high <task>`, or "use an opus subagent at high effort to …".
 
