@@ -9,6 +9,7 @@
  * runs. Output is plain text because each harness shows it in its own approval
  * surface (a native permission prompt, a chat card, a hand-off message).
  */
+import { createHash } from 'crypto';
 import { closeSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { extname, resolve as pathResolve, sep } from 'path';
@@ -698,6 +699,32 @@ export function signatureOnFile(account: string | null, dir: string): string | n
         if (!stat.isFile() || stat.size > 64 * 1024) return null;
         // The host writes the signature followed by one newline; the rest is compared byte for byte.
         return readFileSync(path, 'utf8').replace(/\n$/, '') || null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The account and mailbox the host recorded for exactly these credential bytes, or null. The host writes
+ * `identities.json` (sha256 of a credentials file → its account and primary address) only for credentials it read the
+ * mailbox with, so a renamed, copied or replaced file maps to its real account or to nothing.
+ */
+export function senderOnFile(credentialsFile: string | null, dir: string): { account: string; mailbox: string } | null {
+    if (!credentialsFile?.startsWith('/')) return null;
+    try {
+        const creds = statSync(credentialsFile);
+        if (!creds.isFile() || creds.size > 64 * 1024) return null;
+        const hash = createHash('sha256').update(readFileSync(credentialsFile)).digest('hex');
+        const path = `${dir}/identities.json`;
+        const map = lstatSync(path);
+        if (!map.isFile() || map.size > 1024 * 1024) return null;
+        const identities = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+        const entry = Object.hasOwn(identities, hash) ? identities[hash] as { account?: unknown; mailbox?: unknown } : null;
+        return typeof entry?.account === 'string' && /^[\w.@+-]+$/.test(entry.account)
+            && typeof entry.mailbox === 'string' && entry.mailbox.length <= 254
+            && /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/.test(entry.mailbox)
+            ? { account: entry.account, mailbox: entry.mailbox }
+            : null;
     } catch {
         return null;
     }

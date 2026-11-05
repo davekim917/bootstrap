@@ -37,7 +37,7 @@
  * Python/Node SDK calls, SMTP CLIs, and eval/alias/base64-decoded subshells. The
  * only sound place to catch all of those is the egress proxy.
  */
-import { CARD_SUMMARY_MAX_CHARS, clip, code, defuse, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
+import { CARD_SUMMARY_MAX_CHARS, clip, code, defuse, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, senderOnFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
 // `gws gmail users (messages|drafts) send` (raw API form).
@@ -106,7 +106,10 @@ export interface EnvSnapshot {
     isScheduledTask: boolean;
     /** Working directory of the tool call; a body file under it may be shown. */
     cwd?: string;
-    /** Where the host keeps each account's `<account>.signature.html` read-only; tests point it elsewhere. */
+    /**
+     * Where the host keeps, read-only, each account's `<account>.signature.html` and `identities.json` (the mailbox
+     * each set of credential bytes belongs to); tests point it elsewhere.
+     */
     signaturesDir?: string;
 }
 
@@ -239,7 +242,7 @@ export function envelopeFromJsonRaw(segment: string): {
     cc?: string;
     bcc?: string;
 } {
-    const m = segment.match(/--json\s+(['"])((?:(?!\1).)*)\1/);
+    const m = segment.match(/--json\s+(['"])((?:(?!\1)[\s\S])*)\1/);
     if (!m) return {};
     let payload: unknown;
     try {
@@ -373,7 +376,8 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     );
     // A command in the one shape names the account in exactly one place, which the scan above could miss for a
     // credentials-looking string inside the body.
-    const fromAccount = shape ? shape.account ?? 'default' : credsMatch?.[1] ?? 'default';
+    const sender = shape ? senderOnFile(shape.credentialsFile, env.signaturesDir ?? SIGNATURES_DIR) : null;
+    const fromAccount = sender ? sender.mailbox : shape ? shape.account ?? 'default' : credsMatch?.[1] ?? 'default';
     // Anchor to the four allowed helper verbs only — the prior `\+(\w[\w-]*)`
     // could capture spurious `+ABC` substrings from a base64 payload in the
     // raw-API form. Falls back to "send" for the raw form (which has no +verb).
@@ -413,7 +417,11 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     } else if (probeFlag) {
         lines.push(`⚠️ This send carries ${code(probeFlag)}, which on its own sends nothing. The gate still asks because it could not confirm that flag takes effect: the command holds other shell syntax, or the flag may be another option's value. Check the full command.`, '');
     }
-    lines.push(`From: ${inline(fromAccount)}${alias ? ` (as ${inline(alias)})` : ''}`, `To: ${to}`);
+    lines.push(
+        `From: ${inline(fromAccount)}${alias ? ` (as ${inline(alias)})` : ''}${sender ? '' : ' (not confirmed: the host holds no mailbox for these credentials)'}`,
+        ...(envelope.from ? [`From header in the message: ${inline(envelope.from)}`] : []),
+        `To: ${to}`,
+    );
     if (cc) lines.push(`Cc: ${inline(cc)}`);
     if (bcc) lines.push(`Bcc: ${inline(bcc)}`);
     if (removed) lines.push(`Removed from the reply: ${inline(removed)}`);
@@ -433,7 +441,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     let bodyCut = false;
     let formatted: { text: string; signed: boolean } | null = null;
     if (body.text !== null) {
-        const signature = signatureOnFile(shape?.account ?? null, env.signaturesDir ?? SIGNATURES_DIR);
+        const signature = signatureOnFile(sender?.account ?? null, env.signaturesDir ?? SIGNATURES_DIR);
         formatted = isHtml ? formattedText(body.text, signature) : null;
         const text = formatted ? formatted.text : isHtml ? htmlToText(body.text) : body.text.trim();
         const header = `Message${formatted ? ' (formatted)' : isHtml ? ' (HTML, shown as text)' : ''}:`;
@@ -441,7 +449,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         const shown = clip(text || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used));
         bodyCut = shown !== (text || '(empty)');
         lines.push(header, messageBlock(shown));
-        if (formatted?.signed) lines.push(`Signature: ${inline(fromAccount)}'s Gmail signature, as the host keeps it on file`);
+        if (formatted?.signed) lines.push(`Signature: ${inline(sender!.mailbox)}'s Gmail signature, as the host keeps it on file`);
         if (body.note) lines.push(body.note);
     } else if (isRawApi) {
         lines.push('Message: not shown. This send passes a raw MIME message, so the text is only visible inside the encoded payload. Decline and ask the agent to show the draft if you need to read it first.');
@@ -464,7 +472,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const shownAsCode = [messageId, ...attachments];
     // HTML qualifies only as a formatted body: the summary can't show what other markup or styling would change.
     const bodyFaithful = isHtml ? formatted !== null && bodyShownAsIs(formatted.text) : body.text !== null && bodyShownAsIs(body.text);
-    const pureSend = agree && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
+    const pureSend = agree && sender !== null && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
         && shownPlain.every(v => !v || fieldShownAsIs(v, false))
         && shownAsCode.every(v => !v || fieldShownAsIs(v, true)) && gwsWords === 1 && !generatedWord && !probeFlag
         && !unresolved.size && body.text !== null && !bodyCut && bodyFaithful && summary === lines.join('\n');
@@ -651,6 +659,7 @@ interface SendShape {
     html: boolean;
     body?: string;
     account: string | null;
+    credentialsFile: string | null;
     /** Every option is one the summary shows, each single-valued one given once. */
     complete: boolean;
 }
@@ -753,9 +762,9 @@ function shapeStatements(command: string): ShapeStatement[] | null {
     return flush() ? statements : null;
 }
 
-function credentials(word: ShapeWord | undefined): { account: string } | null {
+function credentials(word: ShapeWord | undefined): { account: string; file: string } | null {
     const match = word ? SHAPE_CREDENTIALS.exec(word.source) : null;
-    return match ? { account: match[1] } : null;
+    return match ? { account: match[1], file: match[0].slice(match[0].indexOf('=') + 1) } : null;
 }
 
 /**
@@ -766,7 +775,7 @@ function sendShape(command: string): SendShape | null {
     const statements = shapeStatements(command);
     const send = statements?.at(-1);
     if (!statements || !send || send.heredoc) return null;
-    let creds: { account: string } | null = null;
+    let creds: { account: string; file: string } | null = null;
     let body: { name: string; value: string } | null = null;
     for (const s of statements.slice(0, -1)) {
         if (s.pipe || s.stderrToStdout) return null;
@@ -835,7 +844,10 @@ function sendShape(command: string): SendShape | null {
     }
     // A variable set and never read is a step of its own.
     if (body && !bodyUsed) return null;
-    return { verb, options, html, account: creds?.account ?? null, complete, body: options.get('--body')?.[0] };
+    return {
+        verb, options, html, account: creds?.account ?? null, credentialsFile: creds?.file ?? null, complete,
+        body: options.get('--body')?.[0],
+    };
 }
 
 // The regex fallback runs only when the parser finds no send; it is quadratic
