@@ -82,6 +82,7 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
             '<p>Use literal token &amp;lt;approved&amp;gt;.</p>',
             '<p>Authorized ```<br>~do not transfer~<br>Transfer 100000</p>',
             '<p>Use token {{emoji:check}} as written</p>',
+            '<p>Use token {{EMOJI:check}} as written</p>',
         ]) {
             const html = formatted(paragraph);
             expect(outcome(html)).toEqual([html, 'gate', false, false]);
@@ -90,6 +91,8 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
         expect(evaluateEmailSend(plain, ENV).pureSend).toBeUndefined();
         const subject = (s: string) => command(formatted('<p>Hi Pat,</p>')).replace('--subject Hi', `--subject "${s}"`);
         expect(evaluateEmailSend(subject('*Urgent* wire'), ENV).pureSend).toBeUndefined();
+        const attached = command(formatted('<p>Hi Pat,</p>')).replace(' --html', ' --html -a /workspace/{{Emoji:check}}.xlsx');
+        expect(evaluateEmailSend(attached, ENV).pureSend).toBeUndefined();
         expect(evaluateEmailSend(subject('Q3 plan'), ENV).pureSend).toBe(true);
     });
 

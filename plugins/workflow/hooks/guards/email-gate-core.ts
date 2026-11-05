@@ -462,7 +462,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const bodyFaithful = isHtml ? formatted !== null && bodyShownAsIs(formatted.text) : body.text !== null && bodyShownAsIs(body.text);
     const pureSend = agree && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
         && shownPlain.every(v => !v || (inline(v) === v && chatLiteral(v)))
-        && shownAsCode.every(v => !v || (inline(v) === v && !v.includes('`'))) && gwsWords === 1 && !generatedWord && !probeFlag
+        && shownAsCode.every(v => !v || (inline(v) === v && !v.includes('`') && !EMOJI_PLACEHOLDER.test(v))) && gwsWords === 1 && !generatedWord && !probeFlag
         && !unresolved.size && body.text !== null && !bodyCut && bodyFaithful && summary === lines.join('\n');
     return { action: 'gate', label, summary, ...(pureSend ? { pureSend } : {}) };
 }
@@ -470,7 +470,8 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
 // The card reaches the approver as chat Markdown. A code block shows the body literally; a line that opens or closes a
 // fence would end it early, so such a body is shown quoted instead and never stands in for the command.
 // Slack's mrkdwn also ends a block at backticks mid-line, and the adapter rewrites `{{emoji:…}}` placeholders anywhere.
-const BREAKS_CODE_BLOCK = /^\s*(?:`{3,}|~{3,})|`{3,}|\{\{emoji:/m;
+const BREAKS_CODE_BLOCK = /^\s*(?:`{3,}|~{3,})|`{3,}|\{\{emoji:/im;
+const EMOJI_PLACEHOLDER = /\{\{emoji:/i;
 
 function messageBlock(text: string): string {
     return BREAKS_CODE_BLOCK.test(text) ? quoteBlock(text) : ['```', defuse(text), '```'].join('\n');
