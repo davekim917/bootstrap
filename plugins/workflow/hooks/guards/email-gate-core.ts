@@ -469,10 +469,11 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
 
 // The card reaches the approver as chat Markdown. A code block shows the body literally; a line that opens or closes a
 // fence would end it early, so such a body is shown quoted instead and never stands in for the command.
-const FENCE_LINE = /^\s*(?:`{3,}|~{3,})/m;
+// Slack's mrkdwn also ends a block at backticks mid-line, and the adapter rewrites `{{emoji:…}}` placeholders anywhere.
+const BREAKS_CODE_BLOCK = /^\s*(?:`{3,}|~{3,})|`{3,}|\{\{emoji:/m;
 
 function messageBlock(text: string): string {
-    return FENCE_LINE.test(text) ? quoteBlock(text) : ['```', defuse(text), '```'].join('\n');
+    return BREAKS_CODE_BLOCK.test(text) ? quoteBlock(text) : ['```', defuse(text), '```'].join('\n');
 }
 
 /**
@@ -480,12 +481,12 @@ function messageBlock(text: string): string {
  * nothing a chat client might decode as an entity.
  */
 function bodyShownAsIs(text: string): boolean {
-    return text === text.trim() && !FENCE_LINE.test(text) && defuse(text) === text && !BIDI_CONTROL.test(text) && !/&#?\w+;/.test(text);
+    return text === text.trim() && !BREAKS_CODE_BLOCK.test(text) && defuse(text) === text && !BIDI_CONTROL.test(text) && !/&#?\w+;/.test(text);
 }
 
 // Fields are shown as plain text, where chat Markdown would restyle or rewrite emphasis and code markers, escapes,
 // link brackets, table pipes, entities and emoji codes.
-const CHAT_SYNTAX = /[*_~`\\|[\]]|&#?\w+;|:[a-z0-9_+-]+:/i;
+const CHAT_SYNTAX = /[*_~`\\|[\]]|&#?\w+;|:[a-z0-9_+-]+:|\{\{emoji:/i;
 
 /** True when chat Markdown would show this one-line field exactly as written. */
 export function chatLiteral(text: string): boolean {

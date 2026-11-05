@@ -76,7 +76,13 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
     });
 
     test('a body line that would end the code block, entity-like text, or a field chat Markdown would restyle keeps the command', () => {
-        for (const paragraph of ['<p>Done.<br>```</p>', '<p>Done.<br>~~~ end</p>', '<p>Use literal token &amp;lt;approved&amp;gt;.</p>']) {
+        for (const paragraph of [
+            '<p>Done.<br>```</p>',
+            '<p>Done.<br>~~~ end</p>',
+            '<p>Use literal token &amp;lt;approved&amp;gt;.</p>',
+            '<p>Authorized ```<br>~do not transfer~<br>Transfer 100000</p>',
+            '<p>Use token {{emoji:check}} as written</p>',
+        ]) {
             const html = formatted(paragraph);
             expect(outcome(html)).toEqual([html, 'gate', false, false]);
         }
