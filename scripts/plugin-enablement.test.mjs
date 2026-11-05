@@ -202,10 +202,11 @@ test('disabled: no sub-agent definition survives without the orchestrate plugin'
   assert.deepEqual(resolveAgents(DISABLED), []);
 });
 
-test('the orchestrate plugin registers only its spawn router and no standing directive', () => {
-  // Invoke-only for delegation: no SessionStart directive, no always-on file.
-  // The one hook it owns is the Claude PreToolUse spawn router on Agent|Task —
-  // it settles a sub-agent's model/effort from the call and never blocks. Codex
+test('the orchestrate plugin registers only its spawn router, its revive guard and no standing directive', () => {
+  // No SessionStart directive, no always-on file. The Claude hooks it owns are
+  // the PreToolUse spawn router on Agent|Task, which settles a sub-agent's
+  // model/effort and never blocks, and the revive guard on SendMessage, which
+  // refuses only a message to the session's own stale helper. Codex
   // carries one SessionStart line stating the model rule (its PreToolUse cannot
   // read or rewrite a spawn); the Claude-composed
   // session below still gets no SessionStart output.
@@ -215,7 +216,7 @@ test('the orchestrate plugin registers only its spawn router and no standing dir
   assert.deepEqual(Object.keys(hooks), ['PreToolUse']);
   assert.deepEqual(
     hooks.PreToolUse.map((h) => h.matcher),
-    ['Agent|Task'],
+    ['Agent|Task', '^SendMessage$'],
   );
   const codex = JSON.parse(fs.readFileSync(path.join(REPO, 'plugins/orchestrate/.codex-plugin/plugin.json'), 'utf8'));
   assert.equal(codex.hooks, './hooks/orchestrate-codex-hooks.json');
