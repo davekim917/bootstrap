@@ -5959,11 +5959,13 @@ function operatorOverrideFlag(cmd: ResolvedCommand): string | typeof OVERRIDE_UN
         const expansion = words[i] ? expandWords([words[i]], cmd) : [];
         if (expansion === null && overrideFlagNamedOnLine(cmd)) return OVERRIDE_UNCHECKED;
         const expanded = expansion?.[0];
-        // Only a word that is one quoted span keeps its value whole; a word mixing quoted and unquoted parts is split,
-        // which can hold on a flag it does not pass but never passes one unseen.
+        // Only a word that is one quoted span keeps its value whole. Any other value is split by IFS, which a script can
+        // set to any character, so it passes a flag wherever one stands between non-word characters. That can hold on
+        // a flag the command does not pass, but never passes one unseen.
         const quoted = words[i] && /^(?:"(?:[^"\\]|\\[\s\S])*"|'[^']*')$/.test(words[i].word);
-        const tokens = [cmd.args[i], ...(expanded === undefined ? [] : quoted ? [expanded] : expanded.split(/\s+/))];
-        const flag = OPERATOR_OVERRIDE_FLAGS.find(f => tokens.some(t => t === f || t.startsWith(`${f}=`)));
+        const whole = expanded !== undefined && quoted ? [cmd.args[i], expanded] : [cmd.args[i]];
+        const flag = OPERATOR_OVERRIDE_FLAGS.find(f => whole.some(t => t === f || t.startsWith(`${f}=`))
+            || (expanded !== undefined && !quoted && new RegExp(`(?:^|[^\\w-])${f}(?:$|[^\\w-])`).test(expanded)));
         if (flag) return flag;
     }
     return null;
