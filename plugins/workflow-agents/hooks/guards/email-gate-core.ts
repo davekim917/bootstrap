@@ -465,8 +465,8 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // HTML qualifies only as a formatted body: the summary can't show what other markup or styling would change.
     const bodyFaithful = isHtml ? formatted !== null && bodyShownAsIs(formatted.text) : body.text !== null && bodyShownAsIs(body.text);
     const pureSend = agree && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
-        && shownPlain.every(v => !v || (inline(v) === v && chatLiteral(v)))
-        && shownAsCode.every(v => !v || (inline(v) === v && !v.includes('`') && !EMOJI_PLACEHOLDER.test(v))) && gwsWords === 1 && !generatedWord && !probeFlag
+        && shownPlain.every(v => !v || fieldShownAsIs(v, false))
+        && shownAsCode.every(v => !v || fieldShownAsIs(v, true)) && gwsWords === 1 && !generatedWord && !probeFlag
         && !unresolved.size && body.text !== null && !bodyCut && bodyFaithful && summary === lines.join('\n');
     return { action: 'gate', label, summary, ...(pureSend ? { pureSend } : {}) };
 }
@@ -495,6 +495,12 @@ const CHAT_SYNTAX = /[*_~`\\|[\]]|&#?\w+;|:[a-z0-9_+-]+:|\{\{emoji:/i;
 // A word starting with @ or # is a mention or channel link to Slack's automatic parsing (`@everyone` notifies the
 // workspace), though `pat@example.com` is not.
 const CHAT_MENTION = /(?:^|[^\w.+-])[@#][\w.-]/;
+
+/** A one-line field the card shows exactly as written, as plain text or inside a code span. */
+function fieldShownAsIs(value: string, asCode: boolean): boolean {
+    if (inline(value) !== value || BIDI_CONTROL.test(value) || EMOJI_PLACEHOLDER.test(value)) return false;
+    return asCode ? !value.includes('`') : chatLiteral(value);
+}
 
 /** True when chat Markdown would show this one-line field exactly as written. */
 export function chatLiteral(text: string): boolean {

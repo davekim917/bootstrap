@@ -93,8 +93,11 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
         expect(evaluateEmailSend(subject('*Urgent* wire'), ENV).pureSend).toBeUndefined();
         for (const s of ['@everyone', 'Hi @here', 'see #general']) expect([s, evaluateEmailSend(subject(s), ENV).pureSend]).toEqual([s, undefined]);
         expect(evaluateEmailSend(subject('Q3 plan for pat@example.com'), ENV).pureSend).toBe(true);
-        const attached = command(formatted('<p>Hi Pat,</p>')).replace(' --html', ' --html -a /workspace/{{Emoji:check}}.xlsx');
-        expect(evaluateEmailSend(attached, ENV).pureSend).toBeUndefined();
+        const attached = (file: string) => command(formatted('<p>Hi Pat,</p>')).replace(' --html', ` --html -a '${file}'`);
+        for (const file of ['/workspace/{{Emoji:check}}.xlsx', '/workspace/invoice‮fdp.exe']) {
+            expect([file, evaluateEmailSend(attached(file), ENV).pureSend]).toEqual([file, undefined]);
+        }
+        expect(evaluateEmailSend(subject('Q3 ⁦plan'), ENV).pureSend).toBeUndefined();
         expect(evaluateEmailSend(subject('Q3 plan'), ENV).pureSend).toBe(true);
     });
 
