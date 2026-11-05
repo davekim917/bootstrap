@@ -11,7 +11,9 @@ lenses only when a changed trust boundary or domain risk justifies them. The rev
 source bundle, not the lead model's conclusions, and must not mutate the target. The source bundle
 is the artifact plus what judging it needs: for a diff, the full text of each function or section it
 changes, the direct callers of anything it changes, and the contracts it touches (types, schemas,
-interfaces, tests, documented invariants). A reviewer may be unable to open anything else.
+interfaces, tests, documented invariants); with the **Bolted-on** lens selected, also the existing
+dispatcher, sibling variants and same-concern systems (logger, retry, config reader) the change sits
+beside. A reviewer may be unable to open anything else.
 
 Before launching a review, claim the exact repository/PR/head review slot in the workgroup's
 review ledger. Reuse an active exact-head receipt instead of launching a second general review from
@@ -102,7 +104,7 @@ placeholders rather than rewriting or replacing it:
   diff for `/team-review --implementation`).
 - `{{USER_FOCUS}}` — the user-specified focus area, followed by the rubric lenses that have no
   analog in the vendored prompt's `<attack_surface>`: **plan fidelity**, **verification quality**,
-  **simplicity**, **comments** and, when selected, **design** (see Review rubric below for their definitions). The vendored prompt has never
+  **simplicity**, **comments** and, when selected, **design** and **bolted-on** (see Review rubric below for their definitions). The vendored prompt has never
   seen `plan.md` and cannot on its own check scope adherence or whether a test would fail if the
   logic broke, so the workflow supplies those checks here instead of trying to fold them into a
   rewritten prompt. If the repo under review defines a review policy file (`docs/review-policy.md`
@@ -177,7 +179,7 @@ accepting it.
 
 Send a Claude reviewer the rubric items for the selected lenses directly, as part of its prompt. A
 Codex reviewer instead gets its own vendored `<attack_surface>`/`<review_method>` sections plus the
-**Plan fidelity**, **Verification quality**, **Simplicity**, **Comments** and selected **Design** lenses via `{{USER_FOCUS}}` (see
+**Plan fidelity**, **Verification quality**, **Simplicity**, **Comments** and selected **Design** and **Bolted-on** lenses via `{{USER_FOCUS}}` (see
 above); this rubric then serves as the grounding bar the lead checks every finding against,
 Codex's included. Every finding must ground in one of them or in a named external invariant — for a
 Claude reviewer, the `requirement` field is where it goes. This exists so two reviewers judge the
@@ -247,6 +249,20 @@ Applied when the changed surface warrants:
   When the change adds one, an importable internal gets a lint or build rule that rejects the
   import, and a hand-synced list gets a test that derives one list from the other or fails when
   they disagree. A note is not the fix.
+- **Bolted-on** — for a feature added to existing code, not a fix. Ask whether the code would look
+  like this if the feature had been in the original design. Each flag is a prompt to investigate; a
+  finding names the existing helper, type or system the feature should fold into, and one that
+  cannot name it is taste, not a finding:
+  - *special-case branch* — an `if (newKind)` in code that already dispatches on kind;
+  - *duplicate flag* — a flag or boolean restating what a type or discriminant already encodes;
+  - *variant copy* — a near-copy of a file, component or function for one variant;
+  - *re-derived alias* — a local or alias recomputing a value the code already has;
+  - *second system* — a new logger, counter, retry, config reader or tracker beside an existing one;
+  - *workaround-pinning test* — a test that only pins the bolted-on path as separate, not a
+    behaviour pin a fold-in must keep.
+
+  A fold-in that changes an existing test states the contract change it makes. The check reads
+  repository code, where the existing system usually lives outside the diff, never production data.
 
 ## Preflight and evidence
 

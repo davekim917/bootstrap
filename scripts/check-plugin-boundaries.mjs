@@ -560,6 +560,14 @@ for (const plugin of ['test-audit', 'wwbd', 'workflow', 'workflow-agents']) {
   }
 }
 
+for (const plugin of ['workflow', 'workflow-agents']) {
+  requireTextTokens(
+    `plugins/${plugin}/LICENSE-MAKE-NATIVE`,
+    ['Copyright (c) 2026 Sloyd', 'Permission is hereby granted, free of charge'],
+    'the make-native license notice',
+  );
+}
+
 // Codex does not expand ${CLAUDE_PLUGIN_ROOT}, so comment-rule ships a separate Codex hook file.
 const commentRuleClaudeManifest = readJson('plugins/comment-rule/.claude-plugin/plugin.json');
 const commentRuleCodexManifest = readJson('plugins/comment-rule/.codex-plugin/plugin.json');
@@ -741,11 +749,11 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.37.0') {
-  fail(`bootstrap-workflow release must be version 5.37.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.38.0') {
+  fail(`bootstrap-workflow release must be version 5.38.0 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.37.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.37.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.38.0') {
+  fail(`bootstrap-workflow-agents release must be version 2.38.0 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
 if (orchestrateClaudeManifest?.version !== '3.8.0') {
