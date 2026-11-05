@@ -498,6 +498,10 @@ export function formattedText(html: string, signature: string | null): { text: s
     };
     // Whitespace is collapsed once, over a whole composed line, as a mail client does: a link's edge spaces still separate words.
     const shownLine = (line: string): string => line.replace(/[ \t\n]+/g, ' ').trim();
+    // A link's destination is listed after its block, never written into the text, so the text stays what the recipient
+    // reads. The marker can't appear in the text, or a fake listing could sit beside a real one.
+    const LINK_MARKER = '↳';
+    let links: string[] = [];
     // Inline content up to `close`, unnormalized: text, the five escape entities, and, where allowed, `<br>` and links.
     const inline = (close: string, inBlock: boolean): string[] | null => {
         const lines: string[] = [''];
@@ -517,7 +521,8 @@ export function formattedText(html: string, signature: string | null): { text: s
                 i = end + 2;
                 const label = inline('</a>', false)?.join('');
                 if (label === undefined || !shownLine(label)) return null;
-                lines[lines.length - 1] += shownLine(label) === href ? label : `${label} (${href})`;
+                lines[lines.length - 1] += label;
+                if (shownLine(label) !== href) links.push(`${LINK_MARKER} link "${shownLine(label)}": ${href}`);
                 continue;
             }
             if (html[i] === '&') {
@@ -527,13 +532,16 @@ export function formattedText(html: string, signature: string | null): { text: s
                 i += entity.length;
                 continue;
             }
+            if (html[i] === LINK_MARKER) return null;
             lines[lines.length - 1] += html[i++];
         }
         return lines;
     };
     const shownBlock = (lines: string[] | null): string | null => {
         const shown = lines?.map(shownLine);
-        return shown?.every(Boolean) ? shown.join('\n') : null;
+        const listed = links;
+        links = [];
+        return shown?.every(Boolean) ? [...shown, ...listed].join('\n') : null;
     };
     skipSpace();
     if (!take(FORMATTED_WRAPPER)) return null;

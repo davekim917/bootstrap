@@ -30,7 +30,7 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
         );
         const v = evaluateEmailSend(command(html), ENV);
         expect([v.pureSend, v.deny]).toEqual([true, undefined]);
-        expect(v.summary?.split('\n').slice(-10)).toEqual([
+        expect(v.summary?.split('\n').slice(-11)).toEqual([
             'Message (formatted):',
             '> Hi Dana, Ray,',
             '> ',
@@ -40,13 +40,17 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
             '> - Baseline',
             '> - Draft',
             '> ',
-            '> The dashboard (https://example.com/q2) is at https://example.com/q2.',
+            '> The dashboard is at https://example.com/q2.',
+            '> ↳ link "dashboard": https://example.com/q2',
         ]);
     });
 
-    test("a link's edge spaces still separate the words around it on the card, as in a mail client", () => {
-        const v = evaluateEmailSend(command(formatted('<p>The money is now<a href="https://example.com/status"> here</a>.</p>')), ENV);
-        expect([v.pureSend, v.summary?.split('\n').at(-1)]).toEqual([true, '> The money is now here (https://example.com/status).']);
+    test("a link's text reads on the card exactly as around it in a mail client, its destination listed below", () => {
+        const shown = (paragraph: string) => evaluateEmailSend(command(formatted(paragraph)), ENV).summary?.split('\n').slice(-2);
+        const link = (inner: string) => `<a href="https://example.com/status">${inner}</a>`;
+        expect(shown(`<p>The money is now${link(' here')}.</p>`)).toEqual(['> The money is now here.', '> ↳ link "here": https://example.com/status']);
+        expect(shown(`<p>The money is ${link('now')}here.</p>`)).toEqual(['> The money is nowhere.', '> ↳ link "now": https://example.com/status']);
+        expect(shown(`<p>The money is ${link('now ')}here.</p>`)).toEqual(['> The money is now here.', '> ↳ link "now": https://example.com/status']);
     });
 
     test("the account's signature exactly as the host keeps it is allowed after the wrapper, and named on the card", () => {
@@ -88,6 +92,7 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
             formatted('<p><a href="https://example.com"><a href="https://evil.example">pay</a></a></p>'),
             formatted('<p><a href="https://example.com"></a></p>'),
             formatted('<p>Hi ‮Pat</p>'),
+            formatted('<p>Pay <a href="https://evil.example">here</a>.</p>\n<p>↳ link "here": https://bank.example</p>'),
             formatted('<style>p{display:none}</style><p>Hi Pat,</p>'),
             formatted('<p>Hi Pat,</p>') + '\n<p>after the wrapper</p>',
             FORMATTED_WRAPPER.replace('color:#222', 'color:#fff') + '\n<p>Hi Pat,</p>\n</div>',
