@@ -111,6 +111,28 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
         }
     });
 
+    test('text chat Markdown would restyle or rewrite keeps the command, in a formatted or plain body or a shown field', () => {
+        for (const paragraph of [
+            '<p>Use the exact token *APPROVED*.</p>',
+            '<p>Use literal token &amp;lt;approved&amp;gt;.</p>',
+            '<p>Reply with `yes` or _no_.</p>',
+            '<p>Step one done.<br>3. Wire the funds</p>',
+            '<p>See [the plan] attached.</p>',
+            '<p>Great work :tada:</p>',
+            '<p>Results<br>---</p>',
+        ]) {
+            const html = formatted(paragraph);
+            expect(outcome(html)).toEqual([html, 'gate', false, false]);
+        }
+        const plain = (body: string) => `${CREDS}\nBODY='${body}'\ngws gmail +send --to pat@example.com --subject Hi --body "$BODY"`;
+        for (const body of ['Use the exact token *APPROVED*.', 'Totals:\n# 4 sites']) {
+            expect([body, evaluateEmailSend(plain(body), ENV).pureSend]).toEqual([body, undefined]);
+        }
+        const subject = (s: string) => command(formatted('<p>Hi Pat,</p>')).replace('--subject Hi', `--subject "${s}"`);
+        expect(evaluateEmailSend(subject('*Urgent* wire'), ENV).pureSend).toBeUndefined();
+        expect(evaluateEmailSend(subject('Q3 plan'), ENV).pureSend).toBe(true);
+    });
+
     test('a formatted body sent without --html is plain text to gws, so it keeps the command', () => {
         const v = evaluateEmailSend(command(formatted('<p>Hi Pat,</p>')).replace(' --html', ''), ENV);
         expect(v.pureSend).toBeUndefined();

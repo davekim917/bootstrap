@@ -456,18 +456,30 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         && viewRead.attachments.join('\n') === exactAttachments.join('\n') && viewRead.isHtml === exact?.html
         && (resolved.text === null || resolved.text === exact?.body));
     const agree = exact !== null && viewAgrees && action === exact.verb;
-    const fields = [flagTo, subject, cc, bcc, removed, messageId, alias, ...attachments];
+    const shownPlain = [flagTo, subject, cc, bcc, removed, alias];
+    const shownAsCode = [messageId, ...attachments];
     // HTML qualifies only as a formatted body: the summary can't show what other markup or styling would change.
     const bodyFaithful = isHtml ? formatted !== null && bodyShownAsIs(formatted.text) : body.text !== null && bodyShownAsIs(body.text) && !BIDI_CONTROL.test(body.text);
     const pureSend = agree && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
-        && fields.every(v => !v || (inline(v) === v && !v.includes('`'))) && gwsWords === 1 && !generatedWord && !probeFlag
+        && shownPlain.every(v => !v || (inline(v) === v && chatLiteral(v)))
+        && shownAsCode.every(v => !v || (inline(v) === v && !v.includes('`'))) && gwsWords === 1 && !generatedWord && !probeFlag
         && !unresolved.size && body.text !== null && !bodyCut && bodyFaithful && summary === lines.join('\n');
     return { action: 'gate', label, summary, ...(pureSend ? { pureSend } : {}) };
 }
 
 /** The card shows the body as written: no edge whitespace trimmed, no `<` defused against chat pings. */
 function bodyShownAsIs(text: string): boolean {
-    return text === text.trim() && quoteBlock(text) === text.split('\n').map(line => `> ${line}`).join('\n');
+    return text === text.trim() && quoteBlock(text) === text.split('\n').map(line => `> ${line}`).join('\n') && chatLiteral(text);
+}
+
+// The card reaches the approver as chat Markdown, which would restyle or rewrite these: emphasis and code markers,
+// escapes, link brackets, table pipes, entities, emoji codes, and lines that start a heading, quote, ordered list or rule.
+const CHAT_SYNTAX = /[*_~`\\|[\]]|&#?\w+;|:[a-z0-9_+-]+:/i;
+const CHAT_LINE_SYNTAX = /^\s*(?:#|>|\+\s|\d+[.)](?:\s|$)|[-=]{2,}\s*$)/;
+
+/** True when chat Markdown would show this text exactly as written. */
+export function chatLiteral(text: string): boolean {
+    return !CHAT_SYNTAX.test(text) && !text.split('\n').some(line => CHAT_LINE_SYNTAX.test(line));
 }
 
 const GWS_ACCOUNTS_DIR = '/home/node/.config/gws/accounts';
