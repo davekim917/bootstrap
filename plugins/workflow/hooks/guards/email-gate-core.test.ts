@@ -913,6 +913,8 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             { account: 'example-co', mailbox: 'not-a-mailbox' },
             { account: '', mailbox: 'team@example.com' },
             { account: '../x', mailbox: 'team@example.com' },
+            { account: 'example-co', mailbox: `team@${'.'.repeat(80_000)} ` },
+            { account: 'example-co', mailbox: `team@${'a'.repeat(250)}.com` },
             'team@example.com',
         ]) {
             const malformed = join(root, 'malformed');
