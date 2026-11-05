@@ -2,7 +2,7 @@
 // Claude Code PreToolUse hook on Agent/Task: settle every sub-agent spawn,
 // autonomous or via /orchestrate. A model no human named is dropped so the spawn
 // inherits its parent's, and the agent and the sub-agent are told which model runs.
-// The effort the call names stands, within the caps.
+// The effort the call names stands, within the caps; a call that names none gets one.
 // Never blocks, never opens a connection. A named role is never rewritten.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,8 +19,10 @@ try {
   // A named role keeps its installed model intent: no rewrite.
   const named = lib.isNamedRole(input.subagent_type);
   const contested = !named && (input.model || input.effort || !lib.isRoleless(input.subagent_type));
-  const pins = contested ? lib.humanPins(input, lib.humanTurns(event.transcript_path).at(-1) ?? '') : undefined;
-  const updated = lib.rewriteClaudeSpawn(input, pins);
+  const turn = contested || (!named && !input.effort) ? lib.humanTurns(event.transcript_path).at(-1) ?? '' : '';
+  const pins = contested ? lib.humanPins(input, turn) : undefined;
+  const parentEffort = typeof event.effort?.level === 'string' ? event.effort.level : undefined;
+  const updated = lib.rewriteClaudeSpawn(input, pins, { parentEffort, invokedEffort: lib.invokedEffort(turn) });
   const dropped = Boolean(updated && input.model && !('model' in updated));
   const notice = dropped ? lib.droppedModelNotice(input.model, lib.inheritedModel(event.transcript_path)) : undefined;
   lib.logDispatch({
@@ -28,6 +30,7 @@ try {
     task: task.slice(0, 2000),
     before: { model: input.model ?? null, effort: input.effort ?? null, subagent_type: input.subagent_type ?? null },
     after: updated ? { model: updated.model ?? null, effort: updated.effort ?? null, subagent_type: updated.subagent_type ?? null } : null,
+    parentEffort: parentEffort ?? null,
     ...(named ? { decision: 'named-role' } : {}),
     ...(pins ? { humanPins: pins } : {}),
     ...(notice ? { notice } : {}),
