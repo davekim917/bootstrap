@@ -748,11 +748,11 @@ if (codexManifest?.version !== '2.35.0') {
   fail(`bootstrap-workflow-agents release must be version 2.35.0 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
-if (orchestrateClaudeManifest?.version !== '3.6.2') {
-  fail(`bootstrap-orchestrate release must be version 3.6.2 (found ${orchestrateClaudeManifest?.version})`);
+if (orchestrateClaudeManifest?.version !== '3.7.0') {
+  fail(`bootstrap-orchestrate release must be version 3.7.0 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '3.6.2') {
-  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.6.2 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '3.7.0') {
+  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.7.0 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -1050,8 +1050,9 @@ for (const filePath of activeContractFiles) {
 
 
 // ─── The orchestrate plugin: one skill, five effort shims ─────────────────────
-// Automatic delegation pressure is OFF. `/orchestrate` is an INVOKE-ONLY skill on
-// every runtime, and the two things that made it automatic are gone: the
+// Automatic delegation pressure is OFF. Nothing tells a session to delegate; the
+// skill's description loads it only once a session is spawning a sub-agent. The
+// two things that made delegation automatic are gone: the
 // `always-on.md` standing directive that told every session to load it, and the
 // `dispatch-first` PreToolUse guard that BLOCKED a coordinator from reading
 // source or running a check before dispatching.
@@ -1081,9 +1082,9 @@ for (const filePath of activeContractFiles) {
     }
   }
 
-  // 2. NO ACTIVATION SURFACE — the concise-shaped rule. `/orchestrate` is
-  //    invoke-only: nothing tells a session to load it and nothing gates a
-  //    session that does not. Any of these reappearing restores the automatic
+  // 2. NO ACTIVATION SURFACE — the concise-shaped rule. No standing directive
+  //    tells a session to load the skill and nothing gates a session that does
+  //    not. Any of these reappearing restores the automatic
   //    pressure the operator turned off, so name each one explicitly rather than
   //    leaving it to the reader to notice an added file.
   for (const activationPath of [
@@ -1091,7 +1092,7 @@ for (const filePath of activeContractFiles) {
     'plugins/orchestrate/.nanoclaw-always-on.md',
   ]) {
     if (exists(activationPath)) {
-      fail(`${activationPath} must not exist; plugins/orchestrate is invoke-only, with no standing directive and no hooks`);
+      fail(`${activationPath} must not exist; plugins/orchestrate has no standing directive`);
     }
   }
   // The one hook allowed: the Claude spawn router (PreToolUse on Agent|Task),

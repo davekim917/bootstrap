@@ -52,11 +52,16 @@ function callEffort(input) {
 
 /**
  * Claude Agent-tool input → the input to run, given which of the call's explicit
- * fields a human asked for (`pins`, from humanPins).
+ * fields a human asked for (`pins`, from humanPins), the parent's own effort
+ * level, and the effort the human's latest invocation named (`invokedEffort`,
+ * from invokedEffort).
  *
  * A model the human did not name is dropped, so the spawn inherits its parent's.
- * The effort the call asks for stands; with none, the spawn runs at its native
- * default. With no model named the hook cannot see which model will run, so an
+ * The effort the call asks for stands. A call that names none takes the human's
+ * invoked level, else DEFAULT_EFFORT, or the parent's level when that is lower:
+ * left unset, a sub-agent on its parent's model inherits the parent's level, so
+ * an xhigh parent would pass xhigh to every helper.
+ * With no model named the hook cannot see which model will run, so an
  * agent's own choice takes AGENT_MAX_EFFORT. Effort always leaves as the Agent
  * call's `effort` field: current Claude Code does not apply a shim's `effort`
  * frontmatter, so a shim type alone runs at the default level. A named role
@@ -68,7 +73,7 @@ function callEffort(input) {
  * (code.claude.com/docs/en/sub-agents, "Choose a model"). The model-effort caps
  * apply either way. Returns null when nothing changes.
  */
-export function rewriteClaudeSpawn(input, pins = {}) {
+export function rewriteClaudeSpawn(input, pins = {}, { parentEffort, invokedEffort } = {}) {
   const out = { ...input };
   const type = typeof input.subagent_type === 'string' ? input.subagent_type : '';
   const shim = SHIM.test(type);
@@ -76,12 +81,16 @@ export function rewriteClaudeSpawn(input, pins = {}) {
 
   if (out.model && !pins.model) delete out.model;
   let effort = callEffort(input);
-  const cap = MODEL_MAX_EFFORT[familyOf(out.model)] ?? (pins.effort ? undefined : AGENT_MAX_EFFORT);
-  if (effort && cap) effort = capEffort(effort, cap);
-  if (effort) {
-    out.effort = effort;
-    if (shim) out.subagent_type = `bootstrap-orchestrate:worker-${effort}`;
+  let humanChosen = Boolean(pins.effort);
+  if (!effort && EFFORTS.includes(invokedEffort)) {
+    effort = invokedEffort;
+    humanChosen = true;
   }
+  effort ??= capEffort(DEFAULT_EFFORT, parentEffort);
+  const cap = MODEL_MAX_EFFORT[familyOf(out.model)] ?? (humanChosen ? undefined : AGENT_MAX_EFFORT);
+  if (cap) effort = capEffort(effort, cap);
+  out.effort = effort;
+  if (shim) out.subagent_type = `bootstrap-orchestrate:worker-${effort}`;
 
   const changed = ['model', 'effort', 'subagent_type'].some((k) => out[k] !== input[k]);
   return changed ? out : null;
@@ -124,6 +133,7 @@ export function droppedModelNotice(requested, running) {
 const MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
 const MODEL_MAX_EFFORT = { fable: 'high', opus: 'xhigh' };
 const AGENT_MAX_EFFORT = 'xhigh';
+const DEFAULT_EFFORT = 'high';
 
 function familyOf(model) {
   return typeof model === 'string' ? MODEL_FAMILIES.find((f) => model.toLowerCase().includes(f)) : undefined;
@@ -224,17 +234,33 @@ function namedFamilies(t) {
  * Effort is never read from plain wording ("failed at high effort").
  */
 export function humanPins(input, text) {
-  const t = text.toLowerCase().replace(/\u2019/g, "'").replace(/<command-name>\s*\/(?:bootstrap-orchestrate:)?(\S+?)\s*<\/command-name>[\s\S]*?<command-args>/g, '\n/$1 ');
+  const t = normalizeTurn(text);
   const family = familyOf(input.model);
   const effort = callEffort(input);
-  const prose = [...t.matchAll(PROSE_INVOCATION)];
-  const latest = [...t.matchAll(SLASH_INVOCATION), ...prose].sort((a, b) => b.index - a.index)[0];
-  if (!latest) return { model: Boolean(family) && namedFamilies(t).has(family), effort: false };
-  const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(CLAUSE_BREAK).at(-1));
-  if (negated) return { model: false, effort: false };
+  const latest = latestInvocation(t);
+  if (latest === undefined) return { model: Boolean(family) && namedFamilies(t).has(family), effort: false };
+  if (latest === null) return { model: false, effort: false };
   const chosen = latest[1] ? new Set([latest[1]]) : namedFamilies(t.slice(latest.index + latest[0].length));
   return {
     model: Boolean(family) && chosen.has(family),
-    effort: Boolean(effort) && latest?.[2] === effort,
+    effort: Boolean(effort) && latest[2] === effort,
   };
+}
+
+/** The effort level the latest invocation in `text`, the human's latest turn, names; undefined when none does. */
+export function invokedEffort(text) {
+  return latestInvocation(normalizeTurn(text))?.[2];
+}
+
+function normalizeTurn(text) {
+  return text.toLowerCase().replace(/\u2019/g, "'").replace(/<command-name>\s*\/(?:bootstrap-orchestrate:)?(\S+?)\s*<\/command-name>[\s\S]*?<command-args>/g, '\n/$1 ');
+}
+
+/** The latest of the skill's invocations in a normalized turn: undefined when there is none, null when it is negated. */
+function latestInvocation(t) {
+  const prose = [...t.matchAll(PROSE_INVOCATION)];
+  const latest = [...t.matchAll(SLASH_INVOCATION), ...prose].sort((a, b) => b.index - a.index)[0];
+  if (!latest) return undefined;
+  const negated = prose.includes(latest) && NEGATED.test(t.slice(0, latest.index).split(CLAUSE_BREAK).at(-1));
+  return negated ? null : latest;
 }

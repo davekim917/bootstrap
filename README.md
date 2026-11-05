@@ -17,7 +17,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 |---|---|---:|---|
 | Claude Code | `bootstrap-workflow` | 5.35.0 | The seven `team-*` skills and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.35.0 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.6.2 | `/orchestrate`, an invoke-only skill, plus the five effort shims it dispatches to |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.7.0 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.3.3 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
@@ -26,7 +26,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
 | Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.1 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
 
-### Delegation is invoke-only
+### Delegation is the agent's choice; how it delegates is not
 
 Automatic delegation pressure is off. Working directly is the normal mode: nothing
 tells a session to reach for a sub-agent, and nothing gates a session that reads
@@ -34,8 +34,17 @@ source, runs a check, or implements a fix itself.
 
 `bootstrap-orchestrate` adds no standing delegation directive or dispatch-first gate.
 Its hooks only settle the model/effort of sub-agent spawns and validate explicit Codex context;
-the Codex `SessionStart` entry is a one-line reminder that only the user names a model. Invoke the
-skill when you want one sub-agent to do all the work in a single thread —
+the Codex `SessionStart` entry is a one-line reminder that only the user names a model.
+
+Once a session does delegate, the skill applies. Its description has an agent load it
+before any sub-agent spawn, for three rules: every spawn names an effort chosen from the
+skill's rubric, a helper is one-shot unless it owns one continuous task (each message to a
+live helper re-reads its whole context, so a standing assistant is the costly shape), and
+only the user picks a model. On Claude Code the spawn hook enforces the effort rule for
+roleless spawns whether or not the skill loaded: a call that names no effort gets `high`,
+or the parent's own level when that is lower, because a sub-agent left unset inherits its
+parent's level and an `xhigh` session would otherwise pass `xhigh` to every helper. Invoke
+the skill when you want one sub-agent to do all the work in a single thread —
 `/orchestrate opus high <task>`, or "use an opus subagent at high effort to …".
 
 Two mechanisms used to create the pressure, and both were deleted rather than moved:
@@ -50,7 +59,7 @@ What is gone is the *automatic* pressure, not delegation itself.
 
 ### What `/orchestrate` is
 
-A parameterized delegation prompt, and nothing else.
+A parameterized delegation prompt, plus the every-spawn rules above.
 
 ```text
 /orchestrate <model> <effort> <task>
@@ -118,8 +127,10 @@ family. The hook parses no other wording: whether a mention is a request ("not o
 haiku") is the coordinator's reading. Any other model is dropped, so the spawn inherits its parent's, and the hook says so: the spawning agent gets a
 note naming the model asked for and the model that runs, and the sub-agent's prompt opens with it. The effort a
 call asks for stands, capped at `xhigh` when no model is named and the human did not choose it through an
-invocation. Fields it leaves omitted follow the client's native inheritance and configuration rather
-than a workflow-owned fallback.
+invocation. A call that names no effort takes the level of the human's latest invocation, else `high`, or
+the parent's level when that is lower; the hook reads the parent's level from the `effort.level` field
+Claude Code puts in tool-use hook input, and a parent on a model without effort gets `high`. A model
+left omitted follows the client's native inheritance rather than a workflow-owned fallback.
 
 A named role is never rewritten. Claude Code gives a per-call `model` precedence over a role's
 own `model` frontmatter, `inherit` included, and a role's effective definition can live where a

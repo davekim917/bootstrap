@@ -13,9 +13,12 @@ import {
   rewriteClaudeSpawn,
 } from './dispatch-lib.mjs';
 
-test('a spawn with nothing named is left untouched', () => {
-  assert.equal(rewriteClaudeSpawn({ description: 'd', prompt: 'p' }), null);
-  assert.equal(rewriteClaudeSpawn({ subagent_type: 'general-purpose', prompt: 'p' }), null);
+test('a spawn with nothing named gains only the default effort', () => {
+  assert.deepEqual(rewriteClaudeSpawn({ description: 'd', prompt: 'p' }), { description: 'd', prompt: 'p', effort: 'high' });
+  assert.deepEqual(
+    rewriteClaudeSpawn({ subagent_type: 'general-purpose', prompt: 'p' }),
+    { subagent_type: 'general-purpose', prompt: 'p', effort: 'high' },
+  );
 });
 
 test('general-purpose counts as roleless', () => {
@@ -83,8 +86,8 @@ test('a model no human named is dropped so the spawn inherits, and the effort st
   const shim = (e) => `bootstrap-orchestrate:worker-${e}`;
   const cases = [
     [{ model: 'opus', subagent_type: shim('high') }, {}, [undefined, 'high', shim('high')]],
-    [{ model: 'sonnet', subagent_type: 'general-purpose' }, {}, [undefined, undefined, 'general-purpose']],
-    [{ model: 'sonnet', prompt: 'p' }, {}, [undefined, undefined, undefined]],
+    [{ model: 'sonnet', subagent_type: 'general-purpose' }, {}, [undefined, 'high', 'general-purpose']],
+    [{ model: 'sonnet', prompt: 'p' }, {}, [undefined, 'high', undefined]],
     [{ model: 'fable', effort: 'xhigh' }, { model: true }, ['fable', 'high', undefined]],
     [{ model: 'sonnet', subagent_type: shim('high') }, { effort: true }, [undefined, 'high', shim('high')]],
     [{ model: 'opus', effort: 'max' }, {}, [undefined, 'xhigh', undefined]],
@@ -273,8 +276,9 @@ test('the installed hook drops an agent-named model unless a human named it, and
   assert.equal(run(['/orchestrate high clean this up'], roleless), null);
   assert.equal(run(['please clean this up'], roleless), null);
   assert.equal(run(['use xhigh effort for this'], { subagent_type: 'general-purpose', effort: 'xhigh' }), null);
-  assert.equal(run(['please clean this up'], { subagent_type: 'general-purpose' }), null);
-  assert.equal(run(['compare Opus and Sonnet on this'], { model: 'sonnet', subagent_type: 'general-purpose' }), null);
+  assert.equal(run(['please clean this up'], { subagent_type: 'general-purpose' }).effort, 'high');
+  const compared = run(['compare Opus and Sonnet on this'], { model: 'sonnet', subagent_type: 'general-purpose' });
+  assert.deepEqual([compared.model, compared.effort], ['sonnet', 'high']);
 });
 
 test('an explicit effort above the cap is lowered; within the cap it is kept', () => {
@@ -298,7 +302,7 @@ function spawnHookRunner() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));
   const hook = fileURLToPath(new URL('../../../hooks/route-spawn.mjs', import.meta.url));
   let runs = 0;
-  const run = (human, toolInput, { parent = 'claude-opus-5-5', env = {} } = {}) => {
+  const run = (human, toolInput, { parent = 'claude-opus-5-5', env = {}, parentEffort } = {}) => {
     const transcript = path.join(root, `t-${runs++}.jsonl`);
     const records = [{ type: 'user', message: { role: 'user', content: human } }];
     if (parent) records.push({ type: 'assistant', message: { role: 'assistant', model: parent, content: [{ type: 'text', text: 'ok' }] } });
@@ -307,6 +311,7 @@ function spawnHookRunner() {
       input: JSON.stringify({
         tool_name: 'Agent',
         transcript_path: transcript,
+        ...(parentEffort ? { effort: { level: parentEffort } } : {}),
         tool_input: { subagent_type: 'general-purpose', description: 'review the spec', prompt: 'Read brief.md.', ...toolInput },
       }),
       encoding: 'utf8',
@@ -345,7 +350,8 @@ test('the installed hook tells the agent and the sub-agent when it drops the mod
 
 test('the installed hook adds no model note when a person named the model or no model was asked for', () => {
   const run = spawnHookRunner();
-  assert.equal(run('Use a fable subagent to review it.', { model: 'fable' }), null);
+  const kept = run('Use a fable subagent to review it.', { model: 'fable' });
+  assert.deepEqual([kept.updatedInput.model, kept.updatedInput.prompt, 'additionalContext' in kept], ['fable', 'Read brief.md.', false]);
   const named = run('Use a fable subagent to review it.', { model: 'fable', effort: 'xhigh' });
   assert.deepEqual([named.updatedInput.model, named.updatedInput.effort, named.updatedInput.prompt], ['fable', 'high', 'Read brief.md.']);
   assert.equal('additionalContext' in named, false);
@@ -353,4 +359,40 @@ test('the installed hook adds no model note when a person named the model or no 
   const effortOnly = run('Thanks, now get it reviewed.', { effort: 'max' });
   assert.deepEqual([effortOnly.updatedInput.effort, effortOnly.updatedInput.prompt], ['xhigh', 'Read brief.md.']);
   assert.equal('additionalContext' in effortOnly, false);
+});
+
+test('a roleless spawn that names no effort runs at high, or at the parent level when that is lower', () => {
+  const effortUnder = (parentEffort) =>
+    rewriteClaudeSpawn({ subagent_type: 'general-purpose', prompt: 'p' }, {}, { parentEffort })?.effort;
+  assert.deepEqual(
+    ['max', 'xhigh', 'high', 'medium', 'low', undefined].map(effortUnder),
+    ['high', 'high', 'high', 'medium', 'low', 'high'],
+  );
+});
+
+test('the effort a person named in their latest invocation fills a spawn that names none, within the model cap', () => {
+  const invoked = rewriteClaudeSpawn({ subagent_type: 'general-purpose', prompt: 'p' }, {}, { parentEffort: 'xhigh', invokedEffort: 'max' });
+  assert.equal(invoked?.effort, 'max');
+  const fable = rewriteClaudeSpawn({ model: 'fable', prompt: 'p' }, { model: true }, { invokedEffort: 'xhigh' });
+  assert.deepEqual([fable?.model, fable?.effort], ['fable', 'high']);
+  const called = rewriteClaudeSpawn({ subagent_type: 'general-purpose', effort: 'low', prompt: 'p' }, {}, { invokedEffort: 'xhigh' });
+  assert.equal(called, null);
+});
+
+test('the installed hook gives a spawn with no effort the default, keeps a level the person named, and still caps', () => {
+  const run = spawnHookRunner();
+  const xhighParent = { parentEffort: 'xhigh' };
+  const effortOf = (out) => out?.updatedInput?.effort;
+
+  assert.equal(effortOf(run('Thanks, now get it reviewed.', {}, xhighParent)), 'high');
+  assert.equal(effortOf(run('Thanks, now get it reviewed.', {}, { parentEffort: 'medium' })), 'medium');
+  assert.equal(effortOf(run('Thanks, now get it reviewed.', {})), 'high');
+
+  assert.equal(run('/orchestrate xhigh review the spec', { effort: 'xhigh' }, xhighParent), null);
+  assert.equal(effortOf(run('/orchestrate xhigh review the spec', {}, xhighParent)), 'xhigh');
+  assert.equal(effortOf(run('/orchestrate max review the spec', {}, xhighParent)), 'max');
+
+  assert.equal(effortOf(run('Thanks, now get it reviewed.', { effort: 'max' }, xhighParent)), 'xhigh');
+  assert.equal(effortOf(run('Use a fable subagent at xhigh to review it.', { model: 'fable' }, xhighParent)), 'high');
+  assert.equal(run('Thanks, now get it reviewed.', { subagent_type: 'Explore' }, xhighParent), null);
 });
