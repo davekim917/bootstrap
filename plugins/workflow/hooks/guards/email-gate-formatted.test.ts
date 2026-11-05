@@ -91,6 +91,8 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
         expect(evaluateEmailSend(plain, ENV).pureSend).toBeUndefined();
         const subject = (s: string) => command(formatted('<p>Hi Pat,</p>')).replace('--subject Hi', `--subject "${s}"`);
         expect(evaluateEmailSend(subject('*Urgent* wire'), ENV).pureSend).toBeUndefined();
+        for (const s of ['@everyone', 'Hi @here', 'see #general']) expect([s, evaluateEmailSend(subject(s), ENV).pureSend]).toEqual([s, undefined]);
+        expect(evaluateEmailSend(subject('Q3 plan for pat@example.com'), ENV).pureSend).toBe(true);
         const attached = command(formatted('<p>Hi Pat,</p>')).replace(' --html', ' --html -a /workspace/{{Emoji:check}}.xlsx');
         expect(evaluateEmailSend(attached, ENV).pureSend).toBeUndefined();
         expect(evaluateEmailSend(subject('Q3 plan'), ENV).pureSend).toBe(true);

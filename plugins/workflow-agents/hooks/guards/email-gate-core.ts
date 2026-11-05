@@ -492,10 +492,13 @@ function bodyShownAsIs(text: string): boolean {
 // Fields are shown as plain text, where chat Markdown would restyle or rewrite emphasis and code markers, escapes,
 // link brackets, table pipes, entities and emoji codes.
 const CHAT_SYNTAX = /[*_~`\\|[\]]|&#?\w+;|:[a-z0-9_+-]+:|\{\{emoji:/i;
+// A word starting with @ or # is a mention or channel link to Slack's automatic parsing (`@everyone` notifies the
+// workspace), though `pat@example.com` is not.
+const CHAT_MENTION = /(?:^|[^\w.+-])[@#][\w.-]/;
 
 /** True when chat Markdown would show this one-line field exactly as written. */
 export function chatLiteral(text: string): boolean {
-    return !CHAT_SYNTAX.test(text);
+    return !CHAT_SYNTAX.test(text) && !CHAT_MENTION.test(text);
 }
 
 // The session's host-owned directory, read-only, at a path whose every ancestor is a mountpoint or root-owned, so an
