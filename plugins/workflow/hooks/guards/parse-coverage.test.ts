@@ -11,8 +11,23 @@ describe('a line the parser stops reading partway through blocks', () => {
     test.each([
         ['a line continuation after $', 'ls $\\\n((1)); shred /tmp/report.txt'],
         ['a line continuation after <', 'cat <\\\n(true); shred /tmp/report.txt'],
+        ['the same stop inside a command substitution', 'echo "$(ls $\\\n((1)); shred /tmp/report.txt)"'],
+        ['the same stop inside a process substitution', 'cat <(ls $\\\n((1)); shred /tmp/report.txt)'],
+        ['the same stop inside backticks', 'echo `ls $\\\n((1)); shred /tmp/report.txt`'],
+        ['a line continuation after $ inside double quotes', 'echo "$\\\n(shred /tmp/report.txt)"'],
+        ['a line continuation after $ in a heredoc body', 'cat <<EOF\n$\\\n(shred /tmp/report.txt)\nEOF'],
+        ['a $(( whose first paren closes early', 'echo $((true); shred /tmp/report.txt)'],
+        ['a (( whose first paren closes early', '((true); shred /tmp/report.txt)'],
+        ['a # joined to a word by a line continuation', 'cat <(true)\\\n#x; shred /tmp/report.txt'],
+        ['the same stop in a case arm another arm follows', 'case x in x) ls $\\\n((1)); shred /tmp/report.txt;; y) true;; esac'],
+        ["an apostrophe in a heredoc inside $( ), which the parser reads past", `git commit -m "$(cat <<'EOF'\nit's done\nEOF\n)" && shred /tmp/report.txt`],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('block');
+    });
+
+    test('the refusal of a heredoc inside $( ) names the stdin form that reads whole', () => {
+        const reason = evaluateBashCommand(`git commit -m "$(cat <<'EOF'\nit's done\nEOF\n)"`, { cwd: '/tmp' }).reason ?? '';
+        expect(reason).toContain('git commit -F - <<');
     });
 });
 
@@ -32,6 +47,11 @@ describe('ordinary multi-line lines still read whole', () => {
         ['line continuations between arguments', 'grep -rn \\\n  --include=*.ts \\\n  needle /tmp/src'],
         ['comments on their own lines and after commands', '# list\nls /tmp # every file\necho done'],
         ['a redirected group joined to the next command', 'cd /tmp && { echo a; echo b; } > /tmp/out.txt && wc -l /tmp/out.txt'],
+        ['arithmetic with inner parens', 'echo $(( (1) + 2 )) $(((1+2)*3)); (( n = 1 << 3 )); echo "$n"'],
+        ['backticks', 'echo `date +%s`'],
+        ['a # after a line continuation that follows a blank', 'ls /tmp \\\n# note\necho done'],
+        ['a heredoc whose line is continued', 'cat <<EOF \\\n  | grep n\nnotes\nEOF\necho done'],
+        ['a heredoc inside $( ) for a commit message', `git commit -m "$(cat <<'EOF'\nfix: the guard reads the whole line\nEOF\n)"`],
         ['a pipeline into a while loop', "ls /tmp | while IFS=$'\\t' read -r f; do echo \"$f\"; done"],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');

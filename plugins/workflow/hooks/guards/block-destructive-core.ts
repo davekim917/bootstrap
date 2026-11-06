@@ -7171,7 +7171,9 @@ function shellParseProblem(command: string): string | null {
         if (!(e instanceof ShellParseError)) return null;
         const fix = e.message.includes('heredoc')
             ? "Put a heredoc on a named command (not a bare redirect or coproc), with its delimiter quoted whole ('EOF') or not at all (EOF)."
-            : 'Run it as simpler separate commands, or write a long script to a file and run the file.';
+            : /\$\([^]*<</.test(command)
+                ? "Text passed through a heredoc inside $(…) is one such case: give the text on stdin instead, as git commit -F - <<'EOF' or gh … --body-file - <<'EOF', write it to a file first, or keep apostrophes out of the heredoc."
+                : 'Run it as simpler separate commands, or write a long script to a file and run the file.';
         return `The guard can't read this command the way bash will run it (${e.message}), so it can't check what runs after that point. ${fix}`;
     }
 }
