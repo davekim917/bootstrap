@@ -4463,7 +4463,11 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
 }
 
 // Environment names that decide which config, binary or code snow runs with.
-const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
+// EXECIGNORE is not inherited, but this shell's PATH search for `snow` skips what it names.
+const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|EXECIGNORE|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
+// bash's own variables: an integer one (RANDOM, SECONDS, OPTIND) evaluates an assigned value as arithmetic, which can
+// assign any name, and BASH_CMDS/BASH_ALIASES repoint a command.
+const BASH_SPECIAL_NAME = /^(?:BASH\w*|RANDOM|SRANDOM|SECONDS|OPTIND|OPTARG|OPTERR|LINENO|HISTCMD|EPOCH\w+|FUNCNAME|FUNCNEST|GROUPS|DIRSTACK|COMP_\w+|IFS|SHELLOPTS|PS4|PROMPT_COMMAND|ENV|CDPATH|GLOBIGNORE|HIST\w*|TMOUT|IGNOREEOF|POSIXLY_CORRECT|PPID|UID|EUID|SHLVL)$/;
 // bash 5.2's builtins (`compgen -b`). Only a builtin runs inside the shell and can change what a later command inherits;
 // any other command is a child process.
 const BASH_BUILTINS = new Set(['.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait']);
@@ -4521,21 +4525,16 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
     const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => String(w?.text ?? ''))
         .concat(((n as { redirects?: Redirect[] }).redirects ?? []).flatMap(r => [String(r.target?.text ?? ''), String(r.content ?? '')]));
     const variableSafe = (name: unknown): name is string => typeof name === 'string' && /^[A-Za-z_]\w*$/.test(name)
-        && !(name in process.env) && !SNOW_ENVIRONMENT_NAME.test(name);
+        && !(name in process.env) && !SNOW_ENVIRONMENT_NAME.test(name) && !BASH_SPECIAL_NAME.test(name);
     const assignmentSafe = (a: Node) => a.type === 'Assignment' && variableSafe(a.name) && a.index === undefined && (a as { array?: unknown }).array === undefined
         && assignsNothing(String(a.text ?? ''));
     const quiet = (n: Node) => ((n as { redirects?: Array<{ operator?: string; target?: { text?: string } }> }).redirects ?? []).every(r =>
         (['>', '>>', '&>', '&>>'].includes(r.operator ?? '') && r.target?.text === '/dev/null') || (r.operator === '>&' && /^[12]$/.test(r.target?.text ?? '')));
     const runsNothing = (word: unknown) => assignsNothing(String(word ?? '')) && !/\$\(|`|[<>]\(/.test(String(word ?? ''));
     const nameOf = (n: Node) => (n.name as { text?: string } | undefined)?.text;
-    // printf's first word must be a literal that can't start with `-`: one that expands or globs could become `-v NAME`, which assigns.
-    const printing = (n: Node): boolean => {
-        const name = nameOf(n);
-        const args = (n.suffix ?? []).map(w => String(w?.text ?? ''));
-        if (n.type !== 'Command' || (n.prefix ?? []).length || !quiet(n) || !args.every(runsNothing)) return false;
-        return name === 'echo' || (name === 'printf' && args.length > 0
-            && /^(?:'[^'-][^']*'|"[^"$`\\-][^"$`\\]*"|[A-Za-z0-9%_.,:=/+@][A-Za-z0-9%_.,:=/+@-]*)$/.test(args[0]));
-    };
+    // printf is not here: its `-v NAME` and `%n` both assign.
+    const printing = (n: Node): boolean => n.type === 'Command' && nameOf(n) === 'echo' && !(n.prefix ?? []).length && quiet(n)
+        && (n.suffix ?? []).every(w => runsNothing(w?.text));
     const plainCommand = (n: Node): boolean => {
         const name = nameOf(n);
         return n.type === 'Command' && !(n.prefix ?? []).length && quiet(n) && (n.suffix ?? []).every(w => runsNothing(w?.text))
@@ -4572,6 +4571,10 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
         return at >= 0 && members.slice(0, at).every(neutral) && reaches(members[at]);
     };
     if (step.pos === undefined) return false;
+    // `{NAME}>file` stores the new descriptor's number in NAME, in this shell when the command is a builtin or compound.
+    const namesDescriptor = (node: unknown): boolean => !!node && typeof node === 'object'
+        && ((node as { variableName?: unknown }).variableName !== undefined || Object.values(node).some(namesDescriptor));
+    if (namesDescriptor(script)) return false;
     const statements = (script.commands ?? []).map(st => st.command ?? st);
     const at = statements.findIndex(holds);
     return at >= 0 && (script.commands ?? []).slice(0, at).every((st, i) => loop(st) || neutral(statements[i])) && reaches(statements[at]);
