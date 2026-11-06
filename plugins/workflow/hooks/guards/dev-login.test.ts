@@ -46,8 +46,10 @@ const GOOD_CONNECTIONS = [
 const verdict = (command: string) => evaluateBashCommand(command, { cwd: '/tmp' }).action;
 
 beforeAll(() => {
-    for (const k of ['HOME', DEV_SCOPE_FILE_ENV, 'DEV_LOGIN_TEST_EXPORTED']) saved[k] = process.env[k];
+    for (const k of ['HOME', DEV_SCOPE_FILE_ENV, 'DEV_LOGIN_TEST_EXPORTED', 'OLDPWD']) saved[k] = process.env[k];
     process.env.DEV_LOGIN_TEST_EXPORTED = '1';
+    // bash exports OLDPWD from startup even when the hook's own environment lacks it.
+    delete process.env.OLDPWD;
     dir = mkdtempSync(join(tmpdir(), 'dev-login-test-'));
     home = join(dir, 'home');
     mkdirSync(join(home, '.snowflake'), { recursive: true });
@@ -93,6 +95,16 @@ describe('a verified dev login runs any SQL without a card', () => {
         ['a file under HOME', 'snow sql -c acme_dev -f "$HOME/q.sql"'],
         ['a shell variable the environment does not hold', 'S=dev_db.scratch; snow sql -c acme_dev -q "drop table $S.t"'],
         ['a quoted variable as an option value', 'R=DEV_RW; snow sql -c acme_dev --role "$R" -q "drop table t"'],
+        ['echo before the step', 'echo hi; snow sql -c acme_dev -q "drop table t"'],
+        ['echo to stderr before the step', 'echo start >&2 && snow sql -c acme_dev -q "drop table t"'],
+        ['a loop that only prints', 'for n in a "$b"; do echo "== $n"; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop running a program, output discarded', 'for f in a b; do grep -c x "$f.log"; done > /dev/null 2>&1; snow sql -c acme_dev -q "drop table t"'],
+        ['several steps with a printing loop between them', [
+            'cd /tmp/w && timeout 900 snow sql -c acme_dev -f /tmp/w/a.sql > /tmp/w/a.out 2>&1',
+            'grep -E "SUCCESS|rror" /tmp/w/a.out | cut -c1-160',
+            'for n in one two; do echo "== $n"; done',
+            'timeout 900 snow sql -c acme_dev -f /tmp/w/b.sql > /tmp/w/b.out 2>&1',
+        ].join('; ')],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -132,7 +144,47 @@ describe('anything that could point the command at another login keeps the card'
         ['an indexed assignment', 'a[HOME=1]=x; snow sql -c acme_dev -q "drop table t"'],
         ['arithmetic in the step itself', 'snow sql -c acme_dev -q "drop table t$((HOME=1))"'],
         ['printf -v', `printf -v X '%s' 1; snow sql -c acme_dev -q "drop table t"`],
-        ['a builtin other than cd before the step', `echo hi; snow sql -c acme_dev -q "drop table t"`],
+        ['a builtin outside the neutral set before the step', `umask 077; snow sql -c acme_dev -q "drop table t"`],
+        ['echo writing a file', `echo x > /tmp/h/.snowflake/connections.toml; snow sql -c acme_dev -q "drop table t"`],
+        ['echo appending to a file', `echo x >> /tmp/h/.snowflake/config.toml; snow sql -c acme_dev -q "drop table t"`],
+        ['echo writing through a duplicated descriptor', `echo x >&3; snow sql -c acme_dev -q "drop table t"`],
+        ['echo reading a here-string', `echo x <<< y; snow sql -c acme_dev -q "drop table t"`],
+        ['echo running a command substitution', 'echo $(touch /tmp/x); snow sql -c acme_dev -q "drop table t"'],
+        ['echo running a backtick substitution', 'echo `touch /tmp/x`; snow sql -c acme_dev -q "drop table t"'],
+        ['echo running a process substitution', 'echo <(touch /tmp/x); snow sql -c acme_dev -q "drop table t"'],
+        ['echo with an assignment prefix', 'X=1 echo hi; snow sql -c acme_dev -q "drop table t"'],
+        ['printf assigning through %n', `printf '%n' HOME; snow sql -c acme_dev -q "drop table t"`],
+        ['printf assigning through %n in a loop body', `for n in a; do printf '%n' PATH; done; snow sql -c acme_dev -q "drop table t"`],
+        ['a loop over an integer variable, whose value is arithmetic', `for RANDOM in 'HOME=0'; do :; done; snow sql -c acme_dev -q "drop table t"`],
+        ['assigning an integer variable an arithmetic value', `OPTIND='PATH=0'; snow sql -c acme_dev -q "drop table t"`],
+        ['echo of arithmetic built by brace expansion', 'echo {$,}[HOME=1]; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop word building a subscript by brace expansion', 'for n in {$,}{a[HOME=1]}; do :; done; snow sql -c acme_dev -q "drop table t"'],
+        ['an external command with arithmetic built by brace expansion', 'ls {$,}[HOME=1]; snow sql -c acme_dev -q "drop table t"'],
+        ['echo of a subscript split by a line continuation', 'echo $\\\n{a[HOME=1]}; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop over OLDPWD', 'for OLDPWD in /x; do :; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop over the command hash', 'for BASH_CMDS in /tmp/evil; do :; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop over HOME before the step', 'for HOME in /tmp/h; do echo; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop over a name the environment holds', 'for DEV_LOGIN_TEST_EXPORTED in x; do echo; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop over a command substitution', 'for n in $(touch /tmp/x); do echo $n; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop over a backtick substitution', 'for n in `touch /tmp/x`; do echo $n; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop writing a file', 'for n in a; do echo $n; done > /tmp/f; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop body writing a file', 'for n in a; do echo $n > /tmp/f; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop body running a builtin', 'for n in a; do hash -p /tmp/evil snow; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop body running its variable', 'for n in /tmp/evil; do $n; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop nested in a loop', 'for n in a; do for m in b; do echo; done; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop with no word list', 'for n; do echo $n; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop joined to the step by &&', 'for n in a; do echo; done && snow sql -c acme_dev -q "drop table t"'],
+        ['an arithmetic loop', 'for ((i=0; i<1; i++)); do echo; done; snow sql -c acme_dev -q "drop table t"'],
+        ['a while loop', 'while false; do echo; done; snow sql -c acme_dev -q "drop table t"'],
+        ['echo in a brace group', '{ echo hi; }; snow sql -c acme_dev -q "drop table t"'],
+        ['echo in a subshell', '( echo hi ); snow sql -c acme_dev -q "drop table t"'],
+        ['echo storing a descriptor number in HOME', 'echo hi {HOME}>/dev/null; snow sql -c acme_dev -q "drop table t"'],
+        ['printf storing a descriptor number in PATH', 'printf ok {PATH}>&2; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop storing a descriptor number in PATH', 'for n in a; do :; done {PATH}>/dev/null; snow sql -c acme_dev -q "drop table t"'],
+        ['true storing a descriptor number in HOME', 'true {HOME}>/dev/null; snow sql -c acme_dev -q "drop table t"'],
+        ['cd storing a descriptor number in HOME', 'cd /tmp {HOME}>/dev/null && snow sql -c acme_dev -q "drop table t"'],
+        ['EXECIGNORE set on the line', 'EXECIGNORE=/usr/local/bin/snow; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop over EXECIGNORE', 'for EXECIGNORE in /usr/local/bin/snow; do :; done; snow sql -c acme_dev -q "drop table t"'],
         ['test -v with an array subscript', `test -v 'a[HOME=1]'; snow sql -c acme_dev -q "drop table t"`],
         ['jobs -x running a command', `jobs -x export HOME=/tmp/other; snow sql -c acme_dev -q "drop table t"`],
         ['arithmetic in a redirect', `ls > $((HOME=1)); snow sql -c acme_dev -q "drop table t"`],

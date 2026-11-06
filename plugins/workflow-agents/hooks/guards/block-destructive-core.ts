@@ -4467,7 +4467,11 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
 }
 
 // Environment names that decide which config, binary or code snow runs with.
-const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
+// EXECIGNORE is not inherited, but this shell's PATH search for `snow` skips what it names.
+const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|EXECIGNORE|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
+// bash's own variables: an integer one (RANDOM, SECONDS, OPTIND) evaluates an assigned value as arithmetic, which can
+// assign any name, and BASH_CMDS/BASH_ALIASES repoint a command.
+const BASH_SPECIAL_NAME = /^(?:BASH\w*|RANDOM|SRANDOM|SECONDS|OPTIND|OPTARG|OPTERR|LINENO|HISTCMD|EPOCH\w+|FUNCNAME|FUNCNEST|GROUPS|DIRSTACK|COMP_\w+|IFS|OLDPWD|PWD|SHELLOPTS|PS4|PROMPT_COMMAND|ENV|CDPATH|GLOBIGNORE|HIST\w*|TMOUT|IGNOREEOF|POSIXLY_CORRECT|PPID|UID|EUID|SHLVL)$/;
 // bash 5.2's builtins (`compgen -b`). Only a builtin runs inside the shell and can change what a later command inherits;
 // any other command is a child process.
 const BASH_BUILTINS = new Set(['.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait']);
@@ -4478,8 +4482,10 @@ const NEUTRAL_BUILTINS = new Set(['cd', 'true', ':']);
  * True when a word expands nothing that can assign: only `$NAME`, `${NAME}`, command substitutions (a subshell) and
  * literal text. `$(( ))`, `$[ ]` and any other `${…}` form evaluate arithmetic or assign in the current shell.
  */
-function assignsNothing(word: string): boolean {
-    return !/\$\(\(|\$\[/.test(word) && ![...word.matchAll(/\$\{/g)].some(m => !/^\$\{[A-Za-z_]\w*\}/.test(word.slice(m.index)));
+function assignsNothing(text: string): boolean {
+    // bash drops a backslash-newline and expands braces before it expands `$`, so `{$,}[x]` and `$\⏎{x}` can make `$[x]` or `${x}`.
+    const words = braceExpand(text.replace(/\\\n/g, ''));
+    return !!words && words.every(word => !/\$\(\(|\$\[/.test(word) && ![...word.matchAll(/\$\{/g)].some(m => !/^\$\{[A-Za-z_]\w*\}/.test(word.slice(m.index))));
 }
 
 /**
@@ -4524,13 +4530,34 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
     // Redirect targets and here-document bodies are expanded by this shell too.
     const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => String(w?.text ?? ''))
         .concat(((n as { redirects?: Redirect[] }).redirects ?? []).flatMap(r => [String(r.target?.text ?? ''), String(r.content ?? '')]));
-    const assignmentSafe = (a: Node) => a.type === 'Assignment' && typeof a.name === 'string' && a.index === undefined && (a as { array?: unknown }).array === undefined
-        && !(a.name in process.env) && !SNOW_ENVIRONMENT_NAME.test(a.name) && assignsNothing(String(a.text ?? ''));
+    const variableSafe = (name: unknown): name is string => typeof name === 'string' && /^[A-Za-z_]\w*$/.test(name)
+        && !(name in process.env) && !SNOW_ENVIRONMENT_NAME.test(name) && !BASH_SPECIAL_NAME.test(name);
+    const assignmentSafe = (a: Node) => a.type === 'Assignment' && variableSafe(a.name) && a.index === undefined && (a as { array?: unknown }).array === undefined
+        && assignsNothing(String(a.text ?? ''));
+    const quiet = (n: Node) => ((n as { redirects?: Array<{ operator?: string; target?: { text?: string } }> }).redirects ?? []).every(r =>
+        (['>', '>>', '&>', '&>>'].includes(r.operator ?? '') && r.target?.text === '/dev/null') || (r.operator === '>&' && /^[12]$/.test(r.target?.text ?? '')));
+    const runsNothing = (word: unknown) => assignsNothing(String(word ?? '')) && !/\$\(|`|[<>]\(/.test(String(word ?? ''));
+    const nameOf = (n: Node) => (n.name as { text?: string } | undefined)?.text;
+    // printf is not here: its `-v NAME` and `%n` both assign.
+    const printing = (n: Node): boolean => n.type === 'Command' && nameOf(n) === 'echo' && !(n.prefix ?? []).length && quiet(n)
+        && (n.suffix ?? []).every(w => runsNothing(w?.text));
+    const plainCommand = (n: Node): boolean => {
+        const name = nameOf(n);
+        return n.type === 'Command' && !(n.prefix ?? []).length && quiet(n) && (n.suffix ?? []).every(w => runsNothing(w?.text))
+            && !!name && /^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || name === 'true' || name === ':');
+    };
+    const loop = (st: Node): boolean => {
+        const n = st.command as Node & { wordlist?: Node[]; body?: Node };
+        return n?.type === 'For' && quiet(st) && variableSafe((n.name as { text?: string } | undefined)?.text)
+            && Array.isArray(n.wordlist) && n.wordlist.length > 0 && n.wordlist.every(w => runsNothing(w?.text))
+            && n.body?.type === 'CompoundList' && (n.body.commands ?? []).every(b => quiet(b) && !!b.command && (printing(b.command) || plainCommand(b.command)));
+    };
     const neutral = (n: Node): boolean => {
         if (n.type === 'Pipeline') return (n.commands?.length ?? 0) > 1;
         if (n.type === 'AndOr') return (n.commands ?? []).every(neutral);
         if (n.type !== 'Command') return false;
-        const name = (n.name as { text?: string } | undefined)?.text;
+        if (printing(n)) return true;
+        const name = nameOf(n);
         if (!(n.prefix ?? []).every(assignmentSafe)) return false;
         const neutralName = name === undefined
             || (/^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || NEUTRAL_BUILTINS.has(name)));
@@ -4550,9 +4577,13 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
         return at >= 0 && members.slice(0, at).every(neutral) && reaches(members[at]);
     };
     if (step.pos === undefined) return false;
+    // `{NAME}>file` stores the new descriptor's number in NAME, in this shell when the command is a builtin or compound.
+    const namesDescriptor = (node: unknown): boolean => !!node && typeof node === 'object'
+        && ((node as { variableName?: unknown }).variableName !== undefined || Object.values(node).some(namesDescriptor));
+    if (namesDescriptor(script)) return false;
     const statements = (script.commands ?? []).map(st => st.command ?? st);
     const at = statements.findIndex(holds);
-    return at >= 0 && statements.slice(0, at).every(neutral) && reaches(statements[at]);
+    return at >= 0 && (script.commands ?? []).slice(0, at).every((st, i) => loop(st) || neutral(statements[i])) && reaches(statements[at]);
 }
 
 /** The connection a `snow sql` step names, when every option it carries is one a trusted dev login may take. */
