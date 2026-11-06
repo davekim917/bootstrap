@@ -20,6 +20,15 @@ describe('a line the parser stops reading partway through blocks', () => {
         ['a (( whose first paren closes early', '((true); shred /tmp/report.txt)'],
         ['a # joined to a word by a line continuation', 'cat <(true)\\\n#x; shred /tmp/report.txt'],
         ['the same stop in a case arm another arm follows', 'case x in x) ls $\\\n((1)); shred /tmp/report.txt;; y) true;; esac'],
+        ['a $(( whose first paren closes early in a heredoc body', 'cat <<EOF\n$((true); shred /tmp/report.txt)\nEOF'],
+        ['a (( whose first paren closes early inside backticks with a backslash', 'echo `echo \\\\x; ((true); shred /tmp/report.txt)`'],
+        ['a # joined by a line continuation inside backticks', 'echo `cat <(true)\\\n#x; shred /tmp/report.txt`'],
+        ['arithmetic the parser ends early', 'echo $(( ($(date +%s) - $(stat -c %Y "/tmp/f")) / 3600 )); shred /tmp/report.txt'],
+        ['a substitution in an array subscript', 'a[$(shred /tmp/report.txt)]=1'],
+        ['a substitution in a subscript expansion', 'echo ${a[$(shred /tmp/report.txt)]}'],
+        ['a process substitution spanning lines', 'cat <(echo a\nshred /tmp/report.txt)'],
+        ['a loop fed by a process substitution spanning lines', 'while read -r l; do echo "$l"; done < <(\n  shred /tmp/report.txt\n)'],
+        ['a single-quoted $( in a word spanning lines', `echo '$(\n'"$(shred /tmp/report.txt)"')'`],
         ["an apostrophe in a heredoc inside $( ), which the parser reads past", `git commit -m "$(cat <<'EOF'\nit's done\nEOF\n)" && shred /tmp/report.txt`],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('block');
@@ -52,6 +61,8 @@ describe('ordinary multi-line lines still read whole', () => {
         ['a # after a line continuation that follows a blank', 'ls /tmp \\\n# note\necho done'],
         ['a heredoc whose line is continued', 'cat <<EOF \\\n  | grep n\nnotes\nEOF\necho done'],
         ['a heredoc inside $( ) for a commit message', `git commit -m "$(cat <<'EOF'\nfix: the guard reads the whole line\nEOF\n)"`],
+        ['a comment after a background job', 'sleep 1 &# wait\necho done'],
+        ['a backtick substitution with an escaped $', 'echo `echo \\$HOME; ls /tmp`'],
         ['a pipeline into a while loop', "ls /tmp | while IFS=$'\\t' read -r f; do echo \"$f\"; done"],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');

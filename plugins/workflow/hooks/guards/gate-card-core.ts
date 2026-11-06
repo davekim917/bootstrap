@@ -281,18 +281,31 @@ export function parseShell(command: string): any {
  */
 function wholeParse(script: any, src: string): any {
     if (/[$<>](?:\\\n)+/.test(src)) throw new ShellParseError('a line continuation right after $, < or >');
+    for (let at = src.indexOf('$(('); at >= 0; at = src.indexOf('$((', at + 1)) {
+        if (!readsAsArithmetic(src.slice(at), 2)) throw new ShellParseError('arithmetic bash reads as a command substitution');
+    }
     covers(script, src);
+    const bodies = new Set(heredocRedirects(script).map(r => r.body).filter(Boolean));
     try {
         walk(script, n => {
-            if (n.type === 'ArithmeticExpansion' && String(n.text ?? '').startsWith('$((') && !readsAsArithmetic(String(n.text), 2)) {
-                throw new ShellParseError('arithmetic bash reads as a command substitution');
+            if (bodies.has(n)) return;
+            const text = typeof n.text === 'string' ? n.text : '';
+            // unbash can end an expansion's text early and lose what follows; bash's own reading ends it at the last `))`.
+            if (n.type === 'ArithmeticExpansion' && text.startsWith('$((') && !(readsAsArithmetic(text, 2) && text.endsWith('))') && closesAt(text, 2) === text.length - 2)) {
+                throw new ShellParseError('arithmetic the parser ends early');
             }
+            // unbash reads a word that spans lines the way it reads a heredoc body: blind to quotes and to `<(`.
+            // A heredoc inside the word is read by the substitution's own check; this quote scan can't model its body.
+            if (text.includes('\n') && !text.includes('<<') && misreadAcrossLines(text)) {
+                throw new ShellParseError('a multi-line word the parser reads differently from bash');
+            }
+            // unbash keeps a subscript as plain text, so a substitution in one is never read.
+            const subscript = n.type === 'Assignment' ? text.match(/^[A-Za-z_]\w*\[([^\]]*)\]\+?=/)
+                : n.type === 'ParameterExpansion' ? text.match(/^\$\{[#!]?[A-Za-z_]\w*\[([^\]]*)\]/) : null;
+            if (subscript && /\$\(|`|[<>]\(/.test(subscript[1])) throw new ShellParseError('a substitution inside an array subscript');
             if (n.type !== 'CommandExpansion' && n.type !== 'ProcessSubstitution') return;
-            const text = String(n.text ?? '');
-            const backtick = text.startsWith('`');
-            // bash removes backslashes inside backticks before parsing, so their offsets don't index the written text.
-            if (backtick && text.includes('\\')) return;
-            covers(n.script, backtick ? text.slice(1, -1) : text.slice(2, -1));
+            // Inside backticks bash drops the backslash of \$, \` and \\ before parsing; unbash's offsets index that text.
+            covers(n.script, text.startsWith('`') ? text.slice(1, -1).replace(/\\([$`\\])/g, '$1') : text.slice(2, -1));
         });
     } catch (e) {
         throw e instanceof RangeError ? new ShellParseError(e.message) : e;
@@ -300,7 +313,55 @@ function wholeParse(script: any, src: string): any {
     return script;
 }
 
-/** Whether bash reads the `((` whose second paren is at `open` as arithmetic: that paren must close just before the last `)`. */
+/**
+ * Whether reading `text` the way unbash reads a heredoc body would lose a command bash runs: an unquoted `<(` or `>(`,
+ * which that reading drops, or a `$(` or backtick inside single quotes, which that reading opens and can close past a
+ * real substitution beside it.
+ */
+function misreadAcrossLines(text: string): boolean {
+    let quote: "'" | '"' | null = null;
+    let quoted = false;
+    let real = false;
+    for (let k = 0; k < text.length; k++) {
+        const c = text[k];
+        const opens = c === '`' || (c === '$' && text[k + 1] === '(');
+        if (quote === "'") {
+            if (c === "'") quote = null;
+            else if (opens) quoted = true;
+        } else if (c === '\\') {
+            k++;
+        } else if (opens) {
+            real = true;
+        } else if (quote === '"') {
+            if (c === '"') quote = null;
+        } else if (c === "'" || c === '"') {
+            quote = c;
+        } else if ((c === '<' || c === '>') && text[k + 1] === '(') {
+            return true;
+        }
+    }
+    return quoted && real;
+}
+
+/** Index of the `)` closing the paren at `open`, counting as readsAsArithmetic does; -1 when it doesn't close. */
+function closesAt(text: string, open: number): number {
+    let depth = 0;
+    for (let k = open; k < text.length; k++) {
+        const c = text[k];
+        if (c === "'" || c === '"') {
+            const close = text.indexOf(c, k + 1);
+            if (close < 0) return -1;
+            k = close;
+        } else if (c === '(') {
+            depth++;
+        } else if (c === ')' && --depth === 0) {
+            return k;
+        }
+    }
+    return -1;
+}
+
+/** Whether bash reads the `((` whose second paren is at `open` in `text` as arithmetic: that paren must close just before a `)`. */
 function readsAsArithmetic(text: string, open: number): boolean {
     let depth = 0;
     for (let k = open; k < text.length; k++) {
@@ -314,7 +375,7 @@ function readsAsArithmetic(text: string, open: number): boolean {
         } else if (c === '(') {
             depth++;
         } else if (c === ')' && --depth === 0) {
-            return k === text.length - 2 && text[k + 1] === ')';
+            return text[k + 1] === ')';
         }
     }
     return false;
@@ -407,7 +468,7 @@ function covers(script: any, src: string): void {
 function startsComment(src: string, i: number): boolean {
     let p = i;
     while (p >= 2 && src[p - 1] === '\n' && src[p - 2] === '\\') p -= 2;
-    return p === 0 || ' \t\n;'.includes(src[p - 1]);
+    return p === 0 || ' \t\n;&|'.includes(src[p - 1]);
 }
 
 /** Throws when a heredoc inside a command substitution has a delimiter unbash misread; those can't be rewritten. */
