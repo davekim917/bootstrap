@@ -296,13 +296,12 @@ function wholeParse(script: any, src: string): any {
             }
             // unbash reads a word that spans lines the way it reads a heredoc body: blind to quotes and to `<(`.
             // A heredoc inside the word is read by the substitution's own check; this quote scan can't model its body.
-            if (text.includes('\n') && !text.includes('<<') && misreadAcrossLines(text)) {
+            if (text.includes('\n') && misreadAcrossLines(text, !text.includes('<<'))) {
                 throw new ShellParseError('a multi-line word the parser reads differently from bash');
             }
             // unbash keeps a subscript as plain text, so a substitution in one is never read.
-            const subscript = n.type === 'Assignment' ? text.match(/^[A-Za-z_]\w*\[([^\]]*)\]\+?=/)
-                : n.type === 'ParameterExpansion' ? text.match(/^\$\{[#!]?[A-Za-z_]\w*\[([^\]]*)\]/) : null;
-            if (subscript && /\$\(|`|[<>]\(/.test(subscript[1])) throw new ShellParseError('a substitution inside an array subscript');
+            const open = (n.type === 'Assignment' ? text.match(/^[A-Za-z_]\w*\[/) : n.type === 'ParameterExpansion' ? text.match(/^\$\{[#!]?[A-Za-z_]\w*\[/) : null)?.[0].length;
+            if (open !== undefined && /\$\(|`|[<>]\(/.test(subscriptAt(text, open))) throw new ShellParseError('a substitution inside an array subscript');
             if (n.type !== 'CommandExpansion' && n.type !== 'ProcessSubstitution') return;
             // Inside backticks bash drops the backslash of \$, \` and \\ before parsing; unbash's offsets index that text.
             covers(n.script, text.startsWith('`') ? text.slice(1, -1).replace(/\\([$`\\])/g, '$1') : text.slice(2, -1));
@@ -318,7 +317,7 @@ function wholeParse(script: any, src: string): any {
  * which that reading drops, or a `$(` or backtick inside single quotes, which that reading opens and can close past a
  * real substitution beside it.
  */
-function misreadAcrossLines(text: string): boolean {
+function misreadAcrossLines(text: string, checkQuoted: boolean): boolean {
     let quote: "'" | '"' | null = null;
     let quoted = false;
     let real = false;
@@ -340,7 +339,23 @@ function misreadAcrossLines(text: string): boolean {
             return true;
         }
     }
-    return quoted && real;
+    return checkQuoted && quoted && real;
+}
+
+/** The text of the subscript opening at `start`, up to its matching `]`; nested brackets and quoted text don't close it. */
+function subscriptAt(text: string, start: number): string {
+    let depth = 1;
+    for (let k = start; k < text.length; k++) {
+        const c = text[k];
+        if (c === '\\') k++;
+        else if (c === "'" || c === '"') {
+            const close = text.indexOf(c, k + 1);
+            if (close < 0) return text.slice(start);
+            k = close;
+        } else if (c === '[') depth++;
+        else if (c === ']' && --depth === 0) return text.slice(start, k);
+    }
+    return text.slice(start);
 }
 
 /** Index of the `)` closing the paren at `open`, counting as readsAsArithmetic does; -1 when it doesn't close. */
@@ -366,6 +381,10 @@ function readsAsArithmetic(text: string, open: number): boolean {
     let depth = 0;
     for (let k = open; k < text.length; k++) {
         const c = text[k];
+        if (c === '\\' && text[k + 1] === '\n') {
+            k++;
+            continue;
+        }
         if (c === '\\' || c === '`') return false;
         if (c === "'" || c === '"') {
             // A paren inside quotes would need bash's own quote matching to count.
