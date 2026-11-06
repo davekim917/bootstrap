@@ -160,7 +160,6 @@ describe('anything that could point the command at another login keeps the card'
         ['echo of arithmetic built by brace expansion', 'echo {$,}[HOME=1]; snow sql -c acme_dev -q "drop table t"'],
         ['a loop word building a subscript by brace expansion', 'for n in {$,}{a[HOME=1]}; do :; done; snow sql -c acme_dev -q "drop table t"'],
         ['an external command with arithmetic built by brace expansion', 'ls {$,}[HOME=1]; snow sql -c acme_dev -q "drop table t"'],
-        ['echo of a subscript split by a line continuation', 'echo $\\\n{a[HOME=1]}; snow sql -c acme_dev -q "drop table t"'],
         ['a loop over OLDPWD', 'for OLDPWD in /x; do :; done; snow sql -c acme_dev -q "drop table t"'],
         ['a loop over the command hash', 'for BASH_CMDS in /tmp/evil; do :; done; snow sql -c acme_dev -q "drop table t"'],
         ['a loop over HOME before the step', 'for HOME in /tmp/h; do echo; done; snow sql -c acme_dev -q "drop table t"'],
@@ -217,6 +216,10 @@ describe('anything that could point the command at another login keeps the card'
         ['a function named snow', 'snow() { command snow sql -c acme_admin -q "$5"; }; snow sql -c acme_dev -q "drop table t"'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('gate');
+    });
+
+    test('a subscript split from its $ by a line continuation is unreadable, so it blocks', () => {
+        expect(verdict('echo $\\\n{a[HOME=1]}; snow sql -c acme_dev -q "drop table t"')).toBe('block');
     });
 
     test('a config reached through a symlink is never trusted', () => {

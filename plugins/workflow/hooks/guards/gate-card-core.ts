@@ -254,7 +254,7 @@ function canonicalDelimiter(delimiter: string, quoted: boolean, length: number):
  * own text), so the caller blocks instead of trusting a parse that hides commands.
  */
 export function parseShell(command: string): any {
-    if (!command.includes('<<')) return parse(command);
+    if (!command.includes('<<')) return wholeParse(parse(command), command);
     let src = command;
     for (let round = 0; round <= HEREDOC_REWRITES_MAX; round++) {
         const ast: any = parse(src);
@@ -262,7 +262,7 @@ export function parseShell(command: string): any {
         if (!misread) {
             if (dropsRedirects(ast, src)) throw new ShellParseError('a heredoc on a command the parser drops redirects from');
             checkNestedHeredocs(ast);
-            return ast;
+            return wholeParse(ast, src);
         }
         const { start, bash } = misread;
         if (!bash) throw new ShellParseError('a heredoc delimiter the guard cannot read the way bash does');
@@ -271,6 +271,223 @@ export function parseShell(command: string): any {
         src = src.slice(0, start) + form + src.slice(bash.end);
     }
     throw new ShellParseError('too many heredocs to read');
+}
+
+/**
+ * `script`, when it accounts for everything bash runs from `src`; throws ShellParseError when not. unbash can stop
+ * reading partway through a line, or through a substitution, without an error, and bash still runs the rest. bash also
+ * joins a line continuation before it reads `$(`, and reads a `$((` whose first paren closes early as a command
+ * substitution, where unbash keeps literal text or arithmetic.
+ */
+function wholeParse(script: any, src: string): any {
+    if (/[$<>](?:\\\n)+/.test(src)) throw new ShellParseError('a line continuation right after $, < or >');
+    for (let at = src.indexOf('$(('); at >= 0; at = src.indexOf('$((', at + 1)) {
+        if (!readsAsArithmetic(src.slice(at), 2)) throw new ShellParseError('arithmetic bash reads as a command substitution');
+    }
+    covers(script, src);
+    const bodies = new Set(heredocRedirects(script).map(r => r.body).filter(Boolean));
+    try {
+        walk(script, n => {
+            if (bodies.has(n)) return;
+            const text = typeof n.text === 'string' ? n.text : '';
+            // unbash can end an expansion's text early and lose what follows; bash's own reading ends it at the last `))`.
+            if (n.type === 'ArithmeticExpansion' && text.startsWith('$((') && !(readsAsArithmetic(text, 2) && text.endsWith('))') && closesAt(text, 2) === text.length - 2)) {
+                throw new ShellParseError('arithmetic the parser ends early');
+            }
+            // unbash reads a word that spans lines the way it reads a heredoc body: blind to quotes and to `<(`.
+            // A heredoc inside the word is read by the substitution's own check; this quote scan can't model its body.
+            if (text.includes('\n') && misreadAcrossLines(text, !text.includes('<<'))) {
+                throw new ShellParseError('a multi-line word the parser reads differently from bash');
+            }
+            // unbash keeps a subscript as plain text, so a substitution in one is never read.
+            const open = (n.type === 'Assignment' ? text.match(/^[A-Za-z_]\w*\[/) : n.type === 'ParameterExpansion' ? text.match(/^\$\{[#!]?[A-Za-z_]\w*\[/) : null)?.[0].length;
+            if (open !== undefined && /\$\(|`|[<>]\(/.test(subscriptAt(text, open))) throw new ShellParseError('a substitution inside an array subscript');
+            if (n.type !== 'CommandExpansion' && n.type !== 'ProcessSubstitution') return;
+            // Inside backticks bash drops the backslash of \$, \` and \\ before parsing; unbash's offsets index that text.
+            covers(n.script, text.startsWith('`') ? text.slice(1, -1).replace(/\\([$`\\])/g, '$1') : text.slice(2, -1));
+        });
+    } catch (e) {
+        throw e instanceof RangeError ? new ShellParseError(e.message) : e;
+    }
+    return script;
+}
+
+/**
+ * Whether reading `text` the way unbash reads a heredoc body would lose a command bash runs: an unquoted `<(` or `>(`,
+ * which that reading drops, or a `$(` or backtick inside single quotes, which that reading opens and can close past a
+ * real substitution beside it.
+ */
+function misreadAcrossLines(text: string, checkQuoted: boolean): boolean {
+    let quote: "'" | '"' | null = null;
+    let quoted = false;
+    let real = false;
+    for (let k = 0; k < text.length; k++) {
+        const c = text[k];
+        const opens = c === '`' || (c === '$' && text[k + 1] === '(');
+        if (quote === "'") {
+            if (c === "'") quote = null;
+            else if (opens) quoted = true;
+        } else if (c === '\\') {
+            k++;
+        } else if (opens) {
+            real = true;
+        } else if (quote === '"') {
+            if (c === '"') quote = null;
+        } else if (c === "'" || c === '"') {
+            quote = c;
+        } else if ((c === '<' || c === '>') && text[k + 1] === '(') {
+            return true;
+        }
+    }
+    return checkQuoted && quoted && real;
+}
+
+/** The text of the subscript opening at `start`, up to its matching `]`; nested brackets and quoted text don't close it. */
+function subscriptAt(text: string, start: number): string {
+    let depth = 1;
+    for (let k = start; k < text.length; k++) {
+        const c = text[k];
+        if (c === '\\') k++;
+        else if (c === "'" || c === '"') {
+            const close = text.indexOf(c, k + 1);
+            if (close < 0) return text.slice(start);
+            k = close;
+        } else if (c === '[') depth++;
+        else if (c === ']' && --depth === 0) return text.slice(start, k);
+    }
+    return text.slice(start);
+}
+
+/** Index of the `)` closing the paren at `open`, counting as readsAsArithmetic does; -1 when it doesn't close. */
+function closesAt(text: string, open: number): number {
+    let depth = 0;
+    for (let k = open; k < text.length; k++) {
+        const c = text[k];
+        if (c === "'" || c === '"') {
+            const close = text.indexOf(c, k + 1);
+            if (close < 0) return -1;
+            k = close;
+        } else if (c === '(') {
+            depth++;
+        } else if (c === ')' && --depth === 0) {
+            return k;
+        }
+    }
+    return -1;
+}
+
+/** Whether bash reads the `((` whose second paren is at `open` in `text` as arithmetic: that paren must close just before a `)`. */
+function readsAsArithmetic(text: string, open: number): boolean {
+    let depth = 0;
+    for (let k = open; k < text.length; k++) {
+        const c = text[k];
+        if (c === '\\' && text[k + 1] === '\n') {
+            k++;
+            continue;
+        }
+        if (c === '\\' || c === '`') return false;
+        if (c === "'" || c === '"') {
+            // A paren inside quotes would need bash's own quote matching to count.
+            const close = text.indexOf(c, k + 1);
+            if (close < 0 || /[()]/.test(text.slice(k + 1, close))) return false;
+            k = close;
+        } else if (c === '(') {
+            depth++;
+        } else if (c === ')' && --depth === 0) {
+            return text[k + 1] === ')';
+        }
+    }
+    return false;
+}
+
+/**
+ * Throws ShellParseError unless the spans of `script`'s nodes and what lies between them account for all of `src`.
+ * unbash's statement ends are not reliable (a redirect on an inner group shortens them), so the spans are every
+ * command, word and redirect it built. Between them there may only be blanks, `;`, line continuations, comments and,
+ * after a line's end, the bodies of that line's heredocs in order.
+ */
+function covers(script: any, src: string): void {
+    const spans: Array<[number, number]> = [];
+    const seen = new WeakSet<object>();
+    const collect = (node: unknown, depth: number): void => {
+        if (!node || typeof node !== 'object' || seen.has(node as object)) return;
+        if (depth > WALK_MAX_DEPTH) throw new ShellParseError('command nests too deeply to read');
+        seen.add(node as object);
+        const r = node as Record<string, any>;
+        if (depth > 0 && typeof r.pos === 'number' && typeof r.end === 'number' && r.end > r.pos) spans.push([r.pos, r.end]);
+        if (r.type === 'ArithmeticCommand' && !readsAsArithmetic(src.slice(r.pos, r.end), 1)) {
+            throw new ShellParseError('arithmetic bash reads as a subshell');
+        }
+        // A word's parts and a substitution's script are placed relative to their own text.
+        for (const [key, child] of Object.entries(r)) if (key !== 'parts' && key !== 'script' && key !== 'parent') collect(child, depth + 1);
+    };
+    collect(script, 0);
+    spans.sort((a, b) => a[0] - b[0]);
+    const merged: Array<[number, number]> = [];
+    for (const [pos, end] of spans) {
+        const last = merged.at(-1);
+        if (last && pos <= last[1]) last[1] = Math.max(last[1], end);
+        else merged.push([pos, end]);
+    }
+    const heredocs = heredocRedirects(script).sort((a, b) => a.pos - b.pos);
+    const pending: Array<{ body: string; delimiter: string; tabs: boolean }> = [];
+    let i = 0;
+    const between = (end: number): boolean => {
+        while (i < end) {
+            const c = src[i];
+            if (c === ' ' || c === '\t' || c === ';') {
+                i++;
+            } else if (c === '\\' && src[i + 1] === '\n') {
+                i += 2;
+            } else if (c === '#' && startsComment(src, i)) {
+                const eol = src.indexOf('\n', i);
+                i = eol < 0 ? src.length : eol;
+            } else if (c === '\n') {
+                i++;
+                for (const h of pending.splice(0)) {
+                    if (!src.startsWith(h.body, i)) return false;
+                    i += h.body.length;
+                    // bash ends a body the input ends without its delimiter line there, with a warning.
+                    if (i === src.length) continue;
+                    if (h.tabs) while (src[i] === '\t') i++;
+                    if (!src.startsWith(h.delimiter, i)) return false;
+                    i += h.delimiter.length;
+                    if (i < src.length && src[i++] !== '\n') return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        return true;
+    };
+    for (const [pos, end] of merged) {
+        if (end <= i) continue;
+        if (pos < i || !between(pos)) throw new ShellParseError('text the parser skipped');
+        // A heredoc body read off the line's end runs past `pos` when unbash made the body a word of its own.
+        if (i > pos) {
+            if (end > i) throw new ShellParseError('text the parser skipped');
+            continue;
+        }
+        i = end;
+        for (const r of heredocs) {
+            if (r.pos < pos || r.pos >= end) continue;
+            let eol = src.indexOf('\n', r.end);
+            while (eol > 0 && src[eol - 1] === '\\') eol = src.indexOf('\n', eol + 1);
+            if (eol >= 0 && eol < end) continue;
+            const start = heredocWordStart(src, r);
+            const word = start === null ? null : bashHeredocDelimiter(src, start);
+            if (!word) throw new ShellParseError('a heredoc operator the guard cannot locate');
+            pending.push({ body: String(r.content ?? ''), delimiter: word.delimiter, tabs: r.operator === '<<-' });
+        }
+    }
+    if (!between(src.length) || pending.length) throw new ShellParseError('text the parser skipped');
+}
+
+/** Whether bash starts a comment at the `#` at `i`: after a blank, `;` or newline, a line continuation between not counting. */
+function startsComment(src: string, i: number): boolean {
+    let p = i;
+    while (p >= 2 && src[p - 1] === '\n' && src[p - 2] === '\\') p -= 2;
+    return p === 0 || ' \t\n;&|'.includes(src[p - 1]);
 }
 
 /** Throws when a heredoc inside a command substitution has a delimiter unbash misread; those can't be rewritten. */
