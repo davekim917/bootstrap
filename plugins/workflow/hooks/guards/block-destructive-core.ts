@@ -4520,13 +4520,39 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
     // Redirect targets and here-document bodies are expanded by this shell too.
     const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => String(w?.text ?? ''))
         .concat(((n as { redirects?: Redirect[] }).redirects ?? []).flatMap(r => [String(r.target?.text ?? ''), String(r.content ?? '')]));
-    const assignmentSafe = (a: Node) => a.type === 'Assignment' && typeof a.name === 'string' && a.index === undefined && (a as { array?: unknown }).array === undefined
-        && !(a.name in process.env) && !SNOW_ENVIRONMENT_NAME.test(a.name) && assignsNothing(String(a.text ?? ''));
+    const variableSafe = (name: unknown): name is string => typeof name === 'string' && /^[A-Za-z_]\w*$/.test(name)
+        && !(name in process.env) && !SNOW_ENVIRONMENT_NAME.test(name);
+    const assignmentSafe = (a: Node) => a.type === 'Assignment' && variableSafe(a.name) && a.index === undefined && (a as { array?: unknown }).array === undefined
+        && assignsNothing(String(a.text ?? ''));
+    const quiet = (n: Node) => ((n as { redirects?: Array<{ operator?: string; target?: { text?: string } }> }).redirects ?? []).every(r =>
+        (['>', '>>', '&>', '&>>'].includes(r.operator ?? '') && r.target?.text === '/dev/null') || (r.operator === '>&' && /^[12]$/.test(r.target?.text ?? '')));
+    const runsNothing = (word: unknown) => assignsNothing(String(word ?? '')) && !/\$\(|`|[<>]\(/.test(String(word ?? ''));
+    const nameOf = (n: Node) => (n.name as { text?: string } | undefined)?.text;
+    // printf's first word must be a literal that can't start with `-`: one that expands or globs could become `-v NAME`, which assigns.
+    const printing = (n: Node): boolean => {
+        const name = nameOf(n);
+        const args = (n.suffix ?? []).map(w => String(w?.text ?? ''));
+        if (n.type !== 'Command' || (n.prefix ?? []).length || !quiet(n) || !args.every(runsNothing)) return false;
+        return name === 'echo' || (name === 'printf' && args.length > 0
+            && /^(?:'[^'-][^']*'|"[^"$`\\-][^"$`\\]*"|[A-Za-z0-9%_.,:=/+@][A-Za-z0-9%_.,:=/+@-]*)$/.test(args[0]));
+    };
+    const plainCommand = (n: Node): boolean => {
+        const name = nameOf(n);
+        return n.type === 'Command' && !(n.prefix ?? []).length && quiet(n) && (n.suffix ?? []).every(w => runsNothing(w?.text))
+            && !!name && /^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || name === 'true' || name === ':');
+    };
+    const loop = (st: Node): boolean => {
+        const n = st.command as Node & { wordlist?: Node[]; body?: Node };
+        return n?.type === 'For' && quiet(st) && variableSafe((n.name as { text?: string } | undefined)?.text)
+            && Array.isArray(n.wordlist) && n.wordlist.length > 0 && n.wordlist.every(w => runsNothing(w?.text))
+            && n.body?.type === 'CompoundList' && (n.body.commands ?? []).every(b => quiet(b) && !!b.command && (printing(b.command) || plainCommand(b.command)));
+    };
     const neutral = (n: Node): boolean => {
         if (n.type === 'Pipeline') return (n.commands?.length ?? 0) > 1;
         if (n.type === 'AndOr') return (n.commands ?? []).every(neutral);
         if (n.type !== 'Command') return false;
-        const name = (n.name as { text?: string } | undefined)?.text;
+        if (printing(n)) return true;
+        const name = nameOf(n);
         if (!(n.prefix ?? []).every(assignmentSafe)) return false;
         const neutralName = name === undefined
             || (/^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || NEUTRAL_BUILTINS.has(name)));
@@ -4548,7 +4574,7 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
     if (step.pos === undefined) return false;
     const statements = (script.commands ?? []).map(st => st.command ?? st);
     const at = statements.findIndex(holds);
-    return at >= 0 && statements.slice(0, at).every(neutral) && reaches(statements[at]);
+    return at >= 0 && (script.commands ?? []).slice(0, at).every((st, i) => loop(st) || neutral(statements[i])) && reaches(statements[at]);
 }
 
 /** The connection a `snow sql` step names, when every option it carries is one a trusted dev login may take. */
