@@ -4471,7 +4471,7 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
 const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|EXECIGNORE|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
 // bash's own variables: an integer one (RANDOM, SECONDS, OPTIND) evaluates an assigned value as arithmetic, which can
 // assign any name, and BASH_CMDS/BASH_ALIASES repoint a command.
-const BASH_SPECIAL_NAME = /^(?:BASH\w*|RANDOM|SRANDOM|SECONDS|OPTIND|OPTARG|OPTERR|LINENO|HISTCMD|EPOCH\w+|FUNCNAME|FUNCNEST|GROUPS|DIRSTACK|COMP_\w+|IFS|SHELLOPTS|PS4|PROMPT_COMMAND|ENV|CDPATH|GLOBIGNORE|HIST\w*|TMOUT|IGNOREEOF|POSIXLY_CORRECT|PPID|UID|EUID|SHLVL)$/;
+const BASH_SPECIAL_NAME = /^(?:BASH\w*|RANDOM|SRANDOM|SECONDS|OPTIND|OPTARG|OPTERR|LINENO|HISTCMD|EPOCH\w+|FUNCNAME|FUNCNEST|GROUPS|DIRSTACK|COMP_\w+|IFS|OLDPWD|PWD|SHELLOPTS|PS4|PROMPT_COMMAND|ENV|CDPATH|GLOBIGNORE|HIST\w*|TMOUT|IGNOREEOF|POSIXLY_CORRECT|PPID|UID|EUID|SHLVL)$/;
 // bash 5.2's builtins (`compgen -b`). Only a builtin runs inside the shell and can change what a later command inherits;
 // any other command is a child process.
 const BASH_BUILTINS = new Set(['.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait']);
@@ -4482,8 +4482,10 @@ const NEUTRAL_BUILTINS = new Set(['cd', 'true', ':']);
  * True when a word expands nothing that can assign: only `$NAME`, `${NAME}`, command substitutions (a subshell) and
  * literal text. `$(( ))`, `$[ ]` and any other `${…}` form evaluate arithmetic or assign in the current shell.
  */
-function assignsNothing(word: string): boolean {
-    return !/\$\(\(|\$\[/.test(word) && ![...word.matchAll(/\$\{/g)].some(m => !/^\$\{[A-Za-z_]\w*\}/.test(word.slice(m.index)));
+function assignsNothing(text: string): boolean {
+    // bash drops a backslash-newline and expands braces before it expands `$`, so `{$,}[x]` and `$\⏎{x}` can make `$[x]` or `${x}`.
+    const words = braceExpand(text.replace(/\\\n/g, ''));
+    return !!words && words.every(word => !/\$\(\(|\$\[/.test(word) && ![...word.matchAll(/\$\{/g)].some(m => !/^\$\{[A-Za-z_]\w*\}/.test(word.slice(m.index))));
 }
 
 /**

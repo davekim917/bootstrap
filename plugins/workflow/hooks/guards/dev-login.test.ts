@@ -46,8 +46,10 @@ const GOOD_CONNECTIONS = [
 const verdict = (command: string) => evaluateBashCommand(command, { cwd: '/tmp' }).action;
 
 beforeAll(() => {
-    for (const k of ['HOME', DEV_SCOPE_FILE_ENV, 'DEV_LOGIN_TEST_EXPORTED']) saved[k] = process.env[k];
+    for (const k of ['HOME', DEV_SCOPE_FILE_ENV, 'DEV_LOGIN_TEST_EXPORTED', 'OLDPWD']) saved[k] = process.env[k];
     process.env.DEV_LOGIN_TEST_EXPORTED = '1';
+    // bash exports OLDPWD from startup even when the hook's own environment lacks it.
+    delete process.env.OLDPWD;
     dir = mkdtempSync(join(tmpdir(), 'dev-login-test-'));
     home = join(dir, 'home');
     mkdirSync(join(home, '.snowflake'), { recursive: true });
@@ -155,6 +157,11 @@ describe('anything that could point the command at another login keeps the card'
         ['printf assigning through %n in a loop body', `for n in a; do printf '%n' PATH; done; snow sql -c acme_dev -q "drop table t"`],
         ['a loop over an integer variable, whose value is arithmetic', `for RANDOM in 'HOME=0'; do :; done; snow sql -c acme_dev -q "drop table t"`],
         ['assigning an integer variable an arithmetic value', `OPTIND='PATH=0'; snow sql -c acme_dev -q "drop table t"`],
+        ['echo of arithmetic built by brace expansion', 'echo {$,}[HOME=1]; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop word building a subscript by brace expansion', 'for n in {$,}{a[HOME=1]}; do :; done; snow sql -c acme_dev -q "drop table t"'],
+        ['an external command with arithmetic built by brace expansion', 'ls {$,}[HOME=1]; snow sql -c acme_dev -q "drop table t"'],
+        ['echo of a subscript split by a line continuation', 'echo $\\\n{a[HOME=1]}; snow sql -c acme_dev -q "drop table t"'],
+        ['a loop over OLDPWD', 'for OLDPWD in /x; do :; done; snow sql -c acme_dev -q "drop table t"'],
         ['a loop over the command hash', 'for BASH_CMDS in /tmp/evil; do :; done; snow sql -c acme_dev -q "drop table t"'],
         ['a loop over HOME before the step', 'for HOME in /tmp/h; do echo; done; snow sql -c acme_dev -q "drop table t"'],
         ['a loop over a name the environment holds', 'for DEV_LOGIN_TEST_EXPORTED in x; do echo; done; snow sql -c acme_dev -q "drop table t"'],
