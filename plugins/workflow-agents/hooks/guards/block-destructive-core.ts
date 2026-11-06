@@ -7173,7 +7173,10 @@ function shellParseProblem(command: string): string | null {
         return null;
     } catch (e) {
         if (!(e instanceof ShellParseError)) return null;
-        return `The guard can't read this command the way bash will run it (${e.message}), so it can't check what runs after that point. Put a heredoc on a named command (not a bare redirect or coproc), with its delimiter quoted whole ('EOF') or not at all (EOF).`;
+        const fix = e.message.includes('heredoc')
+            ? "Put a heredoc on a named command (not a bare redirect or coproc), with its delimiter quoted whole ('EOF') or not at all (EOF)."
+            : 'Run it as simpler separate commands, or write a long script to a file and run the file.';
+        return `The guard can't read this command the way bash will run it (${e.message}), so it can't check what runs after that point. ${fix}`;
     }
 }
 

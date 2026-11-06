@@ -258,7 +258,7 @@ function canonicalDelimiter(delimiter: string, quoted: boolean, length: number):
  * own text), so the caller blocks instead of trusting a parse that hides commands.
  */
 export function parseShell(command: string): any {
-    if (!command.includes('<<')) return parse(command);
+    if (!command.includes('<<')) return wholeParse(parse(command), command);
     let src = command;
     for (let round = 0; round <= HEREDOC_REWRITES_MAX; round++) {
         const ast: any = parse(src);
@@ -266,7 +266,7 @@ export function parseShell(command: string): any {
         if (!misread) {
             if (dropsRedirects(ast, src)) throw new ShellParseError('a heredoc on a command the parser drops redirects from');
             checkNestedHeredocs(ast);
-            return ast;
+            return wholeParse(ast, src);
         }
         const { start, bash } = misread;
         if (!bash) throw new ShellParseError('a heredoc delimiter the guard cannot read the way bash does');
@@ -275,6 +275,87 @@ export function parseShell(command: string): any {
         src = src.slice(0, start) + form + src.slice(bash.end);
     }
     throw new ShellParseError('too many heredocs to read');
+}
+
+/**
+ * `script`, when the spans of its nodes and what lies between them account for all of `src`; throws ShellParseError
+ * when not. unbash can stop reading partway through a line without an error, and bash still runs the rest. Its
+ * statement ends are not reliable (a redirect on an inner group shortens them), so the spans are every command, word
+ * and redirect it built. Between them there may only be blanks, `;`, line continuations, comments and, after a line's
+ * end, the bodies of that line's heredocs in order.
+ */
+function wholeParse(script: any, src: string): any {
+    const spans: Array<[number, number]> = [];
+    const seen = new WeakSet<object>();
+    const collect = (node: unknown, depth: number): void => {
+        if (!node || typeof node !== 'object' || seen.has(node as object)) return;
+        if (depth > WALK_MAX_DEPTH) throw new ShellParseError('command nests too deeply to read');
+        seen.add(node as object);
+        const r = node as Record<string, any>;
+        if (depth > 0 && typeof r.pos === 'number' && typeof r.end === 'number' && r.end > r.pos) spans.push([r.pos, r.end]);
+        // A word's parts and a substitution's script are placed relative to their own text.
+        for (const [key, child] of Object.entries(r)) if (key !== 'parts' && key !== 'script' && key !== 'parent') collect(child, depth + 1);
+    };
+    collect(script, 0);
+    spans.sort((a, b) => a[0] - b[0]);
+    const merged: Array<[number, number]> = [];
+    for (const [pos, end] of spans) {
+        const last = merged.at(-1);
+        if (last && pos <= last[1]) last[1] = Math.max(last[1], end);
+        else merged.push([pos, end]);
+    }
+    const heredocs = heredocRedirects(script).sort((a, b) => a.pos - b.pos);
+    const pending: Array<{ body: string; delimiter: string; tabs: boolean }> = [];
+    let i = 0;
+    const between = (end: number): boolean => {
+        while (i < end) {
+            const c = src[i];
+            if (c === ' ' || c === '\t' || c === ';') {
+                i++;
+            } else if (c === '\\' && src[i + 1] === '\n') {
+                i += 2;
+            } else if (c === '#' && (i === 0 || ' \t\n;'.includes(src[i - 1]))) {
+                const eol = src.indexOf('\n', i);
+                i = eol < 0 ? src.length : eol;
+            } else if (c === '\n') {
+                i++;
+                for (const h of pending.splice(0)) {
+                    if (!src.startsWith(h.body, i)) return false;
+                    i += h.body.length;
+                    // bash ends a body the input ends without its delimiter line there, with a warning.
+                    if (i === src.length) continue;
+                    if (h.tabs) while (src[i] === '\t') i++;
+                    if (!src.startsWith(h.delimiter, i)) return false;
+                    i += h.delimiter.length;
+                    if (i < src.length && src[i++] !== '\n') return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        return true;
+    };
+    for (const [pos, end] of merged) {
+        if (end <= i) continue;
+        if (pos < i || !between(pos)) throw new ShellParseError('text the parser skipped');
+        // A heredoc body read off the line's end runs past `pos` when unbash made the body a word of its own.
+        if (i > pos) {
+            if (end > i) throw new ShellParseError('text the parser skipped');
+            continue;
+        }
+        i = end;
+        for (const r of heredocs) {
+            if (r.pos < pos || r.pos >= end) continue;
+            const eol = src.indexOf('\n', r.end);
+            if (eol >= 0 && eol < end) continue;
+            const start = heredocWordStart(src, r);
+            const word = start === null ? null : bashHeredocDelimiter(src, start);
+            if (!word) throw new ShellParseError('a heredoc operator the guard cannot locate');
+            pending.push({ body: String(r.content ?? ''), delimiter: word.delimiter, tabs: r.operator === '<<-' });
+        }
+    }
+    if (!between(src.length) || pending.length) throw new ShellParseError('text the parser skipped');
+    return script;
 }
 
 /** Throws when a heredoc inside a command substitution has a delimiter unbash misread; those can't be rewritten. */
