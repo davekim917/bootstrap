@@ -209,7 +209,10 @@ Always applied:
   names that signal or the producer to change. A timer whose job is time itself (a daily report, a
   TTL, a reconcile that catches out-of-band changes no event covers) is not a finding when the
   change states that reason. A timer finding is `SHOULD-FIX`; it is `MUST-FIX` only with a
-  separately demonstrated defect.
+  separately demonstrated defect. On a fix or a feature, no new warehouse, compute pool or runner
+  for one job where an existing one fits; the finding names the existing one. Not a finding when the
+  change states why the existing one cannot serve: a different cost owner to isolate, a size it
+  cannot take, or a security boundary.
 - **Comments** — judge every comment the change adds: keep it only when a reader, human or agent,
   would get something wrong without it (an external system's quirk, why the obvious approach is
   wrong). Narration, restatement and history are findings to cut; a `file:line` or PR/issue/ticket
@@ -264,10 +267,6 @@ Applied when the changed surface warrants:
   - *variant copy* — a near-copy of a file, component or function for one variant;
   - *re-derived alias* — a local or alias recomputing a value the code already has;
   - *second system* — a new logger, counter, retry, config reader or tracker beside an existing one;
-  - *single-job compute* — a new warehouse, compute pool or runner for one job where an existing one
-    fits; the finding names the existing one. Not a finding when the change states why the existing
-    one cannot serve: a different cost owner to isolate, a size it cannot take, or a security
-    boundary;
   - *workaround-pinning test* — a test that only pins the bolted-on path as separate, not a
     behaviour pin a fold-in must keep.
 
