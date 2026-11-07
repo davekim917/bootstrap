@@ -258,6 +258,15 @@ Applied when the changed surface warrants:
   - *variant copy* — a near-copy of a file, component or function for one variant;
   - *re-derived alias* — a local or alias recomputing a value the code already has;
   - *second system* — a new logger, counter, retry, config reader or tracker beside an existing one;
+  - *completion timer* — a poll, cron or scheduled task, sleep-and-check or retry-until-done loop
+    waiting for a completion the producer already signals, or could be made to signal, by event,
+    callback, webhook, status or message; the finding names that signal or the producer to change.
+    A timer whose job is time itself (a daily report, a TTL, a reconcile that catches out-of-band
+    changes no event covers) is not a finding when the change states that reason;
+  - *single-job compute* — a new warehouse, compute pool or runner for one job where an existing one
+    fits; the finding names the existing one. Not a finding when the change states why the existing
+    one cannot serve: a different cost owner to isolate, a size it cannot take, or a security
+    boundary;
   - *workaround-pinning test* — a test that only pins the bolted-on path as separate, not a
     behaviour pin a fold-in must keep.
 
