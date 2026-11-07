@@ -208,7 +208,8 @@ Always applied:
   signals, or could be made to signal, by event, callback, webhook, status or message; the finding
   names that signal or the producer to change. A timer whose job is time itself (a daily report, a
   TTL, a reconcile that catches out-of-band changes no event covers) is not a finding when the
-  change states that reason.
+  change states that reason. A timer finding is `SHOULD-FIX`; it is `MUST-FIX` only with a
+  separately demonstrated defect.
 - **Comments** — judge every comment the change adds: keep it only when a reader, human or agent,
   would get something wrong without it (an external system's quirk, why the obvious approach is
   wrong). Narration, restatement and history are findings to cut; a `file:line` or PR/issue/ticket
