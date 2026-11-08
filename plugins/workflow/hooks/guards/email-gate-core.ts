@@ -33,6 +33,7 @@
  * Python/Node SDK calls, SMTP CLIs, and eval/alias/base64-decoded subshells. The
  * only sound place to catch all of those is the egress proxy.
  */
+import { spawnSync } from 'child_process';
 import { CARD_SUMMARY_MAX_CHARS, clip, code, defuse, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, senderOnFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
@@ -107,6 +108,17 @@ export interface EnvSnapshot {
      * each set of credential bytes belongs to); tests point it elsewhere.
      */
     signaturesDir?: string;
+    /** The gws the draft read runs; tests point it at a stub. */
+    gwsBin?: string;
+}
+
+/** The stored draft a `users drafts send` will send, as it was read for the approval card. */
+export interface DraftBinding {
+    draftId: string;
+    /** Gmail gives a draft a new message id whenever its content changes; the draft id stays. */
+    messageId: string;
+    userId: string;
+    credentialsFile: string;
 }
 
 /** Verdict for the email gate. On `gate`, `label` + `summary`
@@ -124,6 +136,11 @@ export interface EmailGateVerdict {
     deny?: string;
     /** The command is the send alone and the summary shows all of it, so the card can leave the command off. */
     pureSend?: boolean;
+    /**
+     * Set when the card shows a stored draft the command sends by id. After approval the adapter re-reads the draft
+     * (`draftChangedSince`) and refuses the send if it is no longer this version.
+     */
+    draft?: DraftBinding;
 }
 
 function normalizedToolName(toolName: string): string {
@@ -339,6 +356,11 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // heredoc is enough); the summary then comes from the shape, and the shell view, when it parsed, must agree.
     const shape = sendShape(command);
     const exact = shape?.complete && shape.verb !== null ? shape : null;
+    // A send of a stored draft names no envelope, so the card reads the draft. A failed read keeps the card and the
+    // gate as they were.
+    const draftTarget = draftSendTarget(shape);
+    const draftRead = draftTarget ? readDraft(draftTarget, 'full', env.gwsBin ?? GWS_BIN) : null;
+    const draft = draftRead ? draftContent(draftRead) : null;
     const exactOption = (name: string) => exact?.options.get(name)?.join(', ');
     const exactAttachments = [...(exact?.options.get('-a') ?? []), ...(exact?.options.get('--attach') ?? [])];
     const viewRead = {
@@ -354,14 +376,14 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     };
     const flagTo = exact ? exactOption('--to') : viewRead.to;
     // A raw-API payload names its own envelope; for a helper call it would be text that merely looks like one.
-    const envelope = !flagTo && !exact ? envelopeFromJsonRaw(command) : {};
+    const envelope = draft ? draft.envelope : !flagTo && !exact ? envelopeFromJsonRaw(command) : {};
     const subject = (exact ? exactOption('--subject') : viewRead.subject) ?? envelope.subject ?? '';
     const cc = (exact ? exactOption('--cc') : viewRead.cc) ?? envelope.cc;
     const bcc = (exact ? exactOption('--bcc') : viewRead.bcc) ?? envelope.bcc;
     const removed = exact ? exactOption('--remove') : viewRead.removed;
     const messageId = exact ? exactOption('--message-id') : viewRead.messageId;
     const alias = exact ? exactOption('--from') : viewRead.alias;
-    const attachments = exact ? exactAttachments : viewRead.attachments;
+    const attachments = draft ? draft.attachments : exact ? exactAttachments : viewRead.attachments;
     const isHtml = exact ? exact.html : viewRead.isHtml;
     // Parse the sending identity from GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE.
     // Path convention: /home/node/.config/gws/accounts/<slug>.json.
@@ -447,6 +469,12 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         lines.push(header, messageBlock(shown));
         if (formatted?.signed) lines.push(`Signature: ${inline(sender!.mailbox)}'s Gmail signature, as the host keeps it on file`);
         if (body.note) lines.push(body.note);
+    } else if (draft && draftRead && draftTarget) {
+        lines.push(
+            `Message${draft.html ? ' (HTML, shown as text)' : ''}, first ${DRAFT_PREVIEW_CHARS} characters:`,
+            messageBlock(clip(draft.text || '(no text part)', DRAFT_PREVIEW_CHARS)),
+            `Draft ${code(inline(draftTarget.draftId))}, version ${code(inline(draftRead.message.id))}. If the draft is edited before the send runs, the send is refused.`,
+        );
     } else if (isRawApi) {
         lines.push('Message: not shown. This send passes a raw MIME message, so the text is only visible inside the encoded payload. Decline and ask the agent to show the draft if you need to read it first.');
     } else {
@@ -458,6 +486,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     }
     const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
     if (!shape) return { action: 'gate', label, summary, deny: SEND_ALONE };
+    if (draftTarget && draftRead) return { action: 'gate', label, summary, draft: { ...draftTarget, messageId: draftRead.message.id } };
     const viewAgrees = !send || (viewRead.to === exactOption('--to') && viewRead.subject === exactOption('--subject')
         && viewRead.cc === exactOption('--cc') && viewRead.bcc === exactOption('--bcc') && viewRead.removed === exactOption('--remove')
         && viewRead.messageId === exactOption('--message-id') && viewRead.alias === exactOption('--from')
@@ -658,6 +687,8 @@ interface SendShape {
     credentialsFile: string | null;
     /** Every option is one the summary shows, each single-valued one given once. */
     complete: boolean;
+    /** The words after `users <resource> send` in the raw API form; null for a helper verb. */
+    raw: { resource: string; words: ShapeWord[] } | null;
 }
 
 /** One word: a plain run, single-quoted text, double-quoted text with no expansion, or exactly "$NAME". */
@@ -799,12 +830,14 @@ function sendShape(command: string): SendShape | null {
     if (pipe !== undefined && !/^(?:head|tail) (?:-\d+|-n \d+)$/.test(pipe)) return null;
     let rest = words.slice(2);
     let verb: SendShape['verb'];
+    let raw: SendShape['raw'] = null;
     const helper = /^\+(send|reply|reply-all|forward)$/.exec(rest[0]?.source ?? '');
     if (helper) {
         verb = helper[1] as SendShape['verb'];
         rest = rest.slice(1);
     } else if (rest[0]?.source === 'users' && /^(?:messages|drafts)$/.test(rest[1]?.source ?? '') && rest[2]?.source === 'send') {
         verb = null;
+        raw = { resource: rest[1].source, words: rest.slice(3) };
         rest = rest.slice(3);
     } else {
         return null;
@@ -841,9 +874,144 @@ function sendShape(command: string): SendShape | null {
     // A variable set and never read is a step of its own.
     if (body && !bodyUsed) return null;
     return {
-        verb, options, html, account: creds?.account ?? null, credentialsFile: creds?.file ?? null, complete,
+        verb, options, html, account: creds?.account ?? null, credentialsFile: creds?.file ?? null, complete, raw,
         body: options.get('--body')?.[0],
     };
+}
+
+// ── Sending a stored draft ──
+// `gws gmail users drafts send --json '{"id":"…"}'` names only the draft, so the card reads the draft itself.
+
+// The image's root-owned gws: the hook's PATH may differ from the send's, and a gws the agent could write might describe
+// one draft while another is sent.
+const GWS_BIN = '/pnpm/gws';
+const DRAFT_READ_TIMEOUT_MS = 4000;
+const DRAFT_READ_MAX_BYTES = 8 * 1024 * 1024;
+const DRAFT_PREVIEW_CHARS = 400;
+const DRAFT_ID = /^[A-Za-z0-9_-]{1,256}$/;
+const GMAIL_USER_ID = /^[\w.@+-]{1,256}$/;
+
+interface DraftPart {
+    mimeType?: unknown;
+    filename?: unknown;
+    headers?: unknown;
+    body?: { data?: unknown };
+    parts?: unknown;
+}
+
+interface StoredDraft {
+    id: string;
+    message: { id: string; snippet?: unknown; payload?: DraftPart };
+}
+
+function jsonObjectWithKeys(text: string | undefined, keys: string[]): Record<string, unknown> | null {
+    if (text === undefined) return null;
+    try {
+        const value = JSON.parse(text) as unknown;
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+        const own = Object.keys(value);
+        return own.length === keys.length && keys.every(k => own.includes(k)) ? value as Record<string, unknown> : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The draft a command sends, when the command is the one shape, names its credentials file, and passes exactly
+ * `--params '{"userId":…}'` and `--json '{"id":…}'`. A payload carrying its own message, or any other option, gets no
+ * draft read.
+ */
+function draftSendTarget(shape: SendShape | null): Omit<DraftBinding, 'messageId'> | null {
+    if (!shape?.raw || shape.raw.resource !== 'drafts' || !shape.credentialsFile) return null;
+    const words = shape.raw.words;
+    const given = new Map<string, string>();
+    for (let k = 0; k < words.length; k += 2) {
+        const name = words[k].source;
+        const value = words[k + 1];
+        if ((name !== '--params' && name !== '--json') || given.has(name) || !value || value.variable !== null) return null;
+        given.set(name, value.value);
+    }
+    const userId = jsonObjectWithKeys(given.get('--params'), ['userId'])?.userId;
+    const draftId = jsonObjectWithKeys(given.get('--json'), ['id'])?.id;
+    if (typeof userId !== 'string' || !GMAIL_USER_ID.test(userId) || typeof draftId !== 'string' || !DRAFT_ID.test(draftId)) return null;
+    return { draftId, userId, credentialsFile: shape.credentialsFile };
+}
+
+/** Read a draft through gws, bounded in time and size; null on any failure, or a reply for another draft. */
+function readDraft(target: Omit<DraftBinding, 'messageId'>, format: 'full' | 'minimal', gwsBin: string): StoredDraft | null {
+    try {
+        const params = JSON.stringify({ userId: target.userId, id: target.draftId, format });
+        const run = spawnSync(gwsBin, ['gmail', 'users', 'drafts', 'get', '--params', params], {
+            env: { ...process.env, GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE: target.credentialsFile },
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore'],
+            timeout: DRAFT_READ_TIMEOUT_MS,
+            killSignal: 'SIGKILL',
+            maxBuffer: DRAFT_READ_MAX_BYTES,
+        });
+        if (run.error || run.status !== 0 || typeof run.stdout !== 'string') return null;
+        const draft = JSON.parse(run.stdout) as Partial<StoredDraft> | null;
+        if (draft?.id !== target.draftId || typeof draft.message?.id !== 'string' || !draft.message.id) return null;
+        return draft as StoredDraft;
+    } catch {
+        return null;
+    }
+}
+
+function decodedPart(part: DraftPart): string | null {
+    const data = part.body?.data;
+    if (typeof data !== 'string') return null;
+    try {
+        return Buffer.from(data, 'base64url').toString('utf-8');
+    } catch {
+        return null;
+    }
+}
+
+type DraftEnvelope = { to?: string; from?: string; subject?: string; cc?: string; bcc?: string };
+
+/** What the card shows of a draft: its envelope, its text, and its attachments' names. */
+function draftContent(draft: StoredDraft): { envelope: DraftEnvelope; text: string; html: boolean; attachments: string[] } {
+    const envelope: DraftEnvelope = {};
+    const root = draft.message.payload ?? {};
+    for (const h of Array.isArray(root.headers) ? root.headers as Array<{ name?: unknown; value?: unknown }> : []) {
+        const name = typeof h?.name === 'string' ? h.name.toLowerCase() : '';
+        const value = typeof h?.value === 'string' ? h.value.trim() : '';
+        if (value && (name === 'to' || name === 'from' || name === 'subject' || name === 'cc' || name === 'bcc')) envelope[name] ??= value;
+    }
+    let plain: string | null = null;
+    let html: string | null = null;
+    const attachments: string[] = [];
+    const pending: Array<{ part: DraftPart; depth: number }> = [{ part: root, depth: 0 }];
+    for (let seen = 0; pending.length && seen < 500; seen++) {
+        const { part, depth } = pending.shift()!;
+        const mime = typeof part.mimeType === 'string' ? part.mimeType.toLowerCase() : '';
+        if (typeof part.filename === 'string' && part.filename) attachments.push(part.filename);
+        else if (mime === 'text/plain') plain ??= decodedPart(part);
+        else if (mime === 'text/html') html ??= decodedPart(part);
+        if (Array.isArray(part.parts) && depth < 20) {
+            for (const child of part.parts) if (child && typeof child === 'object') pending.push({ part: child as DraftPart, depth: depth + 1 });
+        }
+    }
+    const snippet = typeof draft.message.snippet === 'string' ? draft.message.snippet : '';
+    const text = plain !== null ? plain.trim() : html !== null ? htmlToText(html) : snippet.trim();
+    return { envelope, text, html: plain === null && html !== null, attachments };
+}
+
+/**
+ * Re-read an approved draft just before its send runs: null when it is still the version the card showed, otherwise
+ * the refusal to give the agent. A failed read refuses too, since nothing else shows this is the approved version.
+ * Gmail has no conditional send, so an edit in the moment between this read and the send is not seen.
+ */
+export function draftChangedSince(binding: DraftBinding, gwsBin: string = GWS_BIN): string | null {
+    const now = readDraft(binding, 'minimal', gwsBin);
+    if (now === null) {
+        return `Email send refused: draft ${binding.draftId} could not be re-read to confirm it is the version that was ` +
+            'approved. Ask for approval again with the same command.';
+    }
+    if (now.message.id === binding.messageId) return null;
+    return `Email send refused: draft ${binding.draftId} was edited after its approval card was shown, so the approval ` +
+        'does not cover what it holds now. Ask for approval again with the same command; the new card shows the current draft.';
 }
 
 // The regex fallback runs only when the parser finds no send; it is quadratic

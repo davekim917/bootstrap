@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, afterEach } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -124,7 +124,7 @@ interface StagedCall {
     pureSend?: boolean;
 }
 
-async function loadWithSpies(opts: { stageThrows?: boolean } = {}) {
+async function loadWithSpies(opts: { stageThrows?: boolean; decision?: 'approved' | 'denied' | 'timeout' } = {}) {
     const real = await import(MODULE);
     const staged: StagedCall[] = [];
     mock.module(MODULE, () => ({
@@ -140,7 +140,7 @@ async function loadWithSpies(opts: { stageThrows?: boolean } = {}) {
             if (opts.stageThrows) throw new Error('session DBs broken');
             return 'gate-test-id';
         },
-        pollDeliveredTable: (): 'approved' | 'denied' | 'timeout' => 'approved',
+        pollDeliveredTable: (): 'approved' | 'denied' | 'timeout' => opts.decision ?? 'approved',
     }));
     const mod = await import(MODULE);
     return { mod, staged };
@@ -199,6 +199,47 @@ describe('A2 runGateRequest action parameterization', () => {
         mod.runEmailGate('gws gmail +send', 'email send', undefined, 'summary', undefined, true);
         mod.runEmailGate('gws gmail +send', 'email send', undefined, 'summary');
         expect(staged.map(s => s.pureSend)).toEqual([true, undefined]);
+    });
+
+    test('an approved send of a stored draft goes ahead only while the draft is the version the card showed', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'gws-rerun-stub-'));
+        const gwsReturning = (messageId: string): string => {
+            const bin = join(root, `gws-${messageId}`);
+            writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${root}/calls'\necho '{"id":"r-1","message":{"id":"${messageId}"}}'\n`);
+            chmodSync(bin, 0o755);
+            return bin;
+        };
+        const binding = { draftId: 'r-1', messageId: 'm-shown', userId: 'me', credentialsFile: '/home/node/.config/gws/accounts/team-inbox.json' };
+        try {
+            const { mod } = await loadWithSpies();
+            const refusals: string[] = [];
+            const onChanged = (refusal: string) => refusals.push(refusal);
+
+            expect(mod.runEmailGate('cmd', 'Email send', undefined, 's', undefined, undefined, { binding, onChanged, gwsBin: gwsReturning('m-shown') })).toBe('approved');
+            expect(refusals).toEqual([]);
+
+            expect(mod.runEmailGate('cmd', 'Email send', undefined, 's', undefined, undefined, { binding, onChanged, gwsBin: gwsReturning('m-edited') })).toBe('denied');
+            expect(refusals).toHaveLength(1);
+            expect(refusals[0]).toStartWith('Email send refused: draft r-1 was edited after its approval card was shown');
+            expect(readFileSync(join(root, 'calls'), 'utf8').trim().split('\n')).toHaveLength(2);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
+    test('a declined send of a stored draft is not re-read', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'gws-rerun-stub-'));
+        const bin = join(root, 'gws');
+        writeFileSync(bin, `#!/bin/sh\ntouch '${root}/called'\n`);
+        chmodSync(bin, 0o755);
+        try {
+            const { mod } = await loadWithSpies({ decision: 'denied' });
+            const binding = { draftId: 'r-1', messageId: 'm-shown', userId: 'me', credentialsFile: '/home/node/.config/gws/accounts/team-inbox.json' };
+            expect(mod.runEmailGate('cmd', 'Email send', undefined, 's', undefined, undefined, { binding, onChanged: () => {}, gwsBin: bin })).toBe('denied');
+            expect(existsSync(join(root, 'called'))).toBe(false);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 
     test('runEmailGate without a summary falls back to reason for both (back-compat)', async () => {

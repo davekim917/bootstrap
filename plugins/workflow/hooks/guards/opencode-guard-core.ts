@@ -185,7 +185,9 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
     // approval card matches Claude's in-tree card instead of repeating the short
     // label (S-QA2 parity). runEmailGate stages a request_bash_gate approval and
     // polls for the decision; it fail-closes to 'denied' if it cannot stage.
-    const decision = runEmailGate(command, reason, undefined, emailVerdict.summary, undefined, emailVerdict.pureSend);
+    const binding = emailVerdict.draft;
+    const decision = runEmailGate(command, reason, undefined, emailVerdict.summary, undefined, emailVerdict.pureSend,
+      binding ? { binding, onChanged: (refusal) => { throw new Error(`BLOCKED: ${refusal}`); } } : undefined);
     if (decision === 'approved') return;
     const detail =
       decision === 'denied'

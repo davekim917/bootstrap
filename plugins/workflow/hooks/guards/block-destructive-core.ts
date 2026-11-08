@@ -38,6 +38,7 @@ import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
+import { draftChangedSince, type DraftBinding } from './email-gate-core';
 import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, inWorkingTree, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
@@ -7786,7 +7787,9 @@ export function changesProduction(command: string, cwd: string = currentWorkingD
  * both label and summary. Threading summary gives OpenCode's approval card the
  * same structured content as Claude's in-tree card (S-QA2 parity). The 6th
  * `pureSend` is the verdict's own: the host leaves the command off the card only
- * when it is set.
+ * when it is set. The 7th `draft` carries the verdict's draft binding: once
+ * approved, the draft is re-read, and a changed one is refused through
+ * `onChanged` and answers 'denied'.
  */
 export function runEmailGate(
     command: string,
@@ -7795,8 +7798,14 @@ export function runEmailGate(
     summary?: string,
     toolUseId?: string,
     pureSend?: boolean,
+    draft?: { binding: DraftBinding; onChanged: (refusal: string) => void; gwsBin?: string },
 ): GateDecision {
-    return runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId, pureSend });
+    const decision = runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId, pureSend });
+    if (decision !== 'approved' || !draft) return decision;
+    const refusal = draftChangedSince(draft.binding, draft.gwsBin);
+    if (refusal === null) return 'approved';
+    draft.onChanged(refusal);
+    return 'denied';
 }
 
 // ── Repositories agents never merge into ─────────────────────────────────────
