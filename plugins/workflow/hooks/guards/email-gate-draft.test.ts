@@ -127,6 +127,17 @@ describe('a send of a stored draft by id', () => {
             expect(summary.startsWith('⚠️ This draft has 2 text parts and the card shows one.')).toBe(true);
         });
 
+        test('a third version beside the pair is flagged', () => {
+            const summary = withPayload({ mimeType: 'multipart/alternative', headers: TO, parts: [part('text/plain', 'a'), part('text/html', '<p>a</p>'), part('text/x-amp-html', '<p>b</p>')] });
+            expect(summary.startsWith('⚠️ This draft has 2 text parts and the card shows one.')).toBe(true);
+        });
+
+        test('an ordinary emoji is not flagged, but joiners padding after one are', () => {
+            expect(withPayload({ mimeType: 'text/plain', headers: TO, body: { data: b64url('Thanks ❤️ and 👩‍💻') } })).not.toContain('⚠️');
+            expect(withPayload({ mimeType: 'text/plain', headers: TO, body: { data: b64url('❤' + '‍'.repeat(50) + 'text') } }))
+                .toStartWith('⚠️ This draft holds invisible or direction-changing characters');
+        });
+
         test('a plain version, then HTML with inline images, is one pair', () => {
             const summary = withPayload({ mimeType: 'multipart/alternative', headers: TO, parts: [
                 part('text/plain', 'See the chart'),

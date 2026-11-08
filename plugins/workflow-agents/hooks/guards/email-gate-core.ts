@@ -38,7 +38,7 @@
  * only sound place to catch all of those is the egress proxy.
  */
 import { spawnSync } from 'child_process';
-import { CARD_SUMMARY_MAX_CHARS, clip, code, defuse, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, senderOnFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
+import { CARD_SUMMARY_MAX_CHARS, HTML_MAX_CHARS, clip, code, defuse, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, senderOnFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
 // `gws gmail users (messages|drafts) send` (raw API form).
@@ -989,6 +989,8 @@ type DraftEnvelope = { to?: string; from?: string; subject?: string; cc?: string
 
 // Characters a chat client shows as nothing, or that reorder the text around them.
 const HIDDEN_OR_BIDI = /[­͏؜ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁯ㅤ︀-️﻿ﾠ\u{E0000}-\u{E007F}]/u;
+// The variation selector and joiner inside an ordinary emoji (❤️, 👩‍💻) are how it renders, not hidden text.
+const EMOJI_JOINERS = /(\p{Extended_Pictographic})️?(?:‍(?=\p{Extended_Pictographic}))?/gu;
 // What chat Markdown restyles in a one-line field; a "Name <address>" header defused to ‹ is still readable.
 const FIELD_MARKUP = /[`*~|]|\{\{emoji:/i;
 const DRAFT_MAX_PARTS = 500;
@@ -1055,7 +1057,7 @@ function draftContent(draft: StoredDraft): DraftView {
     const isType = (part: DraftPart | null, type: string) => String(part?.mimeType ?? '').toLowerCase() === type;
     const [first, second] = texts;
     const onePairOfVersions = texts.length === 2 && first.mime === 'text/plain' && second.mime === 'text/html'
-        && isType(first.parent, 'multipart/alternative')
+        && isType(first.parent, 'multipart/alternative') && Array.isArray(first.parent?.parts) && first.parent.parts.length === 2
         && (second.parent === first.parent || (isType(second.parent, 'multipart/related') && second.grandparent === first.parent));
     if (texts.length > 1 && !onePairOfVersions) {
         warnings.push(`⚠️ This draft has ${texts.length} text parts and the card shows one. Check the draft before approving.`);
@@ -1063,9 +1065,9 @@ function draftContent(draft: StoredDraft): DraftView {
     if (shown && shown.text === null) warnings.push('⚠️ The text of this draft could not be decoded, so it is not shown. Check the draft before approving.');
     const text = shown?.text ? (shown.mime === 'text/html' ? htmlToText(shown.text) : shown.text.trim()) : '';
     // htmlToText reads only the head of a long body, so its length is a floor.
-    const length = shown?.mime === 'text/html' && (shown.text?.length ?? 0) > 20_000 ? null : [...text].length;
+    const length = shown?.mime === 'text/html' && (shown.text?.length ?? 0) > HTML_MAX_CHARS ? null : [...text].length;
     const fields = Object.values(envelope);
-    if (HIDDEN_OR_BIDI.test(text) || fields.some(v => HIDDEN_OR_BIDI.test(v)) || attachments.some(a => HIDDEN_OR_BIDI.test(a))) {
+    if ([text, ...fields, ...attachments].some(v => HIDDEN_OR_BIDI.test(v.replace(EMOJI_JOINERS, '$1')))) {
         warnings.push('⚠️ This draft holds invisible or direction-changing characters, so recipients may read it differently from this card.');
     }
     if (fields.some(v => FIELD_MARKUP.test(v) || CHAT_MENTION.test(v))) {
