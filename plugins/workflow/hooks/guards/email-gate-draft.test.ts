@@ -122,6 +122,25 @@ describe('a send of a stored draft by id', () => {
             expect(summary).not.toContain('⚠️');
         });
 
+        test('an HTML version before its plain one is flagged, since a client may prefer the last', () => {
+            const summary = withPayload({ mimeType: 'multipart/alternative', headers: TO, parts: [part('text/html', '<p>Lunch Thursday?</p>'), part('text/plain', 'Quarterly figures enclosed')] });
+            expect(summary.startsWith('⚠️ This draft has 2 text parts and the card shows one.')).toBe(true);
+        });
+
+        test('a plain version, then HTML with inline images, is one pair', () => {
+            const summary = withPayload({ mimeType: 'multipart/alternative', headers: TO, parts: [
+                part('text/plain', 'See the chart'),
+                { mimeType: 'multipart/related', parts: [part('text/html', '<p>See the chart</p>'), part('image/png', 'png', 'chart.png')] },
+            ] });
+            expect(summary).not.toContain('⚠️');
+            expect(summary).toContain('Attachments: `chart.png`');
+        });
+
+        test('an HTML body too long to measure says so', () => {
+            const summary = withPayload({ mimeType: 'text/html', headers: TO, body: { data: b64url(`<p>${'word '.repeat(5000)}</p>`) } });
+            expect(summary).toContain('Message (HTML, shown as text), first 400 of more than 20,000 characters:');
+        });
+
         test('a second text part is flagged, and an unnamed part is listed as an attachment', () => {
             const summary = withPayload({ mimeType: 'multipart/mixed', headers: TO, parts: [part('text/plain', 'hello'), part('text/plain', 'second part'), part('application/pdf', '%PDF', '')] });
             expect(summary.startsWith('⚠️ This draft has 2 text parts and the card shows one.')).toBe(true);
@@ -142,6 +161,10 @@ describe('a send of a stored draft by id', () => {
 
         test('invisible characters and chat markup are flagged', () => {
             expect(withPayload({ mimeType: 'text/plain', headers: TO, body: { data: b64url('​'.repeat(50) + 'hidden text') } }))
+                .toStartWith('⚠️ This draft holds invisible or direction-changing characters');
+            expect(withPayload({ mimeType: 'multipart/mixed', headers: TO, parts: [part('text/plain', 'hi'), part('application/octet-stream', 'x', 'invoice‮fdp.exe')] }))
+                .toStartWith('⚠️ This draft holds invisible or direction-changing characters');
+            expect(withPayload({ mimeType: 'text/plain', headers: TO, body: { data: b64url('\u{E0041}'.repeat(50) + 'tagged') } }))
                 .toStartWith('⚠️ This draft holds invisible or direction-changing characters');
             expect(withPayload({ mimeType: 'text/plain', headers: [...TO, { name: 'Subject', value: 'Totals ```' }], body: { data: b64url('hi') } }))
                 .toStartWith('⚠️ A header in this draft holds characters chat formatting may change');

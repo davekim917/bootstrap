@@ -474,8 +474,8 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         if (formatted?.signed) lines.push(`Signature: ${inline(sender!.mailbox)}'s Gmail signature, as the host keeps it on file`);
         if (body.note) lines.push(body.note);
     } else if (draft && draftRead && draftTarget) {
-        const length = [...draft.text].length;
-        const extent = length > DRAFT_PREVIEW_CHARS ? `first ${DRAFT_PREVIEW_CHARS} of ${length} characters` : `${length} characters`;
+        const extent = draft.length === null ? `first ${DRAFT_PREVIEW_CHARS} of more than 20,000 characters`
+            : draft.length > DRAFT_PREVIEW_CHARS ? `first ${DRAFT_PREVIEW_CHARS} of ${draft.length} characters` : `${draft.length} characters`;
         if (draft.warnings.length) lines.unshift(...draft.warnings, '');
         lines.push(
             `Message${draft.html ? ' (HTML, shown as text)' : ''}, ${extent}:`,
@@ -988,7 +988,7 @@ function decodedPart(part: DraftPart): string | null {
 type DraftEnvelope = { to?: string; from?: string; subject?: string; cc?: string; bcc?: string };
 
 // Characters a chat client shows as nothing, or that reorder the text around them.
-const HIDDEN_OR_BIDI = /[­​-‏‪-‮⁠-⁩﻿]/;
+const HIDDEN_OR_BIDI = /[­͏؜ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁯ㅤ︀-️﻿ﾠ\u{E0000}-\u{E007F}]/u;
 // What chat Markdown restyles in a one-line field; a "Name <address>" header defused to ‹ is still readable.
 const FIELD_MARKUP = /[`*~|]|\{\{emoji:/i;
 const DRAFT_MAX_PARTS = 500;
@@ -998,6 +998,8 @@ interface DraftView {
     envelope: DraftEnvelope;
     /** The text recipients read: the HTML part as text when there is one, since mail clients show it first. */
     text: string;
+    /** The text's length in characters; null when the body is too long to measure. */
+    length: number | null;
     html: boolean;
     attachments: string[];
     /** What the card can't show faithfully, listed first on the card so a cut summary can't drop it. */
@@ -1015,13 +1017,16 @@ function draftContent(draft: StoredDraft): DraftView {
             envelope[name] = envelope[name] === undefined ? value : `${envelope[name]}, ${value}`;
         }
     }
-    const texts: Array<{ mime: string; text: string | null; parent: DraftPart | null }> = [];
+    type TextLeaf = { mime: string; text: string | null; parent: DraftPart | null; grandparent: DraftPart | null };
+    const texts: TextLeaf[] = [];
     const attachments: string[] = [];
     const warnings: string[] = [];
-    const pending: Array<{ part: DraftPart; depth: number; parent: DraftPart | null }> = [{ part: root, depth: 0, parent: null }];
+    // Depth-first, in document order: which version of a multipart/alternative a client prefers depends on order.
+    const pending: Array<{ part: DraftPart; depth: number; parent: DraftPart | null; grandparent: DraftPart | null }> =
+        [{ part: root, depth: 0, parent: null, grandparent: null }];
     let incomplete = false;
     for (let seen = 0; pending.length; seen++) {
-        const { part, depth, parent } = pending.shift()!;
+        const { part, depth, parent, grandparent } = pending.pop()!;
         if (seen >= DRAFT_MAX_PARTS) {
             incomplete = true;
             break;
@@ -1033,11 +1038,11 @@ function draftContent(draft: StoredDraft): DraftView {
                 incomplete = true;
                 continue;
             }
-            for (const child of children) pending.push({ part: child, depth: depth + 1, parent: part });
+            for (const child of [...children].reverse()) pending.push({ part: child, depth: depth + 1, parent: part, grandparent: parent });
             continue;
         }
         const filename = typeof part.filename === 'string' ? part.filename : '';
-        if (!filename && (mime === 'text/plain' || mime === 'text/html')) texts.push({ mime, text: decodedPart(part), parent });
+        if (!filename && (mime === 'text/plain' || mime === 'text/html')) texts.push({ mime, text: decodedPart(part), parent, grandparent });
         else attachments.push(filename || `unnamed ${mime || 'part'}`);
     }
     if (incomplete) {
@@ -1045,21 +1050,28 @@ function draftContent(draft: StoredDraft): DraftView {
     }
     const html = texts.find(t => t.mime === 'text/html');
     const shown = html ?? texts.find(t => t.mime === 'text/plain');
-    const onePairOfVersions = texts.length === 2 && texts[0].parent === texts[1].parent && texts[0].mime !== texts[1].mime
-        && /^multipart\/alternative$/i.test(String(texts[0].parent?.mimeType ?? ''));
+    // The one pair a client may show either side of: a plain part, then its HTML version (alone or with inline images in
+    // a multipart/related), under one multipart/alternative. The last version is the preferred one (RFC 2046).
+    const isType = (part: DraftPart | null, type: string) => String(part?.mimeType ?? '').toLowerCase() === type;
+    const [first, second] = texts;
+    const onePairOfVersions = texts.length === 2 && first.mime === 'text/plain' && second.mime === 'text/html'
+        && isType(first.parent, 'multipart/alternative')
+        && (second.parent === first.parent || (isType(second.parent, 'multipart/related') && second.grandparent === first.parent));
     if (texts.length > 1 && !onePairOfVersions) {
         warnings.push(`⚠️ This draft has ${texts.length} text parts and the card shows one. Check the draft before approving.`);
     }
     if (shown && shown.text === null) warnings.push('⚠️ The text of this draft could not be decoded, so it is not shown. Check the draft before approving.');
     const text = shown?.text ? (shown.mime === 'text/html' ? htmlToText(shown.text) : shown.text.trim()) : '';
+    // htmlToText reads only the head of a long body, so its length is a floor.
+    const length = shown?.mime === 'text/html' && (shown.text?.length ?? 0) > 20_000 ? null : [...text].length;
     const fields = Object.values(envelope);
-    if (HIDDEN_OR_BIDI.test(text) || fields.some(v => HIDDEN_OR_BIDI.test(v))) {
+    if (HIDDEN_OR_BIDI.test(text) || fields.some(v => HIDDEN_OR_BIDI.test(v)) || attachments.some(a => HIDDEN_OR_BIDI.test(a))) {
         warnings.push('⚠️ This draft holds invisible or direction-changing characters, so recipients may read it differently from this card.');
     }
     if (fields.some(v => FIELD_MARKUP.test(v) || CHAT_MENTION.test(v))) {
         warnings.push('⚠️ A header in this draft holds characters chat formatting may change, so it may not read here exactly as sent.');
     }
-    return { envelope, text, html: shown?.mime === 'text/html', attachments, warnings };
+    return { envelope, text, length, html: shown?.mime === 'text/html', attachments, warnings };
 }
 
 /**
