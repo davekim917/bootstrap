@@ -55,8 +55,8 @@ function draftJson(messageId: string, overrides: { id?: string } = {}): string {
                     {
                         mimeType: 'multipart/alternative',
                         parts: [
-                            { mimeType: 'text/plain', body: { data: b64url(BODY) } },
-                            { mimeType: 'text/html', body: { data: b64url('<p>html version</p>') } },
+                            { mimeType: 'text/plain', body: { data: b64url('plain version') } },
+                            { mimeType: 'text/html', body: { data: b64url(`<div>${BODY}</div>`) } },
                         ],
                     },
                     { mimeType: 'application/pdf', filename: 'renewal-terms.pdf', body: { attachmentId: 'att-1' } },
@@ -80,10 +80,11 @@ describe('a send of a stored draft by id', () => {
         expect(v.summary).toContain('Bcc: records@example.com');
         expect(v.summary).toContain('Subject: Renewal terms');
         expect(v.summary).toContain('Attachments: `renewal-terms.pdf`');
-        expect(v.summary).toContain('Message, first 400 characters:');
+        expect(v.summary).toContain('Message (HTML, shown as text), first 400 of 692 characters:');
         expect(v.summary).toContain('Hi Pat,\n\nThe renewal terms are attached.');
         expect(v.summary).not.toContain('END-OF-BODY');
-        expect(v.summary).not.toContain('html version');
+        expect(v.summary).not.toContain('plain version');
+        expect(v.summary).not.toContain('⚠️');
         expect(v.summary).toContain('Draft `r-draft-0001`, version `18c00000000000a1`');
         expect(v.summary).not.toContain('Message: not shown');
         expect(v.pureSend).toBeUndefined();
@@ -101,8 +102,50 @@ describe('a send of a stored draft by id', () => {
             body: { data: b64url('<div><p>Only <b>html</b> here</p></div>') },
         };
         const v = evaluateEmailSend(SEND, { ...INTERACTIVE, gwsBin: stubGws({ stdout: JSON.stringify(draft) }).bin });
-        expect(v.summary).toContain('Message (HTML, shown as text), first 400 characters:');
+        expect(v.summary).toContain('Message (HTML, shown as text), 14 characters:');
         expect(v.summary).toContain('Only html here');
+    });
+
+    describe('what the card cannot show faithfully, it says first', () => {
+        const withPayload = (payload: unknown) => {
+            const draft = JSON.parse(draftJson('18c00000000000c1'));
+            draft.message.payload = payload;
+            return evaluateEmailSend(SEND, { ...INTERACTIVE, gwsBin: stubGws({ stdout: JSON.stringify(draft) }).bin }).summary!;
+        };
+        const part = (mimeType: string, text: string, filename?: string) => ({ mimeType, filename, body: { data: b64url(text) } });
+        const TO = [{ name: 'To', value: 'pat@example.com' }];
+
+        test('the HTML version is shown, since that is what recipients read', () => {
+            const summary = withPayload({ mimeType: 'multipart/alternative', headers: TO, parts: [part('text/plain', 'Lunch Thursday?'), part('text/html', '<p>Quarterly figures enclosed</p>')] });
+            expect(summary).toContain('Quarterly figures enclosed');
+            expect(summary).not.toContain('Lunch Thursday?');
+            expect(summary).not.toContain('⚠️');
+        });
+
+        test('a second text part is flagged, and an unnamed part is listed as an attachment', () => {
+            const summary = withPayload({ mimeType: 'multipart/mixed', headers: TO, parts: [part('text/plain', 'hello'), part('text/plain', 'second part'), part('application/pdf', '%PDF', '')] });
+            expect(summary.startsWith('⚠️ This draft has 2 text parts and the card shows one.')).toBe(true);
+            expect(summary).toContain('Attachments: `unnamed application/pdf`');
+        });
+
+        test('every value of a repeated header is shown', () => {
+            const summary = withPayload({ mimeType: 'text/plain', headers: [...TO, { name: 'To', value: 'lee@example.com' }], body: { data: b64url('hi') } });
+            expect(summary).toContain('To: pat@example.com, lee@example.com');
+        });
+
+        test('a card too long to show whole says so before anything is cut', () => {
+            const cc = Array.from({ length: 60 }, (_, i) => `person${i}@example.com`).join(', ');
+            const summary = withPayload({ mimeType: 'text/plain', headers: [...TO, { name: 'Cc', value: cc }, { name: 'Bcc', value: 'records@example.com' }], body: { data: b64url('hi') } });
+            expect(summary.startsWith('⚠️ This draft is longer than the card can show, so lines below are cut.')).toBe(true);
+            expect(summary).not.toContain('records@example.com');
+        });
+
+        test('invisible characters and chat markup are flagged', () => {
+            expect(withPayload({ mimeType: 'text/plain', headers: TO, body: { data: b64url('​'.repeat(50) + 'hidden text') } }))
+                .toStartWith('⚠️ This draft holds invisible or direction-changing characters');
+            expect(withPayload({ mimeType: 'text/plain', headers: [...TO, { name: 'Subject', value: 'Totals ```' }], body: { data: b64url('hi') } }))
+                .toStartWith('⚠️ A header in this draft holds characters chat formatting may change');
+        });
     });
 
     test('a failed, slow, empty or mismatched read keeps the gate and the card it had before', () => {
@@ -132,6 +175,8 @@ describe('a send of a stored draft by id', () => {
         for (const command of [
             // No credentials file named: the read could use another account than the send.
             `gws gmail users drafts send --params '{"userId":"me"}' --json '{"id":"${DRAFT_ID}"}'`,
+            // A relative credentials path resolves against the hook's cwd, not the shell's.
+            `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=accounts/team-inbox.json gws gmail users drafts send --params '{"userId":"me"}' --json '{"id":"${DRAFT_ID}"}'`,
             // The payload carries a message of its own.
             `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${CREDS_FILE} gws gmail users drafts send --params '{"userId":"me"}' --json '{"id":"${DRAFT_ID}","message":{"raw":"eA"}}'`,
             // A message send, not a draft send.

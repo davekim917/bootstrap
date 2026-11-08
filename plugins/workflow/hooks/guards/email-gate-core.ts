@@ -470,8 +470,11 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         if (formatted?.signed) lines.push(`Signature: ${inline(sender!.mailbox)}'s Gmail signature, as the host keeps it on file`);
         if (body.note) lines.push(body.note);
     } else if (draft && draftRead && draftTarget) {
+        const length = [...draft.text].length;
+        const extent = length > DRAFT_PREVIEW_CHARS ? `first ${DRAFT_PREVIEW_CHARS} of ${length} characters` : `${length} characters`;
+        if (draft.warnings.length) lines.unshift(...draft.warnings, '');
         lines.push(
-            `Message${draft.html ? ' (HTML, shown as text)' : ''}, first ${DRAFT_PREVIEW_CHARS} characters:`,
+            `Message${draft.html ? ' (HTML, shown as text)' : ''}, ${extent}:`,
             messageBlock(clip(draft.text || '(no text part)', DRAFT_PREVIEW_CHARS)),
             `Draft ${code(inline(draftTarget.draftId))}, version ${code(inline(draftRead.message.id))}. If the draft is edited before the send runs, the send is refused.`,
         );
@@ -486,7 +489,15 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     }
     const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
     if (!shape) return { action: 'gate', label, summary, deny: SEND_ALONE };
-    if (draftTarget && draftRead) return { action: 'gate', label, summary, draft: { ...draftTarget, messageId: draftRead.message.id } };
+    if (draftTarget && draftRead) {
+        // The command can't stand in for a draft's text, so a cut summary says so first.
+        const fitted = summary === lines.join('\n') ? summary : fitLines([
+            '⚠️ This draft is longer than the card can show, so lines below are cut. Check the draft before approving.',
+            '',
+            ...lines,
+        ], CARD_SUMMARY_MAX_CHARS);
+        return { action: 'gate', label, summary: fitted, draft: { ...draftTarget, messageId: draftRead.message.id } };
+    }
     const viewAgrees = !send || (viewRead.to === exactOption('--to') && viewRead.subject === exactOption('--subject')
         && viewRead.cc === exactOption('--cc') && viewRead.bcc === exactOption('--bcc') && viewRead.removed === exactOption('--remove')
         && viewRead.messageId === exactOption('--message-id') && viewRead.alias === exactOption('--from')
@@ -922,7 +933,9 @@ function jsonObjectWithKeys(text: string | undefined, keys: string[]): Record<st
  * draft read.
  */
 function draftSendTarget(shape: SendShape | null): Omit<DraftBinding, 'messageId'> | null {
-    if (!shape?.raw || shape.raw.resource !== 'drafts' || !shape.credentialsFile) return null;
+    // A relative or ~ path would resolve against the hook's cwd and home, not the shell's.
+    const credentialsFile = shape?.credentialsFile;
+    if (!shape?.raw || shape.raw.resource !== 'drafts' || !credentialsFile?.startsWith('/')) return null;
     const words = shape.raw.words;
     const given = new Map<string, string>();
     for (let k = 0; k < words.length; k += 2) {
@@ -934,7 +947,7 @@ function draftSendTarget(shape: SendShape | null): Omit<DraftBinding, 'messageId
     const userId = jsonObjectWithKeys(given.get('--params'), ['userId'])?.userId;
     const draftId = jsonObjectWithKeys(given.get('--json'), ['id'])?.id;
     if (typeof userId !== 'string' || !GMAIL_USER_ID.test(userId) || typeof draftId !== 'string' || !DRAFT_ID.test(draftId)) return null;
-    return { draftId, userId, credentialsFile: shape.credentialsFile };
+    return { draftId, userId, credentialsFile };
 }
 
 /** Read a draft through gws, bounded in time and size; null on any failure, or a reply for another draft. */
@@ -970,32 +983,79 @@ function decodedPart(part: DraftPart): string | null {
 
 type DraftEnvelope = { to?: string; from?: string; subject?: string; cc?: string; bcc?: string };
 
-/** What the card shows of a draft: its envelope, its text, and its attachments' names. */
-function draftContent(draft: StoredDraft): { envelope: DraftEnvelope; text: string; html: boolean; attachments: string[] } {
+// Characters a chat client shows as nothing, or that reorder the text around them.
+const HIDDEN_OR_BIDI = /[­​-‏‪-‮⁠-⁩﻿]/;
+// What chat Markdown restyles in a one-line field; a "Name <address>" header defused to ‹ is still readable.
+const FIELD_MARKUP = /[`*~|]|\{\{emoji:/i;
+const DRAFT_MAX_PARTS = 500;
+const DRAFT_MAX_DEPTH = 20;
+
+interface DraftView {
+    envelope: DraftEnvelope;
+    /** The text recipients read: the HTML part as text when there is one, since mail clients show it first. */
+    text: string;
+    html: boolean;
+    attachments: string[];
+    /** What the card can't show faithfully, listed first on the card so a cut summary can't drop it. */
+    warnings: string[];
+}
+
+/** What the card shows of a draft. Every MIME leaf is either the shown text, an attachment, or the reason for a warning. */
+function draftContent(draft: StoredDraft): DraftView {
     const envelope: DraftEnvelope = {};
     const root = draft.message.payload ?? {};
     for (const h of Array.isArray(root.headers) ? root.headers as Array<{ name?: unknown; value?: unknown }> : []) {
         const name = typeof h?.name === 'string' ? h.name.toLowerCase() : '';
         const value = typeof h?.value === 'string' ? h.value.trim() : '';
-        if (value && (name === 'to' || name === 'from' || name === 'subject' || name === 'cc' || name === 'bcc')) envelope[name] ??= value;
-    }
-    let plain: string | null = null;
-    let html: string | null = null;
-    const attachments: string[] = [];
-    const pending: Array<{ part: DraftPart; depth: number }> = [{ part: root, depth: 0 }];
-    for (let seen = 0; pending.length && seen < 500; seen++) {
-        const { part, depth } = pending.shift()!;
-        const mime = typeof part.mimeType === 'string' ? part.mimeType.toLowerCase() : '';
-        if (typeof part.filename === 'string' && part.filename) attachments.push(part.filename);
-        else if (mime === 'text/plain') plain ??= decodedPart(part);
-        else if (mime === 'text/html') html ??= decodedPart(part);
-        if (Array.isArray(part.parts) && depth < 20) {
-            for (const child of part.parts) if (child && typeof child === 'object') pending.push({ part: child as DraftPart, depth: depth + 1 });
+        if (value && (name === 'to' || name === 'from' || name === 'subject' || name === 'cc' || name === 'bcc')) {
+            envelope[name] = envelope[name] === undefined ? value : `${envelope[name]}, ${value}`;
         }
     }
-    const snippet = typeof draft.message.snippet === 'string' ? draft.message.snippet : '';
-    const text = plain !== null ? plain.trim() : html !== null ? htmlToText(html) : snippet.trim();
-    return { envelope, text, html: plain === null && html !== null, attachments };
+    const texts: Array<{ mime: string; text: string | null; parent: DraftPart | null }> = [];
+    const attachments: string[] = [];
+    const warnings: string[] = [];
+    const pending: Array<{ part: DraftPart; depth: number; parent: DraftPart | null }> = [{ part: root, depth: 0, parent: null }];
+    let incomplete = false;
+    for (let seen = 0; pending.length; seen++) {
+        const { part, depth, parent } = pending.shift()!;
+        if (seen >= DRAFT_MAX_PARTS) {
+            incomplete = true;
+            break;
+        }
+        const mime = typeof part.mimeType === 'string' ? part.mimeType.toLowerCase() : '';
+        const children = Array.isArray(part.parts) ? part.parts.filter((c): c is DraftPart => !!c && typeof c === 'object') : [];
+        if (children.length) {
+            if (depth >= DRAFT_MAX_DEPTH) {
+                incomplete = true;
+                continue;
+            }
+            for (const child of children) pending.push({ part: child, depth: depth + 1, parent: part });
+            continue;
+        }
+        const filename = typeof part.filename === 'string' ? part.filename : '';
+        if (!filename && (mime === 'text/plain' || mime === 'text/html')) texts.push({ mime, text: decodedPart(part), parent });
+        else attachments.push(filename || `unnamed ${mime || 'part'}`);
+    }
+    if (incomplete) {
+        warnings.push('⚠️ This draft has more parts than the card reads; some of its content is not described here. Check the draft before approving.');
+    }
+    const html = texts.find(t => t.mime === 'text/html');
+    const shown = html ?? texts.find(t => t.mime === 'text/plain');
+    const onePairOfVersions = texts.length === 2 && texts[0].parent === texts[1].parent && texts[0].mime !== texts[1].mime
+        && /^multipart\/alternative$/i.test(String(texts[0].parent?.mimeType ?? ''));
+    if (texts.length > 1 && !onePairOfVersions) {
+        warnings.push(`⚠️ This draft has ${texts.length} text parts and the card shows one. Check the draft before approving.`);
+    }
+    if (shown && shown.text === null) warnings.push('⚠️ The text of this draft could not be decoded, so it is not shown. Check the draft before approving.');
+    const text = shown?.text ? (shown.mime === 'text/html' ? htmlToText(shown.text) : shown.text.trim()) : '';
+    const fields = Object.values(envelope);
+    if (HIDDEN_OR_BIDI.test(text) || fields.some(v => HIDDEN_OR_BIDI.test(v))) {
+        warnings.push('⚠️ This draft holds invisible or direction-changing characters, so recipients may read it differently from this card.');
+    }
+    if (fields.some(v => FIELD_MARKUP.test(v) || CHAT_MENTION.test(v))) {
+        warnings.push('⚠️ A header in this draft holds characters chat formatting may change, so it may not read here exactly as sent.');
+    }
+    return { envelope, text, html: shown?.mime === 'text/html', attachments, warnings };
 }
 
 /**
