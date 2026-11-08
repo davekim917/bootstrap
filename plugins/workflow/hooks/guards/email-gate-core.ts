@@ -971,11 +971,15 @@ function readDraft(target: Omit<DraftBinding, 'messageId'>, format: 'full' | 'mi
     }
 }
 
+/** A text part in the charset its Content-Type declares (UTF-8 when none); null when that can't be done exactly. */
 function decodedPart(part: DraftPart): string | null {
     const data = part.body?.data;
     if (typeof data !== 'string') return null;
+    const contentType = (Array.isArray(part.headers) ? part.headers as Array<{ name?: unknown; value?: unknown }> : [])
+        .find(h => typeof h?.name === 'string' && h.name.toLowerCase() === 'content-type')?.value;
+    const charset = typeof contentType === 'string' ? /;\s*charset\s*=\s*"?([^";\s]+)"?/i.exec(contentType)?.[1] : undefined;
     try {
-        return Buffer.from(data, 'base64url').toString('utf-8');
+        return new TextDecoder(charset ?? 'utf-8', { fatal: true }).decode(Buffer.from(data, 'base64url'));
     } catch {
         return null;
     }

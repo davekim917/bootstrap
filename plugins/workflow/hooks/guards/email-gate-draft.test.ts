@@ -127,6 +127,15 @@ describe('a send of a stored draft by id', () => {
             expect(summary.startsWith('⚠️ This draft has 2 text parts and the card shows one.')).toBe(true);
         });
 
+        test("a text part is decoded in its own charset, and one that can't be decoded exactly is flagged", () => {
+            const latin1 = (charset: string, bytes: Buffer) => ({ mimeType: 'text/plain', headers: [...TO, { name: 'Content-Type', value: `text/plain; charset="${charset}"` }], body: { data: bytes.toString('base64url') } });
+            expect(withPayload(latin1('ISO-8859-1', Buffer.from([0x43, 0x61, 0x66, 0xe9])))).toContain('Café');
+            expect(withPayload(latin1('x-no-such-charset', Buffer.from('hi'))))
+                .toStartWith('⚠️ The text of this draft could not be decoded');
+            expect(withPayload({ mimeType: 'text/plain', headers: TO, body: { data: Buffer.from([0x43, 0x61, 0x66, 0xe9]).toString('base64url') } }))
+                .toStartWith('⚠️ The text of this draft could not be decoded');
+        });
+
         test('a third version beside the pair is flagged', () => {
             const summary = withPayload({ mimeType: 'multipart/alternative', headers: TO, parts: [part('text/plain', 'a'), part('text/html', '<p>a</p>'), part('text/x-amp-html', '<p>b</p>')] });
             expect(summary.startsWith('⚠️ This draft has 2 text parts and the card shows one.')).toBe(true);
