@@ -125,3 +125,7 @@ test('a temporary-replace phrase that runs from a comment into code is not read 
     expect(evaluate(`snow sql -q 'DROP -- CREATE OR REPLACE TEMP\nTABLE widget_facts;'`).action).toBe('gate');
     expect(evaluate(`snow sql -q 'CREATE OR REPLACE TEMPORARY\nTABLE tmp_widget (id INT)'`).action).toBe('gate');
 });
+
+test('inline snow text keeps a lone carriage return inside a comment', () => {
+    expect(evaluate(`snow sql -q $'SELECT 1 // note\\r/*\\n; CREATE /*x*/ OR REPLACE TABLE widget_facts AS SELECT 2;'`).action).toBe('gate');
+});

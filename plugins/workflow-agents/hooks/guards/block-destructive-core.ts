@@ -6060,8 +6060,8 @@ const STATEMENT_MAX_CHARS = 4000;
  * True when Snowflake's connector splits `sql` into the statements the guard's scanner sees. The connector treats `//`
  * as a comment (except in a word holding `://`), `\\` as an escape in quotes, a line starting with `!` as a client
  * command that ends the statement before it, and `;>` as an async statement end; neither it nor Snowflake treats
- * `$tag$` or a backtick as a quote. snow reads a file with universal newlines, so a lone carriage return ends a line
- * there and not in the scanner, and the connector strips U+0085 and U+001C–U+001F as whitespace the scanner keeps.
+ * `$tag$` or a backtick as a quote. A lone carriage return ends a line when snow reads a file but not in the scanner,
+ * and the connector strips U+0085 and U+001C–U+001F as whitespace the scanner keeps.
  * Text holding any of them can hide a statement from the scanner.
  */
 function splitsLikeSnow(sql: string): boolean {
@@ -6093,10 +6093,16 @@ const UNANCHORED_DESTRUCTIVE_SQL = [
  * keywords.
  */
 function destructiveKeywordAnywhere(sql: string): DestructiveMatch | null {
+    // snow reads a file with universal newlines, where a lone carriage return ends a line; text given inline keeps it.
+    const fromFile = sql.replace(/\r(?!\n)/g, '\n');
+    return keywordAnywhereIn(sql) ?? (fromFile !== sql ? keywordAnywhereIn(fromFile) : null);
+}
+
+function keywordAnywhereIn(sql: string): DestructiveMatch | null {
     const lexed = snowCommentsAsSpace(sql);
     const scanned = findDestructiveSqlStatement(lexed);
     if (scanned) return scanned;
-    const collapsed = sql.replace(/\/\*[\s\S]*?(?:\*\/|$)|(?:--|\/\/)[^\r\n]*/g, ' ');
+    const collapsed = sql.replace(/\/\*[\s\S]*?(?:\*\/|$)|(?:--|\/\/)[^\n]*/g, ' ');
     for (const text of [sql, collapsed, lexed]) {
         for (const { rx, label } of UNANCHORED_DESTRUCTIVE_SQL) {
             const m = rx.exec(text);
@@ -6119,9 +6125,8 @@ function snowCommentsAsSpace(sql: string): string {
         const c2 = sql.slice(i, i + 2);
         let end: number;
         if (c2 === '--' || c2 === '//') {
-            const lf = sql.indexOf('\n', i);
-            const cr = sql.indexOf('\r', i);
-            i = lf < 0 ? (cr < 0 ? sql.length : cr) : cr < 0 ? lf : Math.min(lf, cr);
+            const nl = sql.indexOf('\n', i);
+            i = nl < 0 ? sql.length : nl;
             out += ' ';
             continue;
         }
