@@ -6070,10 +6070,11 @@ const STATEMENT_MAX_CHARS = 4000;
  * True when Snowflake's connector splits `sql` into the statements the guard's scanner sees. The connector treats `//`
  * as a comment (except in a word holding `://`), `\\` as an escape in quotes, a line starting with `!` as a client
  * command that ends the statement before it, and `;>` as an async statement end; neither it nor Snowflake treats
- * `$tag$` or a backtick as a quote. Text holding any of them can hide a statement from the scanner.
+ * `$tag$` or a backtick as a quote. snow reads a file with universal newlines, so a lone carriage return ends a `--`
+ * comment there and not in the scanner. Text holding any of them can hide a statement from the scanner.
  */
 function splitsLikeSnow(sql: string): boolean {
-    return !/[$`\\]|\/\/|\/\*|;\s*>|^\s*!/m.test(sql);
+    return !/[$`\\]|\r(?!\n)|\/\/|\/\*|;\s*>|^\s*!/m.test(sql);
 }
 
 const UNANCHORED_SNOWFLAKE_SQL = [

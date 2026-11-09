@@ -43,6 +43,17 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
+// snow reads a file with universal newlines, so a lone carriage return ends a `--` comment and the statement after it runs.
+test('a statement after a lone carriage return in a snow file still gates', () => {
+    writeFileSync(join(dir, 'cr-temp.sql'), 'CREATE OR REPLACE TEMP TABLE tmp_widget AS SELECT 1-- note\r; CREATE OR REPLACE TABLE widget_facts AS SELECT 2;\r');
+    writeFileSync(join(dir, 'cr-select.sql'), 'SELECT 1-- note\r; DROP TABLE widget_facts;\r');
+    writeFileSync(join(dir, 'crlf-temp.sql'), 'CREATE OR REPLACE TEMP TABLE tmp_widget AS SELECT 1; -- note\r\nSELECT 2;\r\n');
+    expect(evaluate(`snow sql -f ${dir}/cr-temp.sql`).action).toBe('gate');
+    expect(evaluate(`snow sql -f ${dir}/cr-select.sql`).action).toBe('gate');
+    expect(evaluate(`snow sql -q '!source ${dir}/cr-select.sql'`).action).toBe('gate');
+    expect(evaluate(`snow sql -f ${dir}/crlf-temp.sql`).action).toBe('allow');
+});
+
 const evaluate = (command: string) => evaluateBashCommand(command, { cwd: dir });
 
 describe('replacing a temporary table passes', () => {
