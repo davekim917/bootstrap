@@ -24,7 +24,7 @@ export const CARD_LABEL_MAX_CHARS = 130;
 const FILE_MAX_BYTES = 256 * 1024;
 // The HTML-to-text pass is quadratic on hostile input; the description only
 // ever shows the first thousand or so characters of the result.
-const HTML_MAX_CHARS = 20_000;
+export const HTML_MAX_CHARS = 20_000;
 
 export function clip(text: string, max: number): string {
     if (text.length <= max) return text;
