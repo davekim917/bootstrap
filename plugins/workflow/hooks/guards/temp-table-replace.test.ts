@@ -68,6 +68,10 @@ describe('every other replace still gates', () => {
         [`snow sql -q "CREATE OR REPLACE TEMPORARY PROCEDURE stage_widgets() RETURNS INT LANGUAGE SQL AS 'SELECT 1'"`, /CREATE OR REPLACE/],
         [`snow sql -q "CREATE OR REPLACE TEMPORARY /* scratch */ TABLE widget_facts (id INT)"`, /CREATE OR REPLACE/],
         [`snow sql -q "EXECUTE IMMEDIATE 'CREATE OR REPLACE TABLE widget_facts (id INT)'"`, /EXECUTE IMMEDIATE → CREATE OR REPLACE/],
+        // Only Snowflake's temporary-table semantics are established; other clients keep gating a temporary replace.
+        [`duckdb widgets.db "CREATE OR REPLACE TEMP TABLE widget_facts AS SELECT 1"`, /CREATE OR REPLACE/],
+        [`mysql -e "CREATE OR REPLACE TEMPORARY TABLE widget_facts AS SELECT 1"`, /CREATE OR REPLACE/],
+        [`mysql -e "CREATE OR REPLACE TEMPORARY TABLE tmp_widget AS SELECT 1--1; CREATE OR REPLACE TABLE widget_facts AS SELECT 2;"`, /CREATE OR REPLACE/],
     ])('%s', (command, reason) => {
         const verdict = evaluate(command);
         expect(verdict.action).toBe('gate');

@@ -723,14 +723,15 @@ const DDL_DROP_TARGETS =
 const POLICY_HOST_OBJECTS =
     '(?:TABLE|VIEW|SCHEMA|DATABASE|TAG|ACCOUNT|USER|ROLE|WAREHOUSE|STAGE|MATERIALIZED|DYNAMIC|EXTERNAL|ICEBERG|EVENT|HYBRID)';
 
-export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
+type SqlPatterns = ReadonlyArray<{ rx: RegExp; label: string }>;
+
+export const DESTRUCTIVE_SQL_PATTERNS: SqlPatterns = [
     { rx: new RegExp(`^DROP\\s+${DDL_DROP_TARGETS}\\b`, 'i'), label: 'DROP' },
     { rx: /^TRUNCATE\b(?!\s*\()/i, label: 'TRUNCATE' },
     { rx: /^DELETE\s+FROM\b/i, label: 'DELETE FROM' },
     // Replacing any object drops the one there: a database or schema with everything in it, a stage with its files, a
-    // role or share with its grants. A temporary table is the exception: in Snowflake it shadows a durable table of the
-    // same name for the session and leaves it intact, so replacing one drops only an earlier temporary table.
-    { rx: /^CREATE\s+OR\s+REPLACE\b(?!\s+(?:TEMP|TEMPORARY)\s+TABLE\b)/i, label: 'CREATE OR REPLACE' },
+    // role or share with its grants.
+    { rx: /^CREATE\s+OR\s+REPLACE\b/i, label: 'CREATE OR REPLACE' },
     { rx: /^INSERT\s+OVERWRITE\b/i, label: 'INSERT OVERWRITE' },
     { rx: /^MERGE\s+INTO\b/i, label: 'MERGE' },
     // After string-strip, a DROP keyword inside a string literal cannot reach
@@ -751,6 +752,13 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^ALTER\b[\s\S]*\bSET\b[\s\S]*\b[A-Z]+_POLICY\s*=/i, label: 'ALTER ... SET POLICY parameter' },
     { rx: /^ALTER\b[\s\S]*\bSET\s+TAG\b/i, label: 'ALTER ... SET TAG' },
 ];
+
+// A Snowflake temporary table shadows a permanent or transient table of the same name for the session and leaves it
+// intact, so replacing one drops only an earlier temporary table. Other dialects' docs don't say which table a
+// temporary replace drops, so there it still gates.
+export const SNOWFLAKE_SQL_PATTERNS: SqlPatterns = DESTRUCTIVE_SQL_PATTERNS.map(p =>
+    p.label === 'CREATE OR REPLACE' ? { ...p, rx: /^CREATE\s+OR\s+REPLACE\b(?!\s+(?:TEMP|TEMPORARY)\s+TABLE\b)/i } : p,
+);
 
 // Control-flow words that can open a statement inside a scripting block
 // (Snowflake Scripting, PL/pgSQL, T-SQL). Stripped before matching, so the
@@ -960,7 +968,7 @@ export function decomposeSqlSegment(skel: string): Array<{ body: string; isCTE: 
     return bodies;
 }
 
-export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | null {
+export function checkSqlBody(body: string, isCTE: boolean, patterns: SqlPatterns = DESTRUCTIVE_SQL_PATTERNS): DestructiveMatch | null {
     const whole = body.trim();
     let trimmed = whole;
     let scripted = false;
@@ -968,7 +976,7 @@ export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | n
         trimmed = trimmed.replace(BLOCK_LEAD, '').trim();
         scripted = true;
     }
-    const found = checkStatement(trimmed, isCTE);
+    const found = checkStatement(trimmed, isCTE, patterns);
     if (found || !scripted) return found;
     let candidates = 0;
     let statements = 0;
@@ -981,17 +989,17 @@ export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | n
         const word = BOUNDARY_WORD.exec(whole);
         if (!word || word[2] || !STATEMENT_VERBS.has(word[1].toUpperCase())) continue;
         if (++statements > SCRIPT_STATEMENTS_MAX) return { pattern: TOO_COMPLEX, statement: whole.slice(0, STATEMENT_PREVIEW_CHARS) };
-        const inner = checkStatement(whole.slice(at), isCTE);
+        const inner = checkStatement(whole.slice(at), isCTE, patterns);
         if (inner) return inner;
     }
     return null;
 }
 
-function checkStatement(trimmed: string, isCTE: boolean): DestructiveMatch | null {
+function checkStatement(trimmed: string, isCTE: boolean, patterns: SqlPatterns): DestructiveMatch | null {
     if (!trimmed) return null;
     const preview = trimmed.slice(0, STATEMENT_PREVIEW_CHARS);
 
-    for (const { rx, label } of DESTRUCTIVE_SQL_PATTERNS) {
+    for (const { rx, label } of patterns) {
         if (rx.test(trimmed)) {
             return { pattern: isCTE ? `CTE-wrapped ${label}` : label, statement: preview };
         }
@@ -1141,7 +1149,12 @@ export function findExecuteImmediateLiterals(
  *   - `UPDATE ... WHERE 1=1` — syntactically has WHERE; semantically rewrites
  *     everything
  */
-export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpgsql = false): DestructiveMatch | null {
+export function findDestructiveSqlStatement(
+    sql: string,
+    depth: number = 0,
+    plpgsql = false,
+    patterns: SqlPatterns = DESTRUCTIVE_SQL_PATTERNS,
+): DestructiveMatch | null {
     if (!SQL_PREFILTER.test(sql)) return null;
     if (depth > SQL_RECURSION_LIMIT) return { pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: sql.trim().slice(0, STATEMENT_PREVIEW_CHARS) };
 
@@ -1151,7 +1164,7 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpg
         const skeleton = sqlSkeleton(sql, backslash).skeleton;
         for (const segment of skeleton.split(';')) {
             for (const { body, isCTE } of decomposeSqlSegment(segment)) {
-                const match = checkSqlBody(body, isCTE);
+                const match = checkSqlBody(body, isCTE, patterns);
                 if (match) return match;
             }
         }
@@ -1162,8 +1175,8 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpg
             return { pattern: opaque.label, statement: sql.slice(opaque.start, opaque.end).trim().slice(0, STATEMENT_PREVIEW_CHARS) };
         }
         for (const literal of dynamic.literals) {
-            const inner = findDestructiveSqlStatement(literal.body, depth + 1, literal.plpgsql)
-                ?? findDestructiveSqlStatement(snowCommentsAsSpace(literal.body), depth + 1, literal.plpgsql);
+            const inner = findDestructiveSqlStatement(literal.body, depth + 1, literal.plpgsql, patterns)
+                ?? findDestructiveSqlStatement(snowCommentsAsSpace(literal.body), depth + 1, literal.plpgsql, patterns);
             if (inner) {
                 return { pattern: `EXECUTE IMMEDIATE → ${inner.pattern}`, statement: inner.statement };
             }
@@ -4654,8 +4667,8 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     for (const arg of input.texts) {
         if (!splitsLikeSnow(arg)) return null;
         if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b|^\s*DO\b|[!\\]\w/im.test(arg)) return null;
-        if (!findDestructiveSqlStatement(arg)) continue;
-        for (const st of destructiveStatements(arg)) {
+        if (!findDestructiveSqlStatement(arg, 0, false, SNOWFLAKE_SQL_PATTERNS)) continue;
+        for (const st of destructiveStatements(arg, 0, true, false, SNOWFLAKE_SQL_PATTERNS)) {
             const target = statementTarget(st.pattern, st.statement);
             if (!target) return null;
             const needed = target.kind === 'schema' ? 2 : target.kind === 'database' ? 0 : 3;
@@ -5766,7 +5779,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         }
         for (const text of input.texts) {
             for (const statements of name === 'psql' ? psqlStatementTexts(text) : [text]) {
-                const matched = findDestructiveSqlStatement(statements)
+                const matched = findDestructiveSqlStatement(statements, 0, false, name === 'snow' ? SNOWFLAKE_SQL_PATTERNS : DESTRUCTIVE_SQL_PATTERNS)
                     ?? (name === 'snow' && !splitsLikeSnow(statements) ? destructiveKeywordAnywhere(statements) : null);
                 if (matched) {
                     return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
@@ -6067,8 +6080,8 @@ function splitsLikeSnow(sql: string): boolean {
     return !/[$`\\]|\/\/|\/\*|;\s*>|^\s*!/m.test(sql);
 }
 
-const UNANCHORED_DESTRUCTIVE_SQL = [
-    ...DESTRUCTIVE_SQL_PATTERNS.map(p => ({ rx: new RegExp(p.rx.source.replace(/^\^/, '\\b'), 'i'), label: p.label })),
+const UNANCHORED_SNOWFLAKE_SQL = [
+    ...SNOWFLAKE_SQL_PATTERNS.map(p => ({ rx: new RegExp(p.rx.source.replace(/^\^/, '\\b'), 'i'), label: p.label })),
     { rx: /\bUPDATE\b[\s\S]*\bSET\b/i, label: 'UPDATE' },
 ];
 
@@ -6079,11 +6092,11 @@ const UNANCHORED_DESTRUCTIVE_SQL = [
  */
 function destructiveKeywordAnywhere(sql: string): DestructiveMatch | null {
     const lexed = snowCommentsAsSpace(sql);
-    const scanned = findDestructiveSqlStatement(lexed);
+    const scanned = findDestructiveSqlStatement(lexed, 0, false, SNOWFLAKE_SQL_PATTERNS);
     if (scanned) return scanned;
     const collapsed = sql.replace(/\/\*[\s\S]*?(?:\*\/|$)|(?:--|\/\/)[^\n]*/g, ' ');
     for (const text of [sql, collapsed, lexed]) {
-        for (const { rx, label } of UNANCHORED_DESTRUCTIVE_SQL) {
+        for (const { rx, label } of UNANCHORED_SNOWFLAKE_SQL) {
             const m = rx.exec(text);
             if (m) return { pattern: label, statement: oneLine(text.slice(m.index, m.index + 200)) };
         }
@@ -6186,7 +6199,7 @@ function sqlStatements(
     return out;
 }
 
-function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgsql = false): FoundStatement[] {
+function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgsql = false, patterns: SqlPatterns = DESTRUCTIVE_SQL_PATTERNS): FoundStatement[] {
     if (!SQL_PREFILTER.test(sql)) return [];
     if (depth > SQL_RECURSION_LIMIT) {
         const text = sql.trim();
@@ -6196,7 +6209,7 @@ function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgs
     const lexed = sqlSkeleton(sql);
     for (const { segment, original, text, skeleton, parsed } of sqlStatements(sql, outerParsed, lexed)) {
         for (const { body, isCTE } of decomposeSqlSegment(segment)) {
-            const match = checkSqlBody(body, isCTE);
+            const match = checkSqlBody(body, isCTE, patterns);
             if (match) {
                 found.push({ pattern: match.pattern, statement: original, text, skeleton, parsed });
                 break;
@@ -6209,7 +6222,7 @@ function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgs
         found.push({ pattern: label, statement: text.trim(), text, skeleton: lexed.skeleton.slice(start, start + text.length), parsed: false });
     }
     for (const literal of dynamic.literals) {
-        found.push(...destructiveStatements(literal.body, depth + 1, outerParsed && lexed.openAt < 0, literal.plpgsql));
+        found.push(...destructiveStatements(literal.body, depth + 1, outerParsed && lexed.openAt < 0, literal.plpgsql, patterns));
     }
     return found;
 }
@@ -6450,7 +6463,7 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
         const segs = segments[r];
         // Statements come in the order of their segments; one run from an EXECUTE IMMEDIATE literal matches none.
         let next = 0;
-        for (const st of destructiveStatements(text)) {
+        for (const st of destructiveStatements(text, 0, true, false, cmd.name === 'snow' ? SNOWFLAKE_SQL_PATTERNS : DESTRUCTIVE_SQL_PATTERNS)) {
             const found = { ...st, parsed: st.parsed && !guessed };
             let at = -1;
             for (let i = next; i < segs.length; i++) {
