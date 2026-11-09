@@ -54,6 +54,18 @@ test('a statement after a lone carriage return in a snow file still gates', () =
     expect(evaluate(`snow sql -f ${dir}/crlf-temp.sql`).action).toBe('allow');
 });
 
+// Any gap between how the scanner and snow split SQL must not let a temporary replace front a statement the scanner misses.
+test('a statement hidden from the scanner beside a temporary replace still gates', () => {
+    writeFileSync(join(dir, 'cr-comment.sql'), 'CREATE OR REPLACE TEMP TABLE tmp_widget AS SELECT 1-- note\r; CREATE/**/OR/**/REPLACE TABLE widget_facts AS SELECT 2;\r');
+    expect(evaluate(`snow sql -f ${dir}/cr-comment.sql`).action).toBe('gate');
+    expect(evaluate(`snow sql -q '!source ${dir}/cr-comment.sql'`).action).toBe('gate');
+    for (const ws of ['\u0085', '\x1c', '\x1f']) {
+        expect(evaluate(`snow sql -q 'CREATE OR REPLACE TEMP TABLE tmp_widget AS SELECT 1;${ws}DROP TABLE widget_facts;'`).action).toBe('gate');
+        expect(evaluate(`snow sql -q 'SELECT 1;${ws}DROP TABLE widget_facts;'`).action).toBe('gate');
+    }
+    expect(evaluate(`snow sql -q "CREATE OR REPLACE TEMP TABLE tmp_widget AS SELECT 1; SELECT 'x'; -- DROP TABLE widget_facts"`).action).toBe('gate');
+});
+
 const evaluate = (command: string) => evaluateBashCommand(command, { cwd: dir });
 
 describe('replacing a temporary table passes', () => {

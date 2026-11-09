@@ -4663,8 +4663,8 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     for (const arg of input.texts) {
         if (!splitsLikeSnow(arg)) return null;
         if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b|^\s*DO\b|[!\\]\w/im.test(arg)) return null;
-        if (!findDestructiveSqlStatement(arg, 0, false, SNOWFLAKE_SQL_PATTERNS)) continue;
-        for (const st of destructiveStatements(arg, 0, true, false, SNOWFLAKE_SQL_PATTERNS)) {
+        if (!findDestructiveSqlStatement(arg)) continue;
+        for (const st of destructiveStatements(arg)) {
             const target = statementTarget(st.pattern, st.statement);
             if (!target) return null;
             const needed = target.kind === 'schema' ? 2 : target.kind === 'database' ? 0 : 3;
@@ -5775,8 +5775,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         }
         for (const text of input.texts) {
             for (const statements of name === 'psql' ? psqlStatementTexts(text) : [text]) {
-                const matched = findDestructiveSqlStatement(statements, 0, false, name === 'snow' ? SNOWFLAKE_SQL_PATTERNS : DESTRUCTIVE_SQL_PATTERNS)
-                    ?? (name === 'snow' && !splitsLikeSnow(statements) ? destructiveKeywordAnywhere(statements) : null);
+                const matched = name === 'snow' ? snowflakeDestructive(statements) : findDestructiveSqlStatement(statements);
                 if (matched) {
                     return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
                 }
@@ -6071,29 +6070,56 @@ const STATEMENT_MAX_CHARS = 4000;
  * as a comment (except in a word holding `://`), `\\` as an escape in quotes, a line starting with `!` as a client
  * command that ends the statement before it, and `;>` as an async statement end; neither it nor Snowflake treats
  * `$tag$` or a backtick as a quote. snow reads a file with universal newlines, so a lone carriage return ends a `--`
- * comment there and not in the scanner. Text holding any of them can hide a statement from the scanner.
+ * comment there and not in the scanner, and the connector strips U+0085 and U+001C–U+001F as whitespace the scanner
+ * keeps. Text holding any of them can hide a statement from the scanner.
  */
 function splitsLikeSnow(sql: string): boolean {
-    return !/[$`\\]|\r(?!\n)|\/\/|\/\*|;\s*>|^\s*!/m.test(sql);
+    return !/[$`\\\u0085\x1c-\x1f]|\r(?!\n)|\/\/|\/\*|;\s*>|^\s*!/m.test(sql);
 }
 
-const UNANCHORED_SNOWFLAKE_SQL = [
-    ...SNOWFLAKE_SQL_PATTERNS.map(p => ({ rx: new RegExp(p.rx.source.replace(/^\^/, '\\b'), 'i'), label: p.label })),
+const unanchored = (patterns: SqlPatterns): SqlPatterns => [
+    ...patterns.map(p => ({ rx: new RegExp(p.rx.source.replace(/^\^/, '\\b'), 'i'), label: p.label })),
     { rx: /\bUPDATE\b[\s\S]*\bSET\b/i, label: 'UPDATE' },
 ];
+const UNANCHORED_DESTRUCTIVE_SQL = unanchored(DESTRUCTIVE_SQL_PATTERNS);
+const UNANCHORED_SNOWFLAKE_SQL = unanchored(SNOWFLAKE_SQL_PATTERNS);
+
+// Only whitespace may sit between the words, so no comment or literal can hide TEMP from Snowflake.
+const SNOWFLAKE_TEMP_TABLE_REPLACE = /\bCREATE[\s\u0085\x1c-\x1f]+OR[\s\u0085\x1c-\x1f]+REPLACE[\s\u0085\x1c-\x1f]+TEMP(?:ORARY)?[\s\u0085\x1c-\x1f]+TABLE\b/gi;
+
+/**
+ * The destructive statement in Snowflake SQL, where replacing a temporary table is not one. Every gap found between
+ * how the scanner and the connector split SQL could let a temporary replace stand in front of a statement the scanner
+ * missed, so the exemption holds only when nothing else in `sql` reads as destructive with every run of non-word
+ * characters, comments and literals included, taken as a word break.
+ */
+function snowflakeDestructive(sql: string): DestructiveMatch | null {
+    const splits = splitsLikeSnow(sql);
+    const strict = findDestructiveSqlStatement(sql) ?? (splits ? null : destructiveKeywordAnywhere(sql));
+    if (!strict) return null;
+    const lenient = findDestructiveSqlStatement(sql, 0, false, SNOWFLAKE_SQL_PATTERNS)
+        ?? (splits ? null : destructiveKeywordAnywhere(sql, SNOWFLAKE_SQL_PATTERNS, UNANCHORED_SNOWFLAKE_SQL));
+    if (lenient) return lenient;
+    const rest = sql.replace(SNOWFLAKE_TEMP_TABLE_REPLACE, ' ; ').replace(/[^\w$]+/g, ' ');
+    return UNANCHORED_DESTRUCTIVE_SQL.some(p => p.rx.test(rest)) ? strict : null;
+}
 
 /**
  * For text the scanner can't split: the full scan of `sql` as Snowflake lexes it, then a destructive keyword anywhere,
  * inside literals and comments too, and with every comment also read as the whitespace it may stand for between two
  * keywords.
  */
-function destructiveKeywordAnywhere(sql: string): DestructiveMatch | null {
+function destructiveKeywordAnywhere(
+    sql: string,
+    patterns: SqlPatterns = DESTRUCTIVE_SQL_PATTERNS,
+    anywhere: SqlPatterns = UNANCHORED_DESTRUCTIVE_SQL,
+): DestructiveMatch | null {
     const lexed = snowCommentsAsSpace(sql);
-    const scanned = findDestructiveSqlStatement(lexed, 0, false, SNOWFLAKE_SQL_PATTERNS);
+    const scanned = findDestructiveSqlStatement(lexed, 0, false, patterns);
     if (scanned) return scanned;
     const collapsed = sql.replace(/\/\*[\s\S]*?(?:\*\/|$)|(?:--|\/\/)[^\n]*/g, ' ');
     for (const text of [sql, collapsed, lexed]) {
-        for (const { rx, label } of UNANCHORED_SNOWFLAKE_SQL) {
+        for (const { rx, label } of anywhere) {
             const m = rx.exec(text);
             if (m) return { pattern: label, statement: oneLine(text.slice(m.index, m.index + 200)) };
         }
