@@ -119,3 +119,9 @@ test('dynamic SQL or a policy change hidden beside a temporary replace still gat
         expect(evaluate(`snow sql -q '!source ${dir}/${file}'`).action).toBe('gate');
     }
 });
+
+test('a temporary-replace phrase that runs from a comment into code is not read as one', () => {
+    expect(evaluate(`snow sql -q 'SELECT 1 FROM -- CREATE OR REPLACE TEMP\nTABLE(GENERATOR(ROWCOUNT => 1)); CREATE OR REPLACE TABLE widget_facts AS SELECT 1;'`).action).toBe('gate');
+    expect(evaluate(`snow sql -q 'DROP -- CREATE OR REPLACE TEMP\nTABLE widget_facts;'`).action).toBe('gate');
+    expect(evaluate(`snow sql -q 'CREATE OR REPLACE TEMPORARY\nTABLE tmp_widget (id INT)'`).action).toBe('gate');
+});

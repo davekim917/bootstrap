@@ -6064,8 +6064,9 @@ function splitsLikeSnow(sql: string): boolean {
     return !/[$`\\\u0085\x1c-\x1f]|\r(?!\n)|\/\/|\/\*|;\s*>|^\s*!/m.test(sql);
 }
 
-// Only whitespace may sit between the words, so no comment or literal can hide TEMP from Snowflake.
-const SNOWFLAKE_TEMP_TABLE_REPLACE = /\bCREATE[\s\u0085\x1c-\x1f]+OR[\s\u0085\x1c-\x1f]+REPLACE[\s\u0085\x1c-\x1f]+TEMP(?:ORARY)?[\s\u0085\x1c-\x1f]+TABLE\b/gi;
+// Only spaces and tabs may sit between the words. A comment, literal or line end between them could put part of the
+// phrase in code and part outside it.
+const SNOWFLAKE_TEMP_TABLE_REPLACE = /\bCREATE[ \t]+OR[ \t]+REPLACE[ \t]+TEMP(?:ORARY)?[ \t]+TABLE\b/gi;
 
 /**
  * `sql` with each replace of a temporary table read as a SELECT of the same length. A Snowflake temporary table shadows
