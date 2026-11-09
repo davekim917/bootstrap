@@ -5764,7 +5764,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
             return 'Snowflake SQL that snow fetches from a URL (!source/!load) can\'t be checked before it runs.';
         }
         for (const text of input.texts) {
-            for (const statements of name === 'psql' ? psqlStatementTexts(text) : [text]) {
+            for (const statements of name === 'psql' ? psqlStatementTexts(text) : name === 'snow' ? [snowTempTablesAsSelect(text)] : [text]) {
                 const matched = findDestructiveSqlStatement(statements)
                     ?? (name === 'snow' && !splitsLikeSnow(statements) ? destructiveKeywordAnywhere(statements) : null);
                 if (matched) {
@@ -6060,10 +6060,26 @@ const STATEMENT_MAX_CHARS = 4000;
  * True when Snowflake's connector splits `sql` into the statements the guard's scanner sees. The connector treats `//`
  * as a comment (except in a word holding `://`), `\\` as an escape in quotes, a line starting with `!` as a client
  * command that ends the statement before it, and `;>` as an async statement end; neither it nor Snowflake treats
- * `$tag$` or a backtick as a quote. Text holding any of them can hide a statement from the scanner.
+ * `$tag$` or a backtick as a quote. A lone carriage return ends a line when snow reads a file but not in the scanner,
+ * and the connector strips U+0085 and U+001C–U+001F as whitespace the scanner keeps.
+ * Text holding any of them can hide a statement from the scanner.
  */
 function splitsLikeSnow(sql: string): boolean {
-    return !/[$`\\]|\/\/|\/\*|;\s*>|^\s*!/m.test(sql);
+    return !/[$`\\\u0085\x1c-\x1f]|\r(?!\n)|\/\/|\/\*|;\s*>|^\s*!/m.test(sql);
+}
+
+// Only spaces and tabs may sit between the words. A comment, literal or line end between them could put part of the
+// phrase in code and part outside it.
+const SNOWFLAKE_TEMP_TABLE_REPLACE = /\bCREATE[ \t]+OR[ \t]+REPLACE[ \t]+TEMP(?:ORARY)?[ \t]+TABLE\b/gi;
+
+/**
+ * `sql` with each replace of a temporary table read as a SELECT of the same length. A Snowflake temporary table shadows
+ * a permanent or transient table of the same name for the session and leaves it intact, so replacing one drops only an
+ * earlier temporary table. Every other statement is checked exactly as it would be beside a SELECT; other dialects'
+ * docs don't say which table a temporary replace drops, so this applies to snow alone.
+ */
+function snowTempTablesAsSelect(sql: string): string {
+    return sql.replace(SNOWFLAKE_TEMP_TABLE_REPLACE, m => 'SELECT'.padEnd(m.length));
 }
 
 const UNANCHORED_DESTRUCTIVE_SQL = [
@@ -6077,6 +6093,12 @@ const UNANCHORED_DESTRUCTIVE_SQL = [
  * keywords.
  */
 function destructiveKeywordAnywhere(sql: string): DestructiveMatch | null {
+    // snow reads a file with universal newlines, where a lone carriage return ends a line; text given inline keeps it.
+    const fromFile = sql.replace(/\r(?!\n)/g, '\n');
+    return keywordAnywhereIn(sql) ?? (fromFile !== sql ? keywordAnywhereIn(fromFile) : null);
+}
+
+function keywordAnywhereIn(sql: string): DestructiveMatch | null {
     const lexed = snowCommentsAsSpace(sql);
     const scanned = findDestructiveSqlStatement(lexed);
     if (scanned) return scanned;
@@ -6450,6 +6472,7 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
         // Statements come in the order of their segments; one run from an EXECUTE IMMEDIATE literal matches none.
         let next = 0;
         for (const st of destructiveStatements(text)) {
+            if (cmd.name === 'snow' && st.pattern === 'CREATE OR REPLACE' && !findDestructiveSqlStatement(snowTempTablesAsSelect(st.text))) continue;
             const found = { ...st, parsed: st.parsed && !guessed };
             let at = -1;
             for (let i = next; i < segs.length; i++) {
