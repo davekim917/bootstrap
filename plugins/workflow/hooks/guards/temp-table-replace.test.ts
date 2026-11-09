@@ -43,6 +43,8 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
+const evaluate = (command: string) => evaluateBashCommand(command, { cwd: dir });
+
 // snow reads a file with universal newlines, so a lone carriage return ends a `--` comment and the statement after it runs.
 test('a statement after a lone carriage return in a snow file still gates', () => {
     writeFileSync(join(dir, 'cr-temp.sql'), 'CREATE OR REPLACE TEMP TABLE tmp_widget AS SELECT 1-- note\r; CREATE OR REPLACE TABLE widget_facts AS SELECT 2;\r');
@@ -63,10 +65,7 @@ test('a statement hidden from the scanner beside a temporary replace still gates
         expect(evaluate(`snow sql -q 'CREATE OR REPLACE TEMP TABLE tmp_widget AS SELECT 1;${ws}DROP TABLE widget_facts;'`).action).toBe('gate');
         expect(evaluate(`snow sql -q 'SELECT 1;${ws}DROP TABLE widget_facts;'`).action).toBe('gate');
     }
-    expect(evaluate(`snow sql -q "CREATE OR REPLACE TEMP TABLE tmp_widget AS SELECT 1; SELECT 'x'; -- DROP TABLE widget_facts"`).action).toBe('gate');
 });
-
-const evaluate = (command: string) => evaluateBashCommand(command, { cwd: dir });
 
 describe('replacing a temporary table passes', () => {
     test.each([
@@ -110,4 +109,13 @@ test('a file mixing temporary replaces with one permanent replace gates on the p
     expect(card.label).toMatch(/GADGET_FACTS/i);
     expect(card.label).not.toMatch(/TMP_GADGET|more\)/i);
     expect(card.summary).not.toMatch(/temporary table|more statement|TMP_GADGET_MORE/i);
+});
+
+test('dynamic SQL or a policy change hidden beside a temporary replace still gates', () => {
+    writeFileSync(join(dir, 'cr-dynamic.sql'), "CREATE OR REPLACE TEMP TABLE tmp_widget AS SELECT 1-- note\r; EXECUTE IMMEDIATE 'DRO' || 'P TABLE widget_facts';\r");
+    writeFileSync(join(dir, 'cr-policy.sql'), 'CREATE OR REPLACE TEMP TABLE tmp_widget AS SELECT 1-- note\r; ALTER USER widget_user SET NETWORK_POLICY/**/= open_policy;\r');
+    for (const file of ['cr-dynamic.sql', 'cr-policy.sql']) {
+        expect(evaluate(`snow sql -f ${dir}/${file}`).action).toBe('gate');
+        expect(evaluate(`snow sql -q '!source ${dir}/${file}'`).action).toBe('gate');
+    }
 });
