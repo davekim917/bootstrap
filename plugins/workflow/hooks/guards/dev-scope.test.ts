@@ -48,6 +48,7 @@ describe('destructive SQL inside a listed dev database skips approval', () => {
         'snow sql -c acme_prod -q "drop schema scratch_db.tmp"',
         'snow sql -c acme_prod -q \'create or replace table "SCRATCH_DB"."TMP"."T" clone prod_db.core.t\'',
         'snow sql -c acme_prod -q "drop table scratch_db.a.b; drop table scratch_db.a.c"',
+        'snow sql -c acme_dev -q "create or replace temporary table t as select 1; drop table dev_db.a.b"',
         'cd /tmp && timeout 300 snow sql -c acme_prod --warehouse dev_wh -q "drop schema if exists scratch_db.tmp cascade" 2>&1 | tail -3',
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
@@ -105,7 +106,7 @@ describe('everything else stays gated', () => {
         ['a template in a second -q', `snow sql -c acme_dev -q "drop table dev_db.a.b" -q '<% ctx.env.query %>'`],
         ['a bare template in a second -q', 'snow sql -c acme_dev -q "drop table dev_db.a.b" -q "&query"'],
         ['SQL read from a file', "cat > /tmp/dev-scope-f.sql <<'EOF'\ndrop table dev_db.a.b;\nEOF\nsnow sql -c acme_dev -f /tmp/dev-scope-f.sql"],
-        ['a temporary table beside a dev drop, named without its database', 'snow sql -c acme_dev -q "create or replace temporary table t as select 1; drop table dev_db.a.b"'],
+        ['a transient table beside a dev drop, named without its database', 'snow sql -c acme_dev -q "create or replace transient table t as select 1; drop table dev_db.a.b"'],
         ['a name placed by an earlier USE', 'snow sql -c acme_dev -q "use database dev_db; drop table scratch.orders"'],
         ['a CREATE SCHEMA moving the session', 'snow sql -c acme_dev -q "use database dev_db; create schema prod_db.scratch_x; drop table s.t"'],
         ['a function named snow defined on the line', 'snow() { command snow sql -c acme_other -q "$5"; }; snow sql -c acme_dev -q "drop table dev_db.a.b"'],

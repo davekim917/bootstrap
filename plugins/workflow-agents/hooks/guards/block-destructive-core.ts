@@ -728,8 +728,9 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^TRUNCATE\b(?!\s*\()/i, label: 'TRUNCATE' },
     { rx: /^DELETE\s+FROM\b/i, label: 'DELETE FROM' },
     // Replacing any object drops the one there: a database or schema with everything in it, a stage with its files, a
-    // role or share with its grants.
-    { rx: /^CREATE\s+OR\s+REPLACE\b/i, label: 'CREATE OR REPLACE' },
+    // role or share with its grants. A temporary table is the exception: in Snowflake it shadows a durable table of the
+    // same name for the session and leaves it intact, so replacing one drops only an earlier temporary table.
+    { rx: /^CREATE\s+OR\s+REPLACE\b(?!\s+(?:TEMP|TEMPORARY)\s+TABLE\b)/i, label: 'CREATE OR REPLACE' },
     { rx: /^INSERT\s+OVERWRITE\b/i, label: 'INSERT OVERWRITE' },
     { rx: /^MERGE\s+INTO\b/i, label: 'MERGE' },
     // After string-strip, a DROP keyword inside a string literal cannot reach
