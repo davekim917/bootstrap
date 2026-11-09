@@ -6419,7 +6419,7 @@ function databasePlace(cmd: ResolvedCommand, dialect: string): string {
 function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     // psql may read a backslash command as running to the end of its line, which the gate also checks; a statement
     // only that reading finds was guessed at, not parsed.
-    const readings = sqlInputOf(cmd).texts.flatMap(t => (cmd.name === 'psql' ? psqlStatementTexts(t) : cmd.name === 'snow' ? [snowTempTablesAsSelect(t)] : [t]).map((text, i) => ({ text, guessed: i > 0 })));
+    const readings = sqlInputOf(cmd).texts.flatMap(t => (cmd.name === 'psql' ? psqlStatementTexts(t) : [t]).map((text, i) => ({ text, guessed: i > 0 })));
     const segments = readings.map(r => (SQL_PREFILTER.test(r.text) ? sqlStatements(r.text) : []));
     // Per reading and target: the statements on that target, and how many of them come before each segment.
     const onTarget = new Map<string, { list: ReturnType<typeof sqlStatements>; before: number[] }>();
@@ -6468,6 +6468,7 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
         // Statements come in the order of their segments; one run from an EXECUTE IMMEDIATE literal matches none.
         let next = 0;
         for (const st of destructiveStatements(text)) {
+            if (cmd.name === 'snow' && st.pattern === 'CREATE OR REPLACE' && !findDestructiveSqlStatement(snowTempTablesAsSelect(st.text))) continue;
             const found = { ...st, parsed: st.parsed && !guessed };
             let at = -1;
             for (let i = next; i < segs.length; i++) {

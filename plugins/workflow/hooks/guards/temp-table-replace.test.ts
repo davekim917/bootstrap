@@ -129,3 +129,10 @@ test('a temporary-replace phrase that runs from a comment into code is not read 
 test('inline snow text keeps a lone carriage return inside a comment', () => {
     expect(evaluate(`snow sql -q $'SELECT 1 // note\\r/*\\n; CREATE /*x*/ OR REPLACE TABLE widget_facts AS SELECT 2;'`).action).toBe('gate');
 });
+
+test('the card quotes a statement as written, not as the temporary-replace check reads it', () => {
+    const command = `snow sql -c widget_dev -q "DELETE FROM widget_log WHERE note = 'CREATE OR REPLACE TEMP TABLE'"`;
+    const verdict = evaluate(command);
+    expect(verdict.action).toBe('gate');
+    expect(describeGate(command, verdict.reason ?? '', dir).summary).toContain("note = 'CREATE OR REPLACE TEMP TABLE'");
+});
