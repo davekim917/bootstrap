@@ -234,10 +234,11 @@ describe('a SQL file named through a value on the line', () => {
     });
 
     test.each([
-        ['a path outside the working tree', `D=/etc; ${snow('$D/hostname')}`],
-        ['a symlink out of the working tree', `D=DIR/loop; ${snow('$D/outside.sql')}`],
-    ])('%s stays held', (_label, command) => {
-        expect(inDir(command)).toBe('gate');
+        ['a path outside the working tree', `D=/etc; ${snow('$D/hostname')}`, snow('/etc/hostname')],
+        ['a symlink out of the working tree', `D=DIR/loop; ${snow('$D/outside.sql')}`, snow('DIR/loop/outside.sql')],
+    ])('%s is read like the path written out', (_label, command, literal) => {
+        expect(inDir(command)).toBe('allow');
+        expect(inDir(command)).toBe(inDir(literal));
     });
 
     test.each([
@@ -251,8 +252,8 @@ describe('a SQL file named through a value on the line', () => {
         expect(refused.reason).toContain('run it in the next');
     });
 
-    test('a file that is not there keeps its card on another client, and a written-out one still runs there', () => {
-        expect(inDir(`D=DIR/loop; psql -h db.example -f $D/missing.sql`)).toBe('gate');
+    test('a file that is not there runs on another client, through a value on the line or written out', () => {
+        expect(inDir(`D=DIR/loop; psql -h db.example -f $D/missing.sql`)).toBe('allow');
         expect(inDir(`psql -h db.example -f DIR/loop/missing.sql`)).toBe('allow');
     });
 
@@ -268,6 +269,82 @@ describe('a SQL file named through a value on the line', () => {
         const refused = evaluateBashCommand(command.replace('DIR', dir), { cwd: dir });
         expect(refused.action).toBe('block');
         expect(refused.reason).toContain('Write each path out');
+    });
+});
+
+describe('a SQL file path held in a variable set on the line gets the verdict of the path written out', () => {
+    let q = '';
+    const run = (command: string) => evaluateBashCommand(command.replaceAll('Q', q), { cwd: '/' });
+    const CLIENTS: Array<[string, (path: string) => string]> = [
+        ['snow -f', p => `snow sql -c example --format csv -f ${p}`],
+        ['snow --filename', p => `snow sql -c example --filename ${p}`],
+        ['psql -f', p => `psql -h db.example -f ${p}`],
+        ['psql <', p => `psql -h db.example < ${p}`],
+        ['duckdb -f', p => `duckdb -f ${p}`],
+    ];
+    // Each pair is [through a variable, written out]; the step runs after a cd, so a relative path has two candidates.
+    const SHAPES: Array<[string, (c: (p: string) => string) => [string, string]]> = [
+        ['cd; then assignment', c => [`cd Q; F=report_a.sql; ${c('"$F"')}`, `cd Q; ${c('"report_a.sql"')}`]],
+        ['cd && assignment &&', c => [`cd Q && F=report_a.sql && ${c('"$F"')}`, `cd Q && ${c('"report_a.sql"')}`]],
+        ['an absolute value, no cd', c => [`F=Q/report_a.sql; ${c('"$F"')}`, c('"Q/report_a.sql"')]],
+        ['an absolute value after cd;', c => [`cd /; F=Q/report_a.sql; ${c('"$F"')}`, `cd /; ${c('"Q/report_a.sql"')}`]],
+    ];
+
+    beforeAll(() => {
+        q = mkdtempSync(join(tmpdir(), 'sql-var-path-'));
+        writeFileSync(join(q, 'report_a.sql'), 'select region, sum(amount) from sales group by 1;\n');
+        writeFileSync(join(q, 'report_b.sql'), 'select count(*) from visits;\n');
+        writeFileSync(join(q, 'report_c.sql'), 'select 1;\n');
+        writeFileSync(join(q, 'cleanup.sql'), 'select 1;\ndrop table staging_orders;\n');
+    });
+    afterAll(() => rmSync(q, { recursive: true, force: true }));
+
+    for (const [client, c] of CLIENTS) {
+        test.each(SHAPES.map(([label, shape]) => [label, ...shape(c)]))(`${client}: %s`, (_label, viaVariable, literal) => {
+            expect(run(viaVariable).action).toBe('allow');
+            expect(run(viaVariable).action).toBe(run(literal).action);
+        });
+    }
+
+    test('the four-query chain from the incident runs when every file is a SELECT', () => {
+        const step = (n: string) => `F=report_${n}.sql; snow sql -c example --format csv -f "$F" > report_${n}.csv`;
+        expect(run(`cd Q; ${['a', 'b', 'c', 'a'].map(step).join('; ')}`).action).toBe('allow');
+    });
+
+    test('a DROP in one file of the chain is caught and named, as it is for the path written out', () => {
+        const chain = (path: string) => `cd Q; F=report_a.sql; snow sql -c example -f "$F" > a.csv; F=cleanup.sql; snow sql -c example -f ${path} > b.csv`;
+        const viaVariable = run(chain('"$F"'));
+        expect(viaVariable.action).toBe('gate');
+        expect(viaVariable.reason).toContain('drop table staging_orders');
+        expect(viaVariable.reason).toBe(run(chain('cleanup.sql')).reason);
+    });
+
+    // An unprovable path keeps the refusal snow already gives it (a fix the agent can make), and another client's card.
+    test.each([
+        ['a glob loop', `cd Q; for F in *.sql; do CLIENT; done`],
+        ['a command substitution', `cd Q; F=$(ls report_a.sql); CLIENT`],
+        ['an assignment after ||', `cd Q; true || F=report_a.sql; CLIENT`],
+        ['an assignment in an if', `cd Q; if true; then F=report_a.sql; fi; CLIENT`],
+        ['a value reassigned in a branch', `cd Q; F=report_a.sql; [ -e x ] && F=cleanup.sql; CLIENT`],
+        ['an assignment inside an && chain the step is outside of', `cd Q && F=report_a.sql; CLIENT`],
+    ])('%s is not proven', (_label, command) => {
+        const snow = run(command.replace('CLIENT', 'snow sql -c example -f "$F"'));
+        expect(snow.action).toBe('block');
+        expect(snow.reason).toContain("$F, a path the command line doesn't prove");
+        expect(snow.reason).toContain('outside any `&&` or `||` chain');
+        const psql = run(command.replace('CLIENT', 'psql -h db.example -f "$F"'));
+        expect(psql.action).toBe('gate');
+        expect(psql.reason).toContain("$F, a path the command line doesn't prove");
+    });
+
+    test.each([
+        ['written out', `echo 'drop table staging_orders;' | snow sql -c example -f /dev/stdin`],
+        ['through a variable', `F=/dev/stdin; echo 'drop table staging_orders;' | snow sql -c example -f "$F"`],
+        ['to psql', `echo 'drop table staging_orders;' | psql -h db.example -f /dev/stdin`],
+    ])('a device in place of a SQL file needs approval, %s', (_label, command) => {
+        const verdict = run(command);
+        expect(verdict.action).toBe('gate');
+        expect(verdict.reason).toContain('a device, pipe or socket, not a file');
     });
 });
 
