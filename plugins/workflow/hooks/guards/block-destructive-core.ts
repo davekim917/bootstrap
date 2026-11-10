@@ -1350,10 +1350,12 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     // `/dev/stdin` names the client's own stdin; stat-ing it in the guard would find the guard's.
     const namesStdin = (f: string) => {
         const paths = f === '-' ? null : sqlPathCandidates(f, cmd);
-        return !!paths?.length && paths.every(p => STDIN_PATH.test(p));
+        return !!paths?.length && paths.every(p => STDIN_PATH.test(fdLinkTarget(p)));
     };
-    if (files.includes('-') || files.some(namesStdin)) readsStdin = true;
-    if (readsStdin && !files.some(f => f !== '-' && !namesStdin(f)) && !(cmd.stdinTexts?.length)) {
+    const fileReadsStdin = files.some(f => f === '-' || namesStdin(f));
+    if (fileReadsStdin) readsStdin = true;
+    // Other files beside the one naming stdin don't stop the client reading it.
+    if (readsStdin && (fileReadsStdin || !files.length) && !(cmd.stdinTexts?.length)) {
         const piped = flattenInput(cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos)), cmd.script);
         if (piped.over || !spendTrace(cmd.script, textSize(piped.texts) + piped.catFiles.length)) traceOver = true;
         else {
@@ -1788,7 +1790,7 @@ function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string;
     const out: Array<{ path: string; content: string | 'too-large' | 'not-a-file' }> = [];
     for (const path of sqlPathCandidates(file, cmd) ?? []) {
         if (path === '/dev/null') continue;
-        if (FD_PATH.test(path)) {
+        if (FD_PATH.test(fdLinkTarget(path))) {
             out.push({ path, content: 'not-a-file' });
             continue;
         }
@@ -1877,6 +1879,21 @@ const SQL_PATH_NOT_FILE = 'a device, pipe or socket, not a file';
 const STDIN_PATH = /^\/(?:dev\/stdin|dev\/fd\/0|proc\/(?:self|thread-self)\/fd\/0)$/;
 // A process's own file descriptors: the guard's differ from the client's, so their names alone decide.
 const FD_PATH = /^\/(?:dev\/(?:stdin|stdout|stderr|fd\/\d+)|proc\/(?:self|thread-self|\d+)(?:\/task\/\d+)?\/fd\/\d+)$/;
+const FD_LINK_HOPS = 16;
+
+/** `path` normalized, following symlinks until one names a descriptor path, which is never followed further. */
+function fdLinkTarget(path: string): string {
+    let p = pathNormalize(path);
+    for (let hop = 0; hop < FD_LINK_HOPS && !FD_PATH.test(p); hop++) {
+        try {
+            if (!lstatSync(p).isSymbolicLink()) break;
+            p = pathNormalize(pathResolve(dirname(p), readlinkSync(p)));
+        } catch {
+            break;
+        }
+    }
+    return p;
+}
 
 function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
     const script = cmd.script;

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -361,7 +361,13 @@ describe('a SQL file path held in a variable set on the line gets the verdict of
         ['through a variable', `F=/dev/stdin; echo 'drop table staging_orders;' | snow sql -c example -f "$F"`],
         ['to psql from a heredoc', `psql -h db.example -f /dev/stdin <<'SQL'\ndrop table staging_orders;\nSQL`],
         ['as /proc/self/fd/0', `echo 'drop table staging_orders;' | duckdb -f /proc/self/fd/0`],
+        ['before a second file', `echo 'drop table staging_orders;' | psql -h db.example -f /dev/stdin -f Q/report_a.sql`],
+        ['after a second file, through a variable', `F=/dev/stdin; echo 'drop table staging_orders;' | psql -h db.example -f Q/report_a.sql -f "$F"`],
+        ['as - beside a second file', `echo 'drop table staging_orders;' | psql -h db.example -f Q/report_a.sql -f -`],
+        ['spelled unnormalized', `echo 'drop table staging_orders;' | snow sql -c example -f /dev/../dev/./stdin`],
+        ['through a symlink in the tree', `echo 'drop table staging_orders;' | snow sql -c example -f Q/stdin_link.sql`],
     ])('SQL piped to a client reading /dev/stdin is scanned, %s', (_label, command) => {
+        if (!existsSync(join(q, 'stdin_link.sql'))) symlinkSync('/dev/stdin', join(q, 'stdin_link.sql'));
         const verdict = run(command);
         expect(verdict.action).toBe('gate');
         expect(verdict.reason).toContain('drop table staging_orders');
