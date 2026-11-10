@@ -1351,8 +1351,13 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         // sqlite3 [OPTIONS] [FILENAME [SQL]]: given SQL as an operand it runs that and never reads stdin.
         readsStdin = true;
     }
-    if (files.includes('-')) readsStdin = true;
-    if (readsStdin && !files.some(f => f !== '-') && !(cmd.stdinTexts?.length)) {
+    // `/dev/stdin` names the client's own stdin; stat-ing it in the guard would find the guard's.
+    const namesStdin = (f: string) => {
+        const paths = f === '-' ? null : sqlPathCandidates(f, cmd);
+        return !!paths?.length && paths.every(p => STDIN_PATH.test(p));
+    };
+    if (files.includes('-') || files.some(namesStdin)) readsStdin = true;
+    if (readsStdin && !files.some(f => f !== '-' && !namesStdin(f)) && !(cmd.stdinTexts?.length)) {
         const piped = flattenInput(cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos)), cmd.script);
         if (piped.over || !spendTrace(cmd.script, textSize(piped.texts) + piped.catFiles.length)) traceOver = true;
         else {
@@ -1372,7 +1377,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const f = pending.shift()!;
         if (seen.has(f)) continue;
         seen.add(f);
-        if (f === '/dev/null') continue;
+        if (f === '/dev/null' || (commandFiles.has(f) && namesStdin(f))) continue;
         // A file something may write before it is read is still read as it stands: what it holds now can block.
         if (writesOwnOutput(cmd) || texts.some(t => SQL_CLIENT_FILE_WRITE.test(t))) {
             unreadable ??= `${f}, which the client may write itself`;
@@ -1384,8 +1389,10 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
             unreadable ??= f;
             continue;
         }
-        // A file snow is told to run that isn't there may be generated on the line, past this check.
-        if (candidates && !writes.length && cmd.name === 'snow' && commandFiles.has(f) && !candidates.some(path => existsSync(path))) {
+        // A file that isn't there may be generated on the line by a writer the guard doesn't model (cp, curl, a script).
+        // A written-out path keeps running on every client but snow.
+        const named = /[$`]/.test(f);
+        if (candidates && !writes.length && (named || (cmd.name === 'snow' && commandFiles.has(f))) && !candidates.some(path => existsSync(path))) {
             unreadable ??= `${f}, ${SQL_PATH_MISSING}`;
         }
         for (const written of writes.map(w => flattenInput(w, cmd.script))) {
@@ -1785,6 +1792,10 @@ function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string;
     const out: Array<{ path: string; content: string | 'too-large' | 'not-a-file' }> = [];
     for (const path of sqlPathCandidates(file, cmd) ?? []) {
         if (path === '/dev/null') continue;
+        if (FD_PATH.test(path)) {
+            out.push({ path, content: 'not-a-file' });
+            continue;
+        }
         try {
             const st = statSync(path);
             if (st.isDirectory()) continue;
@@ -1867,6 +1878,9 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] | null {
 const SQL_PATH_UNPROVEN = "a path the command line doesn't prove";
 const SQL_PATH_MISSING = "a file that isn't there yet";
 const SQL_PATH_NOT_FILE = 'a device, pipe or socket, not a file';
+const STDIN_PATH = /^\/(?:dev\/stdin|dev\/fd\/0|proc\/(?:self|thread-self)\/fd\/0)$/;
+// A process's own file descriptors: the guard's differ from the client's, so their names alone decide.
+const FD_PATH = /^\/(?:dev\/(?:stdin|stdout|stderr|fd\/\d+)|proc\/(?:self|thread-self|\d+)(?:\/task\/\d+)?\/fd\/\d+)$/;
 
 function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
     const script = cmd.script;

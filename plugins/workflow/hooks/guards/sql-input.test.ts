@@ -252,8 +252,8 @@ describe('a SQL file named through a value on the line', () => {
         expect(refused.reason).toContain('run it in the next');
     });
 
-    test('a file that is not there runs on another client, through a value on the line or written out', () => {
-        expect(inDir(`D=DIR/loop; psql -h db.example -f $D/missing.sql`)).toBe('allow');
+    test('a file that is not there keeps its card on another client, and a written-out one still runs there', () => {
+        expect(inDir(`D=DIR/loop; psql -h db.example -f $D/missing.sql`)).toBe('gate');
         expect(inDir(`psql -h db.example -f DIR/loop/missing.sql`)).toBe('allow');
     });
 
@@ -337,11 +337,45 @@ describe('a SQL file path held in a variable set on the line gets the verdict of
         expect(psql.reason).toContain("$F, a path the command line doesn't prove");
     });
 
+    // A file the line may create with a writer the guard doesn't model, or a value the shell reads differently from
+    // the guard, is held for a variable path when no candidate exists yet.
+    test.each([
+        ['a file a cp makes on the line', `cd Q; cp cleanup.sql fresh.sql; F=fresh.sql; psql -h db.example -f "$F"`],
+        ['an array element set after the value', `cd Q; F=cleanup.sql; F[1]=missing.sql; sqlite3 local.db < "$F"`],
+    ])('%s needs approval', (_label, command) => {
+        const verdict = run(command);
+        expect(verdict.action).toBe('gate');
+        expect(verdict.reason).toContain("a file that isn't there yet");
+    });
+
+    test('an include naming a shell variable is held when the variable names nothing there', () => {
+        writeFileSync(join(q, 'outer_include.sql'), '.read $F\n');
+        const verdict = run(`cd Q; F=missing.sql; sqlite3 local.db < outer_include.sql`);
+        expect(verdict.action).toBe('gate');
+        expect(verdict.reason).toContain("a file that isn't there yet");
+    });
+
+    // /dev/stdin is the client's stdin, so what is piped or redirected in is what gets read, wherever the guard runs.
     test.each([
         ['written out', `echo 'drop table staging_orders;' | snow sql -c example -f /dev/stdin`],
         ['through a variable', `F=/dev/stdin; echo 'drop table staging_orders;' | snow sql -c example -f "$F"`],
-        ['to psql', `echo 'drop table staging_orders;' | psql -h db.example -f /dev/stdin`],
-    ])('a device in place of a SQL file needs approval, %s', (_label, command) => {
+        ['to psql from a heredoc', `psql -h db.example -f /dev/stdin <<'SQL'\ndrop table staging_orders;\nSQL`],
+        ['as /proc/self/fd/0', `echo 'drop table staging_orders;' | duckdb -f /proc/self/fd/0`],
+    ])('SQL piped to a client reading /dev/stdin is scanned, %s', (_label, command) => {
+        const verdict = run(command);
+        expect(verdict.action).toBe('gate');
+        expect(verdict.reason).toContain('drop table staging_orders');
+    });
+
+    test('a SELECT piped to a client reading /dev/stdin runs', () => {
+        expect(run(`echo 'select 1;' | snow sql -c example -f /dev/stdin`).action).toBe('allow');
+        expect(run(`psql -h db.example -f /dev/stdin <<'SQL'\nselect 1;\nSQL`).action).toBe('allow');
+    });
+
+    test.each([
+        ['another descriptor', `snow sql -c example -f /dev/fd/3 3< Q/cleanup.sql`],
+        ['a descriptor through a variable', `F=/proc/self/fd/4; psql -h db.example -f "$F"`],
+    ])('%s in place of a SQL file needs approval', (_label, command) => {
         const verdict = run(command);
         expect(verdict.action).toBe('gate');
         expect(verdict.reason).toContain('a device, pipe or socket, not a file');
