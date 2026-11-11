@@ -112,6 +112,7 @@ describe('a statement word inside a comment or literal passes, beside a backslas
         ['positional columns and a // comment naming DROP', 'SELECT $1, $2 FROM @example_stage/file.csv // DROP TABLE example_db.core.orders later\n;'],
         ['a /* */ comment naming DROP', '/* DROP TABLE example_db.core.orders */ SELECT 1'],
         ["a \\' that keeps the literal open over a DROP", String.raw`SELECT 'x\'; DROP TABLE example_db.core.orders; --'`],
+        ['an UPDATE with a WHERE on a positional parameter', "UPDATE example_db.core.orders SET status = 'closed' WHERE id = $1 AND note LIKE '%\\\\%'"],
     ])('%s', (_name, sql) => {
         expect(evaluate(sql).action).toBe('allow');
     });
@@ -129,6 +130,9 @@ describe('a statement after a literal or comment that holds ;, a comment marker,
         ["a /* */ comment holding an apostrophe", "SELECT 1 /* it's */; TRUNCATE TABLE example_db.core.orders"],
         ['a backtick, which Snowflake does not quote with', 'SELECT `x; y` FROM t; DROP TABLE example_db.core.orders'],
         ["an escaped newline in EXECUTE IMMEDIATE", String.raw`EXECUTE IMMEDIATE 'SELECT 1;\nDROP TABLE example_db.core.orders'`],
+        ['an UPDATE whose only WHERE is inside a name holding $', 'UPDATE example_db.core.orders SET status = old$where$flag'],
+        ['a DROP between names holding $$', "EXECUTE IMMEDIATE 'BEGIN SELECT 1 AS a$$b; DROP TABLE example_db.core.orders; SELECT 1 AS c$$; END;'"],
+        ['the same at top level', 'SELECT 1 AS a$$b; DROP TABLE example_db.core.orders; SELECT 1 AS c$$;'],
     ])('%s', (_name, sql) => {
         const result = evaluate(sql);
         expect(result.action).toBe('gate');

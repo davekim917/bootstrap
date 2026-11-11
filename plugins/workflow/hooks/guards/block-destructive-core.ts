@@ -1136,7 +1136,11 @@ export function findExecuteImmediateLiterals(
  *   - `UPDATE ... WHERE 1=1` — syntactically has WHERE; semantically rewrites
  *     everything
  */
-export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpgsql = false): DestructiveMatch | null {
+/**
+ * `snowflake`: `sql` is snow's input as snowLexed reads it exactly, so a dynamic body that reading can't vouch for is
+ * also checked for a destructive keyword anywhere in it.
+ */
+export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpgsql = false, snowflake = false): DestructiveMatch | null {
     if (!SQL_PREFILTER.test(sql)) return null;
     if (depth > SQL_RECURSION_LIMIT) return { pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: sql.trim().slice(0, STATEMENT_PREVIEW_CHARS) };
 
@@ -1157,8 +1161,10 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpg
             return { pattern: opaque.label, statement: sql.slice(opaque.start, opaque.end).trim().slice(0, STATEMENT_PREVIEW_CHARS) };
         }
         for (const literal of dynamic.literals) {
-            const inner = findDestructiveSqlStatement(literal.body, depth + 1, literal.plpgsql)
-                ?? findDestructiveSqlStatement(snowLexed(literal.body).text, depth + 1, literal.plpgsql);
+            const lexedBody = snowLexed(literal.body);
+            const inner = findDestructiveSqlStatement(literal.body, depth + 1, literal.plpgsql, snowflake)
+                ?? findDestructiveSqlStatement(lexedBody.text, depth + 1, literal.plpgsql, snowflake)
+                ?? (snowflake && !lexedBody.exact ? destructiveKeywordAnywhere(literal.body) : null);
             if (inner) {
                 return { pattern: `EXECUTE IMMEDIATE → ${inner.pattern}`, statement: inner.statement };
             }
@@ -5801,7 +5807,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         for (const text of input.texts) {
             for (const statements of name === 'psql' ? psqlStatementTexts(text) : name === 'snow' ? [snowTempTablesAsSelect(text)] : [text]) {
                 const snow = name === 'snow' ? snowLexed(statements) : null;
-                const matched = snow?.exact ? findDestructiveSqlStatement(snow.text)
+                const matched = snow?.exact ? findDestructiveSqlStatement(snow.text, 0, false, true)
                     : findDestructiveSqlStatement(statements) ?? (snow ? destructiveKeywordAnywhere(statements) : null);
                 if (matched) {
                     return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
@@ -6155,7 +6161,7 @@ function keywordAnywhereIn(sql: string): DestructiveMatch | null {
  * inside one (`'--'`) does not swallow the code after it.
  *
  * `exact` is false where this reading may not be Snowflake's, or snow may split the text into other statements than the
- * scanner does: a literal, identifier or comment left open, a `/*` inside a block comment, `//` after a `:` (snow keeps a
+ * scanner does: a `$` inside a name, a literal, identifier or comment left open, a `/*` inside a block comment, `//` after a `:` (snow keeps a
  * `://` in a word), a backslash in an identifier or outside a literal, or text snow reads before splitting (a lone
  * carriage return, U+0085 or U+001C–U+001F, `;>`, a line starting with `!`).
  */
@@ -6181,6 +6187,8 @@ function snowLexed(sql: string): { text: string; exact: boolean } {
             out += ' ';
             continue;
         }
+        // Snowflake allows `$` inside an unquoted name (`a$$b`, `old$where$flag`), where neither quotes.
+        if (c === '$' && /[\w$]/.test(sql[i - 1] ?? '')) exact = false;
         if (c2 === '$$') {
             const close = sql.indexOf('$$', i + 2);
             if (close < 0) exact = false;
