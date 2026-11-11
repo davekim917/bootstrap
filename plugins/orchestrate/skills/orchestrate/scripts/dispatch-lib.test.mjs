@@ -92,7 +92,6 @@ test('a model no human named is dropped so the spawn takes the default model, an
     [{ model: 'sonnet', subagent_type: shim('high') }, { effort: true }, [undefined, 'high', shim('high')]],
     [{ model: 'opus', effort: 'max' }, {}, [undefined, 'xhigh', undefined]],
     [{ model: 'sonnet', effort: 'xhigh' }, {}, [undefined, 'xhigh', undefined]],
-    [{ model: 'opus', effort: 'max' }, { model: true, effort: true }, ['opus', 'xhigh', undefined]],
     [{ model: 'claude-opus-5-5', effort: 'max' }, { model: true }, ['claude-opus-5-5', 'xhigh', undefined]],
     [{ model: 'opus', subagent_type: shim('high') }, { model: true, effort: true }, ['opus', 'high', shim('high')]],
   ];
@@ -102,6 +101,7 @@ test('a model no human named is dropped so the spawn takes the default model, an
     assert.equal('model' in out, expected[0] !== undefined, JSON.stringify(input));
   }
   assert.equal(rewriteClaudeSpawn({ model: 'opus', effort: 'high', subagent_type: shim('high') }, { model: true, effort: true }), null);
+  assert.equal(rewriteClaudeSpawn({ model: 'opus', effort: 'max' }, { model: true, effort: true }), null);
 });
 
 test('humanTurns keeps only the turns people wrote', () => {
@@ -370,16 +370,16 @@ test('a roleless spawn that names no effort runs at high, or at the parent level
   );
 });
 
-test('the effort a person named in their latest invocation fills a spawn that names none, within the model cap', () => {
+test('the effort a person named in their latest invocation fills a spawn that names none, uncapped', () => {
   const invoked = rewriteClaudeSpawn({ subagent_type: 'general-purpose', prompt: 'p' }, {}, { parentEffort: 'xhigh', invokedEffort: 'max' });
   assert.equal(invoked?.effort, 'max');
   const fable = rewriteClaudeSpawn({ model: 'fable', prompt: 'p' }, { model: true }, { invokedEffort: 'xhigh' });
-  assert.deepEqual([fable?.model, fable?.effort], ['fable', 'high']);
+  assert.deepEqual([fable?.model, fable?.effort], ['fable', 'xhigh']);
   const called = rewriteClaudeSpawn({ subagent_type: 'general-purpose', effort: 'low', prompt: 'p' }, {}, { invokedEffort: 'xhigh' });
   assert.equal(called, null);
 });
 
-test('the installed hook gives a spawn with no effort the default, keeps a level the person named, and still caps', () => {
+test('the installed hook gives a spawn with no effort the default, keeps a level the person named, and caps an agent\'s own', () => {
   const run = spawnHookRunner();
   const xhighParent = { parentEffort: 'xhigh' };
   const effortOf = (out) => out?.updatedInput?.effort;
@@ -390,10 +390,10 @@ test('the installed hook gives a spawn with no effort the default, keeps a level
 
   assert.equal(run('/orchestrate xhigh review the spec', { effort: 'xhigh' }, xhighParent), null);
   assert.equal(effortOf(run('/orchestrate xhigh review the spec', {}, xhighParent)), 'xhigh');
-  assert.equal(effortOf(run('/orchestrate max review the spec', {}, { ...xhighParent, parent: 'claude-sonnet-5-5' })), 'max');
+  assert.equal(effortOf(run('/orchestrate max review the spec', {}, xhighParent)), 'max');
 
   assert.equal(effortOf(run('Thanks, now get it reviewed.', { effort: 'max' }, xhighParent)), 'xhigh');
-  assert.equal(effortOf(run('Use a fable subagent at xhigh to review it.', { model: 'fable' }, xhighParent)), 'high');
+  assert.equal(effortOf(run('Use a fable subagent at xhigh to review it.', { model: 'fable' }, xhighParent)), 'xhigh');
   assert.equal(run('Thanks, now get it reviewed.', { subagent_type: 'Explore' }, xhighParent), null);
 });
 
@@ -406,29 +406,30 @@ const capRun = () => {
 };
 const onVariable = (model) => ({ parent: 'claude-sonnet-5-5', env: { CLAUDE_CODE_SUBAGENT_MODEL: model } });
 
-test('a spawn that names no model is capped for the install default sub-agent model', () => {
+test('an agent\'s own effort is capped for the install default sub-agent model', () => {
   const run = capRun();
-  assert.equal(run('/orchestrate max review the spec', {}, onVariable('opus[1m]')).effort, 'xhigh');
-  assert.equal(run('/orchestrate max review the spec', {}, onVariable('claude-opus-5-5[1m]')).effort, 'xhigh');
-  assert.equal(run('/orchestrate max review the spec', {}, onVariable('fable')).effort, 'high');
-  assert.equal(
-    run('/orchestrate max review the spec', { subagent_type: 'bootstrap-orchestrate:worker-max' }, onVariable('opus[1m]')).type,
-    'bootstrap-orchestrate:worker-xhigh',
-  );
+  const own = 'Thanks, now get it reviewed.';
+  assert.equal(run(own, { effort: 'max' }, onVariable('fable')).effort, 'high');
+  assert.equal(run(own, { subagent_type: 'bootstrap-orchestrate:worker-max' }, onVariable('fable')).type, 'bootstrap-orchestrate:worker-high');
+  assert.equal(run(own, { effort: 'max' }, onVariable('opus[1m]')).effort, 'xhigh');
+  assert.equal(run(own, { effort: 'max' }, onVariable('claude-opus-5-5[1m]')).effort, 'xhigh');
 });
 
-test('with no install default, a spawn that names no model is capped for its parent model', () => {
+test('with no install default, an agent\'s own effort is capped for its parent model', () => {
   const run = capRun();
-  assert.equal(run('/orchestrate max review the spec', {}, { parent: 'claude-opus-5-5' }).effort, 'xhigh');
-  assert.equal(run('/orchestrate max review the spec', {}, { parent: 'claude-fable-5-2' }).effort, 'high');
+  const own = 'Thanks, now get it reviewed.';
+  assert.equal(run(own, { effort: 'max' }, { parent: 'claude-fable-5-2' }).effort, 'high');
+  assert.equal(run(own, { effort: 'max' }, { parent: 'claude-opus-5-5' }).effort, 'xhigh');
+  assert.equal(run(own, { model: 'opus', effort: 'max' }, { parent: 'claude-fable-5-2' }).effort, 'high');
 });
 
-test('a model a person named is capped for itself, a dropped model is not, and a named role is not capped for the inherited model', () => {
+test('a level a person chose is not capped, whichever model runs; a named role is never rewritten', () => {
   const run = capRun();
-  assert.equal(run('Thanks, now get it reviewed.', { model: 'opus', effort: 'max' }, { parent: 'claude-fable-5-2' }).effort, 'high');
-  assert.equal(run('/orchestrate max review the spec', { model: 'sonnet' }, { parent: 'claude-opus-5-5' }).effort, 'xhigh');
-  assert.equal(run('/orchestrate sonnet max review the spec', { model: 'sonnet' }, onVariable('opus[1m]')).effort, 'max');
-  assert.equal(run('/orchestrate opus max review the spec', { model: 'opus' }, onVariable('fable')).effort, 'xhigh');
-  assert.equal(run('/orchestrate max review the spec', { subagent_type: 'Explore', effort: 'max' }, onVariable('fable')), null);
-  assert.equal(run('/orchestrate max review the spec', { subagent_type: 'qa-smoke-worker', effort: 'max' }, { parent: 'claude-fable-5-2' }), null);
+  const invoked = '/orchestrate max review the spec';
+  assert.equal(run('/orchestrate opus max review the spec', { model: 'opus' }, onVariable('fable')).effort, 'max');
+  for (const opts of [onVariable('opus[1m]'), onVariable('fable'), { parent: 'claude-opus-5-5' }, { parent: 'claude-fable-5-2' }]) {
+    assert.equal(run(invoked, {}, opts).effort, 'max', JSON.stringify(opts));
+  }
+  assert.equal(run(invoked, { subagent_type: 'Explore', effort: 'max' }, onVariable('fable')), null);
+  assert.equal(run('Thanks, now get it reviewed.', { subagent_type: 'qa-smoke-worker', effort: 'max' }, { parent: 'claude-fable-5-2' }), null);
 });

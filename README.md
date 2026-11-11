@@ -133,9 +133,10 @@ Slack markup) keeps an explicit model of that
 family. The hook parses no other wording: whether a mention is a request ("not opus", "write a
 haiku") is the coordinator's reading. Any other model is dropped, so the spawn runs on the install's default sub-agent model (`CLAUDE_CODE_SUBAGENT_MODEL`), else its parent's, and the hook says so: the spawning agent gets a
 note naming the model asked for and the model that runs, and the sub-agent's prompt opens with it. The effort a
-call asks for stands, capped for the model that will run (the call's model, else the install's default sub-agent
-model, else the parent's): `high` on Fable, `xhigh` on Opus, and `xhigh` on any other model unless the human chose it
-through an invocation. A named role is not capped, since the hook cannot see which model it runs on. A call that names no effort takes the level of the human's latest invocation, else `high`, or
+call asks for stands. A level the human chose through an invocation is not capped; the model and Claude Code own
+what it supports. An agent's own choice is capped for the model that will run (the call's model, else the install's
+default sub-agent model, else the parent's): `high` on Fable, `xhigh` on any other. A named role is not capped,
+since the hook cannot see which model it runs on. A call that names no effort takes the level of the human's latest invocation, else `high`, or
 the parent's level when that is lower; the hook reads the parent's level from the `effort.level` field
 Claude Code puts in tool-use hook input, and a parent on a model without effort gets `high`. A model
 left omitted follows the client's native resolution rather than a workflow-owned fallback.

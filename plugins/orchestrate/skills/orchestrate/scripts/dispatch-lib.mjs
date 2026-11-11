@@ -61,9 +61,10 @@ function callEffort(input) {
  * invoked level, else DEFAULT_EFFORT, or the parent's level when that is lower:
  * left unset, a sub-agent on its parent's model inherits the parent's level, so
  * an xhigh parent would pass xhigh to every helper.
- * The effort is capped for the model that will run: the call's model, else
- * `inheritedModel` (from inheritedModel). When neither names a capped family,
- * an agent's own choice takes AGENT_MAX_EFFORT. Effort always leaves as the Agent
+ * A level the human chose is never capped. An agent's own choice is capped for
+ * the model that will run, the call's model else `inheritedModel` (the model
+ * the sub-agent inherits): MODEL_MAX_EFFORT for that family, else
+ * AGENT_MAX_EFFORT. Effort always leaves as the Agent
  * call's `effort` field: current Claude Code does not apply a shim's `effort`
  * frontmatter, so a shim type alone runs at the default level. A named role
  * (Explore, Plan, any custom or plugin agent) is never rewritten: Claude Code
@@ -89,8 +90,7 @@ export function rewriteClaudeSpawn(input, pins = {}, { parentEffort, invokedEffo
     humanChosen = true;
   }
   effort ??= capEffort(DEFAULT_EFFORT, parentEffort);
-  const cap = MODEL_MAX_EFFORT[familyOf(out.model ?? inheritedModel)] ?? (humanChosen ? undefined : AGENT_MAX_EFFORT);
-  if (cap) effort = capEffort(effort, cap);
+  if (!humanChosen) effort = capEffort(effort, MODEL_MAX_EFFORT[familyOf(out.model ?? inheritedModel)] ?? AGENT_MAX_EFFORT);
   out.effort = effort;
   if (shim) out.subagent_type = `bootstrap-orchestrate:worker-${effort}`;
 
