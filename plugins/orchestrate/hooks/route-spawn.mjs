@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Claude Code PreToolUse hook on Agent/Task: settle every sub-agent spawn,
 // autonomous or via /orchestrate. A model no human named is dropped so the spawn
-// inherits its parent's, and the agent and the sub-agent are told which model runs.
+// runs on CLAUDE_CODE_SUBAGENT_MODEL, else its parent's, and the agent and the sub-agent are told which model runs.
 // The effort the call names stands, within the caps; a call that names none gets one.
 // Never blocks, never opens a connection. A named role is never rewritten.
 import fs from 'node:fs';

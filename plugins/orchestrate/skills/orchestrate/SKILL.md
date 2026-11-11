@@ -12,9 +12,9 @@ This part applies whenever you delegate, invoked or not. Whether to delegate at 
 
 ## The invocation
 
-Parse the invocation: the first two words after /orchestrate are {model} and {effort_level} when they are a model name and an effort level; anything after that is {task}. If the model is absent, none is named and the sub-agent inherits yours. If the effort is absent, you choose it, as below. {rounds} defaults to 3 and {done} to "the deliverable is complete with acceptance evidence" — the task text may override both ("stop after 5 rounds", "until the numbers reconcile").
+Parse the invocation: the first two words after /orchestrate are {model} and {effort_level} when they are a model name and an effort level; anything after that is {task}. If the model is absent, name none. If the effort is absent, you choose it, as below. {rounds} defaults to 3 and {done} to "the deliverable is complete with acceptance evidence" — the task text may override both ("stop after 5 rounds", "until the numbers reconcile").
 
-Only the user chooses a model. Leave it out unless they named one, and never pick one yourself: the sub-agent then runs on your model.
+Only the user chooses a model. Leave it out unless they named one, and never pick one yourself: the sub-agent runs on the install's default sub-agent model, else yours.
 
 Effort is yours, because you hold the user's actual words. A level the user named wins. Otherwise judge the request and the work, whatever words they used; with no level chosen, a Claude Code sub-agent gets the hook's default above and a Codex or OpenCode one runs at its native default:
 - `low`: well-understood or mechanical work, or they asked for a quick pass.

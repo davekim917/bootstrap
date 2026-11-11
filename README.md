@@ -17,7 +17,7 @@ by scale, repetition, concurrency, security, or failure impact—not by a fixed 
 |---|---|---:|---|
 | Claude Code | `bootstrap-workflow` | 5.40.2 | The seven `team-*` skills and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.40.2 | The same, runtime-neutral |
-| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.8.0 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
+| Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.8.1 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.3.3 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
@@ -73,7 +73,7 @@ A parameterized delegation prompt, plus the every-spawn rules above.
 ```
 
 The first two words are the model and the effort when they look like one; everything
-after is the task. Only the user chooses a model: leave it out and the sub-agent inherits the coordinator's,
+after is the task. Only the user chooses a model: leave it out and the sub-agent runs on the install's default sub-agent model, else the coordinator's,
 and on Claude Code the spawn hook drops a model the coordinator named itself. The coordinator chooses effort; left
 out, the runtime's native default applies. Settling a spawn sends nothing off the machine. It dispatches ONE
 sub-agent, hands it the brief, and keeps that same sub-agent for every later round.
@@ -115,8 +115,8 @@ and OpenCode runs a default sub-agent when the shim is absent, and says so. Each
 those sentences is gated by its own drift token and a mutation test.
 
 On the last row: nothing in this repo installs the effort shims onto an OpenCode host —
-a Codex-shaped manifest cannot ship agents, and OpenCode would not read `model: inherit`
-or `effort` from one anyway. The skill therefore degrades out loud rather than pinning an
+a Codex-shaped manifest cannot ship agents, and OpenCode would not read
+`effort` from one anyway. The skill therefore degrades out loud rather than pinning an
 effort it cannot pin.
 
 Explicit choices stay intact subject to the existing compatibility
@@ -131,13 +131,13 @@ one of the skill's invocations — `/orchestrate <model> <effort> …` (an `@men
 names a model family ("I'd like fable to take a look", "compare Opus and Sonnet", also in quotes, backticks or
 Slack markup) keeps an explicit model of that
 family. The hook parses no other wording: whether a mention is a request ("not opus", "write a
-haiku") is the coordinator's reading. Any other model is dropped, so the spawn inherits its parent's, and the hook says so: the spawning agent gets a
+haiku") is the coordinator's reading. Any other model is dropped, so the spawn runs on the install's default sub-agent model (`CLAUDE_CODE_SUBAGENT_MODEL`), else its parent's, and the hook says so: the spawning agent gets a
 note naming the model asked for and the model that runs, and the sub-agent's prompt opens with it. The effort a
 call asks for stands, capped at `xhigh` when no model is named and the human did not choose it through an
 invocation. A call that names no effort takes the level of the human's latest invocation, else `high`, or
 the parent's level when that is lower; the hook reads the parent's level from the `effort.level` field
 Claude Code puts in tool-use hook input, and a parent on a model without effort gets `high`. A model
-left omitted follows the client's native inheritance rather than a workflow-owned fallback.
+left omitted follows the client's native resolution rather than a workflow-owned fallback.
 
 A named role is never rewritten. Claude Code gives a per-call `model` precedence over a role's
 own `model` frontmatter, `inherit` included, and a role's effective definition can live where a
@@ -159,9 +159,12 @@ type. So every dispatch passes `effort` explicitly, and the shim name only label
 The spawn hook also gives any shim call an `effort` field matching the level it runs
 at (renaming the shim to match), but the hook fails open, so the skill never relies
 on it. Each shim keeps its `effort`
-frontmatter, sets `model: inherit` so the dispatch still chooses the model, and
-carries a single line of body. They are not roles, and the drift gates assert exactly
-that: five files, `model: inherit`, and a body too short to hold a contract.
+frontmatter, has no `model` field, and carries a single line of body. Not even
+`model: inherit`: Claude Code ranks a definition's model, `inherit` included, above
+`CLAUDE_CODE_SUBAGENT_MODEL`, so a shim with one would ignore the install's default
+sub-agent model. A shim call that names no model runs on that default, else the
+parent's. They are not roles, and the drift gates assert exactly that: five files, no
+`model` field, and a body too short to hold a contract.
 
 `scripts/plugin-enablement.mjs` prints the composed session for any plugin set, and
 `scripts/plugin-enablement.test.mjs` resolves and RUNS the hooks each state registers,
