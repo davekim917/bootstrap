@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-orchestrate",
-  "version": "3.8.1",
+  "version": "3.8.2",
   "description": "The /orchestrate skill: delegate one task to a sub-agent of the model and effort you name, in one continuous thread. Also sets the effort and lifetime of every sub-agent spawn.",
   "author": {
     "name": "David Kim"
