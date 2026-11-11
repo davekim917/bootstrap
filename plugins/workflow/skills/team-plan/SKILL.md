@@ -10,7 +10,7 @@ The retained sub-agent investigates and designs; the coordinator carries logisti
 
 1. Read the relevant source and instructions in full. Ground outcome, scope, existing approval,
    constraints and observable acceptance criteria in the conversation and evidence.
-2. Choose a safe design in the code that already does the job, and no more. Write a short
+2. Choose a safe design: nothing unneeded, no parallel code path. Write a short
    `docs/specs/<feature>/plan.md` only when a written contract is useful: current behavior with
    source evidence, proposed change, checks, and material safety, rollout or rollback
    considerations. Record unresolved decisions. For a consequential new or changed API, write two or
