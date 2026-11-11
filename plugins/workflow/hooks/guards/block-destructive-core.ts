@@ -39,7 +39,7 @@ import { basename, dirname, join, normalize as pathNormalize, resolve as pathRes
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
 import { draftChangedSince, type DraftBinding } from './email-gate-core';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, inWorkingTree, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -1347,8 +1347,15 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         // sqlite3 [OPTIONS] [FILENAME [SQL]]: given SQL as an operand it runs that and never reads stdin.
         readsStdin = true;
     }
-    if (files.includes('-')) readsStdin = true;
-    if (readsStdin && !files.some(f => f !== '-') && !(cmd.stdinTexts?.length)) {
+    // `/dev/stdin` names the client's own stdin; stat-ing it in the guard would find the guard's.
+    const namesStdin = (f: string) => {
+        const paths = f === '-' ? null : sqlPathCandidates(f, cmd);
+        return !!paths?.length && paths.every(p => STDIN_PATH.test(fdLinkTarget(p)));
+    };
+    const fileReadsStdin = files.some(f => f === '-' || namesStdin(f));
+    if (fileReadsStdin) readsStdin = true;
+    // Other files beside the one naming stdin don't stop the client reading it.
+    if (readsStdin && (fileReadsStdin || !files.length) && !(cmd.stdinTexts?.length)) {
         const piped = flattenInput(cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos)), cmd.script);
         if (piped.over || !spendTrace(cmd.script, textSize(piped.texts) + piped.catFiles.length)) traceOver = true;
         else {
@@ -1368,7 +1375,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const f = pending.shift()!;
         if (seen.has(f)) continue;
         seen.add(f);
-        if (f === '/dev/null') continue;
+        if (f === '/dev/null' || (commandFiles.has(f) && namesStdin(f))) continue;
         // A file something may write before it is read is still read as it stands: what it holds now can block.
         if (writesOwnOutput(cmd) || texts.some(t => SQL_CLIENT_FILE_WRITE.test(t))) {
             unreadable ??= `${f}, which the client may write itself`;
@@ -1380,12 +1387,11 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
             unreadable ??= f;
             continue;
         }
-        // A path a variable names is one the agent chose at run time, so it must exist and stay in the working tree.
-        // A file snow is told to run that isn't there may be generated on the line, past this check.
+        // A file that isn't there may be generated on the line by a writer the guard doesn't model (cp, curl, a script).
+        // A written-out path keeps running on every client but snow.
         const named = /[$`]/.test(f);
-        if (candidates && !writes.length) {
-            if ((named || (cmd.name === 'snow' && commandFiles.has(f))) && !candidates.some(path => existsSync(path))) unreadable ??= `${f}, ${SQL_PATH_MISSING}`;
-            else if (named && !candidates.every(path => inWorkingTree(path, cmd.script?.cwd))) unreadable ??= `${f}, a file that is missing or outside the working tree`;
+        if (candidates && !writes.length && (named || (cmd.name === 'snow' && commandFiles.has(f))) && !candidates.some(path => existsSync(path))) {
+            unreadable ??= `${f}, ${SQL_PATH_MISSING}`;
         }
         for (const written of writes.map(w => flattenInput(w, cmd.script))) {
             if (written.over || !spendTrace(cmd.script, textSize(written.texts) + written.catFiles.length)) {
@@ -1403,6 +1409,10 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         for (const { path, content } of readSqlFiles(f, cmd)) {
             if (content === 'too-large') {
                 unreadable ??= f;
+                continue;
+            }
+            if (content === 'not-a-file') {
+                unreadable ??= `${f}, ${SQL_PATH_NOT_FILE}`;
                 continue;
             }
             if (!spendTrace(cmd.script, content.length)) {
@@ -1770,17 +1780,27 @@ const PIPE_NESTING_MAX = 64;
 
 /**
  * The text of every file a SQL client step could open for `file`: one per
- * directory it could run in. Missing files and non-regular files are skipped
- * (a missing one is usually written earlier in the same command, whose text
- * sqlInputOf scans), and so is a path the command line does not prove.
+ * directory it could run in. Missing files and directories are skipped (a
+ * missing one is usually written earlier in the same command, whose text
+ * sqlInputOf scans), and so is a path the command line does not prove. A
+ * device, pipe or socket hands the client text the guard can't read first.
  */
-function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string; content: string | 'too-large' }> {
+function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string; content: string | 'too-large' | 'not-a-file' }> {
     if (!file || file === '-') return [];
-    const out: Array<{ path: string; content: string | 'too-large' }> = [];
+    const out: Array<{ path: string; content: string | 'too-large' | 'not-a-file' }> = [];
     for (const path of sqlPathCandidates(file, cmd) ?? []) {
+        if (path === '/dev/null') continue;
+        if (FD_PATH.test(fdLinkTarget(path))) {
+            out.push({ path, content: 'not-a-file' });
+            continue;
+        }
         try {
             const st = statSync(path);
-            if (!st.isFile()) continue;
+            if (st.isDirectory()) continue;
+            if (!st.isFile()) {
+                out.push({ path, content: 'not-a-file' });
+                continue;
+            }
             out.push({ path, content: st.size > SQL_FILE_MAX_BYTES ? 'too-large' : readFileSync(path, 'utf-8') });
         } catch {
             continue;
@@ -1855,6 +1875,25 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] | null {
 
 const SQL_PATH_UNPROVEN = "a path the command line doesn't prove";
 const SQL_PATH_MISSING = "a file that isn't there yet";
+const SQL_PATH_NOT_FILE = 'a device, pipe or socket, not a file';
+const STDIN_PATH = /^\/(?:dev\/stdin|dev\/fd\/0|proc\/(?:self|thread-self)\/fd\/0)$/;
+// A process's own file descriptors: the guard's differ from the client's, so their names alone decide.
+const FD_PATH = /^\/(?:dev\/(?:stdin|stdout|stderr|fd\/\d+)|proc\/(?:self|thread-self|\d+)(?:\/task\/\d+)?\/fd\/\d+)$/;
+const FD_LINK_HOPS = 16;
+
+/** `path` normalized, following symlinks until one names a descriptor path, which is never followed further. */
+function fdLinkTarget(path: string): string {
+    let p = pathNormalize(path);
+    for (let hop = 0; hop < FD_LINK_HOPS && !FD_PATH.test(p); hop++) {
+        try {
+            if (!lstatSync(p).isSymbolicLink()) break;
+            p = pathNormalize(pathResolve(dirname(p), readlinkSync(p)));
+        } catch {
+            break;
+        }
+    }
+    return p;
+}
 
 function sqlPathCandidates(file: string, cmd: ResolvedCommand): string[] | null {
     const script = cmd.script;
@@ -7003,7 +7042,7 @@ function* gatedSteps(
                 continue;
             }
             if (cmd.name === 'snow' && reason.includes(SQL_PATH_UNPROVEN)) {
-                yield { cmd, reason, outer, moves, fix: `${reason} Write each path out, or set it to a plain value on the same line (\`F=/path/query.sql; snow sql -f "$F"\`), and the guard reads the files first.` };
+                yield { cmd, reason, outer, moves, fix: `${reason} Write each path out, or set it to a plain value earlier on the same line, as its own step outside any \`&&\` or \`||\` chain, loop or branch (\`cd /path; F=query.sql; snow sql -f "$F"\`), and the guard reads the files first.` };
                 continue;
             }
             if (cmd.name === 'dbt' && reason.includes(DBT_MACRO_MISSING)) {
