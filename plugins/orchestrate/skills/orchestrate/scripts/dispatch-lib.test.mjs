@@ -82,7 +82,7 @@ test('the installed hook leaves every named role untouched', () => {
   assert.deepEqual(entries.map((e) => [e.before.subagent_type, e.decision, e.after]), NAMED_ROLES.map((t) => [t, 'named-role', null]));
 });
 
-test('a model no human named is dropped so the spawn inherits, and the effort stands within the caps', () => {
+test('a model no human named is dropped so the spawn takes the default model, and the effort stands within the caps', () => {
   const shim = (e) => `bootstrap-orchestrate:worker-${e}`;
   const cases = [
     [{ model: 'opus', subagent_type: shim('high') }, {}, [undefined, 'high', shim('high')]],

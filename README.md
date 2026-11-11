@@ -137,7 +137,7 @@ call asks for stands, capped at `xhigh` when no model is named and the human did
 invocation. A call that names no effort takes the level of the human's latest invocation, else `high`, or
 the parent's level when that is lower; the hook reads the parent's level from the `effort.level` field
 Claude Code puts in tool-use hook input, and a parent on a model without effort gets `high`. A model
-left omitted follows the client's native inheritance rather than a workflow-owned fallback.
+left omitted follows the client's native resolution rather than a workflow-owned fallback.
 
 A named role is never rewritten. Claude Code gives a per-call `model` precedence over a role's
 own `model` frontmatter, `inherit` included, and a role's effective definition can live where a
