@@ -119,8 +119,8 @@ a Codex-shaped manifest cannot ship agents, and OpenCode would not read
 `effort` from one anyway. The skill therefore degrades out loud rather than pinning an
 effort it cannot pin.
 
-Explicit choices stay intact subject to the existing compatibility
-caps; a coordinator may still deliberately select a normal role or effort from the
+Explicit choices stay intact, and an agent's own effort stays within the
+caps below; a coordinator may still deliberately select a normal role or effort from the
 task. The Claude Code hook keeps an explicit model only when a
 human chose it in their latest turn of the session transcript (user turns, minus tool results, skill loads, harness
 notices and, in a NanoClaw container, system- or agent-sent `<message>` envelopes and the quoted
