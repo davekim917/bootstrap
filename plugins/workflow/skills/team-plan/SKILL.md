@@ -10,12 +10,12 @@ The retained sub-agent investigates and designs; the coordinator carries logisti
 
 1. Read the relevant source and instructions in full. Ground outcome, scope, existing approval,
    constraints and observable acceptance criteria in the conversation and evidence.
-2. Choose a safe design that builds nothing unneeded and changes existing code rather than adding
-   beside it. Write a short `docs/specs/<feature>/plan.md` only when a written contract is useful:
-   current behavior with source evidence, proposed change, checks, and material safety, rollout or
-   rollback considerations. Record unresolved decisions. For a consequential new or changed API,
-   write two or three realistic call sites first and derive the signatures from them; when the two
-   disagree, change the signatures, not the usage.
+2. Choose a safe design that builds nothing unneeded and, where code already does the job, changes
+   it rather than adding beside it. Write a short `docs/specs/<feature>/plan.md` only when a written
+   contract is useful: current behavior with source evidence, proposed change, checks, and material
+   safety, rollout or rollback considerations. Record unresolved decisions. For a consequential new
+   or changed API, write two or three realistic call sites first and derive the signatures from
+   them; when the two disagree, change the signatures, not the usage.
 3. Before consequential implementation, obtain independent cross-model plan review on the raw plan.
    Routine changes do not automatically require both review gates; record the risk-based choice.
 4. Verify candidate findings and use the shared correction budget. Record evidence in `run.md`.
