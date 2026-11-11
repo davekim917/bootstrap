@@ -56,6 +56,8 @@ describe('a heredoc or comment inside $( ) is read as bash reads it', () => {
         ['a substitution in double quotes before the heredoc', `x=$(echo "$(date)"; cat <<'EOF'\nit's\nEOF\n)\necho "$x"`],
         ['an apostrophe in a comment', `x=$(echo two # it's )\n)\necho "$x"`],
         ['a heredoc in a case arm', `x=$(case y in y) cat <<'E'\nit's)\nE\n;; esac)\necho "$x"`],
+        ['body lines that start with the delimiter and hold no )', "x=$(python3 - <<'PY'\nPYTHONPATH = 1\nprint('it's')\nPY\n)\necho \"$x\""],
+        ['a body line that starts with a one-letter delimiter', "x=$(cat <<'E'\nEverything's fine\nE\n)\necho \"$x\""],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });

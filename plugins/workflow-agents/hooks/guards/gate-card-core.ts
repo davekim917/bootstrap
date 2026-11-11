@@ -629,7 +629,7 @@ function substitutionEnd(src: string, start: number, blanks: Array<[number, numb
                     }
                     // Inside $( ), bash 5.2 also ends a body at a line that starts with the delimiter and holds a `)`,
                     // and reads the rest of that line as commands.
-                    if (line.startsWith(h.delimiter)) return -1;
+                    if (line.startsWith(h.delimiter) && line.includes(')')) return -1;
                     if (eol < 0) {
                         blanks.push([bodyStart, src.length]);
                         p = src.length;
