@@ -1140,7 +1140,11 @@ export function findExecuteImmediateLiterals(
  *   - `UPDATE ... WHERE 1=1` — syntactically has WHERE; semantically rewrites
  *     everything
  */
-export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpgsql = false): DestructiveMatch | null {
+/**
+ * `snowflake`: `sql` is snow's input as snowLexed reads it exactly, so a dynamic body that reading can't vouch for is
+ * also checked for a destructive keyword anywhere in it.
+ */
+export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpgsql = false, snowflake = false): DestructiveMatch | null {
     if (!SQL_PREFILTER.test(sql)) return null;
     if (depth > SQL_RECURSION_LIMIT) return { pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: sql.trim().slice(0, STATEMENT_PREVIEW_CHARS) };
 
@@ -1161,8 +1165,10 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpg
             return { pattern: opaque.label, statement: sql.slice(opaque.start, opaque.end).trim().slice(0, STATEMENT_PREVIEW_CHARS) };
         }
         for (const literal of dynamic.literals) {
-            const inner = findDestructiveSqlStatement(literal.body, depth + 1, literal.plpgsql)
-                ?? findDestructiveSqlStatement(snowCommentsAsSpace(literal.body), depth + 1, literal.plpgsql);
+            const lexedBody = snowLexed(literal.body);
+            const inner = findDestructiveSqlStatement(literal.body, depth + 1, literal.plpgsql, snowflake)
+                ?? findDestructiveSqlStatement(lexedBody.text, depth + 1, literal.plpgsql, snowflake)
+                ?? (snowflake && !lexedBody.exact ? destructiveKeywordAnywhere(literal.body) : null);
             if (inner) {
                 return { pattern: `EXECUTE IMMEDIATE → ${inner.pattern}`, statement: inner.statement };
             }
@@ -5804,8 +5810,9 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         }
         for (const text of input.texts) {
             for (const statements of name === 'psql' ? psqlStatementTexts(text) : name === 'snow' ? [snowTempTablesAsSelect(text)] : [text]) {
-                const matched = findDestructiveSqlStatement(statements)
-                    ?? (name === 'snow' && !splitsLikeSnow(statements) ? destructiveKeywordAnywhere(statements) : null);
+                const snow = name === 'snow' ? snowLexed(statements) : null;
+                const matched = snow?.exact ? findDestructiveSqlStatement(snow.text, 0, false, true)
+                    : findDestructiveSqlStatement(statements) ?? (snow ? destructiveKeywordAnywhere(statements) : null);
                 if (matched) {
                     return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
                 }
@@ -6138,7 +6145,7 @@ function destructiveKeywordAnywhere(sql: string): DestructiveMatch | null {
 }
 
 function keywordAnywhereIn(sql: string): DestructiveMatch | null {
-    const lexed = snowCommentsAsSpace(sql);
+    const lexed = snowLexed(sql).text;
     const scanned = findDestructiveSqlStatement(lexed);
     if (scanned) return scanned;
     const collapsed = sql.replace(/\/\*[\s\S]*?(?:\*\/|$)|(?:--|\/\/)[^\n]*/g, ' ');
@@ -6152,11 +6159,18 @@ function keywordAnywhereIn(sql: string): DestructiveMatch | null {
 }
 
 /**
- * `sql` with each comment read as one space, the way Snowflake lexes it: `--`, `//` and `/* *\/` outside a literal,
- * where a `'` literal takes backslash escapes and `$$` quotes. Literals are kept, so a comment opener inside one
- * (`'--'`) does not swallow the code after it.
+ * `sql` as Snowflake reads it, in text the scanner reads the same way: each comment (`--`, `//`, `/* *\/`) outside a
+ * literal as one space, a backslash-escaped quote in a `'` literal written doubled, `$$` kept as a quote, and a `$`
+ * opening a `$tag$` or a backtick as a space, since Snowflake quotes with neither. Literals are kept, so a comment opener
+ * inside one (`'--'`) does not swallow the code after it.
+ *
+ * `exact` is false where this reading may not be Snowflake's, or snow may split the text into other statements than the
+ * scanner does: a `$` inside a name, a literal, identifier or comment left open, a `/*` inside a block comment, `//` after a `:` (snow keeps a
+ * `://` in a word), a backslash in an identifier or outside a literal, or text snow reads before splitting (a lone
+ * carriage return, U+0085 or U+001C–U+001F, `;>`, a line starting with `!`).
  */
-function snowCommentsAsSpace(sql: string): string {
+function snowLexed(sql: string): { text: string; exact: boolean } {
+    let exact = !/[\u0085\x1c-\x1f]|\r(?!\n)|;\s*>|^\s*!/m.test(sql);
     let out = '';
     let i = 0;
     while (i < sql.length) {
@@ -6164,6 +6178,7 @@ function snowCommentsAsSpace(sql: string): string {
         const c2 = sql.slice(i, i + 2);
         let end: number;
         if (c2 === '--' || c2 === '//') {
+            if (c2 === '//' && sql[i - 1] === ':') exact = false;
             const nl = sql.indexOf('\n', i);
             i = nl < 0 ? sql.length : nl;
             out += ' ';
@@ -6171,12 +6186,16 @@ function snowCommentsAsSpace(sql: string): string {
         }
         if (c2 === '/*') {
             const close = sql.indexOf('*/', i + 2);
+            if (close < 0 || sql.slice(i + 2, close).includes('/*')) exact = false;
             i = close < 0 ? sql.length : close + 2;
             out += ' ';
             continue;
         }
+        // Snowflake allows `$` inside an unquoted name (`a$$b`, `old$where$flag`), where neither quotes.
+        if (c === '$' && /[\w$]/.test(sql[i - 1] ?? '')) exact = false;
         if (c2 === '$$') {
             const close = sql.indexOf('$$', i + 2);
+            if (close < 0) exact = false;
             end = close < 0 ? sql.length : close + 2;
         } else if (c === "'" || c === '"') {
             // A backslash-escaped quote is written doubled, so the scanner that reads this output pairs quotes the same way.
@@ -6187,19 +6206,26 @@ function snowCommentsAsSpace(sql: string): string {
                     literal += sql[end + 1] === "'" ? "''" : sql.slice(end, end + 2);
                     end += 2;
                 } else {
+                    if (sql[end] === '\\') exact = false;
                     literal += sql[end++];
                 }
             }
+            if (end >= sql.length) exact = false;
             out += literal + (end < sql.length ? c : '');
             i = Math.min(end + 1, sql.length);
             continue;
+        } else if (c === '`' || (c === '$' && DOLLAR_TAG.test(sql.slice(i)))) {
+            out += ' ';
+            i++;
+            continue;
         } else {
+            if (c === '\\') exact = false;
             end = i + 1;
         }
         out += sql.slice(i, end);
         i = end;
     }
-    return out;
+    return { text: out, exact };
 }
 
 /** A destructive statement as the description reads it. `statement` is what the gate saw, for decisions keyed on it. */
@@ -6462,7 +6488,11 @@ function databasePlace(cmd: ResolvedCommand, dialect: string): string {
 function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     // psql may read a backslash command as running to the end of its line, which the gate also checks; a statement
     // only that reading finds was guessed at, not parsed.
-    const readings = sqlInputOf(cmd).texts.flatMap(t => (cmd.name === 'psql' ? psqlStatementTexts(t) : [t]).map((text, i) => ({ text, guessed: i > 0 })));
+    const snowRead = (t: string) => {
+        const lexed = snowLexed(t);
+        return lexed.exact ? lexed.text : t;
+    };
+    const readings = sqlInputOf(cmd).texts.flatMap(t => (cmd.name === 'psql' ? psqlStatementTexts(t) : [cmd.name === 'snow' ? snowRead(t) : t]).map((text, i) => ({ text, guessed: i > 0 })));
     const segments = readings.map(r => (SQL_PREFILTER.test(r.text) ? sqlStatements(r.text) : []));
     // Per reading and target: the statements on that target, and how many of them come before each segment.
     const onTarget = new Map<string, { list: ReturnType<typeof sqlStatements>; before: number[] }>();
