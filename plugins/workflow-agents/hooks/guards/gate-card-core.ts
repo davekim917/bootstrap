@@ -494,6 +494,165 @@ function startsComment(src: string, i: number): boolean {
     return p === 0 || ' \t\n;&|'.includes(src[p - 1]);
 }
 
+// unbash 2.2.0 finds the `)` closing a `$(` or `<(` without reading heredocs or comments, so a quote or paren in a
+// body or comment moves it; bash reads neither for that `)`. Its scan is run with each blanked, and its text taken from
+// the real source. unbash 6 reads bodies itself and lacks these internals, so on any other version nothing is wrapped and such
+// a line stays unreadable.
+const UNBASH_BODY_BLIND_VERSION = '2.2.0';
+
+async function readSubstitutionsPastHeredocBodies(): Promise<void> {
+    let lexer: any;
+    try {
+        const entry = import.meta.resolve('unbash');
+        const pkg = await import(new URL('../package.json', entry).href, { with: { type: 'json' } });
+        if ((pkg.default ?? pkg).version !== UNBASH_BODY_BLIND_VERSION) return;
+        lexer = (await import(new URL('./lexer.js', entry).href)).Lexer;
+    } catch {
+        return;
+    }
+    const scan = lexer?.prototype?.extractBalanced;
+    if (typeof scan !== 'function') return;
+    lexer.prototype.extractBalanced = function (this: { src: string; pos: number }): string {
+        const src = this.src;
+        const start = this.pos;
+        const blanked = blankBodiesAndComments(src, start);
+        if (blanked === null) return scan.call(this);
+        this.src = blanked;
+        let inner: string;
+        try {
+            inner = scan.call(this);
+        } finally {
+            this.src = src;
+        }
+        return src.slice(start, start + inner.length);
+    };
+}
+
+/**
+ * `src` with each heredoc body and comment inside the substitution starting at `start` blanked to spaces, its newlines
+ * and every offset kept; null when it holds neither, or holds text this scan does not model.
+ */
+function blankBodiesAndComments(src: string, start: number): string | null {
+    if (src.indexOf('<<', start) < 0 && src.indexOf('#', start) < 0) return null;
+    const bodies: Array<[number, number]> = [];
+    if (substitutionEnd(src, start, bodies, 0) < 0 || !bodies.length) return null;
+    let out = '';
+    let at = 0;
+    for (const [from, to] of bodies.sort((x, y) => x[0] - y[0])) {
+        out += src.slice(at, from) + src.slice(from, to).replace(/[^\n]/g, ' ');
+        at = to;
+    }
+    return out + src.slice(at);
+}
+
+/**
+ * Index of the `)` closing the substitution whose text starts at `start`, or `src.length` when the input ends first,
+ * adding the span of each heredoc body and comment inside it to `bodies`; -1 for text this scan does not model.
+ */
+function substitutionEnd(src: string, start: number, bodies: Array<[number, number]>, depth: number): number {
+    if (depth > WALK_MAX_DEPTH) return -1;
+    let pending: Array<{ delimiter: string; tabs: boolean }> = [];
+    let parens = 1;
+    for (let i = start; i < src.length; i++) {
+        const c = src[i];
+        if (c === '\\') {
+            i++;
+        } else if (c === '$' && src[i + 1] === "'") {
+            i = ansiCQuoteEnd(src, i + 1);
+            if (i < 0) return -1;
+        } else if (c === "'") {
+            i = src.indexOf("'", i + 1);
+            if (i < 0) return -1;
+        } else if (c === '`') {
+            i = backtickEnd(src, i);
+            if (i < 0) return -1;
+        } else if (c === '"') {
+            i = doubleQuoteEnd(src, i, bodies, depth);
+            if (i < 0) return -1;
+        } else if (c === '#' && (startsComment(src, i) || src[i - 1] === '(')) {
+            const eol = src.indexOf('\n', i);
+            bodies.push([i, eol < 0 ? src.length : eol]);
+            i = (eol < 0 ? src.length : eol) - 1;
+        } else if (c === '(' && src[i + 1] === '(' && readsAsArithmetic(src.slice(i), 1)) {
+            i += closesAt(src.slice(i), 1) + 1;
+        } else if (c === '(') {
+            parens++;
+        } else if (c === ')') {
+            if (--parens === 0) return i;
+        } else if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<' && src[i - 1] !== '<') {
+            const tabs = src[i + 2] === '-';
+            let w = i + (tabs ? 3 : 2);
+            while (src[w] === ' ' || src[w] === '\t') w++;
+            const word = bashHeredocDelimiter(src, w);
+            if (!word) return -1;
+            pending.push({ delimiter: word.delimiter, tabs });
+            i = word.end - 1;
+        } else if (c === '\n' && pending.length) {
+            let p = i + 1;
+            for (const h of pending) {
+                const bodyStart = p;
+                for (;;) {
+                    const eol = src.indexOf('\n', p);
+                    const line = src.slice(p, eol < 0 ? src.length : eol);
+                    if ((h.tabs ? line.replace(/^\t+/, '') : line) === h.delimiter) {
+                        bodies.push([bodyStart, p]);
+                        p = eol < 0 ? src.length : eol + 1;
+                        break;
+                    }
+                    if (eol < 0) {
+                        bodies.push([bodyStart, src.length]);
+                        p = src.length;
+                        break;
+                    }
+                    p = eol + 1;
+                }
+            }
+            pending = [];
+            i = p - 1;
+        }
+    }
+    return src.length;
+}
+
+/** Index of the `"` closing the one at `open`, reading each substitution inside it whole; -1 when it can't be read. */
+function doubleQuoteEnd(src: string, open: number, bodies: Array<[number, number]>, depth: number): number {
+    for (let k = open + 1; k < src.length; k++) {
+        const c = src[k];
+        if (c === '\\') {
+            k++;
+        } else if (c === '"') {
+            return k;
+        } else if (c === '`') {
+            k = backtickEnd(src, k);
+            if (k < 0) return -1;
+        } else if (c === '$' && src[k + 1] === '(') {
+            k = src[k + 2] === '(' && readsAsArithmetic(src.slice(k + 1), 1)
+                ? k + 1 + closesAt(src.slice(k + 1), 1) + 1
+                : substitutionEnd(src, k + 2, bodies, depth + 1);
+            if (k < 0 || k >= src.length) return -1;
+        }
+    }
+    return -1;
+}
+
+/** Index of the backtick closing the one at `open`, or -1. */
+function backtickEnd(src: string, open: number): number {
+    for (let k = open + 1; k < src.length; k++) {
+        if (src[k] === '\\') k++;
+        else if (src[k] === '`') return k;
+    }
+    return -1;
+}
+
+/** Index of the `'` closing the `$'…'` string whose opening quote is at `open`, or -1. */
+function ansiCQuoteEnd(src: string, open: number): number {
+    for (let k = open + 1; k < src.length; k++) {
+        if (src[k] === '\\') k++;
+        else if (src[k] === "'") return k;
+    }
+    return -1;
+}
+
 /** Throws when a heredoc inside a command substitution has a delimiter unbash misread; those can't be rewritten. */
 function checkNestedHeredocs(ast: unknown): void {
     try {
@@ -1034,3 +1193,5 @@ export function fitLines(lines: string[], max = CARD_SUMMARY_MAX_CHARS): string 
     }
     return out.join('\n');
 }
+
+await readSubstitutionsPastHeredocBodies();

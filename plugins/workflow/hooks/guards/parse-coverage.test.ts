@@ -32,14 +32,34 @@ describe('a line the parser stops reading partway through blocks', () => {
         ['a process substitution spanning lines', 'cat <(echo a\nshred /tmp/report.txt)'],
         ['a loop fed by a process substitution spanning lines', 'while read -r l; do echo "$l"; done < <(\n  shred /tmp/report.txt\n)'],
         ['a single-quoted $( in a word spanning lines', `echo '$(\n'"$(shred /tmp/report.txt)"')'`],
-        ["an apostrophe in a heredoc inside $( ), which the parser reads past", `git commit -m "$(cat <<'EOF'\nit's done\nEOF\n)" && shred /tmp/report.txt`],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('block');
     });
+});
 
-    test('the refusal of a heredoc inside $( ) names the stdin form that reads whole', () => {
-        const reason = evaluateBashCommand(`git commit -m "$(cat <<'EOF'\nit's done\nEOF\n)"`, { cwd: '/tmp' }).reason ?? '';
-        expect(reason).toContain('git commit -F - <<');
+describe('a heredoc or comment inside $( ) is read as bash reads it', () => {
+    test.each([
+        ['an apostrophe in a quoted body', "DECISION=$(python3 - <<'PY'\n# it's fine\nprint('ok')\nPY\n)\necho $DECISION"],
+        ['the same body without one', "DECISION=$(python3 - <<'PY'\n# its fine\nprint('ok')\nPY\n)\necho $DECISION"],
+        ['the same heredoc outside $( )', "python3 - <<'PY'\n# it's fine\nprint('ok')\nPY"],
+        ['an apostrophe in a commit message', `git commit -m "$(cat <<'EOF'\nfix: it's done\nEOF\n)"`],
+        ['a ) and a literal $( ) in a quoted body', `x=$(cat <<'EOF'\n) $(shred /tmp/report.txt)\nEOF\n)\necho "$x"`],
+        ['a ) in a tab-stripped body', `x=$(cat <<-EOF\n\t)it's\n\tEOF\n)\necho "$x"`],
+        ['a substitution in double quotes before the heredoc', `x=$(echo "$(date)"; cat <<'EOF'\nit's\nEOF\n)\necho "$x"`],
+        ['an apostrophe in a comment', `x=$(echo two # it's )\n)\necho "$x"`],
+    ])('%s', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    const shredAlone = evaluateBashCommand('shred /tmp/report.txt', { cwd: '/tmp' });
+    test.each([
+        ['a command after the substitution', `git commit -m "$(cat <<'EOF'\nit's done\nEOF\n)" && shred /tmp/report.txt`],
+        ['a substitution in an unquoted body', `x=$(cat <<EOF\n) it's $(shred /tmp/report.txt)\nEOF\n)\necho "$x"`],
+        ['a command after a body whose ) and apostrophe would hide it', `x=$(cat <<-EOF\n\t)it's\n\tEOF\n)\nshred /tmp/report.txt`],
+    ])('%s is checked as the command it is', (_name, command) => {
+        const result = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(shredAlone.action).toBe('block');
+        expect(result).toEqual(shredAlone);
     });
 });
 
