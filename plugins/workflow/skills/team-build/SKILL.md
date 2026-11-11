@@ -10,7 +10,8 @@ authority in the conversation. Stop dependent work only for a missing scope, pro
 irreversible decision. Keep the same sub-agent through build, tests and fixes.
 
 1. Inspect git state and preserve unrelated changes. Record existing authority and owner settings.
-2. Inspect current source; implement the smallest complete change. The owner uses tools directly.
+2. Inspect current source; implement the complete change and no more, changing code that already
+   does the job rather than adding beside it. The owner uses tools directly.
    Only brief logistical or mechanical actions execute directly; substantive work uses the sub-agent.
 3. Add meaningful acceptance/regression tests when practical. Confirm the expected failure before
    the fix when useful; use proportional alternatives for mechanical edits or unisolatable behavior.
