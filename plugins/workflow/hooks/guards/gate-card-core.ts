@@ -673,7 +673,8 @@ function doubleQuoteEnd(src: string, open: number, blanks: Array<[number, number
 
 /**
  * Index of the `}` or `]` closing the `${` or `$[` whose bracket is at `open`, reading quotes and substitutions inside
- * it whole; -1 when it can't be read. Bash reads no comment or reserved word there.
+ * it whole; -1 when it can't be read. Bash reads no comment or reserved word there, and a `${…}` ends at its first
+ * `}` outside a nested `${`, so `${v:-{x}}` is `{x` and a literal `}`.
  */
 function bracketEnd(src: string, open: number, blanks: Array<[number, number]>, depth: number): number {
     const [opener, closer] = src[open] === '{' ? ['{', '}'] : ['[', ']'];
@@ -694,7 +695,11 @@ function bracketEnd(src: string, open: number, blanks: Array<[number, number]>, 
         } else if (c === '$' && src[k + 1] === '(') {
             k = substitutionEnd(src, k + 2, blanks, depth + 1);
             if (k < 0 || k >= src.length) return -1;
-        } else if (c === opener) {
+        } else if (c === '$' && src[k + 1] === opener) {
+            level++;
+            k++;
+        } else if (c === opener && opener === '[') {
+            // Bash nests a bare `[` inside `$[…]`, but inside `${…}` only another `${`.
             level++;
         } else if (c === closer && --level === 0) {
             return k;

@@ -58,6 +58,8 @@ describe('a heredoc or comment inside $( ) is read as bash reads it', () => {
         ['a heredoc in a case arm', `x=$(case y in y) cat <<'E'\nit's)\nE\n;; esac)\necho "$x"`],
         ['body lines that start with the delimiter and hold no )', "x=$(python3 - <<'PY'\nPYTHONPATH = 1\nprint('it's')\nPY\n)\necho \"$x\""],
         ['a body line that starts with a one-letter delimiter', "x=$(cat <<'E'\nEverything's fine\nE\n)\necho \"$x\""],
+        ['a literal { in ${…} before a comment', 'v="a{b"; echo $(printf %s ${v//{/}); # drop opening braces'],
+        ['a nested ${…} before a comment', 'echo $(printf %s ${v:-${w}}); # default'],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
