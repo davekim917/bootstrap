@@ -61,8 +61,9 @@ function callEffort(input) {
  * invoked level, else DEFAULT_EFFORT, or the parent's level when that is lower:
  * left unset, a sub-agent on its parent's model inherits the parent's level, so
  * an xhigh parent would pass xhigh to every helper.
- * With no model named the hook cannot see which model will run, so an
- * agent's own choice takes AGENT_MAX_EFFORT. Effort always leaves as the Agent
+ * The effort is capped for the model that will run: the call's model, else
+ * `inheritedModel` (from inheritedModel). When neither names a capped family,
+ * an agent's own choice takes AGENT_MAX_EFFORT. Effort always leaves as the Agent
  * call's `effort` field: current Claude Code does not apply a shim's `effort`
  * frontmatter, so a shim type alone runs at the default level. A named role
  * (Explore, Plan, any custom or plugin agent) is never rewritten: Claude Code
@@ -70,10 +71,11 @@ function callEffort(input) {
  * (including `inherit`), and a role's effective definition can live where a hook
  * cannot see it (managed settings, `--agents`), so any filled model could
  * silently replace the role's installed intent
- * (code.claude.com/docs/en/sub-agents, "Choose a model"). The model-effort caps
- * apply either way. Returns null when nothing changes.
+ * (code.claude.com/docs/en/sub-agents, "Choose a model"). For the same reason
+ * its effort is not capped: the model it runs on is unknown here. Returns null
+ * when nothing changes.
  */
-export function rewriteClaudeSpawn(input, pins = {}, { parentEffort, invokedEffort } = {}) {
+export function rewriteClaudeSpawn(input, pins = {}, { parentEffort, invokedEffort, inheritedModel } = {}) {
   const out = { ...input };
   const type = typeof input.subagent_type === 'string' ? input.subagent_type : '';
   const shim = SHIM.test(type);
@@ -87,7 +89,7 @@ export function rewriteClaudeSpawn(input, pins = {}, { parentEffort, invokedEffo
     humanChosen = true;
   }
   effort ??= capEffort(DEFAULT_EFFORT, parentEffort);
-  const cap = MODEL_MAX_EFFORT[familyOf(out.model)] ?? (humanChosen ? undefined : AGENT_MAX_EFFORT);
+  const cap = MODEL_MAX_EFFORT[familyOf(out.model ?? inheritedModel)] ?? (humanChosen ? undefined : AGENT_MAX_EFFORT);
   if (cap) effort = capEffort(effort, cap);
   out.effort = effort;
   if (shim) out.subagent_type = `bootstrap-orchestrate:worker-${effort}`;
