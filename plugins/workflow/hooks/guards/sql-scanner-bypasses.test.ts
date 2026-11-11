@@ -90,6 +90,52 @@ describe('the same constructs around safe SQL pass', () => {
     });
 });
 
+const LOADER_QUERY = String.raw`-- How the nightly loader's MERGE into example_db.core.accounts assigns a column
+with q as (
+  select query_id, start_time, regexp_replace(query_text, '\\s+', ' ') as t
+  from example_db.account_usage.query_history
+  where start_time >= dateadd(day, -2, current_timestamp())
+    and user_name = 'LOADER_USER' and query_type = 'MERGE'
+    and query_text ilike 'MERGE INTO accounts %' or (query_type = 'MERGE' and query_text ilike '% MERGE INTO accounts %')
+  qualify row_number() over (order by start_time desc) = 1
+)
+select start_time, regexp_count(t, ' = staging\\.', 1, 'i') as n_direct
+from q;`;
+
+describe('a statement word inside a comment or literal passes, beside a backslash, $ or //', () => {
+    test.each([
+        ['a comment and literals naming MERGE, with a regex backslash', LOADER_QUERY],
+        ['the same without the comment', LOADER_QUERY.slice(LOADER_QUERY.indexOf('\n') + 1)],
+        ["a literal holding statements, beside a '\\\\' pattern", String.raw`SELECT 'DELETE FROM example_db.core.orders; DROP TABLE example_db.core.orders' AS note FROM t WHERE c LIKE '%\\%'`],
+        ['a $$ literal holding MERGE', 'SELECT $$ MERGE INTO example_db.core.orders $$ AS note'],
+        ['a URL literal holding MERGE', "SELECT 'https://docs.example/merge into' AS link"],
+        ['positional columns and a // comment naming DROP', 'SELECT $1, $2 FROM @example_stage/file.csv // DROP TABLE example_db.core.orders later\n;'],
+        ['a /* */ comment naming DROP', '/* DROP TABLE example_db.core.orders */ SELECT 1'],
+        ["a \\' that keeps the literal open over a DROP", String.raw`SELECT 'x\'; DROP TABLE example_db.core.orders; --'`],
+    ])('%s', (_name, sql) => {
+        expect(evaluate(sql).action).toBe('allow');
+    });
+});
+
+describe('a statement after a literal or comment that holds ;, a comment marker, \\ or $$ is held', () => {
+    test.each([
+        ["a literal holding ;", String.raw`SELECT 'a;b\\' AS x; MERGE INTO example_db.core.orders o USING s ON o.id = s.id WHEN MATCHED THEN DELETE`],
+        ['a literal holding --', String.raw`SELECT 'x -- y\\' AS x; DELETE FROM example_db.core.orders`],
+        ["a literal holding \\' and ;", String.raw`SELECT 'it\'s; still' AS x; DROP TABLE example_db.core.orders`],
+        ['a literal ending in an escaped backslash', String.raw`SELECT 'C:\\'; DROP TABLE example_db.core.orders`],
+        ['a $$ literal holding ;', String.raw`SELECT $$ ; MERGE \ $$ AS x; MERGE INTO example_db.core.orders o USING s ON 1 = 1 WHEN MATCHED THEN DELETE`],
+        ['a $tag$, which Snowflake does not quote with', 'SELECT $a$ ; $a$ AS x; DROP TABLE example_db.core.orders'],
+        ["a // comment holding an apostrophe", "SELECT 1 // it's here\n; DROP TABLE example_db.core.orders"],
+        ["a /* */ comment holding an apostrophe", "SELECT 1 /* it's */; TRUNCATE TABLE example_db.core.orders"],
+        ['a backtick, which Snowflake does not quote with', 'SELECT `x; y` FROM t; DROP TABLE example_db.core.orders'],
+        ["an escaped newline in EXECUTE IMMEDIATE", String.raw`EXECUTE IMMEDIATE 'SELECT 1;\nDROP TABLE example_db.core.orders'`],
+    ])('%s', (_name, sql) => {
+        const result = evaluate(sql);
+        expect(result.action).toBe('gate');
+        expect(result.reason).toMatch(/^Destructive Snowflake SQL detected/);
+    });
+});
+
 describe('a scripting statement too large to scan one start at a time holds, quickly', () => {
     const cases: Array<[string, string]> = [
         ['10,000 CASE branches', `BEGIN SELECT CASE ${'WHEN x = 1 THEN TRUNCATE(x, 2) '.repeat(10_000)}ELSE 0 END FROM t; END;`],
