@@ -2629,8 +2629,10 @@ function collectCommandsInText(text: string, commands: any[]): void {
         try {
             addNestedCommands(parseShell(inner), commands);
         } catch {
-            // An unparsable span cannot be inspected; its text still reaches the regex fallback below.
+            // An unparsable span cannot be inspected; its text still reaches the regex fallback below, and each
+            // substitution inside it is read on its own.
             commands.push(...fallbackExtract(inner).map(c => ({ __resolved: c })));
+            collectCommandsInText(inner, commands);
         }
     }
 }
@@ -7262,7 +7264,9 @@ function shellParseProblem(command: string): string | null {
         if (!(e instanceof ShellParseError)) return null;
         const fix = e.message.includes('heredoc')
             ? "Put a heredoc on a named command (not a bare redirect or coproc), with its delimiter quoted whole ('EOF') or not at all (EOF)."
-            : 'Run it as simpler separate commands, or write a long script to a file and run the file.';
+            : /\$\([^]*<</.test(command)
+                ? "A heredoc inside $(…) is one such case: put its delimiter alone on a line and the ) on the next, or give the text on stdin instead, as git commit -F - <<'EOF' or gh … --body-file - <<'EOF'."
+                : 'Run it as simpler separate commands, or write a long script to a file and run the file.';
         return `The guard can't read this command the way bash will run it (${e.message}), so it can't check what runs after that point. ${fix}`;
     }
 }

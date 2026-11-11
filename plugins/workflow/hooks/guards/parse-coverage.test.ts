@@ -32,8 +32,16 @@ describe('a line the parser stops reading partway through blocks', () => {
         ['a process substitution spanning lines', 'cat <(echo a\nshred /tmp/report.txt)'],
         ['a loop fed by a process substitution spanning lines', 'while read -r l; do echo "$l"; done < <(\n  shred /tmp/report.txt\n)'],
         ['a single-quoted $( in a word spanning lines', `echo '$(\n'"$(shred /tmp/report.txt)"')'`],
+        ['a heredoc in $( ) ended by its delimiter and a ) on one line', `x=$(cat <<'EOF'\nit's\nEOF)\nshred /tmp/report.txt`],
+        ['a substitution in unquoted body text the scan cannot place', `cat <<EOF\n$(echo 'a) $(shred /tmp/report.txt)\nEOF`],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('block');
+    });
+
+    test('the refusal of a heredoc inside $( ) says how to write it so it reads whole', () => {
+        const reason = evaluateBashCommand(`git commit -m "$(cat <<'EOF'\nfix: it's done\nEOF)"`, { cwd: '/tmp' }).reason ?? '';
+        expect(reason).toContain('delimiter alone on a line');
+        expect(reason).toContain('git commit -F - <<');
     });
 });
 
@@ -60,6 +68,13 @@ describe('a heredoc or comment inside $( ) is read as bash reads it', () => {
         ["a command after a comment's ) and a $'…' string", `x=$(echo hi # )\necho $'\\'#)'; shred /tmp/report.txt\n)`],
         ["a command after a comment's ) inside an unquoted body", `x=$(cat <<EOF\n$(echo hi # )\nshred /tmp/report.txt\n)\nEOF\n)`],
         ['a case arm inside an unquoted body', `x=$(cat <<EOF\n$(case y in y) shred /tmp/report.txt;; esac)\nEOF\n)`],
+        ['a command after a delimiter and ) on one line', `x=$(cat <<'EOF'\nhi\nEOF)\nshred /tmp/report.txt`],
+        ['a command after a delimiter and ) on one line, the same delimiter alone later', `x=$(cat <<'EOF'\nhi\nEOF)\nshred /tmp/report.txt\nEOF\n)`],
+        ['a command after a tab-stripped delimiter and ) on one line', `x=$(cat <<-EOF\n\thi\n\tEOF) && shred /tmp/report.txt`],
+        ['a substitution after a # inside ${…} in an unquoted body', `cat <<EOF\n$(echo \${1:- # none}) and $(shred /tmp/report.txt)\nEOF`],
+        ['a substitution after a # inside $[…] in an unquoted body', `cat <<EOF\n$(echo $[1 #2]) $(shred /tmp/report.txt)\nEOF`],
+        ['a substitution after an array holding the word case', `cat <<EOF\n$(x=(case); echo) $(shred /tmp/report.txt)\nEOF`],
+        ['a substitution after a ( inside ${…} in an unquoted body', `cat <<EOF\n$(echo \${1:-(}) $(shred /tmp/report.txt)\nEOF`],
     ])('%s is checked as the command it is', (_name, command) => {
         const result = evaluateBashCommand(command, { cwd: '/tmp' });
         expect(shredAlone.action).toBe('block');
