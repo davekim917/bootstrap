@@ -38,10 +38,10 @@ before it can become `MUST-FIX`.
 ## Plan mode
 
 1. Read the raw proposed `plan.md`, applicable repository instructions, and cited source.
-2. Check that requirements are testable, scope is explicit, the design is safe, builds nothing
-   unneeded and, where code already does the job, changes that code rather than adding beside it
-   unless the plan records why a parallel path is needed, trust/data-loss boundaries are hardened,
-   and rollout/rollback match the risk.
+2. Check that requirements are testable, scope is explicit, trust/data-loss boundaries are hardened,
+   and rollout/rollback match the risk. Check that the design is safe, builds nothing unneeded, and
+   changes code that already does the job rather than adding beside it unless the plan records why a
+   parallel path is needed.
 3. Run the shared cross-model review on the raw plan.
 4. Verify every candidate finding and record accepted/rejected results in `run.md`.
 5. Return `clear`, `must_fix`, or `degraded`. Do not approve the plan for the user.

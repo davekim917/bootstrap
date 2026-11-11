@@ -16,7 +16,7 @@ Read `../shared/workflow-contract.md` first.
 3. Test the hypothesis. A focused regression test is preferred when practical; confirm it fails
    for the predicted reason. If it fails differently, revise the hypothesis instead of patching.
 4. Search the affected pattern to determine whether this is one instance or a systematic defect.
-5. Implement the smallest root-cause fix. Do not bundle unrelated cleanup.
+5. Fix the root cause where it lives. Do not bundle unrelated cleanup.
 6. Re-run the reproduction, affected tests, and proportional regression checks. Inspect the diff
    and verify error paths or alternate inputs.
 7. For an incident (production/fleet breakage, not a routine red test): the fix is not closed

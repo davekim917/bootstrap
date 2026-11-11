@@ -6,10 +6,11 @@ A risk-scaled delivery workflow for Claude Code, Codex, and OpenCode:
 /team-plan → /team-build → /team-review → /team-ship
 ```
 
-The workflow builds what the real requirements and failure boundaries need and no more, in the code
-that already does the job. A four-file mechanical change should stay small; a one-file credential or
-destructive migration still receives security, rollback, and verification depth. Complexity must be
-justified by scale, repetition, concurrency, security, or failure impact—not by a fixed ceremony.
+The workflow builds what the real requirements and failure boundaries need and no more, changing
+code that already does the job rather than adding beside it. A four-file mechanical change should
+stay small; a one-file credential or destructive migration still receives security, rollback, and
+verification depth. Complexity must be justified by scale, repetition, concurrency, security, or
+failure impact—not by a fixed ceremony.
 
 ## Plugins
 
