@@ -56,7 +56,7 @@ function callEffort(input) {
  * level, and the effort the human's latest invocation named (`invokedEffort`,
  * from invokedEffort).
  *
- * A model the human did not name is dropped, so the spawn inherits its parent's.
+ * A model the human did not name is dropped, so the spawn runs on CLAUDE_CODE_SUBAGENT_MODEL, else its parent's.
  * The effort the call asks for stands. A call that names none takes the human's
  * invoked level, else DEFAULT_EFFORT, or the parent's level when that is lower:
  * left unset, a sub-agent on its parent's model inherits the parent's level, so

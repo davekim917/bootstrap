@@ -187,19 +187,20 @@ test('contract gate rejects dropping any capability refusal or degradation', (t)
   }
 });
 
-test('contract gate rejects an effort shim that pins a model', (t) => {
-  // The shim only labels an effort level; the dispatch names the model. A
-  // `model:` here would silently override what the dispatch asked
-  // for — the caller would name a model and get a different one, with nothing
-  // reporting the substitution.
-  const roots = copiedContracts(t);
-  assert.equal(evaluateContracts(roots).pass, true);
-  const shim = path.join(roots.orchestrateAgentsRoot, 'worker-high.md');
-  fs.writeFileSync(shim, fs.readFileSync(shim, 'utf8').replace('model: inherit', 'model: claude-opus-5'));
-  const result = evaluateContracts(roots);
-  assert.equal(result.pass, false);
-  assert.ok(result.failures.some((failure) => failure.includes('model must be `inherit`')), result.failures.join('\n'));
-});
+for (const model of ['claude-opus-5', 'inherit']) {
+  test(`contract gate rejects an effort shim that declares model: ${model}`, (t) => {
+    // The shim only labels an effort level. Any `model:` here, `inherit`
+    // included, outranks the install's default sub-agent model, so a dispatch
+    // that names none would run on something other than that default.
+    const roots = copiedContracts(t);
+    assert.equal(evaluateContracts(roots).pass, true);
+    const shim = path.join(roots.orchestrateAgentsRoot, 'worker-high.md');
+    fs.writeFileSync(shim, fs.readFileSync(shim, 'utf8').replace('effort: high\n', `model: ${model}\neffort: high\n`));
+    const result = evaluateContracts(roots);
+    assert.equal(result.pass, false);
+    assert.ok(result.failures.some((failure) => failure.includes('model must be absent')), result.failures.join('\n'));
+  });
+}
 
 test('contract gate rejects an effort shim that grows instructions', (t) => {
   const roots = copiedContracts(t);

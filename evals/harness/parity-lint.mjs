@@ -370,8 +370,9 @@ export function evaluateContracts({
  *
  * The risk they carry is becoming roles again — someone adds a model, or a
  * paragraph of instructions, and the "pick a model per dispatch" property is gone
- * without anything failing. So the assertion is their emptiness: `model: inherit`,
- * the effort the filename claims, and a body short enough that it cannot be
+ * without anything failing. So the assertion is their emptiness: no `model` field,
+ * `inherit` included (Claude Code ranks it above the install's default sub-agent
+ * model), the effort the filename claims, and a body short enough that it cannot be
  * carrying a contract. The old `worker-frontier.md` had a 12-line behavioural
  * block; that is the shape being kept out.
  */
@@ -395,10 +396,10 @@ function checkEffortShims(failures, checks, agentsRoot) {
       failures.push(`orchestrate/agents/worker-${level}.md: name must be worker-${level}`);
       allClean = false;
     }
-    if (fields?.get('model') !== 'inherit') {
+    if (fields?.has('model')) {
       failures.push(
-        `orchestrate/agents/worker-${level}.md: model must be \`inherit\` — a pinned model turns the `
-          + 'shim back into a role and takes the model choice away from the dispatch',
+        `orchestrate/agents/worker-${level}.md: model must be absent, \`inherit\` included — any model `
+          + "field outranks the install's default sub-agent model and takes the choice away from the dispatch",
       );
       allClean = false;
     }
@@ -415,7 +416,7 @@ function checkEffortShims(failures, checks, agentsRoot) {
       allClean = false;
     }
   }
-  if (allClean) checks.push(`orchestrate/agents: ${EFFORT_LEVELS.length} effort shims, model: inherit, no instructions`);
+  if (allClean) checks.push(`orchestrate/agents: ${EFFORT_LEVELS.length} effort shims, no model, no instructions`);
 }
 
 function main() {

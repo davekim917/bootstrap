@@ -756,11 +756,11 @@ if (codexManifest?.version !== '2.40.2') {
   fail(`bootstrap-workflow-agents release must be version 2.40.2 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
-if (orchestrateClaudeManifest?.version !== '3.8.0') {
-  fail(`bootstrap-orchestrate release must be version 3.8.0 (found ${orchestrateClaudeManifest?.version})`);
+if (orchestrateClaudeManifest?.version !== '3.8.1') {
+  fail(`bootstrap-orchestrate release must be version 3.8.1 (found ${orchestrateClaudeManifest?.version})`);
 }
-if (orchestrateCodexManifest?.version !== '3.8.0') {
-  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.8.0 (found ${orchestrateCodexManifest?.version})`);
+if (orchestrateCodexManifest?.version !== '3.8.1') {
+  fail(`bootstrap-orchestrate .codex-plugin release must be version 3.8.1 (found ${orchestrateCodexManifest?.version})`);
 }
 
 if (exists('plugins/workflow-agents/.claude-plugin')) {
@@ -786,13 +786,14 @@ for (const unexpectedDir of ['commands']) {
 // the model/effort policy file that rendered its frontmatter and the Codex TOML
 // twin an install hook copied into the user's home.
 //
-// What ships instead is five EFFORT SHIMS. They carry no instructions and name
-// no model: `model: inherit` means the dispatch picks the model. Claude Code
-// does not apply their `effort` frontmatter, so a dispatch sets the level with
-// the Agent call's `effort` parameter and the shim name only labels it. So the
-// assertion is the absence of a role: exactly five files, one
-// per level, each with `model: inherit`. A shim that pinned a model, or a sixth
-// file with a behavioural body, would be a role wearing a shim's name.
+// What ships instead is five EFFORT SHIMS. They carry no instructions and no
+// `model` field, not even `inherit`: Claude Code ranks any frontmatter model
+// above CLAUDE_CODE_SUBAGENT_MODEL, so `inherit` would hide the install's
+// default sub-agent model. Claude Code does not apply their `effort`
+// frontmatter, so a dispatch sets the level with the Agent call's `effort`
+// parameter and the shim name only labels it. So the assertion is the absence
+// of a role: exactly five files, one per level, none with a `model` field. A
+// sixth file with a behavioural body would be a role wearing a shim's name.
 {
   const dir = 'plugins/orchestrate/agents';
   const root = path.join(repoRoot, dir);
@@ -812,10 +813,10 @@ for (const unexpectedDir of ['commands']) {
       }
       const text = readText(`${dir}/${name}`);
       if (text === undefined) continue;
-      if (!/^model:\s*inherit\s*$/m.test(text)) {
+      if (/^model:/m.test(text)) {
         fail(
-          `${dir}/${name} must declare \`model: inherit\`; a shim that pins a model turns the effort `
-            + 'level back into a role and takes the model choice away from the dispatch',
+          `${dir}/${name} must not declare \`model\`, \`inherit\` included; any model field outranks the `
+            + "install's default sub-agent model and takes the choice away from the dispatch",
         );
       }
       const level = path.parse(name).name.replace(/^worker-/, '');
