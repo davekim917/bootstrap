@@ -85,9 +85,9 @@ meaningful phase boundary or demonstrated insufficiency justifies a newly record
 ### Scope of direct work
 
 Build what the requirements and failure boundaries need and no more: no scope creep, no
-over-engineering, nothing built before it is needed. Change the code that already does the job;
-never add new code beside it. Prefer existing primitives; justify complexity by evidenced scale,
-concurrency, security or failure impact.
+over-engineering, nothing built before it is needed. Change the code that already does the job
+rather than adding new code beside it. Prefer existing primitives; justify complexity by evidenced
+scale, concurrency, security or failure impact.
 Never weaken trust, authorization, credential, destructive-action or data-loss safeguards.
 Read exact source and applicable instructions; verify relevant changing external facts.
 
