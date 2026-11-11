@@ -34,6 +34,8 @@ describe('a line the parser stops reading partway through blocks', () => {
         ['a single-quoted $( in a word spanning lines', `echo '$(\n'"$(shred /tmp/report.txt)"')'`],
         ['a heredoc in $( ) ended by its delimiter and a ) on one line', `x=$(cat <<'EOF'\nit's\nEOF)\nshred /tmp/report.txt`],
         ['a substitution in unquoted body text the scan cannot place', `cat <<EOF\n$(echo 'a) $(shred /tmp/report.txt)\nEOF`],
+        ['a $[…] inside ${…} before a comment', 'v=1; echo $(echo ${v:-$[ { }  #)]}; shred /tmp/report.txt\n)'],
+        ["a $'…' inside ${…} before a comment", "v=1; echo $(echo ${v:-$'\\' { } #)'}; shred /tmp/report.txt)"],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('block');
     });

@@ -698,6 +698,9 @@ function bracketEnd(src: string, open: number, blanks: Array<[number, number]>, 
         } else if (c === '$' && src[k + 1] === opener) {
             level++;
             k++;
+        } else if (c === '$' && (src[k + 1] === "'" || src[k + 1] === (opener === '{' ? '[' : '{'))) {
+            // Bash reads a $'…', or the other bracket kind, inside here as a unit, and unbash misreads both.
+            return -1;
         } else if (c === opener && opener === '[') {
             // Bash nests a bare `[` inside `$[…]`, but inside `${…}` only another `${`.
             level++;
