@@ -39,7 +39,7 @@ import { basename, dirname, join, normalize as pathNormalize, resolve as pathRes
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
 import { draftChangedSince, type DraftBinding } from './email-gate-core';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, substitutionClose, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -2645,20 +2645,14 @@ function substitutionSpans(text: string): string[] {
         }
         if (text[i] === '$' && text[i + 1] === '(') {
             if (text[i + 2] === '(') { i += 2; continue; }
-            let depth = 1;
-            let j = i + 2;
-            let quote: string | null = null;
-            for (; j < text.length && depth > 0; j++) {
-                const c = text[j];
-                if (c === '\\') { j++; continue; }
-                if (quote) { if (c === quote) quote = null; continue; }
-                if (c === "'" || c === '"') quote = c;
-                else if (c === '(') depth++;
-                else if (c === ')') depth--;
+            const close = substitutionClose(text, i + 2);
+            // Text bash's reading can't place is checked whole, to its end, rather than skipped.
+            if (close < 0 || close >= text.length) {
+                spans.push(text.slice(i + 2));
+                break;
             }
-            if (depth !== 0) break;
-            spans.push(text.slice(i + 2, j - 1));
-            i = j - 1;
+            spans.push(text.slice(i + 2, close));
+            i = close;
         }
     }
     return spans;

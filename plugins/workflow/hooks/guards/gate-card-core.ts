@@ -492,8 +492,8 @@ function startsComment(src: string, i: number): boolean {
 
 // unbash 2.2.0 finds the `)` closing a `$(` or `<(` without reading heredocs or comments, so a quote or paren in a
 // body or comment moves it; bash reads neither for that `)`. Its scan is run with each blanked, and its text taken from
-// the real source. unbash 6 reads bodies itself and lacks these internals, so on any other version nothing is wrapped and such
-// a line stays unreadable.
+// the real source. Where that scan still closes somewhere other than bash's reading, the text is scanned as written.
+// unbash 6 reads bodies itself and lacks these internals, so on any other version nothing is wrapped.
 const UNBASH_BODY_BLIND_VERSION = '2.2.0';
 
 async function readSubstitutionsPastHeredocBodies(): Promise<void> {
@@ -511,30 +511,28 @@ async function readSubstitutionsPastHeredocBodies(): Promise<void> {
     lexer.prototype.extractBalanced = function (this: { src: string; pos: number }): string {
         const src = this.src;
         const start = this.pos;
-        const blanked = blankBodiesAndComments(src, start);
-        if (blanked === null) return scan.call(this);
-        this.src = blanked;
+        if (src.indexOf('<<', start) < 0 && src.indexOf('#', start) < 0) return scan.call(this);
+        const blanks: Array<[number, number]> = [];
+        const end = substitutionEnd(src, start, blanks, 0);
+        if (end < 0 || !blanks.length) return scan.call(this);
+        this.src = blanked(src, blanks);
         let inner: string;
         try {
             inner = scan.call(this);
         } finally {
             this.src = src;
         }
-        return src.slice(start, start + inner.length);
+        if (start + inner.length === end) return src.slice(start, end);
+        this.pos = start;
+        return scan.call(this);
     };
 }
 
-/**
- * `src` with each heredoc body and comment inside the substitution starting at `start` blanked to spaces, its newlines
- * and every offset kept; null when it holds neither, or holds text this scan does not model.
- */
-function blankBodiesAndComments(src: string, start: number): string | null {
-    if (src.indexOf('<<', start) < 0 && src.indexOf('#', start) < 0) return null;
-    const bodies: Array<[number, number]> = [];
-    if (substitutionEnd(src, start, bodies, 0) < 0 || !bodies.length) return null;
+/** `src` with each span blanked to spaces, its newlines and every offset kept. */
+function blanked(src: string, spans: Array<[number, number]>): string {
     let out = '';
     let at = 0;
-    for (const [from, to] of bodies.sort((x, y) => x[0] - y[0])) {
+    for (const [from, to] of [...spans].sort((x, y) => x[0] - y[0])) {
         out += src.slice(at, from) + src.slice(from, to).replace(/[^\n]/g, ' ');
         at = to;
     }
@@ -542,13 +540,22 @@ function blankBodiesAndComments(src: string, start: number): string | null {
 }
 
 /**
- * Index of the `)` closing the substitution whose text starts at `start`, or `src.length` when the input ends first,
- * adding the span of each heredoc body and comment inside it to `bodies`; -1 for text this scan does not model.
+ * Index of the `)` closing the `$(` whose text starts at `start` in `src`, as bash reads it: `src.length` when the
+ * input ends first, -1 for text this reading does not model.
  */
-function substitutionEnd(src: string, start: number, bodies: Array<[number, number]>, depth: number): number {
+export function substitutionClose(src: string, start: number): number {
+    return substitutionEnd(src, start, [], 0);
+}
+
+/**
+ * substitutionClose, also adding the span of each heredoc body and comment inside the substitution to `blanks`.
+ */
+function substitutionEnd(src: string, start: number, blanks: Array<[number, number]>, depth: number): number {
     if (depth > WALK_MAX_DEPTH) return -1;
     let pending: Array<{ delimiter: string; tabs: boolean }> = [];
     let parens = 1;
+    // The paren depth of each open `case`, where a `)` closes a pattern instead.
+    const cases: number[] = [];
     for (let i = start; i < src.length; i++) {
         const c = src[i];
         if (c === '\\') {
@@ -563,18 +570,24 @@ function substitutionEnd(src: string, start: number, bodies: Array<[number, numb
             i = backtickEnd(src, i);
             if (i < 0) return -1;
         } else if (c === '"') {
-            i = doubleQuoteEnd(src, i, bodies, depth);
+            i = doubleQuoteEnd(src, i, blanks, depth);
             if (i < 0) return -1;
         } else if (c === '#' && (startsComment(src, i) || src[i - 1] === '(')) {
             const eol = src.indexOf('\n', i);
-            bodies.push([i, eol < 0 ? src.length : eol]);
+            blanks.push([i, eol < 0 ? src.length : eol]);
             i = (eol < 0 ? src.length : eol) - 1;
         } else if (c === '(' && src[i + 1] === '(' && readsAsArithmetic(src.slice(i), 1)) {
             i += closesAt(src.slice(i), 1) + 1;
         } else if (c === '(') {
             parens++;
         } else if (c === ')') {
-            if (--parens === 0) return i;
+            if (cases.at(-1) !== parens && --parens === 0) return i;
+        } else if (/^case(?=[\s;&|()]|$)/.test(src.slice(i, i + 5)) && commandStart(src, i, start)) {
+            cases.push(parens);
+            i += 3;
+        } else if (cases.length && /^esac(?=[\s;&|()]|$)/.test(src.slice(i, i + 5)) && commandStart(src, i, start)) {
+            cases.pop();
+            i += 3;
         } else if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<' && src[i - 1] !== '<') {
             const tabs = src[i + 2] === '-';
             let w = i + (tabs ? 3 : 2);
@@ -591,12 +604,12 @@ function substitutionEnd(src: string, start: number, bodies: Array<[number, numb
                     const eol = src.indexOf('\n', p);
                     const line = src.slice(p, eol < 0 ? src.length : eol);
                     if ((h.tabs ? line.replace(/^\t+/, '') : line) === h.delimiter) {
-                        bodies.push([bodyStart, p]);
+                        blanks.push([bodyStart, p]);
                         p = eol < 0 ? src.length : eol + 1;
                         break;
                     }
                     if (eol < 0) {
-                        bodies.push([bodyStart, src.length]);
+                        blanks.push([bodyStart, src.length]);
                         p = src.length;
                         break;
                     }
@@ -610,8 +623,16 @@ function substitutionEnd(src: string, start: number, bodies: Array<[number, numb
     return src.length;
 }
 
+/** Whether the word at `i` is where bash reads a command, so a reserved word there is one. */
+function commandStart(src: string, i: number, start: number): boolean {
+    let p = i;
+    while (p > start && (src[p - 1] === ' ' || src[p - 1] === '\t')) p--;
+    if (p === start || ';&|(\n'.includes(src[p - 1])) return true;
+    return /(?:^|[\s;&|(])(?:do|then|else|elif|\{|!)$/.test(src.slice(Math.max(start, p - 6), p));
+}
+
 /** Index of the `"` closing the one at `open`, reading each substitution inside it whole; -1 when it can't be read. */
-function doubleQuoteEnd(src: string, open: number, bodies: Array<[number, number]>, depth: number): number {
+function doubleQuoteEnd(src: string, open: number, blanks: Array<[number, number]>, depth: number): number {
     for (let k = open + 1; k < src.length; k++) {
         const c = src[k];
         if (c === '\\') {
@@ -624,7 +645,7 @@ function doubleQuoteEnd(src: string, open: number, bodies: Array<[number, number
         } else if (c === '$' && src[k + 1] === '(') {
             k = src[k + 2] === '(' && readsAsArithmetic(src.slice(k + 1), 1)
                 ? k + 1 + closesAt(src.slice(k + 1), 1) + 1
-                : substitutionEnd(src, k + 2, bodies, depth + 1);
+                : substitutionEnd(src, k + 2, blanks, depth + 1);
             if (k < 0 || k >= src.length) return -1;
         }
     }

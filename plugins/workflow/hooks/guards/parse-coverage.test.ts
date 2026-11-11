@@ -47,6 +47,7 @@ describe('a heredoc or comment inside $( ) is read as bash reads it', () => {
         ['a ) in a tab-stripped body', `x=$(cat <<-EOF\n\t)it's\n\tEOF\n)\necho "$x"`],
         ['a substitution in double quotes before the heredoc', `x=$(echo "$(date)"; cat <<'EOF'\nit's\nEOF\n)\necho "$x"`],
         ['an apostrophe in a comment', `x=$(echo two # it's )\n)\necho "$x"`],
+        ['a heredoc in a case arm', `x=$(case y in y) cat <<'E'\nit's)\nE\n;; esac)\necho "$x"`],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -56,6 +57,9 @@ describe('a heredoc or comment inside $( ) is read as bash reads it', () => {
         ['a command after the substitution', `git commit -m "$(cat <<'EOF'\nit's done\nEOF\n)" && shred /tmp/report.txt`],
         ['a substitution in an unquoted body', `x=$(cat <<EOF\n) it's $(shred /tmp/report.txt)\nEOF\n)\necho "$x"`],
         ['a command after a body whose ) and apostrophe would hide it', `x=$(cat <<-EOF\n\t)it's\n\tEOF\n)\nshred /tmp/report.txt`],
+        ["a command after a comment's ) and a $'…' string", `x=$(echo hi # )\necho $'\\'#)'; shred /tmp/report.txt\n)`],
+        ["a command after a comment's ) inside an unquoted body", `x=$(cat <<EOF\n$(echo hi # )\nshred /tmp/report.txt\n)\nEOF\n)`],
+        ['a case arm inside an unquoted body', `x=$(cat <<EOF\n$(case y in y) shred /tmp/report.txt;; esac)\nEOF\n)`],
     ])('%s is checked as the command it is', (_name, command) => {
         const result = evaluateBashCommand(command, { cwd: '/tmp' });
         expect(shredAlone.action).toBe('block');
