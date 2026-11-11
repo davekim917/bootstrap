@@ -60,6 +60,15 @@ describe('a heredoc or comment inside $( ) is read as bash reads it', () => {
         expect(verdict(command)).toBe('allow');
     });
 
+    test.each([
+        ['an unterminated quoted body', "x=$(cat <<'EOF'\nit's"],
+        ['a heredoc nested in one, both unterminated', "x=$(cat <<EOF\n$(cat <<'E'\nit's\n"],
+        ['an unterminated quote in a substitution in body text', "cat <<EOF\n$(cat <<'E'\n$(echo 'a\nEOF"],
+        ['substitutions opened in body text and never closed', 'cat <<EOF\n$($($($(\nEOF'],
+    ])('%s is read to a verdict', (_name, command) => {
+        expect(['allow', 'gate', 'block']).toContain(verdict(command));
+    });
+
     const shredAlone = evaluateBashCommand('shred /tmp/report.txt', { cwd: '/tmp' });
     test.each([
         ['a command after the substitution', `git commit -m "$(cat <<'EOF'\nit's done\nEOF\n)" && shred /tmp/report.txt`],
