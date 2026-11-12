@@ -8501,17 +8501,17 @@ function namesHost(text: string, host: string): boolean {
 }
 
 // Long options that put the response body in a file, by client. `file` takes the file as its value (`-` is stdout),
-// `named` always writes one (a WARC prefix, a curl config that may set `output`), `flag` takes no value.
+// `named` always writes one (a WARC prefix, a curl config or wget command that may set an output), `flag` takes no value.
 // curl, wget and HTTPie all accept an unambiguous prefix of a long option, and curl 8.3+ an `--expand-` form.
 type ClientFileOption = 'file' | 'named' | 'flag';
 const CLIENT_FILE_OPTIONS: Record<string, Record<string, ClientFileOption>> = {
     curl: { output: 'file', trace: 'file', 'trace-ascii': 'file', 'remote-name': 'flag', 'remote-name-all': 'flag', config: 'named' },
-    wget: { 'output-document': 'file', 'warc-file': 'named' },
+    wget: { 'output-document': 'file', 'warc-file': 'named', execute: 'named' },
     http: { output: 'file', download: 'flag' },
 };
 const CLIENT_SHORT_FILE_OPTIONS: Record<string, { value: string; flags: string }> = {
     curl: { value: 'o', flags: 'OK' },
-    wget: { value: 'O', flags: '' },
+    wget: { value: 'O', flags: 'e' },
     http: { value: 'o', flags: 'd' },
 };
 const CLIENT_SHORT_VALUE_LETTERS: Record<string, string> = { curl: CURL_VALUE_LETTERS, wget: 'aABDeiIlOoPQRtTUwXY', http: 'aApo' };
@@ -8591,7 +8591,7 @@ function lineFileWrites(line: string, commands: ResolvedCommand[]): string[] | n
                 }
                 const writes = OUTPUT_REDIRECTS.has(r?.operator)
                     || (r?.operator === '>&' && !/^(?:\d+|-)$/.test(target))
-                    || (r?.operator === '<>' && r.fileDescriptor !== undefined && r.fileDescriptor !== 0);
+                    || r?.operator === '<>';
                 if (writes) files.push(target);
             }
         }

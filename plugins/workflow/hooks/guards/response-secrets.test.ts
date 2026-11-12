@@ -73,6 +73,9 @@ describe('a response from a listed host never reaches a file', () => {
         ['wget --spider then --no-spider', `wget --spider --no-spider ${API}/sources`],
         ['curl with an inline config', `curl -s ${API}/sources -K - <<'CURL'\noutput = s.json\nCURL`],
         ['a quoted filename that looks like a process substitution', `curl -s ${API}/sources > '>(s.json)'`],
+        ['stdout duplicated onto a read-write stdin', `curl -s ${API}/sources 0<> s.json >&0`],
+        ['wget --execute setting a WARC file', `wget -qO- --execute 'warcfile=resp' ${API}/sources`],
+        ['wget -e', `wget -qO- -e warcfile=resp ${API}/sources`],
     ])('%s', (_name, command) => {
         const result = verdict(command);
         expect(result.action).toBe('block');
