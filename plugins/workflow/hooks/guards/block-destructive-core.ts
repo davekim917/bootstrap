@@ -8457,7 +8457,8 @@ function noMergeStepReason(
 // filtered, and printed. No file refuses nothing; a file that can't be read or parsed treats every host as listed.
 // The guard reads the Bash line only: a fetch inside a script file or a Python or Node program is not seen, nor is a
 // file a downstream program writes itself (sed's w, awk's >, a script), nor a response kept in a variable and written
-// by a later command, nor a host spelled with percent-encoding or shell escapes. It catches the habit, not an agent
+// by a later command, nor a host spelled with percent-encoding or shell escapes, nor an output a client's default
+// config file (~/.curlrc, ~/.wgetrc) sets. It catches the habit, not an agent
 // working to get round it.
 
 export const RESPONSE_SECRETS_FILE_ENV = 'BOOTSTRAP_RESPONSE_SECRETS_FILE';
@@ -8502,7 +8503,7 @@ function namesHost(text: string, host: string): boolean {
 type ClientFileOption = 'file' | 'named' | 'flag';
 const CLIENT_FILE_OPTIONS: Record<string, Record<string, ClientFileOption>> = {
     curl: { output: 'file', trace: 'file', 'trace-ascii': 'file', 'remote-name': 'flag', 'remote-name-all': 'flag', config: 'named' },
-    wget: { 'output-document': 'file', 'warc-file': 'named', execute: 'named' },
+    wget: { 'output-document': 'file', 'warc-file': 'named', execute: 'named', config: 'named' },
     http: { output: 'file', download: 'flag' },
 };
 const CLIENT_SHORT_FILE_OPTIONS: Record<string, { value: string; flags: string }> = {
@@ -8607,6 +8608,7 @@ function lineFileWrites(line: string, commands: ResolvedCommand[]): string[] | n
         if (cmd.name === 'dd') files.push(...cmd.args.filter(a => a.startsWith('of=')).map(a => a.slice(3)));
         const args = expandedEmitter(cmd)?.args ?? cmd.args;
         if (HTTP_CLIENTS.has(cmd.name)) files.push(...clientOutputFiles(cmd.name, args));
+        if (cmd.name === 'wget' && cmd.env?.some(e => e.startsWith('WGETRC='))) files.push('<WGETRC>');
         // A client run by xargs, find -exec, parallel and the like: its words follow its name among the runner's.
         const at = CLIENT_RUNNERS.has(cmd.name) ? args.findIndex(a => HTTP_CLIENTS.has(commandName(a))) : -1;
         if (at >= 0) files.push(...clientOutputFiles(commandName(args[at]), args.slice(at + 1)));

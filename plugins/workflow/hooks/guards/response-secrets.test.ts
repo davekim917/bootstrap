@@ -76,6 +76,8 @@ describe('a response from a listed host never reaches a file', () => {
         ['stdout duplicated onto a read-write stdin', `curl -s ${API}/sources 0<> s.json >&0`],
         ['wget --execute setting a WARC file', `wget -qO- --execute 'warcfile=resp' ${API}/sources`],
         ['wget -e', `wget -qO- -e warcfile=resp ${API}/sources`],
+        ['wget --config', `wget -qO- --config settings.wgetrc ${API}/sources`],
+        ['wget with WGETRC set', `WGETRC=settings.wgetrc wget -qO- ${API}/sources`],
     ])('%s', (_name, command) => {
         const result = verdict(command);
         expect(result.action).toBe('block');
