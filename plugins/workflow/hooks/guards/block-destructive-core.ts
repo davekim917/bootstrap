@@ -7341,6 +7341,8 @@ function evaluateBashLine(
     // can't clear what could not be read, the same as a shell taking its command from a variable.
     const unreadable = shellParseProblem(command);
     if (unreadable) return { action: 'block', reason: unreadable };
+    const responseSecrets = responseSecretsReason(commands, command);
+    if (responseSecrets) return { action: 'block', reason: responseSecrets };
 
     // --- Gated checks ---
     if (!opts.skipGate) {
@@ -8444,4 +8446,190 @@ function noMergeStepReason(
         if (reason) return reason;
     }
     return null;
+}
+
+// ── Responses that carry credentials never reach a file ──────────────────────
+// Some APIs return live credentials in ordinary read responses (a vendor's settings endpoints list write keys and
+// destination API keys). Which hosts do is deployment data in an untracked `response-secrets.local.json`, found like
+// lab-scope.local.json:
+//   {"hosts": ["<api host>", …]}
+// A line that calls an HTTP client and names a listed host may not write any file: the response is read in memory,
+// filtered, and printed. No file refuses nothing; a file that can't be read or parsed treats every host as listed.
+// The guard reads the Bash line only: a fetch inside a script file or a Python or Node program is not seen, nor is a
+// file a downstream program writes itself (sed's w, awk's >, a script), nor a response kept in a variable and written
+// by a later command, nor a host spelled with percent-encoding or shell escapes. It catches the habit, not an agent
+// working to get round it.
+
+export const RESPONSE_SECRETS_FILE_ENV = 'BOOTSTRAP_RESPONSE_SECRETS_FILE';
+const RESPONSE_SECRETS_FILE = 'response-secrets.local.json';
+const RESPONSE_HOST_RE = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/;
+const HTTP_CLIENT_WORD_RE = /(?:^|[\s;&|(`'"/])(?:curl|wget|xhs?|https?)(?=$|[\s;&|)`'"])/;
+const CLIENT_RUNNERS = new Set(['xargs', 'find', 'parallel']);
+const OUTPUT_REDIRECTS = new Set(['>', '>>', '>|', '&>', '&>>']);
+const DISCARD_TARGETS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/fd/1', '/dev/fd/2']);
+const RESPONSE_WALK_MAX_NODES = 20_000;
+
+/** Parse a response-secrets file's text into lower-cased hosts. Null when anything about it is unusable. */
+export function parseResponseSecrets(text: string): string[] | null {
+    let raw: unknown;
+    try {
+        raw = JSON.parse(text);
+    } catch {
+        return null;
+    }
+    const hosts = (raw as { hosts?: unknown } | null)?.hosts;
+    if (!Array.isArray(hosts) || !hosts.every(h => typeof h === 'string' && RESPONSE_HOST_RE.test(h.toLowerCase()))) return null;
+    return (hosts as string[]).map(h => h.toLowerCase());
+}
+
+function currentResponseSecrets(): string[] | null | 'unreadable' {
+    const file = deploymentFilePath(RESPONSE_SECRETS_FILE, RESPONSE_SECRETS_FILE_ENV);
+    if (!file) return null;
+    try {
+        return parseResponseSecrets(readFileSync(file, 'utf-8')) ?? 'unreadable';
+    } catch (e) {
+        return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? null : 'unreadable';
+    }
+}
+
+function namesHost(text: string, host: string): boolean {
+    return new RegExp(`(?<![a-z0-9.-])${escapeRegexLiteral(host)}(?![a-z0-9-]|\\.[a-z0-9])`, 'i').test(text);
+}
+
+// Long options that put the response body in a file, by client. `file` takes the file as its value (`-` is stdout),
+// `named` always writes one (a WARC prefix, a curl config that may set `output`), `flag` takes no value.
+// curl, wget and HTTPie all accept an unambiguous prefix of a long option, and curl 8.3+ an `--expand-` form.
+type ClientFileOption = 'file' | 'named' | 'flag';
+const CLIENT_FILE_OPTIONS: Record<string, Record<string, ClientFileOption>> = {
+    curl: { output: 'file', trace: 'file', 'trace-ascii': 'file', 'remote-name': 'flag', 'remote-name-all': 'flag', config: 'named' },
+    wget: { 'output-document': 'file', 'warc-file': 'named' },
+    http: { output: 'file', download: 'flag' },
+};
+const CLIENT_SHORT_FILE_OPTIONS: Record<string, { value: string; flags: string }> = {
+    curl: { value: 'o', flags: 'OK' },
+    wget: { value: 'O', flags: '' },
+    http: { value: 'o', flags: 'd' },
+};
+const CLIENT_SHORT_VALUE_LETTERS: Record<string, string> = { curl: CURL_VALUE_LETTERS, wget: 'aABDeiIlOoPQRtTUwXY', http: 'aApo' };
+
+function writesStdout(file: string): boolean {
+    return file === '-' || DISCARD_TARGETS.has(file);
+}
+
+/** The files an HTTP client's own options write its response to. wget writes one unless told to print or not fetch. */
+function clientOutputFiles(client: string, args: string[]): string[] {
+    const name = client === 'wget' || client === 'curl' ? client : 'http';
+    const long = CLIENT_FILE_OPTIONS[name];
+    const short = CLIENT_SHORT_FILE_OPTIONS[name];
+    const files: string[] = [];
+    let wgetPrints = false;
+    let wgetSpider = false;
+    const take = (file: string) => {
+        if (!writesStdout(file)) files.push(file);
+        else if (name === 'wget') wgetPrints = true;
+    };
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') break;
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const flag = (eq >= 0 ? a.slice(2, eq) : a.slice(2)).replace(/^expand-(?=.)/, '');
+            if (name === 'wget' && flag.length >= 3 && 'spider'.startsWith(flag)) wgetSpider = eq < 0 || /^(?:on|yes|1|true)$/i.test(a.slice(eq + 1));
+            if (name === 'wget' && flag === 'no-spider') wgetSpider = false;
+            const option = flag.length >= 2 ? Object.keys(long).find(o => o === flag) ?? Object.keys(long).find(o => o.startsWith(flag)) : undefined;
+            if (option === undefined) {
+                if (name === 'curl' && eq < 0 && CURL_TEXT_OPTIONS.test(`--${flag}`)) i++;
+                continue;
+            }
+            const kind = long[option];
+            const value = kind === 'flag' ? '' : eq >= 0 ? a.slice(eq + 1) : args[++i] ?? '';
+            if (kind === 'file') take(value);
+            else files.push(`<${option}${value ? ` ${value}` : ''}>`);
+            continue;
+        }
+        if (!/^-[^-]/.test(a)) continue;
+        for (let c = 1; c < a.length; c++) {
+            if (short.flags.includes(a[c])) files.push(`<-${a[c]}>`);
+            if (!CLIENT_SHORT_VALUE_LETTERS[name].includes(a[c])) continue;
+            const value = a.slice(c + 1) || args[++i] || '';
+            if (a[c] === short.value) take(value);
+            break;
+        }
+    }
+    if (name === 'wget' && !wgetPrints && !wgetSpider && !files.length) files.push('<remote name>');
+    return files;
+}
+
+/** The operands a command takes after its options; everything after `--` is one. */
+function operandsOf(args: string[]): string[] {
+    const end = args.indexOf('--');
+    const before = (end >= 0 ? args.slice(0, end) : args).filter(a => a === '-' || !a.startsWith('-'));
+    return end >= 0 ? [...before, ...args.slice(end + 1)] : before;
+}
+
+/** Every file the line's redirects, tee, dd, sponge and HTTP clients write; null when the line is too big to walk. */
+function lineFileWrites(line: string, commands: ResolvedCommand[]): string[] | null {
+    const files: string[] = [];
+    const pipes = new Set<string>();
+    let nodes = 0;
+    const seen = new Set<object>();
+    const walk = (node: unknown): boolean => {
+        if (!node || typeof node !== 'object' || seen.has(node)) return true;
+        seen.add(node);
+        if (++nodes > RESPONSE_WALK_MAX_NODES) return false;
+        const redirects = (node as { redirects?: unknown }).redirects;
+        if (Array.isArray(redirects)) {
+            for (const r of redirects) {
+                const target = r?.target ? wordValue(r.target) : '';
+                if (r?.target?.parts?.length === 1 && r.target.parts[0]?.type === 'ProcessSubstitution') {
+                    pipes.add(target);
+                    continue;
+                }
+                const writes = OUTPUT_REDIRECTS.has(r?.operator)
+                    || (r?.operator === '>&' && !/^(?:\d+|-)$/.test(target))
+                    || (r?.operator === '<>' && r.fileDescriptor !== undefined && r.fileDescriptor !== 0);
+                if (writes) files.push(target);
+            }
+        }
+        for (const child of Object.values(node)) if (!walk(child)) return false;
+        return true;
+    };
+    let ast: unknown;
+    try {
+        ast = parseShell(line);
+    } catch {
+        return null;
+    }
+    if (!walk(ast)) return null;
+    for (const cmd of commands) {
+        files.push(...(cmd.stdoutFiles ?? []));
+        if (cmd.name === 'tee' || cmd.name === 'sponge') files.push(...operandsOf(cmd.args));
+        if (cmd.name === 'dd') files.push(...cmd.args.filter(a => a.startsWith('of=')).map(a => a.slice(3)));
+        const args = expandedEmitter(cmd)?.args ?? cmd.args;
+        if (HTTP_CLIENTS.has(cmd.name)) files.push(...clientOutputFiles(cmd.name, args));
+        // A client run by xargs, find -exec, parallel and the like: its words follow its name among the runner's.
+        const at = CLIENT_RUNNERS.has(cmd.name) ? args.findIndex(a => HTTP_CLIENTS.has(commandName(a))) : -1;
+        if (at >= 0) files.push(...clientOutputFiles(commandName(args[at]), args.slice(at + 1)));
+    }
+    return files.filter(f => !DISCARD_TARGETS.has(f) && !pipes.has(f));
+}
+
+/** Why a line that fetches from a host listed in response-secrets.local.json is refused, or null. */
+function responseSecretsReason(commands: ResolvedCommand[], line: string): string | null {
+    const scope = currentResponseSecrets();
+    if (scope === null) return null;
+    const client = commands.some(c => HTTP_CLIENTS.has(c.name)) || HTTP_CLIENT_WORD_RE.test(line);
+    if (!client) return null;
+    const named = [line, ...commands.flatMap(c => c.args)].join('\n');
+    const host = scope === 'unreadable' ? 'an API' : scope.find(h => namesHost(named, h));
+    if (!host) return null;
+    const writes = lineFileWrites(line, commands);
+    if (writes !== null && writes.length === 0) return null;
+    const what = writes === null ? 'a line too large to check for file writes' : `it writes ${[...new Set(writes)].slice(0, 3).join(', ')}`;
+    const why = scope === 'unreadable'
+        ? `${RESPONSE_SECRETS_FILE} can't be read, so every HTTP response is treated as carrying credentials until it's fixed`
+        : `responses from ${host} can carry live credentials (${RESPONSE_SECRETS_FILE})`;
+    return `Refused: this line calls ${host} and ${what}; ${why}. `
+        + `Read the response in memory and print only the fields you need, e.g. \`curl -s <url> | jq '[.items[] | {id, name}]' 2>/dev/null\`. `
+        + `Write any file in a separate command that does not call the API.`;
 }
