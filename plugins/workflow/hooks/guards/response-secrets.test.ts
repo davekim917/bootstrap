@@ -122,6 +122,7 @@ describe('a line counts a client where bash runs it', () => {
         ['a commit message naming curl and the host', `git commit -m "stop saving curl output from ${HOST}"`],
         ['grep for the host into a file', `grep -rn "${HOST}" src > hits.txt`],
         ['a heredoc note, then grep for the client word', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\ngrep curl note.md`],
+        ['a heredoc note, then a count of its lines', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\nwc -l note.md`],
         ['a heredoc note, then a commit naming the client', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\ngit add note.md; git commit -m 'document the curl call'`],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toEqual({ action: 'allow' });
@@ -144,6 +145,11 @@ describe('a line counts a client where bash runs it', () => {
         ['a word xargs passes to its script', `printf x | xargs sh -c 'ssh box "$0"' 'curl -s ${API}/sources' > s.json`, `this line names ${HOST}`],
         ['an output option xargs passes to its script', `printf x | xargs sh -c 'curl -s ${API}/sources "$0"' '-os.json'`, `this line calls ${HOST}`],
         ['a script piped to sh inside a substitution', `echo "$(printf '%s\\n' 'curl -s ${API}/sources' | sh)" > s.json`, `this line names ${HOST}`],
+        ['a script the line writes, then runs with bash', `cat > fetch.sh <<'EOF'\ncurl -s ${API}/sources -o s.json\nEOF\nbash fetch.sh`, `this line calls ${HOST}`],
+        ['a script the line writes, then runs by its path', `cat > fetch.sh <<'EOF'\ncurl -s ${API}/sources\nEOF\nchmod +x fetch.sh && ./fetch.sh > s.json`, `this line calls ${HOST}`],
+        ['a script the line writes with tee, then sources', `tee f.sh >/dev/null <<'EOF'\ncurl -s ${API}/sources -o s.json\nEOF\nsource f.sh`, `this line calls ${HOST}`],
+        ['the host in a variable, run by docker exec', `API=${API}; docker exec app curl -s "$API/sources" > s.json`, `this line names ${HOST}`],
+        ['the host in a variable, in an unquoted Python heredoc', `API=${API}\npython3 - > s.json <<EOF\nimport subprocess; subprocess.run(['curl', '$API/sources'])\nEOF`, `this line names ${HOST}`],
         ['a script piped to sh inside a process substitution', `cat <(printf '%s\\n' 'curl -s ${API}/sources' | sh) > s.json`, `this line names ${HOST}`],
     ])('%s', (_name, command, reason) => {
         const result = verdict(command);

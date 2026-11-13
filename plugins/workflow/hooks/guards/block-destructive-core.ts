@@ -8473,7 +8473,7 @@ const OUTPUT_REDIRECTS = new Set(['>', '>>', '>|', '&>', '&>>']);
 const DISCARD_TARGETS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/fd/1', '/dev/fd/2']);
 const RESPONSE_WALK_MAX_NODES = 20_000;
 const RESPONSE_SCRIPT_DEPTH_MAX = 4;
-const RESPONSE_SCRIPT_CHARS_MAX = 1_000_000;
+const RESPONSE_SCRIPT_CHARS_MAX = 256_000;
 
 /** Parse a response-secrets file's text into lower-cased hosts. Null when anything about it is unusable. */
 export function parseResponseSecrets(text: string): string[] | null {
@@ -8629,11 +8629,13 @@ function pipedTexts(cmd: ResolvedCommand): string[] | null {
 
 /**
  * The scripts `cmd` has bash run, each with the commands it runs when they are already known: a shell's -c script or
- * the text fed to its stdin, eval's words, and the shell script xargs, find -exec or git submodule foreach runs, with
- * the words they pass it filled in. Null when one can't be worked out.
+ * the text fed to its stdin, a file the line writes that a shell or `source` reads or that runs as the command, eval's
+ * words, and the shell script xargs, find -exec or git submodule foreach runs, with the words they pass it filled in.
+ * Null when one can't be worked out.
  */
 function scriptsRun(cmd: ResolvedCommand): Array<{ text: string; steps?: ResolvedCommand[] }> | null {
     const scripts: Array<{ text: string; steps?: ResolvedCommand[] }> = [];
+    const files = new Set<string>();
     if (SHELLS.has(cmd.name) || cmd.name === 'source' || cmd.name === '.') {
         const script = SHELLS.has(cmd.name) ? shellScript(cmd.name, cmd.args) : null;
         if (script) scripts.push({ text: script.text });
@@ -8641,7 +8643,15 @@ function scriptsRun(cmd: ResolvedCommand): Array<{ text: string; steps?: Resolve
             const piped = pipedTexts(cmd);
             if (piped === null) return null;
             scripts.push(...[...(cmd.stdinTexts ?? []), ...piped].map(text => ({ text })));
+            for (const operand of operandsOf(cmd.args)) files.add(samePath(operand));
         }
+    }
+    for (const write of cmd.script?.writes ?? []) {
+        const target = samePath(write.target);
+        if (!files.has(target) && commandName(target) !== cmd.name) continue;
+        const written = flattenInput(write.input, cmd.script);
+        if (written.over) return null;
+        scripts.push(...written.texts.map(text => ({ text })));
     }
     if (cmd.name === 'eval') scripts.push({ text: cmd.args.join(' ') });
     for (const { inner, tail } of execRuns(cmd)) {
@@ -8688,11 +8698,12 @@ function lineFetch(line: string, commands: ResolvedCommand[], listed: (text: str
         // A shell reading a script from a stdin the guard can't see, such as a pipe inside `$( )`: the line is all there is.
         const unseen = SHELLS.has(cmd.name) && !scripts.length && !operandsOf(cmd.args).length;
         if (unseen && HTTP_CLIENT_WORD_RE.test(line) && listed(line)) fetch.names = true;
-        if (TEXT_EMITTERS.has(cmd.name)) continue;
+        if (TEXT_EMITTERS.has(cmd.name) || cmd.name === 'eval') continue;
         const piped = SHELLS.has(cmd.name) ? [] : pipedTexts(cmd);
+        const expanded = expandedEmitter(cmd);
         const run = new Set(scripts.map(s => s.text));
-        const data = [...cmd.args, ...(cmd.stdinTexts ?? []), ...(piped ?? [])].filter(t => !run.has(t)).join('\n');
-        if (piped === null || (HTTP_CLIENT_WORD_RE.test(data) && listed(data))) fetch.names = true;
+        const data = [...args, ...cmd.args, ...(expanded?.stdinTexts ?? []), ...(cmd.stdinTexts ?? []), ...(piped ?? [])].filter(t => !run.has(t)).join('\n');
+        if (piped === null || expanded === null || (HTTP_CLIENT_WORD_RE.test(data) && listed(data))) fetch.names = true;
     }
     return fetch;
 }
@@ -8709,7 +8720,7 @@ function responseSecretsReason(commands: ResolvedCommand[], line: string): strin
     if (!fetch.calls && !fetch.names) return null;
     const writes = fetch.writes;
     if (writes !== null && writes.length === 0) return null;
-    const what = writes === null ? 'a line too large to check for file writes' : `it writes ${[...new Set(writes)].slice(0, 3).join(', ')}`;
+    const what = writes === null ? 'its file writes cannot all be read' : `it writes ${[...new Set(writes)].slice(0, 3).join(', ')}`;
     const why = scope === 'unreadable'
         ? `${RESPONSE_SECRETS_FILE} can't be read, so every HTTP response is treated as carrying credentials until it's fixed`
         : `responses from ${host} can carry live credentials (${RESPONSE_SECRETS_FILE})`;
