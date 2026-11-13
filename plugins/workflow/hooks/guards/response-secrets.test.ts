@@ -112,6 +112,40 @@ describe('a read that filters in memory is untouched', () => {
     });
 });
 
+describe('a line counts a client where bash runs it', () => {
+    test.each([
+        ['a quoted heredoc that says the rule', `cat > msg.txt <<'EOF'\nAny line that calls ${HOST} with curl and writes a file is refused.\nEOF`],
+        ['a quoted heredoc that quotes a fetch', `cat > msg.txt <<'EOF'\ncurl -s ${API}/sources | jq '{id, name}'\nEOF`],
+        ['echo of a sentence naming curl', `echo "calls to ${HOST} with curl are refused" > note.txt`],
+        ['tee writing a heredoc that quotes a fetch', `tee note.md <<'EOF'\ncurl -s ${API}/sources\nEOF`],
+        ['a heredoc naming the host with no client', `cat > note.md <<'EOF'\nThe sources endpoint lives on ${HOST}.\nEOF`],
+        ['a commit message naming curl and the host', `git commit -m "stop saving curl output from ${HOST}"`],
+        ['grep for the host into a file', `grep -rn "${HOST}" src > hits.txt`],
+    ])('%s', (_name, command) => {
+        expect(verdict(command)).toEqual({ action: 'allow' });
+    });
+
+    test.each([
+        ['bash -c, refused as inline shell', `bash -c "curl -s ${API}/sources -o s.json"`, 'Shell inline execution'],
+        ['an unquoted heredoc piped to sh', `cat <<EOF | sh\ncurl -s ${API}/sources -o s.json\nEOF`, `this line calls ${HOST}`],
+        ['a quoted heredoc piped to sh, which still runs it', `cat <<'EOF' | sh\ncurl -s ${API}/sources > s.json\nEOF`, `this line calls ${HOST}`],
+        ['echo piped to bash', `echo "curl -s ${API}/sources -o s.json" | bash`, `this line calls ${HOST}`],
+        ['xargs running sh -c', `printf '%s' ${API}/sources | xargs sh -c 'curl -s -o s.json "$0"'`, `this line calls ${HOST}`],
+        ['git submodule foreach', `git submodule foreach "curl -s ${API}/sources" > s.json`, `this line calls ${HOST}`],
+        ['ssh, which may run its argument', `ssh box "curl -s ${API}/sources" > s.json`, `this line names ${HOST}`],
+        ['docker exec', `docker exec app curl -s ${API}/sources > s.json`, `this line names ${HOST}`],
+        ['a Python heredoc', `python3 - > s.json <<'EOF'\nimport subprocess; subprocess.run(['curl', '${API}/sources'])\nEOF`, `this line names ${HOST}`],
+    ])('%s', (_name, command, reason) => {
+        const result = verdict(command);
+        expect(result.action).toBe('block');
+        expect(result.reason).toContain(reason);
+    });
+
+    test('a line the guard cannot tell from a note points at the file tool', () => {
+        expect(verdict(`ssh box "curl -s ${API}/sources" > s.json`).reason).toContain('use the file tool');
+    });
+});
+
 describe('the scope file', () => {
     test('no file refuses nothing', () => {
         process.env[RESPONSE_SECRETS_FILE_ENV] = join(dir, 'missing.json');
