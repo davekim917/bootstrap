@@ -121,6 +121,8 @@ describe('a line counts a client where bash runs it', () => {
         ['a heredoc naming the host with no client', `cat > note.md <<'EOF'\nThe sources endpoint lives on ${HOST}.\nEOF`],
         ['a commit message naming curl and the host', `git commit -m "stop saving curl output from ${HOST}"`],
         ['grep for the host into a file', `grep -rn "${HOST}" src > hits.txt`],
+        ['a heredoc note, then grep for the client word', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\ngrep curl note.md`],
+        ['a heredoc note, then a commit naming the client', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\ngit add note.md; git commit -m 'document the curl call'`],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toEqual({ action: 'allow' });
     });
@@ -135,6 +137,14 @@ describe('a line counts a client where bash runs it', () => {
         ['ssh, which may run its argument', `ssh box "curl -s ${API}/sources" > s.json`, `this line names ${HOST}`],
         ['docker exec', `docker exec app curl -s ${API}/sources > s.json`, `this line names ${HOST}`],
         ['a Python heredoc', `python3 - > s.json <<'EOF'\nimport subprocess; subprocess.run(['curl', '${API}/sources'])\nEOF`, `this line names ${HOST}`],
+        ['a Python program piped in', `cat <<'PY' | python3 > s.json\nimport subprocess; subprocess.run(['curl', '${API}/sources'])\nPY`, `this line names ${HOST}`],
+        ['a script piped to ssh', `printf '%s\\n' 'curl -s ${API}/sources' | ssh box sh > s.json`, `this line names ${HOST}`],
+        ['a script piped through sed to sh', `printf '%s\\n' 'curl -s ${API}/sources' | sed -n p | sh > s.json`, `this line names ${HOST}`],
+        ['commands piped to parallel', `printf '%s\\n' 'curl -s ${API}/sources' | parallel > s.json`, `this line names ${HOST}`],
+        ['a word xargs passes to its script', `printf x | xargs sh -c 'ssh box "$0"' 'curl -s ${API}/sources' > s.json`, `this line names ${HOST}`],
+        ['an output option xargs passes to its script', `printf x | xargs sh -c 'curl -s ${API}/sources "$0"' '-os.json'`, `this line calls ${HOST}`],
+        ['a script piped to sh inside a substitution', `echo "$(printf '%s\\n' 'curl -s ${API}/sources' | sh)" > s.json`, `this line names ${HOST}`],
+        ['a script piped to sh inside a process substitution', `cat <(printf '%s\\n' 'curl -s ${API}/sources' | sh) > s.json`, `this line names ${HOST}`],
     ])('%s', (_name, command, reason) => {
         const result = verdict(command);
         expect(result.action).toBe('block');

@@ -8460,8 +8460,8 @@ function noMergeStepReason(
 // A line that calls an HTTP client and names a listed host may not write any file: the response is read in memory,
 // filtered, and printed. No file refuses nothing; a file that can't be read or parsed treats every host as listed.
 // A client counts where bash runs it: as a command, or inside a script a shell, eval, xargs, find -exec or git submodule
-// foreach runs. Words echo, printf, cat and tee write are text. A client word in any other command's arguments or input
-// (ssh, docker exec, python -c) may be run by it, so that line is refused as one that names the host and a client.
+// foreach runs. Words echo, printf, cat and tee write are text. Any other command whose own words or input hold a client
+// word and a listed host (ssh, docker exec, python) may run them, so that line is refused as one that names the host.
 // The guard reads the Bash line only: a fetch inside a script file or a Python or Node program is not seen, nor is a
 // file a downstream program writes itself (sed's w, awk's >, a script), nor a response kept in a variable and written
 // by a later command, nor a host spelled with percent-encoding or shell escapes, nor an output a client's default
@@ -8625,37 +8625,51 @@ function lineFileWrites(line: string, commands: ResolvedCommand[]): string[] | n
     return files.filter(f => !DISCARD_TARGETS.has(f) && !pipes.has(f));
 }
 
-/** The scripts `cmd` has bash run: a shell's -c script or the text fed to its stdin, eval's words, and the shell
- * script xargs, find -exec or git submodule foreach runs. Null when the text fed to it can't be worked out. */
-function scriptsRun(cmd: ResolvedCommand): string[] | null {
-    const texts: string[] = [];
+/** What its pipeline feeds `cmd`, or null when that can't be worked out. */
+function pipedTexts(cmd: ResolvedCommand): string[] | null {
+    const piped = flattenInput(cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos)), cmd.script);
+    return piped.over ? null : piped.texts;
+}
+
+/**
+ * The scripts `cmd` has bash run, each with the commands it runs when they are already known: a shell's -c script or
+ * the text fed to its stdin, eval's words, and the shell script xargs, find -exec or git submodule foreach runs, with
+ * the words they pass it filled in. Null when one can't be worked out.
+ */
+function scriptsRun(cmd: ResolvedCommand): Array<{ text: string; steps?: ResolvedCommand[] }> | null {
+    const scripts: Array<{ text: string; steps?: ResolvedCommand[] }> = [];
     if (SHELLS.has(cmd.name) || cmd.name === 'source' || cmd.name === '.') {
         const script = SHELLS.has(cmd.name) ? shellScript(cmd.name, cmd.args) : null;
-        if (script) texts.push(script.text);
+        if (script) scripts.push({ text: script.text });
         else {
-            const piped = flattenInput(cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos)), cmd.script);
-            if (piped.over) return null;
-            texts.push(...(cmd.stdinTexts ?? []), ...piped.texts);
+            const piped = pipedTexts(cmd);
+            if (piped === null) return null;
+            scripts.push(...[...(cmd.stdinTexts ?? []), ...piped].map(text => ({ text })));
         }
     }
-    if (cmd.name === 'eval') texts.push(cmd.args.join(' '));
-    for (const { inner } of execRuns(cmd)) {
+    if (cmd.name === 'eval') scripts.push({ text: cmd.args.join(' ') });
+    for (const { inner, tail } of execRuns(cmd)) {
         const script = inner && SHELLS.has(inner.name) ? shellScript(inner.name, inner.args) : null;
-        if (script) texts.push(script.text);
+        if (!script) continue;
+        const steps = innerSteps(inner, tail);
+        if (steps === RUNS_VARIABLE) return null;
+        scripts.push({ text: script.text, steps });
     }
-    return texts;
+    return scripts;
 }
 
 interface LineFetch {
     calls: boolean;             // an HTTP client runs
-    names: boolean;             // a client word sits where the guard can't tell a call from text
+    names: boolean;             // one command's words or input hold a client word and a listed host, and it may run them
     writes: string[] | null;    // the files written; null when they can't all be found
-    words: string[];            // every command's arguments, where a host may be spelled with quotes
 }
 
-/** What a line and every script it runs show about HTTP clients and file writes. */
-function lineFetch(line: string, commands: ResolvedCommand[], budget: { chars: number }, depth = 0): LineFetch {
-    const fetch: LineFetch = { calls: false, names: false, writes: lineFileWrites(line, commands), words: commands.flatMap(c => c.args) };
+/**
+ * What a line and every script it runs show about HTTP clients and file writes. `listed` says whether a text names a
+ * listed host.
+ */
+function lineFetch(line: string, commands: ResolvedCommand[], listed: (text: string) => boolean, budget: { chars: number }, depth = 0): LineFetch {
+    const fetch: LineFetch = { calls: false, names: false, writes: lineFileWrites(line, commands) };
     for (const cmd of commands) {
         const args = expandedEmitter(cmd)?.args ?? cmd.args;
         if (HTTP_CLIENTS.has(cmd.name) || (CLIENT_RUNNERS.has(cmd.name) && args.some(a => HTTP_CLIENTS.has(commandName(a))))) {
@@ -8668,17 +8682,21 @@ function lineFetch(line: string, commands: ResolvedCommand[], budget: { chars: n
             fetch.writes = null;
             continue;
         }
-        for (const script of scripts) {
-            budget.chars -= script.length;
-            const inner = budget.chars < 0 ? null : lineFetch(script, extractCommands(script), budget, depth + 1);
+        for (const { text, steps } of scripts) {
+            budget.chars -= text.length;
+            const inner = budget.chars < 0 ? null : lineFetch(text, steps ?? extractCommands(text), listed, budget, depth + 1);
             fetch.calls ||= inner?.calls ?? true;
             fetch.names ||= inner?.names ?? false;
             fetch.writes = inner && inner.writes && fetch.writes ? [...fetch.writes, ...inner.writes] : null;
-            fetch.words.push(...(inner?.words ?? []));
         }
-        if (!scripts.length && !TEXT_EMITTERS.has(cmd.name) && [...cmd.args, ...(cmd.stdinTexts ?? [])].some(t => HTTP_CLIENT_WORD_RE.test(t))) {
-            fetch.names = true;
-        }
+        // A shell reading a script from a stdin the guard can't see, such as a pipe inside `$( )`: the line is all there is.
+        const unseen = SHELLS.has(cmd.name) && !scripts.length && !operandsOf(cmd.args).length;
+        if (unseen && HTTP_CLIENT_WORD_RE.test(line) && listed(line)) fetch.names = true;
+        if (TEXT_EMITTERS.has(cmd.name)) continue;
+        const piped = SHELLS.has(cmd.name) ? [] : pipedTexts(cmd);
+        const run = new Set(scripts.map(s => s.text));
+        const data = [...cmd.args, ...(cmd.stdinTexts ?? []), ...(piped ?? [])].filter(t => !run.has(t)).join('\n');
+        if (piped === null || (HTTP_CLIENT_WORD_RE.test(data) && listed(data))) fetch.names = true;
     }
     return fetch;
 }
@@ -8687,11 +8705,12 @@ function lineFetch(line: string, commands: ResolvedCommand[], budget: { chars: n
 function responseSecretsReason(commands: ResolvedCommand[], line: string): string | null {
     const scope = currentResponseSecrets();
     if (scope === null) return null;
-    const fetch = lineFetch(line, commands, { chars: RESPONSE_SCRIPT_CHARS_MAX });
-    if (!fetch.calls && !fetch.names) return null;
-    const named = [line, ...fetch.words].join('\n');
+    const named = [line, ...commands.flatMap(c => c.args)].join('\n');
     const host = scope === 'unreadable' ? 'an API' : scope.find(h => namesHost(named, h));
     if (!host) return null;
+    const listed = (text: string) => scope === 'unreadable' || scope.some(h => namesHost(text, h));
+    const fetch = lineFetch(line, commands, listed, { chars: RESPONSE_SCRIPT_CHARS_MAX });
+    if (!fetch.calls && !fetch.names) return null;
     const writes = fetch.writes;
     if (writes !== null && writes.length === 0) return null;
     const what = writes === null ? 'a line too large to check for file writes' : `it writes ${[...new Set(writes)].slice(0, 3).join(', ')}`;
