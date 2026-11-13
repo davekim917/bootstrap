@@ -32,14 +32,68 @@ describe('a line the parser stops reading partway through blocks', () => {
         ['a process substitution spanning lines', 'cat <(echo a\nshred /tmp/report.txt)'],
         ['a loop fed by a process substitution spanning lines', 'while read -r l; do echo "$l"; done < <(\n  shred /tmp/report.txt\n)'],
         ['a single-quoted $( in a word spanning lines', `echo '$(\n'"$(shred /tmp/report.txt)"')'`],
-        ["an apostrophe in a heredoc inside $( ), which the parser reads past", `git commit -m "$(cat <<'EOF'\nit's done\nEOF\n)" && shred /tmp/report.txt`],
+        ['a heredoc in $( ) ended by its delimiter and a ) on one line', `x=$(cat <<'EOF'\nit's\nEOF)\nshred /tmp/report.txt`],
+        ['a substitution in unquoted body text the scan cannot place', `cat <<EOF\n$(echo 'a) $(shred /tmp/report.txt)\nEOF`],
+        ['a $[…] inside ${…} before a comment', 'v=1; echo $(echo ${v:-$[ { }  #)]}; shred /tmp/report.txt\n)'],
+        ["a $'…' inside ${…} before a comment", "v=1; echo $(echo ${v:-$'\\' { } #)'}; shred /tmp/report.txt)"],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('block');
     });
 
-    test('the refusal of a heredoc inside $( ) names the stdin form that reads whole', () => {
-        const reason = evaluateBashCommand(`git commit -m "$(cat <<'EOF'\nit's done\nEOF\n)"`, { cwd: '/tmp' }).reason ?? '';
+    test('the refusal of a heredoc inside $( ) says how to write it so it reads whole', () => {
+        const reason = evaluateBashCommand(`git commit -m "$(cat <<'EOF'\nfix: it's done\nEOF)"`, { cwd: '/tmp' }).reason ?? '';
+        expect(reason).toContain('delimiter alone on a line');
         expect(reason).toContain('git commit -F - <<');
+    });
+});
+
+describe('a heredoc or comment inside $( ) is read as bash reads it', () => {
+    test.each([
+        ['an apostrophe in a quoted body', "DECISION=$(python3 - <<'PY'\n# it's fine\nprint('ok')\nPY\n)\necho $DECISION"],
+        ['the same body without one', "DECISION=$(python3 - <<'PY'\n# its fine\nprint('ok')\nPY\n)\necho $DECISION"],
+        ['the same heredoc outside $( )', "python3 - <<'PY'\n# it's fine\nprint('ok')\nPY"],
+        ['an apostrophe in a commit message', `git commit -m "$(cat <<'EOF'\nfix: it's done\nEOF\n)"`],
+        ['a ) and a literal $( ) in a quoted body', `x=$(cat <<'EOF'\n) $(shred /tmp/report.txt)\nEOF\n)\necho "$x"`],
+        ['a ) in a tab-stripped body', `x=$(cat <<-EOF\n\t)it's\n\tEOF\n)\necho "$x"`],
+        ['a substitution in double quotes before the heredoc', `x=$(echo "$(date)"; cat <<'EOF'\nit's\nEOF\n)\necho "$x"`],
+        ['an apostrophe in a comment', `x=$(echo two # it's )\n)\necho "$x"`],
+        ['a heredoc in a case arm', `x=$(case y in y) cat <<'E'\nit's)\nE\n;; esac)\necho "$x"`],
+        ['body lines that start with the delimiter and hold no )', "x=$(python3 - <<'PY'\nPYTHONPATH = 1\nprint('it's')\nPY\n)\necho \"$x\""],
+        ['a body line that starts with a one-letter delimiter', "x=$(cat <<'E'\nEverything's fine\nE\n)\necho \"$x\""],
+        ['a literal { in ${…} before a comment', 'v="a{b"; echo $(printf %s ${v//{/}); # drop opening braces'],
+        ['a nested ${…} before a comment', 'echo $(printf %s ${v:-${w}}); # default'],
+    ])('%s', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['an unterminated quoted body', "x=$(cat <<'EOF'\nit's"],
+        ['a heredoc nested in one, both unterminated', "x=$(cat <<EOF\n$(cat <<'E'\nit's\n"],
+        ['an unterminated quote in a substitution in body text', "cat <<EOF\n$(cat <<'E'\n$(echo 'a\nEOF"],
+        ['substitutions opened in body text and never closed', 'cat <<EOF\n$($($($(\nEOF'],
+    ])('%s is read to a verdict', (_name, command) => {
+        expect(['allow', 'gate', 'block']).toContain(verdict(command));
+    });
+
+    const shredAlone = evaluateBashCommand('shred /tmp/report.txt', { cwd: '/tmp' });
+    test.each([
+        ['a command after the substitution', `git commit -m "$(cat <<'EOF'\nit's done\nEOF\n)" && shred /tmp/report.txt`],
+        ['a substitution in an unquoted body', `x=$(cat <<EOF\n) it's $(shred /tmp/report.txt)\nEOF\n)\necho "$x"`],
+        ['a command after a body whose ) and apostrophe would hide it', `x=$(cat <<-EOF\n\t)it's\n\tEOF\n)\nshred /tmp/report.txt`],
+        ["a command after a comment's ) and a $'…' string", `x=$(echo hi # )\necho $'\\'#)'; shred /tmp/report.txt\n)`],
+        ["a command after a comment's ) inside an unquoted body", `x=$(cat <<EOF\n$(echo hi # )\nshred /tmp/report.txt\n)\nEOF\n)`],
+        ['a case arm inside an unquoted body', `x=$(cat <<EOF\n$(case y in y) shred /tmp/report.txt;; esac)\nEOF\n)`],
+        ['a command after a delimiter and ) on one line', `x=$(cat <<'EOF'\nhi\nEOF)\nshred /tmp/report.txt`],
+        ['a command after a delimiter and ) on one line, the same delimiter alone later', `x=$(cat <<'EOF'\nhi\nEOF)\nshred /tmp/report.txt\nEOF\n)`],
+        ['a command after a tab-stripped delimiter and ) on one line', `x=$(cat <<-EOF\n\thi\n\tEOF) && shred /tmp/report.txt`],
+        ['a substitution after a # inside ${…} in an unquoted body', `cat <<EOF\n$(echo \${1:- # none}) and $(shred /tmp/report.txt)\nEOF`],
+        ['a substitution after a # inside $[…] in an unquoted body', `cat <<EOF\n$(echo $[1 #2]) $(shred /tmp/report.txt)\nEOF`],
+        ['a substitution after an array holding the word case', `cat <<EOF\n$(x=(case); echo) $(shred /tmp/report.txt)\nEOF`],
+        ['a substitution after a ( inside ${…} in an unquoted body', `cat <<EOF\n$(echo \${1:-(}) $(shred /tmp/report.txt)\nEOF`],
+    ])('%s is checked as the command it is', (_name, command) => {
+        const result = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(shredAlone.action).toBe('block');
+        expect(result).toEqual(shredAlone);
     });
 });
 

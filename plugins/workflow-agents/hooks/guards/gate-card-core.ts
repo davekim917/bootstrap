@@ -258,6 +258,13 @@ function canonicalDelimiter(delimiter: string, quoted: boolean, length: number):
  * own text), so the caller blocks instead of trusting a parse that hides commands.
  */
 export function parseShell(command: string): any {
+    unreadSubstitution = false;
+    const script = readShell(command);
+    if (unreadSubstitution) throw new ShellParseError('a $( ) the guard cannot read the way bash does');
+    return script;
+}
+
+function readShell(command: string): any {
     if (!command.includes('<<')) return wholeParse(parse(command), command);
     let src = command;
     for (let round = 0; round <= HEREDOC_REWRITES_MAX; round++) {
@@ -492,6 +499,238 @@ function startsComment(src: string, i: number): boolean {
     let p = i;
     while (p >= 2 && src[p - 1] === '\n' && src[p - 2] === '\\') p -= 2;
     return p === 0 || ' \t\n;&|'.includes(src[p - 1]);
+}
+
+// unbash 2.2.0 finds the `)` closing a `$(` or `<(` without reading heredocs or comments, so a quote or paren in a
+// body or comment moves it; bash reads neither for that `)`. Its scan is run with each blanked, and its text taken from
+// the real source. Where that scan still closes somewhere other than bash's reading, the text is scanned as written.
+// unbash 6 reads bodies itself and lacks these internals, so on any other version nothing is wrapped.
+const UNBASH_BODY_BLIND_VERSION = '2.2.0';
+
+// Set when a substitution holding a heredoc or comment can't be read the way bash reads it, so parseShell refuses.
+let unreadSubstitution = false;
+
+async function readSubstitutionsPastHeredocBodies(): Promise<void> {
+    let lexer: any;
+    try {
+        const entry = import.meta.resolve('unbash');
+        const pkg = await import(new URL('../package.json', entry).href, { with: { type: 'json' } });
+        if ((pkg.default ?? pkg).version !== UNBASH_BODY_BLIND_VERSION) return;
+        lexer = (await import(new URL('./lexer.js', entry).href)).Lexer;
+    } catch {
+        return;
+    }
+    const scan = lexer?.prototype?.extractBalanced;
+    if (typeof scan !== 'function') return;
+    lexer.prototype.extractBalanced = function (this: { src: string; pos: number }): string {
+        const src = this.src;
+        const start = this.pos;
+        if (src.indexOf('<<', start) < 0 && src.indexOf('#', start) < 0) return scan.call(this);
+        const blanks: Array<[number, number]> = [];
+        const end = substitutionEnd(src, start, blanks, 0);
+        if (end < 0) unreadSubstitution = true;
+        if (end < 0 || end >= src.length || !blanks.length) return scan.call(this);
+        this.src = blanked(src, blanks);
+        let inner: string;
+        try {
+            inner = scan.call(this);
+        } finally {
+            this.src = src;
+        }
+        if (start + inner.length === end) return src.slice(start, end);
+        this.pos = start;
+        return scan.call(this);
+    };
+}
+
+/** `src` with each span blanked to spaces, its newlines and every offset kept. */
+function blanked(src: string, spans: Array<[number, number]>): string {
+    let out = '';
+    let at = 0;
+    for (const [from, to] of [...spans].sort((x, y) => x[0] - y[0])) {
+        out += src.slice(at, from) + src.slice(from, to).replace(/[^\n]/g, ' ');
+        at = to;
+    }
+    return out + src.slice(at);
+}
+
+/**
+ * Index of the `)` closing the `$(` whose text starts at `start` in `src`, as bash reads it: `src.length` when the
+ * input ends first, -1 for text this reading does not model.
+ */
+export function substitutionClose(src: string, start: number): number {
+    return substitutionEnd(src, start, [], 0);
+}
+
+/**
+ * substitutionClose, also adding the span of each heredoc body and comment inside the substitution to `blanks`.
+ */
+function substitutionEnd(src: string, start: number, blanks: Array<[number, number]>, depth: number): number {
+    if (depth > WALK_MAX_DEPTH) return -1;
+    let pending: Array<{ delimiter: string; tabs: boolean }> = [];
+    let parens = 1;
+    // The paren depth of each open `case`, where a `)` closes a pattern instead.
+    const cases: number[] = [];
+    for (let i = start; i < src.length; i++) {
+        const c = src[i];
+        if (c === '\\') {
+            i++;
+        } else if (c === '$' && src[i + 1] === "'") {
+            i = ansiCQuoteEnd(src, i + 1);
+            if (i < 0) return -1;
+        } else if (c === '$' && (src[i + 1] === '{' || src[i + 1] === '[')) {
+            i = bracketEnd(src, i + 1, blanks, depth);
+            if (i < 0) return -1;
+        } else if (c === "'") {
+            i = src.indexOf("'", i + 1);
+            if (i < 0) return -1;
+        } else if (c === '`') {
+            i = backtickEnd(src, i);
+            if (i < 0) return -1;
+        } else if (c === '"') {
+            i = doubleQuoteEnd(src, i, blanks, depth);
+            if (i < 0) return -1;
+        } else if (c === '#' && (startsComment(src, i) || src[i - 1] === '(')) {
+            const eol = src.indexOf('\n', i);
+            blanks.push([i, eol < 0 ? src.length : eol]);
+            i = (eol < 0 ? src.length : eol) - 1;
+        } else if (c === '(' && src[i + 1] === '(' && readsAsArithmetic(src.slice(i), 1)) {
+            i += closesAt(src.slice(i), 1) + 1;
+        } else if (c === '(') {
+            parens++;
+        } else if (c === ')') {
+            if (cases.at(-1) !== parens && --parens === 0) return i;
+        } else if (/^case(?=[\s;&|()]|$)/.test(src.slice(i, i + 5)) && commandStart(src, i, start)) {
+            cases.push(parens);
+            i += 3;
+        } else if (cases.length && /^esac(?=[\s;&|()]|$)/.test(src.slice(i, i + 5)) && commandStart(src, i, start)) {
+            cases.pop();
+            i += 3;
+        } else if (c === '<' && src[i + 1] === '<' && src[i + 2] !== '<' && src[i - 1] !== '<') {
+            const tabs = src[i + 2] === '-';
+            let w = i + (tabs ? 3 : 2);
+            while (src[w] === ' ' || src[w] === '\t') w++;
+            const word = bashHeredocDelimiter(src, w);
+            if (!word) return -1;
+            pending.push({ delimiter: word.delimiter, tabs });
+            i = word.end - 1;
+        } else if (c === '\n' && pending.length) {
+            let p = i + 1;
+            for (const h of pending) {
+                const bodyStart = p;
+                for (;;) {
+                    const eol = src.indexOf('\n', p);
+                    const raw = src.slice(p, eol < 0 ? src.length : eol);
+                    const line = h.tabs ? raw.replace(/^\t+/, '') : raw;
+                    if (line === h.delimiter) {
+                        blanks.push([bodyStart, p]);
+                        p = eol < 0 ? src.length : eol + 1;
+                        break;
+                    }
+                    // Inside $( ), bash 5.2 also ends a body at a line that starts with the delimiter and holds a `)`,
+                    // and reads the rest of that line as commands.
+                    if (line.startsWith(h.delimiter) && line.includes(')')) return -1;
+                    if (eol < 0) {
+                        blanks.push([bodyStart, src.length]);
+                        p = src.length;
+                        break;
+                    }
+                    p = eol + 1;
+                }
+            }
+            pending = [];
+            i = p - 1;
+        }
+    }
+    return src.length;
+}
+
+/** Whether the word at `i` is where bash reads a command, so a reserved word there is one. */
+function commandStart(src: string, i: number, start: number): boolean {
+    let p = i;
+    while (p > start && (src[p - 1] === ' ' || src[p - 1] === '\t')) p--;
+    if (src[p - 1] === '(' && src[p - 2] === '=') return false;
+    if (p === start || ';&|(\n'.includes(src[p - 1])) return true;
+    return /(?:^|[\s;&|(])(?:do|then|else|elif|\{|!)$/.test(src.slice(Math.max(start, p - 6), p));
+}
+
+/** Index of the `"` closing the one at `open`, reading each substitution inside it whole; -1 when it can't be read. */
+function doubleQuoteEnd(src: string, open: number, blanks: Array<[number, number]>, depth: number): number {
+    for (let k = open + 1; k < src.length; k++) {
+        const c = src[k];
+        if (c === '\\') {
+            k++;
+        } else if (c === '"') {
+            return k;
+        } else if (c === '`') {
+            k = backtickEnd(src, k);
+            if (k < 0) return -1;
+        } else if (c === '$' && src[k + 1] === '(') {
+            k = src[k + 2] === '(' && readsAsArithmetic(src.slice(k + 1), 1)
+                ? k + 1 + closesAt(src.slice(k + 1), 1) + 1
+                : substitutionEnd(src, k + 2, blanks, depth + 1);
+            if (k < 0 || k >= src.length) return -1;
+        }
+    }
+    return -1;
+}
+
+/**
+ * Index of the `}` or `]` closing the `${` or `$[` whose bracket is at `open`, reading quotes and substitutions inside
+ * it whole; -1 when it can't be read. Bash reads no comment or reserved word there, and a `${…}` ends at its first
+ * `}` outside a nested `${`, so `${v:-{x}}` is `{x` and a literal `}`.
+ */
+function bracketEnd(src: string, open: number, blanks: Array<[number, number]>, depth: number): number {
+    const [opener, closer] = src[open] === '{' ? ['{', '}'] : ['[', ']'];
+    let level = 1;
+    for (let k = open + 1; k < src.length; k++) {
+        const c = src[k];
+        if (c === '\\') {
+            k++;
+        } else if (c === "'") {
+            k = src.indexOf("'", k + 1);
+            if (k < 0) return -1;
+        } else if (c === '"') {
+            k = doubleQuoteEnd(src, k, blanks, depth);
+            if (k < 0) return -1;
+        } else if (c === '`') {
+            k = backtickEnd(src, k);
+            if (k < 0) return -1;
+        } else if (c === '$' && src[k + 1] === '(') {
+            k = substitutionEnd(src, k + 2, blanks, depth + 1);
+            if (k < 0 || k >= src.length) return -1;
+        } else if (c === '$' && src[k + 1] === opener) {
+            level++;
+            k++;
+        } else if (c === '$' && (src[k + 1] === "'" || src[k + 1] === (opener === '{' ? '[' : '{'))) {
+            // Bash reads a $'…', or the other bracket kind, inside here as a unit, and unbash misreads both.
+            return -1;
+        } else if (c === opener && opener === '[') {
+            // Bash nests a bare `[` inside `$[…]`, but inside `${…}` only another `${`.
+            level++;
+        } else if (c === closer && --level === 0) {
+            return k;
+        }
+    }
+    return -1;
+}
+
+/** Index of the backtick closing the one at `open`, or -1. */
+function backtickEnd(src: string, open: number): number {
+    for (let k = open + 1; k < src.length; k++) {
+        if (src[k] === '\\') k++;
+        else if (src[k] === '`') return k;
+    }
+    return -1;
+}
+
+/** Index of the `'` closing the `$'…'` string whose opening quote is at `open`, or -1. */
+function ansiCQuoteEnd(src: string, open: number): number {
+    for (let k = open + 1; k < src.length; k++) {
+        if (src[k] === '\\') k++;
+        else if (src[k] === "'") return k;
+    }
+    return -1;
 }
 
 /** Throws when a heredoc inside a command substitution has a delimiter unbash misread; those can't be rewritten. */
@@ -1034,3 +1273,5 @@ export function fitLines(lines: string[], max = CARD_SUMMARY_MAX_CHARS): string 
     }
     return out.join('\n');
 }
+
+await readSubstitutionsPastHeredocBodies();

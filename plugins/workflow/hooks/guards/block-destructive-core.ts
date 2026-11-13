@@ -39,7 +39,7 @@ import { basename, dirname, join, normalize as pathNormalize, resolve as pathRes
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
 import { draftChangedSince, type DraftBinding } from './email-gate-core';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, substitutionClose, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -2625,8 +2625,10 @@ function collectCommandsInText(text: string, commands: any[]): void {
         try {
             addNestedCommands(parseShell(inner), commands);
         } catch {
-            // An unparsable span cannot be inspected; its text still reaches the regex fallback below.
+            // An unparsable span cannot be inspected; its text still reaches the regex fallback below, and each
+            // substitution inside it is read on its own.
             commands.push(...fallbackExtract(inner).map(c => ({ __resolved: c })));
+            collectCommandsInText(inner, commands);
         }
     }
 }
@@ -2645,20 +2647,14 @@ function substitutionSpans(text: string): string[] {
         }
         if (text[i] === '$' && text[i + 1] === '(') {
             if (text[i + 2] === '(') { i += 2; continue; }
-            let depth = 1;
-            let j = i + 2;
-            let quote: string | null = null;
-            for (; j < text.length && depth > 0; j++) {
-                const c = text[j];
-                if (c === '\\') { j++; continue; }
-                if (quote) { if (c === quote) quote = null; continue; }
-                if (c === "'" || c === '"') quote = c;
-                else if (c === '(') depth++;
-                else if (c === ')') depth--;
+            const close = substitutionClose(text, i + 2);
+            // Text bash's reading can't place is checked whole, to its end, rather than skipped.
+            if (close < 0 || close >= text.length) {
+                spans.push(text.slice(i + 2));
+                break;
             }
-            if (depth !== 0) break;
-            spans.push(text.slice(i + 2, j - 1));
-            i = j - 1;
+            spans.push(text.slice(i + 2, close));
+            i = close;
         }
     }
     return spans;
@@ -7265,7 +7261,7 @@ function shellParseProblem(command: string): string | null {
         const fix = e.message.includes('heredoc')
             ? "Put a heredoc on a named command (not a bare redirect or coproc), with its delimiter quoted whole ('EOF') or not at all (EOF)."
             : /\$\([^]*<</.test(command)
-                ? "Text passed through a heredoc inside $(…) is one such case: give the text on stdin instead, as git commit -F - <<'EOF' or gh … --body-file - <<'EOF', write it to a file first, or keep apostrophes out of the heredoc."
+                ? "A heredoc inside $(…) is one such case: put its delimiter alone on a line and the ) on the next, or give the text on stdin instead, as git commit -F - <<'EOF' or gh … --body-file - <<'EOF'."
                 : 'Run it as simpler separate commands, or write a long script to a file and run the file.';
         return `The guard can't read this command the way bash will run it (${e.message}), so it can't check what runs after that point. ${fix}`;
     }
