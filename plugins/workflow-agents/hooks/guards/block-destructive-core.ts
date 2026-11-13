@@ -8459,6 +8459,9 @@ function noMergeStepReason(
 //   {"hosts": ["<api host>", …]}
 // A line that calls an HTTP client and names a listed host may not write any file: the response is read in memory,
 // filtered, and printed. No file refuses nothing; a file that can't be read or parsed treats every host as listed.
+// A client counts where bash runs it: as a command, or inside a script a shell, eval, xargs, find -exec or git submodule
+// foreach runs. Words echo, printf, cat and tee write are text. Any other command whose own words or input hold a client
+// word and a listed host (ssh, docker exec, python) may run them, so that line is refused as one that names the host.
 // The guard reads the Bash line only: a fetch inside a script file or a Python or Node program is not seen, nor is a
 // file a downstream program writes itself (sed's w, awk's >, a script), nor a response kept in a variable and written
 // by a later command, nor a host spelled with percent-encoding or shell escapes, nor an output a client's default
@@ -8473,6 +8476,8 @@ const CLIENT_RUNNERS = new Set(['xargs', 'find', 'parallel']);
 const OUTPUT_REDIRECTS = new Set(['>', '>>', '>|', '&>', '&>>']);
 const DISCARD_TARGETS = new Set(['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/fd/1', '/dev/fd/2']);
 const RESPONSE_WALK_MAX_NODES = 20_000;
+const RESPONSE_SCRIPT_DEPTH_MAX = 4;
+const RESPONSE_SCRIPT_CHARS_MAX = 256_000;
 
 /** Parse a response-secrets file's text into lower-cased hosts. Null when anything about it is unusable. */
 export function parseResponseSecrets(text: string): string[] | null {
@@ -8620,22 +8625,117 @@ function lineFileWrites(line: string, commands: ResolvedCommand[]): string[] | n
     return files.filter(f => !DISCARD_TARGETS.has(f) && !pipes.has(f));
 }
 
+/** What its pipeline feeds `cmd`, or null when that can't be worked out. */
+function pipedTexts(cmd: ResolvedCommand): string[] | null {
+    const piped = flattenInput(cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos)), cmd.script);
+    return piped.over ? null : piped.texts;
+}
+
+/**
+ * The scripts `cmd` has bash run, each with the commands it runs when they are already known: a shell's -c script or
+ * the text fed to its stdin, a file the line writes that a shell or `source` reads or that runs as the command, eval's
+ * words, and the shell script xargs, find -exec or git submodule foreach runs, with the words they pass it filled in.
+ * Null when one can't be worked out.
+ */
+function scriptsRun(cmd: ResolvedCommand): Array<{ text: string; steps?: ResolvedCommand[] }> | null {
+    const scripts: Array<{ text: string; steps?: ResolvedCommand[] }> = [];
+    const files: string[] = [];
+    if (SHELLS.has(cmd.name) || cmd.name === 'source' || cmd.name === '.') {
+        const script = SHELLS.has(cmd.name) ? shellScript(cmd.name, cmd.args) : null;
+        if (script) scripts.push({ text: script.text });
+        else {
+            const piped = pipedTexts(cmd);
+            if (piped === null) return null;
+            scripts.push(...[...(cmd.stdinTexts ?? []), ...piped].map(text => ({ text })));
+            files.push(...operandsOf(cmd.args).slice(0, 1));
+        }
+    }
+    // Bash runs a file by its own name only when the command word holds a slash; a bare word comes from PATH.
+    const path = cmd.raw.split(/\s+/).map(w => w.replace(/^['"]|['"]$/g, '')).find(w => w.includes('/') && commandName(w) === cmd.name);
+    if (path) files.push(path);
+    for (const file of files) {
+        const writes = writesTo(file, cmd);
+        if (writes === null) return null;
+        for (const input of writes) {
+            const written = flattenInput(input, cmd.script);
+            if (written.over) return null;
+            scripts.push(...written.texts.map(text => ({ text })));
+        }
+    }
+    if (cmd.name === 'eval') scripts.push({ text: cmd.args.join(' ') });
+    for (const { inner, tail } of execRuns(cmd)) {
+        const script = inner && SHELLS.has(inner.name) ? shellScript(inner.name, inner.args) : null;
+        if (!script) continue;
+        const steps = innerSteps(inner, tail);
+        if (steps === RUNS_VARIABLE) return null;
+        scripts.push({ text: script.text, steps });
+    }
+    return scripts;
+}
+
+interface LineFetch {
+    calls: boolean;             // an HTTP client runs
+    names: boolean;             // one command's words or input hold a client word and a listed host, and it may run them
+    writes: string[] | null;    // the files written; null when they can't all be found
+}
+
+/**
+ * What a line and every script it runs show about HTTP clients and file writes. `listed` says whether a text names a
+ * listed host.
+ */
+function lineFetch(line: string, commands: ResolvedCommand[], listed: (text: string) => boolean, budget: { chars: number }, depth = 0): LineFetch {
+    const fetch: LineFetch = { calls: false, names: false, writes: lineFileWrites(line, commands) };
+    for (const cmd of commands) {
+        const args = expandedEmitter(cmd)?.args ?? cmd.args;
+        if (HTTP_CLIENTS.has(cmd.name) || (CLIENT_RUNNERS.has(cmd.name) && args.some(a => HTTP_CLIENTS.has(commandName(a))))) {
+            fetch.calls = true;
+            continue;
+        }
+        const scripts = scriptsRun(cmd);
+        if (scripts === null || (scripts.length && depth >= RESPONSE_SCRIPT_DEPTH_MAX)) {
+            fetch.calls = true;
+            fetch.writes = null;
+            continue;
+        }
+        for (const { text, steps } of scripts) {
+            budget.chars -= text.length;
+            const inner = budget.chars < 0 ? null : lineFetch(text, steps ?? extractCommands(text), listed, budget, depth + 1);
+            fetch.calls ||= inner?.calls ?? true;
+            fetch.names ||= inner?.names ?? false;
+            fetch.writes = inner && inner.writes && fetch.writes ? [...fetch.writes, ...inner.writes] : null;
+        }
+        // A shell reading a script from a stdin the guard can't see, such as a pipe inside `$( )`: the line is all there is.
+        const unseen = SHELLS.has(cmd.name) && !scripts.length && !operandsOf(cmd.args).length;
+        if (unseen && HTTP_CLIENT_WORD_RE.test(line) && listed(line)) fetch.names = true;
+        if (TEXT_EMITTERS.has(cmd.name) || cmd.name === 'eval') continue;
+        const piped = SHELLS.has(cmd.name) ? [] : pipedTexts(cmd);
+        const expanded = expandedEmitter(cmd);
+        const run = new Set(scripts.map(s => s.text));
+        const data = [...args, ...cmd.args, ...(expanded?.stdinTexts ?? []), ...(cmd.stdinTexts ?? []), ...(piped ?? [])].filter(t => !run.has(t)).join('\n');
+        if (piped === null || expanded === null || (HTTP_CLIENT_WORD_RE.test(data) && listed(data))) fetch.names = true;
+    }
+    return fetch;
+}
+
 /** Why a line that fetches from a host listed in response-secrets.local.json is refused, or null. */
 function responseSecretsReason(commands: ResolvedCommand[], line: string): string | null {
     const scope = currentResponseSecrets();
     if (scope === null) return null;
-    const client = commands.some(c => HTTP_CLIENTS.has(c.name)) || HTTP_CLIENT_WORD_RE.test(line);
-    if (!client) return null;
     const named = [line, ...commands.flatMap(c => c.args)].join('\n');
     const host = scope === 'unreadable' ? 'an API' : scope.find(h => namesHost(named, h));
     if (!host) return null;
-    const writes = lineFileWrites(line, commands);
+    const listed = (text: string) => scope === 'unreadable' || scope.some(h => namesHost(text, h));
+    const fetch = lineFetch(line, commands, listed, { chars: RESPONSE_SCRIPT_CHARS_MAX });
+    if (!fetch.calls && !fetch.names) return null;
+    const writes = fetch.writes;
     if (writes !== null && writes.length === 0) return null;
-    const what = writes === null ? 'a line too large to check for file writes' : `it writes ${[...new Set(writes)].slice(0, 3).join(', ')}`;
+    const what = writes === null ? 'its file writes cannot all be read' : `it writes ${[...new Set(writes)].slice(0, 3).join(', ')}`;
     const why = scope === 'unreadable'
         ? `${RESPONSE_SECRETS_FILE} can't be read, so every HTTP response is treated as carrying credentials until it's fixed`
         : `responses from ${host} can carry live credentials (${RESPONSE_SECRETS_FILE})`;
-    return `Refused: this line calls ${host} and ${what}; ${why}. `
-        + `Read the response in memory and print only the fields you need, e.g. \`curl -s <url> | jq '[.items[] | {id, name}]' 2>/dev/null\`. `
+    const fix = `Read the response in memory and print only the fields you need, e.g. \`curl -s <url> | jq '[.items[] | {id, name}]' 2>/dev/null\`. `
         + `Write any file in a separate command that does not call the API.`;
+    if (fetch.calls) return `Refused: this line calls ${host} and ${what}; ${why}. ${fix}`;
+    return `Refused: this line names ${host} and an HTTP client where the guard can't tell a call from text, and ${what}; ${why}. `
+        + `To write a note about the call, use the file tool (Write or Edit), not the shell. To fetch, ${fix.charAt(0).toLowerCase()}${fix.slice(1)}`;
 }

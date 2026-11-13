@@ -112,6 +112,59 @@ describe('a read that filters in memory is untouched', () => {
     });
 });
 
+describe('a line counts a client where bash runs it', () => {
+    test.each([
+        ['a quoted heredoc that says the rule', `cat > msg.txt <<'EOF'\nAny line that calls ${HOST} with curl and writes a file is refused.\nEOF`],
+        ['a quoted heredoc that quotes a fetch', `cat > msg.txt <<'EOF'\ncurl -s ${API}/sources | jq '{id, name}'\nEOF`],
+        ['echo of a sentence naming curl', `echo "calls to ${HOST} with curl are refused" > note.txt`],
+        ['tee writing a heredoc that quotes a fetch', `tee note.md <<'EOF'\ncurl -s ${API}/sources\nEOF`],
+        ['a heredoc naming the host with no client', `cat > note.md <<'EOF'\nThe sources endpoint lives on ${HOST}.\nEOF`],
+        ['a commit message naming curl and the host', `git commit -m "stop saving curl output from ${HOST}"`],
+        ['grep for the host into a file', `grep -rn "${HOST}" src > hits.txt`],
+        ['a heredoc note, then grep for the client word', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\ngrep curl note.md`],
+        ['a heredoc note, then a count of its lines', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\nwc -l note.md`],
+        ['a note named like a command, then that command', `cat > notes/git <<'EOF'\ncurl -s ${API}/sources returns keys\nEOF\ngit status > status.txt`],
+        ['a note passed as an argument to a script', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\nbash lint.sh note.md > lint.txt`],
+        ['a heredoc note, then a commit naming the client', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\ngit add note.md; git commit -m 'document the curl call'`],
+    ])('%s', (_name, command) => {
+        expect(verdict(command)).toEqual({ action: 'allow' });
+    });
+
+    test.each([
+        ['bash -c, refused as inline shell', `bash -c "curl -s ${API}/sources -o s.json"`, 'Shell inline execution'],
+        ['an unquoted heredoc piped to sh', `cat <<EOF | sh\ncurl -s ${API}/sources -o s.json\nEOF`, `this line calls ${HOST}`],
+        ['a quoted heredoc piped to sh, which still runs it', `cat <<'EOF' | sh\ncurl -s ${API}/sources > s.json\nEOF`, `this line calls ${HOST}`],
+        ['echo piped to bash', `echo "curl -s ${API}/sources -o s.json" | bash`, `this line calls ${HOST}`],
+        ['xargs running sh -c', `printf '%s' ${API}/sources | xargs sh -c 'curl -s -o s.json "$0"'`, `this line calls ${HOST}`],
+        ['git submodule foreach', `git submodule foreach "curl -s ${API}/sources" > s.json`, `this line calls ${HOST}`],
+        ['ssh, which may run its argument', `ssh box "curl -s ${API}/sources" > s.json`, `this line names ${HOST}`],
+        ['docker exec', `docker exec app curl -s ${API}/sources > s.json`, `this line names ${HOST}`],
+        ['a Python heredoc', `python3 - > s.json <<'EOF'\nimport subprocess; subprocess.run(['curl', '${API}/sources'])\nEOF`, `this line names ${HOST}`],
+        ['a Python program piped in', `cat <<'PY' | python3 > s.json\nimport subprocess; subprocess.run(['curl', '${API}/sources'])\nPY`, `this line names ${HOST}`],
+        ['a script piped to ssh', `printf '%s\\n' 'curl -s ${API}/sources' | ssh box sh > s.json`, `this line names ${HOST}`],
+        ['a script piped through sed to sh', `printf '%s\\n' 'curl -s ${API}/sources' | sed -n p | sh > s.json`, `this line names ${HOST}`],
+        ['commands piped to parallel', `printf '%s\\n' 'curl -s ${API}/sources' | parallel > s.json`, `this line names ${HOST}`],
+        ['a word xargs passes to its script', `printf x | xargs sh -c 'ssh box "$0"' 'curl -s ${API}/sources' > s.json`, `this line names ${HOST}`],
+        ['an output option xargs passes to its script', `printf x | xargs sh -c 'curl -s ${API}/sources "$0"' '-os.json'`, `this line calls ${HOST}`],
+        ['a script piped to sh inside a substitution', `echo "$(printf '%s\\n' 'curl -s ${API}/sources' | sh)" > s.json`, `this line names ${HOST}`],
+        ['a script the line writes, then runs with bash', `cat > fetch.sh <<'EOF'\ncurl -s ${API}/sources -o s.json\nEOF\nbash fetch.sh`, `this line calls ${HOST}`],
+        ['a script the line writes, then runs by its path', `cat > fetch.sh <<'EOF'\ncurl -s ${API}/sources\nEOF\nchmod +x fetch.sh && ./fetch.sh > s.json`, `this line calls ${HOST}`],
+        ['a script written to an absolute path, run after cd', `cat > /tmp/w/fetch.sh <<'EOF'\ncurl -s ${API}/sources\nEOF\ncd /tmp/w && bash fetch.sh > s.json`, `this line calls ${HOST}`],
+        ['a script the line writes with tee, then sources', `tee f.sh >/dev/null <<'EOF'\ncurl -s ${API}/sources -o s.json\nEOF\nsource f.sh`, `this line calls ${HOST}`],
+        ['the host in a variable, run by docker exec', `API=${API}; docker exec app curl -s "$API/sources" > s.json`, `this line names ${HOST}`],
+        ['the host in a variable, in an unquoted Python heredoc', `API=${API}\npython3 - > s.json <<EOF\nimport subprocess; subprocess.run(['curl', '$API/sources'])\nEOF`, `this line names ${HOST}`],
+        ['a script piped to sh inside a process substitution', `cat <(printf '%s\\n' 'curl -s ${API}/sources' | sh) > s.json`, `this line names ${HOST}`],
+    ])('%s', (_name, command, reason) => {
+        const result = verdict(command);
+        expect(result.action).toBe('block');
+        expect(result.reason).toContain(reason);
+    });
+
+    test('a line the guard cannot tell from a note points at the file tool', () => {
+        expect(verdict(`ssh box "curl -s ${API}/sources" > s.json`).reason).toContain('use the file tool');
+    });
+});
+
 describe('the scope file', () => {
     test('no file refuses nothing', () => {
         process.env[RESPONSE_SECRETS_FILE_ENV] = join(dir, 'missing.json');
