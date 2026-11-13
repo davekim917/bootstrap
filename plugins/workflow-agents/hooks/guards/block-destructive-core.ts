@@ -8639,7 +8639,7 @@ function pipedTexts(cmd: ResolvedCommand): string[] | null {
  */
 function scriptsRun(cmd: ResolvedCommand): Array<{ text: string; steps?: ResolvedCommand[] }> | null {
     const scripts: Array<{ text: string; steps?: ResolvedCommand[] }> = [];
-    const files = new Set<string>();
+    const files: string[] = [];
     if (SHELLS.has(cmd.name) || cmd.name === 'source' || cmd.name === '.') {
         const script = SHELLS.has(cmd.name) ? shellScript(cmd.name, cmd.args) : null;
         if (script) scripts.push({ text: script.text });
@@ -8647,15 +8647,20 @@ function scriptsRun(cmd: ResolvedCommand): Array<{ text: string; steps?: Resolve
             const piped = pipedTexts(cmd);
             if (piped === null) return null;
             scripts.push(...[...(cmd.stdinTexts ?? []), ...piped].map(text => ({ text })));
-            for (const operand of operandsOf(cmd.args)) files.add(samePath(operand));
+            files.push(...operandsOf(cmd.args).slice(0, 1));
         }
     }
-    for (const write of cmd.script?.writes ?? []) {
-        const target = samePath(write.target);
-        if (!files.has(target) && commandName(target) !== cmd.name) continue;
-        const written = flattenInput(write.input, cmd.script);
-        if (written.over) return null;
-        scripts.push(...written.texts.map(text => ({ text })));
+    // Bash runs a file by its own name only when the command word holds a slash; a bare word comes from PATH.
+    const path = cmd.raw.split(/\s+/).map(w => w.replace(/^['"]|['"]$/g, '')).find(w => w.includes('/') && commandName(w) === cmd.name);
+    if (path) files.push(path);
+    for (const file of files) {
+        const writes = writesTo(file, cmd);
+        if (writes === null) return null;
+        for (const input of writes) {
+            const written = flattenInput(input, cmd.script);
+            if (written.over) return null;
+            scripts.push(...written.texts.map(text => ({ text })));
+        }
     }
     if (cmd.name === 'eval') scripts.push({ text: cmd.args.join(' ') });
     for (const { inner, tail } of execRuns(cmd)) {

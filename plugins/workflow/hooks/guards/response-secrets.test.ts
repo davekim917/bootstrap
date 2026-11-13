@@ -123,6 +123,8 @@ describe('a line counts a client where bash runs it', () => {
         ['grep for the host into a file', `grep -rn "${HOST}" src > hits.txt`],
         ['a heredoc note, then grep for the client word', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\ngrep curl note.md`],
         ['a heredoc note, then a count of its lines', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\nwc -l note.md`],
+        ['a note named like a command, then that command', `cat > notes/git <<'EOF'\ncurl -s ${API}/sources returns keys\nEOF\ngit status > status.txt`],
+        ['a note passed as an argument to a script', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\nbash lint.sh note.md > lint.txt`],
         ['a heredoc note, then a commit naming the client', `cat > note.md <<'EOF'\ncurl ${API}/sources\nEOF\ngit add note.md; git commit -m 'document the curl call'`],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toEqual({ action: 'allow' });
@@ -147,6 +149,7 @@ describe('a line counts a client where bash runs it', () => {
         ['a script piped to sh inside a substitution', `echo "$(printf '%s\\n' 'curl -s ${API}/sources' | sh)" > s.json`, `this line names ${HOST}`],
         ['a script the line writes, then runs with bash', `cat > fetch.sh <<'EOF'\ncurl -s ${API}/sources -o s.json\nEOF\nbash fetch.sh`, `this line calls ${HOST}`],
         ['a script the line writes, then runs by its path', `cat > fetch.sh <<'EOF'\ncurl -s ${API}/sources\nEOF\nchmod +x fetch.sh && ./fetch.sh > s.json`, `this line calls ${HOST}`],
+        ['a script written to an absolute path, run after cd', `cat > /tmp/w/fetch.sh <<'EOF'\ncurl -s ${API}/sources\nEOF\ncd /tmp/w && bash fetch.sh > s.json`, `this line calls ${HOST}`],
         ['a script the line writes with tee, then sources', `tee f.sh >/dev/null <<'EOF'\ncurl -s ${API}/sources -o s.json\nEOF\nsource f.sh`, `this line calls ${HOST}`],
         ['the host in a variable, run by docker exec', `API=${API}; docker exec app curl -s "$API/sources" > s.json`, `this line names ${HOST}`],
         ['the host in a variable, in an unquoted Python heredoc', `API=${API}\npython3 - > s.json <<EOF\nimport subprocess; subprocess.run(['curl', '$API/sources'])\nEOF`, `this line names ${HOST}`],
