@@ -116,8 +116,8 @@ function sessionStartCommands(manifestRelativePath) {
  *      the Claude token, so a Claude-shaped command in a Codex manifest cats an
  *      empty path and the session silently starts with no directive.
  *
- * Only `wwbd` ships a directive today. `bootstrap-orchestrate` deliberately does
- * not — see the orchestrate section below.
+ * `analytics-verify` and `test-audit` ship a directive today. `bootstrap-orchestrate`,
+ * `wwbd` and `wwed` deliberately do not.
  */
 function checkAlwaysOnDelivery() {
   const SKIP_DIRS = new Set(['.git', 'node_modules']);
@@ -475,10 +475,7 @@ if (wwbdClaudeManifest?.version !== wwbdCodexManifest?.version) {
 if (!exists('plugins/wwbd/skills/wwbd/SKILL.md')) {
   fail('plugins/wwbd must ship skills/wwbd/SKILL.md');
 }
-if (!exists('plugins/wwbd/always-on.md')) {
-  fail('plugins/wwbd must ship always-on.md (the SessionStart nudge)');
-}
-// wwed is the same shape as wwbd: single-source, both manifests, always-on.
+// wwed is the same shape as wwbd: single-source, both manifests.
 if (wwedClaudeManifest?.name !== 'wwed') {
   fail('plugins/wwed/.claude-plugin/plugin.json name must be wwed');
 }
@@ -493,8 +490,17 @@ if (wwedClaudeManifest?.version !== wwedCodexManifest?.version) {
 if (!exists('plugins/wwed/skills/wwed/SKILL.md')) {
   fail('plugins/wwed must ship skills/wwed/SKILL.md');
 }
-if (!exists('plugins/wwed/always-on.md')) {
-  fail('plugins/wwed must ship always-on.md (the SessionStart nudge)');
+// wwbd and wwed are advisory skills loaded by name or description, never a standing nudge.
+for (const plugin of ['wwbd', 'wwed']) {
+  for (const activationPath of [`plugins/${plugin}/hooks`, `plugins/${plugin}/always-on.md`]) {
+    if (exists(activationPath)) fail(`${activationPath} must not exist; ${plugin} is invoke-only`);
+  }
+  for (const [label, manifest] of [
+    ['Claude', plugin === 'wwbd' ? wwbdClaudeManifest : wwedClaudeManifest],
+    ['Codex', plugin === 'wwbd' ? wwbdCodexManifest : wwedCodexManifest],
+  ]) {
+    if (manifest?.hooks !== undefined) fail(`plugins/${plugin} ${label} manifest must not declare hooks; ${plugin} is invoke-only`);
+  }
 }
 
 // analytics-verify is the same shape again, plus the check script its skill runs.
@@ -602,7 +608,7 @@ if (readText('plugins/comment-rule/hooks/comment-rule-codex-hooks.json')?.includ
   fail('plugins/comment-rule/hooks/comment-rule-codex-hooks.json must not reference CLAUDE_PLUGIN_ROOT');
 }
 
-// wwbd, wwed, analytics-verify and test-audit are the plugins that ship a standing directive, and each reaches
+// analytics-verify and test-audit are the plugins that ship a standing directive, and each reaches
 // BOTH runtimes from its own hooks — the Claude manifest's <name>-hooks.json and
 // the Codex manifest's <name>-codex-hooks.json (separate files because Codex does
 // not expand ${CLAUDE_PLUGIN_ROOT}). checkAlwaysOnDelivery enforces that, and
@@ -1285,8 +1291,8 @@ for (const filePath of activeContractFiles) {
   // (nanoclaw-v2 container/agent-runner/src/providers/claude.ts:1749-1752, handed
   // to the SDK at :2710; the header at :1727-1731 says that pass-through is what
   // makes the SDK load plugin-declared hooks). `discoverPlugins` walks three
-  // levels, so `plugins/bootstrap/plugins/wwbd` is found and its
-  // `wwbd-hooks.json` loads with no NanoClaw change at all. The orchestrate
+  // levels, so `plugins/bootstrap/plugins/test-audit` is found and its
+  // `test-audit-hooks.json` loads with no NanoClaw change at all. The orchestrate
   // plugin declares no hooks, so there is nothing to load for it either way.
   //
   // `nanoclaw-plugin.json`'s `preToolUseGuards` is a DE-DUPLICATION signal with
