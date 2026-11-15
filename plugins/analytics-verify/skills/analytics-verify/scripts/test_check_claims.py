@@ -1619,6 +1619,7 @@ class AuthorCatchesFirst(LedgerCase):
                    ('Visit 100 Main St, Apt. 5 today.', '100 Main St, Apt. 5'),
                    ('See Fig. 2 for it.', 'Fig. 2'),
                    ('Call 555-555-0100 ext. 2 today.', '555-555-0100 ext. 2'),
+                   ('Attached 2026-11-07.csv for review.', '2026-11-07.csv'),
                    ('Slides: 01 · Scope.', '01 · Scope'))
         for text, snippet in allowed:
             code, out = self.check(self.led([], exempt=[snippet]), text)

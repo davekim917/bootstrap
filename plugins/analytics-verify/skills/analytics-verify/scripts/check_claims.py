@@ -1240,11 +1240,12 @@ def _exempt_quantity(text, s, e, inside):
     ("w 2 accounts", or "Sales 500 units" at the start of a sentence)."""
     snip = text[s:e]
     for m in _EXEMPT_DATE.finditer(snip):
-        if not re.search(r'[\w/:-]$', text[:s + m.start()]):
+        if not re.search(r'[\w/:-]$', text[:s + m.start()]) and not re.match(r'[\w-]*\.[A-Za-z]\w{0,4}\b', snip[m.end():]):
             return f'a date or time ("{m.group(0).strip()}")'
-    phones = [(s + a, s + b) for a, b in (m.span() for m in _PHONE.finditer(snip))]
+    kept = [(s + a, s + b) for a, b in (m.span() for m in _PHONE.finditer(snip))]
+    kept += [(s + a, s + b) for a, b in (m.span() for m in re.finditer(r'[\w-]+\.[A-Za-z][A-Za-z0-9]{0,4}\b', snip))]
     for t in inside:
-        if any(a <= t.start and t.end <= b for a, b in phones):
+        if any(a <= t.start and t.end <= b for a, b in kept):
             continue
         lead = _lead(text, t.start)[0]
         if t.pct:
