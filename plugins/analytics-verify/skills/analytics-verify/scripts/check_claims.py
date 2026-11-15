@@ -802,6 +802,7 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
                           'choice carries the headline rerun under its alternatives (see references/ledger.md)')
         reruns = _check_ask_shape(ask, f)
 
+    loose_cutoffs = {}
     for sid, src in sources.items():
         kind = src.get('type') if isinstance(src, dict) else None
         if kind == 'query':
@@ -820,7 +821,7 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
             elif future(stamp.date()):
                 f.fail('source', f'{sid}: as_of {as_of} is in the future')
             elif stamp.tzinfo is None or not re.search(r'[T ]\d', str(as_of).strip()):
-                f.warn('source', f'{sid}: as_of "{as_of}" has no time and timezone; a date alone hides a partial day')
+                loose_cutoffs[sid] = as_of
         elif kind == 'file':
             if not src.get('path'):
                 f.fail('source', f'{sid}: a file source needs "path"')
@@ -983,6 +984,7 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
         if claim.value is None or got != claim.value:
             f.fail('derived', f'{cid}: {expr} = {got}, ledger says {claim.raw.get("value")}')
     _check_derivation_roots(by_id, f)
+    _check_cutoffs(loose_cutoffs, by_id, f)
 
     for i, rel in enumerate(ledger.get('relations') or []):
         expr = rel.get('expr') if isinstance(rel, dict) else rel
@@ -1000,6 +1002,20 @@ def check_ledger(ledger, base, today, stale_days, f: Findings):
     if ask is not None:
         _check_ask_claims(ask, reruns, by_id, sources, f)
     return by_id
+
+
+def _check_cutoffs(loose_cutoffs, by_id, f: Findings):
+    """A query cutoff without a time and timezone fails once a shown claim rests on it, since
+    the reader can't tell which day's partial data the number holds; otherwise it warns."""
+    for sid, as_of in loose_cutoffs.items():
+        shown = sorted(cid for cid, c in by_id.items() if c.raw.get('anchors')
+                       and any(by_id[r].raw.get('source') == sid for r in _roots(cid, by_id)))
+        if shown:
+            f.fail('cutoff', f'{sid}: as_of "{as_of}" has no time and timezone, and {", ".join(shown[:5])} '
+                             f'rest{"s" if len(shown) == 1 else ""} on it: give the exact cutoff with its offset '
+                             '("2026-09-23T17:00:00-07:00")')
+        else:
+            f.warn('source', f'{sid}: as_of "{as_of}" has no time and timezone; a date alone hides a partial day')
 
 
 def _text(value):
@@ -1158,6 +1174,125 @@ def _residue(snippet, tokens_inside, start):
     return ''.join(rest)
 
 
+_PHONE = re.compile(r'(?<![\d.])(?:\+\d{1,3}[ .-]?)?(?:\(\d{2,4}\)[ .-]?|\d{2,4}[ .-])\d{3,4}[ .-]\d{3,4}(?![\d.])'
+                    r'|(?<![\d.-])\d{3}-\d{4}(?![\d-])|\b\d{5}-\d{4}\b')
+_MONTH = (r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|'
+          r'sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?![A-Za-z])')
+_EXEMPT_DATE = re.compile(
+    r'(?<![A-Za-z])' + _MONTH + r'\s*\d{1,4}|\d(?:st|nd|rd|th)?\s+(?:of\s+)?' + _MONTH
+    + r'|\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b\d{1,2}(?::\d{2})?\s?[ap]\.?m\b|\b\d{1,2}:\d{2}\b', re.I)
+_MONEY_WORD = re.compile(r'\s?(?:dollars?|euros?|pounds?|cents?|yen|bucks)\b', re.I)
+_SCALED = re.compile(r'\d\s?(?:thousand|million|billion|trillion|bn|mm|[kKmMbB])(?![A-Za-z])')
+
+
+_FUNCTION_WORDS = frozenset(
+    'a an the w with without of for to from by in on at into over under about around than per across within '
+    'after before between among and or but so has have had is are was were be been get gets got last past next '
+    'first only just all any some each every both these those this that our their its my your his her we they '
+    'you there here total added lost gained sold made took needs need spent ran saw up down out off'.split())
+
+
+def _identifier(text, t):
+    """Whether a number in an exempt snippet is part of an identifier rather than a quantity:
+    a reference glued to a word, "#" or ":" (repo#123, DATA-2099, N+1, #42, report.ts:40-52), a
+    run mixing letters and digits (a commit hash, 3PL; not a unit such as 50ml), a hyphenated
+    name (model-5-5), a dotted version or address (v0.4.2), or an unseparated integer of four
+    or more digits that isn't a year (dashboard 1809, a message timestamp); a value assigned in
+    code (flag = 1); or one of a run of bare numbers (axis labels "1 2 3 4")."""
+    before = text[max(0, t.start - 2):t.start]
+    if before.endswith(('#', '=')) or re.fullmatch(r'[A-Za-z][-+:]', before) or re.search(r'\w ?=\s*$', text[:t.start]):
+        return True
+    if re.match(rf'\s*{BOUNDARY}?\s*\d+\b', text[t.end:]) or re.search(rf'\d\s*{BOUNDARY}?\s*$', text[:t.start]):
+        return True
+    run = re.search(r'[\w.:/-]*$', text[:t.start]).group(0) + re.match(r'[\w.]*', text[t.start:]).group(0)
+    glued = re.match(r'\d+([A-Za-z]\w*)', text[t.start:])
+    if re.fullmatch(r'(?=.*\d)(?=.*[A-Za-z])\w{6,}', run.strip('.')) or run.strip('.').count('.') >= 2 or (
+            glued and not glued.group(1).islower()) or (
+            '-' in run and re.search(r'[A-Za-z]', run) and run.endswith(text[t.start:t.end]) and run[:-len(t.text)].endswith('-')):
+        return True
+    whole = re.match(r'\d+', t.text)
+    return bool(whole) and len(whole.group(0)) >= 4 and not re.fullmatch(r'(19|20)\d\d', whole.group(0))
+
+
+def _exempt_quantity(text, s, e, inside):
+    """What makes the exempt snippet text[s:e] state a quantity, or None. Exemptions are for
+    names, addresses, phone numbers and identifiers, so these are allowed: a phone number; an
+    identifier (see _identifier); a number right after a capitalized word inside a sentence
+    ("an Atlas 5.2 run"), or ending the snippet after one ("Suite 200"); a number right after
+    a label word ("step 2", "dashboard 18"); and a number followed by a capitalized word
+    ("100 Main St", "2025 Annual Report"), or by a list or table marker and one ("2. Next",
+    "01 · Scope", "| 3 | Route"). Everything else is refused: a date or time, a percentage,
+    a currency amount, a scaled, signed, bounded or decimal number, a bare year, and a count
+    ("w 2 accounts", or "Sales 500 units" at the start of a sentence)."""
+    snip = text[s:e]
+    if m := _EXEMPT_DATE.search(snip):
+        return f'a date or time ("{m.group(0).strip()}")'
+    phones = [(s + a, s + b) for a, b in (m.span() for m in _PHONE.finditer(snip))]
+    for t in inside:
+        if any(a <= t.start and t.end <= b for a, b in phones):
+            continue
+        lead = _lead(text, t.start)[0]
+        if t.pct:
+            return f'a percentage ("{t.text}")'
+        if any(_is_currency(ch) for ch in text[max(s, lead - 1):t.start]) or re.search(
+                r'(?<![A-Za-z])(?:[A-Z]{3}|Rs|US)\s?$', text[:t.start][-5:] if t.start >= 5 else text[:t.start]) \
+                or _MONEY_WORD.match(text, t.end):
+            return f'a currency amount ("{text[max(s, lead):t.end].strip()}")'
+        if _identifier(text, t):
+            continue
+        if _SCALED.search(t.text):
+            return f'a scaled quantity ("{t.text}")'
+        if t.sign or t.op != 'eq':
+            return f'a signed or bounded number ("{text[max(s, lead):t.end].strip()}")'
+        word = re.search(r'([A-Za-z][\w&\'-]*)[ ,]*$', text[s:t.start])
+        opens = word is not None and re.search(rf'(^|[.!?:;{BOUNDARY}(])\s*$', text[:s + word.start(1)])
+        if word and word.group(1)[0].isupper() and (not opens or t.end >= e):
+            continue
+        if '.' in t.text:
+            return f'a decimal ("{t.text}")'
+        after = re.match(r'\s*[.)|\u00b7]?\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Za-z])', text[t.end:t.end + 12])
+        if after is not None and after.group(1).isupper():
+            continue
+        if re.fullmatch(r'(19|20)\d\d', t.text):
+            return f'a year ("{t.text}")'
+        if word and word.group(1).lower() not in _FUNCTION_WORDS and (word.group(1).islower() or not opens):
+            continue
+        return f'a count ("{" ".join(text[t.start:].split()[:2]).rstrip(".,;:")}")'
+    return None
+
+
+_STRENGTH = re.compile(
+    r"(?<![\w'-])(no(?!\.\s*\d)(?!\s+(?:more|less|fewer|longer|later|earlier|sooner)\b)|none|never|nothing|nobody|"
+    r"no one|not any|all|always|every|everyone|everything|because|due to|drove|drives|driven by|driving|"
+    r"led to|leads to|leading to|caused|causes|causing|as a result|resulted in|results in|thanks to|"
+    r"attributable to)(?![\w'-])", re.I)
+_ABSENCE = {'no', 'none', 'never', 'nothing', 'nobody', 'no one', 'not any'}
+_UNIVERSAL = {'all', 'always', 'every', 'everyone', 'everything'}
+
+
+def _strength(text, covered, f: Findings, path):
+    """Absence, universal and causal wording that no claim's anchor covers, one line per
+    sentence. It judges nothing: the author binds each to a claim whose source shows that
+    strength, or rewrites it to what the evidence shows."""
+    cuts = [0] + [m.end() for m in _SENTENCE_END.finditer(text)] + [len(text)]
+    flagged = 0
+    for a, b in zip(cuts, cuts[1:]):
+        words = [m.group(0) for m in _STRENGTH.finditer(text, a, b)
+                 if not any(x <= m.start() and m.end() <= y for x, y in covered)]
+        if not words or len(re.findall(r'[A-Za-z]+', text[a:b])) < 3:
+            continue  # a cell or answer that is only "no" or "none" states nothing on its own
+        flagged += 1
+        kinds = sorted({'absence' if w.lower() in _ABSENCE else 'universal' if w.lower() in _UNIVERSAL else 'causal'
+                        for w in words})
+        sentence = text[a:b].strip(f' {BOUNDARY}')
+        f.warn('strength', f'{"/".join(kinds)} ({", ".join(dict.fromkeys(w.lower() for w in words))}) with no claim: '
+                           f'"{sentence[:200]}{"..." if len(sentence) > 200 else ""}"')
+    if flagged:
+        f.note('strength', f'{path}: {flagged} sentence(s) above: bind each to a claim whose source shows that '
+                           'strength, or rewrite it to what the evidence shows (the scope searched and the period; '
+                           '"coincides with" for timing)')
+
+
 def check_deliverables(paths, claims, exempt, f: Findings):
     texts = {p: normalize(read_text(p)) for p in paths}
     tokenized = {p: tokenize(t) for p, t in texts.items()}
@@ -1177,6 +1312,7 @@ def check_deliverables(paths, claims, exempt, f: Findings):
             f.fail('anchor', f'{claim.id}: "{na}" shows {tokens[p][i].text}, which already states {held}; '
                              'one number is one fact, so give each claim its own occurrence')
     exempt_spans = {p: [] for p in paths}
+    anchor_spans = {p: [] for p in paths}
     labels_used = 0
 
     for claim in claims.values():
@@ -1194,6 +1330,7 @@ def check_deliverables(paths, claims, exempt, f: Findings):
             for p in paths:
                 for (s, e) in _occurrences(texts[p], na):
                     found = True
+                    anchor_spans[p].append((s, e))
                     inside = [(i, t) for i, t in enumerate(tokens[p]) if t.start >= s and t.end <= e]
                     for i, _ in inside:
                         in_anchor[p].setdefault(i, []).append(claim.id)
@@ -1255,6 +1392,9 @@ def check_deliverables(paths, claims, exempt, f: Findings):
         if len(inside0) < 2 and not re.search(r'[A-Za-z]', _residue(texts[p0][s0:e0], inside0, s0)):
             f.fail('exempt', f'"{ns}" is a bare number; exempt the address, phone or name it belongs to')
             continue
+        if quantity := _exempt_quantity(texts[p0], s0, e0, inside0):
+            f.fail('exempt', f'"{ns}" holds {quantity}; exempt only names, addresses, phone numbers and '
+                             'identifiers, and give every quantity, date and amount its own claim')
         for p, span in hits:
             exempt_spans[p].append(span)
             for i, held in owner[p].items():
@@ -1284,6 +1424,7 @@ def check_deliverables(paths, claims, exempt, f: Findings):
                      and displays(t, c.value, c.unit, c.magnitude, c.bound)][:3]
             hint = f' (value matches {", ".join(cands)}: anchor it)' if cands else ''
             f.fail('unbound', f'"{t.text}" is not bound to any claim{hint}: ...{around}...')
+        _strength(texts[p], anchor_spans[p] + exempt_spans[p], f, p)
         skipped = tokenized[p][1]
         if skipped:
             shown = ', '.join(sorted(set(skipped))[:12])

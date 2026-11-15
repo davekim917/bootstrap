@@ -62,7 +62,7 @@ Studio services (completed appointments)
 • by yr: 2017 3K, 2018 9K, 2019 22K, 2020 30K, 2021 88K, 2022 190K, 2023 269K, 2024 332K, 2025 403K, 2026 YTD 318K
 
 couple notes for the all-channel estimate
-• counted by customer account, so someone w 2 accounts counts twice
+• counted by customer account, so someone w more than one account counts once per account
 • another 91K people bought product at a studio but never had a service. if you want them in, the unique total is 1.57M
 """
 
@@ -80,7 +80,7 @@ Studio services (completed appointments)
 • by yr: 2016 <1K, 2017 3K, 2018 9K, 2019 22K, 2020 30K, 2021 88K, 2022 190K, 2023 269K, 2024 332K, 2025 403K, 2026 YTD 318K
 
 couple notes for the all-channel estimate
-• someone w 2 accounts counts twice
+• someone w more than one account counts once per account
 • another 91K accounts had a studio order but never a service. 23K of those already ordered Online, so adding them brings the unique total to 1.57M (+69K)
 """
 
@@ -195,7 +195,6 @@ def count_ledger(version, svc_2016='anchor', extra_relations=()):
         },
         'claims': claims,
         'relations': ['online_ever + studio_ever - both_ever == unique_ever', *extra_relations],
-        'exempt': ['w 2 accounts'],
     }
 
 
@@ -1556,6 +1555,91 @@ class Labels(LedgerCase):
         code, out = self.labels([self.cell('c21', 179120, '2021', self.CUST, '2021 179K')], 'Nothing here.')
         self.assertEqual(code, 0)
         self.assertIn('<<2021 179K>>  (not found in the deliverable)', out)
+
+
+class AuthorCatchesFirst(LedgerCase):
+    """Gaps a verifier kept finding in round 1 that the author's own `check` now shows."""
+
+    def query_source(self, as_of):
+        return ({'q': {'type': 'query', 'sql': 'q.sql', 'result': 't.csv', 'as_of': as_of, 'grain': 'store'}},
+                {'q.sql': 'select 1', 't.csv': 'k,v\nstores,12\nopen,9\n'})
+
+    def stores(self, **extra):
+        return {'id': 'stores', 'value': 12, 'source': 'q', 'locate': {'where': {'k': 'stores'}, 'column': 'v'}, **extra}
+
+    def test_an_exemption_that_states_a_quantity_is_refused(self):
+        refused = (('Someone w 2 accounts counts twice.', 'w 2 accounts', 'a count ("2 accounts")'),
+                   ('Sales grew 12% at Bar X.', 'grew 12% at Bar X', 'a percentage ("12%")'),
+                   ('Each pour costs $14 at Bar X.', 'costs $14 at Bar X', 'a currency amount ("$14")'),
+                   ('Bar X reached 1.2M visits.', 'reached 1.2M visits', 'a scaled quantity ("1.2M")'),
+                   ('Bar X has over 50 taps.', 'over 50 taps', 'a signed or bounded number'),
+                   ('Bar X rates 4.6 stars.', 'rates 4.6 stars', 'a decimal ("4.6")'),
+                   ('Bar X opened in 2019 downtown.', 'opened in 2019', 'a year ("2019")'),
+                   ('Bar X opened Sep 2019 downtown.', 'opened Sep 2019', 'a date or time ("Sep 2019")'),
+                   ('Bar X closes at 5pm daily.', 'closes at 5pm', 'a date or time ("5pm")'),
+                   ('Sales 500 units.', 'Sales 500 units', 'a count ("500 units")'),
+                   ('Waits run 12-15 days.', '12-15 days', 'a count ("12-15 days")'))
+        for text, snippet, reason in refused:
+            code, out = self.check(self.led([], exempt=[snippet]), text)
+            self.assertEqual(code, 1, snippet)
+            self.assertIn(f'FAIL exempt    "{snippet}" holds {reason}', out)
+        allowed = (('Visit 100 Main St today.', '100 Main St'),
+                   ('Visit 2100 Main St today.', '2100 Main St'),
+                   ('Call (555) 555-0100 today.', '(555) 555-0100'),
+                   ('Call +1 555 555 0100 today.', '+1 555 555 0100'),
+                   ('Call 555.555.0100 today.', '555.555.0100'),
+                   ('Mail Riverton, CA 94110-1234 today.', 'Riverton, CA 94110-1234'),
+                   ('Meet at Suite 200 today.', 'Suite 200'),
+                   ('Pier 7 opened late.', 'Pier 7'),
+                   ('Read the 2025 Annual Report.', '2025 Annual Report'),
+                   ('Merged in repo#123 today.', 'repo#123'),
+                   ('Pinned v0.4.2 today.', 'v0.4.2'),
+                   ('Built from commit 80b7a195 today.', 'commit 80b7a195'),
+                   ('See report.ts:40-52 for it.', 'report.ts:40-52'),
+                   ('Then step 2 already ran.', 'step 2'),
+                   ('We ran an Atlas 5.2 build.', 'Atlas 5.2'),
+                   ('Set flag = 1 in staging.', 'flag = 1'),
+                   ('Slides: 01 · Scope.', '01 · Scope'))
+        for text, snippet in allowed:
+            code, out = self.check(self.led([], exempt=[snippet]), text)
+            self.assertEqual(code, 0, f'{snippet}: {out}')
+
+    def test_a_shown_claim_needs_the_query_cutoff_with_its_timezone(self):
+        text = 'Riverton has 12 stores.'
+        for as_of in ('2026-09-23', '2026-09-23T17:00:00'):
+            sources, files = self.query_source(as_of)
+            code, out = self.check(self.led([self.stores(anchors=['12 stores'])], sources=sources, files=files), text)
+            self.assertEqual(code, 1, as_of)
+            self.assertIn(f'FAIL cutoff    q: as_of "{as_of}" has no time and timezone, and stores rests on it', out)
+        sources, files = self.query_source('2026-09-23')
+        derived = [self.stores(omit='in the CSV only'), {'id': 'twice', 'value': 24, 'expr': 'stores * 2',
+                                                          'anchors': ['24 stores']}]
+        code, out = self.check(self.led(derived, sources=sources, files=files), 'Riverton has 24 stores.')
+        self.assertIn('and twice rests on it', out)
+        code, out = self.check(self.led([self.stores(omit='in the CSV only')], sources=sources, files=files), 'None shown.')
+        self.assertEqual(code, 0, out)
+        self.assertIn('has no time and timezone; a date alone hides a partial day', out)
+        sources, files = self.query_source('2026-09-23T17:00:00-07:00')
+        code, out = self.check(self.led([self.stores(anchors=['12 stores'])], sources=sources, files=files), text)
+        self.assertEqual(code, 0, out)
+
+    def test_strong_wording_without_a_claim_is_listed(self):
+        flagged = (('No store in Riverton stocks Coconut Cream.', 'absence (no)'),
+                   ('Bar X never runs out of rum.', 'absence (never)'),
+                   ('Every bar in Riverton pours it.', 'universal (every)'),
+                   ('Sales rose because of the patio.', 'causal (because)'),
+                   ('The patio drove the rise.', 'causal (drove)'))
+        for text, words in flagged:
+            code, out = self.check(self.led([]), text)
+            self.assertEqual(code, 0, text)
+            self.assertIn(f'WARN strength  {words} with no claim: "{text}"', out)
+        for text in ('The rise coincides with the patio opening.', 'Bar X pours no more than one flight per guest.',
+                     'Bar X is No. 1 on the list.', 'Bar X has an all-day menu.', 'None.'):
+            self.assertNotIn('strength', self.check(self.led([]), text)[1], text)
+        claim = {'id': 'none_stocked', 'value': 'no Riverton store lists it', 'source': 'd',
+                 'anchors': ['No store in Riverton stocks Coconut Cream']}
+        code, out = self.check(self.led([claim]), 'No store in Riverton stocks Coconut Cream.')
+        self.assertNotIn('strength', out)
 
 
 if __name__ == '__main__':

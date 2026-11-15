@@ -68,7 +68,10 @@ If you're unsure which loop a data claim needs, use the full loop.
    from). What you send is exactly that file, including any caveats or open questions
    you plan to send with it (step 7).
 3. **Keep a ledger as you work:** `claims.json` next to the deliverable, in the format
-   in [references/ledger.md](references/ledger.md).
+   in [references/ledger.md](references/ledger.md). Every claim in
+   [What needs a ledger entry](references/verifier-brief.md#what-needs-a-ledger-entry)
+   gets one: the verifier lists exactly those and reports any without an entry as
+   Unsupported.
    - Numbers are read from result files, never typed. `scaffold` turns a result CSV
      into claims that point at their cells. Name each result column for what it counts
      (`AS new_customers`, not `value` or `col1`): the verifier reads every number against
@@ -86,14 +89,23 @@ If you're unsure which loop a data claim needs, use the full loop.
    - Every number in the deliverable is accounted for, including years, dates and
      spelled-out counts. A range is two claims. The check refuses wording it can't read
      exactly; [references/ledger.md](references/ledger.md) lists what it reads.
-4. **Run the mechanical checks until they pass.** The script is
+4. **Run the mechanical checks until they pass, as the verifier will.** The script is
    `scripts/check_claims.py` in this skill's directory:
    ```
    python3 <skill-dir>/scripts/check_claims.py check claims.json report.md
+   python3 <skill-dir>/scripts/check_claims.py labels claims.json report.md
    python3 <skill-dir>/scripts/check_claims.py reproduce delivered.csv rerun.csv --key Year
    ```
    `rerun.csv` comes from running the saved SQL file again, not from memory. If live
    data moved, rerun with `--rel-tol` and report the drift it lists.
+   - `labels`: fix every number whose words or heading name a different row, series or
+     unit from its source.
+   - Clear every `WARN strength` line, each an absence, universal or causal sentence no
+     claim anchors. Bind it to a claim whose source shows that strength (the source and
+     period searched, the whole population, a design that isolates the cause), or
+     rewrite it to what the evidence shows: "none found in <source> between <dates>",
+     "coincides with". A rewritten absence still needs its claim. Treat strong words the
+     check doesn't list ("only", "the main driver") the same way.
 5. **Get an independent verifier.** Use the first of these you have:
    1. a fresh session of a different model family from the author's, that can reach
       the same data. From a Claude agent, that's `codex exec -c
@@ -199,15 +211,16 @@ The check can't see these.
 - Name the unit you counted: accounts, orders or appointments. Say "people" only if
   you deduplicated people.
 - Give the exact cutoff (date, time, timezone) and flag partial periods.
-- Don't make absence claims ("has no rating") or use descriptions you can't source
-  ("owner-run", "a big part of the business").
+- Don't use descriptions you can't source ("owner-run", "a big part of the business").
 
 ## Limits
 
 Say these plainly when they apply. The script catches numbers with no source, values
 retyped or rounded away from their file, displays that overstate their source, sums
-that don't hold, dropped rows, queries that don't reproduce, undated or old evidence
-(as a warning), and files edited after verification. The receipt covers the file, not
+that don't hold, dropped rows, queries that don't reproduce, quantities hidden in
+exemptions, query cutoffs without a timezone, undated or old evidence (as a warning),
+and files edited after verification. It lists strong wording without a claim but can't
+judge it. The receipt covers the file, not
 lines added around it when you send. It can't catch wrong evidence (a
 miscounted menu), a true number in a false sentence, wrong unit words, or stale facts
 about people and places. Nor can it tell whether you measured the right thing: it
