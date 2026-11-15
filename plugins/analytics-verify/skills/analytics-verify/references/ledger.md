@@ -87,7 +87,7 @@ flips the headline's sign (+ to - or to zero) but is only `omit`ted: the answer 
 
 | type | required | notes |
 |---|---|---|
-| `query` | `sql`, `result`, `as_of`, `grain` | `as_of` is the exact cutoff, an ISO datetime with timezone (a value that doesn't parse fails; a date alone warns). `grain` is what one row counts. |
+| `query` | `sql`, `result`, `as_of`, `grain` | `as_of` is the exact cutoff, an ISO datetime with timezone. A value that doesn't parse fails; a date alone, or a time without an offset, fails once a shown claim rests on the source and warns otherwise. `grain` is what one row counts. |
 | `file` | `path` | Give an `as_of` too. |
 | `web` | `url`, `retrieved`, `entity` | `entity` is the exact business, place or body. `effective` is the date of the evidence itself; without it, the check warns that the source is undated. |
 | `doc` | `ref` | Who said it, where and when. |
@@ -95,6 +95,8 @@ flips the headline's sign (+ to - or to zero) but is only `omit`ted: the answer 
 A source date (`as_of`, `retrieved`, `effective`) more than a day after `--today` fails.
 
 ## Claims
+
+What needs a claim: [What needs a ledger entry](verifier-brief.md#what-needs-a-ledger-entry).
 
 - **`id`**: letters, digits and `_` only, so relations can use it.
 - **`value`**: a number, a numeric string (for exact decimals: `"90071992547409.93"`), or
@@ -164,8 +166,17 @@ A source date (`as_of`, `retrieved`, `effective`) more than a day after `--today
     number of claims can share, or part of an `exempt` snippet. An anchor holds exactly
     one number that shows its claim's value, and no two claims can show through the same
     number: "Revenue was 5; headcount was 5" is two claims, each anchored to its own 5.
-  - An `exempt` snippet must be more than one bare number: an address, a phone number,
-    a product name, or an illustration that isn't a finding ("someone with 2 accounts").
+  - An `exempt` snippet is a name, address, phone number or identifier, never a
+    quantity. It fails when it is one bare number or holds a date or time, a
+    percentage, a currency amount, a scaled, signed, bounded or decimal number, a bare
+    year, or a count ("someone with 2 accounts": rephrase, or give the number a claim).
+    It allows a phone number; an identifier (`repo#123`, `DATA-2099`, `v0.4.2`, a commit
+    hash, `file.ts:40-52`, a whole number of four or more digits with no separator that
+    isn't a year, a value assigned in code, a run of bare numbers such as axis labels); a
+    number after a capitalized word mid-sentence or at the snippet's end ("an Atlas 5.2
+    run", "Suite 200"); a number after a document-structure word such as step, row, slide
+    or dashboard ("step 2"); and a number before a capitalized word or a list marker and
+    one ("100 Main St", "01 · Scope").
 - Each anchor is in the deliverable, and every appearance shows the claim's value. For
   a date claim, each date shown is checked field by field: "9/23" must be September 23,
   and "5pm" must be the claim's hour.
@@ -179,6 +190,11 @@ A source date (`as_of`, `retrieved`, `effective`) more than a day after `--today
   - "About", "around" and "~" don't loosen the match. "Nearly" and "almost" mean below
     the number and within its rounding: "nearly 50" fails for 50 and for 49.4.
 - Each claim is shown or omitted on purpose.
+- Every absence, universal or causal sentence ("no", "never", "all", "every", "because",
+  "drove", "led to" and the like) that no claim's anchor covers is listed as `WARN
+  strength`. It judges nothing: bind it to a claim, rewrite it to what the evidence
+  shows, or leave it only when it states no fact (an instruction, a recommendation, a
+  name).
 - Every relation holds (`==`, `<=`, `>=`, `<`, `>`, with an optional `"tolerance"`).
 - Every `expr` claim derives from other claims, with no circles, down to sourced claims.
 - Arithmetic is exact decimal: 1,000,000,001 is not 1,000,000,000.

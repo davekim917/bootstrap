@@ -16,6 +16,18 @@ have your own answer for each claim. After that, use them only to explain a
 disagreement. If the author sent a brief of their own, treat it as notes on top of this
 one, never as a replacement.
 
+## What needs a ledger entry
+
+The author ledgers exactly these, and you list exactly these:
+
+- every number, including years, dates and spelled-out counts;
+- names, rankings and dates; what a business, product or system has or doesn't have;
+  who owns or runs what; what's on a menu or a shelf; the current status of people,
+  places and systems; what code or a system does;
+- every absence ("no X", "never"), universal ("all", "every", "always") and causal
+  ("because", "drove", "led to") statement. Its source has to show that strength: the
+  source and period searched, the whole population, a design that isolates the cause.
+
 ## Steps
 
 Work in this order. A number can only be right for a question you've pinned down.
@@ -57,16 +69,18 @@ Work in this order. A number can only be right for a question you've pinned down
 5. **Check that it answers all of the question.** Every period, segment and channel the
    request covers is answered, or left out with a reason the requester would accept.
    Material the request didn't ask for is a finding when it buries the answer.
-6. **List the claims from the deliverable alone.** Include every number, and also names,
-   dates, rankings, "has / doesn't have", who owns or runs what, what's on a menu or a
-   shelf, and the current status of people and places. Only then open the ledger's
+6. **List the claims from the deliverable alone:** every one that
+   [needs a ledger entry](#what-needs-a-ledger-entry). Only then open the ledger's
    claims (you've already read its `ask`). Any claim you listed that has no ledger entry
    is Unsupported.
 7. **Run the mechanical checks:** `check`, plus `reproduce` when there's a table. The
    script is `scripts/check_claims.py` in the `analytics-verify` skill. A FAIL is a
    finding. A PASS only shows the claims are bound to sources, not that they're true.
    Read its NOTE lines: claims resting on a `doc` source, identifiers it skipped and
-   labels it accepted are yours to check by hand.
+   labels it accepted are yours to check by hand. Read each `WARN strength` line
+   yourself, whatever the author says of it: one that states a fact (an absence, a
+   universal or a cause) with no claim is Unsupported; one that states no fact (an
+   instruction, a recommendation, a name, a question) is not a finding.
 8. **Re-derive the headline numbers yourself.** Write your own query from the question
    you pinned down and the table documentation, not from the author's SQL. Match the
    population, grain and cutoff, then compare. Read the author's SQL only to explain a
@@ -84,7 +98,8 @@ Work in this order. A number can only be right for a question you've pinned down
    - cutoffs and partial periods
    - dropped rows or segments
    - claims the source only half-supports ("50+ mojitos & drinks" shown as "50+ mojitos")
-   - absence claims and descriptions nobody sourced
+   - strong wording and descriptions nobody sourced, including what `check` doesn't
+     list ("only", "the main driver"), and claims whose source is weaker than the sentence
 11. **For SQL, also check:** join fan-out, distinct entity counts, denominators that shift
    between groups, partial periods, the cutoff's timezone, nulls versus zeros, and gaps
    in source coverage by period.
@@ -142,8 +157,8 @@ You get the output of `check_claims.py changed`.
 2. Confirm each earlier finding's fix landed.
 3. Check every `+` line, every changed claim and every claim derived from one, using
    steps 4-5 and 8-12. A removed or edited relation needs a reason: removing a failing
-   check is not a fix. Every added exemption must be a name, address or phone, not a
-   quantity.
+   check is not a fix. Every added exemption must be a name, address, phone or
+   identifier, not a quantity (`check` refuses the shapes it can read).
 4. Run `check` on the whole final file and read it once end to end. A fix can make a
    sentence it didn't touch false.
 5. Write a new report with the new hashes.
