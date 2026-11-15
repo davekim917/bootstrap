@@ -31,7 +31,7 @@ import {
  * absence is mutation-checked below: give the plugin a directive, or a blocking
  * PreToolUse hook, and the corresponding assertion must collapse.
  *
- * `wwbd` is the counterexample that keeps the machinery honest — it still ships
+ * `test-audit` is the counterexample that keeps the machinery honest — it still ships
  * a standing directive, and its hook is RUN here and asserted to print it.
  */
 
@@ -343,7 +343,7 @@ test('enabled: the PreToolUse composition is the workflow plugin\'s safety guard
 });
 
 /**
- * wwbd still ships a standing directive, and it reaches Codex through ITS OWN
+ * test-audit still ships a standing directive, and it reaches Codex through ITS OWN
  * plugin's SessionStart hook with `${PLUGIN_ROOT}` bound to that plugin's root —
  * the Codex spelling of what Claude does with `${CLAUDE_PLUGIN_ROOT}`. Resolve
  * it from the Codex marketplace and manifest the way the host does, then RUN it.
@@ -426,8 +426,8 @@ net.Socket.prototype.connect = function (...args) { note('socket'); return conne
   }
 });
 
-test('wwbd: the Codex SessionStart hook prints the standing directive when run', () => {
-  const commands = codexSessionStartCommands('wwbd');
+test('test-audit: the Codex SessionStart hook prints the standing directive when run', () => {
+  const commands = codexSessionStartCommands('test-audit');
   assert.ok(commands.length > 0, 'the Codex manifest must register a SessionStart command hook');
   const output = commands
     .map((command) => {
@@ -437,9 +437,9 @@ test('wwbd: the Codex SessionStart hook prints the standing directive when run',
     })
     .join('\n')
     .trim();
-  const canonical = fs.readFileSync(path.join(REPO, 'plugins/wwbd/always-on.md'), 'utf8').trim();
-  assert.ok(canonical.length > 0, 'plugins/wwbd/always-on.md must not be empty');
-  assert.equal(output, canonical, 'the Codex session must receive exactly the directive wwbd ships');
+  const canonical = fs.readFileSync(path.join(REPO, 'plugins/test-audit/always-on.md'), 'utf8').trim();
+  assert.ok(canonical.length > 0, 'plugins/test-audit/always-on.md must not be empty');
+  assert.equal(output, canonical, 'the Codex session must receive exactly the directive test-audit ships');
 });
 
 test('no .nanoclaw-always-on.md anywhere: nothing host-specific lives in this repo', () => {

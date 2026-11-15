@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "bootstrap-workflow-agents",
-      "version": "2.41.2",
+      "version": "2.42.0",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
       "source": {
         "source": "local",
@@ -34,7 +34,7 @@
     },
     {
       "name": "wwbd",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "description": "What Would Boris Do \u2014 engineering-judgment advisory skill channeling Boris Cherny's published guidance.",
       "source": {
         "source": "local",
@@ -76,7 +76,7 @@
     },
     {
       "name": "wwed",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "description": "What Would Elon Do \u2014 Musk's five-step algorithm as a subtraction and cycle-time advisory skill.",
       "source": {
         "source": "local",

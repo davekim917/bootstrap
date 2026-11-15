@@ -6,21 +6,18 @@ A risk-scaled delivery workflow for Claude Code, Codex, and OpenCode:
 /team-plan → /team-build → /team-review → /team-ship
 ```
 
-The workflow builds what the real requirements and failure boundaries need and no more, changing
-code that already does the job rather than adding beside it. A four-file mechanical change should
-stay small; a one-file credential or destructive migration still receives security, rollback, and
-verification depth. Complexity must be justified by scale, repetition, concurrency, security, or
-failure impact—not by a fixed ceremony.
+Ceremony scales with risk, not file count: a one-file credential or destructive migration still
+receives security, rollback, and verification depth.
 
 ## Plugins
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.41.2 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.41.2 | The same, runtime-neutral |
+| Claude Code | `bootstrap-workflow` | 5.42.0 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.42.0 | The same, runtime-neutral |
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.8.2 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
-| Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
-| Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |
+| Claude Code / Codex | `wwbd` | 1.5.0 | Boris Cherny-inspired engineering-judgment advisory skill, invoked by name or description |
+| Claude Code / Codex | `wwed` | 1.1.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill, invoked by name or description; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.4.0 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex | `test-audit` | 1.1.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |
@@ -348,23 +345,23 @@ it — run the `add` above (or add the stanza by hand) once per host.
 
 Container Claude agents need no NanoClaw change. `discoverPlugins` walks `~/plugins` three levels
 deep for a `.claude-plugin/plugin.json` and hands each hit to the SDK as a `plugins:` entry, which
-is what loads a plugin's declared hooks; `plugins/bootstrap/plugins/wwbd` matches at the third
+is what loads a plugin's declared hooks; `plugins/bootstrap/plugins/test-audit` matches at the third
 level.
 Neither plugin ships a `nanoclaw-plugin.json`, and neither should: that file's
 `preToolUseGuards` is a de-duplication signal telling NanoClaw to stand down one of its OWN
 built-in gates, and `bash-email` is the only value anything consumes. `check-plugin-boundaries`
 fails if one appears in the orchestrate plugin.
 
-WWBD is installed separately from the workflow plugin. After installing it, start a new Codex
-session so its WWBD skill is available. Verify installation with `codex plugin list`.
-Both runtimes get the same SessionStart reminder from the plugin's own hook; Codex additionally
-discovers the advisory skill through its native plugin skill loader.
+WWBD and WWED are installed separately from the workflow plugin and ship no hooks: each is an
+advisory skill a session loads by name or by its description, with no standing directive. After
+installing one, start a new Codex session so its skill is available. Verify installation with
+`codex plugin list`.
 
-WWBD and WWED are the only plugins here that ship a standing directive, and they show how one is
-delivered: **the runtime's own plugin declares a `SessionStart` command hook that cats the
-`always-on.md` in its own plugin root**, and the hook's stdout is injected into the model's
-context. Claude's `hooks/wwbd-hooks.json` resolves `${CLAUDE_PLUGIN_ROOT}`; the Codex manifest
-declares a second file, `hooks/wwbd-codex-hooks.json`, resolving `${PLUGIN_ROOT}` — Codex does not
+`analytics-verify` and `test-audit` are the plugins here that ship a standing directive, and they
+show how one is delivered: **the runtime's own plugin declares a `SessionStart` command hook that
+cats the `always-on.md` in its own plugin root**, and the hook's stdout is injected into the model's
+context. Claude's `hooks/test-audit-hooks.json` resolves `${CLAUDE_PLUGIN_ROOT}`; the Codex manifest
+declares a second file, `hooks/test-audit-codex-hooks.json`, resolving `${PLUGIN_ROOT}` — Codex does not
 expand the Claude token. Nothing outside a plugin delivers a directive, so disabling the plugin
 removes it on every runtime at once. Adding a hook to a plugin that had none means Codex asks once
 to trust that plugin's hooks on the next session start.
@@ -499,9 +496,9 @@ Claude, Codex/NanoClaw, or OpenCode sessions after cleanup so cached definitions
   Snowflake-connector, and protected-file safety checks.
 - `bootstrap-workflow-agents` declares exactly one hook event, `PreToolUse`, for those safety
   checks. `check-plugin-boundaries` enforces that closed list — the `SessionStart` entry that used
-  to install a worker role into the user's Codex home went with the role. `wwbd` declares
-  `SessionStart` only, for its standing directive; `bootstrap-orchestrate` uses only its bounded
-  spawn settling, context validation, and Codex model-reminder hooks.
+  to install a worker role into the user's Codex home went with the role. `analytics-verify` and
+  `test-audit` declare `SessionStart` only, for their standing directives; `bootstrap-orchestrate`
+  uses only its bounded spawn settling, context validation, and Codex model-reminder hooks.
 - Planning and review artifacts are workflow contracts, not filesystem safety boundaries.
 
 ## Repository structure

@@ -9,7 +9,7 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
-      "version": "5.41.2"
+      "version": "5.42.0"
     },
     {
       "name": "bootstrap-orchestrate",
@@ -21,7 +21,7 @@
       "name": "wwbd",
       "source": "./plugins/wwbd",
       "description": "What Would Boris Do \u2014 engineering-judgment advisory skill channeling Boris Cherny's published guidance, with an always-on nudge to consult it before architecture/design/build decisions.",
-      "version": "1.4.0"
+      "version": "1.5.0"
     },
     {
       "name": "concise",
@@ -39,7 +39,7 @@
       "name": "wwed",
       "source": "./plugins/wwed",
       "description": "What Would Elon Do \u2014 execution and simplification judgment run through Musk's five-step algorithm (question the requirement, delete, simplify, accelerate, automate), fenced off from human gates and irreversible surfaces. Complements wwbd; ships an always-on nudge like it.",
-      "version": "1.0.1"
+      "version": "1.1.0"
     },
     {
       "name": "analytics-verify",
