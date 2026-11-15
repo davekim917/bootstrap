@@ -3,11 +3,14 @@ name: analytics-verify
 description: >
   Verification loop for analytics and research deliverables: a claim ledger, a
   mechanical check script, an independent verifier on a fresh context, a re-check
-  of every fix, and a receipt tied to the exact file sent. Load BEFORE sending
-  numbers or factual claims from data or research to anyone (a report, deck, PDF,
-  CSV, dashboard, a draft for someone else, or a chat answer someone will act on
-  or forward). Also load it when asked to validate, verify, cross-check or
-  cross-examine an analysis, and when you are the verifier.
+  of every fix, and a receipt tied to the exact file sent. Load BEFORE sending a
+  figure or factual finding you derived from data or research (a query result, a
+  metric, a count from a dataset, a sourced external fact) that someone will use to
+  decide or will pass on, in a report, deck, PDF, CSV, dashboard, a draft for
+  someone else, or a chat answer. Not for reporting the state of your own work
+  (changes, command output, PR/CI/deploy status, file or test counts) or relaying
+  someone else's number unchanged. Also load it when asked to validate, verify,
+  cross-check or cross-examine an analysis, and when you are the verifier.
 ---
 
 # Analytics verify
@@ -28,13 +31,19 @@ number is trusted.
 
 ## Which loop
 
-- **Full loop (default):** anything someone may forward, publish or act on, including
-  a chat answer.
+The loop applies to a figure or factual finding you derived from data or research (a
+query result, a metric, a count from a dataset, a sourced external fact) that someone
+will use to decide or will pass on. It does not apply to reporting the state of your own
+work (what you changed, what a command printed, PR, CI or deploy status, counts of files
+or tests), or to relaying a number someone else gave you unchanged.
+
+- **Full loop (default):** any such claim someone may forward, publish or act on,
+  including a chat answer.
 - **Exploratory:** only when the requester is exploring and nothing will be forwarded
   or decided yet. Run the ledger check if you show numbers, and end with: "Exploratory,
   not verified. Ask for a check before using these numbers."
 
-If you're unsure, use the full loop.
+If you're unsure which loop a data claim needs, use the full loop.
 
 ## Author loop
 
