@@ -1197,9 +1197,8 @@ def _identifier(text, t):
     a reference glued to a word, "#" or ":" (DATA-2099, N+1, #42, a source path, line and
     column), a run mixing letters and digits (a commit hash, 3PL; not a unit such as 50ml or a
     scale such as 2M), a hyphenated name (model-5-5), a dotted version or address (v0.4.2), an
-    unseparated integer of four or more digits that isn't a year (dashboard 1809, a message
-    timestamp), a value assigned in code (flag = 1), or one of a run of bare numbers (axis
-    labels "1 2 3 4")."""
+    unseparated whole number of four or more digits that isn't a year (dashboard 1809), a
+    value assigned in code (flag = 1), or one of a run of bare numbers (axis labels "1 2 3 4")."""
     before = text[max(0, t.start - 2):t.start]
     if before.endswith(('#', '=')) or re.fullmatch(r'[A-Za-z][-+:]', before) or re.search(r'\w ?=\s*$', text[:t.start]):
         return True
@@ -1213,8 +1212,7 @@ def _identifier(text, t):
             glued and not glued.group(1).islower()) or (
             re.search(r'[A-Za-z]', run) and run.endswith(text[t.start:t.end]) and run[:-len(t.text)].endswith(('-', ':'))):
         return True
-    whole = re.match(r'\d+', t.text)
-    return bool(whole) and len(whole.group(0)) >= 4 and not re.fullmatch(r'(19|20)\d\d', whole.group(0))
+    return bool(re.fullmatch(r'\d{4,}', t.text)) and not re.fullmatch(r'(19|20)\d\d', t.text)
 
 
 def _exempt_quantity(text, s, e, inside):

@@ -1575,6 +1575,7 @@ class AuthorCatchesFirst(LedgerCase):
                    ('Bar X reached 2M visits.', 'reached 2M visits', 'a scaled quantity ("2M")'),
                    ('Bar X has over 50 taps.', 'over 50 taps', 'a signed or bounded number'),
                    ('Bar X rates 4.6 stars.', 'rates 4.6 stars', 'a decimal ("4.6")'),
+                   ('Usage reached 1234.56 units.', 'reached 1234.56 units', 'a decimal ("1234.56")'),
                    ('Bar X opened in 2019 downtown.', 'opened in 2019', 'a year ("2019")'),
                    ('Bar X opened Sep 2019 downtown.', 'opened Sep 2019', 'a date or time ("Sep 2019")'),
                    ('Bar X closes at 5pm daily.', 'closes at 5pm', 'a date or time ("5pm")'),
