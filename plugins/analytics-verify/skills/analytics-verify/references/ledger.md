@@ -192,8 +192,9 @@ What needs a claim: [What needs a ledger entry](verifier-brief.md#what-needs-a-l
 - Each claim is shown or omitted on purpose.
 - Every absence, universal or causal sentence ("no", "never", "all", "every", "because",
   "drove", "led to" and the like) that no claim's anchor covers is listed as `WARN
-  strength`. It judges nothing: bind it to a claim, or rewrite it to what the evidence
-  shows.
+  strength`. It judges nothing: bind it to a claim, rewrite it to what the evidence
+  shows, or leave it only when it states no fact (an instruction, a recommendation, a
+  name).
 - Every relation holds (`==`, `<=`, `>=`, `<`, `>`, with an optional `"tolerance"`).
 - Every `expr` claim derives from other claims, with no circles, down to sourced claims.
 - Arithmetic is exact decimal: 1,000,000,001 is not 1,000,000,000.

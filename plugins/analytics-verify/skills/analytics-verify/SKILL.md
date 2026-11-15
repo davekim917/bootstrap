@@ -100,12 +100,13 @@ If you're unsure which loop a data claim needs, use the full loop.
    data moved, rerun with `--rel-tol` and report the drift it lists.
    - `labels`: fix every number whose words or heading name a different row, series or
      unit from its source.
-   - Clear every `WARN strength` line, each an absence, universal or causal sentence no
-     claim anchors. Bind it to a claim whose source shows that strength (the source and
-     period searched, the whole population, a design that isolates the cause), or
-     rewrite it to what the evidence shows: "none found in <source> between <dates>",
-     "coincides with". A rewritten absence still needs its claim. Treat strong words the
-     check doesn't list ("only", "the main driver") the same way.
+   - Each `WARN strength` line is an absence, universal or causal sentence no claim
+     anchors. Bind it to a claim whose source shows that strength (the source and period
+     searched, the whole population, a design that isolates the cause), or rewrite it to
+     what the evidence shows: "none found in <source> between <dates>", "coincides with".
+     Leave it only when it states no fact (an instruction, a recommendation, a name). A
+     rewritten absence still needs its claim. Treat strong words the check doesn't list
+     ("only", "the main driver") the same way.
 5. **Get an independent verifier.** Use the first of these you have:
    1. a fresh session of a different model family from the author's, that can reach
       the same data. From a Claude agent, that's `codex exec -c

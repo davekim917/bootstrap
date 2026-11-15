@@ -77,8 +77,10 @@ Work in this order. A number can only be right for a question you've pinned down
    script is `scripts/check_claims.py` in the `analytics-verify` skill. A FAIL is a
    finding. A PASS only shows the claims are bound to sources, not that they're true.
    Read its NOTE lines: claims resting on a `doc` source, identifiers it skipped and
-   labels it accepted are yours to check by hand. Each `WARN strength` line is an
-   absence, universal or causal sentence with no claim, so Unsupported.
+   labels it accepted are yours to check by hand. Read each `WARN strength` line
+   yourself, whatever the author says of it: one that states a fact (an absence, a
+   universal or a cause) with no claim is Unsupported; one that states no fact (an
+   instruction, a recommendation, a name, a question) is not a finding.
 8. **Re-derive the headline numbers yourself.** Write your own query from the question
    you pinned down and the table documentation, not from the author's SQL. Match the
    population, grain and cutoff, then compare. Read the author's SQL only to explain a

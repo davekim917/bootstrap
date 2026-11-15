@@ -1635,7 +1635,8 @@ class AuthorCatchesFirst(LedgerCase):
                    ('Bar X never runs out of rum.', 'absence (never)'),
                    ('Every bar in Riverton pours it.', 'universal (every)'),
                    ('Sales rose because of the patio.', 'causal (because)'),
-                   ('The patio drove the rise.', 'causal (drove)'))
+                   ('The patio drove the rise.', 'causal (drove)'),
+                   ('Always confirm the cutoff before sending.', 'universal (always)'))
         for text, words in flagged:
             code, out = self.check(self.led([]), text)
             self.assertEqual(code, 0, text)
