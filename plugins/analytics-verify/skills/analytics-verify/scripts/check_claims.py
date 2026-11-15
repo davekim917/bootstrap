@@ -1194,7 +1194,7 @@ _FUNCTION_WORDS = frozenset(
 
 def _identifier(text, t):
     """Whether a number in an exempt snippet is part of an identifier rather than a quantity:
-    a reference glued to a word, "#" or ":" (repo#123, DATA-2099, N+1, #42, report.ts:40-52), a
+    a reference glued to a word, "#" or ":" (DATA-2099, N+1, #42, a source path and line), a
     run mixing letters and digits (a commit hash, 3PL; not a unit such as 50ml), a hyphenated
     name (model-5-5), a dotted version or address (v0.4.2), or an unseparated integer of four
     or more digits that isn't a year (dashboard 1809, a message timestamp); a value assigned in
