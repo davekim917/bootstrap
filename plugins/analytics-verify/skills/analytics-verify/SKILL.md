@@ -181,9 +181,9 @@ If you're unsure which loop a data claim needs, use the full loop.
    Notes for the requester alone go in a second file, checked alongside it (one
    `artifact-sha256` line per file), and you paste that file's text into your message
    to the requester. A note left only in a file never reaches them: they read the
-   conversation, not this machine. After the receipt, your own words may only paste a
-   verified file, point at one, or ask for a decision it already raises, and state no
-   other figure or finding from the analysis; the stamp is the one exception.
+   conversation, not this machine. After the receipt, whatever you say about the analysis
+   may only paste a verified file, point at one, or ask for a decision it already raises,
+   and states no other figure or finding from it; the stamp is the one exception.
    A restated figure can be retyped wrong, and the receipt can't see it. Anything that
    states a figure, comparison or claim from the analysis, in this message or a later
    status post, goes back to step 6.
