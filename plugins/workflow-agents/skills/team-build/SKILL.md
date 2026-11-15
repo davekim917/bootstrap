@@ -10,8 +10,7 @@ authority in the conversation. Stop dependent work only for a missing scope, pro
 irreversible decision. Keep the same sub-agent through build, tests and fixes.
 
 1. Inspect git state and preserve unrelated changes. Record existing authority and owner settings.
-2. Inspect current source; implement the complete change and no more, changing code that already
-   does the job rather than adding beside it. The owner uses tools directly.
+2. Implement the change. The owner uses tools directly.
    Only brief logistical or mechanical actions execute directly; substantive work uses the sub-agent.
 3. Add meaningful acceptance/regression tests when practical. Confirm the expected failure before
    the fix when useful; use proportional alternatives for mechanical edits or unisolatable behavior.
@@ -20,8 +19,7 @@ irreversible decision. Keep the same sub-agent through build, tests and fixes.
    its pipeline would. Without that, record the missing end-to-end proof as a verification gap.
 4. Diagnose unexpected failures with `/team-debug`; apply the shared maximum of 3 corrective rounds
    across the task. Reconsider a repeated failure signature once, and stop on no progress.
-5. Inspect the complete diff, run the self-simplify pass (`../shared/workflow-contract.md`) when it
-   will be pushed, and run affected checks. Reuse exact unchanged evidence under the shared
+5. Inspect the complete diff and run affected checks. Reuse exact unchanged evidence under the shared
    artifact/environment/command rule; do not repeat checks merely to satisfy stage names.
 6. Record changes, decisions, evidence, repairs and limitations in `run.md` when used. Obtain the
    risk-appropriate implementation review before shipping, honoring explicit review requests.

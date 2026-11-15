@@ -6,18 +6,15 @@ A risk-scaled delivery workflow for Claude Code, Codex, and OpenCode:
 /team-plan → /team-build → /team-review → /team-ship
 ```
 
-The workflow builds what the real requirements and failure boundaries need and no more, changing
-code that already does the job rather than adding beside it. A four-file mechanical change should
-stay small; a one-file credential or destructive migration still receives security, rollback, and
-verification depth. Complexity must be justified by scale, repetition, concurrency, security, or
-failure impact—not by a fixed ceremony.
+Ceremony scales with risk, not file count: a one-file credential or destructive migration still
+receives security, rollback, and verification depth.
 
 ## Plugins
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.41.2 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.41.2 | The same, runtime-neutral |
+| Claude Code | `bootstrap-workflow` | 5.42.0 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.42.0 | The same, runtime-neutral |
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.8.2 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.4.0 | Boris Cherny-inspired engineering-judgment advisory skill |
 | Claude Code / Codex | `wwed` | 1.0.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill; pairs with `wwbd` |

@@ -82,15 +82,6 @@ effort. Do not use severity labels, a failed command, or a desire to retry as a 
 reasoning. There is no automatic effort ladder: a sub-agent continues at its selected level unless a
 meaningful phase boundary or demonstrated insufficiency justifies a newly recorded override.
 
-### Scope of direct work
-
-Build what the requirements and failure boundaries need and no more: no scope creep, no
-over-engineering, nothing built before it is needed. Where code already does the job, change it
-rather than adding new code beside it, unless the requirements call for a parallel path. Prefer
-existing primitives; justify complexity by evidenced scale, concurrency, security or failure impact.
-Never weaken trust, authorization, credential, destructive-action or data-loss safeguards.
-Read exact source and applicable instructions; verify relevant changing external facts.
-
 ## Session and effort continuity
 
 A model-pinned native sub-agent cannot become an alternate model through prompting; pick the model
@@ -112,6 +103,8 @@ of a newly written plan. Factual corrections and test-detail refinements do not 
 Record them. New product intent, scope, trust boundaries, hard constraints or destructive and
 irreversible behavior require the missing decision before dependent work. Planning-only requests
 remain planning-only. No stage bypasses repository safety controls or adds deployment authority.
+Never weaken trust, authorization, credential, destructive-action or data-loss safeguards.
+Read exact source and applicable instructions; verify relevant changing external facts.
 
 ## Minimal artifacts
 
@@ -150,24 +143,6 @@ reconsider the root cause or test premise once before another repair; do not rep
 Stop at the bound, on no progress, or repeated workflow-created obstruction. Name the external
 invariant, or identify the removable workflow mechanism; do not manufacture more process to
 satisfy a flawed rule. A new round budget needs an explicit grounded decision.
-
-## Self-simplify before the first push
-
-When a change is ready to push as a pull request, before its first push, the owner runs one pass over
-its own complete diff and applies what it finds:
-
-- reuse: an existing helper, primitive or library call already does what new code does;
-- simplification and altitude: fewer branches, layers and options for the same behavior, each at the
-  level it belongs;
-- efficiency: no repeated work, unbounded scans or per-item process spawns;
-- unused code and copy-paste clones the diff adds;
-- replaced code left behind: what the change supersedes is deleted in the same change;
-- comments: no `file:line` or PR/issue/ticket citation, and every added comment kept only when a
-  reader would get something wrong without it.
-
-On Claude, the native `/simplify` skill covers the first three; without it, and on Codex and
-OpenCode, work them by hand. Then run the repository's cheap local checks and push once. The pass
-writes no receipt and replaces no review.
 
 ## Shipping
 

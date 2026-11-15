@@ -1,6 +1,6 @@
 {
   "name": "bootstrap-workflow-agents",
-  "version": "2.41.2",
+  "version": "2.42.0",
   "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
   "author": {
     "name": "David Kim"
@@ -32,7 +32,7 @@
     "websiteURL": "https://github.com/davekim917/bootstrap",
     "defaultPrompt": [
       "Run the team workflow for this feature.",
-      "Create the smallest complete plan and run its cross-model review.",
+      "Create a plan and run its cross-model review.",
       "Review the approved plan and current implementation diff."
     ],
     "brandColor": "#111827"
