@@ -1175,7 +1175,8 @@ def _residue(snippet, tokens_inside, start):
 
 
 _PHONE = re.compile(r'(?<![\d.])(?:\+\d{1,3}[ .-]?|1[ .-])?(?:\(\d{2,4}\)[ .-]?|\d{2,4}[ .-])\d{3,4}[ .-]\d{3,4}(?![\d.])'
-                    r'|(?<![\d.-])\d{3}-\d{4}(?![\d-])|\b\d{5}-\d{4}\b')
+                    r'|(?<![\d.-])\d{3}-\d{4}(?![\d-])|\b\d{5}-\d{4}\b'
+                    r'|(?<=\d)\s*ext\.?\s*\d{1,5}\b')
 _MONTH = (r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|'
           r'sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?![A-Za-z])')
 _EXEMPT_DATE = re.compile(
@@ -1412,7 +1413,9 @@ def check_deliverables(paths, claims, exempt, f: Findings):
         if len(inside0) < 2 and not re.search(r'[A-Za-z]', _residue(texts[p0][s0:e0], inside0, s0)):
             f.fail('exempt', f'"{ns}" is a bare number; exempt the address, phone or name it belongs to')
             continue
-        if quantity := _exempt_quantity(texts[p0], s0, e0, inside0):
+        found = (_exempt_quantity(texts[p], a, b, [t for t in tokens[p] if t.start >= a and t.end <= b])
+                 for p, (a, b) in hits)
+        if quantity := next(filter(None, found), None):
             f.fail('exempt', f'"{ns}" holds {quantity}; exempt only names, addresses, phone numbers and '
                              'identifiers, and give every quantity, date and amount its own claim')
         for p, span in hits:
