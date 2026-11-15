@@ -1194,11 +1194,12 @@ _FUNCTION_WORDS = frozenset(
 
 def _identifier(text, t):
     """Whether a number in an exempt snippet is part of an identifier rather than a quantity:
-    a reference glued to a word, "#" or ":" (DATA-2099, N+1, #42, a source path and line), a
-    run mixing letters and digits (a commit hash, 3PL; not a unit such as 50ml), a hyphenated
-    name (model-5-5), a dotted version or address (v0.4.2), or an unseparated integer of four
-    or more digits that isn't a year (dashboard 1809, a message timestamp); a value assigned in
-    code (flag = 1); or one of a run of bare numbers (axis labels "1 2 3 4")."""
+    a reference glued to a word, "#" or ":" (DATA-2099, N+1, #42, a source path, line and
+    column), a run mixing letters and digits (a commit hash, 3PL; not a unit such as 50ml or a
+    scale such as 2M), a hyphenated name (model-5-5), a dotted version or address (v0.4.2), an
+    unseparated integer of four or more digits that isn't a year (dashboard 1809, a message
+    timestamp), a value assigned in code (flag = 1), or one of a run of bare numbers (axis
+    labels "1 2 3 4")."""
     before = text[max(0, t.start - 2):t.start]
     if before.endswith(('#', '=')) or re.fullmatch(r'[A-Za-z][-+:]', before) or re.search(r'\w ?=\s*$', text[:t.start]):
         return True
@@ -1206,9 +1207,11 @@ def _identifier(text, t):
         return True
     run = re.search(r'[\w.:/-]*$', text[:t.start]).group(0) + re.match(r'[\w.]*', text[t.start:]).group(0)
     glued = re.match(r'\d+([A-Za-z]\w*)', text[t.start:])
+    if glued and re.fullmatch(r'(?i)k|m|b|mm|bn', glued.group(1)):
+        glued = None
     if re.fullmatch(r'(?=.*\d)(?=.*[A-Za-z])\w{6,}', run.strip('.')) or run.strip('.').count('.') >= 2 or (
             glued and not glued.group(1).islower()) or (
-            '-' in run and re.search(r'[A-Za-z]', run) and run.endswith(text[t.start:t.end]) and run[:-len(t.text)].endswith('-')):
+            re.search(r'[A-Za-z]', run) and run.endswith(text[t.start:t.end]) and run[:-len(t.text)].endswith(('-', ':'))):
         return True
     whole = re.match(r'\d+', t.text)
     return bool(whole) and len(whole.group(0)) >= 4 and not re.fullmatch(r'(19|20)\d\d', whole.group(0))
@@ -1225,8 +1228,9 @@ def _exempt_quantity(text, s, e, inside):
     a currency amount, a scaled, signed, bounded or decimal number, a bare year, and a count
     ("w 2 accounts", or "Sales 500 units" at the start of a sentence)."""
     snip = text[s:e]
-    if m := _EXEMPT_DATE.search(snip):
-        return f'a date or time ("{m.group(0).strip()}")'
+    for m in _EXEMPT_DATE.finditer(snip):
+        if not re.search(r'\w:$', text[:s + m.start()]):
+            return f'a date or time ("{m.group(0).strip()}")'
     phones = [(s + a, s + b) for a, b in (m.span() for m in _PHONE.finditer(snip))]
     for t in inside:
         if any(a <= t.start and t.end <= b for a, b in phones):
