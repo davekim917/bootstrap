@@ -1580,6 +1580,7 @@ class AuthorCatchesFirst(LedgerCase):
                    ('Bar X opened Sep 2019 downtown.', 'opened Sep 2019', 'a date or time ("Sep 2019")'),
                    ('Bar X closes at 5pm daily.', 'closes at 5pm', 'a date or time ("5pm")'),
                    ('Sales 500 units.', 'Sales 500 units', 'a count ("500 units")'),
+                   ('Bar X reached 12 visits.', 'reached 12 visits', 'a count ("12 visits")'),
                    ('Waits run 12-15 days.', '12-15 days', 'a count ("12-15 days")'))
         for text, snippet, reason in refused:
             code, out = self.check(self.led([], exempt=[snippet]), text)
@@ -1590,6 +1591,7 @@ class AuthorCatchesFirst(LedgerCase):
                    ('Call (555) 555-0100 today.', '(555) 555-0100'),
                    ('Call +1 555 555 0100 today.', '+1 555 555 0100'),
                    ('Call 555.555.0100 today.', '555.555.0100'),
+                   ('Call 1-800-555-1234 today.', '1-800-555-1234'),
                    ('Mail Riverton, CA 94110-1234 today.', 'Riverton, CA 94110-1234'),
                    ('Meet at Suite 200 today.', 'Suite 200'),
                    ('Pier 7 opened late.', 'Pier 7'),
@@ -1599,6 +1601,8 @@ class AuthorCatchesFirst(LedgerCase):
                    ('Built from commit 80b7a195 today.', 'commit 80b7a195'),
                    ('See report.ts:40-52 for it.', 'report.ts:40-52'),
                    ('See src.py:12:34 for the call.', 'src.py:12:34'),
+                   ('Logs are in logs/us-east-1/2026/11/11/ today.', 'logs/us-east-1/2026/11/11/'),
+                   ('Attached sample_WE2026-11-07.xlsx today.', 'sample_WE2026-11-07.xlsx'),
                    ('Then step 2 already ran.', 'step 2'),
                    ('We ran an Atlas 5.2 build.', 'Atlas 5.2'),
                    ('Set flag = 1 in staging.', 'flag = 1'),

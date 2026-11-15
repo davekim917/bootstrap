@@ -1174,7 +1174,7 @@ def _residue(snippet, tokens_inside, start):
     return ''.join(rest)
 
 
-_PHONE = re.compile(r'(?<![\d.])(?:\+\d{1,3}[ .-]?)?(?:\(\d{2,4}\)[ .-]?|\d{2,4}[ .-])\d{3,4}[ .-]\d{3,4}(?![\d.])'
+_PHONE = re.compile(r'(?<![\d.])(?:\+\d{1,3}[ .-]?|1[ .-])?(?:\(\d{2,4}\)[ .-]?|\d{2,4}[ .-])\d{3,4}[ .-]\d{3,4}(?![\d.])'
                     r'|(?<![\d.-])\d{3}-\d{4}(?![\d-])|\b\d{5}-\d{4}\b')
 _MONTH = (r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|'
           r'sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?![A-Za-z])')
@@ -1185,17 +1185,17 @@ _MONEY_WORD = re.compile(r'\s?(?:dollars?|euros?|pounds?|cents?|yen|bucks)\b', r
 _SCALED = re.compile(r'\d\s?(?:thousand|million|billion|trillion|bn|mm|[kKmMbB])(?![A-Za-z])')
 
 
-_FUNCTION_WORDS = frozenset(
-    'a an the w with without of for to from by in on at into over under about around than per across within '
-    'after before between among and or but so has have had is are was were be been get gets got last past next '
-    'first only just all any some each every both these those this that our their its my your his her we they '
-    'you there here total added lost gained sold made took needs need spent ran saw up down out off'.split())
+_LABEL_WORDS = frozenset(
+    'step phase stage part section chapter page slide figure fig table row column col line item option '
+    'version round wave call session tab sprint tier level lane track task ticket issue case test run job '
+    'build query dashboard chart tile report model sheet flag tag id rule question exhibit appendix note '
+    'footnote scenario variant group cohort week day month quarter'.split())
 
 
 def _identifier(text, t):
     """Whether a number in an exempt snippet is part of an identifier rather than a quantity:
     a reference glued to a word, "#" or ":" (DATA-2099, N+1, #42, a source path, line and
-    column), a run mixing letters and digits (a commit hash, 3PL; not a unit such as 50ml or a
+    column, a dated path or file name), a run mixing letters and digits (a commit hash, 3PL; not a unit such as 50ml or a
     scale such as 2M), a hyphenated name (model-5-5), a dotted version or address (v0.4.2), an
     unseparated whole number of four or more digits that isn't a year (dashboard 1809), a
     value assigned in code (flag = 1), or one of a run of bare numbers (axis labels "1 2 3 4")."""
@@ -1204,13 +1204,14 @@ def _identifier(text, t):
         return True
     if re.match(rf'\s*{BOUNDARY}?\s*\d+\b', text[t.end:]) or re.search(rf'\d\s*{BOUNDARY}?\s*$', text[:t.start]):
         return True
-    run = re.search(r'[\w.:/-]*$', text[:t.start]).group(0) + re.match(r'[\w.]*', text[t.start:]).group(0)
+    pre = re.search(r'[\w.:/-]*$', text[:t.start]).group(0)
+    run = pre + re.match(r'[\w.]*', text[t.start:]).group(0)
     glued = re.match(r'\d+([A-Za-z]\w*)', text[t.start:])
     if glued and re.fullmatch(r'(?i)k|m|b|mm|bn', glued.group(1)):
         glued = None
     if re.fullmatch(r'(?=.*\d)(?=.*[A-Za-z])\w{6,}', run.strip('.')) or run.strip('.').count('.') >= 2 or (
             glued and not glued.group(1).islower()) or (
-            re.search(r'[A-Za-z]', run) and run.endswith(text[t.start:t.end]) and run[:-len(t.text)].endswith(('-', ':'))):
+            re.search(r'[A-Za-z]', pre) and pre.endswith(('-', ':', '/'))):
         return True
     return bool(re.fullmatch(r'\d{4,}', t.text)) and not re.fullmatch(r'(19|20)\d\d', t.text)
 
@@ -1220,14 +1221,14 @@ def _exempt_quantity(text, s, e, inside):
     names, addresses, phone numbers and identifiers, so these are allowed: a phone number; an
     identifier (see _identifier); a number right after a capitalized word inside a sentence
     ("an Atlas 5.2 run"), or ending the snippet after one ("Suite 200"); a number right after
-    a label word ("step 2", "dashboard 18"); and a number followed by a capitalized word
+    one of _LABEL_WORDS ("step 2", "dashboard 18"); and a number followed by a capitalized word
     ("100 Main St", "2025 Annual Report"), or by a list or table marker and one ("2. Next",
     "01 · Scope", "| 3 | Route"). Everything else is refused: a date or time, a percentage,
     a currency amount, a scaled, signed, bounded or decimal number, a bare year, and a count
     ("w 2 accounts", or "Sales 500 units" at the start of a sentence)."""
     snip = text[s:e]
     for m in _EXEMPT_DATE.finditer(snip):
-        if not re.search(r'\w:$', text[:s + m.start()]):
+        if not re.search(r'[\w/:-]$', text[:s + m.start()]):
             return f'a date or time ("{m.group(0).strip()}")'
     phones = [(s + a, s + b) for a, b in (m.span() for m in _PHONE.finditer(snip))]
     for t in inside:
@@ -1257,7 +1258,7 @@ def _exempt_quantity(text, s, e, inside):
             continue
         if re.fullmatch(r'(19|20)\d\d', t.text):
             return f'a year ("{t.text}")'
-        if word and word.group(1).lower() not in _FUNCTION_WORDS and (word.group(1).islower() or not opens):
+        if word and re.sub(r's$', '', word.group(1).lower()) in _LABEL_WORDS:
             continue
         return f'a count ("{" ".join(text[t.start:].split()[:2]).rstrip(".,;:")}")'
     return None

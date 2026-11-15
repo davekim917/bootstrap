@@ -171,11 +171,12 @@ What needs a claim: [What needs a ledger entry](verifier-brief.md#what-needs-a-l
     percentage, a currency amount, a scaled, signed, bounded or decimal number, a bare
     year, or a count ("someone with 2 accounts": rephrase, or give the number a claim).
     It allows a phone number; an identifier (`repo#123`, `DATA-2099`, `v0.4.2`, a commit
-    hash, `file.ts:40-52`, an unseparated whole number of four or more digits that isn't a year, a
-    value assigned in code, a run of bare numbers such as axis labels); a number after a
-    capitalized word mid-sentence or at the snippet's end ("an Atlas 5.2 run", "Suite
-    200"); a number after a label word ("step 2"); and a number before a capitalized
-    word or a list marker and one ("100 Main St", "01 · Scope").
+    hash, `file.ts:40-52`, a whole number of four or more digits with no separator that
+    isn't a year, a value assigned in code, a run of bare numbers such as axis labels); a
+    number after a capitalized word mid-sentence or at the snippet's end ("an Atlas 5.2
+    run", "Suite 200"); a number after a document-structure word such as step, row, slide
+    or dashboard ("step 2"); and a number before a capitalized word or a list marker and
+    one ("100 Main St", "01 · Scope").
 - Each anchor is in the deliverable, and every appearance shows the claim's value. For
   a date claim, each date shown is checked field by field: "9/23" must be September 23,
   and "5pm" must be the claim's hour.
