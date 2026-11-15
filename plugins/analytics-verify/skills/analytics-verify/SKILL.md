@@ -3,11 +3,15 @@ name: analytics-verify
 description: >
   Verification loop for analytics and research deliverables: a claim ledger, a
   mechanical check script, an independent verifier on a fresh context, a re-check
-  of every fix, and a receipt tied to the exact file sent. Load BEFORE sending
-  numbers or factual claims from data or research to anyone (a report, deck, PDF,
-  CSV, dashboard, a draft for someone else, or a chat answer someone will act on
-  or forward). Also load it when asked to validate, verify, cross-check or
-  cross-examine an analysis, and when you are the verifier.
+  of every fix, and a receipt tied to the exact file sent. Load BEFORE sending a
+  figure or factual finding you derived from data or research (a query result, a
+  metric, a count from a dataset, a sourced external fact) that someone will use to
+  decide or will pass on, in a report, deck, PDF, CSV, dashboard, a draft for
+  someone else, or a chat answer. Not for reporting the state of your own work
+  (changes, build/test/deploy output, PR/CI/deploy status, file or test counts)
+  or relaying someone else's number unchanged; a query result is in scope however
+  it is framed. Also load it when asked to validate, verify,
+  cross-check or cross-examine an analysis, and when you are the verifier.
 ---
 
 # Analytics verify
@@ -28,13 +32,21 @@ number is trusted.
 
 ## Which loop
 
-- **Full loop (default):** anything someone may forward, publish or act on, including
-  a chat answer.
+The loop applies to a figure or factual finding you derived from data or research (a
+query result, a metric, a count from a dataset, a sourced external fact) that someone
+will use to decide or will pass on. It does not apply to reporting the state of your own
+work (what you changed, build, test or deploy output, PR, CI or deploy status, counts of
+files or tests), or to relaying a number someone else gave you unchanged. A query result
+or analytical finding is in scope however you frame it, including as "what the query
+returned" in a status update.
+
+- **Full loop (default):** any such claim someone may forward, publish or act on,
+  including a chat answer.
 - **Exploratory:** only when the requester is exploring and nothing will be forwarded
   or decided yet. Run the ledger check if you show numbers, and end with: "Exploratory,
   not verified. Ask for a check before using these numbers."
 
-If you're unsure, use the full loop.
+If you're unsure which loop a data claim needs, use the full loop.
 
 ## Author loop
 
@@ -169,12 +181,12 @@ If you're unsure, use the full loop.
    Notes for the requester alone go in a second file, checked alongside it (one
    `artifact-sha256` line per file), and you paste that file's text into your message
    to the requester. A note left only in a file never reaches them: they read the
-   conversation, not this machine. After the receipt, your own words may only paste a
-   verified file, point at one, or ask for a decision it already raises, and state no
-   other figures; the stamp is the one exception.
+   conversation, not this machine. After the receipt, whatever you say about the analysis
+   may only paste a verified file, point at one, or ask for a decision it already raises,
+   and states no other figure or finding from it; the stamp is the one exception.
    A restated figure can be retyped wrong, and the receipt can't see it. Anything that
-   states a figure, comparison or claim, in this message or a later status post, goes
-   back to step 6.
+   states a figure, comparison or claim from the analysis, in this message or a later
+   status post, goes back to step 6.
 
 ## Writing rules
 
