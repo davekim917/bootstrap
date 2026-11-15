@@ -1582,6 +1582,7 @@ class AuthorCatchesFirst(LedgerCase):
                    ('The event is on 23 May.', 'on 23 May', 'a date or time ("23 May")'),
                    ('Each pour costs USD 14 at Bar X.', 'costs USD 14 at Bar X', 'a currency amount ("USD 14")'),
                    ('The bill was QAR 14 today.', 'QAR 14', 'a currency amount ("QAR 14")'),
+                   ('The bill was 14 USD today.', '14 USD', 'a currency amount ("14 USD")'),
                    ('Sales 500 units.', 'Sales 500 units', 'a count ("500 units")'),
                    ('Bar X reached 12 visits.', 'reached 12 visits', 'a count ("12 visits")'),
                    ('Waits run 12-15 days.', '12-15 days', 'a count ("12-15 days")'))
@@ -1612,6 +1613,7 @@ class AuthorCatchesFirst(LedgerCase):
                    ('We use ISO 9001.', 'ISO 9001'),
                    ('We tested an IBM 360.', 'IBM 360'),
                    ('We flew an Atlas 737-800 today.', 'Atlas 737-800'),
+                   ('Use version 1.2 for this build.', 'version 1.2'),
                    ('Slides: 01 · Scope.', '01 · Scope'))
         for text, snippet in allowed:
             code, out = self.check(self.led([], exempt=[snippet]), text)

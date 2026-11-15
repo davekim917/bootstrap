@@ -1247,9 +1247,12 @@ def _exempt_quantity(text, s, e, inside):
         if t.pct:
             return f'a percentage ("{t.text}")'
         code = re.search(r'(?<![A-Za-z])([A-Z]{3}|Rs|US)\s?$', text[max(0, t.start - 5):t.start])
+        trailing = re.match(r'\s?([A-Z]{3})(?![A-Za-z])', text[t.end:])
         if any(_is_currency(ch) for ch in text[max(s, lead - 1):t.start]) or _MONEY_WORD.match(text, t.end) or (
-                code and code.group(1) in _CURRENCY_CODES | {'Rs', 'US'}):
-            return f'a currency amount ("{text[max(s, lead):t.end].strip()}")'
+                code and code.group(1) in _CURRENCY_CODES | {'Rs', 'US'}) or (
+                trailing and trailing.group(1) in _CURRENCY_CODES):
+            end = t.end + (trailing.end() if trailing and trailing.group(1) in _CURRENCY_CODES else 0)
+            return f'a currency amount ("{text[max(s, lead):end].strip()}")'
         if _identifier(text, t):
             continue
         if _SCALED.search(t.text):
@@ -1262,14 +1265,15 @@ def _exempt_quantity(text, s, e, inside):
         opens = name is not None and re.search(rf'(^|[.!?:;{BOUNDARY}(])\s*$', text[:s + name.start(1)])
         if name and name.group(1)[0].isupper() and (not opens or t.end >= e):
             continue
-        if '.' in t.text:
+        label = word is not None and re.sub(r's$', '', word.group(1).lower()) in _LABEL_WORDS
+        if '.' in t.text and not label:
             return f'a decimal ("{t.text}")'
         after = re.match(r'\s*[.)|\u00b7]?\s+(?:\d+(?:st|nd|rd|th)\s+)?([A-Za-z])', text[t.end:t.end + 12])
         if after is not None and after.group(1).isupper():
             continue
         if re.fullmatch(r'(19|20)\d\d', t.text):
             return f'a year ("{t.text}")'
-        if word and re.sub(r's$', '', word.group(1).lower()) in _LABEL_WORDS:
+        if label:
             continue
         return f'a count ("{" ".join(text[t.start:].split()[:2]).rstrip(".,;:")}")'
     return None
