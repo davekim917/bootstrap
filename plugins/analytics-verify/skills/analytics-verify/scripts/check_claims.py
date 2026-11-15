@@ -1204,8 +1204,8 @@ _LABEL_WORDS = frozenset(
 def _identifier(text, t):
     """Whether a number in an exempt snippet is part of an identifier rather than a quantity:
     a reference glued to a word, "#" or ":" (DATA-2099, N+1, #42, a source path, line and
-    column, a dated path or file name), a run mixing letters and digits (a commit hash, 3PL; not a unit such as 50ml or a
-    scale such as 2M), a hyphenated name (model-5-5), a dotted version or address (v0.4.2), an
+    column, a dated path or file name), a run mixing letters and digits (a commit hash, 3PL;
+    not a unit such as 1000ms or a scale such as 2M), a hyphenated name (model-5-5), a dotted version or address (v0.4.2), an
     unseparated whole number of four or more digits that isn't a year (dashboard 1809), a
     value assigned in code (flag = 1), or one of a run of bare numbers (axis labels "1 2 3 4")."""
     before = text[max(0, t.start - 2):t.start]
@@ -1218,11 +1218,13 @@ def _identifier(text, t):
     glued = re.match(r'\d+([A-Za-z]\w*)', text[t.start:])
     if glued and re.fullmatch(r'(?i)k|m|b|mm|bn', glued.group(1)):
         glued = None
-    if re.fullmatch(r'(?=.*\d)(?=.*[A-Za-z])\w{6,}', run.strip('.')) or run.strip('.').count('.') >= 2 or (
+    if (re.fullmatch(r'(?=.*\d)(?=.*[A-Za-z])\w{6,}', run.strip('.'))
+            and not re.fullmatch(r'\d+[a-z]+', run.strip('.'))) or run.strip('.').count('.') >= 2 or (
             glued and not glued.group(1).islower()) or (
             re.search(r'[A-Za-z]', pre) and pre.endswith(('-', ':', '/'))):
         return True
-    return bool(re.fullmatch(r'\d{4,}', t.text)) and not re.fullmatch(r'(19|20)\d\d', t.text)
+    return bool(re.fullmatch(r'\d{4,}', t.text)) and not re.fullmatch(r'(19|20)\d\d', t.text) and not (
+        glued and glued.group(1).islower())
 
 
 def _exempt_quantity(text, s, e, inside):
@@ -1260,8 +1262,8 @@ def _exempt_quantity(text, s, e, inside):
         if t.sign or t.op != 'eq':
             return f'a signed or bounded number ("{text[max(s, lead):t.end].strip()}")'
         head = t.start - len(re.search(r'(?:\d+-)*$', text[s:t.start]).group(0))
-        word = re.search(r'([A-Za-z][\w&\'-]*)[ ,]*$', text[s:t.start])
-        name = re.search(r'([A-Za-z][\w&\'-]*)[ ,]*$', text[s:head])
+        word = re.search(r'([A-Za-z][\w&\'-]*)\.?[ ,]*$', text[s:t.start])
+        name = re.search(r'([A-Za-z][\w&\'-]*)\.?[ ,]*$', text[s:head])
         opens = name is not None and re.search(rf'(^|[.!?:;{BOUNDARY}(])\s*$', text[:s + name.start(1)])
         if name and name.group(1)[0].isupper() and (not opens or t.end >= e):
             continue
