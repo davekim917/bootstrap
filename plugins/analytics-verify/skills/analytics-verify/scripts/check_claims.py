@@ -1179,8 +1179,11 @@ _PHONE = re.compile(r'(?<![\d.])(?:\+\d{1,3}[ .-]?|1[ .-])?(?:\(\d{2,4}\)[ .-]?|
 _MONTH = (r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|'
           r'sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?![A-Za-z])')
 _EXEMPT_DATE = re.compile(
-    r'(?<![A-Za-z])' + _MONTH + r'\s*\d{1,4}|\d(?:st|nd|rd|th)?\s+(?:of\s+)?' + _MONTH
+    r'(?<![A-Za-z])' + _MONTH + r'\s*\d{1,4}|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?' + _MONTH
     + r'|\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b\d{1,2}(?::\d{2})?\s?[ap]\.?m\b|\b\d{1,2}:\d{2}\b', re.I)
+_CURRENCY_CODES = frozenset(
+    'USD EUR GBP JPY CNY INR CAD AUD NZD CHF SEK NOK DKK MXN BRL ZAR SGD HKD KRW RUB TRY PLN ILS AED SAR '
+    'THB IDR PHP MYR TWD CZK HUF COP CLP ARS PEN VND NGN EGP KES'.split())
 _MONEY_WORD = re.compile(r'\s?(?:dollars?|euros?|pounds?|cents?|yen|bucks)\b', re.I)
 _SCALED = re.compile(r'\d\s?(?:thousand|million|billion|trillion|bn|mm|[kKmMbB])(?![A-Za-z])')
 
@@ -1237,9 +1240,9 @@ def _exempt_quantity(text, s, e, inside):
         lead = _lead(text, t.start)[0]
         if t.pct:
             return f'a percentage ("{t.text}")'
-        if any(_is_currency(ch) for ch in text[max(s, lead - 1):t.start]) or re.search(
-                r'(?<![A-Za-z])(?:[A-Z]{3}|Rs|US)\s?$', text[:t.start][-5:] if t.start >= 5 else text[:t.start]) \
-                or _MONEY_WORD.match(text, t.end):
+        code = re.search(r'(?<![A-Za-z])([A-Z]{3}|Rs|US)\s?$', text[max(0, t.start - 5):t.start])
+        if any(_is_currency(ch) for ch in text[max(s, lead - 1):t.start]) or _MONEY_WORD.match(text, t.end) or (
+                code and code.group(1) in _CURRENCY_CODES | {'Rs', 'US'}):
             return f'a currency amount ("{text[max(s, lead):t.end].strip()}")'
         if _identifier(text, t):
             continue
