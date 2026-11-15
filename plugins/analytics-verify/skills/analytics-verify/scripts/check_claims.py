@@ -1181,9 +1181,15 @@ _MONTH = (r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|
 _EXEMPT_DATE = re.compile(
     r'(?<![A-Za-z])' + _MONTH + r'\s*\d{1,4}|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?' + _MONTH
     + r'|\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b\d{1,2}(?::\d{2})?\s?[ap]\.?m\b|\b\d{1,2}:\d{2}\b', re.I)
-_CURRENCY_CODES = frozenset(
-    'USD EUR GBP JPY CNY INR CAD AUD NZD CHF SEK NOK DKK MXN BRL ZAR SGD HKD KRW RUB TRY PLN ILS AED SAR '
-    'THB IDR PHP MYR TWD CZK HUF COP CLP ARS PEN VND NGN EGP KES'.split())
+_CURRENCY_CODES = frozenset((
+    'AED AFN ALL AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN '
+    'BWP BYN BZD CAD CDF CHF CLP CNY COP CRC CUP CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD '
+    'FKP GBP GEL GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY '
+    'KES KGS KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL LYD MAD MDL MGA MKD MMK MNT MOP '
+    'MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP PKR PLN PYG QAR '
+    'RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SVC SYP SZL THB TJS TMT '
+    'TND TOP TRY TTD TWD TZS UAH UGX USD UYU UZS VES VND VUV WST XAF XCD XOF XPF YER ZAR ZMW '
+    'ZWL').split())
 _MONEY_WORD = re.compile(r'\s?(?:dollars?|euros?|pounds?|cents?|yen|bucks)\b', re.I)
 _SCALED = re.compile(r'\d\s?(?:thousand|million|billion|trillion|bn|mm|[kKmMbB])(?![A-Za-z])')
 
@@ -1250,9 +1256,11 @@ def _exempt_quantity(text, s, e, inside):
             return f'a scaled quantity ("{t.text}")'
         if t.sign or t.op != 'eq':
             return f'a signed or bounded number ("{text[max(s, lead):t.end].strip()}")'
+        head = t.start - len(re.search(r'(?:\d+-)*$', text[s:t.start]).group(0))
         word = re.search(r'([A-Za-z][\w&\'-]*)[ ,]*$', text[s:t.start])
-        opens = word is not None and re.search(rf'(^|[.!?:;{BOUNDARY}(])\s*$', text[:s + word.start(1)])
-        if word and word.group(1)[0].isupper() and (not opens or t.end >= e):
+        name = re.search(r'([A-Za-z][\w&\'-]*)[ ,]*$', text[s:head])
+        opens = name is not None and re.search(rf'(^|[.!?:;{BOUNDARY}(])\s*$', text[:s + name.start(1)])
+        if name and name.group(1)[0].isupper() and (not opens or t.end >= e):
             continue
         if '.' in t.text:
             return f'a decimal ("{t.text}")'
