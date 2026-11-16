@@ -73,10 +73,14 @@ function callEffort(input) {
  * cannot see it (managed settings, `--agents`), so any filled model could
  * silently replace the role's installed intent
  * (code.claude.com/docs/en/sub-agents, "Choose a model"). For the same reason
- * its effort is not capped: the model it runs on is unknown here. Returns null
- * when nothing changes.
+ * its effort is not capped: the model it runs on is unknown here. A roleless call
+ * that names no effort and no model is left without one when the level it would
+ * get is `parentEffort` and `inheritsParentEffort` says the sub-agent would run
+ * at that level anyway: in auto mode Claude Code refuses a call whose input a
+ * hook changed after the server reviewed it, so a field that changes nothing
+ * costs a resent call. Returns null when nothing changes.
  */
-export function rewriteClaudeSpawn(input, pins = {}, { parentEffort, invokedEffort, inheritedModel } = {}) {
+export function rewriteClaudeSpawn(input, pins = {}, { parentEffort, invokedEffort, inheritedModel, inheritsParentEffort = false } = {}) {
   const out = { ...input };
   const type = typeof input.subagent_type === 'string' ? input.subagent_type : '';
   const shim = SHIM.test(type);
@@ -93,17 +97,14 @@ export function rewriteClaudeSpawn(input, pins = {}, { parentEffort, invokedEffo
   if (!humanChosen) effort = capEffort(effort, MODEL_MAX_EFFORT[familyOf(out.model ?? inheritedModel)] ?? AGENT_MAX_EFFORT);
   out.effort = effort;
   if (shim) out.subagent_type = `bootstrap-orchestrate:worker-${effort}`;
+  else if (inheritsParentEffort && input.effort === undefined && !('model' in out) && effort === parentEffort) delete out.effort;
 
   const changed = ['model', 'effort', 'subagent_type'].some((k) => out[k] !== input[k]);
   return changed ? out : null;
 }
 
-/**
- * The model a sub-agent with no model of its own runs on: Claude Code's sub-agent override when one is set, else the
- * model of the session's latest reply in its transcript. Undefined when neither is known.
- */
-export function inheritedModel(transcriptPath, env = process.env) {
-  if (env.CLAUDE_CODE_SUBAGENT_MODEL) return env.CLAUDE_CODE_SUBAGENT_MODEL;
+/** The model of the session's latest reply in its transcript; undefined when none is known. */
+export function sessionModel(transcriptPath) {
   let lines;
   try {
     lines = fs.readFileSync(transcriptPath, 'utf8').split('\n');
@@ -139,6 +140,12 @@ const DEFAULT_EFFORT = 'high';
 
 function familyOf(model) {
   return typeof model === 'string' ? MODEL_FAMILIES.find((f) => model.toLowerCase().includes(f)) : undefined;
+}
+
+/** Whether two model names or aliases are the same known family. */
+export function sameFamily(a, b) {
+  const family = familyOf(a);
+  return Boolean(family) && family === familyOf(b);
 }
 
 const HARNESS_BLOCK = /<(task-notification|system|system-reminder|local-command-stdout|local-command-caveat)>[\s\S]*?<\/\1>/g;

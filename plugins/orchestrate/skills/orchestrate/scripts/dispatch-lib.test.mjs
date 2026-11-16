@@ -302,7 +302,7 @@ function spawnHookRunner() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrate-hook-'));
   const hook = fileURLToPath(new URL('../../../hooks/route-spawn.mjs', import.meta.url));
   let runs = 0;
-  const run = (human, toolInput, { parent = 'claude-opus-5-5', env = {}, parentEffort } = {}) => {
+  const run = (human, toolInput, { parent = 'claude-opus-5-5', env = {}, parentEffort, agentId } = {}) => {
     const transcript = path.join(root, `t-${runs++}.jsonl`);
     const records = [{ type: 'user', message: { role: 'user', content: human } }];
     if (parent) records.push({ type: 'assistant', message: { role: 'assistant', model: parent, content: [{ type: 'text', text: 'ok' }] } });
@@ -312,6 +312,7 @@ function spawnHookRunner() {
         tool_name: 'Agent',
         transcript_path: transcript,
         ...(parentEffort ? { effort: { level: parentEffort } } : {}),
+        ...(agentId ? { agent_id: agentId } : {}),
         tool_input: { subagent_type: 'general-purpose', description: 'review the spec', prompt: 'Read brief.md.', ...toolInput },
       }),
       encoding: 'utf8',
@@ -385,16 +386,36 @@ test('the installed hook gives a spawn with no effort the default, keeps a level
   const effortOf = (out) => out?.updatedInput?.effort;
 
   assert.equal(effortOf(run('Thanks, now get it reviewed.', {}, xhighParent)), 'high');
-  assert.equal(effortOf(run('Thanks, now get it reviewed.', {}, { parentEffort: 'medium' })), 'medium');
   assert.equal(effortOf(run('Thanks, now get it reviewed.', {})), 'high');
 
   assert.equal(run('/orchestrate xhigh review the spec', { effort: 'xhigh' }, xhighParent), null);
-  assert.equal(effortOf(run('/orchestrate xhigh review the spec', {}, xhighParent)), 'xhigh');
+  assert.equal(effortOf(run('/orchestrate high review the spec', {}, xhighParent)), 'high');
   assert.equal(effortOf(run('/orchestrate max review the spec', {}, xhighParent)), 'max');
 
   assert.equal(effortOf(run('Thanks, now get it reviewed.', { effort: 'max' }, xhighParent)), 'xhigh');
   assert.equal(effortOf(run('Use a fable subagent at xhigh to review it.', { model: 'fable' }, xhighParent)), 'xhigh');
   assert.equal(run('Thanks, now get it reviewed.', { subagent_type: 'Explore' }, xhighParent), null);
+});
+
+test('the installed hook leaves a spawn with no effort alone when the level it would add is the one the sub-agent inherits', () => {
+  const run = spawnHookRunner();
+  const own = 'Thanks, now get it reviewed.';
+  const effortOf = (out) => out?.updatedInput?.effort;
+
+  assert.equal(run(own, {}, { parentEffort: 'medium' }), null);
+  assert.equal(run(own, {}, { parentEffort: 'high' }), null);
+  assert.equal(run('/orchestrate xhigh review the spec', {}, { parentEffort: 'xhigh' }), null);
+  const dropped = run(own, { model: 'sonnet' }, { parentEffort: 'medium' }).updatedInput;
+  assert.deepEqual(['model' in dropped, 'effort' in dropped], [false, false]);
+
+  assert.equal(effortOf(run(own, {}, { parentEffort: 'medium', agentId: 'agent-7' })), 'medium');
+  assert.equal(effortOf(run(own, {}, { parentEffort: 'medium', env: { CLAUDE_CODE_SUBAGENT_EFFORT: 'low' } })), 'medium');
+  assert.equal(run(own, {}, { parentEffort: 'medium', env: { CLAUDE_CODE_SUBAGENT_MODEL: 'opus[1m]' } }), null);
+  assert.equal(effortOf(run(own, {}, { parentEffort: 'medium', env: { CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' } })), 'medium');
+  assert.equal(effortOf(run(own, {}, { parentEffort: 'medium', parent: null })), 'medium');
+  const pinned = run('Use a fable subagent to review it.', { model: 'fable' }, { parent: 'claude-fable-5-2', parentEffort: 'high' });
+  assert.deepEqual([pinned.updatedInput.model, pinned.updatedInput.effort], ['fable', 'high']);
+  assert.equal(effortOf(run(own, { subagent_type: 'bootstrap-orchestrate:worker-medium' }, { parentEffort: 'medium' })), 'medium');
 });
 
 const capRun = () => {

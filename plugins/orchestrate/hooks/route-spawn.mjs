@@ -2,7 +2,8 @@
 // Claude Code PreToolUse hook on Agent/Task: settle every sub-agent spawn,
 // autonomous or via /orchestrate. A model no human named is dropped so the spawn
 // runs on CLAUDE_CODE_SUBAGENT_MODEL, else its parent's, and the agent and the sub-agent are told which model runs.
-// The effort the call names stands; an agent's own choice is capped for the model that will run. A call that names none gets one.
+// The effort the call names stands; an agent's own choice is capped for the model that will run. A call that names none gets one,
+// unless it is the level the sub-agent would inherit anyway.
 // Never blocks, never opens a connection. A named role is never rewritten.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,8 +23,12 @@ try {
   const turn = contested || (!named && !input.effort) ? lib.humanTurns(event.transcript_path).at(-1) ?? '' : '';
   const pins = contested ? lib.humanPins(input, turn) : undefined;
   const parentEffort = typeof event.effort?.level === 'string' ? event.effort.level : undefined;
-  const inheritedModel = named ? undefined : lib.inheritedModel(event.transcript_path);
-  const updated = lib.rewriteClaudeSpawn(input, pins, { parentEffort, invokedEffort: lib.invokedEffort(turn), inheritedModel });
+  const session = named ? undefined : lib.sessionModel(event.transcript_path);
+  const inheritedModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL || session;
+  // Claude Code runs a sub-agent with no effort of its own at the session's level only on the session's model; on
+  // another it takes that model's saved level or default. Inside a sub-agent the event's level is that sub-agent's.
+  const inheritsParentEffort = !event.agent_id && !process.env.CLAUDE_CODE_SUBAGENT_EFFORT && lib.sameFamily(inheritedModel, session);
+  const updated = lib.rewriteClaudeSpawn(input, pins, { parentEffort, invokedEffort: lib.invokedEffort(turn), inheritedModel, inheritsParentEffort });
   const dropped = Boolean(updated && input.model && !('model' in updated));
   const notice = dropped ? lib.droppedModelNotice(input.model, inheritedModel) : undefined;
   lib.logDispatch({
