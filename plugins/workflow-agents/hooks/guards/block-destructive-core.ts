@@ -4464,6 +4464,18 @@ const DEV_LOGIN_MAX_HORIZON_MS = 3 * 24 * 60 * 60 * 1000;
 const TRUSTED_CONNECTION_KEYS = new Set(['account', 'user', 'role', 'warehouse', 'database', 'schema', 'authenticator', 'private_key_path', 'private_key_file']);
 
 /**
+ * True when a connection key is one the trusted login may carry. NanoClaw stages every connection with
+ * `session_parameters = { QUERY_TAG = "…" }`; a query tag only labels the session's queries, so a table holding that
+ * one string is allowed and any other session parameter is not.
+ */
+function trustedConnectionEntry(key: string, value: unknown): boolean {
+    if (TRUSTED_CONNECTION_KEYS.has(key)) return typeof value === 'string';
+    if (key !== 'session_parameters' || !value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const params = Object.entries(value as Record<string, unknown>);
+    return params.length === 1 && params[0][0].toUpperCase() === 'QUERY_TAG' && typeof params[0][1] === 'string';
+}
+
+/**
  * True when the file can't change between this check and snow reading it: it sits on a read-only mount, as the
  * container's staged Snowflake config does. A file the agent's user owns could be rewritten, or made writable, first.
  */
@@ -4497,7 +4509,7 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
         const section = (toml.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>)[name];
         if (!section || typeof section !== 'object' || Array.isArray(section)) return false;
         const entries = Object.entries(section as Record<string, unknown>);
-        if (entries.some(([k, v]) => !TRUSTED_CONNECTION_KEYS.has(k) || typeof v !== 'string')) return false;
+        if (!entries.every(([k, v]) => trustedConnectionEntry(k, v))) return false;
         const get = (k: string) => (section as Record<string, string>)[k];
         return get('user')?.toUpperCase() === login.user.toUpperCase()
             && get('account')?.toUpperCase() === login.account.toUpperCase()

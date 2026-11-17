@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -44,6 +44,9 @@ const GOOD_CONNECTIONS = [
 ].join('\n');
 
 const verdict = (command: string) => evaluateBashCommand(command, { cwd: '/tmp' }).action;
+
+// What NanoClaw writes into the container: every staged connection carries a query tag.
+const STAGED_CONNECTIONS = GOOD_CONNECTIONS.replace(/^(\[[a-z_]+\])$/gm, '$1\nsession_parameters = { QUERY_TAG = "nanoclaw:agent:session" }');
 
 beforeAll(() => {
     for (const k of ['HOME', DEV_SCOPE_FILE_ENV, 'DEV_LOGIN_TEST_EXPORTED', 'OLDPWD']) saved[k] = process.env[k];
@@ -269,6 +272,82 @@ describe('anything that could point the command at another login keeps the card'
         ['a value that is not a string', GOOD_CONNECTIONS.replace('role = "AGENT_DEV"', 'role = 1'), ''],
     ])('%s', (_name, connections, config) => {
         writeConnections(connections, config);
+        expect(verdict('snow sql -c acme_dev -q "drop table prod_db.s.t"')).toBe('gate');
+    });
+});
+
+describe('the connection as NanoClaw stages it, with a query tag', () => {
+    const buildFile = [
+        'cd /workspace/artifacts/demo/build; cat > sql/02_build.sql <<\'EOF\'',
+        'create schema if not exists dev_db.scratch_demo;',
+        'create or replace table dev_db.scratch_demo.orders as select 1 id;',
+        'select count(*) from dev_db.scratch_demo.orders;',
+        'EOF',
+        'snow sql -c acme_dev --format csv -f sql/02_build.sql > results/02.csv 2>&1; cat results/02.csv',
+    ].join('\n');
+    const editFile = [
+        'cd /workspace/artifacts/demo/build; python3 - <<\'EOF\'',
+        "p='sql/02_build.sql'; s=open(p).read(); open(p,'w').write(s.replace('1 id', '2 id'))",
+        'EOF',
+        'grep -n "id" sql/02_build.sql',
+        'snow sql -c acme_dev --format csv -f sql/02_build.sql > results/02.csv 2>&1; tail -12 results/02.csv',
+    ].join('\n');
+    const wrapped = 'cd /workspace/artifacts/demo/build && snow sql -c acme_dev --format csv -f /workspace/artifacts/demo/build/sql/04.sql > results/04.csv 2>results/04.err; cat results/04.csv; head -3 results/04.err; wc -l results/04.csv; tail -n 2 results/04.csv';
+
+    // The same wrapper around a prod statement: the trusted login is all that lets it through.
+    const wrappedProd = 'cd /workspace/artifacts/demo/build && snow sql -c acme_dev --format csv -q "drop table prod_db.s.t" > results/04.csv 2>results/04.err; cat results/04.csv; head -3 results/04.err';
+
+    beforeEach(() => {
+        writeScope({ user: 'AGENT_DEV_USER', account: 'ACME-DEV1', verifiedUntil: hours(24) });
+        writeConnections(STAGED_CONNECTIONS);
+    });
+
+    test.each([
+        ['a SQL file written on the line, then run', buildFile],
+        ['a SQL file edited by a script, then run', editFile],
+        ['a cd, output redirected to files, read-only commands after', wrapped],
+        ['the same wrapper around a statement outside the dev databases', wrappedProd],
+    ])('%s runs without a card', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['an env assignment on the step', 'TZ=UTC snow sql -c acme_dev -q "drop table prod_db.s.t"'],
+        ['a SNOWFLAKE_ name on the line', 'SNOWFLAKE_CONNECTIONS_ACME_DEV_USER=ADMIN_USER snow sql -c acme_dev -q "drop table prod_db.s.t"'],
+        ['an account override', 'cd /tmp && snow sql -c acme_dev --account OTHER-ACCT -q "drop table prod_db.s.t" > /tmp/o.csv'],
+        ['a connection held in a variable', 'C=acme_dev; snow sql -c "$C" -q "drop table prod_db.s.t"'],
+        ['a connection with no trusted login, on a non-dev statement', 'cd /tmp && snow sql -c acme_admin -q "drop table prod_db.s.t" > /tmp/o.csv 2>&1; cat /tmp/o.csv'],
+    ])('%s keeps the card', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+
+    test('a SNOWFLAKE_ variable in the environment keeps the card', () => {
+        process.env.SNOWFLAKE_CONNECTIONS_ACME_DEV_USER = 'ADMIN_USER';
+        try {
+            expect(verdict(wrappedProd)).toBe('gate');
+        } finally {
+            delete process.env.SNOWFLAKE_CONNECTIONS_ACME_DEV_USER;
+        }
+    });
+
+    test('a trailing command that deletes is still stopped on its own account', () => {
+        const result = evaluateBashCommand(`${wrapped}; rm -rf /srv/data`, { cwd: '/tmp' });
+        expect(result.action).toBe('block');
+        expect((result as { reason?: string }).reason).toStartWith('BLOCKED: rm is not allowed');
+    });
+
+    test('an expired verification keeps the card', () => {
+        writeScope({ user: 'AGENT_DEV_USER', account: 'ACME-DEV1', verifiedUntil: hours(-1) });
+        expect(verdict(wrappedProd)).toBe('gate');
+    });
+
+    test.each([
+        ['another session parameter', 'session_parameters = { TIMEZONE = "UTC" }'],
+        ['a second parameter beside the tag', 'session_parameters = { QUERY_TAG = "t", TIMEZONE = "UTC" }'],
+        ['a tag that is not a string', 'session_parameters = { QUERY_TAG = 1 }'],
+        ['session parameters that are not a table', 'session_parameters = "QUERY_TAG=t"'],
+    ])('a connection with %s is not trusted', (_name, line) => {
+        writeConnections(GOOD_CONNECTIONS.replace('[acme_dev]', `[acme_dev]\n${line}`));
         expect(verdict('snow sql -c acme_dev -q "drop table prod_db.s.t"')).toBe('gate');
     });
 });
