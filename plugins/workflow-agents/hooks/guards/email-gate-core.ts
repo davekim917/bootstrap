@@ -53,12 +53,17 @@ export const EMAIL_BYPASS_FLAGS = new Set(['--dry-run', '--draft', '--help', '-h
 const NOT_A_PLAIN_COMMAND = /[;&|`$()<>{}\[\]*?!~#\\\n\t\r\0]/;
 // gws gmail options that take no value, so a flag after one is still an option rather than that option's value.
 const GWS_BOOLEAN_OPTIONS = new Set(['--html', '--dry-run', '--draft', '--help', '-h', '--no-original-attachments']);
+// The one tail an agent adds to read a no-send call's output: stderr merged into stdout, then at most one pipe into a
+// bare head or tail with a line count. It only moves output, so gws runs with the same words either way.
+const OUTPUT_TRIM_TAIL = /(?: +2>&1)?(?: *\| *(?:head|tail)(?: +-(?:\d{1,6}|n *\d{1,6}))?)? *$/;
 
 /**
- * True when the command is one gws call with literal words and a real `--dry-run`, `--draft`, `--help` or `-h` option. It reasons about
- * no shell syntax: a command holding any character that could make bash do more is never excused, and gets a card.
+ * True when the command is one gws call with literal words and a real `--dry-run`, `--draft`, `--help` or `-h` option,
+ * optionally followed by OUTPUT_TRIM_TAIL. It reasons about no other shell syntax: a command holding any character
+ * that could make bash do more is never excused, and gets a card.
  */
-export function sendsNothing(command: string): boolean {
+export function sendsNothing(fullCommand: string): boolean {
+    const command = fullCommand.slice(0, OUTPUT_TRIM_TAIL.exec(fullCommand)!.index);
     if (NOT_A_PLAIN_COMMAND.test(command)) return false;
     const tokens: Array<{ text: string; quoted: boolean }> = [];
     let i = 0;

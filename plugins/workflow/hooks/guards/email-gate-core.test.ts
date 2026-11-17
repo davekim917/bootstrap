@@ -134,6 +134,46 @@ describe('evaluateEmailSend — gate decision', () => {
         }
     });
 
+    test('a no-send call may merge stderr and pipe once into a bare head or tail with a count', () => {
+        for (const cmd of [
+            // Regression: a help lookup before a reply-all asked for approval, then the send asked again.
+            'gws gmail +reply-all --help 2>&1 | head -30',
+            'gws gmail +reply-all --help 2>&1',
+            'gws gmail +send -h | head',
+            'gws gmail +reply --help | tail -n 30',
+            'gws gmail +forward --help 2>&1 | tail -n30',
+            'gws gmail users messages send --help 2>&1|head -60',
+            'gws gmail +send --to a@example.com --body hi --dry-run 2>&1 | head -40',
+            'gws gmail +send --draft --to a@example.com --body hi | tail -5',
+        ]) {
+            expect([cmd, evaluateEmailSend(cmd, INTERACTIVE)]).toEqual([cmd, { action: 'allow' }]);
+        }
+    });
+
+    test('a no-send call with any other tail still gates', () => {
+        for (const cmd of [
+            'gws gmail +reply-all --help 2>&1 | head -30; gws gmail +send --to a@example.com --body x',
+            'gws gmail +reply-all --help && gws gmail +send --to a@example.com --body x',
+            'gws gmail +reply-all --help 2>&1 | grep to',
+            'gws gmail +reply-all --help 2>&1 | head -c 30',
+            'gws gmail +reply-all --help 2>&1 | head -n +30',
+            'gws gmail +reply-all --help 2>&1 | head -30 | sh',
+            'gws gmail +reply-all --help |& head -30',
+            'gws gmail +reply-all --help | head -30 2>&1',
+            'gws gmail +reply-all --help 2>&1 | head $(gws gmail +send --to a@example.com --body x)',
+            'gws gmail +reply-all --help 2>&1 | head `gws gmail +send --to a@example.com --body x`',
+            'gws gmail +reply-all --help > out.txt',
+            'gws gmail +reply-all --help 2>&1 > out.txt',
+            'gws gmail +reply-all --help 2>out.txt',
+            'gws gmail +send --to a@example.com --help <<EOF\nhi\nEOF',
+            "gws gmail +send --to a@example.com --body 'x | head -30",
+            'gws gmail +send --subject --help 2>&1 | head -30',
+            'gws gmail +send --to a@example.com --body x 2>&1 | head -30',
+        ]) {
+            expect([cmd, evaluateEmailSend(cmd, INTERACTIVE).action]).toEqual([cmd, 'gate']);
+        }
+    });
+
     test('any shell syntax beside a send, however harmless, means a card, not an excuse', () => {
         const send = ['gws', 'gmail', '+' + 'send'].join(' ');
         const body = `${send} --to victim@example.com --subject Hi --body`;
