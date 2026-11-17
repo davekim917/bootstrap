@@ -60,8 +60,9 @@ test('any write outside the dev databases fails', () => {
     g('USAGE', 'STREAMLIT', 'DEV_DB.S.APP'),
     g('USAGE', 'FUNCTION', 'DEV_DB.S.CALLS_A_SERVICE(VARCHAR)'),
     g('USAGE', 'A_KIND_ADDED_LATER', 'DEV_DB.S.X'),
+    g('IMPERSONATE', 'USER', 'UNWALKED_USER'),
   ], ['DEV_DB']);
-  assert.equal(problems.length, 22);
+  assert.equal(problems.length, 23);
 });
 
 test('the walk covers PUBLIC, inherited roles, database roles and users the login owns', () => {
