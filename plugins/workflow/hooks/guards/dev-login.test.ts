@@ -297,7 +297,10 @@ describe('the connection as NanoClaw stages it, with a query tag', () => {
     // The same wrapper around a prod statement: the trusted login is all that lets it through.
     const wrappedProd = 'cd /workspace/artifacts/demo/build && snow sql -c acme_dev --format csv -q "drop table prod_db.s.t" > results/04.csv 2>results/04.err; cat results/04.csv; head -3 results/04.err';
 
-    beforeEach(() => writeConnections(STAGED_CONNECTIONS));
+    beforeEach(() => {
+        writeScope({ user: 'AGENT_DEV_USER', account: 'ACME-DEV1', verifiedUntil: hours(24) });
+        writeConnections(STAGED_CONNECTIONS);
+    });
 
     test.each([
         ['a SQL file written on the line, then run', buildFile],
