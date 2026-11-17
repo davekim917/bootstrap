@@ -64,8 +64,8 @@ export function writeGrantsOutside(grants, databases) {
     if (on === 'WAREHOUSE' && WAREHOUSE_PRIVILEGES.has(privilege)) continue;
     if (COMPUTE_OBJECTS.has(on) && privilege === 'USAGE') continue;
     if (on === 'ACCOUNT' && (ACCOUNT_FEATURE_PRIVILEGES.has(privilege) || OWN_TASK_PRIVILEGES.has(privilege))) continue;
-    // Signing in as an owned user is walked like a role it holds.
-    if (on === 'USER' && privilege === 'OWNERSHIP') continue;
+    // Signing in as an owned user, or running as an impersonated one, is walked like a role it holds.
+    if (on === 'USER' && (privilege === 'OWNERSHIP' || privilege === 'IMPERSONATE')) continue;
     const db = databaseOf(on, g.name);
     // Snowflake's own database: its procedures run with the caller's rights or need schema access the role lacks.
     if (db === 'SNOWFLAKE' && on !== 'DATABASE') continue;
@@ -145,7 +145,7 @@ export function collectGrants(user, rows, sessionRole) {
         queue.push({ kind: on, name: g.name });
         if (privilege === 'USAGE') edges.set(key, [...(edges.get(key) ?? []), `${on}:${g.name}`]);
       }
-      else if (on === 'USER' && privilege === 'OWNERSHIP') queue.push({ kind: 'USER', name: g.name });
+      else if (on === 'USER' && (privilege === 'OWNERSHIP' || privilege === 'IMPERSONATE')) queue.push({ kind: 'USER', name: g.name });
       else if (on === 'PROCEDURE' && privilege === 'USAGE' && !inSnowflakeDatabase(g.name)) {
         // A procedure that runs with its owner's rights lets the caller act as that owner, so its owner is walked too.
         const name = String(g.name);

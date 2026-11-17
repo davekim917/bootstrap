@@ -231,7 +231,7 @@ test('operating a task walks its owner role and any user it executes as: a dev-o
       g('OPERATE', 'TASK', 'DEV_DB.S.PROD_OWNED'),
       g('OPERATE', 'TASK', 'DEV_DB.S.RUNS_AS_USER'),
     ],
-    'show grants to role "DEV_OWNER"': [g('OWNERSHIP', 'TABLE', 'DEV_DB.S.T'), g('EXECUTE TASK', 'ACCOUNT', 'ACME')],
+    'show grants to role "DEV_OWNER"': [g('OWNERSHIP', 'TABLE', 'DEV_DB.S.T'), g('EXECUTE TASK', 'ACCOUNT', 'ACME'), g('IMPERSONATE', 'USER', 'SERVICE_USER')],
     'describe task DEV_DB.S.DEV_OWNED': describedTask('DEV_OWNED', 'DEV_OWNER'),
     'describe task DEV_DB.S.PROD_OWNED': describedTask('PROD_OWNED', 'PROD_WRITER'),
     'show grants to role "PROD_WRITER"': [g('INSERT', 'TABLE', 'PROD_DB.S.FROM_TASK_OWNER')],
