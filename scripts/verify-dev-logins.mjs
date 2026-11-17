@@ -32,6 +32,9 @@ const ACCOUNT_FEATURE_PRIVILEGES = new Set([
   'MANAGE ACCESS ON CHART ARTIFACTS', 'MANAGE ACCESS ON DASHBOARD ARTIFACTS', 'MANAGE ACCESS ON FILE ARTIFACTS',
   'MANAGE ACCESS ON REPORT ARTIFACTS', 'MANAGE ACCESS ON THREAD ARTIFACTS',
 ]);
+// Running tasks a role owns (a role must hold one of these for its tasks to run at all): a task acts with only its
+// owner's privileges, which the walk reads like any other, so these widen nothing it does not already count.
+const OWN_TASK_PRIVILEGES = new Set(['EXECUTE TASK', 'EXECUTE MANAGED TASK']);
 const COMPUTE_OBJECTS = new Set(['COMPUTE_POOL', 'AI_GATEWAY']);
 
 /** The database an object's grant name lives in, upper-cased as Snowflake folds it; null for account-level objects. */
@@ -60,7 +63,7 @@ export function writeGrantsOutside(grants, databases) {
     if ((on === 'ROLE' || on === 'DATABASE_ROLE') && (privilege === 'USAGE' || privilege === 'OWNERSHIP')) continue;
     if (on === 'WAREHOUSE' && WAREHOUSE_PRIVILEGES.has(privilege)) continue;
     if (COMPUTE_OBJECTS.has(on) && privilege === 'USAGE') continue;
-    if (on === 'ACCOUNT' && ACCOUNT_FEATURE_PRIVILEGES.has(privilege)) continue;
+    if (on === 'ACCOUNT' && (ACCOUNT_FEATURE_PRIVILEGES.has(privilege) || OWN_TASK_PRIVILEGES.has(privilege))) continue;
     // Signing in as an owned user is walked like a role it holds.
     if (on === 'USER' && privilege === 'OWNERSHIP') continue;
     const db = databaseOf(on, g.name);
@@ -157,6 +160,18 @@ export function collectGrants(user, rows, sessionRole) {
           continue;
         }
         if (executeAs !== 'CALLER' && executeAs !== 'RESTRICTED CALLER') throw new Error(`unknown execute-as for procedure ${g.name}: ${executeAs}`);
+        grants.push({ ...g, ownerWalked: true });
+        continue;
+      }
+      else if (on === 'TASK' && privilege === 'OPERATE') {
+        // Whoever starts a task, it runs as its owner role, or as the user it names to execute as, so both are walked.
+        const task = rows(`describe task ${g.name}`)[0];
+        if (!task || !('execute_as_user' in task)) throw new Error(`task ${g.name} could not be described`);
+        const described = [task.database_name, task.schema_name, task.name].map(p => (/^[A-Z_][A-Z0-9_$]*$/.test(p) ? p : quoteIdent(p))).join('.');
+        if (described !== String(g.name)) throw new Error(`describe task ${g.name} returned ${described}`);
+        if (task.owner_role_type !== 'ROLE' || !task.owner) throw new Error(`task ${g.name} has no owner role (${task.owner_role_type} ${task.owner})`);
+        queue.push({ kind: 'ROLE', name: task.owner });
+        if (task.execute_as_user) queue.push({ kind: 'USER', name: task.execute_as_user });
         grants.push({ ...g, ownerWalked: true });
         continue;
       }

@@ -26,6 +26,8 @@ test('writes inside the dev databases and reads anywhere pass', () => {
     g('USAGE', 'ROLE', 'READER'),
     g('USAGE', 'COMPUTE_POOL', 'SYSTEM_COMPUTE_POOL_CPU'),
     g('USE AI FUNCTIONS', 'ACCOUNT', 'ACME'),
+    g('EXECUTE TASK', 'ACCOUNT', 'ACME'),
+    g('EXECUTE MANAGED TASK', 'ACCOUNT', 'ACME'),
     g('USAGE', 'PROCEDURE', 'SNOWFLAKE.CORTEX.CREATE_AI_FUNCTION(VARCHAR)'),
     g('INSTANTIATE', 'CLASS', 'SNOWFLAKE.ML.FORECAST'),
     g('OWNERSHIP', 'ROLE', 'OWNED_ROLE'),
@@ -45,7 +47,6 @@ test('any write outside the dev databases fails', () => {
     g('OPERATE', 'TASK', 'PROD_DB.S.LOAD'),
     g('MANAGE GRANTS', 'ACCOUNT', 'ACME'),
     g('CREATE DATABASE', 'ACCOUNT', 'ACME'),
-    g('EXECUTE TASK', 'ACCOUNT', 'ACME'),
     g('MODIFY', 'WAREHOUSE', 'PROD_WH'),
     g('OWNERSHIP', 'SHARE', 'ACME_SHARE'),
     g('OWNERSHIP', 'DATABASE', 'SNOWFLAKE'),
@@ -60,7 +61,7 @@ test('any write outside the dev databases fails', () => {
     g('USAGE', 'FUNCTION', 'DEV_DB.S.CALLS_A_SERVICE(VARCHAR)'),
     g('USAGE', 'A_KIND_ADDED_LATER', 'DEV_DB.S.X'),
   ], ['DEV_DB']);
-  assert.equal(problems.length, 23);
+  assert.equal(problems.length, 22);
 });
 
 test('the walk covers PUBLIC, inherited roles, database roles and users the login owns', () => {
@@ -217,4 +218,46 @@ test('a SQL function passes; a function in any other language, or one whose name
     'USAGE on FUNCTION DEV_DB.S.CALLS_A_SERVICE(VARCHAR)',
     'USAGE on FUNCTION UTIL_DB.S."Quoted"()',
   ]);
+});
+
+const describedTask = (name, owner, extra = {}) => [{ database_name: 'DEV_DB', schema_name: 'S', name, owner, owner_role_type: 'ROLE', execute_as_user: null, ...extra }];
+
+test('operating a task walks its owner role and any user it executes as: a dev-only owner passes, one that writes elsewhere fails', () => {
+  const grants = {
+    'show grants to user "AGENT"': [{ role: 'DEV_ROLE' }],
+    'show grants to role "DEV_ROLE"': [
+      g('USAGE', 'ROLE', 'DEV_OWNER'),
+      g('OPERATE', 'TASK', 'DEV_DB.S.DEV_OWNED'),
+      g('OPERATE', 'TASK', 'DEV_DB.S.PROD_OWNED'),
+      g('OPERATE', 'TASK', 'DEV_DB.S.RUNS_AS_USER'),
+    ],
+    'show grants to role "DEV_OWNER"': [g('OWNERSHIP', 'TABLE', 'DEV_DB.S.T'), g('EXECUTE TASK', 'ACCOUNT', 'ACME')],
+    'describe task DEV_DB.S.DEV_OWNED': describedTask('DEV_OWNED', 'DEV_OWNER'),
+    'describe task DEV_DB.S.PROD_OWNED': describedTask('PROD_OWNED', 'PROD_WRITER'),
+    'show grants to role "PROD_WRITER"': [g('INSERT', 'TABLE', 'PROD_DB.S.FROM_TASK_OWNER')],
+    'describe task DEV_DB.S.RUNS_AS_USER': describedTask('RUNS_AS_USER', 'DEV_OWNER', { execute_as_user: 'SERVICE_USER' }),
+    'show grants to user "SERVICE_USER"': [{ role: 'DEV_OWNER' }, g('DELETE', 'TABLE', 'PROD_DB.S.FROM_TASK_USER')],
+    'show grants to role "PUBLIC"': [],
+  };
+  assert.deepEqual(writeGrantsOutside(collectGrants('AGENT', fixture(grants), 'DEV_ROLE'), ['DEV_DB']).sort(), [
+    'DELETE on TABLE PROD_DB.S.FROM_TASK_USER', 'GRANTS HIDDEN FROM DEV_ROLE on ROLE PROD_WRITER', 'INSERT on TABLE PROD_DB.S.FROM_TASK_OWNER',
+  ]);
+});
+
+test('a task whose owner or identity cannot be read for certain fails the check', () => {
+  for (const [why, described, error] of [
+    ['no execute-as column', [{ database_name: 'DEV_DB', schema_name: 'S', name: 'T', owner: 'DEV_ROLE', owner_role_type: 'ROLE' }], /could not be described/],
+    ['nothing described', [], /could not be described/],
+    ['another task described', describedTask('t', 'DEV_ROLE'), /returned DEV_DB\.S\."t"/],
+    ['owned by a database role', describedTask('T', 'DEV_DB.DBR', { owner_role_type: 'DATABASE_ROLE' }), /no owner role/],
+    ['no owner', describedTask('T', null), /no owner role/],
+  ]) {
+    const grants = {
+      'show grants to user "AGENT"': [{ role: 'DEV_ROLE' }],
+      'show grants to role "DEV_ROLE"': [g('OPERATE', 'TASK', 'DEV_DB.S.T')],
+      'describe task DEV_DB.S.T': described,
+      'show grants to role "PUBLIC"': [],
+    };
+    assert.throws(() => collectGrants('AGENT', fixture(grants), 'DEV_ROLE'), error, why);
+  }
 });
