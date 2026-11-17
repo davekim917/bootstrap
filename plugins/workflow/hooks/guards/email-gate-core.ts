@@ -50,8 +50,9 @@ const NOT_A_PLAIN_COMMAND = /[;&|`$()<>{}\[\]*?!~#\\\n\t\r\0]/;
 // gws gmail options that take no value, so a flag after one is still an option rather than that option's value.
 const GWS_BOOLEAN_OPTIONS = new Set(['--html', '--dry-run', '--draft', '--help', '-h', '--no-original-attachments']);
 // The one tail an agent adds to read a no-send call's output: stderr merged into stdout, then at most one pipe into a
-// bare head or tail with a line count. It only moves output, so gws runs with the same words either way.
-const OUTPUT_TRIM_TAIL = /(?: +2>&1)?(?: *\| *(?:head|tail)(?: +-(?:\d{1,6}|n *\d{1,6}))?)? *$/;
+// bare head or tail with a line count. It only moves output, so gws runs with the same words either way. Every space
+// run is bounded: the regex is tried at each start position, so an unbounded run makes a long run of spaces quadratic.
+const OUTPUT_TRIM_TAIL = /(?: {1,8}2>&1)?(?: {0,8}\| {0,8}(?:head|tail)(?: {1,8}-(?:\d{1,6}|n {0,8}\d{1,6}))?)? {0,8}$/;
 
 /**
  * True when the command is one gws call with literal words and a real `--dry-run`, `--draft`, `--help` or `-h` option,

@@ -150,6 +150,13 @@ describe('evaluateEmailSend — gate decision', () => {
         }
     });
 
+    test('a long run of spaces is read in linear time', () => {
+        const cmd = `gws gmail +send --to a@example.com --body x${' '.repeat(100_000)}x`;
+        const started = performance.now();
+        expect(evaluateEmailSend(cmd, INTERACTIVE).action).toBe('gate');
+        expect(performance.now() - started).toBeLessThan(2_000);
+    });
+
     test('a no-send call with any other tail still gates', () => {
         for (const cmd of [
             'gws gmail +reply-all --help 2>&1 | head -30; gws gmail +send --to a@example.com --body x',
@@ -166,7 +173,8 @@ describe('evaluateEmailSend — gate decision', () => {
             'gws gmail +reply-all --help 2>&1 > out.txt',
             'gws gmail +reply-all --help 2>out.txt',
             'gws gmail +send --to a@example.com --help <<EOF\nhi\nEOF',
-            "gws gmail +send --to a@example.com --body 'x | head -30",
+            "gws gmail +send --help --body 'x | head -30",
+            'gws gmail +send --to a@example.com --body x --help2>&1',
             'gws gmail +send --subject --help 2>&1 | head -30',
             'gws gmail +send --to a@example.com --body x 2>&1 | head -30',
         ]) {
