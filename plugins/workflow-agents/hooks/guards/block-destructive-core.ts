@@ -7696,6 +7696,7 @@ export function writeGateRequest(
         command,
         ...(card.pureSend ? { pureSend: true } : {}),
         ...(card.fullSummary !== undefined ? { fullSummary: card.fullSummary } : {}),
+        ...(card.wholeEmail !== undefined ? { wholeEmail: card.wholeEmail } : {}),
     });
 
     const outbound = new Database(NANOCLAW_OUTBOUND_DB);
@@ -7893,8 +7894,8 @@ export function changesProduction(command: string, cwd: string = currentWorkingD
  * body (from/to/cc/bcc/body); when omitted, the card falls back to `reason` for
  * both label and summary. Threading summary gives OpenCode's approval card the
  * same structured content as Claude's in-tree card (S-QA2 parity). The 6th
- * `card` carries the verdict's own `pureSend` and `fullSummary`: the host leaves
- * the command off the card only when one of them is set. The 7th `draft` carries the verdict's draft binding: once
+ * `card` carries the verdict's own `pureSend`, `fullSummary` and `wholeEmail`: the host leaves
+ * the command off the card only when one of the first two is set, and shows `wholeEmail` when the card cuts the message. The 7th `draft` carries the verdict's draft binding: once
  * approved, the draft is re-read, and a changed one is refused through
  * `onChanged` and answers 'denied'.
  */
