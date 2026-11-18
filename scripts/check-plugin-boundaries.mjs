@@ -755,11 +755,11 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.43.0') {
-  fail(`bootstrap-workflow release must be version 5.43.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.43.1') {
+  fail(`bootstrap-workflow release must be version 5.43.1 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.43.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.43.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.43.1') {
+  fail(`bootstrap-workflow-agents release must be version 2.43.1 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
 if (orchestrateClaudeManifest?.version !== '3.8.3') {
@@ -964,6 +964,7 @@ for (const fileName of [
 const crossModelTokens = [
   'codex exec',
   '--ignore-user-config',
+  '-m gpt-6.1-sol',
   'model_reasoning_effort="high"',
   '-s read-only',
   '3600000',
@@ -1004,7 +1005,16 @@ for (const contractPath of [
   if (forbidden.length > 0) {
     fail(`${contractPath}: cross-model review must keep the read-only Codex sandbox and 60-minute ceiling (found ${forbidden.join(', ')})`);
   }
+  const unpinned = (content ?? '').split('\n').filter((line) => /^codex exec\b/.test(line.trim()) && !/\s-m\s/.test(line));
+  if (unpinned.length > 0) {
+    fail(`${contractPath}: every Codex review command must name its model with -m, since Codex's own default can be a small tier (found ${unpinned.join(' | ')})`);
+  }
 }
+requireTextTokens(
+  'plugins/analytics-verify/skills/analytics-verify/SKILL.md',
+  ['codex exec -m gpt-6.1-sol'],
+  'a Codex verifier that names its model',
+);
 
 for (const root of ['plugins/workflow/skills', 'plugins/workflow-agents/skills']) {
   requireTextTokens(
