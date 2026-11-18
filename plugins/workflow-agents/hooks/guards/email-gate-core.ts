@@ -39,6 +39,7 @@
  * only sound place to catch all of those is the egress proxy.
  */
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { CARD_SUMMARY_MAX_CHARS, HTML_MAX_CHARS, clip, code, defuse, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, senderOnFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
 import { readAttachments } from './gws-attachments-core';
 
@@ -134,7 +135,7 @@ export interface DraftBinding {
 }
 
 /** What the host is told about leaving the command off the card. */
-export type EmailCard = Pick<EmailGateVerdict, 'pureSend' | 'fullSummary'>;
+export type EmailCard = Pick<EmailGateVerdict, 'pureSend' | 'fullSummary' | 'wholeEmail'>;
 
 /** Verdict for the email gate. On `gate`, `label` + `summary`
  *  describe the send for the approver. */
@@ -157,6 +158,12 @@ export interface EmailGateVerdict {
      * `summary` and the command.
      */
     fullSummary?: string;
+    /**
+     * Set when `summary` had to cut the message: every line of the summary, with the body exactly as the send carries
+     * it (an HTML body also as the recipient reads it). A host that cannot show the whole message on the card puts this
+     * in front of the approver, or posts no card.
+     */
+    wholeEmail?: string;
     /**
      * Set when the card shows a stored draft the command sends by id. After approval the adapter re-reads the draft
      * (`draftChangedSince`) and refuses the send if it is no longer this version.
@@ -252,8 +259,14 @@ export function evaluateEmailToolCall(
     if (body) {
         const isHtml = html !== undefined || /<(?:p|div|br|html|body|table|span|a)\b[^>]{0,500}>/i.test(body.slice(0, 20_000));
         const header = `Message${isHtml ? ' (HTML, shown as text)' : ''}:`;
-        const used = lines.join('\n').length + header.length + 8;
-        lines.push('', header, quoteBlock(clip((isHtml ? htmlToText(body) : body.slice(0, 20_000).trim()) || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used))));
+        const text = (isHtml ? htmlToText(body) : body.trim()) || '(empty)';
+        const htmlHead = isHtml && body.length > HTML_MAX_CHARS ? body.length : null;
+        const cut = cutBody(text, CARD_SUMMARY_MAX_CHARS - (lines.join('\n').length + header.length + 4), quoteBlock, htmlHead);
+        const fields = [...lines];
+        lines.push('', ...cut.note, header, cut.block);
+        const summary = fitLines(roomForBody(lines, lines.length - 1, cut), CARD_SUMMARY_MAX_CHARS);
+        const whole = !cut.note.length && summary === lines.join('\n') ? null : [...fields, '', ...exactBody(isHtml && htmlHead === null ? text : null, body)].join('\n');
+        return { action: 'gate', label, reason: label, summary, ...(whole === null ? {} : { wholeEmail: whole }) };
     }
 
     return {
@@ -479,17 +492,24 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     lines.push('');
     let bodyCut = false;
     let formatted: { text: string; signed: boolean } | null = null;
-    let wholeMessage: { at: number; block: string } | null = null;
+    let wholeMessage: { at: number; block: string; noteAt: number | null; exact: string[]; cut: BodyCut } | null = null;
     if (body.text !== null) {
         const signature = signatureOnFile(sender?.account ?? null, env.signaturesDir ?? SIGNATURES_DIR);
         formatted = isHtml ? formattedText(body.text, signature) : null;
         const text = formatted ? formatted.text : isHtml ? htmlToText(body.text) : body.text.trim();
         const header = `Message${formatted ? ' (formatted)' : isHtml ? ' (HTML, shown as text)' : ''}:`;
-        const used = lines.join('\n').length + header.length + 120;
-        const shown = clip(text || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used));
-        bodyCut = shown !== (text || '(empty)');
-        lines.push(header, messageBlock(shown));
-        wholeMessage = { at: lines.length - 1, block: messageBlock(text || '(empty)') };
+        const after = 112;
+        const htmlHead = isHtml && !formatted && body.text.length > HTML_MAX_CHARS ? body.text.length : null;
+        const cut = cutBody(text || '(empty)', CARD_SUMMARY_MAX_CHARS - (lines.join('\n').length + header.length + after), messageBlock, htmlHead);
+        bodyCut = cut.note.length > 0;
+        lines.push(...cut.note, header, cut.block);
+        wholeMessage = {
+            at: lines.length - 1,
+            block: messageBlock(text || '(empty)'),
+            noteAt: bodyCut ? lines.length - 3 : null,
+            exact: exactBody(isHtml && htmlHead === null ? text : null, body.text),
+            cut,
+        };
         if (formatted?.signed) lines.push(`Signature: ${inline(sender!.mailbox)}'s Gmail signature, as the host keeps it on file`);
         if (body.note) lines.push(body.note);
     } else if (draft && draftRead && draftTarget) {
@@ -510,7 +530,10 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         const list = [...unresolved];
         lines.push(`⚠️ ${list.map(code).join(', ')} ${list.length === 1 ? 'is' : 'are'} only known when the command runs, so the value${list.length === 1 ? '' : 's'} above may differ.`);
     }
-    const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
+    const summary = fitLines(wholeMessage ? roomForBody(lines, wholeMessage.at, wholeMessage.cut) : lines, CARD_SUMMARY_MAX_CHARS);
+    const exactly = wholeMessage && (bodyCut || summary !== lines.join('\n'))
+        ? { wholeEmail: lines.flatMap((line, k) => k === wholeMessage!.noteAt || k === wholeMessage!.at - 1 ? [] : k === wholeMessage!.at ? wholeMessage!.exact : [line]).join('\n') }
+        : {};
     if (!shape) return { action: 'gate', label, summary, deny: SEND_ALONE };
     const attachmentsRead = readAttachments([...shape.options.get('-a') ?? [], ...shape.options.get('--attach') ?? []], env.cwd);
     if (attachmentsRead.refusal) return { action: 'gate', label, summary, deny: attachmentsRead.refusal };
@@ -539,9 +562,72 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         && !unresolved.size && body.text !== null && bodyFaithful && attachmentsRead.namesAsSent;
     if (faithful && !bodyCut && summary === lines.join('\n')) return { action: 'gate', label, summary, pureSend: true };
     const whole = faithful && wholeMessage
-        ? lines.map((line, k) => k === wholeMessage!.at ? wholeMessage!.block : line).join('\n')
+        ? lines.flatMap((line, k) => k === wholeMessage!.noteAt ? [] : [k === wholeMessage!.at ? wholeMessage!.block : line]).join('\n')
         : null;
-    return { action: 'gate', label, summary, ...(whole !== null && whole.length <= FULL_SUMMARY_MAX_CHARS ? { fullSummary: whole } : {}) };
+    return { action: 'gate', label, summary, ...exactly, ...(whole !== null && whole.length <= FULL_SUMMARY_MAX_CHARS ? { fullSummary: whole } : {}) };
+}
+
+/**
+ * The message lines of `wholeEmail`: the body exactly as the command or tool call gives it, after the text a recipient
+ * reads when it is HTML and that text was read whole. A reply or forward also carries the original message under it.
+ */
+function exactBody(readAs: string | null, given: string): string[] {
+    // Named by the body's own hash, so no line of the body can pose as the one that ends it.
+    const mark = `-- ${createHash('sha256').update(given).digest('hex').slice(0, 16)} --`;
+    const what = readAs === null ? 'Message' : 'Message source';
+    return [
+        ...(readAs === null ? [] : ['Message, as the recipient reads it:', readAs, '']),
+        `${what}, exactly as the send gives it: ${[...given].length.toLocaleString('en-US')} characters between the two ${mark} lines.`,
+        mark,
+        given,
+        mark,
+    ];
+}
+
+interface BodyCut {
+    block: string;
+    note: string[];
+    /** The note for a card with no room for any of the message. */
+    none: string;
+}
+
+/**
+ * The body's block as the card shows it: `render`ed, in `room` characters for the block itself or at least 200. A body
+ * that does not fit is cut and `note` says so. Counts are Unicode code points of the text the card shows and of the
+ * whole text; when that text was read from only the start of an HTML source (`htmlHead`, the source's length in the
+ * UTF-16 units that start is measured in), the note says so.
+ */
+function cutBody(text: string, room: number, render: (shown: string) => string, htmlHead: number | null): BodyCut {
+    const total = [...text].length;
+    const n = (k: number) => k.toLocaleString('en-US');
+    const of = htmlHead === null ? `${n(total)} characters` : `the text read from the first ${n(HTML_MAX_CHARS)} of the HTML source's ${n(htmlHead)} UTF-16 units`;
+    const none = htmlHead === null
+        ? `Body cut: this card has no room for the message's ${of}.`
+        : `Body cut: this card has no room for the message, an HTML source of ${n(htmlHead)} UTF-16 units.`;
+    const fit = Math.max(200, room);
+    if (htmlHead === null && render(text).length <= fit) return { block: render(text), note: [], none };
+    const say = (k: number) => `Body cut: showing ${n(k)} of ${of}.`;
+    const limit = fit - say(total).length - 1;
+    let lo = 0;
+    let hi = text.length;
+    while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (render(clip(text, mid)).length <= limit) lo = mid;
+        else hi = mid - 1;
+    }
+    const shown = lo >= text.length ? text : clip(text, Math.max(lo, 2));
+    const count = shown === text ? total : [...shown].length - 1;
+    return { block: render(shown), note: [say(count)], none };
+}
+
+/**
+ * `lines` as they fit the card: unchanged when everything up to the body's block survives `fitLines`, else with the
+ * message dropped and the note that says so first, so the card never shows part of a body as if it were all of it.
+ */
+function roomForBody(lines: string[], blockAt: number, cut: BodyCut): string[] {
+    if (lines.slice(0, blockAt + 1).join('\n').length + 1 <= CARD_SUMMARY_MAX_CHARS) return lines;
+    const dropped = new Set([blockAt, blockAt - 1, ...(cut.note.length ? [blockAt - 2] : [])]);
+    return [cut.none, ...lines.filter((_, k) => !dropped.has(k))];
 }
 
 // Slack's 2800-unit message, less the longest title, the resolution line and the footer: no NanoClaw card without the

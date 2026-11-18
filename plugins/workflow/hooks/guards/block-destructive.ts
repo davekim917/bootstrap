@@ -83,7 +83,7 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
         reason: verdict.label ?? verdict.reason ?? 'Outbound email send requires approval.',
         summary: verdict.summary,
         deny: verdict.deny,
-        card: { pureSend: verdict.pureSend, fullSummary: verdict.fullSummary },
+        card: { pureSend: verdict.pureSend, fullSummary: verdict.fullSummary, wholeEmail: verdict.wholeEmail },
         draft: verdict.draft,
     };
 }
@@ -107,6 +107,8 @@ function main(): void {
                 reason,
                 undefined,
                 nativeEmail.summary,
+                undefined,
+                { wholeEmail: nativeEmail.wholeEmail },
             );
             if (decision !== 'approved') {
                 block(`${reason} — ${deniedDetail(decision)}`, reason);

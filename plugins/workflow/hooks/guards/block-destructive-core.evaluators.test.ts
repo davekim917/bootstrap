@@ -121,7 +121,7 @@ interface StagedCall {
     summary: string;
     command: string;
     action: string | undefined;
-    card?: { pureSend?: boolean; fullSummary?: string };
+    card?: { pureSend?: boolean; fullSummary?: string; wholeEmail?: string };
 }
 
 async function loadWithSpies(opts: { stageThrows?: boolean; decision?: 'approved' | 'denied' | 'timeout' } = {}) {
@@ -134,7 +134,7 @@ async function loadWithSpies(opts: { stageThrows?: boolean; decision?: 'approved
             summary: string,
             command: string,
             action?: 'request_destructive_gate' | 'request_bash_gate',
-            card?: { pureSend?: boolean; fullSummary?: string },
+            card?: { pureSend?: boolean; fullSummary?: string; wholeEmail?: string },
         ): string => {
             staged.push({ label, summary, command, action, card });
             if (opts.stageThrows) throw new Error('session DBs broken');
@@ -198,8 +198,9 @@ describe('A2 runGateRequest action parameterization', () => {
         const { mod, staged } = await loadWithSpies();
         mod.runEmailGate('gws gmail +send', 'email send', undefined, 'summary', undefined, { pureSend: true });
         mod.runEmailGate('gws gmail +send', 'email send', undefined, 'summary', undefined, { fullSummary: 'whole' });
+        mod.runEmailGate('gws gmail +send', 'email send', undefined, 'summary', undefined, { wholeEmail: 'all of it' });
         mod.runEmailGate('gws gmail +send', 'email send', undefined, 'summary');
-        expect(staged.map(s => s.card)).toEqual([{ pureSend: true }, { fullSummary: 'whole' }, undefined]);
+        expect(staged.map(s => s.card)).toEqual([{ pureSend: true }, { fullSummary: 'whole' }, { wholeEmail: 'all of it' }, undefined]);
     });
 
     test('an approved send of a stored draft goes ahead only while the draft is the version the card showed', async () => {
