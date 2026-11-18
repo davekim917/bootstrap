@@ -1,0 +1,25 @@
+# Which changes need review before they merge. codex-review.sh (`scope`, `merge-check`)
+# reads `risk:high` from the base branch and matches each changed file against it; a PR
+# touching none of these globs merges on green CI. Keep `risk:high` in the one shape the
+# gate reads (one rule, one any-glob-to-any-file list of quoted globs using only * and **)
+# or every PR fails closed to review. Globs cannot exclude, so this lists every tracked
+# top-level path except README.md: a new top-level path skips review until it is added here.
+#
+# Everything under plugins/ reaches every agent in the fleet within the hour of a merge.
+
+risk:high:
+- changed-files:
+  - any-glob-to-any-file:
+    - 'plugins/**'
+    - 'scripts/**'
+    - '.github/**'
+    # The marketplace manifests that tell every install which plugins and versions to load
+    - '.claude-plugin/**'
+    - '.agents/**'
+    # The comment checker's own config, and the public-boundary scan's exemptions
+    - '.comment-rule.json'
+    - '.public-boundary-*.json'
+    # Keeps local run records out of this public repo
+    - '.gitignore'
+    - 'evals/**'
+    - 'deprecated/**'
