@@ -578,3 +578,11 @@ describe('a tool passing command as an array or another non-string', () => {
         expect(stderr).toMatch(/failed closed/i);
     });
 });
+
+describe('a onecli command that prints a credential', () => {
+    test('is refused through the Claude hook, naming the safe listing', async () => {
+        const { exitCode, stderr } = await runHook('onecli agents list | head -60');
+        expect(exitCode).toBe(2);
+        expect(stderr).toContain('onecli agents list --fields id,identifier,name');
+    });
+});

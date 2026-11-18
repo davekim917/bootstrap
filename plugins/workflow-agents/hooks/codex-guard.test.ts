@@ -321,3 +321,9 @@ describe('Codex protected edits', () => {
     expect(result.output).toEqual({ continue: true });
   });
 });
+
+describe('Codex: a onecli command that prints a credential', () => {
+  test('is denied, naming the safe listing', async () => {
+    expectDecision(await runGuard(shell('onecli agents list | head -60')), 'deny', /onecli agents list --fields id,identifier,name/);
+  });
+});

@@ -76,6 +76,7 @@ export interface ResolvedCommand {
     stdinExpanded?: ExpandableWord[]; // the part of stdinTexts bash expands (not a quoted heredoc or '…' here-string)
     stdinFiles?: string[];      // files redirected into this command with `<`
     stdoutFiles?: string[];     // files this command's output is redirected into
+    stdoutLast?: string;        // where its stdout ends up after all its redirects: a file, or `&N` when duplicated onto fd N
     pipedInput?: PipedInput;    // what its pipeline feeds a command inside `$(…)`, whose offset can't key pipedInto
     argsAreValues?: boolean;    // pos is not this command's own, so its args are expanded from their values, not the view's words
     expandAs?: ResolvedCommand[] | null; // inside `$(…)`: the views its words expand in; null past the cap, so they're unknown
@@ -2797,10 +2798,15 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
             }
             if (args[skip] === '--') skip += 1;
         } else if (name === 'onecli') {
-            // `onecli run [options] -- <command>` runs the command with credentials injected; nothing else does.
+            // `onecli run [options] [--] <command>` runs the command with credentials injected; nothing else does.
+            // onecli takes the first word that is not one of its own options as the command, `--` or not.
+            if (args[0] !== 'run') break;
             const split = args.indexOf('--');
-            if (args[0] !== 'run' || split < 0) break;
-            skip = split + 1;
+            if (split >= 0) skip = split + 1;
+            else {
+                skip = 1;
+                while (skip < args.length && args[skip].startsWith('-')) skip += args[skip] === '--agent' || args[skip] === '--gateway' ? 2 : 1;
+            }
         } else if (name === 'npx' || name === 'bunx') {
             // The command follows the flags; -p/--package takes a value.
             while (skip < args.length && args[skip].startsWith('-')) {
@@ -2925,9 +2931,17 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const stdinExpanded: ExpandableWord[] = [];
     const stdinFiles: string[] = [];
     const stdoutFiles: string[] = [];
+    let stdoutLast: string | undefined;
     for (const r of (node.redirects || [])) {
-        if (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && (r.fileDescriptor === undefined || r.fileDescriptor === 1)) {
+        const onStdout = r?.fileDescriptor === undefined || r?.fileDescriptor === 1;
+        if (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && onStdout) {
             stdoutFiles.push(wordValue(r.target));
+            stdoutLast = wordValue(r.target);
+        }
+        if (r?.operator === '<>' && r?.fileDescriptor === 1) stdoutLast = wordValue(r.target);
+        if (r?.operator === '>&' && onStdout) {
+            const target = wordValue(r.target);
+            stdoutLast = /^(?:\d+|-)$/.test(target) ? `&${target}` : target;
         }
         if (r?.operator === '<<' || r?.operator === '<<-') {
             stdinTexts.push(String(r.content ?? ''));
@@ -2954,6 +2968,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         ...(stdinExpanded.length ? { stdinExpanded } : {}),
         ...(stdinFiles.length ? { stdinFiles } : {}),
         ...(stdoutFiles.length ? { stdoutFiles } : {}),
+        ...(stdoutLast !== undefined ? { stdoutLast } : {}),
     };
 }
 
@@ -5482,6 +5497,8 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     }
     const client = clientProgramBlock(cmd);
     if (client) return client;
+    const onecliTokens = onecliTokenReason(cmd);
+    if (onecliTokens) return onecliTokens;
     if (cmd.name === 'find' && cmd.args.includes('-delete')) {
         return 'find -delete permanently deletes files. Use trash instead.';
     }
@@ -7345,6 +7362,8 @@ function evaluateBashLine(
             return { action: 'block', reason };
         }
     }
+    const onecliScriptTokens = onecliTokenInScripts(commands, command);
+    if (onecliScriptTokens) return { action: 'block', reason: onecliScriptTokens };
     const selfKill = selfMatchingKillReason(commands, command);
     if (selfKill) return { action: 'block', reason: selfKill };
     const merge = noMergeReason(commands, cwd, command);
@@ -8658,7 +8677,7 @@ function scriptsRun(cmd: ResolvedCommand): Array<{ text: string; steps?: Resolve
             const piped = pipedTexts(cmd);
             if (piped === null) return null;
             scripts.push(...[...(cmd.stdinTexts ?? []), ...piped].map(text => ({ text })));
-            files.push(...operandsOf(cmd.args).slice(0, 1));
+            files.push(...operandsOf(cmd.args).slice(0, 1), ...(SHELLS.has(cmd.name) ? cmd.stdinFiles ?? [] : []));
         }
     }
     // Bash runs a file by its own name only when the command word holds a slash; a bare word comes from PATH.
@@ -8749,4 +8768,121 @@ function responseSecretsReason(commands: ResolvedCommand[], line: string): strin
     if (fetch.calls) return `Refused: this line calls ${host} and ${what}; ${why}. ${fix}`;
     return `Refused: this line names ${host} and an HTTP client where the guard can't tell a call from text, and ${what}; ${why}. `
         + `To write a note about the call, use the file tool (Write or Edit), not the shell. To fetch, ${fix.charAt(0).toLowerCase()}${fix.slice(1)}`;
+}
+
+
+// ── OneCLI never prints a credential into tool output ────────────────────────
+// onecli prints OneCLI agent access tokens and the account API key in ordinary output: `agents list` and
+// `agents get-default` unless --fields leaves accessToken out, `agents create`, `agents regenerate-token`,
+// `auth api-key` and `auth regenerate-api-key` always; --dry-run prints only the request. `onecli run` puts the token
+// in the child's proxy variables. A subcommand a later onecli adds is unknown, so it counts as printing one. onecli
+// prints every field for an empty --fields and honours only the last one given.
+const ONECLI_FREE: Record<string, Set<string>> = {
+    agents: new Set(['delete', 'rename', 'secrets', 'set-secrets', 'set-secret-mode']),
+    secrets: new Set(['list', 'create', 'update', 'delete']),
+    apps: new Set(['list', 'get', 'configure', 'remove', 'disconnect']),
+    rules: new Set(['list', 'create', 'update', 'delete']),
+    auth: new Set(['login', 'logout', 'status']),
+    config: new Set(['get', 'set']),
+};
+const ONECLI_FREE_ALONE = new Set(['help', 'version', 'migrate']);
+const ONECLI_FILTERED = new Set(['list', 'get-default']);
+const ONECLI_SAFE_FIELDS = new Set(['id', 'identifier', 'name', 'isDefault', 'createdAt', 'secretMode']);
+const ONECLI_FIELD_OPTIONS = ['--fields', '--quiet'];
+const ONECLI_SAFE_LISTING = 'onecli agents list --fields id,identifier,name';
+const ONECLI_RUN_RE = /(?:^|[\s/])onecli\s+run\s/;
+const ONECLI_DRY_RUNS = new Set(['create', 'regenerate-token', 'regenerate-api-key']);
+const PROC_PATH_RE = /^\/proc(?:\/|$)/;
+// /dev/fd, /dev/stdin and the like link into /proc/self, so a `..` after them climbs into a process's directory.
+const DEV_PROC_LINK_RE = /^\/dev\/(?:fd|stdin|stdout|stderr)(?:\/|$)[^]*\.\./;
+
+/** Whether a word, or the path after an option's `=`, reads under /proc. */
+function readsProc(word: string): boolean {
+    const path = word.slice(word.startsWith('/') ? 0 : word.indexOf('=') + 1);
+    if (!path.startsWith('/')) return false;
+    return PROC_PATH_RE.test(pathNormalize(path)) || DEV_PROC_LINK_RE.test(path.replace(/\/+/g, '/'));
+}
+
+/** Whether the last --dry-run among these words turns it on; a later `--dry-run=false` turns it back off. */
+function onecliDryRun(words: string[]): boolean {
+    let on = false;
+    for (const w of words) {
+        if (w === '--dry-run') on = true;
+        else if (w.startsWith('--dry-run=')) on = /^(?:true|1)$/i.test(w.slice('--dry-run='.length));
+    }
+    return on;
+}
+const ONECLI_ENV_VIEWERS = new Set(['env', 'printenv']);
+const ONECLI_SCRIPT_DEPTH_MAX = 4;
+
+function onecliSafeFields(args: string[]): boolean {
+    const values: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        for (const option of ONECLI_FIELD_OPTIONS) {
+            if (args[i] === option) values.push(args[++i] ?? '');
+            else if (args[i].startsWith(`${option}=`)) values.push(args[i].slice(option.length + 1));
+        }
+    }
+    return values.length > 0 && values.every(v => {
+        const fields = v.split(',').map(f => f.trim()).filter(Boolean);
+        return fields.length > 0 && fields.every(f => ONECLI_SAFE_FIELDS.has(f));
+    });
+}
+
+/** Why a command `onecli run` starts is refused because it prints the proxy variables holding the token, or null. */
+function onecliRunChildReason(cmd: ResolvedCommand): string | null {
+    const prints = ONECLI_ENV_VIEWERS.has(cmd.name) || [...cmd.args, ...(cmd.stdinFiles ?? [])].some(readsProc);
+    if (!prints) return null;
+    return `Refused: \`onecli run\` puts the agent's OneCLI access token in the child's proxy variables, and \`${cmd.name}\` `
+        + `would print them (/proc holds every process's environment). Run \`onecli run --agent <id> --dry-run -- true\` to see which variables it injects, without their values.`;
+}
+
+/** Why a onecli command, or a command `onecli run` starts, is refused because its output can hold a credential, or null. */
+function onecliTokenReason(cmd: ResolvedCommand): string | null {
+    if (cmd.name !== 'onecli') return ONECLI_RUN_RE.test(cmd.raw) ? onecliRunChildReason(cmd) : null;
+    if (cmd.args.includes('--help') || cmd.args.includes('-h')) return null;
+    const words = cmd.args.filter(a => !a.startsWith('-'));
+    const [group, sub] = words;
+    if (group === undefined || group === 'run' || ONECLI_FREE_ALONE.has(group)) return null;
+    if (sub !== undefined && ONECLI_FREE[group]?.has(sub)) return null;
+    if (group === 'agents' && sub !== undefined && ONECLI_FILTERED.has(sub) && onecliSafeFields(cmd.args)) return null;
+    if (sub !== undefined && ONECLI_DRY_RUNS.has(sub) && onecliDryRun(cmd.args)) return null;
+    if (cmd.stdoutLast === '/dev/null') return null;
+    const what = `onecli ${[group, sub].filter(Boolean).join(' ')}`;
+    const fix = group === 'agents' && sub === 'get-default' ? 'onecli agents get-default --fields id,identifier,name'
+        : group === 'agents' && sub === 'create' ? `onecli agents create --name <name> --identifier <id> > /dev/null && ${ONECLI_SAFE_LISTING}`
+        : group === 'agents' && sub === 'regenerate-token' ? 'onecli agents regenerate-token --id <id> > /dev/null'
+        : group === 'auth' ? 'onecli auth status'
+        : group === 'agents' && sub !== undefined && ONECLI_FILTERED.has(sub) ? ONECLI_SAFE_LISTING
+        : `${what} > /dev/null && ${ONECLI_SAFE_LISTING}`;
+    return `Refused: \`${what}\` can print a OneCLI access token or API key into this session. Run \`${fix}\` instead`
+        + ` (the only agent fields shown are ${[...ONECLI_SAFE_FIELDS].join(', ')}).`;
+}
+
+/** The same refusal for a onecli command inside a script the line has a shell run (piped in, or written then run). */
+function onecliTokenInScripts(commands: ResolvedCommand[], line: string, depth = 0, underRun = false): string | null {
+    if (!underRun && !/onecli/.test(line.replace(/['"\\]/g, ''))) return null;
+    for (const cmd of commands) {
+        const runs = underRun || (cmd.name !== 'onecli' && ONECLI_RUN_RE.test(cmd.raw));
+        const check = (step: ResolvedCommand) => onecliTokenReason(step) ?? (runs ? onecliRunChildReason(step) : null);
+        const scripts = scriptsRun(cmd);
+        if (scripts === null || (scripts.length && depth >= ONECLI_SCRIPT_DEPTH_MAX)) {
+            if (/\bonecli\b/.test(line)) {
+                return `Refused: this line has a shell run a script the guard can't read, and it names onecli. Run the onecli command directly, e.g. \`${ONECLI_SAFE_LISTING}\`.`;
+            }
+            continue;
+        }
+        for (const { text, steps } of scripts) {
+            const inner = steps ?? extractCommands(text);
+            for (const step of inner) {
+                const reason = check(step)
+                    ?? execRuns(step).map(r => (r.inner ? check(r.inner) : null)).find(Boolean)
+                    ?? null;
+                if (reason) return reason;
+            }
+            const nested = onecliTokenInScripts(inner, text, depth + 1, runs);
+            if (nested) return nested;
+        }
+    }
+    return null;
 }
