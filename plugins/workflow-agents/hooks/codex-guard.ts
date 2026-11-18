@@ -23,7 +23,7 @@ import {
     runEmailGate,
     runNanoclawGate,
 } from './guards/block-destructive-core';
-import { evaluateEmailSend, evaluateEmailToolCall, type DraftBinding } from './guards/email-gate-core';
+import { evaluateEmailSend, evaluateEmailToolCall, type DraftBinding, type EmailCard } from './guards/email-gate-core';
 import { checkEditProtection, EDIT_TOOLS } from './guards/file-protection-core';
 
 export const LOCAL_APPROVAL_HANDOFF =
@@ -124,7 +124,7 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
     reason: string;
     summary?: string;
     deny?: string;
-    pureSend?: boolean;
+    card: EmailCard;
     draft?: DraftBinding;
 } {
     const verdict = evaluateEmailSend(command, {
@@ -137,7 +137,7 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
         reason: verdict.label ?? verdict.reason ?? 'Outbound email send requires approval.',
         summary: verdict.summary,
         deny: verdict.deny,
-        pureSend: verdict.pureSend,
+        card: { pureSend: verdict.pureSend, fullSummary: verdict.fullSummary },
         draft: verdict.draft,
     };
 }
@@ -284,7 +284,7 @@ function main(): void {
             const binding = email.draft;
             const decision = runEmailGate(command, email.reason, () => {
                 staged = false;
-            }, email.summary, toolUseId, email.pureSend,
+            }, email.summary, toolUseId, email.card,
             binding ? { binding, onChanged: (refusal) => emitDeny(refusal, email.reason) } : undefined);
             if (!staged) {
                 emitDeny(`${email.reason} — could not stage the NanoClaw approval request.`, email.reason);

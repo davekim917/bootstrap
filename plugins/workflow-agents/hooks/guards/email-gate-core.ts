@@ -6,9 +6,10 @@
  * Shared decision logic for the outbound-email approval gate.
  *
  * The verdict is pure: no bun:sqlite, no writeMessageOut / awaitDeliveryAck, no
- * process.exit, and nothing it reads can change allow vs gate. The one I/O is a
- * read-only display read: when a send's body is `$(cat /absolute/path)`, the
- * description shows that file. It takes a bash command string or native
+ * process.exit, and nothing it reads can change allow vs gate. Its I/O is read-only:
+ * display reads (a `$(cat /absolute/path)` body, the sender and signature on file, a
+ * stored draft), and a stat of each attachment, which turns a gate into a refusal
+ * when gws would refuse the file after approval. It takes a bash command string or native
  * email-tool call plus an env snapshot and returns a verdict (allow | gate)
  * with a plain-text `label` + `summary` for the approver. The harness adapter
  * (Claude hook, OpenCode plugin, Codex runner) shows them in its own approval
@@ -39,6 +40,7 @@
  */
 import { spawnSync } from 'child_process';
 import { CARD_SUMMARY_MAX_CHARS, HTML_MAX_CHARS, clip, code, defuse, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, senderOnFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
+import { readAttachments } from './gws-attachments-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
 // `gws gmail users (messages|drafts) send` (raw API form).
@@ -131,6 +133,9 @@ export interface DraftBinding {
     credentialsFile: string;
 }
 
+/** What the host is told about leaving the command off the card. */
+export type EmailCard = Pick<EmailGateVerdict, 'pureSend' | 'fullSummary'>;
+
 /** Verdict for the email gate. On `gate`, `label` + `summary`
  *  describe the send for the approver. */
 export interface EmailGateVerdict {
@@ -146,6 +151,12 @@ export interface EmailGateVerdict {
     deny?: string;
     /** The command is the send alone and the summary shows all of it, so the card can leave the command off. */
     pureSend?: boolean;
+    /**
+     * Set instead of `pureSend` when the command is the send alone but `summary` had to cut the message: the whole
+     * send, uncut, for a host whose card has room for it without the command. Too long for its card, the host shows
+     * `summary` and the command.
+     */
+    fullSummary?: string;
     /**
      * Set when the card shows a stored draft the command sends by id. After approval the adapter re-reads the draft
      * (`draftChangedSince`) and refuses the send if it is no longer this version.
@@ -468,6 +479,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     lines.push('');
     let bodyCut = false;
     let formatted: { text: string; signed: boolean } | null = null;
+    let wholeMessage: { at: number; block: string } | null = null;
     if (body.text !== null) {
         const signature = signatureOnFile(sender?.account ?? null, env.signaturesDir ?? SIGNATURES_DIR);
         formatted = isHtml ? formattedText(body.text, signature) : null;
@@ -477,6 +489,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         const shown = clip(text || '(empty)', Math.max(200, CARD_SUMMARY_MAX_CHARS - used));
         bodyCut = shown !== (text || '(empty)');
         lines.push(header, messageBlock(shown));
+        wholeMessage = { at: lines.length - 1, block: messageBlock(text || '(empty)') };
         if (formatted?.signed) lines.push(`Signature: ${inline(sender!.mailbox)}'s Gmail signature, as the host keeps it on file`);
         if (body.note) lines.push(body.note);
     } else if (draft && draftRead && draftTarget) {
@@ -499,6 +512,8 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     }
     const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
     if (!shape) return { action: 'gate', label, summary, deny: SEND_ALONE };
+    const attachmentsRead = readAttachments([...shape.options.get('-a') ?? [], ...shape.options.get('--attach') ?? []], env.cwd);
+    if (attachmentsRead.refusal) return { action: 'gate', label, summary, deny: attachmentsRead.refusal };
     if (draftTarget && draftRead) {
         // The command can't stand in for a draft's text, so a cut summary says so first.
         const fitted = summary === lines.join('\n') ? summary : fitLines([
@@ -518,12 +533,21 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const shownAsCode = [messageId, ...attachments];
     // HTML qualifies only as a formatted body: the summary can't show what other markup or styling would change.
     const bodyFaithful = isHtml ? formatted !== null && bodyShownAsIs(formatted.text) : body.text !== null && bodyShownAsIs(body.text);
-    const pureSend = agree && sender !== null && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
+    const faithful = agree && sender !== null && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
         && shownPlain.every(v => !v || fieldShownAsIs(v, false))
         && shownAsCode.every(v => !v || fieldShownAsIs(v, true)) && gwsWords === 1 && !generatedWord && !probeFlag
-        && !unresolved.size && body.text !== null && !bodyCut && bodyFaithful && summary === lines.join('\n');
-    return { action: 'gate', label, summary, ...(pureSend ? { pureSend } : {}) };
+        && !unresolved.size && body.text !== null && bodyFaithful && attachmentsRead.namesAsSent;
+    if (faithful && !bodyCut && summary === lines.join('\n')) return { action: 'gate', label, summary, pureSend: true };
+    const whole = faithful && wholeMessage
+        ? lines.map((line, k) => k === wholeMessage!.at ? wholeMessage!.block : line).join('\n')
+        : null;
+    return { action: 'gate', label, summary, ...(whole !== null && whole.length <= FULL_SUMMARY_MAX_CHARS ? { fullSummary: whole } : {}) };
 }
+
+// Slack's 2800-unit message, less the longest title, the resolution line and the footer: no NanoClaw card without the
+// command has room for more. The host still checks its own fit.
+const FULL_SUMMARY_MAX_CHARS = 2400;
+
 
 // The card reaches the approver as chat Markdown. A code block shows the body literally; a line that opens or closes a
 // fence would end it early, so such a body is shown quoted instead and never stands in for the command.
