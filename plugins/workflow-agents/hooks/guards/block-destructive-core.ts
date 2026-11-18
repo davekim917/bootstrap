@@ -2798,10 +2798,15 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
             }
             if (args[skip] === '--') skip += 1;
         } else if (name === 'onecli') {
-            // `onecli run [options] -- <command>` runs the command with credentials injected; nothing else does.
+            // `onecli run [options] [--] <command>` runs the command with credentials injected; nothing else does.
+            // onecli takes the first word that is not one of its own options as the command, `--` or not.
+            if (args[0] !== 'run') break;
             const split = args.indexOf('--');
-            if (args[0] !== 'run' || split < 0) break;
-            skip = split + 1;
+            if (split >= 0) skip = split + 1;
+            else {
+                skip = 1;
+                while (skip < args.length && args[skip].startsWith('-')) skip += args[skip] === '--agent' || args[skip] === '--gateway' ? 2 : 1;
+            }
         } else if (name === 'npx' || name === 'bunx') {
             // The command follows the flags; -p/--package takes a value.
             while (skip < args.length && args[skip].startsWith('-')) {
@@ -8785,7 +8790,7 @@ const ONECLI_FILTERED = new Set(['list', 'get-default']);
 const ONECLI_SAFE_FIELDS = new Set(['id', 'identifier', 'name', 'isDefault', 'createdAt', 'secretMode']);
 const ONECLI_FIELD_OPTIONS = ['--fields', '--quiet'];
 const ONECLI_SAFE_LISTING = 'onecli agents list --fields id,identifier,name';
-const ONECLI_RUN_RE = /(?:^|[\s/])onecli\s+run\b[^]*?\s--(?:\s|$)/;
+const ONECLI_RUN_RE = /(?:^|[\s/])onecli\s+run\s/;
 const ONECLI_DRY_RUNS = new Set(['create', 'regenerate-token', 'regenerate-api-key']);
 const PROC_PATH_RE = /^\/proc(?:\/|$)/;
 // /dev/fd, /dev/stdin and the like link into /proc/self, so a `..` after them climbs into a process's directory.
