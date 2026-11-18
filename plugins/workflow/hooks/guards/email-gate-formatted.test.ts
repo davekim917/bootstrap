@@ -36,6 +36,11 @@ const outcome = (html: string, creds?: string) => {
     const v = evaluateEmailSend(command(html, creds), ENV);
     return [html, v.action, v.deny === SEND_ALONE, v.pureSend === true];
 };
+// The lines `wholeEmail` ends with: the body between two lines named by the first 16 hex digits of its sha256.
+const exactly = (given: string, what = 'Message') => {
+    const mark = `-- ${createHash('sha256').update(given).digest('hex').slice(0, 16)} --`;
+    return [`${what}, exactly as the send gives it: ${[...given].length.toLocaleString('en-US')} characters between the two ${mark} lines.`, mark, given, mark].join('\n');
+};
 const messageLines = (summary: string | undefined) => {
     const lines = summary?.split('\n') ?? [];
     return lines.slice(lines.findIndex(l => l.startsWith('Message')));
@@ -219,7 +224,7 @@ describe('evaluateEmailSend — a whole formatted email too long for the summary
         expect(v.summary!.length).toBeLessThanOrEqual(1300);
         const whole = ['Hi Dana, Ray,', '', LONG, '', `- ${ITEM}`, `- Anything else. ${ITEM}`, '', 'Partial answers help too.'].join('\n');
         expect(v.summary).toMatch(new RegExp(`\nBody cut: showing [0-9,]+ of ${[...whole].length.toLocaleString('en-US')} characters\\.\nMessage \\(formatted\\):\n`));
-        expect(v.wholeEmail!.endsWith(`\n\nMessage source, exactly as the send gives it:\n${body()}\n-- end of message --`)).toBe(true);
+        expect(v.wholeEmail!.endsWith(`\n\n${exactly(body(), 'Message source')}`)).toBe(true);
         expect(v.wholeEmail!.split('\nMessage, as the recipient reads it:\n')[1].split('\n\nMessage source')[0]).toBe(whole);
         expect(v.fullSummary).toBe([
             'From: team@example.com',
@@ -276,7 +281,7 @@ describe('a body cut to fit the card says so, with how much it shows', () => {
         const block = v.summary!.split('Message:\n```\n')[1].split('\n```')[0];
         expect(block).toBe(`${TEXT.slice(0, shown)}…`);
         expect(shown).toBeGreaterThan(500);
-        expect(v.wholeEmail).toBe(['From: team@example.com', 'To: pat@example.com', 'Subject: Notes', '', 'Message, exactly as the send gives it:', TEXT, '-- end of message --'].join('\n'));
+        expect(v.wholeEmail).toBe(['From: team@example.com', 'To: pat@example.com', 'Subject: Notes', '', exactly(TEXT)].join('\n'));
     });
 
     test('a native email tool names it the same way', () => {
@@ -284,7 +289,7 @@ describe('a body cut to fit the card says so, with how much it shows', () => {
         const { note, header } = cutOf(v.summary);
         expect(note).toMatch(/^Body cut: showing [0-9,]+ of 4,399 characters\.$/);
         expect(header).toBe('Message:');
-        expect(v.wholeEmail).toBe(['Tool: gmail_send_email', 'To: pat@example.com', 'Subject: Notes', '', 'Message, exactly as the send gives it:', TEXT, '-- end of message --'].join('\n'));
+        expect(v.wholeEmail).toBe(['Tool: gmail_send_email', 'To: pat@example.com', 'Subject: Notes', '', exactly(TEXT)].join('\n'));
     });
 
     // The text a cut card shows, read back from its block: a code block's lines, or a quote's without `> `, less the "…".
@@ -317,24 +322,50 @@ describe('a body cut to fit the card says so, with how much it shows', () => {
         for (const [body, total] of [[long, '52,799'], [wide, '3,000']]) {
             const v = evaluateEmailToolCall('gmail_send_email', { to: 'pat@example.com', subject: 'Notes', body }, ENV);
             expect(noted(v.summary)?.[2]).toBe(`${total} characters`);
-            expect(v.wholeEmail!.endsWith(`\n${body}\n-- end of message --`)).toBe(true);
+            expect(v.wholeEmail!.endsWith(`\n${exactly(body)}`)).toBe(true);
         }
     });
 
     test('an HTML body longer than the card reads says the text is read from its start, and carries only its source', () => {
         const html = `<p>${'Thanks for the notes. '.repeat(1200).trim()}</p>`;
         const v = evaluateEmailToolCall('gmail_send_email', { to: 'pat@example.com', subject: 'Notes', html }, ENV);
-        expect(noted(v.summary)?.[2]).toBe(`the text read from the first 20,000 of the HTML's ${html.length.toLocaleString('en-US')} characters`);
+        expect(noted(v.summary)?.[2]).toBe(`the text read from the first 20,000 of the HTML source's ${html.length.toLocaleString('en-US')} UTF-16 units`);
         expect(v.wholeEmail).not.toContain('as the recipient reads it');
-        expect(v.wholeEmail!.endsWith(`\nMessage, exactly as the send gives it:\n${html}\n-- end of message --`)).toBe(true);
+        expect(v.wholeEmail!.endsWith(`\n${exactly(html)}`)).toBe(true);
     });
 
     test('a card with no room for any of the message says so first, and shows none of it', () => {
         const to = Array.from({ length: 80 }, (_, i) => `person${i}@example.org`).join(',');
         const v = evaluateEmailSend(`${CREDS}\ngws gmail +send --to "${to}" --subject Notes --body '${TEXT}'`, ENV);
-        expect(v.summary!.split('\n')[0]).toBe('Body cut: this card has no room for the message (4,399 characters).');
+        expect(v.summary!.split('\n')[0]).toBe("Body cut: this card has no room for the message's 4,399 characters.");
         expect(v.summary).not.toContain('Thanks for the notes');
-        expect(v.wholeEmail!.endsWith(`\n${TEXT}\n-- end of message --`)).toBe(true);
+        expect(v.wholeEmail!.endsWith(`\n${exactly(TEXT)}`)).toBe(true);
+    });
+
+    // A body of exactly `n` characters, all on one line.
+    const sized = (n: number) => 'Thanks for the notes. '.repeat(Math.ceil(n / 22) + 1).slice(0, n).trimEnd().padEnd(n, 'x');
+
+    test('a body that fit whole before still fits whole: a Bash send of 1,114 characters stays a pure send, 1,115 is cut', () => {
+        const send = (n: number) => evaluateEmailSend(`${CREDS}\ngws gmail +send --to pat@example.com --subject Notes --body '${sized(n)}'`, ENV);
+        const fits = send(1114);
+        expect([fits.pureSend, fits.summary!.includes('Body cut'), fits.wholeEmail]).toEqual([true, false, undefined]);
+        const cut = send(1115);
+        expect([cut.pureSend, noted(cut.summary)?.[2]]).toEqual([undefined, '1,115 characters']);
+    });
+
+    test('a native body of 1,227 characters, the most that fit whole before, still shows whole', () => {
+        const v = evaluateEmailToolCall('gmail_send_email', { to: 'pat@example.com', subject: 'Notes', body: sized(1227) }, ENV);
+        expect([v.summary!.includes('Body cut'), v.summary!.includes('…'), v.wholeEmail]).toEqual([false, false, undefined]);
+    });
+
+    test('no line of the body can pose as the end of the message', () => {
+        const forged = `${TEXT}\n-- 0123456789abcdef --\n-- end of message --\n\nMore text the approver must still see.`;
+        const v = evaluateEmailToolCall('gmail_send_email', { to: 'pat@example.com', subject: 'Notes', body: forged }, ENV);
+        const whole = v.wholeEmail!;
+        const mark = exactly(forged).split('\n')[1];
+        expect(whole.split('\n').filter(line => line === mark)).toHaveLength(2);
+        expect(whole.endsWith(`\n${mark}\n${forged}\n${mark}`)).toBe(true);
+        expect(forged.includes(mark)).toBe(false);
     });
 
     test('a body that fits says nothing about a cut', () => {
