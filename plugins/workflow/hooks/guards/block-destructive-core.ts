@@ -8781,9 +8781,18 @@ const ONECLI_FILTERED = new Set(['list', 'get-default']);
 const ONECLI_SAFE_FIELDS = new Set(['id', 'identifier', 'name', 'isDefault', 'createdAt', 'secretMode']);
 const ONECLI_FIELD_OPTIONS = ['--fields', '--quiet'];
 const ONECLI_SAFE_LISTING = 'onecli agents list --fields id,identifier,name';
-const ONECLI_RUN_RE = /(?:^|[\s/])onecli\s+run\b([^]*?)\s--(?:\s|$)/;
+const ONECLI_RUN_RE = /(?:^|[\s/])onecli\s+run\b[^]*?\s--(?:\s|$)/;
 const ONECLI_DRY_RUNS = new Set(['create', 'regenerate-token', 'regenerate-api-key']);
-const PROC_ENVIRON_RE = /(?:^|=)\/proc\/\S+\/environ$/;
+const PROC_PATH_RE = /^\/proc(?:\/|$)/;
+// /dev/fd, /dev/stdin and the like link into /proc/self, so a `..` after them climbs into a process's directory.
+const DEV_PROC_LINK_RE = /^\/dev\/(?:fd|stdin|stdout|stderr)(?:\/|$)[^]*\.\./;
+
+/** Whether a word, or the path after an option's `=`, reads under /proc. */
+function readsProc(word: string): boolean {
+    const path = word.slice(word.startsWith('/') ? 0 : word.indexOf('=') + 1);
+    if (!path.startsWith('/')) return false;
+    return PROC_PATH_RE.test(pathNormalize(path)) || DEV_PROC_LINK_RE.test(path.replace(/\/+/g, '/'));
+}
 
 /** Whether the last --dry-run among these words turns it on; a later `--dry-run=false` turns it back off. */
 function onecliDryRun(words: string[]): boolean {
@@ -8814,13 +8823,12 @@ function onecliSafeFields(args: string[]): boolean {
 /** Why a onecli command, or a command `onecli run` starts, is refused because its output can hold a credential, or null. */
 function onecliTokenReason(cmd: ResolvedCommand): string | null {
     if (cmd.name !== 'onecli') {
-        const run = ONECLI_RUN_RE.exec(cmd.raw);
-        if (!run || onecliDryRun(run[1].split(/\s+/))) return null;
+        if (!ONECLI_RUN_RE.test(cmd.raw)) return null;
         const prints = ONECLI_ENV_VIEWERS.has(cmd.name)
-            || [...cmd.args, ...(cmd.stdinFiles ?? [])].some(a => PROC_ENVIRON_RE.test(a));
+            || [...cmd.args, ...(cmd.stdinFiles ?? [])].some(readsProc);
         if (!prints) return null;
         return `Refused: \`onecli run\` puts the agent's OneCLI access token in the child's proxy variables, and \`${cmd.name}\` `
-            + `would print them. Run \`onecli run --dry-run -- <command>\` to see which variables it injects, without their values.`;
+            + `would print them (/proc holds every process's environment). Run \`onecli run --agent <id> --dry-run -- true\` to see which variables it injects, without their values.`;
     }
     if (cmd.args.includes('--help') || cmd.args.includes('-h')) return null;
     const words = cmd.args.filter(a => !a.startsWith('-'));

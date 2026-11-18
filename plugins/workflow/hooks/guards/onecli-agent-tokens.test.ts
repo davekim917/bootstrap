@@ -7,7 +7,7 @@ const DEFAULT_SAFE = 'onecli agents get-default --fields id,identifier,name';
 const CREATE_SAFE = 'onecli agents create --name <name> --identifier <id> > /dev/null && onecli agents list --fields id,identifier,name';
 const REGENERATE_SAFE = 'onecli agents regenerate-token --id <id> > /dev/null';
 const AUTH_SAFE = 'onecli auth status';
-const RUN_SAFE = 'onecli run --dry-run -- <command>';
+const RUN_SAFE = 'onecli run --agent <id> --dry-run -- true';
 const verdict = (command: string) => evaluateBashCommand(command, { cwd: '/workspace/invented' });
 
 describe('every onecli command that prints a credential is refused, naming its safe form', () => {
@@ -33,6 +33,12 @@ describe('every onecli command that prints a credential is refused, naming its s
         ['an onecli run dry run a later flag turns off', 'onecli run --dry-run --dry-run=false -- env', RUN_SAFE],
         ['a thread environment under onecli run', 'onecli run -- cat /proc/self/task/1/environ', RUN_SAFE],
         ['the environment read by dd under onecli run', 'onecli run -- dd if=/proc/self/environ', RUN_SAFE],
+        ['a quoted later flag that turns the dry run off', "onecli run --dry-run '--dry-run=false' -- env", RUN_SAFE],
+        ['the environment under a doubled slash', 'onecli run -- cat //proc/self/environ', RUN_SAFE],
+        ['the environment by a glob', 'onecli run -- cat /proc/self/env*', RUN_SAFE],
+        ['the environment through .. from /dev', 'onecli run -- cat /dev/../proc/self/environ', RUN_SAFE],
+        ['the environment through the /dev/fd link', 'onecli run -- cat /dev/fd/../environ', RUN_SAFE],
+        ['the environment through the /dev/fd link on stdin', "onecli run -- tr '\\0' '\\n' < //dev/fd/../environ", RUN_SAFE],
         ['a script whose quotes split the word onecli', "echo 'one''cli agents regenerate-token --id agent-invented-1' | bash", REGENERATE_SAFE],
     ])('%s', (_name, command, safe) => {
         const result = verdict(command);
@@ -83,11 +89,12 @@ describe('a listing limited to safe fields, and other onecli commands, run as be
         ['regenerating a token with its output discarded', 'onecli agents regenerate-token --id agent-invented-1 >/dev/null 2>&1'],
         ['a command onecli run starts', 'onecli run --agent invented -- curl -s https://api.invented.example/v1/me'],
         ['onecli run --dry-run', 'onecli run --agent invented --dry-run -- curl -s https://api.invented.example'],
-        ['the dry run the env refusal names', 'onecli run --agent invented --dry-run -- env'],
+        ['the dry run the env refusal names', 'onecli run --agent invented --dry-run -- true'],
         ['stdout duplicated, then discarded', 'onecli agents create --name Invented --identifier invented-agent 1>&2 >/dev/null'],
         ['creating an agent as a dry run', 'onecli agents create --name Invented --identifier invented-agent --dry-run'],
         ['regenerating a token as a dry run', 'onecli agents regenerate-token --id agent-invented-1 --dry-run'],
         ['env outside onecli run', 'env | grep PATH'],
+        ['a /dev path under onecli run', 'onecli run -- cat /dev/null'],
         ['auth status', 'onecli auth status'],
         ['version', 'onecli version'],
         ['a commit message naming the command', 'git commit -m "refuse onecli agents list without --fields"'],
