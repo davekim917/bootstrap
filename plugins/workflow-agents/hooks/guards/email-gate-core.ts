@@ -40,7 +40,7 @@
  */
 import { spawnSync } from 'child_process';
 import { CARD_SUMMARY_MAX_CHARS, HTML_MAX_CHARS, clip, code, defuse, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, senderOnFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
-import { attachmentRefusal } from './gws-attachments-core';
+import { readAttachments } from './gws-attachments-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
 // `gws gmail users (messages|drafts) send` (raw API form).
@@ -512,8 +512,8 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     }
     const summary = fitLines(lines, CARD_SUMMARY_MAX_CHARS);
     if (!shape) return { action: 'gate', label, summary, deny: SEND_ALONE };
-    const refusedAttachment = attachmentRefusal([...shape.options.get('-a') ?? [], ...shape.options.get('--attach') ?? []], env.cwd);
-    if (refusedAttachment) return { action: 'gate', label, summary, deny: refusedAttachment };
+    const attachmentsRead = readAttachments([...shape.options.get('-a') ?? [], ...shape.options.get('--attach') ?? []], env.cwd);
+    if (attachmentsRead.refusal) return { action: 'gate', label, summary, deny: attachmentsRead.refusal };
     if (draftTarget && draftRead) {
         // The command can't stand in for a draft's text, so a cut summary says so first.
         const fitted = summary === lines.join('\n') ? summary : fitLines([
@@ -536,7 +536,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const faithful = agree && sender !== null && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
         && shownPlain.every(v => !v || fieldShownAsIs(v, false))
         && shownAsCode.every(v => !v || fieldShownAsIs(v, true)) && gwsWords === 1 && !generatedWord && !probeFlag
-        && !unresolved.size && body.text !== null && bodyFaithful;
+        && !unresolved.size && body.text !== null && bodyFaithful && attachmentsRead.namesAsSent;
     if (faithful && !bodyCut && summary === lines.join('\n')) return { action: 'gate', label, summary, pureSend: true };
     const whole = faithful && wholeMessage
         ? lines.map((line, k) => k === wholeMessage!.at ? wholeMessage!.block : line).join('\n')

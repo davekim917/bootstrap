@@ -204,7 +204,9 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
 describe('evaluateEmailSend — a whole formatted email too long for the summary', () => {
     // The 11-18 shape: two recipients, a Cc, an attachment, a formatted body with a list, the output trimmed. The body
     // is longer than the summary beside the command has room for.
-    const SHEET = '/workspace/agent/send/Spring budget - comparisons to confirm.xlsx';
+    const SHEET = join(root, 'Spring budget - comparisons to confirm.xlsx');
+    writeFileSync(SHEET, 'sheet');
+    symlinkSync(SHEET, join(root, 'renamed.xlsx'));
     const LONG = 'Before we share the spring view, we would like your input on the items below. '.repeat(9).trim();
     const ITEM = 'The attached sheet lists each new item, the comparison we would use, and why. '.repeat(4).trim();
     const body = (...extra: string[]) => formatted('<p>Hi Dana, Ray,</p>', `<p>${LONG}</p>`, '<ul>', `<li>${ITEM}</li>`, `<li>Anything else. ${ITEM}</li>`, '</ul>', ...extra, '<p>Partial answers help too.</p>');
@@ -244,6 +246,7 @@ describe('evaluateEmailSend — a whole formatted email too long for the summary
             ['a numbered list', longSend(body('<ol><li>First</li></ol>'))],
             ['a second attachment as --attach=', longSend(body(), sendLine(' --attach=/workspace/agent/send/notes.pdf'))],
             ['an unconfirmed sender', longSend().replace('example-co.json', 'unknown-co.json')],
+            ['an attachment gws sends under another name', longSend().replace(SHEET, join(root, 'renamed.xlsx'))],
             ['more than any card holds', longSend(body(`<p>${LONG.repeat(3)}</p>`))],
         ]) {
             const v = evaluateEmailSend(command, ENV);

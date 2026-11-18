@@ -19,6 +19,10 @@ writeFileSync(join(agent, 'locked.txt'), 'locked');
 chmodSync(join(agent, 'locked.txt'), 0o000);
 symlinkSync(join(shared, SHEET), join(agent, 'linked.xlsx'));
 symlinkSync(join(agent, 'send', SHEET), join(agent, 'linked-inside.xlsx'));
+mkdirSync(join(agent, 'deep', 'er'), { recursive: true });
+writeFileSync(join(agent, 'deep', 'x.txt'), 'x');
+symlinkSync(join(agent, 'deep', 'er'), join(agent, 'up'));
+symlinkSync(agent, join(root, 'agent-link'));
 writeFileSync(join(agent, 'big-a.bin'), '');
 truncateSync(join(agent, 'big-a.bin'), 13 * 1024 * 1024);
 writeFileSync(join(agent, 'big-b.bin'), '');
@@ -58,6 +62,8 @@ describe('evaluateEmailSend — an attachment gws would refuse is refused before
             [['../workgroup/artifacts/spring-budget/' + SHEET], 'outside that directory'],
             [['linked.xlsx'], `resolves to \`${join(shared, SHEET)}\`, outside that directory`],
             [['missing.xlsx'], 'it does not exist'],
+            [['missing/../send/' + SHEET], 'it does not exist'],
+            [['up/x.txt'], 'it does not exist'],
             [['folder'], 'it is not a regular file'],
             [['empty.txt'], 'it is empty'],
             [[`send/${SHEET}`, join(shared, SHEET)], `\`${join(shared, SHEET)}\``],
@@ -74,9 +80,13 @@ describe('evaluateEmailSend — an attachment gws would refuse is refused before
     });
 
     test('files gws attaches, or a send whose working directory is unknown, still get their card', () => {
-        for (const attachments of [[`send/${SHEET}`], [join(agent, 'send', SHEET)], ['linked-inside.xlsx'], [join(agent, 'big-a.bin')]]) {
+        for (const attachments of [[`send/${SHEET}`], [join(agent, 'send', SHEET)], ['linked-inside.xlsx'], [join(agent, 'big-a.bin')],
+            // gws resolves `..` after a symlink from where the link points.
+            ['up/../x.txt']]) {
             expect([attachments, refusal(...attachments)]).toEqual([attachments, undefined]);
         }
+        const viaLinkedCwd = evaluateEmailSend(send(`../agent/send/${SHEET}`), { ...ENV, cwd: join(root, 'agent-link') });
+        expect(viaLinkedCwd.deny).toBeUndefined();
         for (const cwd of [undefined, 'relative/dir', join(root, 'gone')]) {
             const v = evaluateEmailSend(send(join(shared, SHEET)), { ...ENV, cwd });
             expect([cwd, v.action, v.deny]).toEqual([cwd, 'gate', undefined]);
