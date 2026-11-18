@@ -22,7 +22,9 @@ symlinkSync(join(agent, 'send', SHEET), join(agent, 'linked-inside.xlsx'));
 mkdirSync(join(agent, 'deep', 'er'), { recursive: true });
 writeFileSync(join(agent, 'deep', 'x.txt'), 'x');
 symlinkSync(join(agent, 'deep', 'er'), join(agent, 'up'));
-symlinkSync(agent, join(root, 'agent-link'));
+mkdirSync(join(agent, 'deep', 'cwd-target'));
+writeFileSync(join(agent, 'deep', 'cwd-target', 'f.txt'), 'f');
+symlinkSync(join(agent, 'deep', 'cwd-target'), join(root, 'cwd-link'));
 writeFileSync(join(agent, 'big-a.bin'), '');
 truncateSync(join(agent, 'big-a.bin'), 13 * 1024 * 1024);
 writeFileSync(join(agent, 'big-b.bin'), '');
@@ -85,7 +87,8 @@ describe('evaluateEmailSend — an attachment gws would refuse is refused before
             ['up/../x.txt']]) {
             expect([attachments, refusal(...attachments)]).toEqual([attachments, undefined]);
         }
-        const viaLinkedCwd = evaluateEmailSend(send(`../agent/send/${SHEET}`), { ...ENV, cwd: join(root, 'agent-link') });
+        // From a symlinked cwd, `..` climbs from the directory the link points to, which has another parent.
+        const viaLinkedCwd = evaluateEmailSend(send('../cwd-target/f.txt'), { ...ENV, cwd: join(root, 'cwd-link') });
         expect(viaLinkedCwd.deny).toBeUndefined();
         for (const cwd of [undefined, 'relative/dir', join(root, 'gone')]) {
             const v = evaluateEmailSend(send(join(shared, SHEET)), { ...ENV, cwd });
