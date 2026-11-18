@@ -27,7 +27,7 @@ import {
     runEmailGate,
     runNanoclawGate,
 } from './block-destructive-core';
-import { evaluateEmailSend, evaluateEmailToolCall, type DraftBinding } from './email-gate-core';
+import { evaluateEmailSend, evaluateEmailToolCall, type DraftBinding, type EmailCard } from './email-gate-core';
 
 interface GuardToolInput extends ToolUseInput {
     tool_input: {
@@ -70,7 +70,7 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
     reason: string;
     summary?: string;
     deny?: string;
-    pureSend?: boolean;
+    card: EmailCard;
     draft?: DraftBinding;
 } {
     const verdict = evaluateEmailSend(command, {
@@ -83,7 +83,7 @@ function emailReason(command: string, cwd?: string): { action: 'allow' } | {
         reason: verdict.label ?? verdict.reason ?? 'Outbound email send requires approval.',
         summary: verdict.summary,
         deny: verdict.deny,
-        pureSend: verdict.pureSend,
+        card: { pureSend: verdict.pureSend, fullSummary: verdict.fullSummary },
         draft: verdict.draft,
     };
 }
@@ -185,7 +185,7 @@ function main(): void {
             }
 
             const binding = email.draft;
-            const decision = runEmailGate(command, email.reason, undefined, email.summary, undefined, email.pureSend,
+            const decision = runEmailGate(command, email.reason, undefined, email.summary, undefined, email.card,
                 binding ? { binding, onChanged: (refusal) => block(refusal, email.reason) } : undefined);
             if (decision !== 'approved') {
                 block(`${email.reason} — ${deniedDetail(decision)}`, email.reason);

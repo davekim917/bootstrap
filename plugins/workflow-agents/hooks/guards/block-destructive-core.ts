@@ -42,7 +42,7 @@ import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
-import { draftChangedSince, type DraftBinding } from './email-gate-core';
+import { draftChangedSince, type DraftBinding, type EmailCard } from './email-gate-core';
 import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, substitutionClose, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
@@ -7677,7 +7677,7 @@ export function writeGateRequest(
     summary: string,
     command: string,
     action: GateAction = 'request_destructive_gate',
-    pureSend?: boolean,
+    card: EmailCard = {},
 ): string {
     // Dynamic import so non-NanoClaw environments (plain Claude Code) never
     // touch bun:sqlite — the module is only present under bun runtime.
@@ -7694,7 +7694,8 @@ export function writeGateRequest(
         // command in its approval record. Truncating here would discard final
         // arguments before the approver or audit trail could inspect them.
         command,
-        ...(pureSend ? { pureSend: true } : {}),
+        ...(card.pureSend ? { pureSend: true } : {}),
+        ...(card.fullSummary !== undefined ? { fullSummary: card.fullSummary } : {}),
     });
 
     const outbound = new Database(NANOCLAW_OUTBOUND_DB);
@@ -7803,8 +7804,8 @@ export function runGateRequest(
         // tool call share ONE approval card instead of raising one each — see
         // `claimGateRequest`. Omitted, behaviour is exactly as before.
         toolUseId?: string;
-        // The email gate's word that the command is the send alone and its summary shows all of it.
-        pureSend?: boolean;
+        // The email gate's word on whether the card may leave the command off (EmailGateVerdict).
+        card?: EmailCard;
     },
 ): GateDecision {
     const key = opts.toolUseId ? gateClaimKey(opts.toolUseId, opts.action) : null;
@@ -7822,7 +7823,7 @@ export function runGateRequest(
 
     let requestId: string;
     try {
-        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action, opts.pureSend);
+        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action, opts.card);
     } catch (err) {
         // If we can't even stage the request, the session DBs are in a broken
         // state. Deny rather than silently allowing — the gate is fail-closed.
@@ -7892,8 +7893,8 @@ export function changesProduction(command: string, cwd: string = currentWorkingD
  * body (from/to/cc/bcc/body); when omitted, the card falls back to `reason` for
  * both label and summary. Threading summary gives OpenCode's approval card the
  * same structured content as Claude's in-tree card (S-QA2 parity). The 6th
- * `pureSend` is the verdict's own: the host leaves the command off the card only
- * when it is set. The 7th `draft` carries the verdict's draft binding: once
+ * `card` carries the verdict's own `pureSend` and `fullSummary`: the host leaves
+ * the command off the card only when one of them is set. The 7th `draft` carries the verdict's draft binding: once
  * approved, the draft is re-read, and a changed one is refused through
  * `onChanged` and answers 'denied'.
  */
@@ -7903,10 +7904,10 @@ export function runEmailGate(
     onStageError?: (err: unknown) => void,
     summary?: string,
     toolUseId?: string,
-    pureSend?: boolean,
+    card?: EmailCard,
     draft?: { binding: DraftBinding; onChanged: (refusal: string) => void; gwsBin?: string },
 ): GateDecision {
-    const decision = runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId, pureSend });
+    const decision = runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId, card });
     if (decision !== 'approved' || !draft) return decision;
     const refusal = draftChangedSince(draft.binding, draft.gwsBin);
     if (refusal === null) return 'approved';

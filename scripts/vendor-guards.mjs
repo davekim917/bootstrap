@@ -38,6 +38,7 @@ const VENDORED_FILES = [
   'file-protection-core.ts',
   'email-gate-core.ts',
   'gate-card-core.ts',
+  'gws-attachments-core.ts',
 ];
 const TARGET_DIRS = [path.join(REPO, 'plugins/workflow-agents/hooks/guards')];
 

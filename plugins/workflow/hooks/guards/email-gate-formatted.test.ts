@@ -200,3 +200,54 @@ describe('evaluateEmailSend — a formatted body cards as the text it shows', ()
         expect(v.pureSend).toBeUndefined();
     });
 });
+
+describe('evaluateEmailSend — a whole formatted email too long for the summary', () => {
+    // The 11-18 shape: two recipients, a Cc, an attachment, a formatted body with a list, the output trimmed. The body
+    // is longer than the summary beside the command has room for.
+    const SHEET = '/workspace/agent/send/Spring budget - comparisons to confirm.xlsx';
+    const LONG = 'Before we share the spring view, we would like your input on the items below. '.repeat(9).trim();
+    const ITEM = 'The attached sheet lists each new item, the comparison we would use, and why. '.repeat(4).trim();
+    const body = (...extra: string[]) => formatted('<p>Hi Dana, Ray,</p>', `<p>${LONG}</p>`, '<ul>', `<li>${ITEM}</li>`, `<li>Anything else. ${ITEM}</li>`, '</ul>', ...extra, '<p>Partial answers help too.</p>');
+    const sendLine = (tail = '') => `gws gmail +send --to "dana@example.org,ray@example.org" --cc "lee@example.com" --subject "Spring budget: comparisons to confirm" --body "$BODY" --html -a "${SHEET}"${tail} --format json 2>&1 | tail -8`;
+    const longSend = (html = body(), line = sendLine()) => `${CREDS}\nBODY=$(cat <<'EOF'\n${html}\nEOF\n)\n${line}`;
+
+    test('the 11-18 shape carries the whole email for a card without the command: every field, the attachment and the full list', () => {
+        const v = evaluateEmailSend(longSend(), ENV);
+        expect([v.action, v.deny, v.pureSend]).toEqual(['gate', undefined, undefined]);
+        expect(v.summary!.length).toBeLessThanOrEqual(1300);
+        expect(v.summary).toContain('…');
+        expect(v.fullSummary).toBe([
+            'From: team@example.com',
+            'To: dana@example.org,ray@example.org',
+            'Cc: lee@example.com',
+            'Subject: Spring budget: comparisons to confirm',
+            `Attachments: \`${SHEET}\``,
+            '',
+            'Message (formatted):',
+            '```',
+            'Hi Dana, Ray,',
+            '',
+            LONG,
+            '',
+            `- ${ITEM}`,
+            `- Anything else. ${ITEM}`,
+            '',
+            'Partial answers help too.',
+            '```',
+        ].join('\n'));
+    });
+
+    test('a near miss keeps the command: another step, markup the card cannot render, an attachment it does not list, or too long', () => {
+        for (const [name, command] of [
+            ['a second command', `${longSend()}\necho sent`],
+            ['bold text', longSend(body('<p>Reply by <b>Friday</b>.</p>'))],
+            ['a numbered list', longSend(body('<ol><li>First</li></ol>'))],
+            ['a second attachment as --attach=', longSend(body(), sendLine(' --attach=/workspace/agent/send/notes.pdf'))],
+            ['an unconfirmed sender', longSend().replace('example-co.json', 'unknown-co.json')],
+            ['more than any card holds', longSend(body(`<p>${LONG.repeat(3)}</p>`))],
+        ]) {
+            const v = evaluateEmailSend(command, ENV);
+            expect([name, v.action, v.pureSend, v.fullSummary]).toEqual([name, 'gate', undefined, undefined]);
+        }
+    });
+});
