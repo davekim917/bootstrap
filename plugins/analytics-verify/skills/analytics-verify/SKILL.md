@@ -109,9 +109,10 @@ If you're unsure which loop a data claim needs, use the full loop.
      ("only", "the main driver") the same way.
 5. **Get an independent verifier.** Use the first of these you have:
    1. a fresh session of a different model family from the author's, that can reach
-      the same data. From a Claude agent, that's `codex exec -c
+      the same data. From a Claude agent, that's `codex exec -m gpt-6.1-sol -c
       model_reasoning_effort=<effort>` with stdin closed (`</dev/null`) or it waits
-      forever. Reviewing work another family wrote (a Codex peer's draft), it's a
+      forever. Name the model: Codex's own default can be a small tier, which is not a
+      verifier. Reviewing work another family wrote (a Codex peer's draft), it's a
       fresh-context subagent of your own model, at `<effort>`. Don't use `claude -p`:
       inside an agent container it fails with "Not logged in";
    2. a peer agent in this conversation on a different family from the author's

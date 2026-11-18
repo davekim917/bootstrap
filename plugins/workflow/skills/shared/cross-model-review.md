@@ -28,10 +28,10 @@ When the artifact author is Claude, invoke Codex with settings that do not inher
 `config.toml`:
 
 ```sh
-codex exec --ignore-user-config -c 'model_reasoning_effort="high"' -s read-only
+codex exec --ignore-user-config -m gpt-6.1-sol -c 'model_reasoning_effort="high"' -s read-only
 ```
 
-The command names no model on purpose. Codex has no model aliases (`-m sol` is rejected), so any id written here goes stale at the next release; with the user config ignored, Codex uses its own current default. Record the id the run reports (the `model:` line of the run header) as the reviewer, never an alias, and stop if that id is a small tier.
+The command names the model because Codex's own default is not chosen for review: with the user config ignored, Codex runs whatever default it currently serves, and that can be a small tier. Codex has no model aliases (`-m sol` is rejected), so the id is written in full and moves to a newer frontier model when one ships. An id left behind still names a frontier model, and one Codex no longer serves fails the run (`nonzero-exit`) instead of falling back. Record the id the run reports (the `model:` line of the run header) as the reviewer, never an alias, and stop if that id is a small tier.
 
 If Codex answers with its usage limit, record `nonzero-exit` and treat Codex as unavailable for this
 review. Never rerun it yourself with a different `CODEX_HOME`: a host that has spare Codex logins
@@ -86,7 +86,7 @@ Send the vendored prompt at `references/codex-adversarial-prompt.md` verbatim, f
 four substitution markers (below), and enforce its schema at the CLI boundary rather than in prose:
 
 ```sh
-codex exec --ignore-user-config -c 'model_reasoning_effort="high"' -s read-only \
+codex exec --ignore-user-config -m gpt-6.1-sol -c 'model_reasoning_effort="high"' -s read-only \
   --output-schema references/codex-review-output.schema.json \
   --output-last-message <path-to-write-the-final-JSON-response>
 ```
@@ -278,9 +278,8 @@ Applied when the changed surface warrants:
 Record in `run.md`:
 
 - review stage, artifact author runtime/model family and coordinator family separately;
-- target runtime plus requested effort passed as an explicit CLI argument (requested model: runtime
-  default when the command names none), and the effective model ID when process metadata reports it
-  (otherwise record it as unverified);
+- target runtime plus requested model and effort, each passed as an explicit CLI argument, and the
+  effective model ID when process metadata reports it (otherwise record it as unverified);
 - exact command and timeout;
 - one of: `completed`, `missing-cli`, `unauthenticated`, `unsupported-flags`, `timeout`,
   `nonzero-exit`, `empty-output`, or `invalid-output`;
