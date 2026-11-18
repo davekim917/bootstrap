@@ -218,8 +218,8 @@ describe('evaluateEmailSend — a whole formatted email too long for the summary
         expect([v.action, v.deny, v.pureSend]).toEqual(['gate', undefined, undefined]);
         expect(v.summary!.length).toBeLessThanOrEqual(1300);
         const whole = ['Hi Dana, Ray,', '', LONG, '', `- ${ITEM}`, `- Anything else. ${ITEM}`, '', 'Partial answers help too.'].join('\n');
-        expect(v.summary).toMatch(new RegExp(`\nBody cut: showing [0-9,]+ of ${whole.length.toLocaleString('en-US')} characters\\.\nMessage \\(formatted\\):\n`));
-        expect(v.wholeEmail!.endsWith(`\n\nMessage source, exactly as sent:\n${body()}`)).toBe(true);
+        expect(v.summary).toMatch(new RegExp(`\nBody cut: showing [0-9,]+ of ${[...whole].length.toLocaleString('en-US')} characters\\.\nMessage \\(formatted\\):\n`));
+        expect(v.wholeEmail!.endsWith(`\n\nMessage source, exactly as the send gives it:\n${body()}\n-- end of message --`)).toBe(true);
         expect(v.wholeEmail!.split('\nMessage, as the recipient reads it:\n')[1].split('\n\nMessage source')[0]).toBe(whole);
         expect(v.fullSummary).toBe([
             'From: team@example.com',
@@ -276,7 +276,7 @@ describe('a body cut to fit the card says so, with how much it shows', () => {
         const block = v.summary!.split('Message:\n```\n')[1].split('\n```')[0];
         expect(block).toBe(`${TEXT.slice(0, shown)}…`);
         expect(shown).toBeGreaterThan(500);
-        expect(v.wholeEmail).toBe(['From: team@example.com', 'To: pat@example.com', 'Subject: Notes', '', 'Message, exactly as sent:', TEXT].join('\n'));
+        expect(v.wholeEmail).toBe(['From: team@example.com', 'To: pat@example.com', 'Subject: Notes', '', 'Message, exactly as the send gives it:', TEXT, '-- end of message --'].join('\n'));
     });
 
     test('a native email tool names it the same way', () => {
@@ -284,7 +284,57 @@ describe('a body cut to fit the card says so, with how much it shows', () => {
         const { note, header } = cutOf(v.summary);
         expect(note).toMatch(/^Body cut: showing [0-9,]+ of 4,399 characters\.$/);
         expect(header).toBe('Message:');
-        expect(v.wholeEmail).toBe(['Tool: gmail_send_email', 'To: pat@example.com', 'Subject: Notes', '', 'Message, exactly as sent:', TEXT].join('\n'));
+        expect(v.wholeEmail).toBe(['Tool: gmail_send_email', 'To: pat@example.com', 'Subject: Notes', '', 'Message, exactly as the send gives it:', TEXT, '-- end of message --'].join('\n'));
+    });
+
+    // The text a cut card shows, read back from its block: a code block's lines, or a quote's without `> `, less the "…".
+    const shownText = (summary: string, header: string) => {
+        const after = summary.split(`\n${header}\n`)[1];
+        const block = after.startsWith('```') ? after.split('```\n')[1].split('\n```')[0] : after.split('\n').filter(l => l.startsWith('>')).map(l => l.replace(/^> ?/, '')).join('\n');
+        return block.replace(/…$/, '');
+    };
+    const noted = (summary: string | undefined) => /^Body cut: showing ([0-9,]+) of (.+)\.$/m.exec(summary ?? '');
+
+    test('the count is what the card shows, for a body of many short lines that each take a quote mark', () => {
+        const lines = Array.from({ length: 700 }, (_, i) => `line ${i}`).join('\n');
+        const v = evaluateEmailToolCall('gmail_send_email', { to: 'pat@example.com', subject: 'Notes', body: lines }, ENV);
+        const shown = shownText(v.summary!, 'Message:');
+        expect(lines.startsWith(shown)).toBe(true);
+        expect(noted(v.summary)?.slice(1)).toEqual([[...shown].length.toLocaleString('en-US'), `${[...lines].length.toLocaleString('en-US')} characters`]);
+    });
+
+    test('the count is what the card shows, for a Bash body quoted because it holds a fence line', () => {
+        const text = ['```', ...Array.from({ length: 500 }, (_, i) => `row ${i}`)].join('\n');
+        const v = evaluateEmailSend(`${CREDS}\ngws gmail +send --to pat@example.com --subject Notes --body '${text}'`, ENV);
+        const shown = shownText(v.summary!, 'Message:');
+        expect(text.startsWith(shown)).toBe(true);
+        expect(noted(v.summary)?.[1]).toBe([...shown].length.toLocaleString('en-US'));
+    });
+
+    test('the total counts the whole body: past the 20,000 characters a native body was read to, and in code points', () => {
+        const long = 'Thanks for the notes. '.repeat(2400).trim();
+        const wide = '😀'.repeat(3000);
+        for (const [body, total] of [[long, '52,799'], [wide, '3,000']]) {
+            const v = evaluateEmailToolCall('gmail_send_email', { to: 'pat@example.com', subject: 'Notes', body }, ENV);
+            expect(noted(v.summary)?.[2]).toBe(`${total} characters`);
+            expect(v.wholeEmail!.endsWith(`\n${body}\n-- end of message --`)).toBe(true);
+        }
+    });
+
+    test('an HTML body longer than the card reads says the text is read from its start, and carries only its source', () => {
+        const html = `<p>${'Thanks for the notes. '.repeat(1200).trim()}</p>`;
+        const v = evaluateEmailToolCall('gmail_send_email', { to: 'pat@example.com', subject: 'Notes', html }, ENV);
+        expect(noted(v.summary)?.[2]).toBe(`the text read from the first 20,000 of the HTML's ${html.length.toLocaleString('en-US')} characters`);
+        expect(v.wholeEmail).not.toContain('as the recipient reads it');
+        expect(v.wholeEmail!.endsWith(`\nMessage, exactly as the send gives it:\n${html}\n-- end of message --`)).toBe(true);
+    });
+
+    test('a card with no room for any of the message says so first, and shows none of it', () => {
+        const to = Array.from({ length: 80 }, (_, i) => `person${i}@example.org`).join(',');
+        const v = evaluateEmailSend(`${CREDS}\ngws gmail +send --to "${to}" --subject Notes --body '${TEXT}'`, ENV);
+        expect(v.summary!.split('\n')[0]).toBe('Body cut: this card has no room for the message (4,399 characters).');
+        expect(v.summary).not.toContain('Thanks for the notes');
+        expect(v.wholeEmail!.endsWith(`\n${TEXT}\n-- end of message --`)).toBe(true);
     });
 
     test('a body that fits says nothing about a cut', () => {

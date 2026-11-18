@@ -7891,7 +7891,8 @@ export function changesProduction(command: string, cwd: string = currentWorkingD
  * both label and summary. Threading summary gives OpenCode's approval card the
  * same structured content as Claude's in-tree card (S-QA2 parity). The 6th
  * `card` carries the verdict's own `pureSend`, `fullSummary` and `wholeEmail`: the host leaves
- * the command off the card only when one of the first two is set, and shows `wholeEmail` when the card cuts the message. The 7th `draft` carries the verdict's draft binding: once
+ * the command off the card only when one of the first two is set; `wholeEmail` is for a host that puts the whole message
+ * in front of the approver when the card cuts it. The 7th `draft` carries the verdict's draft binding: once
  * approved, the draft is re-read, and a changed one is refused through
  * `onChanged` and answers 'denied'.
  */
