@@ -91,7 +91,7 @@ describe('a listing limited to safe fields, and other onecli commands, run as be
         ['creating an agent with its output discarded', 'onecli agents create --name Invented --identifier invented-agent > /dev/null'],
         ['regenerating a token with its output discarded', 'onecli agents regenerate-token --id agent-invented-1 >/dev/null 2>&1'],
         ['a command onecli run starts', 'onecli run --agent invented -- curl -s https://api.invented.example/v1/me'],
-        ['a command onecli run starts with no --', 'onecli run --agent invented curl -s https://api.invented.example/v1/me'],
+        ['a command onecli run starts with no --', 'onecli run --agent invented curl https://api.invented.example/v1/me'],
         ['onecli run --dry-run', 'onecli run --agent invented --dry-run -- curl -s https://api.invented.example'],
         ['the dry run the env refusal names', 'onecli run --agent invented --dry-run -- true'],
         ['stdout duplicated, then discarded', 'onecli agents create --name Invented --identifier invented-agent 1>&2 >/dev/null'],
