@@ -28,6 +28,12 @@ describe('every onecli command that prints a credential is refused, naming its s
         ['the process environment read from stdin under onecli run', "onecli run -- tr '\\0' '\\n' < /proc/self/environ", RUN_SAFE],
         ['stdout discarded, then duplicated onto stderr', 'onecli agents create --name Invented --identifier invented-agent >/dev/null 1>&2', CREATE_SAFE],
         ['stdout duplicated onto stderr', 'onecli agents regenerate-token --id agent-invented-1 >&2', REGENERATE_SAFE],
+        ['stdout discarded, then reopened read-write on stderr', 'onecli agents regenerate-token --id agent-invented-1 >/dev/null 1<>/dev/stderr', REGENERATE_SAFE],
+        ['a dry run a later flag turns off', 'onecli agents regenerate-token --id agent-invented-1 --dry-run --dry-run=false', REGENERATE_SAFE],
+        ['an onecli run dry run a later flag turns off', 'onecli run --dry-run --dry-run=false -- env', RUN_SAFE],
+        ['a thread environment under onecli run', 'onecli run -- cat /proc/self/task/1/environ', RUN_SAFE],
+        ['the environment read by dd under onecli run', 'onecli run -- dd if=/proc/self/environ', RUN_SAFE],
+        ['a script whose quotes split the word onecli', "echo 'one''cli agents regenerate-token --id agent-invented-1' | bash", REGENERATE_SAFE],
     ])('%s', (_name, command, safe) => {
         const result = verdict(command);
         expect(result.action).toBe('block');

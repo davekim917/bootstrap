@@ -2929,6 +2929,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
             stdoutFiles.push(wordValue(r.target));
             stdoutLast = wordValue(r.target);
         }
+        if (r?.operator === '<>' && r?.fileDescriptor === 1) stdoutLast = wordValue(r.target);
         if (r?.operator === '>&' && onStdout) {
             const target = wordValue(r.target);
             stdoutLast = /^(?:\d+|-)$/.test(target) ? `&${target}` : target;
@@ -8782,7 +8783,17 @@ const ONECLI_FIELD_OPTIONS = ['--fields', '--quiet'];
 const ONECLI_SAFE_LISTING = 'onecli agents list --fields id,identifier,name';
 const ONECLI_RUN_RE = /(?:^|[\s/])onecli\s+run\b([^]*?)\s--(?:\s|$)/;
 const ONECLI_DRY_RUNS = new Set(['create', 'regenerate-token', 'regenerate-api-key']);
-const PROC_ENVIRON_RE = /^\/proc\/[^/]+\/environ$/;
+const PROC_ENVIRON_RE = /(?:^|=)\/proc\/\S+\/environ$/;
+
+/** Whether the last --dry-run among these words turns it on; a later `--dry-run=false` turns it back off. */
+function onecliDryRun(words: string[]): boolean {
+    let on = false;
+    for (const w of words) {
+        if (w === '--dry-run') on = true;
+        else if (w.startsWith('--dry-run=')) on = /^(?:true|1)$/i.test(w.slice('--dry-run='.length));
+    }
+    return on;
+}
 const ONECLI_ENV_VIEWERS = new Set(['env', 'printenv']);
 const ONECLI_SCRIPT_DEPTH_MAX = 4;
 
@@ -8804,7 +8815,7 @@ function onecliSafeFields(args: string[]): boolean {
 function onecliTokenReason(cmd: ResolvedCommand): string | null {
     if (cmd.name !== 'onecli') {
         const run = ONECLI_RUN_RE.exec(cmd.raw);
-        if (!run || /(?:^|\s)--dry-run(?:\s|$)/.test(run[1])) return null;
+        if (!run || onecliDryRun(run[1].split(/\s+/))) return null;
         const prints = ONECLI_ENV_VIEWERS.has(cmd.name)
             || [...cmd.args, ...(cmd.stdinFiles ?? [])].some(a => PROC_ENVIRON_RE.test(a));
         if (!prints) return null;
@@ -8817,7 +8828,7 @@ function onecliTokenReason(cmd: ResolvedCommand): string | null {
     if (group === undefined || group === 'run' || ONECLI_FREE_ALONE.has(group)) return null;
     if (sub !== undefined && ONECLI_FREE[group]?.has(sub)) return null;
     if (group === 'agents' && sub !== undefined && ONECLI_FILTERED.has(sub) && onecliSafeFields(cmd.args)) return null;
-    if (sub !== undefined && ONECLI_DRY_RUNS.has(sub) && cmd.args.includes('--dry-run')) return null;
+    if (sub !== undefined && ONECLI_DRY_RUNS.has(sub) && onecliDryRun(cmd.args)) return null;
     if (cmd.stdoutLast === '/dev/null') return null;
     const what = `onecli ${[group, sub].filter(Boolean).join(' ')}`;
     const fix = group === 'agents' && sub === 'get-default' ? 'onecli agents get-default --fields id,identifier,name'
@@ -8832,7 +8843,7 @@ function onecliTokenReason(cmd: ResolvedCommand): string | null {
 
 /** The same refusal for a onecli command inside a script the line has a shell run (piped in, or written then run). */
 function onecliTokenInScripts(commands: ResolvedCommand[], line: string, depth = 0): string | null {
-    if (!/\bonecli\b/.test(line)) return null;
+    if (!/onecli/.test(line.replace(/['"\\]/g, ''))) return null;
     for (const cmd of commands) {
         const scripts = scriptsRun(cmd);
         if (scripts === null || (scripts.length && depth >= ONECLI_SCRIPT_DEPTH_MAX)) {
