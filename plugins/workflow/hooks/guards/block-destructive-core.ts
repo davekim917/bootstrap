@@ -8826,15 +8826,17 @@ function onecliSafeFields(args: string[]): boolean {
 }
 
 /** Why a onecli command, or a command `onecli run` starts, is refused because its output can hold a credential, or null. */
+/** Why a command `onecli run` starts is refused because it prints the proxy variables holding the token, or null. */
+function onecliRunChildReason(cmd: ResolvedCommand): string | null {
+    const prints = ONECLI_ENV_VIEWERS.has(cmd.name) || [...cmd.args, ...(cmd.stdinFiles ?? [])].some(readsProc);
+    if (!prints) return null;
+    return `Refused: \`onecli run\` puts the agent's OneCLI access token in the child's proxy variables, and \`${cmd.name}\` `
+        + `would print them (/proc holds every process's environment). Run \`onecli run --agent <id> --dry-run -- true\` to see which variables it injects, without their values.`;
+}
+
+/** Why a onecli command, or a command `onecli run` starts, is refused because its output can hold a credential, or null. */
 function onecliTokenReason(cmd: ResolvedCommand): string | null {
-    if (cmd.name !== 'onecli') {
-        if (!ONECLI_RUN_RE.test(cmd.raw)) return null;
-        const prints = ONECLI_ENV_VIEWERS.has(cmd.name)
-            || [...cmd.args, ...(cmd.stdinFiles ?? [])].some(readsProc);
-        if (!prints) return null;
-        return `Refused: \`onecli run\` puts the agent's OneCLI access token in the child's proxy variables, and \`${cmd.name}\` `
-            + `would print them (/proc holds every process's environment). Run \`onecli run --agent <id> --dry-run -- true\` to see which variables it injects, without their values.`;
-    }
+    if (cmd.name !== 'onecli') return ONECLI_RUN_RE.test(cmd.raw) ? onecliRunChildReason(cmd) : null;
     if (cmd.args.includes('--help') || cmd.args.includes('-h')) return null;
     const words = cmd.args.filter(a => !a.startsWith('-'));
     const [group, sub] = words;
@@ -8855,9 +8857,11 @@ function onecliTokenReason(cmd: ResolvedCommand): string | null {
 }
 
 /** The same refusal for a onecli command inside a script the line has a shell run (piped in, or written then run). */
-function onecliTokenInScripts(commands: ResolvedCommand[], line: string, depth = 0): string | null {
+function onecliTokenInScripts(commands: ResolvedCommand[], line: string, depth = 0, underRun = false): string | null {
     if (!/onecli/.test(line.replace(/['"\\]/g, ''))) return null;
     for (const cmd of commands) {
+        const runs = underRun || (cmd.name !== 'onecli' && ONECLI_RUN_RE.test(cmd.raw));
+        const check = (step: ResolvedCommand) => onecliTokenReason(step) ?? (runs ? onecliRunChildReason(step) : null);
         const scripts = scriptsRun(cmd);
         if (scripts === null || (scripts.length && depth >= ONECLI_SCRIPT_DEPTH_MAX)) {
             if (/\bonecli\b/.test(line)) {
@@ -8868,12 +8872,12 @@ function onecliTokenInScripts(commands: ResolvedCommand[], line: string, depth =
         for (const { text, steps } of scripts) {
             const inner = steps ?? extractCommands(text);
             for (const step of inner) {
-                const reason = onecliTokenReason(step)
-                    ?? execRuns(step).map(r => (r.inner ? onecliTokenReason(r.inner) : null)).find(Boolean)
+                const reason = check(step)
+                    ?? execRuns(step).map(r => (r.inner ? check(r.inner) : null)).find(Boolean)
                     ?? null;
                 if (reason) return reason;
             }
-            const nested = onecliTokenInScripts(inner, text, depth + 1);
+            const nested = onecliTokenInScripts(inner, text, depth + 1, runs);
             if (nested) return nested;
         }
     }
