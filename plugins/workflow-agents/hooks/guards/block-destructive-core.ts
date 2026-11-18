@@ -8677,7 +8677,7 @@ function scriptsRun(cmd: ResolvedCommand): Array<{ text: string; steps?: Resolve
             const piped = pipedTexts(cmd);
             if (piped === null) return null;
             scripts.push(...[...(cmd.stdinTexts ?? []), ...piped].map(text => ({ text })));
-            files.push(...operandsOf(cmd.args).slice(0, 1));
+            files.push(...operandsOf(cmd.args).slice(0, 1), ...(SHELLS.has(cmd.name) ? cmd.stdinFiles ?? [] : []));
         }
     }
     // Bash runs a file by its own name only when the command word holds a slash; a bare word comes from PATH.
@@ -8829,7 +8829,6 @@ function onecliSafeFields(args: string[]): boolean {
     });
 }
 
-/** Why a onecli command, or a command `onecli run` starts, is refused because its output can hold a credential, or null. */
 /** Why a command `onecli run` starts is refused because it prints the proxy variables holding the token, or null. */
 function onecliRunChildReason(cmd: ResolvedCommand): string | null {
     const prints = ONECLI_ENV_VIEWERS.has(cmd.name) || [...cmd.args, ...(cmd.stdinFiles ?? [])].some(readsProc);
@@ -8862,7 +8861,7 @@ function onecliTokenReason(cmd: ResolvedCommand): string | null {
 
 /** The same refusal for a onecli command inside a script the line has a shell run (piped in, or written then run). */
 function onecliTokenInScripts(commands: ResolvedCommand[], line: string, depth = 0, underRun = false): string | null {
-    if (!/onecli/.test(line.replace(/['"\\]/g, ''))) return null;
+    if (!underRun && !/onecli/.test(line.replace(/['"\\]/g, ''))) return null;
     for (const cmd of commands) {
         const runs = underRun || (cmd.name !== 'onecli' && ONECLI_RUN_RE.test(cmd.raw));
         const check = (step: ResolvedCommand) => onecliTokenReason(step) ?? (runs ? onecliRunChildReason(step) : null);
