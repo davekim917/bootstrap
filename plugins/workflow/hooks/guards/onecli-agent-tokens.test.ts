@@ -25,6 +25,9 @@ describe('every onecli command that prints a credential is refused, naming its s
         ['env under onecli run', 'onecli run --agent invented -- env', RUN_SAFE],
         ['printenv under onecli run', 'onecli run --agent invented -- printenv HTTPS_PROXY', RUN_SAFE],
         ['the process environment under onecli run', 'onecli run -- cat /proc/self/environ', RUN_SAFE],
+        ['the process environment read from stdin under onecli run', "onecli run -- tr '\\0' '\\n' < /proc/self/environ", RUN_SAFE],
+        ['stdout discarded, then duplicated onto stderr', 'onecli agents create --name Invented --identifier invented-agent >/dev/null 1>&2', CREATE_SAFE],
+        ['stdout duplicated onto stderr', 'onecli agents regenerate-token --id agent-invented-1 >&2', REGENERATE_SAFE],
     ])('%s', (_name, command, safe) => {
         const result = verdict(command);
         expect(result.action).toBe('block');
@@ -74,6 +77,10 @@ describe('a listing limited to safe fields, and other onecli commands, run as be
         ['regenerating a token with its output discarded', 'onecli agents regenerate-token --id agent-invented-1 >/dev/null 2>&1'],
         ['a command onecli run starts', 'onecli run --agent invented -- curl -s https://api.invented.example/v1/me'],
         ['onecli run --dry-run', 'onecli run --agent invented --dry-run -- curl -s https://api.invented.example'],
+        ['the dry run the env refusal names', 'onecli run --agent invented --dry-run -- env'],
+        ['stdout duplicated, then discarded', 'onecli agents create --name Invented --identifier invented-agent 1>&2 >/dev/null'],
+        ['creating an agent as a dry run', 'onecli agents create --name Invented --identifier invented-agent --dry-run'],
+        ['regenerating a token as a dry run', 'onecli agents regenerate-token --id agent-invented-1 --dry-run'],
         ['env outside onecli run', 'env | grep PATH'],
         ['auth status', 'onecli auth status'],
         ['version', 'onecli version'],
