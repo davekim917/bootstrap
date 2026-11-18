@@ -397,3 +397,9 @@ describe('opencode-guard leaves a load receipt for the NanoClaw runner', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe('opencode-guard: a onecli command that prints a credential', () => {
+  test('throws, naming the safe listing', () => {
+    expect(() => gateBashOrThrow('onecli agents list | head -60')).toThrow(/onecli agents list --fields id,identifier,name/);
+  });
+});

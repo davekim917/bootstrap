@@ -57,7 +57,7 @@ const verdict = (command: string) => evaluateBashCommand(command, { cwd: '/tmp' 
 
 describe('reading Render needs no approval', () => {
     test.each([
-        'onecli agents list',
+        'onecli agents list --fields id,identifier,name',
         `onecli run --agent ag-example -- render services -o json`,
         'render services list -o json',
         'render services -o json',

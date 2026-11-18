@@ -5482,6 +5482,8 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     }
     const client = clientProgramBlock(cmd);
     if (client) return client;
+    const onecliTokens = onecliTokenReason(cmd);
+    if (onecliTokens) return onecliTokens;
     if (cmd.name === 'find' && cmd.args.includes('-delete')) {
         return 'find -delete permanently deletes files. Use trash instead.';
     }
@@ -7345,6 +7347,8 @@ function evaluateBashLine(
             return { action: 'block', reason };
         }
     }
+    const onecliScriptTokens = onecliTokenInScripts(commands, command);
+    if (onecliScriptTokens) return { action: 'block', reason: onecliScriptTokens };
     const selfKill = selfMatchingKillReason(commands, command);
     if (selfKill) return { action: 'block', reason: selfKill };
     const merge = noMergeReason(commands, cwd, command);
@@ -8749,4 +8753,97 @@ function responseSecretsReason(commands: ResolvedCommand[], line: string): strin
     if (fetch.calls) return `Refused: this line calls ${host} and ${what}; ${why}. ${fix}`;
     return `Refused: this line names ${host} and an HTTP client where the guard can't tell a call from text, and ${what}; ${why}. `
         + `To write a note about the call, use the file tool (Write or Edit), not the shell. To fetch, ${fix.charAt(0).toLowerCase()}${fix.slice(1)}`;
+}
+
+
+// ── OneCLI never prints a credential into tool output ────────────────────────
+// onecli prints OneCLI agent access tokens and the account API key in ordinary output: `agents list` and
+// `agents get-default` unless --fields leaves accessToken out, `agents create`, `agents regenerate-token`,
+// `auth api-key` and `auth regenerate-api-key` always. `onecli run` puts the token in the child's proxy variables, so
+// a child that prints its environment prints it too. Only subcommands whose output holds no credential run freely; any
+// other, including one a later onecli adds, runs only with its stdout discarded. onecli prints every field for an
+// empty --fields and honours only the last one given, so every --fields and --quiet value must name known-safe fields.
+const ONECLI_FREE: Record<string, Set<string>> = {
+    agents: new Set(['delete', 'rename', 'secrets', 'set-secrets', 'set-secret-mode']),
+    secrets: new Set(['list', 'create', 'update', 'delete']),
+    apps: new Set(['list', 'get', 'configure', 'remove', 'disconnect']),
+    rules: new Set(['list', 'create', 'update', 'delete']),
+    auth: new Set(['login', 'logout', 'status']),
+    config: new Set(['get', 'set']),
+};
+const ONECLI_FREE_ALONE = new Set(['help', 'version', 'migrate']);
+const ONECLI_FILTERED = new Set(['list', 'get-default']);
+const ONECLI_SAFE_FIELDS = new Set(['id', 'identifier', 'name', 'isDefault', 'createdAt', 'secretMode']);
+const ONECLI_FIELD_OPTIONS = ['--fields', '--quiet'];
+const ONECLI_SAFE_LISTING = 'onecli agents list --fields id,identifier,name';
+const ONECLI_RUN_RE = /(?:^|[\s/])onecli\s+run\b[^]*?\s--(?:\s|$)/;
+const ONECLI_ENV_VIEWERS = new Set(['env', 'printenv']);
+const ONECLI_SCRIPT_DEPTH_MAX = 4;
+
+/** Every --fields and --quiet value names only known-safe fields, and there is at least one. */
+function onecliSafeFields(args: string[]): boolean {
+    const values: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        for (const option of ONECLI_FIELD_OPTIONS) {
+            if (args[i] === option) values.push(args[++i] ?? '');
+            else if (args[i].startsWith(`${option}=`)) values.push(args[i].slice(option.length + 1));
+        }
+    }
+    return values.length > 0 && values.every(v => {
+        const fields = v.split(',').map(f => f.trim()).filter(Boolean);
+        return fields.length > 0 && fields.every(f => ONECLI_SAFE_FIELDS.has(f));
+    });
+}
+
+/** Why a onecli command, or a command `onecli run` starts, is refused because its output can hold a credential, or null. */
+function onecliTokenReason(cmd: ResolvedCommand): string | null {
+    if (cmd.name !== 'onecli') {
+        if (!ONECLI_RUN_RE.test(cmd.raw)) return null;
+        const prints = ONECLI_ENV_VIEWERS.has(cmd.name) || cmd.args.some(a => /^\/proc\/[^/]+\/environ$/.test(a));
+        if (!prints) return null;
+        return `Refused: \`onecli run\` puts the agent's OneCLI access token in the child's proxy variables, and \`${cmd.name}\` `
+            + `would print them. Run \`onecli run --dry-run -- <command>\` to see which variables it injects, without their values.`;
+    }
+    if (cmd.args.includes('--help') || cmd.args.includes('-h')) return null;
+    const words = cmd.args.filter(a => !a.startsWith('-'));
+    const [group, sub] = words;
+    if (group === undefined || group === 'run' || ONECLI_FREE_ALONE.has(group)) return null;
+    if (sub !== undefined && ONECLI_FREE[group]?.has(sub)) return null;
+    if (group === 'agents' && sub !== undefined && ONECLI_FILTERED.has(sub) && onecliSafeFields(cmd.args)) return null;
+    const out = cmd.stdoutFiles ?? [];
+    if (out.length > 0 && out.every(f => f === '/dev/null')) return null;
+    const what = `onecli ${[group, sub].filter(Boolean).join(' ')}`;
+    const fix = group === 'agents' && sub === 'get-default' ? 'onecli agents get-default --fields id,identifier,name'
+        : group === 'agents' && sub === 'create' ? `onecli agents create --name <name> --identifier <id> > /dev/null && ${ONECLI_SAFE_LISTING}`
+        : group === 'agents' && sub === 'regenerate-token' ? 'onecli agents regenerate-token --id <id> > /dev/null'
+        : group === 'auth' ? 'onecli auth status'
+        : group === 'agents' && sub !== undefined && ONECLI_FILTERED.has(sub) ? ONECLI_SAFE_LISTING
+        : `${what} > /dev/null && ${ONECLI_SAFE_LISTING}`;
+    return `Refused: \`${what}\` can print a OneCLI access token or API key into this session. Run \`${fix}\` instead`
+        + ` (the only agent fields shown are ${[...ONECLI_SAFE_FIELDS].join(', ')}).`;
+}
+
+/** The same refusal for a onecli command inside a script the line has a shell run (piped in, or written then run). */
+function onecliTokenInScripts(commands: ResolvedCommand[], line: string, depth = 0): string | null {
+    for (const cmd of commands) {
+        const scripts = scriptsRun(cmd);
+        if (scripts === null || (scripts.length && depth >= ONECLI_SCRIPT_DEPTH_MAX)) {
+            if (/\bonecli\b/.test(line)) {
+                return `Refused: this line has a shell run a script the guard can't read, and it names onecli. Run the onecli command directly, e.g. \`${ONECLI_SAFE_LISTING}\`.`;
+            }
+            continue;
+        }
+        for (const { text, steps } of scripts) {
+            const inner = steps ?? extractCommands(text);
+            for (const step of inner) {
+                const reason = onecliTokenReason(step)
+                    ?? execRuns(step).map(r => (r.inner ? onecliTokenReason(r.inner) : null)).find(Boolean)
+                    ?? null;
+                if (reason) return reason;
+            }
+            const nested = onecliTokenInScripts(inner, text, depth + 1);
+            if (nested) return nested;
+        }
+    }
+    return null;
 }
