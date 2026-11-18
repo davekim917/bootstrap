@@ -13,13 +13,11 @@ risk:high:
     - 'plugins/**'
     - 'scripts/**'
     - '.github/**'
-    # The marketplace manifests that tell every install which plugins and versions to load
-    - '.claude-plugin/**'
-    - '.agents/**'
-    # The comment checker's own config, and the public-boundary scan's exemptions
-    - '.comment-rule.json'
-    - '.public-boundary-*.json'
-    # Keeps local run records out of this public repo
-    - '.gitignore'
+    # Every dotfile and dot-directory: the marketplace manifests, the comment checker's config,
+    # the public-boundary scan's exemptions, .gitignore, and agent config (.claude, .mcp.json)
+    - '.*'
+    - '.*/**'
+    - 'AGENTS.md'
+    - 'CLAUDE.md'
     - 'evals/**'
     - 'deprecated/**'
