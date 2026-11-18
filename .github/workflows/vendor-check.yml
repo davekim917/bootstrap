@@ -16,7 +16,7 @@
 # pass before merging" → select "vendor-check"). That is a repo-admin action,
 # NOT code, and cannot be configured from this file. Until an admin marks this
 # check required, a PR can still be merged while it is red.
-name: vendor-check
+name: CI
 
 on:
   pull_request:
