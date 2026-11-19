@@ -7691,20 +7691,21 @@ export function sleepSync(ms: number): void {
  */
 export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'request_prod_gate';
 
-export function writeGateRequest(
+/**
+ * The staged request as the host reads it. `toolUseId` is set only for a gate that joins the shared one-card claim:
+ * NanoClaw's in-tree email hook joins a peer's card only when the stored request equals, field for field, the one it
+ * would file itself for the same tool call, and that one carries the tool call.
+ */
+export function gateRequestContent(
+    requestId: string,
     label: string,
     summary: string,
     command: string,
-    action: GateAction = 'request_destructive_gate',
+    action: GateAction,
     card: EmailCard = {},
+    toolUseId?: string,
 ): string {
-    // Dynamic import so non-NanoClaw environments (plain Claude Code) never
-    // touch bun:sqlite — the module is only present under bun runtime.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
-
-    const requestId = `gate-${Date.now()}-${randomBytes(4).toString('hex')}`;
-    const content = JSON.stringify({
+    return JSON.stringify({
         action,
         requestId,
         label,
@@ -7716,7 +7717,25 @@ export function writeGateRequest(
         ...(card.pureSend ? { pureSend: true } : {}),
         ...(card.fullSummary !== undefined ? { fullSummary: card.fullSummary } : {}),
         ...(card.wholeEmail !== undefined ? { wholeEmail: card.wholeEmail } : {}),
+        ...(toolUseId ? { toolUseId } : {}),
     });
+}
+
+export function writeGateRequest(
+    label: string,
+    summary: string,
+    command: string,
+    action: GateAction = 'request_destructive_gate',
+    card: EmailCard = {},
+    toolUseId?: string,
+): string {
+    // Dynamic import so non-NanoClaw environments (plain Claude Code) never
+    // touch bun:sqlite — the module is only present under bun runtime.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+
+    const requestId = `gate-${Date.now()}-${randomBytes(4).toString('hex')}`;
+    const content = gateRequestContent(requestId, label, summary, command, action, card, toolUseId);
 
     const outbound = new Database(NANOCLAW_OUTBOUND_DB);
     outbound.exec('PRAGMA busy_timeout = 5000');
@@ -7843,7 +7862,7 @@ export function runGateRequest(
 
     let requestId: string;
     try {
-        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action, opts.card);
+        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action, opts.card, key ? opts.toolUseId : undefined);
     } catch (err) {
         // If we can't even stage the request, the session DBs are in a broken
         // state. Deny rather than silently allowing — the gate is fail-closed.

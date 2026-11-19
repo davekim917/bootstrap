@@ -119,7 +119,7 @@ function deniedDetail(decision: 'denied' | 'timeout'): string {
         : 'Timed out waiting for user approval. Do not retry.';
 }
 
-function emailReason(command: string, cwd?: string): { action: 'allow' } | {
+export function emailReason(command: string, cwd?: string): { action: 'allow' } | {
     action: 'gate';
     reason: string;
     summary?: string;
