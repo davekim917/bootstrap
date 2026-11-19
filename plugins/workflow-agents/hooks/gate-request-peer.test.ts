@@ -50,7 +50,7 @@ function inTreeRequest(verdict: Verdict, command: string, toolUseId: string, req
 }
 
 // Codex can send the command as argv. The in-tree chain reads it with this (container/agent-runner/src/codex-hooks/runner.ts).
-const ARGV_SHELLS = new Set(['bash', 'sh', 'zsh']);
+const ARGV_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish']);
 function argvCommandLine(argv: unknown[]): string {
     const words = argv.map(String);
     const shell = (words[0] ?? '').split('/').pop() ?? '';
@@ -154,7 +154,8 @@ describe('the email card this adapter stages is the one the in-tree Codex hook w
     test('a command Codex sends as argv reads as the same text on both sides', async () => {
         const { core } = await stagedRequests();
         const script = SENDS['heredoc body, pure'];
-        for (const argv of [['bash', '-lc', script], ['/bin/bash', '-c', script], ['sh', '-c', script], ['zsh', '-lc', script]]) {
+        const argvs = [...ARGV_SHELLS].flatMap(shell => [[shell, '-c', script], [shell, '-lc', script], [`/bin/${shell}`, '-c', script]]);
+        for (const argv of argvs) {
             expect([argv[0], argv[1], core.commandLineOf(argv)]).toEqual([argv[0], argv[1], argvCommandLine(argv)]);
         }
     });
