@@ -188,6 +188,13 @@ same change against the same bar instead of each re-deriving one from a lens nam
 A rubric item is a hypothesis generator, never a verdict. The lead still traces every finding to
 source before it can become `MUST-FIX`; a rubric match alone does not block.
 
+**Safety guards:** a change that lets through something the base's safety guard stopped (a
+destructive-command guard, a permission check, a secret scanner, any guard whose job is to refuse
+an action) is `MUST-FIX`, as a permission bypass. A gap the guard already had at the base is
+`SHOULD-FIX`, like any other non-destructive finding. Example: a parser change that lets a
+force-push past the destructive-command guard is `MUST-FIX`; a force-push spelling the guard
+never caught is `SHOULD-FIX`.
+
 **Calibration:** prefer one strong finding over several weak ones; do not dilute a serious issue
 with filler. If the change looks safe, say so directly and return no findings — an empty finding
 list is a complete, valid review, not a sign the reviewer didn't try.
