@@ -1008,7 +1008,13 @@ for (const contractPath of [
   }
   const unpinned = (content ?? '').split('\n').filter((line) => {
     if (!/^codex exec\b/.test(line.trim())) return false;
-    const models = [...line.replace(/\s#.*$/, '').replace(/\s--(\s.*)?$/, '').matchAll(/\s(?:-m(?:=|\s+)?|--model(?:=|\s+))([^\s=]\S*)/g)].map((m) => m[1]);
+    const tokens = line.replace(/\s#.*$/, '').replace(/\s--(\s.*)?$/, '').trim().split(/\s+/);
+    const models = tokens.flatMap((token, i) => {
+      if (token === '-m' || token === '--model') return [tokens[i + 1] ?? ''];
+      if (token.startsWith('--model')) return [token.startsWith('--model=') ? token.slice(8) : ''];
+      if (token.startsWith('-m')) return [token.slice(2).replace(/^=/, '')];
+      return [];
+    });
     return models.length !== 1 || models[0] !== 'sol';
   });
   if (unpinned.length > 0) {
