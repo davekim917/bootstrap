@@ -885,6 +885,7 @@ describe('a Render read with a flag the CLI does not take', () => {
         [`render deploys list ${DEV} --limit all`, 'deploys list', '--limit'],
         [`render jobs list ${PROD} -o json -x`, 'jobs list', '-x'],
         [`render logs -r ${PROD} --bogus; render services delete ${PROD} --confirm`, 'logs', '--bogus'],
+        [`render services delete ${PROD} --confirm; render logs -r ${PROD} --bogus`, 'logs', '--bogus'],
     ])('%s is refused, naming the flag', (command, read, flag) => {
         const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
         expect(action).toBe('block');
@@ -905,7 +906,6 @@ describe('a Render read with a flag the CLI does not take', () => {
         `render jobs --bogus list ${PROD}`,
         `render logs -r $SRV --bogus`,
         `render logs -r ${PROD} --help=false -o json`,
-        `render services delete ${PROD} --confirm; render logs -r ${PROD} --bogus`,
     ])('%s keeps its production gate', command => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
