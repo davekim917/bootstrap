@@ -213,19 +213,12 @@ describe('a listed dev resource', () => {
     });
 
     test.each([
-        `render deploys list ${PROD} --limit 1`,
-        `render deploys list ${PROD} --limit 1 -o json`,
-        `render jobs list ${PROD} --limit 1`,
         `render psql ${PROD_DB} -c 'select 1'`,
         `render ssh ${PROD} --help`,
         `render jobs create ${PROD} --start-command "echo \\$VAR"`,
-        `render deploys list ${DEV} --limit "$N"`,
-        `render deploys list ${DEV} --limit 1 ${PROD}`,
         `render deploys list ${DEV} --confirm`,
         `render psql ${DEV_DB} -c "select '${PROD}'"`,
         `render ssh ${DEV} ${PROD} --help`,
-        `render deploys list a-service-name --limit 1`,
-        `render deploys list ${DEV} --limit all`,
         `render psql a-database-name -c 'select 1'`,
         `curl -X DELETE https://api.render.com/v1/postgres/${DEV_DB} --config /tmp/requests.conf`,
         `wget --method=DELETE https://api.render.com/v1/postgres/${DEV_DB}`,
@@ -875,5 +868,76 @@ describe('a raw DELETE to the Render API', () => {
 
     test('the card says what a delete can lose', () => {
         expect(describeGate(`curl -sS -X DELETE ${URL}`, 'gated', '/tmp').summary).toContain("some deletes can't be undone: Render keeps no backup of a deleted database");
+    });
+});
+
+describe('a Render read with a flag the CLI does not take', () => {
+    test.each([
+        [`render logs -r ${PROD} --task-run-ids job-example0000000000001 -o text --limit 80`, 'logs', '--task-run-ids'],
+        [`render logs --resources ${DEV} --task-run-ids job-example0000000000001 -o text`, 'logs', '--task-run-ids'],
+        [`for j in job-a job-b; do render logs -r ${PROD} --task-run-ids $j -o text | tail -40; done`, 'logs', '--task-run-ids'],
+        [`render deploys list ${PROD} --limit 1`, 'deploys list', '--limit'],
+        [`render deploys list ${PROD} --limit 1 -o json`, 'deploys list', '--limit'],
+        [`render jobs list ${PROD} --limit 1`, 'jobs list', '--limit'],
+        [`render deploys list ${DEV} --limit "$N"`, 'deploys list', '--limit'],
+        [`render deploys list ${DEV} --limit 1 ${PROD}`, 'deploys list', '--limit'],
+        [`render deploys list a-service-name --limit 1`, 'deploys list', '--limit'],
+        [`render deploys list ${DEV} --limit all`, 'deploys list', '--limit'],
+        [`render jobs list ${PROD} -o json -x`, 'jobs list', '-x'],
+        [`render logs -r ${PROD} --bogus; render services delete ${PROD} --confirm`, 'logs', '--bogus'],
+    ])('%s is refused, naming the flag', (command, read, flag) => {
+        const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(action).toBe('block');
+        expect(reason).toContain(`\`render ${read}\` has no flag \`${flag}\``);
+    });
+
+    test('the refusal names the flag the read takes', () => {
+        expect(evaluateBashCommand(`render logs -r ${PROD} --task-run-ids job-x`, { cwd: '/tmp' }).reason).toContain('Did you mean `--task-run-id`?');
+    });
+
+    test('the flag the read takes runs', () => {
+        expect(verdict(`render logs -r ${PROD} --task-run-id job-example0000000000001 -o text --limit 80`)).toBe('allow');
+    });
+
+    test.each([
+        `render jobs create ${PROD} --bogus`,
+        `render services update ${PROD} --bogus`,
+        `render jobs --bogus list ${PROD}`,
+        `render logs -r $SRV --bogus`,
+        `render logs -r ${PROD} --help=false -o json`,
+        `render services delete ${PROD} --confirm; render logs -r ${PROD} --bogus`,
+    ])('%s keeps its production gate', command => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+});
+
+describe('a held Render read says it is a read', () => {
+    test.each([
+        [`render jobs list ${PROD}`, 'interactive menu', 'not listed as dev'],
+        [`render jobs list ${DEV} --confirm`, 'interactive menu', 'Its target is listed as dev.'],
+        ['render logs -r $SRV --bogus', "can't account for every word", 'reads from Render'],
+        [`xargs -I{} render jobs list {} < /tmp/ids`, 'interactive menu', 'reads from Render'],
+    ])('%s', (command, why, where) => {
+        const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(action).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+        const { summary } = describeGate(command, reason!, '/tmp');
+        expect(summary).toStartWith('Runs `render');
+        expect(summary).toContain('reads from Render');
+        expect(summary).toContain(why);
+        expect(summary).toContain(where);
+        expect(summary).not.toContain('Production change');
+        expect(summary).not.toContain('deleted database');
+        expect(summary).not.toContain('Treat this as production');
+    });
+
+    test.each([
+        `render services delete ${PROD} --confirm`,
+        `render jobs list ${PROD}; render services delete ${PROD} --confirm`,
+    ])('a Render change keeps the production wording: %s', command => {
+        const { summary } = describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp');
+        expect(summary).toContain('not listed as dev, so treat it as production');
+        expect(summary).toContain("such as a deleted database, can't be undone");
     });
 });
