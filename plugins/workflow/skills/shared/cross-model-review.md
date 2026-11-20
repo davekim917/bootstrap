@@ -28,10 +28,10 @@ When the artifact author is Claude, invoke Codex with settings that do not inher
 `config.toml`:
 
 ```sh
-codex exec --ignore-user-config -m gpt-6.1-sol -c 'model_reasoning_effort="high"' -s read-only
+codex exec --ignore-user-config -m sol -c 'model_reasoning_effort="high"' -s read-only
 ```
 
-The command names the model because Codex's own default is not chosen for review: with the user config ignored, Codex runs whatever default it currently serves, and that can be a small tier. Codex has no model aliases (`-m sol` is rejected), so the id is written in full and moves to a newer frontier model when one ships. An id left behind still names a frontier model, and one Codex no longer serves fails the run (`nonzero-exit`) instead of falling back. Record the id the run reports (the `model:` line of the run header) as the reviewer, never an alias, and stop if that id is a small tier.
+The command names the model because Codex's own default is not chosen for review: with the user config ignored, Codex runs whatever default its server currently serves, and that can be a small tier. It names the Sol family rather than a versioned id, so a new Sol release needs no edit here. A host `codex` that resolves family words (NanoClaw's wrapper does, from its own fleet default at call time, and prints `codex-exec: model=<id>`) runs the current Sol id. The Codex CLI itself has no aliases and rejects `-m sol` (`nonzero-exit`), so where nothing resolves it, pass the id yourself: the `slug` of the listed (`"visibility": "list"`) `-sol` model with the lowest `priority` in `codex debug models`, for example `codex debug models | jq -r '[.models[] | select(.visibility == "list" and (.slug | endswith("-sol")))] | sort_by(.priority) | .[0].slug'`; if that prints nothing, record `nonzero-exit`. Never drop `-m`. Record the id the run reports (the `model:` line of the run header) as the reviewer, never an alias, and stop if that id is a small tier.
 
 If Codex answers with its usage limit, record `nonzero-exit` and treat Codex as unavailable for this
 review. Never rerun it yourself with a different `CODEX_HOME`: a host that has spare Codex logins
@@ -86,7 +86,7 @@ Send the vendored prompt at `references/codex-adversarial-prompt.md` verbatim, f
 four substitution markers (below), and enforce its schema at the CLI boundary rather than in prose:
 
 ```sh
-codex exec --ignore-user-config -m gpt-6.1-sol -c 'model_reasoning_effort="high"' -s read-only \
+codex exec --ignore-user-config -m sol -c 'model_reasoning_effort="high"' -s read-only \
   --output-schema references/codex-review-output.schema.json \
   --output-last-message <path-to-write-the-final-JSON-response>
 ```

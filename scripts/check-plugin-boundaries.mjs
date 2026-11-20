@@ -755,11 +755,11 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.47.0') {
-  fail(`bootstrap-workflow release must be version 5.47.0 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.47.1') {
+  fail(`bootstrap-workflow release must be version 5.47.1 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.47.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.47.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.47.1') {
+  fail(`bootstrap-workflow-agents release must be version 2.47.1 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
 if (orchestrateClaudeManifest?.version !== '3.8.3') {
@@ -964,7 +964,8 @@ for (const fileName of [
 const crossModelTokens = [
   'codex exec',
   '--ignore-user-config',
-  '-m gpt-6.1-sol',
+  '-m sol',
+  'codex debug models',
   'model_reasoning_effort="high"',
   '-s read-only',
   '3600000',
@@ -1012,9 +1013,21 @@ for (const contractPath of [
 }
 requireTextTokens(
   'plugins/analytics-verify/skills/analytics-verify/SKILL.md',
-  ['codex exec -m gpt-6.1-sol'],
+  ['codex exec -m sol', 'codex debug models'],
   'a Codex verifier that names its model',
 );
+for (const contractPath of [
+  'README.md',
+  'plugins/workflow/skills/shared/cross-model-review.md',
+  'plugins/workflow-agents/skills/shared/cross-model-review.md',
+  'plugins/analytics-verify/skills/analytics-verify/SKILL.md',
+  'plugins/analytics-verify/skills/analytics-verify/references/verifier-brief.md',
+]) {
+  const versioned = (readText(contractPath) ?? '').match(/\bgpt-\d[\w.-]*/g) ?? [];
+  if (versioned.length > 0) {
+    fail(`${contractPath}: a Codex reviewer or verifier names the Sol family (-m sol), never a versioned id, which goes stale at the next release (found ${[...new Set(versioned)].join(', ')})`);
+  }
+}
 
 for (const root of ['plugins/workflow/skills', 'plugins/workflow-agents/skills']) {
   requireTextTokens(

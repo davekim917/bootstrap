@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "bootstrap-workflow-agents",
-      "version": "2.47.0",
+      "version": "2.47.1",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
       "source": {
         "source": "local",
@@ -90,7 +90,7 @@
     },
     {
       "name": "analytics-verify",
-      "version": "1.4.1",
+      "version": "1.4.2",
       "description": "Claim ledger, check script and independent verifier for analytics and research deliverables, with an always-on nudge to run it before numbers leave.",
       "source": {
         "source": "local",

@@ -109,10 +109,12 @@ If you're unsure which loop a data claim needs, use the full loop.
      ("only", "the main driver") the same way.
 5. **Get an independent verifier.** Use the first of these you have:
    1. a fresh session of a different model family from the author's, that can reach
-      the same data. From a Claude agent, that's `codex exec -m gpt-6.1-sol -c
+      the same data. From a Claude agent, that's `codex exec -m sol -c
       model_reasoning_effort=<effort>` with stdin closed (`</dev/null`) or it waits
       forever. Name the model: Codex's own default can be a small tier, which is not a
-      verifier. Reviewing work another family wrote (a Codex peer's draft), it's a
+      verifier. `sol` works where the host's `codex` resolves family words to the
+      current id (NanoClaw's does); the bare Codex CLI rejects it, so there pass the
+      lowest-`priority` listed `-sol` slug from `codex debug models` instead. Reviewing work another family wrote (a Codex peer's draft), it's a
       fresh-context subagent of your own model, at `<effort>`. Don't use `claude -p`:
       inside an agent container it fails with "Not logged in";
    2. a peer agent in this conversation on a different family from the author's
@@ -180,7 +182,7 @@ If you're unsure which loop a data claim needs, use the full loop.
    the verified file (that would change its bytes). The stamp says what ran, who
    checked, and what wasn't checked:
    > Verified: ledger PASS (41 numbers, 3 relations), CSV reproduces exactly; checked
-   > by gpt-6.1-sol at high effort in a fresh Codex session, CLEAR after 2 rounds. Not checked: store
+   > by <verifier model id> at high effort in a fresh Codex session, CLEAR after 2 rounds. Not checked: store
    > shelf stock.
 
    Name the verifier's actual model and reasoning effort, from its output header or the
