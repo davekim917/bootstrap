@@ -35,6 +35,8 @@ const BASH_BLOCK = [
   "trash-rm key.p8; psql -c 'drop database prod'",
   "git clean -f; psql -c 'drop database prod'",
   'trash-empty; snow sql -f missing.sql',
+  'trash-rm key.p8; rm secrets/key.p8',
+  'git clean -f; rm secrets/key.p8',
   'rm\\\n -rf /home/x',
   'rm \\\n -rf /home/x',
   'r\\\nm -rf /home/x',

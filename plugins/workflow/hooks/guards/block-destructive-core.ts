@@ -7318,18 +7318,17 @@ function shellParseProblem(command: string): string | null {
  * WITHOUT the approval-bypass step (that stays in the caller) and without any
  * process.exit / stderr:
  *   (1) hard block (first non-null checkHardBlock) ⇒ block
- *   (2) gated command (first non-null checkGatedCommand) ⇒ gate
- *   (3) rm decision (first non-null checkRmDecision) ⇒ block
+ *   (2) rm decision (first non-null checkRmDecision) ⇒ block
+ *   (3) gated command: any gated step the guard refuses ⇒ block, else the first ⇒ gate
  *   else ⇒ allow
  *
  * Reasons are returned verbatim: hard-block reasons are the bare message
  * (the caller prefixes `BLOCKED: `); gated reasons are the bare gate reason;
  * rm reasons are already prefixed with `BLOCKED:`.
  *
- * `opts.skipGate` skips tier (2). The caller uses this for the post-approval
- * pass: in the original main(), an approved gate falls through to the rm tier,
- * so a destructive rm in the same command line is still blocked even after the
- * gated verb was approved. Skipping tier (2) reproduces that fall-through.
+ * `opts.skipGate` skips tier (3). The caller uses this for the post-approval
+ * pass, which re-runs tiers (1) and (2) so a refused step in the line stays
+ * refused after the gated verb was approved.
  *
  * `opts.cwd` is the working directory the command will run in — supplied by an
  * adapter that has it on its hook input (Claude's `cwd` field), else
@@ -7388,19 +7387,8 @@ function evaluateBashLine(
     const responseSecrets = responseSecretsReason(commands, command);
     if (responseSecrets) return { action: 'block', reason: responseSecrets };
 
-    // --- Gated checks ---
-    if (!opts.skipGate) {
-        // A step the guard refuses outright (one flag short of the scratch-Postgres exemption, a database it can't
-        // name) is refused wherever it sits in the line: an earlier gated step must not turn it into an approvable card.
-        let first: string | undefined;
-        for (const step of gatedSteps(commands, command, cwd, lab, true, opts.localPg)) {
-            if (step.fix) return { action: 'block', reason: step.fix };
-            first ??= step.reason;
-        }
-        if (first !== undefined) return { action: 'gate', reason: first };
-    }
-
     // --- rm-specific checks (three-tier protection) ---
+    // Before the gate: a refused rm blocks the line rather than reaching an approval card it could never pass.
     for (const cmd of commands) {
         if (cmd.name === 'rm') {
             const proven = typeof cmd.pos === 'number'
@@ -7421,6 +7409,18 @@ function evaluateBashLine(
                 return { action: 'block', reason };
             }
         }
+    }
+
+    // --- Gated checks ---
+    if (!opts.skipGate) {
+        // A step the guard refuses outright (one flag short of the scratch-Postgres exemption, a database it can't
+        // name) is refused wherever it sits in the line: an earlier gated step must not turn it into an approvable card.
+        let first: string | undefined;
+        for (const step of gatedSteps(commands, command, cwd, lab, true, opts.localPg)) {
+            if (step.fix) return { action: 'block', reason: step.fix };
+            first ??= step.reason;
+        }
+        if (first !== undefined) return { action: 'gate', reason: first };
     }
 
     return { action: 'allow' };
