@@ -169,9 +169,12 @@ const BASH_GATE = [
   'git clean -f --e -npattern',
   'git -c clean.requireForce=false --attr-source HEAD clean',
   '/usr/lib/git-core/git-clean -fd',
-  // trash-cli's trash-rm and trash-empty delete from the trash for good; only help, version and a dry run pass.
+  // trash-cli's trash-rm and trash-empty delete from the trash for good. trash-rm parses no options, so its --help
+  // still deletes; only trash-empty's help, version and dry run pass.
   'trash-rm /workspace/agent/key.p8',
   'trash-rm key.p8',
+  'trash-rm key.p8 --help',
+  'trash-rm --help',
   'trash-empty',
   'trash-empty 30',
   '/usr/bin/trash-empty -f',
@@ -346,7 +349,7 @@ const BASH_ALLOW = [
   'git clean -n',
   'trash key.p8',
   'trash-list',
-  'trash-rm --help',
+  'trash-empty --help',
   'trash-empty --version',
   'trash-empty --dry-run',
   'git clean -ndx',
