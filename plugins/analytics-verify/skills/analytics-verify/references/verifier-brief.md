@@ -116,7 +116,7 @@ nowhere else in it. `## Frame` comes right after them, before any other heading.
 ```
 artifact-sha256: <check_claims.py hash <deliverable>; one line per file>
 ledger-sha256: <check_claims.py hash claims.json>
-verifier: <your actual model, reasoning effort and how you ran, e.g. "gpt-6.1-sol, high, fresh codex exec session">
+verifier: <your actual model, reasoning effort and how you ran, e.g. "<id from the run header's model: line>, high, fresh codex exec session">
 family: other | same
 verdict: CLEAR | CHANGES
 

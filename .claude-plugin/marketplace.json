@@ -9,7 +9,7 @@
       "name": "bootstrap-workflow",
       "source": "./plugins/workflow",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
-      "version": "5.48.0"
+      "version": "5.48.1"
     },
     {
       "name": "bootstrap-orchestrate",
@@ -45,7 +45,7 @@
       "name": "analytics-verify",
       "source": "./plugins/analytics-verify",
       "description": "Claim ledger, check script and independent verifier for analytics and research deliverables, with an always-on nudge to run it before numbers leave.",
-      "version": "1.4.1"
+      "version": "1.4.2"
     },
     {
       "name": "test-audit",

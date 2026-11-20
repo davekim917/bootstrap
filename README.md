@@ -13,12 +13,12 @@ receives security, rollback, and verification depth.
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.48.0 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.48.0 | The same, runtime-neutral |
+| Claude Code | `bootstrap-workflow` | 5.48.1 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.48.1 | The same, runtime-neutral |
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.8.3 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.5.0 | Boris Cherny-inspired engineering-judgment advisory skill, invoked by name or description |
 | Claude Code / Codex | `wwed` | 1.1.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill, invoked by name or description; pairs with `wwbd` |
-| Claude Code / Codex | `analytics-verify` | 1.4.1 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
+| Claude Code / Codex | `analytics-verify` | 1.4.2 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex | `test-audit` | 1.1.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
@@ -219,16 +219,18 @@ Routine work does not automatically need both gates; explicit requested reviews 
 Choose the other family relative to the artifact author, not the coordinator.
 The review receives source artifacts, not the lead model's conclusions, and is non-mutating.
 Findings are hypotheses until verified by the lead. The plugin explicitly selects reviewer model and
-effort and ignores host and container Codex configuration. The Codex model is pinned because Codex's own
-default can be a small tier; the run header's `model:` line is recorded, and a small tier there stops the
-review.
+effort and ignores host and container Codex configuration. The Codex model is named because Codex's own
+default can be a small tier. It is named as the Sol family, not a versioned id: a host `codex` that
+resolves family words (NanoClaw's) runs the current Sol id. With any other `codex`, the reviewer puts the listed
+Sol id of lowest `priority` in `codex debug models --bundled` in place of `sol` before the run. The run header's `model:` line is
+recorded, and a small tier there stops the review.
 
 Claude-authored artifact reviews use (high default, explicit validated overrides allowed):
 
 ```bash
 codex exec \
   --ignore-user-config \
-  -m gpt-6.1-sol \
+  -m sol \
   -c 'model_reasoning_effort="high"' \
   -s read-only
 ```

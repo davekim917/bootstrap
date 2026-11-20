@@ -28,10 +28,10 @@ When the artifact author is Claude, invoke Codex with settings that do not inher
 `config.toml`:
 
 ```sh
-codex exec --ignore-user-config -m gpt-6.1-sol -c 'model_reasoning_effort="high"' -s read-only
+codex exec --ignore-user-config -m sol -c 'model_reasoning_effort="high"' -s read-only
 ```
 
-The command names the model because Codex's own default is not chosen for review: with the user config ignored, Codex runs whatever default it currently serves, and that can be a small tier. Codex has no model aliases (`-m sol` is rejected), so the id is written in full and moves to a newer frontier model when one ships. An id left behind still names a frontier model, and one Codex no longer serves fails the run (`nonzero-exit`) instead of falling back. Record the id the run reports (the `model:` line of the run header) as the reviewer, never an alias, and stop if that id is a small tier.
+The command names the model because Codex's own default is not chosen for review: with the user config ignored, Codex runs whatever default its server currently serves, and that can be a small tier. It names the Sol family rather than a versioned id, so a new Sol release needs no edit here. Before running it, check which `codex` is on PATH. NanoClaw's wrapper carries the marker `nanoclaw-codex-rotation-shim` in its first lines (`head -c 512 "$(command -v codex)" | grep -q nanoclaw-codex-rotation-shim` succeeds); it turns `sol` into the fleet's current Sol id at call time and prints `codex-exec: model=<id>`. Any other `codex` has no family words, so put the id in place of `sol` before the run, never sending it a bare `sol`: a configured provider could answer to a deployment of that name. The id is the `slug` of the listed (`"visibility": "list"`) `-sol` model with the lowest `priority` in the catalog this CLI build ships, which `codex debug models --bundled | jq -er '[.models[] | select(.visibility == "list" and (.slug | endswith("-sol")))] | sort_by(.priority) | .[0].slug // empty'` prints (without `jq`, read those fields from the JSON yourself). `--bundled` skips `config.toml`, provider sign-in and the network, so the lookup starts no provider or credential helper a user config sets up (codex still loads `$CODEX_HOME/.env` at startup, as every codex command does), and it always picks a Sol. It can trail the server's catalog by a release: a CLI can run a Sol released after its build, which its bundle does not list. Only when that catalog lists no such model, record `nonzero-exit`. Never drop `-m`, and never name a model other than Sol or its resolved id. Record the id the run reports (the `model:` line of the run header) as the reviewer, never an alias, and stop if that id is a small tier.
 
 If Codex answers with its usage limit, record `nonzero-exit` and treat Codex as unavailable for this
 review. Never rerun it yourself with a different `CODEX_HOME`: a host that has spare Codex logins
@@ -86,7 +86,7 @@ Send the vendored prompt at `references/codex-adversarial-prompt.md` verbatim, f
 four substitution markers (below), and enforce its schema at the CLI boundary rather than in prose:
 
 ```sh
-codex exec --ignore-user-config -m gpt-6.1-sol -c 'model_reasoning_effort="high"' -s read-only \
+codex exec --ignore-user-config -m sol -c 'model_reasoning_effort="high"' -s read-only \
   --output-schema references/codex-review-output.schema.json \
   --output-last-message <path-to-write-the-final-JSON-response>
 ```
