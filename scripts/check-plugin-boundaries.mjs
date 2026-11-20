@@ -1008,7 +1008,7 @@ for (const contractPath of [
   }
   const unpinned = (content ?? '').split('\n').filter((line) => {
     if (!/^codex exec\b/.test(line.trim())) return false;
-    const models = [...line.replace(/\s#.*$/, '').matchAll(/\s-m\s+(\S+)/g)].map((m) => m[1]);
+    const models = [...line.replace(/\s#.*$/, '').matchAll(/\s(?:-m|--model)(?:=|\s+)?([^\s=]\S*)/g)].map((m) => m[1]);
     return models.length === 0 || models.some((model) => model !== 'sol');
   });
   if (unpinned.length > 0) {
