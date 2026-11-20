@@ -221,8 +221,8 @@ The review receives source artifacts, not the lead model's conclusions, and is n
 Findings are hypotheses until verified by the lead. The plugin explicitly selects reviewer model and
 effort and ignores host and container Codex configuration. The Codex model is named because Codex's own
 default can be a small tier. It is named as the Sol family, not a versioned id: a host `codex` that
-resolves family words (NanoClaw's) runs the current Sol id, and elsewhere the bare CLI rejects `-m sol`,
-so the reviewer resolves the id from `codex debug models` first. The run header's `model:` line is
+resolves family words (NanoClaw's) runs the current Sol id. Elsewhere the bare CLI rejects `-m sol` before
+the run starts, and the reviewer reruns with the newest listed Sol id from `codex debug models`. The run header's `model:` line is
 recorded, and a small tier there stops the review.
 
 Claude-authored artifact reviews use (high default, explicit validated overrides allowed):

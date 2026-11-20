@@ -1023,7 +1023,7 @@ for (const contractPath of [
   'plugins/analytics-verify/skills/analytics-verify/SKILL.md',
   'plugins/analytics-verify/skills/analytics-verify/references/verifier-brief.md',
 ]) {
-  const versioned = (readText(contractPath) ?? '').match(/\bgpt-\d[\w.-]*/g) ?? [];
+  const versioned = (readText(contractPath) ?? '').match(/gpt-\d[\w.-]*/g) ?? [];
   if (versioned.length > 0) {
     fail(`${contractPath}: a Codex reviewer or verifier names the Sol family (-m sol), never a versioned id, which goes stale at the next release (found ${[...new Set(versioned)].join(', ')})`);
   }
