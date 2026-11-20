@@ -6010,13 +6010,14 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
 
     // trash-cli's trash-rm and trash-empty delete from the trash for good: the step past the recoverable `trash` that the
     // rm redirect sends deletions to. trash-rm parses no options (`trash-rm x --help` still deletes x), so it has no
-    // exemption. trash-empty's help, version and dry run delete nothing and pass, only as literal words, since a
-    // variable or glob could expand to anything.
+    // exemption. trash-empty passes only when every word is a help, version or dry-run flag or a day count: older
+    // releases act on other options before honouring --help (`--trash-dir X --help` empties X).
     if (name === 'trash-rm' || name === 'trash-empty') {
-        const literal = args.every(a => /^[\w@%+=:,./ -]*$/.test(a));
+        const readOnlyFlag = (a: string) => a === '-h' || a === '--help' || a === '--version' || a === '--dry-run';
         const readOnly = name === 'trash-empty'
-            && args.some(a => a === '-h' || a === '--help' || a === '--version' || a === '--dry-run');
-        if (!(literal && readOnly)) {
+            && args.some(readOnlyFlag)
+            && args.every(a => readOnlyFlag(a) || /^\d+$/.test(a));
+        if (!readOnly) {
             return name === 'trash-rm'
                 ? 'trash-rm permanently deletes the trashed items it matches. They cannot be restored.'
                 : 'trash-empty permanently deletes everything in the trash. It cannot be restored.';
