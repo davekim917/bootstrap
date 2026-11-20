@@ -222,7 +222,7 @@ Findings are hypotheses until verified by the lead. The plugin explicitly select
 effort and ignores host and container Codex configuration. The Codex model is named because Codex's own
 default can be a small tier. It is named as the Sol family, not a versioned id: a host `codex` that
 resolves family words (NanoClaw's) runs the current Sol id. Elsewhere the bare CLI rejects `-m sol` before
-the run starts, and the reviewer reruns with the listed Sol id of lowest `priority` in `codex debug models`. The run header's `model:` line is
+the run starts, and the reviewer reruns with the listed Sol id of lowest `priority` in `codex debug models --bundled`. The run header's `model:` line is
 recorded, and a small tier there stops the review.
 
 Claude-authored artifact reviews use (high default, explicit validated overrides allowed):

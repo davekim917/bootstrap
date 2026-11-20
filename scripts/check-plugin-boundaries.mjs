@@ -965,7 +965,7 @@ const crossModelTokens = [
   'codex exec',
   '--ignore-user-config',
   '-m sol',
-  'codex debug models',
+  'codex debug models --bundled',
   'model_reasoning_effort="high"',
   '-s read-only',
   '3600000',
@@ -1013,7 +1013,7 @@ for (const contractPath of [
 }
 requireTextTokens(
   'plugins/analytics-verify/skills/analytics-verify/SKILL.md',
-  ['codex exec -m sol', 'codex debug models'],
+  ['codex exec -m sol', 'codex debug models --bundled'],
   'a Codex verifier that names its model',
 );
 for (const contractPath of [
