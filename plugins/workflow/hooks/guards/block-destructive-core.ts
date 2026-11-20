@@ -6980,7 +6980,7 @@ const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
     'helm uninstall': ['Removes the release and every Kubernetes resource it created.', 'data kept only in those resources is lost'],
     'helm delete': ['Removes the release and every Kubernetes resource it created.', 'data kept only in those resources is lost'],
     'gh repo': ['Permanently deletes the GitHub repository.', "its code, issues and pull requests can't be recovered"],
-    'trash-rm': ['Permanently deletes every trashed item whose original path or file name matches the pattern in the step below: an absolute path matches one item, a bare file name every item of that name.', "they skip any further recovery and can't be restored"],
+    'trash-rm': ['Permanently deletes every trashed item whose original path or file name matches the pattern in the step below: an absolute path matches every copy trashed from that path, a bare file name every item of that name, and a wildcard more.', "they skip any further recovery and can't be restored"],
     'trash-empty': ['Permanently deletes everything in the trash, or with a number of days, everything trashed longer ago than that.', "what it deletes can't be restored"],
     dd: ['Writes raw bytes to the output target; pointed at a disk, it overwrites it.', "whatever it overwrites can't be recovered"],
     render: ['Changes the Render service, database or job named in the step below, which is not listed as dev, so treat it as production.', "some changes, such as a deleted database, can't be undone"],
