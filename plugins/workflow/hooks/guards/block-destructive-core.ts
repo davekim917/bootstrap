@@ -1997,6 +1997,7 @@ const RENDER_EXPANDS = /[[\]*?{}$`~]/;
 export const RENDER_RESOURCE_ID_RE = /^[a-z]{3}-[a-z0-9]{20}(?:-[a-z])?$/;
 export const RENDER_CHANGE_REASON = 'Production change on Render';
 const RENDER_DEV_HOLD = 'Held on dev Render resource';
+const RENDER_READ_HOLD = 'Render read held';
 const RENDER_DATASTORE_DELETE = /^(?:postgres|keyvalues) delete$/;
 // `render services --help` shows its usage as `render services [subcommand]`: the CLI reads `list` as an argument to
 // `services`, whose children include update and delete, so `services list` is not a leaf there.
@@ -2057,6 +2058,57 @@ export function renderUnknownCommand(args: string[]): string | null {
         flags = { ...RENDER_GLOBAL, ...RENDER_COMMANDS.get(node)?.flags };
     }
     return null;
+}
+
+/** Whether nothing in the CLI's tree sits below `command`, so a word after it can only be an operand or a flag. */
+function renderLeaf(command: string): boolean {
+    return !RENDER_NOT_LEAF.has(command) && ![...RENDER_KNOWN].some(c => c.startsWith(`${command} `));
+}
+
+/**
+ * The read command and the flag the CLI rejects, when a read with no subcommand under it carries a flag outside its
+ * table: the CLI stops at "unknown flag" and runs nothing. Null once a shell expansion or `--` comes before that flag,
+ * or for a command that can change something, whose flag table is not kept complete.
+ */
+export function renderUnknownFlag(args: string[]): { command: string; flag: string } | null {
+    const words: string[] = [];
+    let command: string | null = null;
+    let flags: RenderFlags = RENDER_GLOBAL;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--' || RENDER_EXPANDS.test(a)) return null;
+        if (a === '-h' || a === '--help') continue;
+        if (!a.startsWith('-') || a === '-') {
+            words.push(command === null ? RENDER_ALIASES.get(a) ?? a : a);
+            continue;
+        }
+        const at = a.startsWith('--') ? a.indexOf('=') : -1;
+        const flag = a.startsWith('--') ? (at < 0 ? a : a.slice(0, at)) : RENDER_SHORT.get(a[1]) ?? a.slice(0, 2);
+        if (flag === '--help' || flag === '-h') return null;
+        if (command === null && !(flag in RENDER_GLOBAL)) {
+            command = renderCommandOf([...words]);
+            if (command === null) return null;
+            flags = { ...RENDER_GLOBAL, ...RENDER_COMMANDS.get(command)!.flags };
+        }
+        const arity = Object.hasOwn(flags, flag) ? flags[flag] : undefined;
+        if (!arity) {
+            const kind = command === null ? undefined : RENDER_COMMANDS.get(command)!.kind;
+            return command !== null && kind !== 'proof' && renderLeaf(command) ? { command, flag } : null;
+        }
+        if (arity === 'value' && (a.startsWith('--') ? at < 0 : a.length === 2)) {
+            const value = args[++i];
+            if (value === undefined || RENDER_EXPANDS.test(value)) return null;
+        }
+    }
+    return null;
+}
+
+/** The refusal for a read the CLI would reject for an unknown flag, naming the flag it likely meant. */
+function renderUnknownFlagFix(found: { command: string; flag: string }): string {
+    const known = Object.keys({ ...RENDER_GLOBAL, ...RENDER_COMMANDS.get(found.command)!.flags });
+    const meant = known.find(k => k === found.flag.replace(/s$/, '') || k === `${found.flag}s`);
+    const hint = meant ? ` Did you mean \`${meant}\`?` : '';
+    return `\`render ${found.command}\` has no flag \`${found.flag}\` (Render CLI ${RENDER_CLI_VERSION}): the CLI stops with "unknown flag" and runs nothing.${hint} \`render ${found.command} --help\` lists its flags.`;
 }
 
 /**
@@ -2169,6 +2221,19 @@ function renderHelpOnly(args: string[]): boolean {
     return at > 0 && args.slice(at).every(a => a === '-h' || a === '--help') && RENDER_KNOWN.has(args.slice(0, at).join(' '));
 }
 
+/** The read a line's leading words name, when they name one with nothing below it in the CLI's tree; null otherwise. */
+function renderLeadRead(args: string[]): string | null {
+    const end = args.findIndex(a => a.startsWith('-') || RENDER_EXPANDS.test(a));
+    const words = (end < 0 ? args : args.slice(0, end)).map((a, i) => (i === 0 ? RENDER_ALIASES.get(a) ?? a : a));
+    const command = renderCommandOf(words);
+    if (command === null || RENDER_COMMANDS.get(command)!.kind === 'proof') return null;
+    if (renderLeaf(command)) return command;
+    if (args.some(a => RENDER_EXPANDS.test(a))) return null;
+    const parent = RENDER_NOT_LEAF.has(command) ? command.split(' ')[0] : command;
+    const children = new Set([...RENDER_KNOWN].filter(c => c.startsWith(`${parent} `)).map(c => c.slice(parent.length + 1).split(' ')[0]));
+    return args.some(a => children.has(a === 'ls' ? 'list' : a)) && !RENDER_NOT_LEAF.has(command) ? null : command;
+}
+
 export function renderChangeReason(args: string[]): string | null {
     if (args.every(a => ['-h', '--help', '-v', '--version'].includes(a)) || renderHelpOnly(args)) return null;
     const shape = renderShape(args);
@@ -2180,9 +2245,11 @@ export function renderChangeReason(args: string[]): string | null {
         if (!subcommand) {
             if (shape.entry.kind === 'read' || (RENDER_PLAIN_OUTPUT.has(shape.output ?? '') && shape.outputAfterExpansion)) return null;
             const where = shape.expanded ? ', after the last variable,' : '';
-            return `${RENDER_CHANGE_REASON} possible: render ${shape.command} can open an interactive menu that deploys. Add -o json (or yaml/text)${where} to read it without approval.`;
+            return `${RENDER_READ_HOLD}: render ${shape.command} is a read, but with no plain output it can open an interactive menu that deploys. Add -o json (or yaml/text)${where} to read it without approval.`;
         }
     }
+    const lead = shape ? null : renderLeadRead(args);
+    if (lead) return `${RENDER_READ_HOLD}: render ${lead} is a read, but the guard can't account for every word on the line, so it can't rule out a different command.`;
     const words = shape?.command ?? args.filter(a => !a.startsWith('-')).slice(0, 3).join(' ');
     return `${RENDER_CHANGE_REASON} (render ${words || args.join(' ')}).`;
 }
@@ -6970,6 +7037,17 @@ const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
     render: ['Changes the Render service, database or job named in the step below, which is not listed as dev, so treat it as production.', "some changes, such as a deleted database, can't be undone"],
 };
 
+/** A held Render read's card: it says the step reads, why it is held, and whether its target is listed as dev. */
+function renderReadEffect(cmd: ResolvedCommand, reason: string): [effect: string, loss: string] {
+    const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    const ids = [...new Set(renderResourceIds(cmd.args))];
+    const where = !ids.length ? '' : ids.every(id => listed.has(id)) ? ' Its target is listed as dev.' : ' Its target is not listed as dev, so treat it as production.';
+    const why = reason.includes('interactive menu')
+        ? 'with no plain output (-o json, yaml or text) it can open an interactive menu that deploys'
+        : "the guard can't account for every word on the line, so it can't rule out a different command";
+    return [`Reads from Render. It is held because ${why}.${where}`, 'approve it only if the step below is the read it looks like'];
+}
+
 function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
     const verbs = cmd.args.filter(a => /^[a-z][\w:-]*$/i.test(a)).slice(0, 2);
     const run = code([cmd.name, ...verbs].join(' '));
@@ -6977,6 +7055,8 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
     const onDev = cmd.name === 'render' && reason.startsWith(RENDER_DEV_HOLD);
     const described: [effect: string, loss: string] | undefined = onDev
         ? ['Changes the Render dev resource named in the step below.', "some changes, such as a deleted database, can't be undone"]
+        : cmd.name === 'render' && reason.includes(RENDER_READ_HOLD)
+        ? renderReadEffect(cmd, reason)
         : cmd.name === 'terraform' && targets.length
         ? [`Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`, "anything it destroys can't be brought back"]
         : GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
@@ -7086,6 +7166,11 @@ function* gatedSteps(
                 };
                 continue;
             }
+            const unknownFlag = cmd.name === 'render' ? renderUnknownFlag(cmd.args) : null;
+            if (unknownFlag !== null) {
+                yield { cmd, reason, outer, moves, fix: renderUnknownFlagFix(unknownFlag) };
+                continue;
+            }
             const devExpansion = cmd === outer && cmd.name === 'render' ? renderDevExpansionFix(cmd) : null;
             if (devExpansion !== null) {
                 yield { cmd, reason, outer, moves, fix: devExpansion };
@@ -7126,8 +7211,9 @@ export function describeGate(command: string, reason: string, cwd: string = curr
     try {
         const commands = extractCommands(command);
         if (commands[0]?.script) commands[0].script.cwd = cwd;
-        const gated = [...gatedSteps(commands, command, cwd, isLabSession(), false)];
-        if (gated.length === 0) return fallback;
+        const found = [...gatedSteps(commands, command, cwd, isLabSession(), false)];
+        if (found.length === 0) return fallback;
+        const gated = [...found.filter(s => !heldRead(s)), ...found.filter(heldRead)];
         const view = viewShell(command);
 
         const evaluated = (cmd: ResolvedCommand, unresolved: Set<string>): ResolvedCommand => {
@@ -7197,7 +7283,8 @@ export function describeGate(command: string, reason: string, cwd: string = curr
         if (commands.length > gated.length) {
             lines.push('', `Approving runs the whole command (${commands.length} steps), not only the step${gated.length > 1 ? 's' : ''} described here.`);
         }
-        if (gated.some(onProduction) && !lines[0].includes('treat it as production')) lines.unshift('Treat this as production: its target is not listed as dev.', '');
+        const prodChange = (step: GatedStep): boolean => onProduction(step) && !heldRead(step);
+        if (gated.some(prodChange) && !lines[0].includes('treat it as production')) lines.unshift('Treat this as production: its target is not listed as dev.', '');
         lines.push(`Guard rule: ${clip(oneLine(reason), 200)}`);
         return { label: clip(label, CARD_LABEL_MAX_CHARS), summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
     } catch {
@@ -7898,6 +7985,8 @@ export function runNanoclawGate(
 }
 
 const heldOnDev = (step: GatedStep): boolean => step.cmd === step.outer && renderDevHeld(step.cmd) !== null;
+
+const heldRead = (step: GatedStep): boolean => step.cmd.name === 'render' && step.reason.includes(RENDER_READ_HOLD);
 
 const onProduction = (step: GatedStep): boolean => step.reason.includes(CLIENT_PROGRAM_GATE)
     || (!heldOnDev(step) && (step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || /\brender\b/.test(step.cmd.raw)));
