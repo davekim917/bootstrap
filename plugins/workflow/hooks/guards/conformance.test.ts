@@ -31,6 +31,10 @@ import { checkEditProtection } from './file-protection-core';
 // Hard-block (never allowed): file-deletion primitives, shell-wrapper bypass,
 // protected-path rm.
 const BASH_BLOCK = [
+  // A step refused outright stays refused behind an earlier gated step; the gate must not make it approvable.
+  "trash-rm key.p8; psql -c 'drop database prod'",
+  "git clean -f; psql -c 'drop database prod'",
+  'trash-empty; snow sql -f missing.sql',
   'rm\\\n -rf /home/x',
   'rm \\\n -rf /home/x',
   'r\\\nm -rf /home/x',

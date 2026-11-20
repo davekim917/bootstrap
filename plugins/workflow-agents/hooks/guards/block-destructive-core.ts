@@ -7394,10 +7394,14 @@ function evaluateBashLine(
 
     // --- Gated checks ---
     if (!opts.skipGate) {
-        const first = gatedSteps(commands, command, cwd, lab, true, opts.localPg).next();
-        // A step one flag short of the scratch-Postgres exemption is refused with that flag named, not sent to an
-        // approver: the agent reruns it with -X and it passes without a card.
-        if (!first.done) return first.value.fix ? { action: 'block', reason: first.value.fix } : { action: 'gate', reason: first.value.reason };
+        // A step the guard refuses outright (one flag short of the scratch-Postgres exemption, a database it can't
+        // name) is refused wherever it sits in the line: an earlier gated step must not turn it into an approvable card.
+        let first: string | undefined;
+        for (const step of gatedSteps(commands, command, cwd, lab, true, opts.localPg)) {
+            if (step.fix) return { action: 'block', reason: step.fix };
+            first ??= step.reason;
+        }
+        if (first !== undefined) return { action: 'gate', reason: first };
     }
 
     // --- rm-specific checks (three-tier protection) ---
