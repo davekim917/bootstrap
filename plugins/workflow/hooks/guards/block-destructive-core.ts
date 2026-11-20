@@ -6004,6 +6004,20 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         }
     }
 
+    // trash-cli's trash-rm and trash-empty delete from the trash for good: the step past the recoverable `trash` that the
+    // rm redirect sends deletions to. Only help, version and a trash-empty dry run read nothing and pass, and only as
+    // literal words, since a variable or glob could expand to anything.
+    if (name === 'trash-rm' || name === 'trash-empty') {
+        const literal = args.every(a => /^[\w@%+=:,./ -]*$/.test(a));
+        const readOnly = args.some(a => a === '-h' || a === '--help' || a === '--version')
+            || (name === 'trash-empty' && args.includes('--dry-run'));
+        if (!(literal && readOnly)) {
+            return name === 'trash-rm'
+                ? 'trash-rm permanently deletes the trashed items it matches. They cannot be restored.'
+                : 'trash-empty permanently deletes everything in the trash. It cannot be restored.';
+        }
+    }
+
     // ── dbt ──────────────────────────────────────────────────────────────
 
     if (name === 'dbt' && ['run', 'build'].includes(args[0]) && args.includes('--full-refresh')) {
@@ -6966,6 +6980,8 @@ const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
     'helm uninstall': ['Removes the release and every Kubernetes resource it created.', 'data kept only in those resources is lost'],
     'helm delete': ['Removes the release and every Kubernetes resource it created.', 'data kept only in those resources is lost'],
     'gh repo': ['Permanently deletes the GitHub repository.', "its code, issues and pull requests can't be recovered"],
+    'trash-rm': ['Permanently deletes every trashed item whose original path or file name matches the pattern in the step below: an absolute path matches one item, a bare file name every item of that name.', "they skip any further recovery and can't be restored"],
+    'trash-empty': ['Permanently deletes everything in the trash, or with a number of days, everything trashed longer ago than that.', "what it deletes can't be restored"],
     dd: ['Writes raw bytes to the output target; pointed at a disk, it overwrites it.', "whatever it overwrites can't be recovered"],
     render: ['Changes the Render service, database or job named in the step below, which is not listed as dev, so treat it as production.', "some changes, such as a deleted database, can't be undone"],
 };
@@ -7274,7 +7290,7 @@ export function checkRmDecision(
     const unsafePaths = paths.filter(p => !safe(p));
     if (unsafePaths.length > 0) {
         const trashCmd = `trash ${unsafePaths.join(' ')}`;
-        return `BLOCKED: rm is not allowed for non-ephemeral paths. Re-run your command using trash instead:\n\n  ${trashCmd}\n\ntrash moves files to macOS Trash (recoverable). Ephemeral paths (tmp, node_modules, dist, build, .cache, coverage, __pycache__, etc.) are allowed with rm.`;
+        return `BLOCKED: rm is not allowed for non-ephemeral paths. Re-run your command using trash instead:\n\n  ${trashCmd}\n\ntrash moves files to the trash, where they can be restored. To remove a file for good, such as a credential that must not stay on disk, trash it and then run trash-rm with its absolute path, which asks for approval. Ephemeral paths (tmp, node_modules, dist, build, .cache, coverage, __pycache__, etc.) are allowed with rm.`;
     }
 
     return null;
