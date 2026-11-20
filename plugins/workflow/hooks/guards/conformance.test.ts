@@ -31,6 +31,12 @@ import { checkEditProtection } from './file-protection-core';
 // Hard-block (never allowed): file-deletion primitives, shell-wrapper bypass,
 // protected-path rm.
 const BASH_BLOCK = [
+  // A step refused outright stays refused behind an earlier gated step; the gate must not make it approvable.
+  "trash-rm key.p8; psql -c 'drop database prod'",
+  "git clean -f; psql -c 'drop database prod'",
+  'trash-empty; snow sql -f missing.sql',
+  'trash-rm key.p8; rm secrets/key.p8',
+  'git clean -f; rm secrets/key.p8',
   'rm\\\n -rf /home/x',
   'rm \\\n -rf /home/x',
   'r\\\nm -rf /home/x',
@@ -169,6 +175,21 @@ const BASH_GATE = [
   'git clean -f --e -npattern',
   'git -c clean.requireForce=false --attr-source HEAD clean',
   '/usr/lib/git-core/git-clean -fd',
+  // trash-cli's trash-rm and trash-empty delete from the trash for good. trash-rm parses no options, so its --help
+  // still deletes; only trash-empty's help, version and dry run pass.
+  'trash-rm /workspace/agent/key.p8',
+  'trash-rm key.p8',
+  'trash-rm key.p8 --help',
+  'trash-rm --help',
+  'trash-empty',
+  'trash-empty 30',
+  '/usr/bin/trash-empty -f',
+  'trash key.p8 && trash-rm "$PWD/key.p8"',
+  'X=--dry-run; trash-empty $X',
+  'trash-empty --trash-dir /workspace/agent/.Trash-1001 --help',
+  'trash-empty --trash X --version',
+  'trash-empty -h --trash-dir=/x',
+  'find . -name key.p8 -exec trash-rm {} +',
   'git -c clean.requireForce=false --shallow-file /dev/null clean',
   'X=--no-dry-run; git clean -n $X -f',
   // git submodule foreach runs its command in each submodule.
@@ -335,6 +356,12 @@ const BASH_ALLOW = [
   'exec bash-completion-loader',
   'git status',
   'git clean -n',
+  'trash key.p8',
+  'trash-list',
+  'trash-empty --help',
+  'trash-empty --version',
+  'trash-empty --dry-run',
+  'trash-empty --dry-run 30',
   'git clean -ndx',
   'git clean --dry-run -fdx',
   'git clean -e keep -n',

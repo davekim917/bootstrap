@@ -61,6 +61,12 @@ describe('destructive approval description', () => {
             has: ['Deletes the table `users`'],
         },
         {
+            name: 'trash-rm says an absolute path matches every copy trashed from it, and a bare name every item of that name',
+            command: 'trash-rm /workspace/agent/key.p8',
+            label: 'Run trash-rm',
+            has: ['Permanently deletes every trashed item whose original path or file name matches', 'an absolute path matches every copy trashed from that path', 'a bare file name every item of that name'],
+        },
+        {
             name: 'git clean names what it deletes, that it skips the trash, and what -e keeps',
             command: 'cd /work/app && git clean -fdx -e .env',
             label: 'Permanently delete untracked and ignored files (git clean)',

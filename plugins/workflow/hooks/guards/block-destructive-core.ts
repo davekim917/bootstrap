@@ -6071,6 +6071,22 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         }
     }
 
+    // trash-cli's trash-rm and trash-empty delete from the trash for good: the step past the recoverable `trash` that the
+    // rm redirect sends deletions to. trash-rm parses no options (`trash-rm x --help` still deletes x), so it has no
+    // exemption. trash-empty passes only when every word is a help, version or dry-run flag or a day count: older
+    // releases act on other options before honouring --help (`--trash-dir X --help` empties X).
+    if (name === 'trash-rm' || name === 'trash-empty') {
+        const readOnlyFlag = (a: string) => a === '-h' || a === '--help' || a === '--version' || a === '--dry-run';
+        const readOnly = name === 'trash-empty'
+            && args.some(readOnlyFlag)
+            && args.every(a => readOnlyFlag(a) || /^\d+$/.test(a));
+        if (!readOnly) {
+            return name === 'trash-rm'
+                ? 'trash-rm permanently deletes the trashed items it matches. They cannot be restored.'
+                : 'trash-empty permanently deletes everything in the trash. It cannot be restored.';
+        }
+    }
+
     // ── dbt ──────────────────────────────────────────────────────────────
 
     if (name === 'dbt' && ['run', 'build'].includes(args[0]) && args.includes('--full-refresh')) {
@@ -7033,6 +7049,8 @@ const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
     'helm uninstall': ['Removes the release and every Kubernetes resource it created.', 'data kept only in those resources is lost'],
     'helm delete': ['Removes the release and every Kubernetes resource it created.', 'data kept only in those resources is lost'],
     'gh repo': ['Permanently deletes the GitHub repository.', "its code, issues and pull requests can't be recovered"],
+    'trash-rm': ['Permanently deletes every trashed item whose original path or file name matches the pattern in the step below: an absolute path matches every copy trashed from that path, a bare file name every item of that name, and a wildcard more.', "they skip any further recovery and can't be restored"],
+    'trash-empty': ['Permanently deletes everything in the trash, or with a number of days, everything trashed longer ago than that.', "what it deletes can't be restored"],
     dd: ['Writes raw bytes to the output target; pointed at a disk, it overwrites it.', "whatever it overwrites can't be recovered"],
     render: ['Changes the Render service, database or job named in the step below, which is not listed as dev, so treat it as production.', "some changes, such as a deleted database, can't be undone"],
 };
@@ -7361,7 +7379,7 @@ export function checkRmDecision(
     const unsafePaths = paths.filter(p => !safe(p));
     if (unsafePaths.length > 0) {
         const trashCmd = `trash ${unsafePaths.join(' ')}`;
-        return `BLOCKED: rm is not allowed for non-ephemeral paths. Re-run your command using trash instead:\n\n  ${trashCmd}\n\ntrash moves files to macOS Trash (recoverable). Ephemeral paths (tmp, node_modules, dist, build, .cache, coverage, __pycache__, etc.) are allowed with rm.`;
+        return `BLOCKED: rm is not allowed for non-ephemeral paths. Re-run your command using trash instead:\n\n  ${trashCmd}\n\ntrash moves files to the trash, where they can be restored. To remove a file for good, such as a credential that must not stay on disk, trash it and then run trash-rm with its absolute path, which asks for approval. Ephemeral paths (tmp, node_modules, dist, build, .cache, coverage, __pycache__, etc.) are allowed with rm.`;
     }
 
     return null;
@@ -7388,18 +7406,17 @@ function shellParseProblem(command: string): string | null {
  * WITHOUT the approval-bypass step (that stays in the caller) and without any
  * process.exit / stderr:
  *   (1) hard block (first non-null checkHardBlock) ⇒ block
- *   (2) gated command (first non-null checkGatedCommand) ⇒ gate
- *   (3) rm decision (first non-null checkRmDecision) ⇒ block
+ *   (2) rm decision (first non-null checkRmDecision) ⇒ block
+ *   (3) gated command: any gated step the guard refuses ⇒ block, else the first ⇒ gate
  *   else ⇒ allow
  *
  * Reasons are returned verbatim: hard-block reasons are the bare message
  * (the caller prefixes `BLOCKED: `); gated reasons are the bare gate reason;
  * rm reasons are already prefixed with `BLOCKED:`.
  *
- * `opts.skipGate` skips tier (2). The caller uses this for the post-approval
- * pass: in the original main(), an approved gate falls through to the rm tier,
- * so a destructive rm in the same command line is still blocked even after the
- * gated verb was approved. Skipping tier (2) reproduces that fall-through.
+ * `opts.skipGate` skips tier (3). The caller uses this for the post-approval
+ * pass, which re-runs tiers (1) and (2) so a refused step in the line stays
+ * refused after the gated verb was approved.
  *
  * `opts.cwd` is the working directory the command will run in — supplied by an
  * adapter that has it on its hook input (Claude's `cwd` field), else
@@ -7458,15 +7475,8 @@ function evaluateBashLine(
     const responseSecrets = responseSecretsReason(commands, command);
     if (responseSecrets) return { action: 'block', reason: responseSecrets };
 
-    // --- Gated checks ---
-    if (!opts.skipGate) {
-        const first = gatedSteps(commands, command, cwd, lab, true, opts.localPg).next();
-        // A step one flag short of the scratch-Postgres exemption is refused with that flag named, not sent to an
-        // approver: the agent reruns it with -X and it passes without a card.
-        if (!first.done) return first.value.fix ? { action: 'block', reason: first.value.fix } : { action: 'gate', reason: first.value.reason };
-    }
-
     // --- rm-specific checks (three-tier protection) ---
+    // Before the gate: a refused rm blocks the line rather than reaching an approval card it could never pass.
     for (const cmd of commands) {
         if (cmd.name === 'rm') {
             const proven = typeof cmd.pos === 'number'
@@ -7487,6 +7497,18 @@ function evaluateBashLine(
                 return { action: 'block', reason };
             }
         }
+    }
+
+    // --- Gated checks ---
+    if (!opts.skipGate) {
+        // A step the guard refuses outright (one flag short of the scratch-Postgres exemption, a database it can't
+        // name) is refused wherever it sits in the line: an earlier gated step must not turn it into an approvable card.
+        let first: string | undefined;
+        for (const step of gatedSteps(commands, command, cwd, lab, true, opts.localPg)) {
+            if (step.fix) return { action: 'block', reason: step.fix };
+            first ??= step.reason;
+        }
+        if (first !== undefined) return { action: 'gate', reason: first };
     }
 
     return { action: 'allow' };

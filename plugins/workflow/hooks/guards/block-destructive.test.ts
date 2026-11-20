@@ -256,6 +256,13 @@ describe('rm: non-ephemeral paths redirected to trash', () => {
         expect(exitCode).toBe(2);
         expect(stderr).toContain('trash');
     });
+
+    test('the redirect names the recoverable trash, not one platform, and the approval path for a for-good removal', async () => {
+        const { stderr } = await runHook('rm secrets/key.p8');
+        expect(stderr).not.toContain('macOS');
+        expect(stderr).toContain('trash-rm');
+        expect(stderr).toContain('asks for approval');
+    });
 });
 
 // ── Safe commands pass through ───────────────────────────────────────────────
