@@ -1009,7 +1009,7 @@ for (const contractPath of [
   const unpinned = (content ?? '').split('\n').filter((line) => {
     if (!/^codex exec\b/.test(line.trim())) return false;
     const models = [...line.replace(/\s#.*$/, '').replace(/\s--(\s.*)?$/, '').matchAll(/\s(?:-m|--model)(?:=|\s+)?([^\s=]\S*)/g)].map((m) => m[1]);
-    return models.length === 0 || models.some((model) => model !== 'sol');
+    return models.length !== 1 || models[0] !== 'sol';
   });
   if (unpinned.length > 0) {
     fail(`${contractPath}: every Codex review command must name the Sol family with -m sol, since Codex's own default can be a small tier and a pinned id goes stale (found ${unpinned.join(' | ')})`);
