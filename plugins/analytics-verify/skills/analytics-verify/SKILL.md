@@ -112,11 +112,12 @@ If you're unsure which loop a data claim needs, use the full loop.
       the same data. From a Claude agent, that's `codex exec -m sol -c
       model_reasoning_effort=<effort>` with stdin closed (`</dev/null`) or it waits
       forever. Name the model: Codex's own default can be a small tier, which is not a
-      verifier. `sol` works where the host's `codex` resolves family words to the
-      current id (NanoClaw's does). The bare Codex CLI rejects it ("The 'sol' model
-      is not supported") before the model is called; then rerun with the lowest-`priority`
-      listed `-sol` slug from `codex debug models --bundled` (the jq command in the
-      workflow plugin's cross-model contract) in its place, and stop if there is none. Reviewing work another family wrote (a Codex peer's draft), it's a
+      verifier. `sol` is for NanoClaw's `codex`, which resolves
+      family words to the current id (its first lines carry `nanoclaw-codex-rotation-shim`).
+      With any other `codex`, put the lowest-`priority` listed `-sol` slug from
+      `codex debug models --bundled` (the jq command in the workflow plugin's
+      cross-model contract) in its place before the run, never a bare `sol`, and stop if
+      there is none. Reviewing work another family wrote (a Codex peer's draft), it's a
       fresh-context subagent of your own model, at `<effort>`. Don't use `claude -p`:
       inside an agent container it fails with "Not logged in";
    2. a peer agent in this conversation on a different family from the author's
