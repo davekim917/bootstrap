@@ -1182,7 +1182,7 @@ function replyRecipients(
     // A plain reply never takes the original To or Cc, and a reply to the account's own message never takes its Reply-To.
     const missed = unread.filter(u => replyAll ? !(selfReply && u.replyTo) : u.replyTo).flatMap(u => u.addresses);
     const leftOff = firstOnly(missed, new Set(taken), excluded);
-    if ([...final.to, ...final.cc, ...final.bcc, ...leftOff].some(a => !PLAIN_ADDRESS.test(a) || HIDDEN_OR_BIDI.test(a))) {
+    if ([...final.to, ...final.cc, ...final.bcc, ...leftOff].some(a => !PLAIN_ADDRESS.test(a) || HIDDEN_OR_BIDI.test(a) || /\p{Cc}/u.test(a))) {
         return { unresolved: 'an address on the original is not a plain address this card can show as written' };
     }
     return { ...final, leftOff };
