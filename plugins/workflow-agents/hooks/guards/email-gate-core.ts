@@ -436,14 +436,25 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const action = send?.verb ?? command.match(/\+(send|reply|reply-all|forward)\b/)?.[1] ?? 'send';
     const isRawApi = send ? send.verb === 'send' && !send.helper : !/\+(send|reply|reply-all|forward)\b/.test(command);
 
-    // gws resolves reply recipients from the original message, honouring its
-    // Reply-To header; `--to` adds recipients (`gws gmail +reply-all --help`).
-    const threadRecipients = action === 'reply' ? 'the original sender (or its Reply-To address)'
-        : action === 'reply-all' ? 'the original sender (or its Reply-To address) and everyone on To/Cc'
+    const isReply = action === 'reply' || action === 'reply-all';
+    const replyAll = action === 'reply-all';
+    const replyCreds = exact?.credentialsFile;
+    const replyRead = isReply && exact && messageId && GMAIL_ID.test(messageId) && replyCreds?.startsWith('/')
+        ? readReplyContext(messageId, replyAll, alias, replyCreds, env.gwsBin ?? GWS_BIN)
         : null;
-    const to = inline(threadRecipients
-        ? (flagTo ? `${threadRecipients}, plus ${flagTo}` : threadRecipients)
+    const resolution = replyRead ? replyRecipients(replyAll, replyRead, { to: flagTo, cc, bcc, remove: removed }) : null;
+    const reached = resolution && !('unresolved' in resolution) ? resolution : null;
+    const unresolvedWhy = !isReply || reached ? null
+        : !exact ? 'this command is not a send the gate can read exactly'
+        : !replyCreds?.startsWith('/') ? 'the command names no absolute GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE to read the original with'
+        : resolution && 'unresolved' in resolution ? resolution.unresolved
+        : `the gate could not read Gmail message ${code(inline(messageId ?? '(none)'))} and the account's own addresses with the send's credentials`;
+    const plus = (known: string | undefined) => known ? `not resolved, plus ${known}` : 'not resolved';
+    const to = inline(reached ? reached.to.join(', ')
+        : isReply ? plus(flagTo)
         : flagTo ?? envelope.to ?? 'unknown recipient');
+    const shownCc = reached ? reached.cc.join(', ') || undefined : replyAll ? plus(cc) : cc;
+    const shownBcc = reached ? reached.bcc.join(', ') || undefined : bcc;
     // A send-shaped call, or one whose verb is hidden behind quoting or expansion.
     const sendLike = calls.filter(c => c.verb || /[$`'"\\]/.test(c.verbText)).length;
     const generatedWord = view.commands.some(c => /[$`\\]/.test(c.name));
@@ -454,7 +465,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         : [];
     const label = gwsWords > 1
         ? `Email: ${gwsWords} gws calls; addresses named: ${named.join(', ') || 'none found'}`
-        : (subject ? `Email ${action} to ${to}: "${inline(subject)}"` : `Email ${action} to ${to}`)
+        : `Email ${action}${unresolvedWhy ? ' (recipients not resolved)' : ` to ${to}`}${subject ? `: "${inline(subject)}"` : ''}`
             + (generatedWord ? ' (check the command)' : probeFlag ? ` (${probeFlag} — check the command)` : '');
 
     const lines: string[] = [];
@@ -469,17 +480,20 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     } else if (probeFlag) {
         lines.push(`⚠️ This send carries ${code(probeFlag)}, which on its own sends nothing. The gate still asks because it could not confirm that flag takes effect: the command holds other shell syntax, or the flag may be another option's value. Check the full command.`, '');
     }
+    if (unresolvedWhy) {
+        lines.push(`⚠️ Recipients not resolved: ${unresolvedWhy}, so this card cannot list who the reply reaches. Decline unless you know everyone on the thread.`, '');
+    }
     lines.push(
         `From: ${inline(fromAccount)}${alias ? ` (as ${inline(alias)})` : ''}${sender ? '' : ' (not confirmed: the host holds no mailbox for these credentials)'}`,
         ...(envelope.from ? [`From header in the message: ${inline(envelope.from)}`] : []),
         `To: ${to}`,
     );
-    if (cc) lines.push(`Cc: ${inline(cc)}`);
-    if (bcc) lines.push(`Bcc: ${inline(bcc)}`);
+    if (shownCc) lines.push(`Cc: ${inline(shownCc)}`);
+    if (shownBcc) lines.push(`Bcc: ${inline(shownBcc)}`);
     if (removed) lines.push(`Removed from the reply: ${inline(removed)}`);
     if (subject) lines.push(`Subject: ${inline(subject)}`);
-    else if (threadRecipients) lines.push('Subject: Re: the original subject');
-    if (messageId && threadRecipients) lines.push(`In reply to: Gmail message ${code(inline(messageId))}, quoted under the reply`);
+    else if (isReply) lines.push('Subject: Re: the original subject');
+    if (messageId && isReply) lines.push(`In reply to: Gmail message ${code(inline(messageId))}, quoted under the reply${reached ? '; the recipients above are read from it' : ''}`);
     if (attachments.length) lines.push(`Attachments: ${attachments.map(a => code(inline(a))).join(', ')}`);
 
     const bodyText = send ? argTexts(send, '--body')[0] : matchFlag('--body');
@@ -535,6 +549,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         ? { wholeEmail: lines.flatMap((line, k) => k === wholeMessage!.noteAt || k === wholeMessage!.at - 1 ? [] : k === wholeMessage!.at ? wholeMessage!.exact : [line]).join('\n') }
         : {};
     if (!shape) return { action: 'gate', label, summary, deny: SEND_ALONE };
+    if (reached?.leftOff.length) return { action: 'gate', label, summary, deny: leftOffRefusal(reached.leftOff, replyAll) };
     const attachmentsRead = readAttachments([...shape.options.get('-a') ?? [], ...shape.options.get('--attach') ?? []], env.cwd);
     if (attachmentsRead.refusal) return { action: 'gate', label, summary, deny: attachmentsRead.refusal };
     if (draftTarget && draftRead) {
@@ -552,14 +567,14 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         && viewRead.attachments.join('\n') === exactAttachments.join('\n') && viewRead.isHtml === exact?.html
         && (resolved.text === null || resolved.text === exact?.body));
     const agree = exact !== null && viewAgrees && action === exact.verb;
-    const shownPlain = [fromAccount, flagTo, subject, cc, bcc, removed, alias];
+    const shownPlain = [fromAccount, flagTo, subject, cc, bcc, removed, alias, ...(reached ? [reached.to.join(', '), shownCc, shownBcc] : [])];
     const shownAsCode = [messageId, ...attachments];
     // HTML qualifies only as a formatted body: the summary can't show what other markup or styling would change.
     const bodyFaithful = isHtml ? formatted !== null && bodyShownAsIs(formatted.text) : body.text !== null && bodyShownAsIs(body.text);
     const faithful = agree && sender !== null && (shape.verb === 'reply' || shape.verb === 'reply-all' || (shape.verb === 'send' && !messageId))
         && shownPlain.every(v => !v || fieldShownAsIs(v, false))
         && shownAsCode.every(v => !v || fieldShownAsIs(v, true)) && gwsWords === 1 && !generatedWord && !probeFlag
-        && !unresolved.size && body.text !== null && bodyFaithful && attachmentsRead.namesAsSent;
+        && !unresolved.size && body.text !== null && bodyFaithful && attachmentsRead.namesAsSent && !unresolvedWhy;
     if (faithful && !bodyCut && summary === lines.join('\n')) return { action: 'gate', label, summary, pureSend: true };
     const whole = faithful && wholeMessage
         ? lines.flatMap((line, k) => k === wholeMessage!.noteAt ? [] : [k === wholeMessage!.at ? wholeMessage!.block : line]).join('\n')
@@ -776,6 +791,14 @@ export function formattedText(html: string, signature: string | null): { text: s
     const rest = html.slice(i);
     if (rest && rest !== signature) return null;
     return { text: blocks.join('\n\n'), signed: rest !== '' };
+}
+
+/** The refusal for a reply gws would send without people the original names in a header it does not read. */
+export function leftOffRefusal(addresses: string[], replyAll: boolean): string {
+    const list = addresses.join(',');
+    return `Email reply refused: gws would leave off ${addresses.join(', ')}. The original message names ${addresses.length === 1 ? 'that address' : 'them'} ` +
+        `in a ${replyAll ? 'To, Cc or Reply-To' : 'Reply-To'} header spelled another way (such as CC), which gws does not read. Run the send again ` +
+        `with --cc ${list} added${replyAll ? `, or --remove ${list} if ${addresses.length === 1 ? 'they should' : 'they should all'} be left off` : ''}.`;
 }
 
 export const SEND_ALONE =
@@ -1010,16 +1033,171 @@ function sendShape(command: string): SendShape | null {
     };
 }
 
+// ── Who a reply reaches ──
+// gws builds a reply's envelope from the original message, so the command alone never names who a reply reaches. The
+// card reads the original with the send's own account and works the envelope out as gws 0.22.5 does
+// (helpers/gmail/reply.rs and mod.rs): a reply goes To the Reply-To addresses, else the From address; a reply-all also
+// puts the original To and Cc on Cc, leaves out the account's primary address, its From identity and `--remove`, and
+// when the original came from that account goes To the original To with the original Cc on Cc. `--to`, `--cc` and
+// `--bcc` add to those, and an address is kept only in the first of To, Cc and Bcc that names it. gws reads only the
+// headers spelled exactly From, Reply-To, To and Cc; Gmail keeps the sender's spelling, and Outlook writes `CC`.
+
+const READ_HEADERS: Record<string, 'replyTo' | 'to' | 'cc'> = { 'Reply-To': 'replyTo', To: 'to', Cc: 'cc' };
+// Addresses from a third party's headers reach the card and the refusal's suggested option, so only plain ones are shown.
+const PLAIN_ADDRESS = /^[^\s@<>()[\],;:"'`|\\$&*?!{}]+@[^\s@<>()[\],;:"'`|\\$&*?!{}]+$/;
+
+/** gws's address-list split: commas outside double quotes, with a backslash escaping a quote inside them. */
+function splitMailboxList(header: string): string[] {
+    const out: string[] = [];
+    let inQuotes = false;
+    let start = 0;
+    let escaped = false;
+    for (let i = 0; i < header.length; i++) {
+        const ch = header[i];
+        if (ch === '\\' && inQuotes) {
+            escaped = !escaped;
+            continue;
+        }
+        if (ch === '"' && !escaped) inQuotes = !inQuotes;
+        else if (ch === ',' && !inQuotes) {
+            const token = header.slice(start, i).trim();
+            if (token) out.push(token);
+            start = i + 1;
+        }
+        escaped = false;
+    }
+    const token = header.slice(start).trim();
+    if (token) out.push(token);
+    return out;
+}
+
+/** The address gws takes from one mailbox: what the last `<…>` holds, else the whole text, less ASCII control characters. */
+function mailboxAddress(raw: string): string {
+    const text = raw.trim();
+    const open = text.lastIndexOf('<');
+    const close = open < 0 ? -1 : text.indexOf('>', open);
+    return (close < 0 ? text : text.slice(open + 1, close).trim()).replace(/[\x00-\x1f\x7f]/g, '');
+}
+
+function addressList(raw: string | undefined): string[] {
+    return raw ? splitMailboxList(raw).map(mailboxAddress).filter(Boolean) : [];
+}
+
+/** Keep each address once, in order, leaving out any already in `taken` (which this fills). */
+function firstOnly(addresses: string[], taken: Set<string>, excluded: Set<string> = new Set()): string[] {
+    return addresses.filter(a => {
+        const key = a.toLowerCase();
+        if (!key || excluded.has(key) || taken.has(key)) return false;
+        taken.add(key);
+        return true;
+    });
+}
+
+interface ReplyRecipients {
+    to: string[];
+    cc: string[];
+    bcc: string[];
+    /** Addresses the original names in a header gws does not read (`CC`, `TO`, `Reply-to`) that this reply leaves off. */
+    leftOff: string[];
+}
+
+interface ReplyRead {
+    headers: Array<{ name: string; value: string }>;
+    /** The account's primary address and its From identity; reply-all leaves both out. */
+    self: string[];
+}
+
+/** The original's headers and, for a reply-all, the account's own addresses; null when any read gws itself needs fails. */
+function readReplyContext(messageId: string, replyAll: boolean, fromOption: string | undefined, credentialsFile: string, gwsBin: string): ReplyRead | null {
+    const message = gwsRead(['users', 'messages', 'get'], {
+        userId: 'me', id: messageId, format: 'metadata', metadataHeaders: ['From', 'Reply-To', 'To', 'Cc', 'Message-ID'],
+    }, credentialsFile, gwsBin);
+    const raw = (message?.payload as { headers?: unknown } | undefined)?.headers;
+    if (message?.id !== messageId || !Array.isArray(raw)) return null;
+    const headers = raw.flatMap(h => typeof h?.name === 'string' && typeof h?.value === 'string' ? [{ name: h.name as string, value: h.value as string }] : []);
+    if (!replyAll) return { headers, self: [] };
+    const primary = gwsRead(['users', 'getProfile'], { userId: 'me' }, credentialsFile, gwsBin)?.emailAddress;
+    if (typeof primary !== 'string' || !primary) return null;
+    // With no --from, gws sends as the default send-as identity. It goes on without one when its own read of that list
+    // fails, which a failed read here does not show, so that case is left unresolved.
+    let identity: string | undefined = addressList(fromOption)[0];
+    if (identity === undefined) {
+        const sendAs = gwsRead(['users', 'settings', 'sendAs', 'list'], { userId: 'me' }, credentialsFile, gwsBin)?.sendAs;
+        if (!Array.isArray(sendAs)) return null;
+        const fallback = sendAs.find(e => e?.isDefault === true)?.sendAsEmail;
+        identity = typeof fallback === 'string' ? mailboxAddress(fallback) : undefined;
+    }
+    return { headers, self: [mailboxAddress(primary), ...(identity ? [identity] : [])] };
+}
+
+/** Who gws sends a reply to, from the original's headers and the command's options; null when gws would refuse to build it. */
+function replyRecipients(
+    replyAll: boolean,
+    read: ReplyRead,
+    options: { to?: string; cc?: string; bcc?: string; remove?: string },
+): ReplyRecipients | { unresolved: string } {
+    let from = '';
+    let messageIdHeader = '';
+    const lists = { replyTo: '', to: '', cc: '' };
+    const unread: Array<{ replyTo: boolean; addresses: string[] }> = [];
+    for (const { name, value } of read.headers) {
+        if (name === 'From') from = value;
+        else if (name === 'Message-ID' || name === 'Message-Id') messageIdHeader = value;
+        else if (Object.hasOwn(READ_HEADERS, name)) {
+            const key = READ_HEADERS[name];
+            if (value) lists[key] = lists[key] ? `${lists[key]}, ${value}` : value;
+        } else if (/^(?:reply-to|to|cc)$/i.test(name)) {
+            unread.push({ replyTo: /^reply-to$/i.test(name), addresses: addressList(value) });
+        }
+    }
+    const messageIdBare = messageIdHeader.trim().replace(/^<(.*)>$/, '$1');
+    if (!from || !messageIdBare) return { unresolved: 'gws would refuse to build this reply: the original has no From or Message-ID header it reads' };
+    const sender = mailboxAddress(from);
+    const replyTo = addressList(lists.replyTo);
+    const origTo = addressList(lists.to);
+    const origCc = addressList(lists.cc);
+    // gws falls back to From only when there is no Reply-To text at all, not when the text holds no address.
+    const answerTo = lists.replyTo ? replyTo : [sender];
+    const extraCc = addressList(options.cc);
+    let to: string[];
+    let cc: string[];
+    const excluded = new Set<string>();
+    const selfReply = replyAll && read.self.some(a => a.toLowerCase() === sender.toLowerCase());
+    if (replyAll) {
+        for (const a of [...addressList(options.remove), ...read.self]) if (a) excluded.add(a.toLowerCase());
+        const inTo = new Set<string>();
+        to = firstOnly(selfReply ? origTo : answerTo, inTo, excluded);
+        cc = firstOnly([...(selfReply ? origCc : [...origTo, ...origCc]), ...extraCc], new Set(inTo), excluded);
+    } else {
+        to = answerTo;
+        cc = extraCc;
+    }
+    const taken = new Set<string>();
+    const final = {
+        to: firstOnly([...to, ...addressList(options.to)], taken),
+        cc: firstOnly(cc, taken),
+        bcc: firstOnly(addressList(options.bcc), taken),
+    };
+    if (!final.to.length) return { unresolved: 'gws would refuse to build this reply: no To recipient remains' };
+    // A plain reply never takes the original To or Cc, and a reply to the account's own message never takes its Reply-To.
+    const missed = unread.filter(u => replyAll ? !(selfReply && u.replyTo) : u.replyTo).flatMap(u => u.addresses);
+    const leftOff = firstOnly(missed, new Set(taken), excluded);
+    if ([...final.to, ...final.cc, ...final.bcc, ...leftOff].some(a => !PLAIN_ADDRESS.test(a) || HIDDEN_OR_BIDI.test(a) || /\p{Cc}/u.test(a))) {
+        return { unresolved: 'an address on the original is not a plain address this card can show as written' };
+    }
+    return { ...final, leftOff };
+}
+
 // ── Sending a stored draft ──
 // `gws gmail users drafts send --json '{"id":"…"}'` names only the draft, so the card reads the draft itself.
 
 // The image's root-owned gws: the hook's PATH may differ from the send's, and a gws the agent could write might describe
 // one draft while another is sent.
 const GWS_BIN = '/pnpm/gws';
-const DRAFT_READ_TIMEOUT_MS = 4000;
-const DRAFT_READ_MAX_BYTES = 8 * 1024 * 1024;
+const GWS_READ_TIMEOUT_MS = 4000;
+const GWS_READ_MAX_BYTES = 8 * 1024 * 1024;
 const DRAFT_PREVIEW_CHARS = 400;
-const DRAFT_ID = /^[A-Za-z0-9_-]{1,256}$/;
+const GMAIL_ID = /^[A-Za-z0-9_-]{1,256}$/;
 const GMAIL_USER_ID = /^[\w.@+-]{1,256}$/;
 
 interface DraftPart {
@@ -1066,29 +1244,34 @@ function draftSendTarget(shape: SendShape | null): Omit<DraftBinding, 'messageId
     }
     const userId = jsonObjectWithKeys(given.get('--params'), ['userId'])?.userId;
     const draftId = jsonObjectWithKeys(given.get('--json'), ['id'])?.id;
-    if (typeof userId !== 'string' || !GMAIL_USER_ID.test(userId) || typeof draftId !== 'string' || !DRAFT_ID.test(draftId)) return null;
+    if (typeof userId !== 'string' || !GMAIL_USER_ID.test(userId) || typeof draftId !== 'string' || !GMAIL_ID.test(draftId)) return null;
     return { draftId, userId, credentialsFile };
 }
 
-/** Read a draft through gws, bounded in time and size; null on any failure, or a reply for another draft. */
-function readDraft(target: Omit<DraftBinding, 'messageId'>, format: 'full' | 'minimal', gwsBin: string): StoredDraft | null {
+/** One read-only Gmail API call through gws with the send's credentials, bounded in time and size; null on any failure. */
+function gwsRead(method: string[], params: Record<string, unknown>, credentialsFile: string, gwsBin: string): Record<string, unknown> | null {
     try {
-        const params = JSON.stringify({ userId: target.userId, id: target.draftId, format });
-        const run = spawnSync(gwsBin, ['gmail', 'users', 'drafts', 'get', '--params', params], {
-            env: { ...process.env, GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE: target.credentialsFile },
+        const run = spawnSync(gwsBin, ['gmail', ...method, '--params', JSON.stringify(params)], {
+            env: { ...process.env, GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE: credentialsFile },
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'ignore'],
-            timeout: DRAFT_READ_TIMEOUT_MS,
+            timeout: GWS_READ_TIMEOUT_MS,
             killSignal: 'SIGKILL',
-            maxBuffer: DRAFT_READ_MAX_BYTES,
+            maxBuffer: GWS_READ_MAX_BYTES,
         });
         if (run.error || run.status !== 0 || typeof run.stdout !== 'string') return null;
-        const draft = JSON.parse(run.stdout) as Partial<StoredDraft> | null;
-        if (draft?.id !== target.draftId || typeof draft.message?.id !== 'string' || !draft.message.id) return null;
-        return draft as StoredDraft;
+        const value = JSON.parse(run.stdout) as unknown;
+        return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
     } catch {
         return null;
     }
+}
+
+/** Read a draft through gws; null on any failure, or a reply for another draft. */
+function readDraft(target: Omit<DraftBinding, 'messageId'>, format: 'full' | 'minimal', gwsBin: string): StoredDraft | null {
+    const draft = gwsRead(['users', 'drafts', 'get'], { userId: target.userId, id: target.draftId, format }, target.credentialsFile, gwsBin) as Partial<StoredDraft> | null;
+    if (draft?.id !== target.draftId || typeof draft.message?.id !== 'string' || !draft.message.id) return null;
+    return draft as StoredDraft;
 }
 
 /** A text part in the charset its Content-Type declares (UTF-8 when none); null when that can't be done exactly. */

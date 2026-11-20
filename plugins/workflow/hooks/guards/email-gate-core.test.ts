@@ -1,6 +1,6 @@
 import { afterAll, describe, test, expect } from 'bun:test';
 import { createHash } from 'crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -873,6 +873,16 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
         const v = evaluateEmailSend(command, INTERACTIVE);
         return [command, v.action, v.deny === SEND_ALONE, v.pureSend === true];
     };
+    // A gws that answers a reply's read of the original message, whatever its id.
+    const originalReader = join(root, 'gws-original');
+    writeFileSync(originalReader, [
+        '#!/bin/sh',
+        'id=$(printf \'%s\' "$*" | sed -n \'s/.*"id":"\\([^"]*\\)".*/\\1/p\')',
+        'printf \'{"id":"%s","payload":{"headers":[{"name":"From","value":"pat@example.com"},{"name":"Message-ID","value":"<o@example.com>"}]}}\' "$id"',
+        '',
+    ].join('\n'));
+    chmodSync(originalReader, 0o755);
+    const READS_ORIGINAL = { ...INTERACTIVE, gwsBin: originalReader };
 
     test('the 11-04 bundle (draft file, export, body and reply in one command) is refused with the way to split it', () => {
         const v = evaluateEmailSend([DRAFT, CREDS, QUOTED_BODY, REPLY].join('\n'), INTERACTIVE);
@@ -887,9 +897,10 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             `${CREDS}\n${QUOTED_BODY}\n${REPLY}`,
             `${HEREDOC_BODY}\n${PREFIX} ${REPLY} 2>&1 | tail -7`,
         ]) {
-            const v = evaluateEmailSend(command, INTERACTIVE);
+            const v = evaluateEmailSend(command, READS_ORIGINAL);
             expect([command, v.action, v.deny, v.pureSend]).toEqual([command, 'gate', undefined, true]);
             expect(v.summary).toContain('From: team@example.com');
+            expect(v.summary).toContain('To: pat@example.com');
             expect(v.summary).toContain('Cc: lee@example.com');
             expect(v.summary).toContain('Message:\n```\nHi Pat,\n\nCan you confirm the file works?\n```');
         }
@@ -918,7 +929,7 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
             [`${CREDS}\nBODY='  indented first line'\n${withBody('"$BODY"')}`, false],
             [envelopeInBody, true],
         ] as Array<[string, boolean]>) {
-            const v = evaluateEmailSend(command, INTERACTIVE);
+            const v = evaluateEmailSend(command, READS_ORIGINAL);
             expect([command, v.pureSend === true, /Cc: hidden@example\.com|Subject: Receipt/.test(v.summary ?? '')]).toEqual([command, pure, false]);
         }
     });
