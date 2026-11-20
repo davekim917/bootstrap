@@ -533,12 +533,13 @@ gws gmail +send --to sam@example.com --subject "Export" --body "$BODY" --html`;
     });
 
     test.each([
-        { verb: '+reply', extra: '', to: 'the original sender (or its Reply-To address)' },
-        { verb: '+reply-all', extra: '', to: 'the original sender (or its Reply-To address) and everyone on To/Cc' },
-        { verb: '+reply-all', extra: '--to new@example.com', to: 'the original sender (or its Reply-To address) and everyone on To/Cc, plus new@example.com' },
-    ])('$verb $extra says who receives the reply', ({ verb, extra, to }) => {
+        { verb: '+reply', extra: '', to: 'not resolved' },
+        { verb: '+reply-all', extra: '', to: 'not resolved' },
+        { verb: '+reply-all', extra: '--to new@example.com', to: 'not resolved, plus new@example.com' },
+    ])('$verb $extra with no credentials file to read the original says who receives the reply is not resolved', ({ verb, extra, to }) => {
         const v = evaluateEmailSend(`gws gmail ${verb} --message-id 18f1 --body "Thanks" ${extra}`, INTERACTIVE);
         expect(v.summary).toContain(`To: ${to}`);
+        expect(v.summary?.split('\n')[0]).toStartWith('⚠️ Recipients not resolved:');
         expect(v.label).not.toContain('unknown recipient');
     });
 
