@@ -126,6 +126,18 @@ describe('a reply card lists the addresses gws sends to', () => {
             lines: ['To: sender@example.org, bob@example.org, new@example.org', 'Cc: john@example.org', 'Bcc: audit@example.org'],
         },
         {
+            name: 'reply-all sent --from an alias: that alias counts as the account, so a message from it goes to the original To',
+            verb: '+reply-all' as const, extra: '--from sales@example.com',
+            headers: [['From', 'sales@example.com'], ['To', 'alice@example.org, sales@example.com'], ['Cc', 'carol@example.org'], ['Message-ID', '<m@x>']] as Header[],
+            lines: ['To: alice@example.org', 'Cc: carol@example.org'],
+        },
+        {
+            name: 'reply: a Reply-To that holds no address is still taken over From, leaving only what --to adds',
+            verb: '+reply' as const, extra: '--to new@example.org',
+            headers: [['From', 'alice@example.org'], ['Reply-To', '<>'], ['Message-ID', '<m@x>']] as Header[],
+            lines: ['To: new@example.org'],
+        },
+        {
             name: 'reply: Reply-To or else From, plus only what the command adds',
             verb: '+reply' as const, extra: '--cc lee@example.org',
             headers: [['From', 'alice@example.org'], ['Reply-To', 'desk@example.org'], ['To', 'team@example.com, bob@example.org'], ['Cc', 'carol@example.org'], ['Message-ID', '<m@x>']] as Header[],
@@ -177,11 +189,14 @@ describe('when the gate cannot work out who a reply reaches', () => {
         { why: 'the original cannot be read', verb: '+reply-all' as const, stub: () => gws({ profile: 'team@example.com' }) },
         { why: 'the account\'s own address cannot be read', verb: '+reply-all' as const, stub: () => gws({ headers: OUTLOOK_THREAD }) },
         { why: 'gws itself would refuse: no Message-ID header', verb: '+reply' as const, stub: () => gws({ headers: [['From', 'alice@example.org']] }) },
+        { why: 'the send-as identity cannot be read, which gws may still read', verb: '+reply-all' as const, stub: () => gws({ headers: OUTLOOK_THREAD, profile: 'team@example.com' }) },
+        { why: 'an address that is not plain (a hidden option, a bidi override)', verb: '+reply-all' as const, stub: () => gws({ headers: [['From', 'alice@example.org'], ['CC', 'x <a@example.org --bcc z@example.net>'], ['To', 'bob\u{202E}@example.org'], ['Message-ID', '<m@x>']], profile: 'team@example.com', defaultSendAs: 'team@example.com' }) },
     ])('$why: the card says so first, still asks, and never leaves the command off', ({ verb, stub }) => {
         const v = card(reply(verb, '--to added@example.org --cc extra@example.org'), stub());
         const lines = (v.summary ?? '').split('\n');
         expect([v.action, v.deny, v.pureSend, v.fullSummary]).toEqual(['gate', undefined, undefined, undefined]);
         expect(lines[0]).toMatch(NOT_RESOLVED);
+        expect(v.label).toBe(`Email ${verb.slice(1)} (recipients not resolved)`);
         expect(recipientLines(v.summary)).toEqual(verb === '+reply-all'
             ? ['To: not resolved, plus added@example.org', 'Cc: not resolved, plus extra@example.org']
             : ['To: not resolved, plus added@example.org', 'Cc: extra@example.org']);

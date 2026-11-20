@@ -438,11 +438,12 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const replyRead = isReply && exact && messageId && GMAIL_ID.test(messageId) && replyCreds?.startsWith('/')
         ? readReplyContext(messageId, replyAll, alias, replyCreds, env.gwsBin ?? GWS_BIN)
         : null;
-    const reached = replyRead ? replyRecipients(replyAll, replyRead, { to: flagTo, cc, bcc, remove: removed }) : null;
+    const resolution = replyRead ? replyRecipients(replyAll, replyRead, { to: flagTo, cc, bcc, remove: removed }) : null;
+    const reached = resolution && !('unresolved' in resolution) ? resolution : null;
     const unresolvedWhy = !isReply || reached ? null
         : !exact ? 'this command is not a send the gate can read exactly'
         : !replyCreds?.startsWith('/') ? 'the command names no absolute GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE to read the original with'
-        : replyRead ? 'gws would refuse to build this reply: the original has no From or Message-ID header it reads, or no To recipient remains'
+        : resolution && 'unresolved' in resolution ? resolution.unresolved
         : `the gate could not read Gmail message ${code(inline(messageId ?? '(none)'))} and the account's own addresses with the send's credentials`;
     const plus = (known: string | undefined) => known ? `not resolved, plus ${known}` : 'not resolved';
     const to = inline(reached ? reached.to.join(', ')
@@ -460,7 +461,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         : [];
     const label = gwsWords > 1
         ? `Email: ${gwsWords} gws calls; addresses named: ${named.join(', ') || 'none found'}`
-        : (subject ? `Email ${action} to ${to}: "${inline(subject)}"` : `Email ${action} to ${to}`)
+        : `Email ${action}${unresolvedWhy ? ' (recipients not resolved)' : ` to ${to}`}${subject ? `: "${inline(subject)}"` : ''}`
             + (generatedWord ? ' (check the command)' : probeFlag ? ` (${probeFlag} — check the command)` : '');
 
     const lines: string[] = [];
@@ -1038,6 +1039,8 @@ function sendShape(command: string): SendShape | null {
 // headers spelled exactly From, Reply-To, To and Cc; Gmail keeps the sender's spelling, and Outlook writes `CC`.
 
 const READ_HEADERS: Record<string, 'replyTo' | 'to' | 'cc'> = { 'Reply-To': 'replyTo', To: 'to', Cc: 'cc' };
+// Addresses from a third party's headers reach the card and the refusal's suggested option, so only plain ones are shown.
+const PLAIN_ADDRESS = /^[^\s@<>()[\],;:"'`|\\$&*?!{}]+@[^\s@<>()[\],;:"'`|\\$&*?!{}]+$/;
 
 /** gws's address-list split: commas outside double quotes, with a backslash escaping a quote inside them. */
 function splitMailboxList(header: string): string[] {
@@ -1111,11 +1114,13 @@ function readReplyContext(messageId: string, replyAll: boolean, fromOption: stri
     if (!replyAll) return { headers, self: [] };
     const primary = gwsRead(['users', 'getProfile'], { userId: 'me' }, credentialsFile, gwsBin)?.emailAddress;
     if (typeof primary !== 'string' || !primary) return null;
-    // With no --from, gws sends as the default send-as identity, and goes on without one when that list can't be read.
+    // With no --from, gws sends as the default send-as identity. It goes on without one when its own read of that list
+    // fails, which a failed read here does not show, so that case is left unresolved.
     let identity: string | undefined = addressList(fromOption)[0];
     if (identity === undefined) {
         const sendAs = gwsRead(['users', 'settings', 'sendAs', 'list'], { userId: 'me' }, credentialsFile, gwsBin)?.sendAs;
-        const fallback = Array.isArray(sendAs) ? sendAs.find(e => e?.isDefault === true)?.sendAsEmail : undefined;
+        if (!Array.isArray(sendAs)) return null;
+        const fallback = sendAs.find(e => e?.isDefault === true)?.sendAsEmail;
         identity = typeof fallback === 'string' ? mailboxAddress(fallback) : undefined;
     }
     return { headers, self: [mailboxAddress(primary), ...(identity ? [identity] : [])] };
@@ -1126,7 +1131,7 @@ function replyRecipients(
     replyAll: boolean,
     read: ReplyRead,
     options: { to?: string; cc?: string; bcc?: string; remove?: string },
-): ReplyRecipients | null {
+): ReplyRecipients | { unresolved: string } {
     let from = '';
     let messageIdHeader = '';
     const lists = { replyTo: '', to: '', cc: '' };
@@ -1142,12 +1147,13 @@ function replyRecipients(
         }
     }
     const messageIdBare = messageIdHeader.trim().replace(/^<(.*)>$/, '$1');
-    if (!from || !messageIdBare) return null;
+    if (!from || !messageIdBare) return { unresolved: 'gws would refuse to build this reply: the original has no From or Message-ID header it reads' };
     const sender = mailboxAddress(from);
     const replyTo = addressList(lists.replyTo);
     const origTo = addressList(lists.to);
     const origCc = addressList(lists.cc);
-    const answerTo = replyTo.length ? replyTo : [sender];
+    // gws falls back to From only when there is no Reply-To text at all, not when the text holds no address.
+    const answerTo = lists.replyTo ? replyTo : [sender];
     const extraCc = addressList(options.cc);
     let to: string[];
     let cc: string[];
@@ -1168,10 +1174,13 @@ function replyRecipients(
         cc: firstOnly(cc, taken),
         bcc: firstOnly(addressList(options.bcc), taken),
     };
-    if (!final.to.length) return null;
+    if (!final.to.length) return { unresolved: 'gws would refuse to build this reply: no To recipient remains' };
     // A plain reply never takes the original To or Cc, and a reply to the account's own message never takes its Reply-To.
     const missed = unread.filter(u => replyAll ? !(selfReply && u.replyTo) : u.replyTo).flatMap(u => u.addresses);
     const leftOff = firstOnly(missed, new Set(taken), excluded);
+    if ([...final.to, ...final.cc, ...final.bcc, ...leftOff].some(a => !PLAIN_ADDRESS.test(a) || HIDDEN_OR_BIDI.test(a))) {
+        return { unresolved: 'an address on the original is not a plain address this card can show as written' };
+    }
     return { ...final, leftOff };
 }
 
