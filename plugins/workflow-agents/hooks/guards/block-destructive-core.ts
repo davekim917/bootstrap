@@ -2088,6 +2088,7 @@ export function renderUnknownFlag(args: string[]): { command: string; flag: stri
         }
         const at = a.startsWith('--') ? a.indexOf('=') : -1;
         const flag = a.startsWith('--') ? (at < 0 ? a : a.slice(0, at)) : RENDER_SHORT.get(a[1]) ?? a.slice(0, 2);
+        if (flag === '--help' || flag === '-h') return null;
         if (command === null && !(flag in RENDER_GLOBAL)) {
             command = renderCommandOf([...words]);
             if (command === null) return null;
@@ -7058,7 +7059,7 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
     const onDev = cmd.name === 'render' && reason.startsWith(RENDER_DEV_HOLD);
     const described: [effect: string, loss: string] | undefined = onDev
         ? ['Changes the Render dev resource named in the step below.', "some changes, such as a deleted database, can't be undone"]
-        : cmd.name === 'render' && reason.startsWith(RENDER_READ_HOLD)
+        : cmd.name === 'render' && reason.includes(RENDER_READ_HOLD)
         ? renderReadEffect(cmd, reason)
         : cmd.name === 'terraform' && targets.length
         ? [`Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`, "anything it destroys can't be brought back"]
@@ -7214,8 +7215,9 @@ export function describeGate(command: string, reason: string, cwd: string = curr
     try {
         const commands = extractCommands(command);
         if (commands[0]?.script) commands[0].script.cwd = cwd;
-        const gated = [...gatedSteps(commands, command, cwd, isLabSession(), false)];
-        if (gated.length === 0) return fallback;
+        const found = [...gatedSteps(commands, command, cwd, isLabSession(), false)];
+        if (found.length === 0) return fallback;
+        const gated = [...found.filter(s => !heldRead(s)), ...found.filter(heldRead)];
         const view = viewShell(command);
 
         const evaluated = (cmd: ResolvedCommand, unresolved: Set<string>): ResolvedCommand => {
@@ -7285,7 +7287,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
         if (commands.length > gated.length) {
             lines.push('', `Approving runs the whole command (${commands.length} steps), not only the step${gated.length > 1 ? 's' : ''} described here.`);
         }
-        const prodChange = (step: GatedStep): boolean => onProduction(step) && !(step.cmd.name === 'render' && step.reason.startsWith(RENDER_READ_HOLD));
+        const prodChange = (step: GatedStep): boolean => onProduction(step) && !heldRead(step);
         if (gated.some(prodChange) && !lines[0].includes('treat it as production')) lines.unshift('Treat this as production: its target is not listed as dev.', '');
         lines.push(`Guard rule: ${clip(oneLine(reason), 200)}`);
         return { label: clip(label, CARD_LABEL_MAX_CHARS), summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
@@ -7987,6 +7989,8 @@ export function runNanoclawGate(
 }
 
 const heldOnDev = (step: GatedStep): boolean => step.cmd === step.outer && renderDevHeld(step.cmd) !== null;
+
+const heldRead = (step: GatedStep): boolean => step.cmd.name === 'render' && step.reason.includes(RENDER_READ_HOLD);
 
 const onProduction = (step: GatedStep): boolean => step.reason.includes(CLIENT_PROGRAM_GATE)
     || (!heldOnDev(step) && (step.cmd.name === 'render' || step.reason.includes(RENDER_CHANGE_REASON) || /\brender\b/.test(step.cmd.raw)));

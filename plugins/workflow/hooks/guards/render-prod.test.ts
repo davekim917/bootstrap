@@ -904,6 +904,7 @@ describe('a Render read with a flag the CLI does not take', () => {
         `render services update ${PROD} --bogus`,
         `render jobs --bogus list ${PROD}`,
         `render logs -r $SRV --bogus`,
+        `render logs -r ${PROD} --help=false -o json`,
         `render services delete ${PROD} --confirm; render logs -r ${PROD} --bogus`,
     ])('%s keeps its production gate', command => {
         expect(verdict(command)).toBe('gate');
@@ -915,7 +916,8 @@ describe('a held Render read says it is a read', () => {
     test.each([
         [`render jobs list ${PROD}`, 'interactive menu', 'not listed as dev'],
         [`render jobs list ${DEV} --confirm`, 'interactive menu', 'Its target is listed as dev.'],
-        ['render logs -r $SRV --bogus', "can't account for every word", ''],
+        ['render logs -r $SRV --bogus', "can't account for every word", 'reads from Render'],
+        [`xargs -I{} render jobs list {} < /tmp/ids`, 'interactive menu', 'reads from Render'],
     ])('%s', (command, why, where) => {
         const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
         expect(action).toBe('gate');
@@ -930,8 +932,10 @@ describe('a held Render read says it is a read', () => {
         expect(summary).not.toContain('Treat this as production');
     });
 
-    test('a Render change keeps the production wording', () => {
-        const command = `render services delete ${PROD} --confirm`;
+    test.each([
+        `render services delete ${PROD} --confirm`,
+        `render jobs list ${PROD}; render services delete ${PROD} --confirm`,
+    ])('a Render change keeps the production wording: %s', command => {
         const { summary } = describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp');
         expect(summary).toContain('not listed as dev, so treat it as production');
         expect(summary).toContain("such as a deleted database, can't be undone");
