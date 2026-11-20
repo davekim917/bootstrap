@@ -1006,7 +1006,11 @@ for (const contractPath of [
   if (forbidden.length > 0) {
     fail(`${contractPath}: cross-model review must keep the read-only Codex sandbox and 60-minute ceiling (found ${forbidden.join(', ')})`);
   }
-  const unpinned = (content ?? '').split('\n').filter((line) => /^codex exec\b/.test(line.trim()) && !/\s-m sol(\s|$)/.test(line));
+  const unpinned = (content ?? '').split('\n').filter((line) => {
+    if (!/^codex exec\b/.test(line.trim())) return false;
+    const models = [...line.replace(/\s#.*$/, '').matchAll(/\s-m\s+(\S+)/g)].map((m) => m[1]);
+    return models.length === 0 || models.some((model) => model !== 'sol');
+  });
   if (unpinned.length > 0) {
     fail(`${contractPath}: every Codex review command must name the Sol family with -m sol, since Codex's own default can be a small tier and a pinned id goes stale (found ${unpinned.join(' | ')})`);
   }
