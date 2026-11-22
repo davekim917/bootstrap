@@ -48,8 +48,8 @@ In an agent-built codebase that means, concretely:
   do. The perfect answer to the wrong question is still wrong.
 - A constraint you inherited from your own earlier turn is the most suspect class of
   all, because it arrives looking like a fact.
-- "Requirements from smart people are the most dangerous, because people are less
-  likely to question them." The operator and the client included. Bring evidence, not
+- In Isaacson's rendering: "Requirements from smart people are the most dangerous,
+  because people are less likely to question them." The operator and the client included. Bring evidence, not
   deference.
 
 Physics is the only immutable rule. In software, the immutables are: what the data

@@ -5,7 +5,7 @@ Musk's own first-person accounts are the primary sources:
 - **Starbase tour, 2021**: Everyday Astronaut, "Starbase Tour with Elon Musk [PART 1 // Summer 2021]", 2021-08-03, https://www.youtube.com/watch?v=t705r8ICkRw. Quotes are from the video's caption track.
 - **Lex Fridman Podcast #438, 2024**: 2024-08-02, official transcript at https://lexfridman.com/elon-musk-and-neuralink-team-transcript/ (00:44:08–00:48:31).
 
-Walter Isaacson's *Elon Musk* (Simon & Schuster, 2023) names it "the algorithm". Book lines below are quoted from reproductions of the passage (philmohun.com/elon, 2023-09-16), not checked against a printed copy; they are marked *(book)*.
+Walter Isaacson's *Elon Musk* (Simon & Schuster, 2023) names it "the algorithm". Book lines below are quoted from reproductions of the passage (philmohun.com/elon, 2023-09-16), not checked against a printed copy; they are marked *(book)*. Isaacson quotes Musk directly on saying it "to an annoying degree"; the commandments that follow are Isaacson's rendering in Musk's voice, not a quotation, and are marked *(book, Isaacson's rendering)*.
 
 Use this file when answering a direct "what would Elon say", so the answer quotes what he actually said. Judgment lives in `../SKILL.md`; this is the quote bank.
 
@@ -23,11 +23,11 @@ The steps, as he lists them on the Starbase tour: make your requirements less du
 
 > "The requirements are always dumb to some degree. So, you want to start off by reducing the number of requirements, and no matter how smart the person is who gave you those requirements, they're still dumb to some degree. You have to start there, because, otherwise, you could get the perfect answer to the wrong question." *(Lex, 00:44:08)*
 
-> "Requirements from smart people are the most dangerous, because people are less likely to question them. Always do so, even if the requirement came from me." *(book)*
+> "Requirements from smart people are the most dangerous, because people are less likely to question them. Always do so, even if the requirement came from me." *(book, Isaacson's rendering)*
 
 > "Whatever requirement or constraint you have, it must come with a name, not a department. 'Cause you can't ask the departments, you have to ask a person." *(Starbase tour, 16:00)*
 
-> "You need to know the name of the real person who made that requirement." *(book)*
+> "You need to know the name of the real person who made that requirement." *(book, Isaacson's rendering)*
 
 ### Step 2 — try very hard to delete the part or process
 
@@ -51,16 +51,16 @@ The 10% is a floor in every version: the Starbase tour and the book say "at leas
 
 > "And then, the fifth thing is to automate it. I've gone backwards so many times where I've automated something, sped it up, simplified it, and then deleted it. And I got tired of doing that." *(Lex, 00:48:09)*
 
-> "Yes, excessive automation at Tesla was a mistake. To be precise, my mistake. Humans are underrated." *(X, 2018-04-13, @elonmusk)*
+> "Yes, excessive automation at Tesla was a mistake. To be precise, my mistake. Humans are underrated." *(Elon Musk on X, 2018-04-13)*
 
-> "The big mistake in Nevada and at Fremont was that I began by trying to automate every step. We should have waited until all the requirements had been questioned, parts and processes deleted, and the bugs were shaken out." *(book)*
+> "The big mistake in Nevada and at Fremont was that I began by trying to automate every step. We should have waited until all the requirements had been questioned, parts and processes deleted, and the bugs were shaken out." *(book, Isaacson's rendering)*
 
 ---
 
 ## § Adjacent principles
 
 - **The idiot index**: a finished part's cost divided by the cost of its raw material *(book, as summarised in reviews)*. A high ratio points at the process rather than the physics.
-- **"The best part is no part, the best process is no process."** *(Starship update, Boca Chica, 2019-09-28, as reported by Spaceflight Now)*
+- **"The best part is no part, the best process is no process."** *(Starship update, Boca Chica, 2019-09-28, as reported by Spaceflight Now: https://spaceflightnow.com/2019/09/29/elon-musk-wants-to-move-fast-with-spacexs-starship/)*
 - **"If a schedule's long, it's wrong, if it's tight, it's right."** *(same event and report)*
 - **First principles over analogy**: reason from what the problem requires, not from what the previous version did. This is a theme of the book, not a single quote.
 
