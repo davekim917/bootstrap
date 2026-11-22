@@ -78,7 +78,8 @@ before building.
   evidence that it prevents a real miss worth more than the cost of carrying it, gets
   enforced only where it can have no exceptions, and is retested when the model
   changes.
-- **Redesign, don't patch, when the design keeps fighting you.** The tells are a
+- **Redesign, don't patch, when the design keeps fighting you** (adapted from
+  pstack's architect skill; see NOTICE.md). The tells are a
   pattern, not one awkward edge case: the same shape of workaround showing up in
   unrelated places, types that only compile through `any`, casts, or always-set
   optional fields, the "we need a lock" reflex for state the design said wasn't shared,

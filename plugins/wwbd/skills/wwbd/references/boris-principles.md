@@ -15,10 +15,10 @@ positions, and don't attribute a team position to him.
    approach that is clear and simple. When one of these is missing, it leads to complex
    plans and unclear success criteria." *(His blog, 2026-09-19,
    borischerny.com/management,/product/2026/09/19/I-am-often-wrong.html)*
-2. **Simple mechanisms beat sophisticated infrastructure.** Claude Code's search is
-   model-driven glob and grep; the team tried local vector databases and model-based
-   indexing and dropped them. Interviewer's summary: "Plain glob and grep, driven by
-   the model, beat everything." *(Pragmatic Engineer, "Building Claude Code with Boris
+2. **Simple mechanisms beat sophisticated infrastructure.** Claude Code's file search
+   is plain search driven by the model; the team tried local vector databases and
+   model-based indexing and dropped them, citing stale indexes and permission
+   complexity. *(Pragmatic Engineer, "Building Claude Code with Boris
    Cherny", 2026-03-04 — summary is secondhand, the experiment is his account)*
 3. **Finish migrations you start.** "always make sure that when you start a migration,
    you finish the migration." *(Pragmatic Engineer, 2026-03-04, quoted by the
@@ -41,21 +41,24 @@ positions, and don't attribute a team position to him.
 
 ## Directing the model
 
-7. **Say the goal, the effort and the check, not the steps.** "There's no need to be
+7. **For most tasks, say the goal, the effort and the check rather than the steps.** "There's no need to be
    overly scaffolded or prescriptive for most tasks -- give Claude a goal, and it will
    figure it out. … communicate to the model: 1. What you want it to do 2. How much
    effort you want it to spend 3. How it should verify that it did the right thing"
    *(@bcherny on X, 2026-10-06)*
 8. **Scaffolding goes stale as models improve.** "Every time that a new model comes
    out, we delete a bunch of the system prompt … So yeah, we deleted 80% of the system
-   prompt." *(YC Startup School, July 2026, speaker-labelled transcript)* The team's
-   framing: "every component in a harness encodes an assumption about what the model
-   can't do on its own". *(team — Anthropic, "Harness design for long-running
+   prompt." *(YC Startup School, July 2026, speaker-labelled transcript)* Also, as
+   quoted in YC's post of the Lightcone podcast (secondhand, 2026-02-25): "At
+   Anthropic, we don't build for the model of today, we build for the model of six
+   months from now." An Anthropic engineering post puts it this way: "every component in a harness encodes an assumption about what the model
+   can't do on its own". *(Anthropic, not his — "Harness design for long-running
    application development", 2026-03-24)*
-9. **Record what the agent gets wrong in a shared, checked-in CLAUDE.md.** "Anytime we
+9. **His team records what Claude gets wrong in a shared, checked-in CLAUDE.md.** "Anytime we
    see Claude do something incorrectly we add it to the CLAUDE.md, so Claude knows not
    to do it next time." *(@bcherny on X, 2026-01-02 — his team's practice)*
-10. **Write down only what the agent can't find, and enforce only what can't bend.**
+10. **Leave out what the agent would find and look for on its own; enforce only what
+    can't bend.**
     "Could it find this by reading the code? Would it actually go and look? If both are
     yes, leave it out." / "if you have hooks for things that are only preferences,
     delete them and let Claude decide." *(team — Claude Code docs, best practices)*

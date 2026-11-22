@@ -5,7 +5,7 @@ Musk's own first-person accounts are the primary sources:
 - **Starbase tour, 2021**: Everyday Astronaut, "Starbase Tour with Elon Musk [PART 1 // Summer 2021]", 2021-08-03, https://www.youtube.com/watch?v=t705r8ICkRw. Quotes are from the video's caption track.
 - **Lex Fridman Podcast #438, 2024**: 2024-08-02, official transcript at https://lexfridman.com/elon-musk-and-neuralink-team-transcript/ (00:44:08–00:48:31).
 
-Walter Isaacson's *Elon Musk* (Simon & Schuster, 2023) names it "the algorithm". Book lines below are quoted from reproductions of the passage, not checked against a printed copy; they are marked *(book)*.
+Walter Isaacson's *Elon Musk* (Simon & Schuster, 2023) names it "the algorithm". Book lines below are quoted from reproductions of the passage (philmohun.com/elon, 2023-09-16), not checked against a printed copy; they are marked *(book)*.
 
 Use this file when answering a direct "what would Elon say", so the answer quotes what he actually said. Judgment lives in `../SKILL.md`; this is the quote bank.
 
@@ -16,6 +16,8 @@ Use this file when answering a direct "what would Elon say", so the answer quote
 > "I have this very basic first principles algorithm that I run kind of as a mantra, which is to first question the requirements, make the requirements less dumb." *(Lex, 00:44:08)*
 
 The steps, as he lists them on the Starbase tour: make your requirements less dumb; try very hard to delete the part or process; simplify or optimize; accelerate cycle time; automate. The book words them as "Question every requirement… Delete any part or process you can… Simplify and optimize… Accelerate cycle time… Automate." *(book)*
+
+> "I became a broken record on the algorithm… But I think it's helpful to say it to an annoying degree." *(book)*
 
 ### Step 1 — make your requirements less dumb
 
