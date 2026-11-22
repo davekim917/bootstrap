@@ -17,5 +17,5 @@ Four of the upstream tells are kept: the same workaround shape in unrelated
 code, types that need escape hatches, the "we need a lock" reflex, and callers
 that must know the abstraction's internals. The tells about special-case
 branches and deviations from an agreed sketch are left out, since this skill
-has no sketch phase. The upstream redesign steps are reduced to one sentence,
-without its references to other pstack skills.
+has no sketch phase. The upstream redesign steps are left out: the skill keeps
+the tells as evidence for choosing a redesign, not a procedure for one.

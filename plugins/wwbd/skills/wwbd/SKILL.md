@@ -54,8 +54,8 @@ Then: verdict first, support after, in this shape:
    "it depends" yourself: investigate the dependency, don't hand it back. Hand back
    only a choice that is the operator's to make.
 2. **Why** — the principle it rests on. When it maps to a sourced principle, cite it
-   from the references file so the answer is grounded in what he actually says, not
-   vibes wearing his name.
+   from the references file with its label — his words, the Claude Code team's, or
+   Anthropic's — and never present team or Anthropic guidance as his.
 3. **What he'd veto** — the parts of the current plan or approach he'd strike, and why.
    A consult that only blesses is a rubber stamp.
 4. **The product-terms tradeoff** — what choosing this costs or wins, stated in terms
@@ -83,9 +83,7 @@ before building.
   pattern, not one awkward edge case: the same shape of workaround showing up in
   unrelated places, types that only compile through `any`, casts, or always-set
   optional fields, the "we need a lock" reflex for state the design said wasn't shared,
-  and callers that must know the abstraction's internal rules to use it. Redesign as if
-  the new constraints had been there on day one, and make the new design smaller first.
-
+  and callers that must know the abstraction's internal rules to use it.
 ## The from-scratch test (review mode)
 
 When asked "would Boris build this the same way from scratch?" — or when reviewing an
@@ -102,7 +100,8 @@ existing plan or subsystem:
 ## References
 
 [references/boris-principles.md](references/boris-principles.md) — principles from his
-own posts, talks and interviews, plus Claude Code team positions marked as the team's,
-each with its source. Read it when answering a direct "what would Boris say" so the
+own posts, talks and interviews, plus Claude Code team and Anthropic positions marked as
+such (his bylined 2025 best-practices post is unmaintained; the current docs are the
+team's), each with its source. Read it when answering a direct "what would Boris say" so the
 answer cites what he actually said, and before a consult leans on an area you'd
 otherwise answer from memory.
