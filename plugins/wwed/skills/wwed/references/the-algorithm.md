@@ -7,7 +7,7 @@ Musk's own first-person accounts are the primary sources:
 
 Walter Isaacson's *Elon Musk* (Simon & Schuster, 2023) names it "the algorithm". Book lines below are quoted from reproductions of the passage (philmohun.com/elon, 2023-09-16), not checked against a printed copy; they are marked *(book)*. Isaacson quotes Musk directly on saying it "to an annoying degree"; the commandments that follow are Isaacson's rendering in Musk's voice, not a quotation, and are marked *(book, Isaacson's rendering)*.
 
-Use this file when answering a direct "what would Elon say", so the answer quotes what he actually said. Judgment lives in `../SKILL.md`; this is the quote bank.
+Use this file when answering a direct "what would Elon say": quote his own remarks as his, and the book's rendering as Isaacson's. Judgment lives in `../SKILL.md`; this is the quote bank.
 
 ---
 
@@ -15,7 +15,7 @@ Use this file when answering a direct "what would Elon say", so the answer quote
 
 > "I have this very basic first principles algorithm that I run kind of as a mantra, which is to first question the requirements, make the requirements less dumb." *(Lex, 00:44:08)*
 
-The steps, as he lists them on the Starbase tour: make your requirements less dumb; try very hard to delete the part or process; simplify or optimize; accelerate cycle time; automate. The book words them as "Question every requirement… Delete any part or process you can… Simplify and optimize… Accelerate cycle time… Automate." *(book)*
+The steps, as he lists them on the Starbase tour: make your requirements less dumb; try very hard to delete the part or process; simplify or optimize; accelerate cycle time; automate. The book words them as "Question every requirement… Delete any part or process you can… Simplify and optimize… Accelerate cycle time… Automate." *(book, Isaacson's rendering)*
 
 > "I became a broken record on the algorithm… But I think it's helpful to say it to an annoying degree." *(book)*
 

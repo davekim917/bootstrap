@@ -55,7 +55,7 @@ positions, and don't attribute a team position to him.
    quoted by Y Combinator on X from the Lightcone podcast (secondhand, 2026-02-25): "At
    Anthropic, we don't build for the model of today, we build for the model of six
    months from now." An Anthropic engineering post puts it this way: "every component in a harness encodes an assumption about what the model
-   can't do on its own". *(Anthropic, not his — "Harness design for long-running
+   can't do on its own". *(Anthropic, not his — Prithvi Rajasekaran, "Harness design for long-running
    application development", 2026-03-24,
    https://www.anthropic.com/engineering/harness-design-long-running-apps)*
 9. **His team records what Claude gets wrong in a shared, checked-in CLAUDE.md.** "Anytime we
