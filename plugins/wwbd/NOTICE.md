@@ -1,7 +1,7 @@
 # Notice
 
-The signs that a design is wrong, in the `wwbd` skill's "Two failed corrections"
-default, are adapted from pstack's `architect` skill.
+The signs that a design is wrong, in the `wwbd` skill's "Redesign, don't patch"
+criterion, are adapted from pstack's `architect` skill.
 
 - Upstream repository: https://github.com/cursor/plugins
 - Upstream path: `pstack/skills/architect/SKILL.md` (Phase E, "Scrap when the

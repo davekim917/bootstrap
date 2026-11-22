@@ -1,109 +1,66 @@
-# Boris Cherny — Sourced Principles for Directing an AI Agent
+# Boris Cherny — Sourced Principles
 
-Distilled from primary sources: the Anthropic engineering doc he authored and his team
-maintains ("Claude Code: Best practices for agentic coding", code.claude.com/docs/en/best-practices),
-his publicly shared personal CLAUDE.md, his X/Twitter threads on his own workflow, and
-the Pragmatic Engineer interview ("Building Claude Code with Boris Cherny").
-Researched 2026-08-30. Cite these when channeling him — don't invent positions.
+Sources: his own X posts, blog and recorded interviews, and the Claude Code team's docs
+and engineering posts. Team positions are marked *(team)*: they are not his words. His
+bylined April 2025 best-practices post (anthropic.com/research/claude-code-best-practices)
+has been marked no longer maintained since 2026-01-26; the docs page that replaced it
+(code.claude.com/docs/en/best-practices) is unbylined and was rewritten after
+2026-08-31. Researched 2026-11-22. Cite these when channeling him — don't invent
+positions, and don't attribute a team position to him.
 
-## Planning & scoping
+## Simplicity
 
-1. **Explore → Plan → Implement → Commit, in that order.** Separate research/planning
-   from coding so the agent doesn't solve the wrong problem — default to plan mode for
-   anything non-trivial. *(Anthropic best-practices doc)*
-2. **Skip planning when you could describe the diff in one sentence.** Plan mode has
-   overhead; it pays off when scope is uncertain, the change spans multiple files, or
-   the code is unfamiliar — not for a typo fix or a log line. *(Anthropic best-practices doc)*
-3. **For ambiguous or large features, have the agent interview you and write a spec
-   before any code**, then start a fresh session to implement it. A precise spec
-   written up front beats watching implementation happen. *(Anthropic best-practices doc)*
-4. **Finish migrations you start — never leave a codebase half-converted.** A
-   mixed-pattern codebase confuses the model exactly as much as a human reader.
-   *(Pragmatic Engineer interview)*
+1. **Define the problem, then a clear and simple approach.** "Most often, the failure
+   mode I see is (3) failure to clearly define the problem, and (4) failure to define an
+   approach that is clear and simple. When one of these is missing, it leads to complex
+   plans and unclear success criteria." *(His blog, 2026-09-19,
+   borischerny.com/management,/product/2026/09/19/I-am-often-wrong.html)*
+2. **Simple mechanisms beat sophisticated infrastructure.** Claude Code's search is
+   model-driven glob and grep; the team tried local vector databases and model-based
+   indexing and dropped them. Interviewer's summary: "Plain glob and grep, driven by
+   the model, beat everything." *(Pragmatic Engineer, "Building Claude Code with Boris
+   Cherny", 2026-03-04 — summary is secondhand, the experiment is his account)*
+3. **Finish migrations you start.** "always make sure that when you start a migration,
+   you finish the migration." *(Pragmatic Engineer, 2026-03-04, quoted by the
+   interviewer)*
 
-## Verification loops
+## Quality bar
 
-5. **Give the agent something that returns pass/fail** — a test, a build, a screenshot
-   diff. He calls this "probably the most important thing" for quality; without a
-   check, "looks done" is the only signal and the human becomes the verification loop.
-   *(Anthropic best-practices doc; his X "13 tips" thread)*
-6. **Show evidence (test output, command + result, screenshot) rather than asserting
-   success.** Reviewing evidence is faster than re-verifying, and it's the only option
-   for unattended runs. *(Anthropic best-practices doc)*
-7. **Add an adversarial review step: a fresh-context subagent grades the diff against
-   the plan/criteria, not its own reasoning.** Tell it to flag only correctness and
-   requirement gaps — a reviewer told to find gaps will always find some, and chasing
-   all of them causes over-engineering. *(Anthropic best-practices doc)*
-8. **Writer/Reviewer across two separate sessions** — one implements, a fresh second
-   session reviews for edge cases and consistency — rather than trusting the
-   implementing session to self-grade. *(Anthropic best-practices doc)*
-9. **Address root causes, not symptoms** — describe the failing behavior and
-   explicitly instruct "fix it, don't suppress the error." *(Anthropic best-practices
-   doc; his personal CLAUDE.md)*
+4. **The bar scales with blast radius.** "Prototypes and other throw-away code can be
+   treated as totally black box. If you're going to throw it away anyway, and if the
+   blast radius of it breaking is low, it doesn't need to be perfect." / "Production
+   code written by Claude should have a higher bar than if it was written by a human."
+   / "Your job is to hold the bar on code quality." *(@bcherny on X, 2026-09-11)*
+5. **Give the agent a way to verify its work.** "probably the most important thing to
+   get great results out of Claude Code -- give Claude a way to verify its work. If
+   Claude has that feedback loop, it will 2-3x the quality of the final result." *(@bcherny on X, 2026-01-02)*
+6. **Don't fix every review finding.** "A reviewer that's asked to find problems will
+   always find *something*. If you fix every finding, you end up with extra abstraction
+   layers and tests for cases that can't happen." *(team — Claude Code docs, best
+   practices)*
 
-## Prompting
+## Directing the model
 
-10. **Be specific: name the file, the test cases, the constraint, or an existing
-    pattern to follow.** "Add tests for foo.py" → "test the edge case where the user
-    is logged out; avoid mocks." *(Anthropic best-practices doc)*
-11. **Vague, open-ended prompts are fine specifically when exploring** and you can
-    afford to course-correct — they surface things you wouldn't think to ask.
-    *(Anthropic best-practices doc)*
-
-## Course-correction & context management
-
-12. **Interrupt and redirect the moment the agent drifts** — don't let it run further
-    off track; stop with context preserved and rewind if needed. *(Anthropic
-    best-practices doc)*
-13. **After two failed corrections on the same issue, stop correcting** — clear and
-    write a better initial prompt instead. A clean session with a sharper prompt
-    reliably beats a long session cluttered with failed attempts. *(Anthropic
-    best-practices doc)*
-14. **Scope investigations narrowly, or delegate them to a subagent** — an unscoped
-    "investigate X" burns the main context reading hundreds of files. *(Anthropic
-    best-practices doc)*
-15. **The "kitchen sink session" is a top failure mode** — unrelated tasks piling into
-    one context. Clear between unrelated tasks. *(Anthropic best-practices doc)*
-
-## CLAUDE.md
-
-16. **One CLAUDE.md checked into git, shared by the whole team, updated multiple times
-    a week.** *(His X "13 tips" thread; Pragmatic Engineer interview)*
-17. **Prune ruthlessly: for every line ask "would removing this cause a mistake?"** A
-    bloated CLAUDE.md causes the agent to ignore the instructions that matter; if a
-    rule is ignored, the file is usually too long, not the rule too weak. *(Anthropic
-    best-practices doc)*
-18. **When the agent makes the same mistake twice, add it to CLAUDE.md — or better, a
-    hook — instead of re-correcting every session.** *(His X "13 tips" thread; his
-    personal CLAUDE.md "self-improvement loop")*
-19. **Hooks for anything that must happen with zero exceptions** (e.g., auto-format on
-    write). CLAUDE.md is advisory; hooks are deterministic. *(Anthropic best-practices
-    doc; his X "13 tips" thread)*
-
-## Subagents & parallelism
-
-20. **Delegate research/exploration to subagents** to keep it out of the main context —
-    they run in a separate window and report back a summary. *(Anthropic
-    best-practices doc; his personal CLAUDE.md — "one task per subagent")*
-21. **Run multiple sessions in parallel (git worktrees) rather than one at a time.**
-    He personally runs ~5 in terminal tabs plus more on the web, moving work between
-    them. *(His X threads on his personal setup)*
-
-## Permissions & tooling
-
-22. **Pre-approve trusted commands via permission allowlists instead of skipping
-    permissions wholesale.** Cuts prompt fatigue without giving up control. *(His X
-    "13 tips" thread; Anthropic best-practices doc)*
-23. **Point the agent at CLI tools (`gh`, cloud CLIs) for external services rather
-    than raw APIs** — more context-efficient and avoids unauthenticated rate limits.
-    *(Anthropic best-practices doc)*
-
-## Simplicity bias
-
-24. **Prefer simple mechanisms over sophisticated infrastructure.** Claude Code's own
-    file search is model-driven grep/glob, which beat RAG/vector-DB approaches on
-    reliability. *(Pragmatic Engineer interview)*
-25. **Demand elegance on substantial changes; don't over-engineer trivial fixes.** His
-    own CLAUDE.md includes "knowing everything I know now, implement the elegant
-    solution" as a deliberate pause-and-reconsider step, reserved for real changes.
-    *(His personal CLAUDE.md — "Demand Elegance")*
+7. **Say the goal, the effort and the check, not the steps.** "There's no need to be
+   overly scaffolded or prescriptive for most tasks -- give Claude a goal, and it will
+   figure it out. … communicate to the model: 1. What you want it to do 2. How much
+   effort you want it to spend 3. How it should verify that it did the right thing"
+   *(@bcherny on X, 2026-10-06)*
+8. **Scaffolding goes stale as models improve.** "Every time that a new model comes
+   out, we delete a bunch of the system prompt … So yeah, we deleted 80% of the system
+   prompt." *(YC Startup School, July 2026, speaker-labelled transcript)* The team's
+   framing: "every component in a harness encodes an assumption about what the model
+   can't do on its own". *(team — Anthropic, "Harness design for long-running
+   application development", 2026-03-24)*
+9. **Record what the agent gets wrong in a shared, checked-in CLAUDE.md.** "Anytime we
+   see Claude do something incorrectly we add it to the CLAUDE.md, so Claude knows not
+   to do it next time." *(@bcherny on X, 2026-01-02 — his team's practice)*
+10. **Write down only what the agent can't find, and enforce only what can't bend.**
+    "Could it find this by reading the code? Would it actually go and look? If both are
+    yes, leave it out." / "if you have hooks for things that are only preferences,
+    delete them and let Claude decide." *(team — Claude Code docs, best practices)*
+11. **When it goes sideways, re-plan rather than push; after a mediocre fix, scrap it.**
+    "the moment something goes sideways, they switch back to plan mode and re-plan.
+    Don't keep pushing." / "After a mediocre fix, say: 'Knowing everything you know
+    now, scrap this and implement the elegant solution'" *(@bcherny on X,
+    2026-01-31, tips he shared from the Claude Code team)*

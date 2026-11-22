@@ -16,8 +16,8 @@ receives security, rollback, and verification depth.
 | Claude Code | `bootstrap-workflow` | 5.49.0 | The seven `team-*` skills and the safety gates |
 | Codex / OpenCode | `bootstrap-workflow-agents` | 2.49.0 | The same, runtime-neutral |
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.8.3 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
-| Claude Code / Codex | `wwbd` | 1.5.0 | Boris Cherny-inspired engineering-judgment advisory skill, invoked by name or description |
-| Claude Code / Codex | `wwed` | 1.1.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill, invoked by name or description; pairs with `wwbd` |
+| Claude Code / Codex | `wwbd` | 1.6.0 | Boris Cherny-inspired engineering-judgment advisory skill, invoked by name or description |
+| Claude Code / Codex | `wwed` | 1.2.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill, invoked by name or description; pairs with `wwbd` |
 | Claude Code / Codex | `analytics-verify` | 1.4.2 | Claim ledger, check script and independent-verifier loop for analytics and research deliverables, with an always-on nudge |
 | Claude Code / Codex | `test-audit` | 1.1.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |

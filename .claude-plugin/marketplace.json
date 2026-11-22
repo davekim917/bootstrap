@@ -20,8 +20,8 @@
     {
       "name": "wwbd",
       "source": "./plugins/wwbd",
-      "description": "What Would Boris Do \u2014 engineering-judgment advisory skill channeling Boris Cherny's published guidance, with an always-on nudge to consult it before architecture/design/build decisions.",
-      "version": "1.5.0"
+      "description": "What Would Boris Do \u2014 engineering-judgment advisory skill channeling Boris Cherny's published guidance, invoked by name or description.",
+      "version": "1.6.0"
     },
     {
       "name": "concise",
@@ -38,8 +38,8 @@
     {
       "name": "wwed",
       "source": "./plugins/wwed",
-      "description": "What Would Elon Do \u2014 execution and simplification judgment run through Musk's five-step algorithm (question the requirement, delete, simplify, accelerate, automate), fenced off from human gates and irreversible surfaces. Complements wwbd; ships an always-on nudge like it.",
-      "version": "1.1.0"
+      "description": "What Would Elon Do \u2014 execution and simplification judgment run through Musk's five-step algorithm (question the requirement, delete, simplify, accelerate, automate), fenced off from human gates and irreversible surfaces. Complements wwbd; invoked by name or description.",
+      "version": "1.2.0"
     },
     {
       "name": "analytics-verify",
