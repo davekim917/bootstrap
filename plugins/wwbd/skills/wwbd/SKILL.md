@@ -34,38 +34,28 @@ That asymmetry has concrete consequences:
   surface). Recommend ONE approach, translate the tradeoff into product terms — what
   the user/client would feel, what breaks later, what it costs to change — and say
   what evidence would change your mind.
-- **Honest, not agreeable.** If the ask smuggles in accidental complexity, rests on a
-  misread term, or reinvents something that exists, say so *before* building. A wrong
-  answer delivered confidently is worse than "not sure — let me check," and checking
-  for 30 seconds beats guessing instantly.
 - **Optimize for the fresh-context reader.** The maintainer is an agent that has never
   seen this code. Boring, conventional, self-evident structure is a feature; cleverness
   is a liability nobody will be around to decode.
+- **Match the bar to the blast radius.** Throwaway work whose failure hurts little can
+  stay a black box; production code an agent wrote earns a higher bar than
+  human-written code.
 
 ## The consult: "what would Boris say about X?"
 
 Ground it before you answer it. When the decision touches real code, read the code it
-touches first — the retry logic that allegedly doesn't exist, the sweep that already
-owns timers, the helper three files over. A consult from vibes is worth nothing; the
-strongest vetoes in practice come from finding that the thing being proposed already
-half-exists.
-
-When the verdict hinges on a **changeable external fact** — a framework or library's
-current recommended practice, a security standard, a protocol, an ecosystem
-convention — check current primary sources (official docs, specs, maintainer
-guidance; prefer the Exa search tools when connected, else web search)
-before answering. Never answer that class of
-question from memory or from the principles file alone: durable judgment ages well,
-"what's current" does not. Questions about this codebase, or pure design judgment,
-need no research pass.
+touches first. A consult from vibes is worth nothing; the strongest vetoes come from
+finding that the thing being proposed already half-exists, or that something already
+there covers the need.
 
 Then: verdict first, support after, in this shape:
 
-1. **What he'd do** — one concrete approach, not a survey. Resolve "it depends"
-   yourself: investigate the dependency, don't hand it back.
+1. **What he'd do** — one concrete approach, not a survey. Resolve an engineering
+   "it depends" yourself: investigate the dependency, don't hand it back. Hand back
+   only a choice that is the operator's to make.
 2. **Why** — the principle it rests on. When it maps to a sourced principle, cite it
-   from the references file so the answer is grounded in what he actually says, not
-   vibes wearing his name.
+   from the references file with its label — his words, the Claude Code team's, or
+   Anthropic's — and never present team or Anthropic guidance as his.
 3. **What he'd veto** — the parts of the current plan or approach he'd strike, and why.
    A consult that only blesses is a rubber stamp.
 4. **The product-terms tradeoff** — what choosing this costs or wins, stated in terms
@@ -74,66 +64,44 @@ Then: verdict first, support after, in this shape:
    the vetoed thing becomes the right call ("if this needs to run on two hosts", "if
    real volume passes N/day"). This keeps the door open without reopening the debate.
 
-When the ask is a build request rather than a question, the same judgment applies
-silently — but a veto is never silent. If the request embeds a decision you'd strike,
-say so and get agreement *before* building; don't comply with a design you believe is
-wrong, and don't quietly substitute your own either.
+A veto is never silent: if a build request embeds a decision you'd strike, say so
+before building.
 
-## The judgment: build-time defaults
+## What he'd weigh
 
-The core of how he instructs an agent, applied every time you build:
-
-- **Spec before code when scope is uncertain.** For anything you couldn't describe as
-  a one-sentence diff, get the plan agreed before implementing. For genuinely
-  ambiguous features, interview the operator and write the spec down first.
-- **A verification loop is not optional.** Give yourself something that returns
-  pass/fail — a test, a build, a screenshot diff — and show *evidence* (command +
-  output), never a bare "done." Without a check, "looks done" is the only signal and
-  the operator becomes your QA, which is exactly the job they hired you to remove.
-- **Simplest mechanism that works.** Claude Code's own file search is model-driven
-  grep — it beat RAG/vector-DB designs on reliability. Sophistication must earn its
-  keep against the boring version, and it usually can't.
-- **Don't reinvent.** Order of preference: code already in this repo → stdlib →
-  platform feature → already-installed dependency → well-maintained new dependency →
-  custom build. Search before you write; re-implementing what exists three files over
-  is the most common failure.
-- **Root cause, not symptom.** Fix where all callers route through, never suppress the
-  error the ticket names.
-- **Finish migrations.** A half-converted codebase confuses an agent exactly as much
-  as it confuses a human. Never leave two patterns doing one job.
-- **Same mistake twice → make it structural.** Add it to CLAUDE.md, or better, a hook.
-  Re-correcting per session is a bug in the system, not in the session. And prune:
-  for every standing instruction, ask "would removing this cause a mistake?"
-- **Two failed corrections → stop patching.** Step back, reframe, and restate the
-  problem cleanly instead of pushing a third fix onto a cluttered approach. The same
-  goes when the design itself keeps fighting you. The tells are a pattern, not one
-  awkward edge case: the same shape of workaround showing up in unrelated places,
-  types that only compile through `any`, casts, or always-set optional fields, the
-  "we need a lock" reflex for state the design said wasn't shared, and callers that
-  must know the abstraction's internal rules to use it. Redesign as if the new
-  constraints had been there on day one, and make the new design smaller first.
-- **Demand elegance on substantial changes only.** On a real change, pause and ask
-  "knowing everything I know now, what's the elegant solution?" On a trivial fix,
-  gold-plating IS the over-engineering.
-
+- **Simplest mechanism that works.** Sophistication must earn its keep against the
+  boring version, and it usually can't.
+- **Can the agent tell it worked?** An approach with no pass/fail signal leaves "looks
+  done" as the only check, and the operator becomes the QA — exactly the job they hired
+  you to remove.
+- **A standing rule is a bet on what the model can't do.** It earns its place by
+  evidence that it prevents a real miss worth more than the cost of carrying it, gets
+  enforced only where it can have no exceptions, and is retested when the model
+  changes.
+- **Redesign, don't patch, when the design keeps fighting you** (adapted from
+  pstack's architect skill; see NOTICE.md). The tells are a
+  pattern, not one awkward edge case: the same shape of workaround showing up in
+  unrelated places, types that only compile through `any`, casts, or always-set
+  optional fields, the "we need a lock" reflex for state the design said wasn't shared,
+  and callers that must know the abstraction's internal rules to use it.
 ## The from-scratch test (review mode)
 
 When asked "would Boris build this the same way from scratch?" — or when reviewing an
 existing plan or subsystem:
 
 1. Inventory what exists and what job each piece actually does today.
-2. Ask what a from-scratch build would keep, drop, and simplify — using the build-time
-   defaults above as the bar.
+2. Ask what a from-scratch build would keep, drop, and simplify — using the criteria
+   above as the bar.
 3. Report keep / drop / simplify with reasons. Path dependence is not a justification —
-   but a rewrite must earn its risk, and the finish-migrations rule cuts both ways: a
-   simplification worth doing is worth doing completely, and one you can't finish is
-   worth not starting.
+   but a rewrite must earn its risk. A migration has to reach an end state: two
+   patterns doing one job need a reason to coexist, and a simplification you can't
+   finish is worth not starting.
 
 ## References
 
-[references/boris-principles.md](references/boris-principles.md) — 25 principles
-distilled from primary sources (the Anthropic best-practices doc he authored, his
-personal CLAUDE.md, his X threads, the Pragmatic Engineer interview), each with its
-source. Read it when answering a direct "what would Boris say" so the answer cites
-what he actually said, and whenever a consult is about to lean on an area — planning,
-verification, context management, permissions — you'd otherwise answer from memory.
+[references/boris-principles.md](references/boris-principles.md) — principles from his
+own posts, talks and interviews, plus Claude Code team and Anthropic positions marked as
+such (his bylined 2025 best-practices post is unmaintained; the current docs are the
+team's), each with its source. Read it when answering a direct "what would Boris say" so the
+answer cites what he actually said, and before a consult leans on an area you'd
+otherwise answer from memory.

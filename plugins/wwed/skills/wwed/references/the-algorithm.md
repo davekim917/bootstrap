@@ -1,154 +1,76 @@
 # The Algorithm — sourced
 
-Primary source: Walter Isaacson, *Elon Musk* (Simon & Schuster, Sept 2023), the
-algorithm at pp. 284–286 of the hardback. Musk's own first-person rendering is quoted
-widely; the corollaries are listed in the book alongside the five steps.
+Musk's own first-person accounts are the primary sources:
 
-Use this file when answering a direct "what would Elon say" so the answer quotes what he
-actually said. Judgment lives in `../SKILL.md`; this is the quote bank.
+- **Starbase tour, 2021**: Everyday Astronaut, "Starbase Tour with Elon Musk [PART 1 // Summer 2021]", 2021-08-03, https://www.youtube.com/watch?v=t705r8ICkRw. Quotes are from the video's caption track.
+- **Lex Fridman Podcast #438, 2024**: 2024-08-02, official transcript at https://lexfridman.com/elon-musk-and-neuralink-team-transcript/ (00:44:08–00:48:31).
+
+Walter Isaacson's *Elon Musk* (Simon & Schuster, 2023) names it "the algorithm". Book lines below are quoted from reproductions of the passage (philmohun.com/elon, 2023-09-16), not checked against a printed copy; they are marked *(book)*. Isaacson quotes Musk directly on saying it "to an annoying degree"; the commandments that follow are Isaacson's rendering in Musk's voice, not a quotation, and are marked *(book, Isaacson's rendering)*.
+
+Use this file when answering a direct "what would Elon say": quote his own remarks as his, and the book's rendering as Isaacson's. Judgment lives in `../SKILL.md`; this is the quote bank.
 
 ---
 
-## § The five steps, in his words
+## § The five steps
 
-> I have everyone at my companies rigorously implement a five-step process for
-> engineering. I call it The Algorithm. I'll list the steps, then explain. **The order is
-> very important.**
->
-> 1. Make your requirements less dumb.
-> 2. Try very hard to delete the part or process.
-> 3. Simplify or optimize.
-> 4. Accelerate.
-> 5. Automate.
+> "I have this very basic first principles algorithm that I run kind of as a mantra, which is to first question the requirements, make the requirements less dumb." *(Lex, 00:44:08)*
+
+The steps, as he lists them on the Starbase tour: make your requirements less dumb; try very hard to delete the part or process; simplify or optimize; accelerate cycle time; automate. The book words them as "Question every requirement… Delete any part or process you can… Simplify and optimize… Accelerate cycle time… Automate." *(book, Isaacson's rendering)*
+
+> "I became a broken record on the algorithm… But I think it's helpful to say it to an annoying degree." *(book)*
 
 ### Step 1 — make your requirements less dumb
 
-> The first step is to question the requirements, and make your requirements less dumb.
-> You have to start there, because otherwise you could get the perfect answer to the
-> wrong question.
+> "The requirements are always dumb to some degree. So, you want to start off by reducing the number of requirements, and no matter how smart the person is who gave you those requirements, they're still dumb to some degree. You have to start there, because, otherwise, you could get the perfect answer to the wrong question." *(Lex, 00:44:08)*
 
-> Your requirements are definitely dumb. It does not matter who gave them to you.
-> Requirements from smart people are the most dangerous, because you're less likely to
-> question them. Always question requirements, even if it came from me. Everyone is wrong
-> some of the time.
+> "Requirements from smart people are the most dangerous, because people are less likely to question them. Always do so, even if the requirement came from me." *(book, Isaacson's rendering)*
 
-> Whatever requirements or constraints you do have must come from a person, not a
-> department. You can't actually ask a department… Otherwise, you could have a
-> requirement made up by an intern two years ago off the cuff, or someone who isn't even
-> at the company anymore. You must know the name of the real person who made every
-> requirement.
+> "Whatever requirement or constraint you have, it must come with a name, not a department. 'Cause you can't ask the departments, you have to ask a person." *(Starbase tour, 16:00)*
 
-Isaacson's reporting on where this came from, at SpaceX:
-
-> Whenever one of his engineers cited "a requirement" as a reason for doing something,
-> Musk would grill them: Who made that requirement? And answering "The military" or "The
-> legal department" was not good enough… All requirements should be treated as
-> recommendations, he repeatedly instructed. The only immutable ones were those decreed
-> by the laws of physics.
-
-Tim Buzza, SpaceX VP of launch and testing: *"We would talk about how we were going to
-qualify an engine or certify a fuel tank, and he would ask, 'Why do we have to do
-that?' … And we would say, 'There is a military specification that says it's a
-requirement.' And he'd reply, 'Who wrote that? Why does it make sense?'"*
+> "You need to know the name of the real person who made that requirement." *(book, Isaacson's rendering)*
 
 ### Step 2 — try very hard to delete the part or process
 
-> It sounds obvious, but people often forget to try deleting something entirely.
+> "It sounds very obvious, but people often forget to try deleting it entirely. And if you're not forced to put back at least 10% of what you delete, you're not deleting enough. Somewhat illogically, people often, most of the time, feel as though they've succeeded if they've not been forced to put things back in. But, actually, they haven't because they've been overly conservative and have left things in there that shouldn't be." *(Lex, 00:44:53)*
 
-> If you're not adding deleted things back in 10 percent of the time, you're clearly not
-> deleting enough. Somewhat illogically, people often feel they've succeeded if they are
-> not forced to put anything back in. But actually they have failed in a different way,
-> because they've been overly conservative and have left things in there that shouldn't
-> be.
+> "So, you actually have to say, 'Look, we're deliberately going to delete more than we should.' At least one in 10 things, we're going to add back in." *(Lex, 00:46:20)*
 
-Isaacson notes the word *delete* appears throughout the book as the recurring technique;
-the underlying method is **zero-based design** — every requirement starts deleted and is
-added back only once proven necessary, usually in a slimmed-down form.
+The 10% is a floor in every version: the Starbase tour and the book say "at least" too.
 
 ### Step 3 — simplify or optimize
 
-> The most common mistake of smart engineers is to optimize a thing that should not
-> exist.
-
-> Everyone was trained in high school and college to answer the question in front of
-> them. It's convergent logic. You can't tell the professor, "Your question is dumb." You
-> have to answer the question. Without knowing it, almost everyone has this mental
-> straightjacket on.
+> "I'd say the most common mistake of smart engineers is to optimize a thing that should not exist." *(Lex, 00:44:53)*
 
 ### Step 4 — accelerate cycle time
 
-> Once you're moving in the right direction, and moving efficiently… you're moving too
-> slow. Go faster. You can always make things go faster.
+> "Any given thing can be sped up. However fast you think it can be done, whatever the speed it's being done, it can be done faster. But you shouldn't speed things up until you've tried to delete it and optimize. … Speeding up something that shouldn't exist is absurd." *(Lex, 00:47:50)*
 
-> I mistakenly spent a lot of time accelerating processes that I later realized should
-> have been deleted. Speeding up something that shouldn't exist is absurd. If you're
-> digging your grave, don't dig it faster. Stop digging.
+> "Don't dig it faster, stop digging your grave." *(Starbase tour, 21:44)*
 
 ### Step 5 — automate
 
-> The big mistake I made in the Tesla factories in Nevada and Fremont was trying to
-> automate every step too early. To fix that, we had to tear hundreds of expensive robots
-> out of the production line. We put a hole in the side of the building just to remove all
-> that equipment.
+> "And then, the fifth thing is to automate it. I've gone backwards so many times where I've automated something, sped it up, simplified it, and then deleted it. And I got tired of doing that." *(Lex, 00:48:09)*
 
-> Always wait until the end of designing a process — after you have questioned all the
-> requirements and deleted unnecessary parts — before you introduce automation.
+> "Yes, excessive automation at Tesla was a mistake. To be precise, my mistake. Humans are underrated." *(Elon Musk on X, 2018-04-13)*
+
+> "The big mistake in Nevada and at Fremont was that I began by trying to automate every step. We should have waited until all the requirements had been questioned, parts and processes deleted, and the bugs were shaken out." *(book, Isaacson's rendering)*
 
 ---
 
-## § The corollaries
+## § Adjacent principles
 
-| Corollary | His words |
-|---|---|
-| Hands-on management | "All technical managers must have hands-on experience. Managers of software teams must spend at least 20% of their time coding. Otherwise, they are like a cavalry leader who can't ride a horse." |
-| Comradery is dangerous | "Comradery is dangerous. It makes it hard for people to challenge each other's work. There is a tendency not to throw a colleague under the bus. That needs to be avoided." |
-| Confident wrongness | "It's OK to be wrong. Just don't be confident and wrong." |
-| Lead from the front | "Never ask your troops to do something you're not willing to do." |
-| Skip-level | "Whenever there are problems to solve, don't just meet with your managers. Do a skip level, where you meet with the level right below your managers." |
-| Hiring | When hiring, look for attitude — skills can be taught, attitude changes take a brain transplant. |
-| Urgency | "A maniacal sense of urgency is our operating principle." |
-| Rules | "The only rules are the ones dictated by the laws of physics. Everything else is a recommendation." |
-
----
-
-## § Adjacent principles from the same book
-
-- **The idiot index** — a finished part's cost divided by the cost of its raw material. A
-  high index means the waste is in the process, not in physics. Rockets scored badly,
-  Musk argued, because of complacent adherence to military and NASA specs.
-- **The best part is no part. The best process is no process.**
-- **First principles over analogy** — reason from what the problem requires, not from what
-  the previous version did.
-- **Named responsibility** — "every part, every process, and every specification needs to
-  have a name attached."
-- **"If a schedule is long, it's wrong."**
+- **The idiot index**: a finished part's cost divided by the cost of its raw material *(book, as summarised in reviews)*. A high ratio points at the process rather than the physics.
+- **"The best part is no part, the best process is no process."** *(Starship update, Boca Chica, 2019-09-28, as reported by Spaceflight Now: https://spaceflightnow.com/2019/09/29/elon-musk-wants-to-move-fast-with-spacexs-starship/)*
+- **"If a schedule's long, it's wrong, if it's tight, it's right."** *(same event and report)*
+- **First principles over analogy**: reason from what the problem requires, not from what the previous version did. This is a theme of the book, not a single quote.
 
 ---
 
 ## § The documented failure modes
 
-These are in the record too, and they are why `SKILL.md` fences the algorithm off from
-gates, money, privacy, irreversible data, verification, and people:
+These are in the record too, and they are why `SKILL.md` fences the algorithm off from gates, money, privacy, irreversible data, verification, and people:
 
-- **Fremont / Nevada over-automation** — automating before deleting, then physically
-  removing the robots. Automation applied to an unexamined process locks the flaw in at
-  scale.
-- **Acceleration of doomed processes** — his own retrospective on speeding up Tesla lines
-  that should have been deleted.
-- **Deletions that needed adding back** — the 10% rule is not rhetoric; it describes a
-  process that routinely overshoots. Overshooting is acceptable only where adding back is
-  cheap, which is exactly why irreversible surfaces are out of scope.
-- **The mandate problem** — the algorithm as practised depends on an authority that can
-  override any team's convention. Run bottom-up without that mandate, the aggressive cuts
-  get filtered out; run bottom-up *ignoring* the mandate, you cut something that was
-  someone else's call to make.
-- **Comradery-as-liability, taken too far** — the principle is "challenge the work." It is
-  not licence for the acerbic version of conflict the book also documents.
-
-# Citations
-
-- Walter Isaacson, *Elon Musk*, Simon & Schuster, 2023 — the algorithm, pp. 284–286.
-- <https://www.the-independent.com/tech/elon-musk-algorithm-tesla-spacex-biography-b2414965.html> — page reference and corollary summary.
-- <https://bagerbach.com/books/elon-musk/> — book notes including the corollary list and the idiot index.
-- <https://thedigitalleader.substack.com/p/delete-delete-delete-the-critical> — the Buzza quotes and the zero-based-design framing.
-- <https://carymillsap.com/2023/12/08/the-algorithm/> — step-by-step rendering with Musk's retrospectives.
+- **Automating first.** In his own account, he automated, sped up and simplified processes that he later deleted. Automation applied to an unexamined process locks the flaw in at scale.
+- **Accelerating doomed processes.** "Speeding up something that shouldn't exist is absurd."
+- **Deletions that need adding back.** The 10% floor describes a process that deliberately overshoots. Overshooting is acceptable only where adding back is cheap, which is exactly why irreversible surfaces are out of scope.
+- **The mandate problem.** The algorithm as practised depends on an authority that can override any team's convention. Run bottom-up without that mandate, the aggressive cuts get filtered out; run bottom-up *ignoring* the mandate, you cut something that was someone else's call to make.
