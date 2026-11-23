@@ -99,6 +99,7 @@ describe('hook configs agy hot-reloads cannot be changed by the agent', () => {
         ['rm -rf /etc/antigravity'],
         ['cat .agents/hooks.json > .agents/backup.json'],
         ['ls 2> .agents/listing.log'],
+        ['git diff --output=.agents/review.patch'],
     ])('the shell command %s', (command) => {
         expect(reasonOf(call('run_command', { CommandLine: command }))).toMatch(/hook configs live/);
     });
@@ -140,6 +141,8 @@ describe('calls agy could otherwise use to step around the guard are denied', ()
         mkdirSync(join(root, 'docs', 'specs', 'demo'), { recursive: true });
         writeFileSync(join(root, 'docs', 'specs', 'demo', '.team-auto-active'), '');
         expect(reasonOf(call('ask_question', { Question: 'Which branch?' }, root))).toMatch(/team-auto is active/);
+        const second = { ...(call('ask_question', { Question: 'Which branch?' }) as object), workspacePaths: [scratch(), root] };
+        expect(reasonOf(second)).toMatch(/team-auto is active/);
     });
 
     test.each([

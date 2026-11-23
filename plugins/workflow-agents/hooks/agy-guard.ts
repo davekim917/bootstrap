@@ -33,8 +33,8 @@ const SUBAGENT_TOOLS = new Set(['invoke_subagent', 'define_subagent']);
 
 /** Shell commands that only read. A command line touching a protected path passes only if every step is one. */
 const READ_ONLY_COMMANDS = new Set([
-    'cat', 'ls', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'stat', 'wc', 'file',
-    'readlink', 'realpath', 'du', 'tree', 'jq', 'diff', 'sha256sum', 'md5sum', 'test', '[',
+    'cat', 'ls', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'stat', 'wc', 'file',
+    'readlink', 'realpath', 'du', 'jq', 'diff', 'sha256sum', 'md5sum', 'test', '[',
 ]);
 const READ_ONLY_GIT = new Set(['status', 'log', 'show', 'diff', 'ls-files', 'rev-parse', 'blame']);
 const PROTECTED_TEXT = /(?:^|[\s'"=:/~])(?:\.agents|\.gemini)(?:[/\s'"]|$)|\/etc\/antigravity\b/;
@@ -94,7 +94,8 @@ function readsOnly(command: string): boolean {
     }
     return steps.length > 0 && steps.every((step) =>
         !step.stdoutFiles?.length
-        && (READ_ONLY_COMMANDS.has(step.name) || (step.name === 'git' && READ_ONLY_GIT.has(step.args[0] ?? ''))));
+        && (READ_ONLY_COMMANDS.has(step.name)
+            || (step.name === 'git' && READ_ONLY_GIT.has(step.args[0] ?? '') && !step.args.some((arg) => arg.startsWith('--output')))));
 }
 
 function targetsOf(args: Args): string[] {
@@ -124,7 +125,11 @@ export function decideAgyCall(payload: unknown): Verdict {
     const base: ToolCall = { cwd, ...(typeof call.id === 'string' ? { tool_use_id: call.id } : {}) };
 
     if (name === 'ask_question') {
-        return decideToolCall({ ...base, tool_name: 'request_user_input', tool_input: args }, AGY_APPROVAL_HANDOFF);
+        for (const root of roots) {
+            const verdict = decideToolCall({ ...base, cwd: root, tool_name: 'request_user_input', tool_input: args }, AGY_APPROVAL_HANDOFF);
+            if (verdict.action === 'deny') return verdict;
+        }
+        return { action: 'allow' };
     }
     if (READ_ONLY_TOOLS.has(name)) return { action: 'allow' };
 
