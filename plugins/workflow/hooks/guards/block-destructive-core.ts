@@ -7059,7 +7059,13 @@ const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
 function renderReadEffect(cmd: ResolvedCommand, reason: string): [effect: string, loss: string] {
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
-    const where = !ids.length ? '' : ids.every(id => listed.has(id)) ? ' Its target is listed as dev.' : ' Its target is not listed as dev, so treat it as production.';
+    const on = ids.filter(id => listed.has(id));
+    const off = ids.filter(id => !listed.has(id));
+    const names = (list: string[]) => `${list.map(id => code(id)).join(', ')} ${list.length > 1 ? 'are' : 'is'}`;
+    const where = !ids.length ? ''
+        : !off.length ? ' Its target is listed as dev.'
+        : !on.length ? ' Its target is not listed as dev, so treat it as production.'
+        : ` ${names(on)} listed as dev, but ${names(off)} not, so treat it as production.`;
     const why = reason.includes('interactive menu')
         ? 'with no plain output (-o json, yaml or text) it can open an interactive menu that deploys'
         : "the guard can't account for every word on the line, so it can't rule out a different command";
