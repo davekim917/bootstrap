@@ -301,6 +301,7 @@ describe('Codex team-auto input guard', () => {
 describe('Codex protected edits', () => {
   test.each([
     ['apply_patch', { patch: '*** Update File: /workspace/repo/terraform/main.tf\n' }, /terraform\/main\.tf/],
+    ['apply_patch', { command: '*** Begin Patch\n*** Update File: .env\n@@\n-A=1\n+A=2\n*** End Patch' }, /\.env/],
     ['write_file', { path: 'C:\\repo\\infra\\terraform\\prod.tf' }, /infra\\terraform\\prod\.tf/],
     ['write_file', { path: '.env' }, /\.env/],
   ])('blocks %s input', async (toolName, toolInput, reason) => {

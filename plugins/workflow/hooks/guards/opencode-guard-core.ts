@@ -38,7 +38,59 @@ import {
 } from './block-destructive-core';
 import { evaluateEmailSend, evaluateEmailToolCall } from './email-gate-core';
 import * as emailCore from './email-gate-core';
-import { checkEditProtection, EDIT_TOOLS } from './file-protection-core';
+import {
+  checkEditProtection,
+  editPathsFromToolInput,
+  EDIT_TOOLS,
+  firstProtectedPath,
+  UNREADABLE_EDIT_TARGET,
+} from './file-protection-core';
+
+/**
+ * OpenCode built-ins that never write a file. Every other tool, MCP tools
+ * included, has its path arguments checked, so a write tool OpenCode adds later
+ * is guarded before it is listed anywhere.
+ */
+const OPENCODE_NON_WRITE_TOOLS = new Set([
+  'invalid',
+  'question',
+  'bash',
+  'read',
+  'glob',
+  'grep',
+  'task',
+  'webfetch',
+  'websearch',
+  'todowrite',
+  'skill',
+  'lsp',
+  'plan_exit',
+]);
+
+/** OpenCode's MCP tool id: the sanitized server name, `_`, the sanitized tool name. */
+const sanitizeMcpName = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+function openCodeWriteBlock(
+  tool: string,
+  args: Record<string, unknown>,
+  mcp: { prefixes: readonly string[]; localTools: ReadonlySet<string> | null },
+  cwd?: string,
+): string | null {
+  // MCP tools run outside this file system and carry their own approval gates. The hook input does not say a call
+  // is MCP, so an id OpenCode also registers locally, or any id while that list is unknown, keeps its path check.
+  if (mcp.prefixes.some((prefix) => tool.startsWith(prefix))) {
+    if (mcp.localTools && !mcp.localTools.has(tool)) return null;
+    return firstProtectedPath(editPathsFromToolInput(args), cwd);
+  }
+  if (EDIT_TOOLS.has(tool)) return checkEditProtection(tool, args, cwd);
+  if (OPENCODE_NON_WRITE_TOOLS.has(tool)) return null;
+  return firstProtectedPath(editPathsFromToolInput(args), cwd);
+}
+
+type GuardContext = {
+  directory?: string;
+  client?: { tool?: { ids?: () => Promise<{ data?: unknown }> } };
+};
 
 // ── Fail-closed core-export validation (B3) ───────────────────────────────────
 // "Present ≠ correct." A stale or partially-built core could export an email
@@ -235,26 +287,50 @@ function writeLoadReceipt(): void {
   if (dir) writeFileSync(join(dir, 'nanoclaw-guard'), new Date().toISOString());
 }
 
-export const NanoclawGuard = async (ctx?: { directory?: string }) => {
+export const NanoclawGuard = async (ctx?: GuardContext) => {
   // Fail-closed: refuse to operate against a malformed core (B3). Throws here so
   // the guard never silently fails-open on a missing evaluator or gate primitive.
   assertCoreExports();
   writeLoadReceipt();
+  let mcpPrefixes: string[] = [];
+  let localTools: ReadonlySet<string> | null = null;
+  const registeredLocalTools = async (): Promise<ReadonlySet<string> | null> => {
+    if (localTools) return localTools;
+    try {
+      const ids = (await ctx?.client?.tool?.ids?.())?.data;
+      if (Array.isArray(ids) && ids.every((id) => typeof id === 'string')) localTools = new Set(ids);
+    } catch {
+      // Unknown until a later call succeeds; MCP-shaped ids keep their path check meanwhile.
+    }
+    return localTools;
+  };
   return {
+    config: async (cfg?: { mcp?: Record<string, unknown> }) => {
+      mcpPrefixes = Object.keys(cfg?.mcp ?? {}).map((name) => `${sanitizeMcpName(name)}_`);
+    },
     'tool.execute.before': async (input: ToolBeforeInput, output: ToolBeforeOutput) => {
       // File-protection: block edits to protected paths (.env, lockfiles, .git,
       // terraform), at parity with the Claude file-protection hook. Shared core.
-      if (EDIT_TOOLS.has(input.tool)) {
-        if (process.env.SKIP_FILE_PROTECTION !== '1') {
-          const blocked = checkEditProtection(input.tool, (output.args ?? {}) as Record<string, unknown>);
-          if (blocked) {
-            throw new Error(
-              `BLOCKED: file-protection — '${blocked}' is protected from automated edits. Set SKIP_FILE_PROTECTION=1 to bypass.`,
-            );
-          }
+      if (process.env.SKIP_FILE_PROTECTION !== '1') {
+        const mcpShaped = mcpPrefixes.some((prefix) => input.tool.startsWith(prefix));
+        const blocked = openCodeWriteBlock(
+          input.tool,
+          (output.args ?? {}) as Record<string, unknown>,
+          { prefixes: mcpPrefixes, localTools: mcpShaped ? await registeredLocalTools() : localTools },
+          ctx?.directory,
+        );
+        if (blocked === UNREADABLE_EDIT_TARGET) {
+          throw new Error(
+            `BLOCKED: file-protection — no target file found in this ${input.tool} call, so it is refused. Set SKIP_FILE_PROTECTION=1 to bypass.`,
+          );
         }
-        return;
+        if (blocked) {
+          throw new Error(
+            `BLOCKED: file-protection — '${blocked}' is protected from automated edits. Set SKIP_FILE_PROTECTION=1 to bypass.`,
+          );
+        }
       }
+      if (EDIT_TOOLS.has(input.tool)) return;
       if (gateNativeEmailToolOrThrow(input.tool, output.args ?? {})) return;
       // Destructive-command gate (bash).
       if (input.tool !== 'bash') return;

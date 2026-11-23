@@ -498,3 +498,42 @@ describe('staging everything during a conflicted operation', () => {
         expect(evaluateBashCommand('git commit -am "x"', { skipGate: true, cwd: clean }).action).toBe('allow');
     });
 });
+
+describe('apply_patch run from the shell', () => {
+    const envPatch = "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: .env\n@@\n-A=1\n+A=2\n*** End Patch\nEOF";
+    test.each([
+        ['a heredoc patch to .env', envPatch, /\.env/],
+        ['applypatch after cd, adding a lockfile', "cd app && applypatch <<'EOF'\n*** Begin Patch\n*** Add File: package-lock.json\n+{}\n*** End Patch\nEOF", /package-lock\.json/],
+        ['the patch as its one argument, moving onto .env', "apply_patch '*** Begin Patch\n*** Update File: notes.txt\n*** Move to: .env\n@@\n-a\n+b\n*** End Patch'", /\.env/],
+        ['an argument beside an ordinary heredoc', "apply_patch \"$PATCH\" <<'EOF'\n*** Begin Patch\n*** Add File: notes.txt\n+x\n*** End Patch\nEOF", /apply_patch/],
+        ['a file redirect after an ordinary heredoc', "command apply_patch <<'EOF' < fixture.patch\n*** Begin Patch\n*** Add File: notes.txt\n+x\n*** End Patch\nEOF", /apply_patch/],
+        ['a piped patch', 'cat fixture.patch | apply_patch', /apply_patch/],
+        ['a double-quoted patch argument that expands', 'apply_patch "*** Begin Patch\n*** Add File: $F\n+x\n*** End Patch"', /apply_patch/],
+        ['a relative path after cd terraform', "cd terraform && apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: main.tf\n+x\n*** End Patch\nEOF", /main\.tf/],
+        ['a patch read from a file', 'apply_patch < fix.patch', /apply_patch/],
+        ['a patch whose path is a variable', 'apply_patch <<EOF\n*** Begin Patch\n*** Add File: $F\n+x\n*** End Patch\nEOF', /apply_patch/],
+    ])('blocks %s', (_name, command, reason) => {
+        const v = evaluateBashCommand(command, { skipGate: true, cwd: '/tmp' });
+        expect(v.action).toBe('block');
+        expect(v.reason).toMatch(reason);
+    });
+
+    test('resolves a relative path against the shell\'s working directory', () => {
+        const v = evaluateBashCommand("apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: main.tf\n+x\n*** End Patch\nEOF", { skipGate: true, cwd: '/repo/terraform' });
+        expect(v.action).toBe('block');
+        expect(v.reason).toMatch(/main\.tf/);
+    });
+
+    test.each([
+        ['a patch to an ordinary file', "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: src/a.ts\n@@\n-a\n+b\n*** End Patch\nEOF"],
+        ['apply_patch named as an argument', 'grep -rn apply_patch .env.example'],
+        ['a lookup with command -v', 'command -v apply_patch'],
+        ['the patch as its one literal argument', "apply_patch '*** Begin Patch\n*** Add File: notes.txt\n+x\n*** End Patch'"],
+        ['a $ inside a single-quoted patch argument', "apply_patch '*** Begin Patch\n*** Add File: notes.txt\n+The price is $5.\n*** End Patch'"],
+        ['a lookup with command -V', 'command -V apply_patch'],
+        ['a literal $ in a quoted heredoc', "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: cash$notes.txt\n+x\n*** End Patch\nEOF"],
+        ['a path that leaves terraform/ again', "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: terraform/../notes.txt\n+x\n*** End Patch\nEOF"],
+    ])('allows %s', (_name, command) => {
+        expect(evaluateBashCommand(command, { skipGate: true, cwd: '/tmp' }).action).toBe('allow');
+    });
+});

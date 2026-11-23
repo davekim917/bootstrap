@@ -9,8 +9,13 @@
  *   - OpenCode: opencode-guard.ts           (tool.execute.before on edit/write → throw)
  *   - Codex:    codex-hooks/runner.ts        (Edit/apply_patch PreToolUse → deny decision)
  *
+ * An edit tool whose input yields no target path is blocked: a renamed argument
+ * must not turn into an unguarded write.
+ *
  * Vendored into workflow-agents by scripts/vendor-guards.mjs (--check gated).
  */
+
+import { posix } from 'path';
 
 // Explicitly allowed files (template files that look like protected ones).
 // Checked BEFORE the protected patterns.
@@ -61,11 +66,32 @@ export const EDIT_TOOLS = new Set([
     'apply_patch', // Codex
 ]);
 
-/** Returns true if an edit to `path` should be blocked. */
-export function isProtectedEditPath(path: string): boolean {
+// .git is a directory in a clone and a file in a linked worktree; either way
+// nothing under it is a template, so it is checked before the allowlist.
+const GIT_METADATA = /(?:^|\/)\.git(?:\/|$)/;
+
+/**
+ * `path` as the writer resolves it: against `cwd` when relative, with `.`
+ * and `..` collapsed. Symlinks are not followed.
+ */
+export function normalizeEditPath(path: string, cwd?: string): string {
+    const p = path.replace(/\\/g, '/');
+    const absolute = p.startsWith('/') || /^[A-Za-z]:\//.test(p);
+    return posix.normalize(cwd && !absolute ? `${cwd.replace(/\\/g, '/')}/${p}` : p);
+}
+
+/**
+ * Returns true if an edit to `path` should be blocked. `cwd` places a
+ * relative path for the directory rules (.git, terraform) only: the name rules
+ * match substrings, so a working directory such as `.envs/` must not block
+ * every file under it.
+ */
+export function isProtectedEditPath(path: string, cwd?: string): boolean {
     if (!path) return false;
 
-    const normalizedPath = path.replace(/\\/g, '/');
+    const normalizedPath = normalizeEditPath(path);
+    const resolvedPath = cwd ? normalizeEditPath(path, cwd) : normalizedPath;
+    if (GIT_METADATA.test(resolvedPath)) return true;
 
     // Allowlist first (template files that look like protected files).
     for (const allowed of ALLOWED_FILES) {
@@ -77,27 +103,48 @@ export function isProtectedEditPath(path: string): boolean {
     }
     // Glob patterns.
     for (const pattern of PROTECTED_GLOBS) {
-        if (pattern.test(normalizedPath)) return true;
+        if (pattern.test(resolvedPath)) return true;
     }
     return false;
 }
 
-/** Extract file paths from the codex `apply_patch` envelope format. */
+// Both runtimes split on \n alone and trim the path's ends, so a \r inside a
+// path stays in it. Inside an Update hunk a header must start at column 0 (a
+// line starting with a space is context); elsewhere Codex trims leading
+// whitespace first, while OpenCode reads column 0 in every state, so the guard
+// takes the looser of the two. OpenCode accepts no space after the colon.
+// "Move to" names the file an update is written to.
+const PATCH_HEADER = /^\*\*\* (Add File|Update File|Delete File|Move to):([\s\S]*)$/;
+
+/** Extract file paths from the `apply_patch` envelope format (Codex and OpenCode). */
 export function filePathsFromPatch(text: unknown): string[] {
     if (typeof text !== 'string') return [];
     const paths: string[] = [];
+    let inUpdate = false;
     for (const line of text.split('\n')) {
-        const m = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/);
-        if (m) paths.push(m[1].trim());
+        const m: RegExpMatchArray | null = (inUpdate ? line.trimEnd() : line.trim()).match(PATCH_HEADER);
+        if (!m) continue;
+        const path = m[2].trim();
+        if (path) paths.push(path);
+        if (m[1] !== 'Move to') inUpdate = m[1] === 'Update File';
     }
     return paths;
 }
 
 /**
+ * Where each runtime puts an apply_patch envelope: OpenCode `patchText`, the
+ * Codex PreToolUse hook `command`, older/generic shapes `patch`/`diff`/`input`.
+ */
+const PATCH_KEYS = ['patch', 'patchText', 'diff', 'input', 'command'] as const;
+
+/** Returned by checkEditProtection when an edit tool's input names no target it can read. */
+export const UNREADABLE_EDIT_TARGET = '(edit target not found in tool input)';
+
+/**
  * Pull every edit target from a tool_input across runtimes:
  *   - Claude:   { file_path } | { edits: [{ file_path }] }
- *   - OpenCode: { path } | { file_path }
- *   - Codex:    { patch | diff | input } (apply_patch envelope), { paths }, { files }
+ *   - OpenCode: { filePath } | { patchText } (apply_patch envelope)
+ *   - Codex:    { command } (apply_patch hook input), { patch | diff | input }, { paths }, { files }
  */
 export function editPathsFromToolInput(toolInput: Record<string, unknown> = {}): string[] {
     const paths: string[] = [];
@@ -119,22 +166,30 @@ export function editPathsFromToolInput(toolInput: Record<string, unknown> = {}):
             if (edit && typeof edit.path === 'string') paths.push(edit.path);
         }
     }
-    paths.push(...filePathsFromPatch(toolInput.patch ?? toolInput.diff ?? toolInput.input));
+    for (const key of PATCH_KEYS) paths.push(...filePathsFromPatch(toolInput[key]));
 
     return [...new Set(paths.filter(Boolean))];
 }
 
 /**
  * Evaluate an edit tool call. Returns the first protected path (the block
- * reason) or null when allowed. Callers own the block I/O.
+ * reason), UNREADABLE_EDIT_TARGET when the input names no target, or null when
+ * allowed. Callers own the block I/O.
  */
 export function checkEditProtection(
     toolName: string,
     toolInput: Record<string, unknown> = {},
+    cwd?: string,
 ): string | null {
     if (!EDIT_TOOLS.has(toolName)) return null;
-    for (const p of editPathsFromToolInput(toolInput)) {
-        if (isProtectedEditPath(p)) return p;
+    const paths = editPathsFromToolInput(toolInput);
+    if (paths.length === 0) return UNREADABLE_EDIT_TARGET;
+    return firstProtectedPath(paths, cwd);
+}
+
+export function firstProtectedPath(paths: string[], cwd?: string): string | null {
+    for (const p of paths) {
+        if (isProtectedEditPath(p, cwd)) return p;
     }
     return null;
 }

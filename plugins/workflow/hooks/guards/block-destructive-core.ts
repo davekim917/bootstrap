@@ -39,6 +39,7 @@ import { basename, dirname, join, normalize as pathNormalize, resolve as pathRes
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
 import { draftChangedSince, type DraftBinding, type EmailCard } from './email-gate-core';
+import { filePathsFromPatch, firstProtectedPath } from './file-protection-core';
 import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, substitutionClose, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
@@ -5576,6 +5577,9 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     const hookBypass = gitHookBypassReason(cmd);
     if (hookBypass) return hookBypass;
 
+    const applyPatch = applyPatchProtectionReason(cmd);
+    if (applyPatch) return applyPatch;
+
     // Simple dangerous commands
     if (cmd.name === 'eval') return 'eval is not allowed. Run commands directly.';
     if (cmd.name === 'unlink') return 'unlink permanently deletes files. Use: trash <path>';
@@ -5583,6 +5587,56 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     if (cmd.name === 'truncate') return 'truncate destroys file content.';
 
     return null;
+}
+
+/**
+ * Codex runs a shell `apply_patch` itself and reports it to hooks as a shell
+ * command, so the file-protection check on its edit tool never sees it. A patch
+ * the guard cannot read (from a file, a pipe, or a variable) is refused too.
+ */
+const APPLY_PATCH_COMMANDS = new Set(['apply_patch', 'applypatch']);
+
+// `command -v`/`-V` only looks the name up; the wrapper stripping leaves it looking like a run.
+const COMMAND_LOOKUP = /(?:^|[\s;&|(])command\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*[vV]\b/;
+
+/** The directory a command runs in, or undefined when a cd before it can't be followed. */
+function applyPatchCwd(cmd: ResolvedCommand): string | undefined {
+    let dir = cmd.chdir ?? cmd.script?.cwd;
+    for (const step of cmd.script?.cds ?? []) {
+        if (cmd.pos === undefined || step.pos >= cmd.pos) continue;
+        if (step.target === undefined || (!dir && !step.target.startsWith('/'))) return undefined;
+        dir = step.target.startsWith('/') ? step.target : `${dir}/${step.target}`;
+    }
+    return dir;
+}
+
+function applyPatchProtectionReason(cmd: ResolvedCommand): string | null {
+    if (!APPLY_PATCH_COMMANDS.has(cmd.name)) return null;
+    if (COMMAND_LOOKUP.test(cmd.raw)) return null;
+    if (process.env.SKIP_FILE_PROTECTION === '1') return null;
+    const unreadable = `${cmd.name} with a patch the file-protection guard cannot read is not allowed. Use the apply_patch tool, or give the patch as its only input in a quoted heredoc (<<'EOF').`;
+    // The executable reads an argument before stdin, and a later redirect or a pipe replaces the heredoc, so the
+    // patch is read only from one literal argument with no other input, or from one heredoc with no argument.
+    const piped = cmd.pipedInput !== undefined || (cmd.pos !== undefined && (cmd.script?.pipedInto.has(cmd.pos) ?? false));
+    const stdinTexts = cmd.stdinTexts ?? [];
+    if ((cmd.stdinFiles?.length ?? 0) > 0 || piped) return unreadable;
+    let patch: string;
+    let expanded: boolean;
+    if (cmd.args.length === 1 && stdinTexts.length === 0) {
+        [patch] = cmd.args;
+        // Only a word that is one single-quoted string is literal; any other quoting can expand.
+        const words = argumentWords(cmd);
+        expanded = /[$`]/.test(patch) && !(words.length === 1 && /^'[^']*'$/.test(words[0].word));
+    } else if (cmd.args.length === 0 && stdinTexts.length === 1) {
+        [patch] = stdinTexts;
+        expanded = (cmd.stdinExpanded?.length ?? 0) > 0;
+    } else {
+        return unreadable;
+    }
+    const paths = filePathsFromPatch(patch);
+    if (paths.length === 0 || (expanded && (cmd.args.length === 1 || paths.some(p => /[$`\\]/.test(p))))) return unreadable;
+    const protectedPath = firstProtectedPath(paths, applyPatchCwd(cmd));
+    return protectedPath ? `file-protection — '${protectedPath}' is protected from automated edits.` : null;
 }
 
 // ── Self-matching kills ──────────────────────────────────────────────────────
