@@ -15,7 +15,9 @@ trap 'rm -f "$out"' EXIT
 
 # A background job in a non-interactive shell reads /dev/null unless given stdin explicitly.
 exec 3<&0
-bun "$here/agy-guard.ts" "$@" <&3 >"$out" &
+# bun otherwise loads a .env and a bunfig.toml (with its preload) from the agent's working directory, which the agent
+# controls: either could switch a check off or replace the guard.
+bun --no-env-file --config=/dev/null "$here/agy-guard.ts" "$@" <&3 >"$out" &
 guard=$!
 exec 3<&-
 (

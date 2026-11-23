@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -68,5 +68,20 @@ describe("the guard's own decision passes through", () => {
         const reason = denyReason((await run(WRAPPER, input)).stdout);
         expect(reason).toMatch(/Destructive Snowflake SQL/);
         expect(reason).not.toMatch(/did not finish/);
+    });
+});
+
+describe('the agent cannot steer bun from its working directory', () => {
+    test('a .env and a bunfig.toml preload there are both ignored', async () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'agy-guard-cwd-'));
+        roots.push(cwd);
+        writeFileSync(join(cwd, '.env'), 'SKIP_FILE_PROTECTION=1\n');
+        writeFileSync(join(cwd, 'preload.ts'), "require('node:fs').writeFileSync(require('node:path').join(process.cwd(), 'preload-ran'), '');");
+        writeFileSync(join(cwd, 'bunfig.toml'), 'preload = ["./preload.ts"]\n');
+        const guard = "process.stdout.write(JSON.stringify({ decision: 'deny', reason: process.env.SKIP_FILE_PROTECTION ?? 'unset' }));";
+        const proc = Bun.spawn(['bash', withStandIn(guard), 'PreToolUse'], { cwd, stdin: new Blob(['{}']), stdout: 'pipe', stderr: 'pipe' });
+        expect(await proc.exited).toBe(0);
+        expect(JSON.parse(await new Response(proc.stdout).text())).toEqual({ decision: 'deny', reason: 'unset' });
+        expect(existsSync(join(cwd, 'preload-ran'))).toBe(false);
     });
 });
