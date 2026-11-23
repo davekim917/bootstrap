@@ -91,7 +91,7 @@ async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'app
     before({ tool, sessionID: 's', callID: 'c' }, { args: { path } });
   const runTool = (tool: string, args: Record<string, unknown> = {}) =>
     before({ tool, sessionID: 's', callID: 'c' }, { args });
-  return { before, runBash, runEdit, runTool, stagedActions, stagedSummaries };
+  return { hooks: hooks as typeof hooks & { config: (cfg: { mcp?: Record<string, unknown> }) => Promise<void> }, before, runBash, runEdit, runTool, stagedActions, stagedSummaries };
 }
 
 // Representative input per guard class, with its expected outcome at the
@@ -409,9 +409,13 @@ describe('test_oc_dispatch_file_writes', () => {
     );
   });
 
-  test('an MCP tool naming a protected path is blocked like any other non-built-in', async () => {
-    const { runTool } = await loadEntrypoint();
-    await expect(runTool('files_send_file', { path: '.env' })).rejects.toThrow(/file-protection — '\.env'/);
+  test('a configured MCP server\'s tools pass with a protected path; the same id with no such server is checked', async () => {
+    const { hooks, runTool } = await loadEntrypoint();
+    await expect(runTool('approved.run_read_file', { path: 'package-lock.json' })).rejects.toThrow(/file-protection/);
+    await hooks.config({ mcp: { 'approved.run': {}, files: {} } });
+    await expect(runTool('approved_run_read_file', { path: 'package-lock.json' })).resolves.toBeUndefined();
+    await expect(runTool('files_send_file', { path: '.env' })).resolves.toBeUndefined();
+    await expect(runTool('multiedit', { filePath: '.env' })).rejects.toThrow(/file-protection — '\.env'/);
   });
 
   test('read-only tools and pathless tools are not blocked', async () => {

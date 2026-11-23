@@ -67,9 +67,14 @@ const OPENCODE_NON_WRITE_TOOLS = new Set([
   'plan_exit',
 ]);
 
-function openCodeWriteBlock(tool: string, args: Record<string, unknown>): string | null {
+/** OpenCode's MCP tool id: the sanitized server name, `_`, the sanitized tool name. */
+const sanitizeMcpName = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+function openCodeWriteBlock(tool: string, args: Record<string, unknown>, mcpPrefixes: readonly string[]): string | null {
   if (EDIT_TOOLS.has(tool)) return checkEditProtection(tool, args);
   if (OPENCODE_NON_WRITE_TOOLS.has(tool)) return null;
+  // MCP tools run outside this file system and carry their own approval gates.
+  if (mcpPrefixes.some((prefix) => tool.startsWith(prefix))) return null;
   return firstProtectedPath(editPathsFromToolInput(args));
 }
 
@@ -273,12 +278,16 @@ export const NanoclawGuard = async (ctx?: { directory?: string }) => {
   // the guard never silently fails-open on a missing evaluator or gate primitive.
   assertCoreExports();
   writeLoadReceipt();
+  let mcpPrefixes: string[] = [];
   return {
+    config: async (cfg?: { mcp?: Record<string, unknown> }) => {
+      mcpPrefixes = Object.keys(cfg?.mcp ?? {}).map((name) => `${sanitizeMcpName(name)}_`);
+    },
     'tool.execute.before': async (input: ToolBeforeInput, output: ToolBeforeOutput) => {
       // File-protection: block edits to protected paths (.env, lockfiles, .git,
       // terraform), at parity with the Claude file-protection hook. Shared core.
       if (process.env.SKIP_FILE_PROTECTION !== '1') {
-        const blocked = openCodeWriteBlock(input.tool, (output.args ?? {}) as Record<string, unknown>);
+        const blocked = openCodeWriteBlock(input.tool, (output.args ?? {}) as Record<string, unknown>, mcpPrefixes);
         if (blocked === UNREADABLE_EDIT_TARGET) {
           throw new Error(
             `BLOCKED: file-protection — no target file found in this ${input.tool} call, so it is refused. Set SKIP_FILE_PROTECTION=1 to bypass.`,
