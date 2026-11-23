@@ -117,10 +117,10 @@ async function stagedRequests() {
         claimGateRequest: (): { owner: true } => ({ owner: true }),
         publishGateClaim: (): void => {},
     }));
-    return { staged, core: await import(CORE), evaluate: (await import(EMAIL_CORE)).evaluateEmailSend, guard: await import('./codex-guard') };
+    return { staged, core: await import(CORE), evaluate: (await import(EMAIL_CORE)).evaluateEmailSend, guard: await import('./guard-policy') };
 }
 
-/** Stages one send the way codex-guard's main does for a gated shell email, and the verdict the in-tree hook reads. */
+/** Stages one send the way decideToolCall does for a gated shell email, and the verdict the in-tree hook reads. */
 async function stage(commands: string[], toolUseId: string | undefined) {
     const { staged, core, evaluate, guard } = await stagedRequests();
     const verdicts: Verdict[] = [];

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { findFreshTeamAutoSentinel, LOCAL_APPROVAL_HANDOFF } from './codex-guard';
+import { LOCAL_APPROVAL_HANDOFF } from './codex-guard';
+import { findFreshTeamAutoSentinel } from './guard-policy';
 
 const GUARD = join(import.meta.dir, 'codex-guard.ts');
 const temporaryRoots: string[] = [];
