@@ -51,7 +51,12 @@ type BeforeHook = (
  * (request_destructive_gate vs request_bash_gate). Gates return 'approved' so a
  * gated command does NOT throw — distinguishing it from a block (which throws).
  */
-async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'approved') {
+/** A plugin context whose OpenCode client lists `localTools` as the registered (non-MCP) tool ids. */
+function pluginContext(localTools: string[]) {
+  return { directory: '/repo', client: { tool: { ids: async () => ({ data: localTools }) } } };
+}
+
+async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'approved', ctx?: unknown) {
   const stagedActions: string[] = [];
   const stagedSummaries: Array<string | undefined> = [];
   mock.module(CORE, () => ({
@@ -83,7 +88,7 @@ async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'app
     pollDeliveredTable: (): 'approved' | 'denied' | 'timeout' => decision,
   }));
   const { NanoclawGuard } = await import('./opencode-guard-core');
-  const hooks = await NanoclawGuard();
+  const hooks = await NanoclawGuard(ctx as Parameters<typeof NanoclawGuard>[0]);
   const before = hooks['tool.execute.before'] as BeforeHook;
   const runBash = (command: string) =>
     before({ tool: 'bash', sessionID: 's', callID: 'c' }, { args: { command } });
@@ -410,12 +415,30 @@ describe('test_oc_dispatch_file_writes', () => {
   });
 
   test('a configured MCP server\'s tools pass with a protected path; the same id with no such server is checked', async () => {
-    const { hooks, runTool } = await loadEntrypoint();
+    const { hooks, runTool } = await loadEntrypoint('approved', pluginContext(['bash', 'read', 'apply_patch']));
     await expect(runTool('approved.run_read_file', { path: 'package-lock.json' })).rejects.toThrow(/file-protection/);
     await hooks.config({ mcp: { 'approved.run': {}, files: {} } });
     await expect(runTool('approved_run_read_file', { path: 'package-lock.json' })).resolves.toBeUndefined();
     await expect(runTool('files_send_file', { path: '.env' })).resolves.toBeUndefined();
     await expect(runTool('multiedit', { filePath: '.env' })).rejects.toThrow(/file-protection — '\.env'/);
+  });
+
+  test('an id under an MCP server\'s prefix that OpenCode also registers locally is still checked', async () => {
+    const { hooks, runTool } = await loadEntrypoint('approved', pluginContext(['bash', 'read', 'apply_patch', 'files_patch']));
+    await hooks.config({ mcp: { files: {}, apply: {} } });
+    await expect(runTool('files_patch', { filePath: '.env' })).rejects.toThrow(/file-protection — '\.env'/);
+    await expect(runTool('apply_patch', { patchText: '*** Begin Patch\n*** Delete File: .env\n*** End Patch' })).rejects.toThrow(
+      /file-protection — '\.env'/,
+    );
+    await expect(runTool('apply_patch', { jobId: '42' })).resolves.toBeUndefined();
+  });
+
+  test('MCP ids are checked when OpenCode cannot list its local tools', async () => {
+    const failing = { directory: '/repo', client: { tool: { ids: async () => { throw new Error('unreachable'); } } } };
+    const { hooks, runTool } = await loadEntrypoint('approved', failing);
+    await hooks.config({ mcp: { files: {} } });
+    await expect(runTool('files_send_file', { path: '.env' })).rejects.toThrow(/file-protection — '\.env'/);
+    await expect(runTool('files_send_file', { text: 'hi' })).resolves.toBeUndefined();
   });
 
   test('read-only tools and pathless tools are not blocked', async () => {

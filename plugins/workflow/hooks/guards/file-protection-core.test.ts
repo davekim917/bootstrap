@@ -31,6 +31,12 @@ describe('isProtectedEditPath', () => {
         expect(isProtectedEditPath('C:\\repo\\infra\\terraform\\prod.tf')).toBe(true);
     });
 
+    it('protects .git itself, which is a file in a linked worktree', () => {
+        expect(isProtectedEditPath('.git')).toBe(true);
+        expect(isProtectedEditPath('/workspace/repo/.git')).toBe(true);
+        expect(isProtectedEditPath('.github/workflows/ci.yml')).toBe(false);
+    });
+
     it('allows template/allowlisted files even though they look protected', () => {
         for (const p of ['.env.example', '.env.sample', '.env.template', '.gitignore', '.dockerignore']) {
             expect(isProtectedEditPath(p)).toBe(false);
@@ -84,6 +90,22 @@ describe('checkEditProtection', () => {
         ['one protected file among several', { patchText: '*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: app/package-lock.json\n@@\n-a\n+b\n*** End Patch' }, 'app/package-lock.json'],
     ])('flags a patch through %s', (_name, input, expected) => {
         expect(checkEditProtection('apply_patch', input)).toBe(expected);
+    });
+
+    it.each([
+        ['a bare CR inside the path', { patchText: '*** Begin Patch\n*** Add File: scratch\r/../.env\n+X=1\n*** End Patch' }, undefined, 'scratch\r/../.env'],
+        ['a relative path inside terraform/', { patchText: '*** Begin Patch\n*** Add File: main.tf\n+x\n*** End Patch' }, '/repo/terraform', 'main.tf'],
+        ['deleting a linked worktree\'s .git file', { patchText: '*** Begin Patch\n*** Delete File: .git\n*** End Patch' }, undefined, '.git'],
+        ['a template name under .git/', { patchText: '*** Begin Patch\n*** Add File: .git/.env.example\n+x\n*** End Patch' }, undefined, '.git/.env.example'],
+    ])('flags a patch through %s', (_name, input, cwd, expected) => {
+        expect(checkEditProtection('apply_patch', input, cwd)).toBe(expected);
+    });
+
+    it.each([
+        ['a context line that reads like a header', '*** Begin Patch\n*** Update File: docs/patch-format.md\n@@\n *** Delete File: .env\n-old\n+new\n*** End Patch'],
+        ['a path that leaves terraform/ again', '*** Begin Patch\n*** Add File: terraform/../notes.txt\n+x\n*** End Patch'],
+    ])('allows %s', (_name, patchText) => {
+        expect(checkEditProtection('apply_patch', { patchText }, '/repo')).toBeNull();
     });
 
     it('allows a patch that touches only ordinary files', () => {

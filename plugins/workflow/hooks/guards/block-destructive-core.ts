@@ -5596,14 +5596,32 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
  */
 const APPLY_PATCH_COMMANDS = new Set(['apply_patch', 'applypatch']);
 
+// `command -v`/`-V` only looks the name up; the wrapper stripping leaves it looking like a run.
+const COMMAND_LOOKUP = /(?:^|[\s;&|(])command\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*[vV]\b/;
+
+/** The directory a command runs in, or undefined when a cd before it can't be followed. */
+function applyPatchCwd(cmd: ResolvedCommand): string | undefined {
+    let dir = cmd.chdir ?? cmd.script?.cwd;
+    for (const step of cmd.script?.cds ?? []) {
+        if (cmd.pos === undefined || step.pos >= cmd.pos) continue;
+        if (step.target === undefined || (!dir && !step.target.startsWith('/'))) return undefined;
+        dir = step.target.startsWith('/') ? step.target : `${dir}/${step.target}`;
+    }
+    return dir;
+}
+
 function applyPatchProtectionReason(cmd: ResolvedCommand): string | null {
     if (!APPLY_PATCH_COMMANDS.has(cmd.name)) return null;
+    if (COMMAND_LOOKUP.test(cmd.raw)) return null;
     if (process.env.SKIP_FILE_PROTECTION === '1') return null;
-    const paths = [...cmd.args, ...(cmd.stdinTexts ?? [])].flatMap(filePathsFromPatch);
-    if (paths.length === 0 || paths.some(p => /[$`]/.test(p))) {
-        return `${cmd.name} with a patch the file-protection guard cannot read is not allowed. Use the apply_patch tool, or give the patch inline in a quoted heredoc (<<'EOF').`;
-    }
-    const protectedPath = firstProtectedPath(paths);
+    const unreadable = `${cmd.name} with a patch the file-protection guard cannot read is not allowed. Use the apply_patch tool, or give the patch as its only input in a quoted heredoc (<<'EOF').`;
+    // The executable reads an argument before stdin, and a later redirect or a pipe replaces the heredoc.
+    const piped = cmd.pipedInput !== undefined || (cmd.pos !== undefined && (cmd.script?.pipedInto.has(cmd.pos) ?? false));
+    if (cmd.args.length > 0 || (cmd.stdinFiles?.length ?? 0) > 0 || piped || cmd.stdinTexts?.length !== 1) return unreadable;
+    const paths = filePathsFromPatch(cmd.stdinTexts[0]);
+    const expanded = (cmd.stdinExpanded?.length ?? 0) > 0;
+    if (paths.length === 0 || (expanded && paths.some(p => /[$`\\]/.test(p)))) return unreadable;
+    const protectedPath = firstProtectedPath(paths, applyPatchCwd(cmd));
     return protectedPath ? `file-protection — '${protectedPath}' is protected from automated edits.` : null;
 }
 

@@ -22,9 +22,14 @@ function main(): void {
         const input = JSON.parse(readFileSync(0, 'utf-8')) as {
             tool_name?: string;
             tool_input?: Record<string, unknown>;
+            cwd?: unknown;
         };
 
-        const blocked = checkEditProtection(input.tool_name ?? '', input.tool_input ?? {});
+        const blocked = checkEditProtection(
+            input.tool_name ?? '',
+            input.tool_input ?? {},
+            typeof input.cwd === 'string' ? input.cwd : undefined,
+        );
         if (blocked) {
             console.error(`
 ⚠️ BLOCKED: File protection guard

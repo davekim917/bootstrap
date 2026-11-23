@@ -199,7 +199,11 @@ function main(): void {
 
         if (input.tool_name && EDIT_TOOLS.has(input.tool_name)) {
             if (process.env.SKIP_FILE_PROTECTION !== '1') {
-                const protectedPath = checkEditProtection(input.tool_name, input.tool_input ?? {});
+                const protectedPath = checkEditProtection(
+                    input.tool_name,
+                    input.tool_input ?? {},
+                    typeof input.cwd === 'string' ? input.cwd : undefined,
+                );
                 if (protectedPath) {
                     emitDeny(
                         `file-protection — '${protectedPath}' is protected from automated edits.`,

@@ -19,6 +19,8 @@
  * Vendored into workflow-agents by scripts/vendor-guards.mjs (--check gated).
  */
 
+import { posix } from 'path';
+
 // Explicitly allowed files (template files that look like protected ones).
 // Checked BEFORE the protected patterns.
 export const ALLOWED_FILES = [
@@ -68,11 +70,32 @@ export const EDIT_TOOLS = new Set([
     'apply_patch', // Codex
 ]);
 
-/** Returns true if an edit to `path` should be blocked. */
-export function isProtectedEditPath(path: string): boolean {
+// .git is a directory in a clone and a file in a linked worktree; either way
+// nothing under it is a template, so it is checked before the allowlist.
+const GIT_METADATA = /(?:^|\/)\.git(?:\/|$)/;
+
+/**
+ * `path` as the writer resolves it: against `cwd` when relative, with `.`
+ * and `..` collapsed. Symlinks are not followed.
+ */
+export function normalizeEditPath(path: string, cwd?: string): string {
+    const p = path.replace(/\\/g, '/');
+    const absolute = p.startsWith('/') || /^[A-Za-z]:\//.test(p);
+    return posix.normalize(cwd && !absolute ? `${cwd.replace(/\\/g, '/')}/${p}` : p);
+}
+
+/**
+ * Returns true if an edit to `path` should be blocked. `cwd` places a
+ * relative path for the directory rules (.git, terraform) only: the name rules
+ * match substrings, so a working directory such as `.envs/` must not block
+ * every file under it.
+ */
+export function isProtectedEditPath(path: string, cwd?: string): boolean {
     if (!path) return false;
 
-    const normalizedPath = path.replace(/\\/g, '/');
+    const normalizedPath = normalizeEditPath(path);
+    const resolvedPath = cwd ? normalizeEditPath(path, cwd) : normalizedPath;
+    if (GIT_METADATA.test(resolvedPath)) return true;
 
     // Allowlist first (template files that look like protected files).
     for (const allowed of ALLOWED_FILES) {
@@ -84,24 +107,24 @@ export function isProtectedEditPath(path: string): boolean {
     }
     // Glob patterns.
     for (const pattern of PROTECTED_GLOBS) {
-        if (pattern.test(normalizedPath)) return true;
+        if (pattern.test(resolvedPath)) return true;
     }
     return false;
 }
 
-// At least as loose as OpenCode's parser, which trims the path after the colon,
-// so the space is optional and a CRLF line's \r is dropped; any header a
-// runtime acts on must be read here too. "Move to" names the file an
-// update is written to.
-const PATCH_HEADER = /^\*\*\*\s*(?:Add File|Update File|Delete File|Move to)\s*:\s*(.*?)\s*$/i;
+// Both runtimes split on \n alone, read headers only at column 0 (a line
+// starting with a space is hunk context), and trim the path's ends, so a \r
+// inside a path stays in it. OpenCode accepts no space after the colon. "Move
+// to" names the file an update is written to.
+const PATCH_HEADER = /^\*\*\* (?:Add File|Update File|Delete File|Move to):([\s\S]*)$/;
 
 /** Extract file paths from the `apply_patch` envelope format (Codex and OpenCode). */
 export function filePathsFromPatch(text: unknown): string[] {
     if (typeof text !== 'string') return [];
     const paths: string[] = [];
-    for (const line of text.split(/\r\n|\r|\n/)) {
-        const m = line.trim().match(PATCH_HEADER);
-        if (m && m[1]) paths.push(m[1]);
+    for (const line of text.split('\n')) {
+        const path = line.match(PATCH_HEADER)?.[1].trim();
+        if (path) paths.push(path);
     }
     return paths;
 }
@@ -154,16 +177,17 @@ export function editPathsFromToolInput(toolInput: Record<string, unknown> = {}):
 export function checkEditProtection(
     toolName: string,
     toolInput: Record<string, unknown> = {},
+    cwd?: string,
 ): string | null {
     if (!EDIT_TOOLS.has(toolName)) return null;
     const paths = editPathsFromToolInput(toolInput);
     if (paths.length === 0) return UNREADABLE_EDIT_TARGET;
-    return firstProtectedPath(paths);
+    return firstProtectedPath(paths, cwd);
 }
 
-export function firstProtectedPath(paths: string[]): string | null {
+export function firstProtectedPath(paths: string[], cwd?: string): string | null {
     for (const p of paths) {
-        if (isProtectedEditPath(p)) return p;
+        if (isProtectedEditPath(p, cwd)) return p;
     }
     return null;
 }
