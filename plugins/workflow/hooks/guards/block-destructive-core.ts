@@ -39,6 +39,7 @@ import { basename, dirname, join, normalize as pathNormalize, resolve as pathRes
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
 import { draftChangedSince, type DraftBinding, type EmailCard } from './email-gate-core';
+import { filePathsFromPatch, firstProtectedPath } from './file-protection-core';
 import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, substitutionClose, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
@@ -5576,6 +5577,9 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     const hookBypass = gitHookBypassReason(cmd);
     if (hookBypass) return hookBypass;
 
+    const applyPatch = applyPatchProtectionReason(cmd);
+    if (applyPatch) return applyPatch;
+
     // Simple dangerous commands
     if (cmd.name === 'eval') return 'eval is not allowed. Run commands directly.';
     if (cmd.name === 'unlink') return 'unlink permanently deletes files. Use: trash <path>';
@@ -5583,6 +5587,24 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
     if (cmd.name === 'truncate') return 'truncate destroys file content.';
 
     return null;
+}
+
+/**
+ * Codex runs a shell `apply_patch` itself and reports it to hooks as a shell
+ * command, so the file-protection check on its edit tool never sees it. A patch
+ * the guard cannot read (from a file, a pipe, or a variable) is refused too.
+ */
+const APPLY_PATCH_COMMANDS = new Set(['apply_patch', 'applypatch']);
+
+function applyPatchProtectionReason(cmd: ResolvedCommand): string | null {
+    if (!APPLY_PATCH_COMMANDS.has(cmd.name)) return null;
+    if (process.env.SKIP_FILE_PROTECTION === '1') return null;
+    const paths = [...cmd.args, ...(cmd.stdinTexts ?? [])].flatMap(filePathsFromPatch);
+    if (paths.length === 0 || paths.some(p => /[$`]/.test(p))) {
+        return `${cmd.name} with a patch the file-protection guard cannot read is not allowed. Use the apply_patch tool, or give the patch inline in a quoted heredoc (<<'EOF').`;
+    }
+    const protectedPath = firstProtectedPath(paths);
+    return protectedPath ? `file-protection — '${protectedPath}' is protected from automated edits.` : null;
 }
 
 // ── Self-matching kills ──────────────────────────────────────────────────────

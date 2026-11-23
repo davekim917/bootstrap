@@ -383,3 +383,41 @@ describe('test_oc_dispatch_fail_closed_on_malformed_core', () => {
     await expectEntrypointFailsClosed(undefined, malformedEmail, /evaluateEmailToolCall/);
   });
 });
+
+describe('test_oc_dispatch_file_writes', () => {
+  afterEach(restoreModules);
+
+  test('apply_patch with OpenCode\'s real argument shape is blocked on a protected path', async () => {
+    const { runTool } = await loadEntrypoint();
+    const patchText = '*** Begin Patch\n*** Update File: .env\n@@\n-SECRET=a\n+SECRET=b\n*** End Patch';
+    await expect(runTool('apply_patch', { patchText })).rejects.toThrow(/file-protection — '\.env'/);
+  });
+
+  test('apply_patch on an ordinary file is allowed', async () => {
+    const { runTool } = await loadEntrypoint();
+    const patchText = '*** Begin Patch\n*** Update File: notes.txt\n@@\n-a\n+b\n*** End Patch';
+    await expect(runTool('apply_patch', { patchText })).resolves.toBeUndefined();
+  });
+
+  test('a tool OpenCode does not list as read-only is checked for protected paths', async () => {
+    const { runTool } = await loadEntrypoint();
+    await expect(runTool('multiedit', { filePath: '.env', edits: [{ oldString: 'a', newString: 'b' }] })).rejects.toThrow(
+      /file-protection — '\.env'/,
+    );
+    await expect(runTool('patch', { patchText: '*** Begin Patch\n*** Delete File: yarn.lock\n*** End Patch' })).rejects.toThrow(
+      /file-protection — 'yarn\.lock'/,
+    );
+  });
+
+  test('an MCP tool naming a protected path is blocked like any other non-built-in', async () => {
+    const { runTool } = await loadEntrypoint();
+    await expect(runTool('files_send_file', { path: '.env' })).rejects.toThrow(/file-protection — '\.env'/);
+  });
+
+  test('read-only tools and pathless tools are not blocked', async () => {
+    const { runTool } = await loadEntrypoint();
+    await expect(runTool('read', { filePath: '.env' })).resolves.toBeUndefined();
+    await expect(runTool('grep', { pattern: 'x', path: '.git/' })).resolves.toBeUndefined();
+    await expect(runTool('nanoclaw_send_message', { text: 'hi' })).resolves.toBeUndefined();
+  });
+});

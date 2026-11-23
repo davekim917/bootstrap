@@ -38,7 +38,40 @@ import {
 } from './block-destructive-core';
 import { evaluateEmailSend, evaluateEmailToolCall } from './email-gate-core';
 import * as emailCore from './email-gate-core';
-import { checkEditProtection, EDIT_TOOLS } from './file-protection-core';
+import {
+  checkEditProtection,
+  editPathsFromToolInput,
+  EDIT_TOOLS,
+  firstProtectedPath,
+  UNREADABLE_EDIT_TARGET,
+} from './file-protection-core';
+
+/**
+ * OpenCode built-ins that never write a file. Every other tool, MCP tools
+ * included, has its path arguments checked, so a write tool OpenCode adds later
+ * is guarded before it is listed anywhere.
+ */
+const OPENCODE_NON_WRITE_TOOLS = new Set([
+  'invalid',
+  'question',
+  'bash',
+  'read',
+  'glob',
+  'grep',
+  'task',
+  'webfetch',
+  'websearch',
+  'todowrite',
+  'skill',
+  'lsp',
+  'plan_exit',
+]);
+
+function openCodeWriteBlock(tool: string, args: Record<string, unknown>): string | null {
+  if (EDIT_TOOLS.has(tool)) return checkEditProtection(tool, args);
+  if (OPENCODE_NON_WRITE_TOOLS.has(tool)) return null;
+  return firstProtectedPath(editPathsFromToolInput(args));
+}
 
 // ── Fail-closed core-export validation (B3) ───────────────────────────────────
 // "Present ≠ correct." A stale or partially-built core could export an email
@@ -244,17 +277,20 @@ export const NanoclawGuard = async (ctx?: { directory?: string }) => {
     'tool.execute.before': async (input: ToolBeforeInput, output: ToolBeforeOutput) => {
       // File-protection: block edits to protected paths (.env, lockfiles, .git,
       // terraform), at parity with the Claude file-protection hook. Shared core.
-      if (EDIT_TOOLS.has(input.tool)) {
-        if (process.env.SKIP_FILE_PROTECTION !== '1') {
-          const blocked = checkEditProtection(input.tool, (output.args ?? {}) as Record<string, unknown>);
-          if (blocked) {
-            throw new Error(
-              `BLOCKED: file-protection — '${blocked}' is protected from automated edits. Set SKIP_FILE_PROTECTION=1 to bypass.`,
-            );
-          }
+      if (process.env.SKIP_FILE_PROTECTION !== '1') {
+        const blocked = openCodeWriteBlock(input.tool, (output.args ?? {}) as Record<string, unknown>);
+        if (blocked === UNREADABLE_EDIT_TARGET) {
+          throw new Error(
+            `BLOCKED: file-protection — no target file found in this ${input.tool} call, so it is refused. Set SKIP_FILE_PROTECTION=1 to bypass.`,
+          );
         }
-        return;
+        if (blocked) {
+          throw new Error(
+            `BLOCKED: file-protection — '${blocked}' is protected from automated edits. Set SKIP_FILE_PROTECTION=1 to bypass.`,
+          );
+        }
       }
+      if (EDIT_TOOLS.has(input.tool)) return;
       if (gateNativeEmailToolOrThrow(input.tool, output.args ?? {})) return;
       // Destructive-command gate (bash).
       if (input.tool !== 'bash') return;

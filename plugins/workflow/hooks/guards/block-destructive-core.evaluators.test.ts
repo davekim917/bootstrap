@@ -498,3 +498,25 @@ describe('staging everything during a conflicted operation', () => {
         expect(evaluateBashCommand('git commit -am "x"', { skipGate: true, cwd: clean }).action).toBe('allow');
     });
 });
+
+describe('apply_patch run from the shell', () => {
+    const envPatch = "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: .env\n@@\n-A=1\n+A=2\n*** End Patch\nEOF";
+    test.each([
+        ['a heredoc patch to .env', envPatch, /\.env/],
+        ['applypatch after cd, adding a lockfile', "cd app && applypatch <<'EOF'\n*** Begin Patch\n*** Add File: package-lock.json\n+{}\n*** End Patch\nEOF", /package-lock\.json/],
+        ['the patch as an argument, moving onto .env', "apply_patch '*** Begin Patch\n*** Update File: notes.txt\n*** Move to: .env\n@@\n-a\n+b\n*** End Patch'", /\.env/],
+        ['a patch read from a file', 'apply_patch < fix.patch', /apply_patch/],
+        ['a patch whose path is a variable', 'apply_patch <<EOF\n*** Begin Patch\n*** Add File: $F\n+x\n*** End Patch\nEOF', /apply_patch/],
+    ])('blocks %s', (_name, command, reason) => {
+        const v = evaluateBashCommand(command, { skipGate: true, cwd: '/tmp' });
+        expect(v.action).toBe('block');
+        expect(v.reason).toMatch(reason);
+    });
+
+    test.each([
+        ['a patch to an ordinary file', "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: src/a.ts\n@@\n-a\n+b\n*** End Patch\nEOF"],
+        ['apply_patch named as an argument', 'grep -rn apply_patch .env.example'],
+    ])('allows %s', (_name, command) => {
+        expect(evaluateBashCommand(command, { skipGate: true, cwd: '/tmp' }).action).toBe('allow');
+    });
+});
