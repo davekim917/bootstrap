@@ -21,7 +21,7 @@ export const AGY_APPROVAL_HANDOFF =
 export const READ_ONLY_TOOLS = new Set([
     'read_file', 'view_file', 'list_dir', 'grep_search', 'find_by_name', 'command_status',
     'read_url_content', 'search_web', 'list_resources', 'read_resource', 'list_permissions',
-    'wait', 'wait_5_seconds', 'finish', 'ask_question', 'ask_permission', 'ask_custom_permission',
+    'wait', 'wait_5_seconds', 'finish', 'ask_permission', 'ask_custom_permission',
     'manage_task', 'send_message',
 ]);
 
@@ -64,14 +64,28 @@ function isProtectedConfig(path: string): boolean {
         || path === '/etc/antigravity' || path.startsWith('/etc/antigravity/');
 }
 
-/** The protected hook-config path an edit target names, as written or through a symlink, else null. */
-export function protectedConfigTarget(target: string, cwd: string): string | null {
-    const abs = isAbsolute(target) ? resolve(target) : resolve(cwd, target);
-    if (isProtectedConfig(abs)) return target;
-    return isProtectedConfig(resolvedThroughLinks(abs)) ? target : null;
+/** True when `target`, resolved against any of `roots` and through symlinks, is a hook-config location. */
+export function isProtectedTarget(target: string, roots: string[]): boolean {
+    const candidates = isAbsolute(target) ? [resolve(target)] : roots.map((root) => resolve(root, target));
+    return candidates.some((abs) => isProtectedConfig(abs) || isProtectedConfig(resolvedThroughLinks(abs)));
+}
+
+/** Every `Workspace` value anywhere in a subagent call, since agy takes one per spec in a `Subagents` list too. */
+function workspacesIn(value: unknown, out: unknown[] = []): unknown[] {
+    if (Array.isArray(value)) {
+        for (const item of value) workspacesIn(item, out);
+    } else if (value && typeof value === 'object') {
+        for (const [key, inner] of Object.entries(value)) {
+            if (key === 'Workspace') out.push(inner);
+            else workspacesIn(inner, out);
+        }
+    }
+    return out;
 }
 
 function readsOnly(command: string): boolean {
+    // Any redirect may write, whatever its file descriptor.
+    if (command.includes('>')) return false;
     let steps;
     try {
         steps = extractCommands(command);
@@ -90,22 +104,36 @@ function targetsOf(args: Args): string[] {
 /** The verdict for one agy hook payload. */
 export function decideAgyCall(payload: unknown): Verdict {
     if (!payload || typeof payload !== 'object') return denied('the hook input is not a JSON object.');
-    const { hookEventName, toolCall, cwd: rawCwd } = payload as { hookEventName?: unknown; toolCall?: unknown; cwd?: unknown };
+    const { hookEventName, toolCall, cwd: rawCwd, workspacePaths } = payload as {
+        hookEventName?: unknown;
+        toolCall?: unknown;
+        cwd?: unknown;
+        workspacePaths?: unknown;
+    };
     if (hookEventName !== undefined && hookEventName !== 'PreToolUse') return { action: 'allow' };
     const call = (toolCall ?? {}) as { name?: unknown; args?: unknown; id?: unknown };
     if (typeof call.name !== 'string' || !call.name) return denied('the hook input names no tool, so the guard cannot check this call.');
     const name = call.name;
     const args: Args = call.args && typeof call.args === 'object' ? call.args as Args : {};
-    const cwd = typeof rawCwd === 'string' && rawCwd ? rawCwd : process.cwd();
+    // Hooks may run from a plugin's own directory, so the session's workspaces, not the hook cwd, anchor relative paths.
+    const workspaces = Array.isArray(workspacePaths)
+        ? workspacePaths.filter((p): p is string => typeof p === 'string' && isAbsolute(p))
+        : [];
+    const roots = workspaces.length ? workspaces : [typeof rawCwd === 'string' && rawCwd ? rawCwd : process.cwd()];
+    const cwd = roots[0];
     const base: ToolCall = { cwd, ...(typeof call.id === 'string' ? { tool_use_id: call.id } : {}) };
 
+    if (name === 'ask_question') {
+        return decideToolCall({ ...base, tool_name: 'request_user_input', tool_input: args }, AGY_APPROVAL_HANDOFF);
+    }
     if (READ_ONLY_TOOLS.has(name)) return { action: 'allow' };
 
     if (name === 'run_command') {
         if (args.BypassSandbox === true) return denied('commands may not run outside the sandbox (BypassSandbox).');
         const command = args.CommandLine;
         if (typeof command !== 'string' || !command.trim()) return denied('run_command has no CommandLine to check.');
-        if (PROTECTED_TEXT.test(command) && !readsOnly(command)) {
+        const runsIn = typeof args.Cwd === 'string' && args.Cwd ? args.Cwd : undefined;
+        if ((PROTECTED_TEXT.test(command) || (runsIn !== undefined && isProtectedTarget(runsIn, roots))) && !readsOnly(command)) {
             return denied('this command touches .agents/, ~/.gemini/ or /etc/antigravity/, where hook configs live. Agents may not change them.');
         }
         const workdir = typeof args.Cwd === 'string' && args.Cwd ? { workdir: args.Cwd } : {};
@@ -116,8 +144,9 @@ export function decideAgyCall(payload: unknown): Verdict {
         const targets = targetsOf(args);
         if (targets.length === 0) return denied(`${name} names no file, so the guard cannot check it.`);
         for (const target of targets) {
-            const hit = protectedConfigTarget(target, cwd);
-            if (hit) return denied(`'${hit}' is a hook-config location (.agents/, ~/.gemini/ or /etc/antigravity/). Agents may not change it.`);
+            if (isProtectedTarget(target, roots)) {
+                return denied(`'${target}' is a hook-config location (.agents/, ~/.gemini/ or /etc/antigravity/). Agents may not change it.`);
+            }
         }
         const [first, ...rest] = targets;
         return decideToolCall({
@@ -138,14 +167,16 @@ export function decideAgyCall(payload: unknown): Verdict {
     }
 
     if (SUBAGENT_TOOLS.has(name)) {
-        const workspace = args.Workspace;
-        if (workspace === undefined || workspace === '') return { action: 'allow' };
-        if (typeof workspace !== 'string') return denied(`${name} has an unreadable Workspace.`);
-        const root = resolvedThroughLinks(resolve(cwd));
-        const asked = resolvedThroughLinks(isAbsolute(workspace) ? resolve(workspace) : resolve(cwd, workspace));
-        return asked === root
-            ? { action: 'allow' }
-            : denied(`a subagent may only work in this session's workspace (${root}); a workspace elsewhere loads its own hook config.`);
+        const allowed = new Set(roots.map((root) => resolvedThroughLinks(resolve(root))));
+        for (const workspace of workspacesIn(args)) {
+            if (workspace === undefined || workspace === '') continue;
+            if (typeof workspace !== 'string') return denied(`${name} has an unreadable Workspace.`);
+            const asked = resolvedThroughLinks(isAbsolute(workspace) ? resolve(workspace) : resolve(cwd, workspace));
+            if (!allowed.has(asked)) {
+                return denied(`a subagent may only work in this session's workspace (${[...allowed].join(', ')}); a workspace elsewhere loads its own hook config.`);
+            }
+        }
+        return { action: 'allow' };
     }
 
     return denied(`agy tool '${name}' is not on this guard's allowlist.`);

@@ -34,8 +34,10 @@ wait "$guard"
 status=$?
 kill "$watchdog" 2>/dev/null
 
-if [ "$status" -eq 0 ] && grep -qE '^\{"decision":"(allow|deny)"' "$out"; then
-    cat "$out"
+# One whole line, as JSON.stringify prints it: a decision cut short is not one. The read and the print are builtins.
+reply="$(<"$out")"
+if [ "$status" -eq 0 ] && [[ "$reply" =~ ^\{\"decision\":\"allow\"\}$|^\{\"decision\":\"deny\",\"reason\":\".*\"\}$ ]]; then
+    printf '%s' "$reply"
     exit 0
 fi
 deny "The tool guard did not finish with a decision (exit $status), so the call was not run. Tell the user; do not retry or work around it."

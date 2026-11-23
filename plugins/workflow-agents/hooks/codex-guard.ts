@@ -34,6 +34,7 @@ function main(): void {
         const eventArg = process.argv[2];
         const raw = readFileSync(0, 'utf-8');
         const input = raw.trim() ? JSON.parse(raw) : {};
+        if (input === null) throw new Error('the hook input is null, not an object.');
         const event = eventArg ?? input.hook_event_name;
         if (event && event !== 'PreToolUse') emitContinue();
         verdict = decideToolCall(input, LOCAL_APPROVAL_HANDOFF);

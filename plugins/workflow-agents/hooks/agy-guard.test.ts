@@ -33,6 +33,7 @@ describe('agy tool calls reach the shared policy under the names the cores read'
         ['a source write', call('write_file', { Path: 'src/app.ts', Content: 'x' })],
         ['an MCP call that sends nothing', call('call_mcp_tool', { ServerName: 'docs', ToolName: 'search', Arguments: { q: 'x' } })],
         ['a read-only tool', call('read_file', { Path: 'README.md' })],
+        ['a question with no /team-auto run active', call('ask_question', { Question: 'Which branch?' }, tmpdir())],
         ['a subagent with no workspace of its own', call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: 't' })],
     ])('%s is allowed', (_name, payload) => {
         expect(decideAgyCall(payload)).toEqual({ action: 'allow' });
@@ -73,6 +74,14 @@ describe('hook configs agy hot-reloads cannot be changed by the agent', () => {
         expect(reasonOf(call(name, args))).toMatch(/hook-config location/);
     });
 
+    test("relative paths resolve against the session's workspaces, not the directory the hook runs from", () => {
+        const root = scratch();
+        mkdirSync(join(root, '.agents'));
+        symlinkSync(join(root, '.agents'), join(root, 'innocent-dir'));
+        const payload = { ...(call('write_file', { Path: 'innocent-dir/hooks.json', Content: '{}' }, '/') as object), workspacePaths: [root] };
+        expect(reasonOf(payload)).toMatch(/hook-config location/);
+    });
+
     test('a symlink into .agents is followed, for an existing file and for a new one', () => {
         const root = scratch();
         mkdirSync(join(root, '.agents'));
@@ -89,8 +98,15 @@ describe('hook configs agy hot-reloads cannot be changed by the agent', () => {
         ['cp evil.json ~/.gemini/hooks.json'],
         ['rm -rf /etc/antigravity'],
         ['cat .agents/hooks.json > .agents/backup.json'],
+        ['ls 2> .agents/listing.log'],
     ])('the shell command %s', (command) => {
         expect(reasonOf(call('run_command', { CommandLine: command }))).toMatch(/hook configs live/);
+    });
+
+    test('a shell command run from inside .agents', () => {
+        const root = scratch();
+        mkdirSync(join(root, '.agents'));
+        expect(reasonOf(call('run_command', { CommandLine: 'touch fixture.txt', Cwd: join(root, '.agents') }, root))).toMatch(/hook configs live/);
     });
 
     test.each([
@@ -107,13 +123,23 @@ describe('calls agy could otherwise use to step around the guard are denied', ()
         expect(reasonOf(call('run_command', { CommandLine: 'ls', BypassSandbox: true }))).toMatch(/BypassSandbox/);
     });
 
-    test('a subagent workspace other than the session root, nested ones included', () => {
+    test('a subagent workspace other than the session root, nested ones and list entries included', () => {
         const root = scratch();
         mkdirSync(join(root, 'nested'));
         for (const workspace of [tmpdir(), join(root, 'nested'), 'nested']) {
             expect(reasonOf(call('invoke_subagent', { Prompt: 'p', Workspace: workspace }, root))).toMatch(/only work in this session's workspace/);
         }
+        const listed = { Subagents: [{ Prompt: 'a', Workspace: root }, { Prompt: 'b', Workspace: tmpdir() }] };
+        expect(reasonOf(call('invoke_subagent', listed, root))).toMatch(/only work in this session's workspace/);
+        expect(decideAgyCall(call('invoke_subagent', { Subagents: [{ Prompt: 'a', Workspace: root }] }, root))).toEqual({ action: 'allow' });
         expect(decideAgyCall(call('define_subagent', { Workspace: root }, root))).toEqual({ action: 'allow' });
+    });
+
+    test('a question while a /team-auto run is active, as the shared policy refuses user input then', () => {
+        const root = scratch();
+        mkdirSync(join(root, 'docs', 'specs', 'demo'), { recursive: true });
+        writeFileSync(join(root, 'docs', 'specs', 'demo', '.team-auto-active'), '');
+        expect(reasonOf(call('ask_question', { Question: 'Which branch?' }, root))).toMatch(/team-auto is active/);
     });
 
     test.each([

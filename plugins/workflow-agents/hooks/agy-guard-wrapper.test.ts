@@ -41,6 +41,7 @@ describe('a guard that does not finish with a decision is a deny, since agy runs
         ['exits non-zero', 'process.exit(1);', /exit 1/],
         ['throws before printing', "throw new Error('boom');", /exit 1/],
         ['prints something that is not a decision', "process.stdout.write('{\"continue\":true}');", /exit 0/],
+        ['prints a decision cut short', "process.stdout.write('{\"decision\":\"deny\"');", /exit 0/],
     ])('%s', async (_name, guard, status) => {
         const result = await run(withStandIn(guard), '{}');
         expect(result.status).toBe(0);
@@ -57,9 +58,9 @@ describe('a guard that does not finish with a decision is a deny, since agy runs
 
 describe("the guard's own decision passes through", () => {
     test('with the hook input on its stdin', async () => {
-        const echo = "const input = await Bun.stdin.text(); process.stdout.write(JSON.stringify({ decision: 'allow', input }));";
+        const echo = "const input = await Bun.stdin.text(); process.stdout.write(JSON.stringify({ decision: 'deny', reason: input }));";
         const result = await run(withStandIn(echo), '{"toolCall":{"name":"read_file"}}');
-        expect(JSON.parse(result.stdout)).toEqual({ decision: 'allow', input: '{"toolCall":{"name":"read_file"}}' });
+        expect(JSON.parse(result.stdout)).toEqual({ decision: 'deny', reason: '{"toolCall":{"name":"read_file"}}' });
     });
 
     test('the shipped guard denies a destructive command itself, not through the wrapper', async () => {

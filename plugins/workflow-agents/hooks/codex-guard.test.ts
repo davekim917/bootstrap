@@ -50,6 +50,13 @@ function expectDecision(result: GuardResult, decision: 'deny', reason: RegExp): 
 }
 
 describe('Codex local approval transport', () => {
+  test('a null hook input is denied for any event, before the event is read', async () => {
+    const proc = Bun.spawn(['bun', 'run', GUARD, 'PostToolUse'], { stdin: new Blob(['null']), stdout: 'pipe', stderr: 'pipe' });
+    expect(await proc.exited).toBe(0);
+    const output = JSON.parse(await new Response(proc.stdout).text());
+    expect(output.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+
   test('allows safe commands', async () => {
     expect((await runGuard(shell('git status'))).output).toEqual({ continue: true });
   });
