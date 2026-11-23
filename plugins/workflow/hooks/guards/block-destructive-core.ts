@@ -5624,7 +5624,9 @@ function applyPatchProtectionReason(cmd: ResolvedCommand): string | null {
     let expanded: boolean;
     if (cmd.args.length === 1 && stdinTexts.length === 0) {
         [patch] = cmd.args;
-        expanded = /[$`]/.test(patch);
+        // Only a word that is one single-quoted string is literal; any other quoting can expand.
+        const words = argumentWords(cmd);
+        expanded = /[$`]/.test(patch) && !(words.length === 1 && /^'[^']*'$/.test(words[0].word));
     } else if (cmd.args.length === 0 && stdinTexts.length === 1) {
         [patch] = stdinTexts;
         expanded = (cmd.stdinExpanded?.length ?? 0) > 0;
