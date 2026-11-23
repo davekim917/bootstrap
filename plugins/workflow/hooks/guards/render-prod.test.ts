@@ -28,6 +28,7 @@ const PROD_DB = 'dpg-proddatabase00000001-a';
 const DEV_DB = 'dpg-devdatabase000000001-a';
 const DEV_KV = 'red-devkeyvalue000000001';
 const DEV_CRON = 'crn-devcronjob0000000001';
+const RUN = 'job-example0000000000001';
 
 let dir = '';
 let saved: string | undefined;
@@ -918,6 +919,9 @@ describe('a held Render read says it is a read', () => {
         [`render jobs list ${DEV} --confirm`, 'interactive menu', 'Its target is listed as dev.'],
         ['render logs -r $SRV --bogus', "can't account for every word", 'reads from Render'],
         [`xargs -I{} render jobs list {} < /tmp/ids`, 'interactive menu', 'reads from Render'],
+        [`J=${RUN}; S=${DEV}; render logs --resources $S --task-run-ids $J -o text`, "can't account for every word", `\`${DEV}\` is listed as dev, but \`${RUN}\` is not, so treat it as production.`],
+        [`J=${RUN}; S=${PROD}; render logs --resources $S --task-run-ids $J -o text`, "can't account for every word", 'Its target is not listed as dev, so treat it as production.'],
+        [`S=${DEV}; P=${PROD}; render logs --resources $S --task-run-ids $P -o text`, "can't account for every word", `\`${DEV}\` is listed as dev, but \`${PROD}\` is not, so treat it as production.`],
     ])('%s', (command, why, where) => {
         const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
         expect(action).toBe('gate');
