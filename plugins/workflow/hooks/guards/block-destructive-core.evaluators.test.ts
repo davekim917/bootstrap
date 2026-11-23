@@ -504,7 +504,7 @@ describe('apply_patch run from the shell', () => {
     test.each([
         ['a heredoc patch to .env', envPatch, /\.env/],
         ['applypatch after cd, adding a lockfile', "cd app && applypatch <<'EOF'\n*** Begin Patch\n*** Add File: package-lock.json\n+{}\n*** End Patch\nEOF", /package-lock\.json/],
-        ['the patch as an argument', "apply_patch '*** Begin Patch\n*** Update File: notes.txt\n*** Move to: .env\n@@\n-a\n+b\n*** End Patch'", /apply_patch/],
+        ['the patch as its one argument, moving onto .env', "apply_patch '*** Begin Patch\n*** Update File: notes.txt\n*** Move to: .env\n@@\n-a\n+b\n*** End Patch'", /\.env/],
         ['an argument beside an ordinary heredoc', "apply_patch \"$PATCH\" <<'EOF'\n*** Begin Patch\n*** Add File: notes.txt\n+x\n*** End Patch\nEOF", /apply_patch/],
         ['a file redirect after an ordinary heredoc', "command apply_patch <<'EOF' < fixture.patch\n*** Begin Patch\n*** Add File: notes.txt\n+x\n*** End Patch\nEOF", /apply_patch/],
         ['a piped patch', 'cat fixture.patch | apply_patch', /apply_patch/],
@@ -527,6 +527,7 @@ describe('apply_patch run from the shell', () => {
         ['a patch to an ordinary file', "apply_patch <<'EOF'\n*** Begin Patch\n*** Update File: src/a.ts\n@@\n-a\n+b\n*** End Patch\nEOF"],
         ['apply_patch named as an argument', 'grep -rn apply_patch .env.example'],
         ['a lookup with command -v', 'command -v apply_patch'],
+        ['the patch as its one literal argument', "apply_patch '*** Begin Patch\n*** Add File: notes.txt\n+x\n*** End Patch'"],
         ['a lookup with command -V', 'command -V apply_patch'],
         ['a literal $ in a quoted heredoc', "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: cash$notes.txt\n+x\n*** End Patch\nEOF"],
         ['a path that leaves terraform/ again', "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: terraform/../notes.txt\n+x\n*** End Patch\nEOF"],

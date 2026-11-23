@@ -112,19 +112,25 @@ export function isProtectedEditPath(path: string, cwd?: string): boolean {
     return false;
 }
 
-// Both runtimes split on \n alone, read headers only at column 0 (a line
-// starting with a space is hunk context), and trim the path's ends, so a \r
-// inside a path stays in it. OpenCode accepts no space after the colon. "Move
-// to" names the file an update is written to.
-const PATCH_HEADER = /^\*\*\* (?:Add File|Update File|Delete File|Move to):([\s\S]*)$/;
+// Both runtimes split on \n alone and trim the path's ends, so a \r inside a
+// path stays in it. Inside an Update hunk a header must start at column 0 (a
+// line starting with a space is context); elsewhere Codex trims leading
+// whitespace first, while OpenCode reads column 0 in every state, so the guard
+// takes the looser of the two. OpenCode accepts no space after the colon.
+// "Move to" names the file an update is written to.
+const PATCH_HEADER = /^\*\*\* (Add File|Update File|Delete File|Move to):([\s\S]*)$/;
 
 /** Extract file paths from the `apply_patch` envelope format (Codex and OpenCode). */
 export function filePathsFromPatch(text: unknown): string[] {
     if (typeof text !== 'string') return [];
     const paths: string[] = [];
+    let inUpdate = false;
     for (const line of text.split('\n')) {
-        const path = line.match(PATCH_HEADER)?.[1].trim();
+        const m: RegExpMatchArray | null = (inUpdate ? line.trimEnd() : line.trim()).match(PATCH_HEADER);
+        if (!m) continue;
+        const path = m[2].trim();
         if (path) paths.push(path);
+        if (m[1] !== 'Move to') inUpdate = m[1] === 'Update File';
     }
     return paths;
 }

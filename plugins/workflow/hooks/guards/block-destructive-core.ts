@@ -5615,12 +5615,24 @@ function applyPatchProtectionReason(cmd: ResolvedCommand): string | null {
     if (COMMAND_LOOKUP.test(cmd.raw)) return null;
     if (process.env.SKIP_FILE_PROTECTION === '1') return null;
     const unreadable = `${cmd.name} with a patch the file-protection guard cannot read is not allowed. Use the apply_patch tool, or give the patch as its only input in a quoted heredoc (<<'EOF').`;
-    // The executable reads an argument before stdin, and a later redirect or a pipe replaces the heredoc.
+    // The executable reads an argument before stdin, and a later redirect or a pipe replaces the heredoc, so the
+    // patch is read only from one literal argument with no other input, or from one heredoc with no argument.
     const piped = cmd.pipedInput !== undefined || (cmd.pos !== undefined && (cmd.script?.pipedInto.has(cmd.pos) ?? false));
-    if (cmd.args.length > 0 || (cmd.stdinFiles?.length ?? 0) > 0 || piped || cmd.stdinTexts?.length !== 1) return unreadable;
-    const paths = filePathsFromPatch(cmd.stdinTexts[0]);
-    const expanded = (cmd.stdinExpanded?.length ?? 0) > 0;
-    if (paths.length === 0 || (expanded && paths.some(p => /[$`\\]/.test(p)))) return unreadable;
+    const stdinTexts = cmd.stdinTexts ?? [];
+    if ((cmd.stdinFiles?.length ?? 0) > 0 || piped) return unreadable;
+    let patch: string;
+    let expanded: boolean;
+    if (cmd.args.length === 1 && stdinTexts.length === 0) {
+        [patch] = cmd.args;
+        expanded = /[$`]/.test(patch);
+    } else if (cmd.args.length === 0 && stdinTexts.length === 1) {
+        [patch] = stdinTexts;
+        expanded = (cmd.stdinExpanded?.length ?? 0) > 0;
+    } else {
+        return unreadable;
+    }
+    const paths = filePathsFromPatch(patch);
+    if (paths.length === 0 || (expanded && (cmd.args.length === 1 || paths.some(p => /[$`\\]/.test(p))))) return unreadable;
     const protectedPath = firstProtectedPath(paths, applyPatchCwd(cmd));
     return protectedPath ? `file-protection — '${protectedPath}' is protected from automated edits.` : null;
 }

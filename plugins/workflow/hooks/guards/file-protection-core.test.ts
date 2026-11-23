@@ -95,6 +95,8 @@ describe('checkEditProtection', () => {
     it.each([
         ['a bare CR inside the path', { patchText: '*** Begin Patch\n*** Add File: scratch\r/../.env\n+X=1\n*** End Patch' }, undefined, 'scratch\r/../.env'],
         ['a relative path inside terraform/', { patchText: '*** Begin Patch\n*** Add File: main.tf\n+x\n*** End Patch' }, '/repo/terraform', 'main.tf'],
+        ['an indented header right after Begin Patch', { patchText: '*** Begin Patch\n *** Add File: .env\n+X=1\n*** End Patch' }, undefined, '.env'],
+        ['an indented header after an Add hunk', { patchText: '*** Begin Patch\n*** Add File: notes.txt\n+x\n\t*** Delete File: yarn.lock\n*** End Patch' }, undefined, 'yarn.lock'],
         ['deleting a linked worktree\'s .git file', { patchText: '*** Begin Patch\n*** Delete File: .git\n*** End Patch' }, undefined, '.git'],
         ['a template name under .git/', { patchText: '*** Begin Patch\n*** Add File: .git/.env.example\n+x\n*** End Patch' }, undefined, '.git/.env.example'],
     ])('flags a patch through %s', (_name, input, cwd, expected) => {
