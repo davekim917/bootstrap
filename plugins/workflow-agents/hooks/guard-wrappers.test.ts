@@ -192,6 +192,9 @@ function withStandIn(rt: Runtime, guard: string, seconds = 30, checker?: string)
     return join(root, rt.wrapper.split('/').pop()!);
 }
 
+/** timeout's status after it sends KILL differs by coreutils build: 137 with 9.1 on the host and in the image, 124 on the CI runner. */
+const WATCHDOG_DENY = /did not finish.*\(exit (?:124|137)\)/;
+
 const print = (text: string) => `process.stdout.write(${JSON.stringify(text)});`;
 
 /** An environment whose bun reports `version` (after `stall` seconds) and otherwise runs the real bun. */
@@ -221,7 +224,7 @@ describe.each(RUNTIMES)('$runtime wrapper: anything but a well-formed decision i
     test('runs past the watchdog', async () => {
         const result = await run(withStandIn(rt, 'await Bun.sleep(60_000);', 2), '{}');
         expect(result.status).toBe(0);
-        expect(rt.reasonOf(JSON.parse(result.stdout))).toMatch(/did not finish.*\(exit 137\)/);
+        expect(rt.reasonOf(JSON.parse(result.stdout))).toMatch(WATCHDOG_DENY);
         expect(result.ms).toBeLessThan(10_000);
     });
 
@@ -243,25 +246,25 @@ describe.each(RUNTIMES)('$runtime wrapper: anything but a well-formed decision i
     // Each stall outlasts the 2-second watchdog by far; the deny must arrive on the watchdog's clock.
     test('stalls in the reply check', async () => {
         const result = await run(withStandIn(rt, print(JSON.stringify(rt.allowed)), 2, 'await Bun.sleep(20_000);'), '{}');
-        expect(rt.reasonOf(JSON.parse(result.stdout))).toMatch(/did not finish.*\(exit 137\)/);
+        expect(rt.reasonOf(JSON.parse(result.stdout))).toMatch(WATCHDOG_DENY);
         expect(result.ms).toBeLessThan(10_000);
     }, 30_000);
 
     test('stalls in the bun version probe', async () => {
         const result = await run(withStandIn(rt, print(JSON.stringify(rt.allowed)), 2), '{}', { env: fakeBun('1.4.2', 20) });
-        expect(rt.reasonOf(JSON.parse(result.stdout))).toMatch(/did not finish.*\(exit 137\)/);
+        expect(rt.reasonOf(JSON.parse(result.stdout))).toMatch(WATCHDOG_DENY);
         expect(result.ms).toBeLessThan(10_000);
     }, 30_000);
 
     test('stalls in the bun version probe with errexit switched on through SHELLOPTS', async () => {
         const result = await run(withStandIn(rt, print(JSON.stringify(rt.allowed)), 2), '{}', { env: { ...fakeBun('1.4.2', 20), SHELLOPTS: 'errexit' } });
-        expect(rt.reasonOf(JSON.parse(result.stdout))).toMatch(/did not finish.*\(exit 137\)/);
+        expect(rt.reasonOf(JSON.parse(result.stdout))).toMatch(WATCHDOG_DENY);
         expect(result.ms).toBeLessThan(10_000);
     }, 30_000);
 
     test('runs past the watchdog with SECONDS set in its environment', async () => {
         const result = await run(withStandIn(rt, 'await Bun.sleep(20_000);', 2), '{}', { env: { ...process.env, SECONDS: '-100' } });
-        expect(rt.reasonOf(JSON.parse(result.stdout))).toMatch(/did not finish.*\(exit 137\)/);
+        expect(rt.reasonOf(JSON.parse(result.stdout))).toMatch(WATCHDOG_DENY);
         expect(result.ms).toBeLessThan(10_000);
     }, 30_000);
 });
