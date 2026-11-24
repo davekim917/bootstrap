@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AGY_APPROVAL_HANDOFF, decideAgyCall } from './agy-guard';
@@ -34,7 +34,7 @@ describe('agy tool calls reach the shared policy under the names the cores read'
         ['an MCP call that sends nothing', call('call_mcp_tool', { ServerName: 'docs', ToolName: 'search', Arguments: { q: 'x' } })],
         ['a read-only tool', call('read_file', { Path: 'README.md' })],
         ['a question with no /team-auto run active', call('ask_question', { Question: 'Which branch?' }, tmpdir())],
-        ['a subagent with no workspace of its own', call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: 't' })],
+        ['a subagent with no workspace of its own', call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: 'self' })],
     ])('%s is allowed', (_name, payload) => {
         expect(decideAgyCall(payload)).toEqual({ action: 'allow' });
     });
@@ -338,7 +338,6 @@ describe('a subagent that does not inherit customizations would run without thes
         ['a workspace agent directory', 'workspace', 'writer/agent.md', 'name: writer\ninheritCustomizations: false'],
         ['a global agent file', 'home', 'writer.md', 'name: writer\ninheritCustomizations: false'],
         ['a global agent directory', 'home', 'writer/agent.md', 'name: writer\ninheritScopes: none'],
-        ['a definition named only by its file', 'workspace', 'writer.md', 'description: d\ninheritScopes: repo_and_org'],
         ['a definition whose name differs from its file', 'workspace', 'other.md', 'name: writer\ninheritCustomizations: "false"'],
     ])('invoke_subagent of an agent defined by %s', (_name, where, file, frontmatter) => {
         const { home, root } = homeAndRoot();
@@ -347,6 +346,13 @@ describe('a subagent that does not inherit customizations would run without thes
         const verdict = decideAgyCall(invoke(root, 'writer'), { home });
         expect(verdict.action).toBe('deny');
         expect(verdict.action === 'deny' ? verdict.reason : '').toMatch(/agent 'writer' .* sets inherit(Customizations|Scopes)/);
+    });
+
+    test('a definition named only by its file is no match, and is denied as unknown', () => {
+        const { home, root } = homeAndRoot();
+        agentDef(join(root, '.agents', 'agents'), 'writer.md', 'description: d\ninheritScopes: repo_and_org');
+        const verdict = decideAgyCall(invoke(root, 'writer'), { home });
+        expect(verdict.action === 'deny' ? verdict.reason : 'allowed').toMatch(/no agent definition named 'writer'/);
     });
 
     test('invoke_subagent through a Subagents list entry', () => {
@@ -399,6 +405,92 @@ describe('a subagent that does not inherit customizations would run without thes
         const reply = JSON.parse(await new Response(proc.stdout).text());
         expect(reply.decision).toBe('deny');
         expect(reply.reason).toMatch(/agent 'writer' .* sets inheritCustomizations/);
+    });
+});
+
+describe('invoke_subagent resolves a TypeName to the one definition agy would load', () => {
+    function agentDef(dir: string, file: string, frontmatter: string): string {
+        mkdirSync(join(dir, file, '..'), { recursive: true });
+        writeFileSync(join(dir, file), `---\n${frontmatter}\n---\n\n# System Prompt\nWrite what you are asked to.\n`);
+        return join(dir, file);
+    }
+    function invoke(root: string, typeName: string): unknown {
+        return { ...(call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: typeName }) as object), workspacePaths: [root] };
+    }
+    function setup(): { home: string; root: string; workspaceAgents: string; globalAgents: string } {
+        const home = scratch();
+        const root = scratch();
+        return { home, root, workspaceAgents: join(root, '.agents', 'agents'), globalAgents: join(home, '.gemini', 'config', 'agents') };
+    }
+    function reason(payload: unknown, home: string): string {
+        const verdict = decideAgyCall(payload, { home });
+        return verdict.action === 'deny' ? verdict.reason : 'allowed';
+    }
+
+    test.each([['self'], ['research'], ['browser']])('the built-in %s is allowed beside an unrelated README and a broken agent file', (builtIn) => {
+        const { home, root, workspaceAgents } = setup();
+        mkdirSync(workspaceAgents, { recursive: true });
+        writeFileSync(join(workspaceAgents, 'README.md'), 'Agents for this repository.\n');
+        writeFileSync(join(workspaceAgents, 'broken.md'), '---\nname: [broken\n---\n');
+        expect(decideAgyCall(invoke(root, builtIn), { home })).toEqual({ action: 'allow' });
+    });
+
+    test('a valid named agent is allowed beside a README, a broken file and an unreadable file', () => {
+        const { home, root, workspaceAgents } = setup();
+        agentDef(workspaceAgents, 'writer.md', 'name: writer');
+        writeFileSync(join(workspaceAgents, 'README.md'), 'Agents for this repository.\n');
+        writeFileSync(join(workspaceAgents, 'broken.md'), '---\nname: [broken\n---\n');
+        const locked = agentDef(workspaceAgents, 'locked.md', 'name: locked');
+        chmodSync(locked, 0o000);
+        expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
+    });
+
+    test('a custom name no definition carries is denied', () => {
+        const { home, root, workspaceAgents } = setup();
+        agentDef(workspaceAgents, 'writer.md', 'name: writer');
+        expect(reason(invoke(root, 'reviewer'), home)).toMatch(/no agent definition named 'reviewer'/);
+    });
+
+    test.each([
+        ['by file name, which agy does not read', 'writer.md', 'name: author', 'writer'],
+        ['with other letter case, which agy does not match', 'writer.md', 'name: Writer', 'writer'],
+        ['two directories deep, which agy does not load', 'team/writer/agent.md', 'name: writer', 'writer'],
+    ])('a definition reachable only %s is not a match', (_name, file, frontmatter, typeName) => {
+        const { home, root, workspaceAgents } = setup();
+        agentDef(workspaceAgents, file, frontmatter);
+        expect(reason(invoke(root, typeName), home)).toMatch(new RegExp(`no agent definition named '${typeName}'`));
+    });
+
+    test('a workspace definition takes precedence over a global one of the same name', () => {
+        const { home, root, workspaceAgents, globalAgents } = setup();
+        agentDef(workspaceAgents, 'writer.md', 'name: writer\ninheritCustomizations: true');
+        agentDef(globalAgents, 'writer.md', 'name: writer\ninheritCustomizations: false');
+        expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
+        agentDef(workspaceAgents, 'writer.md', 'name: writer\ninheritCustomizations: false');
+        agentDef(globalAgents, 'writer.md', 'name: writer');
+        expect(reason(invoke(root, 'writer'), home)).toMatch(/agent 'writer' .* sets inheritCustomizations/);
+    });
+
+    test('a definition whose file resolves outside its agents directory is denied', () => {
+        const { home, root, workspaceAgents } = setup();
+        const elsewhere = agentDef(scratch(), 'writer.md', 'name: writer');
+        mkdirSync(workspaceAgents, { recursive: true });
+        symlinkSync(elsewhere, join(workspaceAgents, 'writer.md'));
+        expect(reason(invoke(root, 'writer'), home)).toMatch(/resolves outside its agents directory/);
+    });
+
+    test('a lookup error on the path to the definitions is denied', () => {
+        const { home, root } = setup();
+        writeFileSync(join(root, '.agents'), 'not a directory');
+        expect(reason(invoke(root, 'writer'), home)).toMatch(/cannot be (listed|resolved)/);
+        expect(reason(invoke(root, 'self'), home)).toMatch(/cannot be (listed|resolved)/);
+    });
+
+    test('a definition agy may read under the requested name but the guard cannot parse is denied', () => {
+        const { home, root, workspaceAgents } = setup();
+        mkdirSync(workspaceAgents, { recursive: true });
+        writeFileSync(join(workspaceAgents, 'writer.md'), '---\nname: writer\ninheritCustomizations: [false\n---\n');
+        expect(reason(invoke(root, 'writer'), home)).toMatch(/defines agent 'writer' but cannot be read/);
     });
 });
 

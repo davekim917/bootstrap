@@ -11,7 +11,7 @@
  */
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'path';
+import { dirname, isAbsolute, join, resolve, sep } from 'path';
 import { decideToolCall, type ToolCall, type Verdict } from './guard-policy';
 import { extractCommands, walkCommandNodes } from './guards/block-destructive-core';
 import { parseShell } from './guards/gate-card-core';
@@ -151,85 +151,130 @@ function inheritanceOff(value: unknown): string | null {
     return null;
 }
 
-type AgentDefinition = { file: string; names: string[]; frontmatter: Record<string, unknown> } | { file: string; error: string };
+/** Subagent types agy ships with no definition file. */
+const BUILT_IN_SUBAGENTS = new Set(['self', 'research', 'browser']);
 
-/** The markdown agent files in one agents directory, as `<name>.md` or `<name>/agent.md`, each with the name its path gives it. */
-function agentFilesIn(dir: string): Array<{ file: string; pathName: string }> {
+function errorCode(error: unknown): string {
+    return (error as NodeJS.ErrnoException)?.code ?? (error instanceof Error ? error.message : String(error));
+}
+
+/** An agents directory as the filesystem resolves it, or null when it does not exist. Any other error throws. */
+function canonicalAgentsDir(dir: string): string | null {
+    try {
+        return realpathSync(dir);
+    } catch (error) {
+        if (errorCode(error) === 'ENOENT') return null;
+        throw new Error(`the agents directory ${dir} cannot be resolved (${errorCode(error)})`);
+    }
+}
+
+/** The files agy reads markdown agents from in one directory: `<dir>/<file>.md` and `<dir>/<subdir>/agent.md`, no deeper. */
+function agentFilesIn(dir: string): string[] {
     let entries: string[];
     try {
         entries = readdirSync(dir);
     } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code === 'ENOENT' || code === 'ENOTDIR') return [];
-        throw new Error(`the agents directory ${dir} cannot be listed (${code ?? String(error)})`);
+        throw new Error(`the agents directory ${dir} cannot be listed (${errorCode(error)})`);
     }
-    const files: Array<{ file: string; pathName: string }> = [];
+    const files: string[] = [];
     for (const entry of entries) {
         const path = join(dir, entry);
         let isDirectory: boolean;
         try {
             isDirectory = statSync(path).isDirectory();
         } catch {
-            if (entry.endsWith('.md')) files.push({ file: path, pathName: basename(entry, '.md') });
             continue;
         }
         if (isDirectory) {
-            if (existsSync(join(path, 'agent.md'))) files.push({ file: join(path, 'agent.md'), pathName: entry });
+            if (existsSync(join(path, 'agent.md'))) files.push(join(path, 'agent.md'));
         } else if (entry.endsWith('.md')) {
-            files.push({ file: path, pathName: basename(entry, '.md') });
+            files.push(path);
         }
     }
     return files;
 }
 
-/** One agent file's frontmatter, or why it cannot be read as one. */
-function readAgentDefinition(file: string, pathName: string): AgentDefinition {
+/**
+ * A file's frontmatter, or why it cannot be read as one, with the `name` a line of it declares even when the
+ * frontmatter does not parse: agy's YAML parser may read a file this one rejects.
+ */
+function readAgentFile(file: string): { frontmatter: Record<string, unknown> } | { error: string; declaredName?: string } {
     let text: string;
     try {
         text = readFileSync(file, 'utf-8');
-        if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
     } catch (error) {
-        return { file, error: (error as NodeJS.ErrnoException).code ?? String(error) };
+        return { error: errorCode(error) };
     }
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
     const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
-    if (!match) return { file, error: 'no YAML frontmatter' };
+    if (!match) return { error: 'no YAML frontmatter' };
+    const declaredName = /^name[ \t]*:[ \t]*(.*?)[ \t]*$/m.exec(match[1])?.[1].replace(/^(['"])(.*)\1$/, '$2');
     let frontmatter: unknown;
     try {
         frontmatter = Bun.YAML.parse(match[1]);
     } catch (error) {
-        return { file, error: error instanceof Error ? error.message : String(error) };
+        return { error: error instanceof Error ? error.message : String(error), declaredName };
     }
-    if (!frontmatter || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) return { file, error: 'frontmatter is not a mapping' };
-    const fields = frontmatter as Record<string, unknown>;
-    const names = [pathName, ...(typeof fields.name === 'string' ? [fields.name] : [])];
-    return { file, names, frontmatter: fields };
+    if (!frontmatter || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) return { error: 'frontmatter is not a mapping', declaredName };
+    return { frontmatter: frontmatter as Record<string, unknown> };
 }
 
+type Candidate = { file: string; dir: string; frontmatter?: Record<string, unknown>; error?: string };
+
 /**
- * Why invoking the agents `typeNames` would run one without this guard, or null. Definitions come from where agy loads
- * markdown agents: each workspace's `.agents/agents/` and `~/.gemini/config/agents/`. A definition that cannot be
- * read could be any of them, so it refuses the call.
+ * Why invoking `typeName` would run a subagent without this guard, or null. agy loads markdown agents from each
+ * workspace's `.agents/agents/` before `~/.gemini/config/agents/`, matching the frontmatter `name` exactly; the file
+ * name and any deeper directory play no part. The guard checks only the definitions the first of those scopes holds
+ * under that name. A file it cannot read or parse elsewhere is no candidate, unless a `name` line still names
+ * `typeName`. A custom name with no definition, a lookup error, or a definition that resolves outside its directory
+ * is refused, since the guard cannot check what agy would run.
  */
-function subagentInheritanceRefusal(typeNames: string[], roots: string[], home: string): string | null {
-    const wanted = new Set(typeNames.map((name) => name.toLowerCase()));
-    const dirs = [...roots.map((root) => join(root, '.agents', 'agents')), join(home, '.gemini', 'config', 'agents')];
-    for (const dir of dirs) {
-        let files: Array<{ file: string; pathName: string }>;
-        try {
-            files = agentFilesIn(dir);
-        } catch (error) {
-            return `${error instanceof Error ? error.message : String(error)}, so the guard cannot tell whether the subagent keeps this guard's hooks.`;
+function subagentRefusal(typeName: string, roots: string[], home: string): string | null {
+    const scopes = [roots.map((root) => join(root, '.agents', 'agents')), [join(home, '.gemini', 'config', 'agents')]];
+    const skipped: string[] = [];
+    let selected: Candidate[] = [];
+    try {
+        for (const scope of scopes) {
+            for (const configured of scope) {
+                const dir = canonicalAgentsDir(configured);
+                if (dir === null) continue;
+                for (const file of agentFilesIn(dir)) {
+                    const read = readAgentFile(file);
+                    if ('frontmatter' in read) {
+                        if (read.frontmatter.name === typeName) selected.push({ file, dir, frontmatter: read.frontmatter });
+                    } else if (read.declaredName === typeName) {
+                        selected.push({ file, dir, error: read.error });
+                    } else {
+                        skipped.push(`${file} cannot be read as an agent definition (${read.error})`);
+                    }
+                }
+            }
+            if (selected.length) break;
         }
-        for (const { file, pathName } of files) {
-            const definition = readAgentDefinition(file, pathName);
-            if ('error' in definition) {
-                return `${file} cannot be read as an agent definition (${definition.error}), so the guard cannot tell whether a subagent it defines keeps this guard's hooks. Fix or remove that file.`;
-            }
-            const name = definition.names.find((candidate) => wanted.has(candidate.toLowerCase()));
-            const off = name === undefined ? null : inheritanceOff(definition.frontmatter);
-            if (off) {
-                return `agent '${name}' (${file}) sets ${off}, so it would run without the user's hooks, this guard among them. Agents may only invoke subagents that inherit customizations.`;
-            }
+    } catch (error) {
+        return `${error instanceof Error ? error.message : String(error)}, so the guard cannot tell which definition agy would run for '${typeName}'.`;
+    }
+    if (!selected.length) {
+        if (BUILT_IN_SUBAGENTS.has(typeName)) return null;
+        const searched = scopes.flat().join(', ');
+        return `no agent definition named '${typeName}' that agy would load (searched ${searched}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}), so the guard cannot check it. Invoke a built-in subagent (${[...BUILT_IN_SUBAGENTS].join(', ')}) or a markdown agent defined there.`;
+    }
+    for (const { file, dir, frontmatter, error } of selected) {
+        if (error !== undefined || !frontmatter) {
+            return `${file} defines agent '${typeName}' but cannot be read as an agent definition (${error}), so the guard cannot tell whether it keeps this guard's hooks. Fix or remove that file.`;
+        }
+        let real: string;
+        try {
+            real = realpathSync(file);
+        } catch (lookup) {
+            return `${file}, which defines agent '${typeName}', cannot be resolved (${errorCode(lookup)}).`;
+        }
+        if (!real.startsWith(dir + sep)) {
+            return `${file}, which defines agent '${typeName}', resolves outside its agents directory (${real}), so the guard cannot tell whether agy reads the same file.`;
+        }
+        const off = inheritanceOff(frontmatter);
+        if (off) {
+            return `agent '${typeName}' (${file}) sets ${off}, so it would run without the user's hooks, this guard among them. Agents may only invoke subagents that inherit customizations.`;
         }
     }
     return null;
@@ -442,8 +487,10 @@ export function decideAgyCall(payload: unknown, { home = process.env.HOME || hom
         }
         const typeNames = typeNamesIn(args);
         if (typeNames.some((typeName) => typeof typeName !== 'string')) return denied(`${name} has an unreadable TypeName.`);
-        const refusal = subagentInheritanceRefusal(typeNames.filter((typeName): typeName is string => typeName !== ''), roots, home);
-        if (refusal) return denied(refusal);
+        for (const typeName of typeNames.filter((value): value is string => value !== '')) {
+            const refusal = subagentRefusal(typeName, roots, home);
+            if (refusal) return denied(refusal);
+        }
         return { action: 'allow' };
     }
 
