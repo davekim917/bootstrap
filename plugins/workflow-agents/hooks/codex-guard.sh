@@ -14,9 +14,17 @@ here="$(cd "$(dirname "$0")" && pwd)" || deny 'The command guard could not be lo
 out="$(mktemp)" || deny 'The command guard could not start, so the command was not run.'
 trap 'rm -f "$out"' EXIT
 
+# The hook runs in the agent's working directory, where a .env or a bunfig.toml preload could switch a check off.
+# Bun before 1.3.3 accepts --no-env-file and still loads the .env, so an older or unrecognised bun is refused.
+version="$(bun --version 2>/dev/null | LC_ALL=C tr -c '0-9.\n' '#')"
+too_old='The command guard needs Bun 1.3.3 or newer, so the command was not run. Tell the user; do not retry or work around it.'
+[[ "$version" =~ ^([0-9]{1,9})\.([0-9]{1,9})\.([0-9]{1,9})$ ]] || deny "$too_old"
+major=$((10#${BASH_REMATCH[1]})) minor=$((10#${BASH_REMATCH[2]})) patch=$((10#${BASH_REMATCH[3]}))
+(( major > 1 || (major == 1 && (minor > 3 || (minor == 3 && patch >= 3))) )) || deny "$too_old"
+
 # A background job in a non-interactive shell reads /dev/null unless given stdin explicitly.
 exec 3<&0
-bun "$here/codex-guard.ts" "$@" <&3 >"$out" &
+bun --no-env-file --config=/dev/null "$here/codex-guard.ts" "$@" <&3 >"$out" &
 guard=$!
 exec 3<&-
 (
