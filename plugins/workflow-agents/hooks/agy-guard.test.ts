@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { AGY_APPROVAL_HANDOFF, decideAgyCall } from './agy-guard';
 
 const GUARD = join(import.meta.dir, 'agy-guard.ts');
@@ -34,7 +34,7 @@ describe('agy tool calls reach the shared policy under the names the cores read'
         ['an MCP call that sends nothing', call('call_mcp_tool', { ServerName: 'docs', ToolName: 'search', Arguments: { q: 'x' } })],
         ['a read-only tool', call('read_file', { Path: 'README.md' })],
         ['a question with no /team-auto run active', call('ask_question', { Question: 'Which branch?' }, tmpdir())],
-        ['a subagent with no workspace of its own', call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: 't' })],
+        ['a subagent with no workspace of its own', call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: 'self' })],
     ])('%s is allowed', (_name, payload) => {
         expect(decideAgyCall(payload)).toEqual({ action: 'allow' });
     });
@@ -299,6 +299,396 @@ describe('any BypassSandbox value but false is a request to leave the sandbox', 
 
     test('false is allowed', () => {
         expect(decideAgyCall(call('run_command', { CommandLine: 'pwd', BypassSandbox: false }))).toEqual({ action: 'allow' });
+    });
+});
+
+describe('a subagent that does not inherit customizations would run without these hooks, so it is denied', () => {
+    function agentDef(dir: string, file: string, frontmatter: string): void {
+        mkdirSync(join(dir, file, '..'), { recursive: true });
+        writeFileSync(join(dir, file), `---\n${frontmatter}\n---\n\n# System Prompt\nWrite what you are asked to.\n`);
+    }
+    function invoke(root: string, typeName: string): unknown {
+        return { ...(call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: typeName }) as object), workspacePaths: [root] };
+    }
+    function homeAndRoot(): { home: string; root: string } {
+        return { home: scratch(), root: scratch() };
+    }
+
+    test.each([
+        ['inheritCustomizations', false], ['inheritCustomizations', 'false'], ['inheritCustomizations', 0], ['inheritCustomizations', null],
+        ['inheritCustomizations', 'no'], ['InheritCustomizations', false], ['inherit_customizations', false],
+        ['inheritScopes', 'none'], ['inheritScopes', 'repo_and_org'], ['inheritScopes', null],
+    ])('define_subagent with %s %j', (key, value) => {
+        const args = { Name: 'helper', Description: 'd', SystemPrompt: 's', EnableWriteTools: true, [key]: value };
+        expect(reasonOf(call('define_subagent', args))).toMatch(/define_subagent sets inherit(Customizations|Scopes)/);
+    });
+
+    test.each([
+        ['inheritCustomizations true', { inheritCustomizations: true }],
+        ['inheritScopes all', { inheritScopes: 'all' }],
+        ['neither', {}],
+        ['a key that only an object prototype has', { constructor: false, toString: 0 }],
+    ])('define_subagent with %s is allowed', (_name, extra) => {
+        const args = { Name: 'helper', Description: 'd', SystemPrompt: 's', EnableWriteTools: true, ...extra };
+        expect(decideAgyCall(call('define_subagent', args))).toEqual({ action: 'allow' });
+    });
+
+    test.each([
+        ['a workspace agent file', 'workspace', 'writer.md', 'name: writer\ninheritCustomizations: false'],
+        ['a workspace agent directory', 'workspace', 'writer/agent.md', 'name: writer\ninheritCustomizations: false'],
+        ['a global agent file', 'home', 'writer.md', 'name: writer\ninheritCustomizations: false'],
+        ['a global agent directory', 'home', 'writer/agent.md', 'name: writer\ninheritScopes: none'],
+        ['a definition whose name differs from its file', 'workspace', 'other.md', 'name: writer\ninheritCustomizations: "false"'],
+    ])('invoke_subagent of an agent defined by %s', (_name, where, file, frontmatter) => {
+        const { home, root } = homeAndRoot();
+        const dir = where === 'home' ? join(home, '.gemini', 'config', 'agents') : join(root, '.agents', 'agents');
+        agentDef(dir, file, frontmatter);
+        const verdict = decideAgyCall(invoke(root, 'writer'), { home });
+        expect(verdict.action).toBe('deny');
+        expect(verdict.action === 'deny' ? verdict.reason : '').toMatch(/agent 'writer' .* sets inherit(Customizations|Scopes)/);
+    });
+
+    test('a definition named only by its file is no match, and is denied as unknown', () => {
+        const { home, root } = homeAndRoot();
+        agentDef(join(root, '.agents', 'agents'), 'writer.md', 'description: d\ninheritScopes: repo_and_org');
+        const verdict = decideAgyCall(invoke(root, 'writer'), { home });
+        expect(verdict.action === 'deny' ? verdict.reason : 'allowed').toMatch(/no agent definition named 'writer'/);
+    });
+
+    test('invoke_subagent through a Subagents list entry', () => {
+        const { home, root } = homeAndRoot();
+        agentDef(join(root, '.agents', 'agents'), 'writer.md', 'name: writer\ninheritCustomizations: false');
+        const listed = { ...(call('invoke_subagent', { Subagents: [{ Prompt: 'a', TypeName: 'self' }, { Prompt: 'b', TypeName: 'writer' }] }) as object), workspacePaths: [root] };
+        const verdict = decideAgyCall(listed, { home });
+        expect(verdict.action === 'deny' ? verdict.reason : 'allowed').toMatch(/agent 'writer'/);
+    });
+
+    test.each([
+        ['no frontmatter', 'Write what you are asked to.\n'],
+        ['frontmatter that is not YAML', '---\nname: [writer\n---\n'],
+        ['frontmatter that is not a mapping', '---\n- writer\n---\n'],
+    ])('a definition with %s fails closed', (_name, text) => {
+        const { home, root } = homeAndRoot();
+        mkdirSync(join(root, '.agents', 'agents'), { recursive: true });
+        writeFileSync(join(root, '.agents', 'agents', 'writer.md'), text);
+        const verdict = decideAgyCall(invoke(root, 'writer'), { home });
+        expect(verdict.action === 'deny' ? verdict.reason : 'allowed').toMatch(/cannot be read as an agent definition/);
+    });
+
+    test.each([
+        ['without the field', 'name: writer'],
+        ['with inheritCustomizations true', 'name: writer\ninheritCustomizations: true'],
+        ['with inheritScopes all', 'name: writer\ninheritScopes: all'],
+    ])('invoke_subagent of an agent %s is allowed', (_name, frontmatter) => {
+        const { home, root } = homeAndRoot();
+        agentDef(join(root, '.agents', 'agents'), 'writer.md', frontmatter);
+        agentDef(join(home, '.gemini', 'config', 'agents'), 'writer/agent.md', frontmatter);
+        expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
+    });
+
+    test('an agent that drops inheritance does not block invoking a different one', () => {
+        const { home, root } = homeAndRoot();
+        agentDef(join(root, '.agents', 'agents'), 'loner.md', 'name: loner\ninheritCustomizations: false');
+        agentDef(join(root, '.agents', 'agents'), 'writer.md', 'name: writer');
+        expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
+        expect(decideAgyCall(invoke(root, 'self'), { home })).toEqual({ action: 'allow' });
+    });
+
+    test('the installed guard reads the global agents of the HOME it runs with', async () => {
+        const { home, root } = homeAndRoot();
+        agentDef(join(home, '.gemini', 'config', 'agents'), 'writer.md', 'name: writer\ninheritCustomizations: false');
+        const proc = Bun.spawn(['bun', GUARD], {
+            stdin: new Blob([JSON.stringify(invoke(root, 'writer'))]),
+            stdout: 'pipe', stderr: 'pipe', env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home },
+        });
+        expect(await proc.exited).toBe(0);
+        const reply = JSON.parse(await new Response(proc.stdout).text());
+        expect(reply.decision).toBe('deny');
+        expect(reply.reason).toMatch(/agent 'writer' .* sets inheritCustomizations/);
+    });
+});
+
+describe('invoke_subagent resolves a TypeName to the one definition agy would load', () => {
+    function agentDef(dir: string, file: string, frontmatter: string): string {
+        mkdirSync(join(dir, file, '..'), { recursive: true });
+        writeFileSync(join(dir, file), `---\n${frontmatter}\n---\n\n# System Prompt\nWrite what you are asked to.\n`);
+        return join(dir, file);
+    }
+    function invoke(root: string, typeName: string): unknown {
+        return { ...(call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: typeName }) as object), workspacePaths: [root] };
+    }
+    function setup(): { home: string; root: string; workspaceAgents: string; globalAgents: string } {
+        const home = scratch();
+        const root = scratch();
+        return { home, root, workspaceAgents: join(root, '.agents', 'agents'), globalAgents: join(home, '.gemini', 'config', 'agents') };
+    }
+    function reason(payload: unknown, home: string): string {
+        const verdict = decideAgyCall(payload, { home });
+        return verdict.action === 'deny' ? verdict.reason : 'allowed';
+    }
+
+    test.each([['self'], ['research'], ['browser']])('the built-in %s is allowed beside an unrelated README and a broken agent file', (builtIn) => {
+        const { home, root, workspaceAgents } = setup();
+        mkdirSync(workspaceAgents, { recursive: true });
+        writeFileSync(join(workspaceAgents, 'README.md'), 'Agents for this repository.\n');
+        writeFileSync(join(workspaceAgents, 'broken.md'), '---\nname: [broken\n---\n');
+        expect(decideAgyCall(invoke(root, builtIn), { home })).toEqual({ action: 'allow' });
+    });
+
+    test('a valid named agent is allowed beside a README and a broken file', () => {
+        const { home, root, workspaceAgents } = setup();
+        agentDef(workspaceAgents, 'writer.md', 'name: writer');
+        writeFileSync(join(workspaceAgents, 'README.md'), 'Agents for this repository.\n');
+        writeFileSync(join(workspaceAgents, 'broken.md'), '---\nname: [broken\n---\n');
+        expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
+    });
+
+    test('a custom name no definition carries is denied', () => {
+        const { home, root, workspaceAgents } = setup();
+        agentDef(workspaceAgents, 'writer.md', 'name: writer');
+        expect(reason(invoke(root, 'reviewer'), home)).toMatch(/no agent definition named 'reviewer'/);
+    });
+
+    test.each([
+        ['by file name, which agy does not read', 'writer.md', 'name: author', 'writer'],
+        ['with other letter case, which agy does not match', 'writer.md', 'name: Writer', 'writer'],
+        ['two directories deep, which agy does not load', 'team/writer/agent.md', 'name: writer', 'writer'],
+    ])('a definition reachable only %s is not a match', (_name, file, frontmatter, typeName) => {
+        const { home, root, workspaceAgents } = setup();
+        agentDef(workspaceAgents, file, frontmatter);
+        expect(reason(invoke(root, typeName), home)).toMatch(new RegExp(`no agent definition named '${typeName}'`));
+    });
+
+    test('a workspace definition takes precedence over a global one of the same name', () => {
+        const { home, root, workspaceAgents, globalAgents } = setup();
+        agentDef(workspaceAgents, 'writer.md', 'name: writer\ninheritCustomizations: true');
+        agentDef(globalAgents, 'writer.md', 'name: writer\ninheritCustomizations: false');
+        expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
+        agentDef(workspaceAgents, 'writer.md', 'name: writer\ninheritCustomizations: false');
+        agentDef(globalAgents, 'writer.md', 'name: writer');
+        expect(reason(invoke(root, 'writer'), home)).toMatch(/agent 'writer' .* sets inheritCustomizations/);
+    });
+
+    test('a definition whose file resolves outside its agents directory is denied', () => {
+        const { home, root, workspaceAgents } = setup();
+        const elsewhere = agentDef(scratch(), 'writer.md', 'name: writer');
+        mkdirSync(workspaceAgents, { recursive: true });
+        symlinkSync(elsewhere, join(workspaceAgents, 'writer.md'));
+        expect(reason(invoke(root, 'writer'), home)).toMatch(/resolves outside its agents directory/);
+    });
+
+    test('a lookup error on the path to the definitions is denied', () => {
+        const { home, root } = setup();
+        writeFileSync(join(root, '.agents'), 'not a directory');
+        expect(reason(invoke(root, 'writer'), home)).toMatch(/cannot be (listed|resolved)/);
+        expect(reason(invoke(root, 'self'), home)).toMatch(/cannot be (listed|resolved)/);
+    });
+
+    test('a definition agy may read under the requested name but the guard cannot parse is denied', () => {
+        const { home, root, workspaceAgents } = setup();
+        mkdirSync(workspaceAgents, { recursive: true });
+        writeFileSync(join(workspaceAgents, 'writer.md'), '---\nname: writer\ninheritCustomizations: [false\n---\n');
+        expect(reason(invoke(root, 'writer'), home)).toMatch(/defines agent 'writer' but cannot be read/);
+    });
+});
+
+describe('a lookup error on any candidate denies the call, with no fallback to a global definition or a built-in', () => {
+    const asRoot = process.getuid?.() === 0;
+    function agentDef(dir: string, file: string, frontmatter: string): string {
+        mkdirSync(join(dir, file, '..'), { recursive: true });
+        writeFileSync(join(dir, file), `---\n${frontmatter}\n---\n\n# System Prompt\nWrite what you are asked to.\n`);
+        return join(dir, file);
+    }
+    function invoke(root: string, typeName: string): unknown {
+        return { ...(call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: typeName }) as object), workspacePaths: [root] };
+    }
+    function withValidGlobal(): { home: string; root: string; workspaceAgents: string } {
+        const home = scratch();
+        const root = scratch();
+        agentDef(join(home, '.gemini', 'config', 'agents'), 'writer.md', 'name: writer');
+        return { home, root, workspaceAgents: join(root, '.agents', 'agents') };
+    }
+    function reasonWhileLocked(path: string, payload: unknown, home: string): string {
+        chmodSync(path, 0o000);
+        try {
+            const verdict = decideAgyCall(payload, { home });
+            return verdict.action === 'deny' ? verdict.reason : 'allowed';
+        } finally {
+            chmodSync(path, 0o755);
+        }
+    }
+
+    test.skipIf(asRoot).each([['writer'], ['self'], ['research'], ['browser']])('an unreadable workspace agent file denies %s', (typeName) => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        const locked = agentDef(workspaceAgents, 'writer.md', 'name: writer');
+        expect(reasonWhileLocked(locked, invoke(root, typeName), home)).toMatch(/cannot be read/);
+    });
+
+    test.skipIf(asRoot)('an unreadable <subdir>/agent.md denies the call', () => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        const locked = agentDef(workspaceAgents, 'team/agent.md', 'name: writer');
+        expect(reasonWhileLocked(locked, invoke(root, 'writer'), home)).toMatch(/cannot be read/);
+    });
+
+    test.skipIf(asRoot)('a <subdir> that cannot be listed denies the call', () => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        agentDef(workspaceAgents, 'team/agent.md', 'name: writer');
+        expect(reasonWhileLocked(join(workspaceAgents, 'team'), invoke(root, 'writer'), home)).toMatch(/cannot be (read|listed|checked)/);
+    });
+
+    test('an entry whose link target is missing denies the call', () => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        mkdirSync(workspaceAgents, { recursive: true });
+        symlinkSync(join(root, 'missing.md'), join(workspaceAgents, 'ghost.md'));
+        expect(decideAgyCall(invoke(root, 'writer'), { home }).action).toBe('deny');
+    });
+
+    test('a <subdir>/agent.md link whose target is missing denies the call', () => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        mkdirSync(join(workspaceAgents, 'team'), { recursive: true });
+        symlinkSync(join(root, 'missing.md'), join(workspaceAgents, 'team', 'agent.md'));
+        expect(decideAgyCall(invoke(root, 'writer'), { home }).action).toBe('deny');
+    });
+
+    test.each([['.agents'], ['.agents/agents']])('a workspace %s link whose target is missing denies the call', (link) => {
+        const { home, root } = withValidGlobal();
+        mkdirSync(join(root, link, '..'), { recursive: true });
+        symlinkSync(join(root, 'missing-dir'), join(root, link));
+        expect(decideAgyCall(invoke(root, 'writer'), { home }).action).toBe('deny');
+        expect(decideAgyCall(invoke(root, 'self'), { home }).action).toBe('deny');
+    });
+
+    test('a global agents directory link whose target is missing denies a built-in', () => {
+        const home = scratch();
+        const root = scratch();
+        mkdirSync(join(home, '.gemini', 'config'), { recursive: true });
+        symlinkSync(join(home, 'missing-dir'), join(home, '.gemini', 'config', 'agents'));
+        expect(decideAgyCall(invoke(root, 'self'), { home }).action).toBe('deny');
+    });
+
+    test('an agents directory that is simply absent under an existing parent denies nothing', () => {
+        const home = scratch();
+        const root = scratch();
+        mkdirSync(join(root, '.agents'), { recursive: true });
+        mkdirSync(join(home, '.gemini', 'config'), { recursive: true });
+        expect(decideAgyCall(invoke(root, 'self'), { home })).toEqual({ action: 'allow' });
+        const linked = scratch();
+        mkdirSync(join(linked, 'shared'));
+        symlinkSync(join(linked, 'shared'), join(linked, '.agents'));
+        expect(decideAgyCall(invoke(linked, 'self'), { home })).toEqual({ action: 'allow' });
+    });
+
+    test('a readable README or another agent\'s broken frontmatter still denies nothing', () => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        mkdirSync(workspaceAgents, { recursive: true });
+        writeFileSync(join(workspaceAgents, 'README.md'), 'Agents for this repository.\n');
+        writeFileSync(join(workspaceAgents, 'other.md'), '---\nname: other\ninheritCustomizations: [true\n---\n');
+        expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
+        expect(decideAgyCall(invoke(root, 'self'), { home })).toEqual({ action: 'allow' });
+    });
+});
+
+describe('agy reads the .agent, _agents and _agent customization roots the same as .agents', () => {
+    function agentDef(dir: string, file: string, frontmatter: string): void {
+        mkdirSync(join(dir, file, '..'), { recursive: true });
+        writeFileSync(join(dir, file), `---\n${frontmatter}\n---\n\n# System Prompt\nWrite what you are asked to.\n`);
+    }
+    function invoke(root: string, typeName: string): unknown {
+        return { ...(call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: typeName }) as object), workspacePaths: [root] };
+    }
+    function reason(payload: unknown, home: string): string {
+        const verdict = decideAgyCall(payload, { home });
+        return verdict.action === 'deny' ? verdict.reason : 'allowed';
+    }
+
+    describe.each([['.agent'], ['_agents'], ['_agent']])('%s', (alias) => {
+        test('a write_file to its hooks.json is denied', () => {
+            expect(reasonOf(call('write_file', { Path: `${alias}/hooks.json`, Content: '{}' }))).toMatch(/hook-config location/);
+        });
+
+        test('a shell write to its hooks.json is denied', () => {
+            expect(reasonOf(call('run_command', { CommandLine: `mkdir -p ${alias} && printf '{}' > ${alias}/hooks.json` }))).toMatch(/where hook configs live/);
+        });
+
+        test('a read-only shell command on it is allowed', () => {
+            expect(decideAgyCall(call('run_command', { CommandLine: `cat ${alias}/hooks.json` }))).toEqual({ action: 'allow' });
+        });
+
+        test('invoke_subagent of a definition under it that drops inheritance is denied', () => {
+            const home = scratch();
+            const root = scratch();
+            agentDef(join(root, alias, 'agents'), 'writer.md', 'name: writer\ninheritCustomizations: false');
+            expect(reason(invoke(root, 'writer'), home)).toMatch(/agent 'writer' .* sets inheritCustomizations/);
+        });
+
+        test('invoke_subagent of a plugin agent under it that drops inheritance is denied', () => {
+            const home = scratch();
+            const root = scratch();
+            agentDef(join(root, alias, 'plugins', 'kit', 'agents'), 'writer.md', 'name: writer\ninheritScopes: none');
+            expect(reason(invoke(root, 'writer'), home)).toMatch(/agent 'writer' .* sets inheritScopes/);
+        });
+
+        test('a definition under it that keeps inheritance is allowed', () => {
+            const home = scratch();
+            const root = scratch();
+            agentDef(join(root, alias, 'agents'), 'writer.md', 'name: writer');
+            expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
+        });
+    });
+
+    test('every workspace root is one scope: a clean .agents definition does not hide a bypass in .agent', () => {
+        const home = scratch();
+        const root = scratch();
+        agentDef(join(root, '.agents', 'agents'), 'writer.md', 'name: writer');
+        agentDef(join(root, '.agent', 'agents'), 'writer.md', 'name: writer\ninheritCustomizations: false');
+        expect(reason(invoke(root, 'writer'), home)).toMatch(/agent 'writer' .* sets inheritCustomizations/);
+    });
+
+    test('a global plugin agent that drops inheritance is denied', () => {
+        const home = scratch();
+        const root = scratch();
+        agentDef(join(home, '.gemini', 'config', 'plugins', 'kit', 'agents'), 'writer.md', 'name: writer\ninheritCustomizations: false');
+        expect(reason(invoke(root, 'writer'), home)).toMatch(/agent 'writer' .* sets inheritCustomizations/);
+    });
+
+    test('a workspace plugin agent under .agents that drops inheritance is denied', () => {
+        const home = scratch();
+        const root = scratch();
+        agentDef(join(root, '.agents', 'plugins', 'kit', 'agents'), 'writer.md', 'name: writer\ninheritCustomizations: false');
+        expect(reason(invoke(root, 'writer'), home)).toMatch(/agent 'writer' .* sets inheritCustomizations/);
+    });
+});
+
+describe('the .agent, _agents and _agent rules apply only at the roots agy loads them from', () => {
+    test.each([['docs/_agent/README.md'], ['src/_agents/x.ts'], ['notes/.agent/plan.md']])('write_file to %s, below the root, is allowed', (path) => {
+        const root = scratch();
+        expect(decideAgyCall(call('write_file', { Path: path, Content: 'x' }, root))).toEqual({ action: 'allow' });
+    });
+
+    test.each([['docs/_agent/README.md'], ['src/_agents/x.ts']])('a shell write to %s, below the root, is allowed', (path) => {
+        const root = scratch();
+        const command = `mkdir -p ${dirname(path)} && printf 'x' > ${path}`;
+        expect(decideAgyCall(call('run_command', { CommandLine: command }, root))).toEqual({ action: 'allow' });
+    });
+
+    test('a link in a subdirectory that points at the root .agent/ is still a hook-config location', () => {
+        const root = scratch();
+        mkdirSync(join(root, '.agent'));
+        mkdirSync(join(root, 'sub'));
+        symlinkSync(join(root, '.agent'), join(root, 'sub', 'cfg'));
+        expect(reasonOf(call('write_file', { Path: 'sub/cfg/hooks.json', Content: '{}' }, root))).toMatch(/hook-config location/);
+        expect(reasonOf(call('run_command', { CommandLine: "printf '{}' > sub/cfg/hooks.json" }, root))).toMatch(/where hook configs live/);
+        expect(reasonOf(call('write_file', { Path: 'docs/../_agent/hooks.json', Content: '{}' }, root))).toMatch(/hook-config location/);
+    });
+
+    test("the git top level of the hook's cwd is a root too", () => {
+        const repo = scratch();
+        mkdirSync(join(repo, '.git'));
+        mkdirSync(join(repo, 'pkg'));
+        const payload = { ...(call('write_file', { Path: join(repo, '_agents', 'hooks.json'), Content: '{}' }, join(repo, 'pkg')) as object), workspacePaths: [join(repo, 'pkg')] };
+        expect(reasonOf(payload)).toMatch(/hook-config location/);
+        const below = { ...(call('write_file', { Path: join(repo, 'pkg', 'lib', '_agents', 'x.ts'), Content: 'x' }, join(repo, 'pkg')) as object), workspacePaths: [join(repo, 'pkg')] };
+        expect(decideAgyCall(below)).toEqual({ action: 'allow' });
     });
 });
 

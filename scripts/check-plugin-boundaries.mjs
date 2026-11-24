@@ -764,8 +764,8 @@ if (claudeManifest?.name !== 'bootstrap-workflow') {
 if (claudeManifest?.version !== '5.49.2') {
   fail(`bootstrap-workflow release must be version 5.49.2 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.50.0') {
-  fail(`bootstrap-workflow-agents release must be version 2.50.0 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.50.1') {
+  fail(`bootstrap-workflow-agents release must be version 2.50.1 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
 if (orchestrateClaudeManifest?.version !== '3.8.3') {
