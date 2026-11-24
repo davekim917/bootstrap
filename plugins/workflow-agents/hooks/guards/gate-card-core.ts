@@ -1186,7 +1186,7 @@ export function senderOnFile(credentialsFile: string | null, dir: string): { acc
     }
 }
 
-// gws 0.22.5 (auth.rs) loads a credentials file ahead of the login in its config directory, but takes the access
+// gws 0.22.5 (auth.rs) loads a credentials file ahead of the login in its config directory (load_credentials_inner), but takes the access
 // token from that directory's cache: token_cache.json for a user login unless a proxy variable is set, and
 // sa_token_cache.json for a service account, proxy or not. The caches are keyed by scopes alone, so a token cached for
 // another account is used in place of the credentials file's own.
@@ -1219,15 +1219,27 @@ function absent(error: unknown): boolean {
     return reason === 'ENOENT' || reason === 'ENOTDIR';
 }
 
-/** The login a gws credentials file holds, which decides the cache gws reads for it; null when it can't be read. */
-export function gwsCredentialsKind(file: string): 'service_account' | 'user' | null {
+export interface GwsCredentials {
+    /** The login the file holds, which decides the cache gws reads for it; null when it can't be read. */
+    kind: 'service_account' | 'user' | null;
+    /** sha256 of the file's bytes; null when it can't be read. */
+    hash: string | null;
+}
+
+export function gwsCredentials(file: string): GwsCredentials {
     try {
         const stat = statSync(file);
-        if (!stat.isFile() || stat.size > 64 * 1024) return null;
-        const type = (JSON.parse(readFileSync(file, 'utf8')) as { type?: unknown } | null)?.type;
-        return type === 'service_account' ? 'service_account' : 'user';
+        if (!stat.isFile() || stat.size > 64 * 1024) return { kind: null, hash: null };
+        const bytes = readFileSync(file);
+        const hash = createHash('sha256').update(bytes).digest('hex');
+        try {
+            const type = (JSON.parse(bytes.toString('utf8')) as { type?: unknown } | null)?.type;
+            return { kind: type === 'service_account' ? 'service_account' : 'user', hash };
+        } catch {
+            return { kind: null, hash };
+        }
     } catch {
-        return null;
+        return { kind: null, hash: null };
     }
 }
 
@@ -1238,10 +1250,11 @@ export function gwsProxySet(): boolean {
 }
 
 /**
- * The files in `dir`, as the kernel resolves it, that gws would take a login or a token from for credentials of
- * `kind` (null: not known, so both caches count); null when the gate can't tell. A missing directory holds none.
+ * The token caches in `dir`, as the kernel resolves it, that gws would send with for credentials of `kind` (null: not
+ * known, so both count); null when the gate can't tell. A missing directory holds none. A login there (credentials.enc,
+ * client_secret.json) does not count: gws loads the credentials file ahead of it.
  */
-export function gwsLoginsFor(dir: string, kind: 'service_account' | 'user' | null): string[] | null {
+export function gwsCachesFor(dir: string, kind: 'service_account' | 'user' | null): string[] | null {
     let real: string;
     try {
         real = realpathSync(dir);
@@ -1249,10 +1262,8 @@ export function gwsLoginsFor(dir: string, kind: 'service_account' | 'user' | nul
         return absent(error) ? [] : null;
     }
     const names = [
-        'credentials.enc',
         ...(kind !== 'service_account' && !gwsProxySet() ? ['token_cache.json'] : []),
         ...(kind !== 'user' ? ['sa_token_cache.json'] : []),
-        'client_secret.json',
     ];
     const held: string[] = [];
     for (const name of names) {

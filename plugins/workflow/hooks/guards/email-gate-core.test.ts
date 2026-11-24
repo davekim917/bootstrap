@@ -707,7 +707,9 @@ describe('evaluateEmailSend — the send goes from the account its credentials f
     afterAll(() => rmSync(root, { recursive: true, force: true }));
     mkdirSync(join(root, 'accounts'));
     const creds = join(root, 'accounts', 'example-co.json');
-    writeFileSync(creds, '{"type":"authorized_user","refresh_token":"e"}');
+    const CREDS_BYTES = '{"type":"authorized_user","refresh_token":"e"}';
+    writeFileSync(creds, CREDS_BYTES);
+    const BOUND = { kind: 'user' as const, hash: createHash('sha256').update(CREDS_BYTES).digest('hex') };
     const service = join(root, 'accounts', 'robot-co.json');
     writeFileSync(service, '{"type":"service_account","client_email":"robot@example.iam.gserviceaccount.com"}');
     const dir = (name: string, files: string[]) => {
@@ -759,15 +761,19 @@ describe('evaluateEmailSend — the send goes from the account its credentials f
             expect([command, deny(command, hostDefault)]).toEqual([command, undefined]);
         }
         const v = evaluateEmailSend(`GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${fresh(1)} ${CREDS} ${SEND}`, { isScheduledTask: false, gwsConfigDir: hostDefault });
-        expect(v.account).toEqual({ credentialsFile: creds, configDir: fresh(1), defaultConfigDir: hostDefault });
+        expect(v.account).toEqual({ credentialsFile: creds, credentials: BOUND, configDir: fresh(1), defaultConfigDir: hostDefault });
     });
 
-    test('a config dir that already exists, even empty, is refused', () => {
+    test('a config dir that already exists, even empty, is refused unless it is the one gws would use anyway', () => {
         for (const held of [dir('empty', []), dir('held', ['token_cache.json'])]) {
             expect(deny(`GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${held} ${CREDS} ${SEND}`, containerDefault)).toBe(
                 `Email send refused: GOOGLE_WORKSPACE_CLI_CONFIG_DIR ${held} already exists, so it may hold a token gws would send with. ${FRESH}`,
             );
         }
+        const proxy = { HTTPS_PROXY: 'http://proxy.example:10255' };
+        expect(deny(`GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${containerDefault} ${CREDS} ${SEND}`, containerDefault)).toBeUndefined();
+        expect(deny(`GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${leftoverCache} ${CREDS} ${SEND}`, leftoverCache, proxy)).toBeUndefined();
+        expect(deny(`GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${cacheOnly} ${CREDS} ${SEND}`, cacheOnly)).toStartWith(`Email send refused: gws keeps a login or token in ${cacheOnly} (token_cache.json)`);
     });
 
     test('a config dir the gate would read at another place than gws opens is refused', () => {
@@ -808,8 +814,10 @@ describe('evaluateEmailSend — the send goes from the account its credentials f
         expect(deny(`${CREDS} ${SEND}`, join(root, 'default-link'))).toStartWith(`Email send refused: gws keeps a login or token in ${join(root, 'default-link')} (token_cache.json)`);
     });
 
-    test('with no login in the default config dir (the container case), a credentials-only send is allowed as today', () => {
-        for (const defaultDir of [containerDefault, join(root, 'no-such-dir')]) {
+    test('with no token cached in the default config dir (the container case), a credentials-only send is allowed as today', () => {
+        // gws loads the credentials file ahead of a login there (auth.rs load_credentials_inner).
+        const leftoverLogin = dir('container-login', ['credentials.enc', '.encryption_key', 'client_secret.json']);
+        for (const defaultDir of [containerDefault, join(root, 'no-such-dir'), leftoverLogin]) {
             expect(deny(`export ${CREDS}\n${SEND}`, defaultDir)).toBeUndefined();
         }
     });
@@ -859,8 +867,8 @@ describe('evaluateEmailSend — the send goes from the account its credentials f
     });
 
     test('after approval the account is checked again: a config dir made meanwhile, or a cache left in the default one, refuses the send', () => {
-        const named = { credentialsFile: creds, configDir: fresh(5), defaultConfigDir: containerDefault };
-        const unnamed = { credentialsFile: creds, configDir: null, defaultConfigDir: dir('default-later', []) };
+        const named = { credentialsFile: creds, credentials: BOUND, configDir: fresh(5), defaultConfigDir: containerDefault };
+        const unnamed = { credentialsFile: creds, credentials: BOUND, configDir: null, defaultConfigDir: dir('default-later', []) };
         withEnv({}, () => {
             expect(accountChangedSince(named)).toBeNull();
             expect(accountChangedSince(unnamed)).toBeNull();
@@ -874,6 +882,22 @@ describe('evaluateEmailSend — the send goes from the account its credentials f
                 'Email send refused after approval: what decides its account changed while the approval was pending. ' +
                 `gws keeps a login or token in ${unnamed.defaultConfigDir} (token_cache.json)`,
             );
+        });
+    });
+
+    test('after approval a credentials file rewritten with other content, or another kind of login, refuses the send', () => {
+        const file = join(root, 'accounts', 'swapped-co.json');
+        writeFileSync(file, CREDS_BYTES);
+        const binding = { credentialsFile: file, credentials: BOUND, configDir: fresh(6), defaultConfigDir: containerDefault };
+        const changed = 'Email send refused after approval: what decides its account changed while the approval was pending. ' +
+            `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE ${file} is not the file the approval card was made from, so it may hold another account. Ask for approval again.`;
+        withEnv({}, () => {
+            expect(accountChangedSince(binding)).toBeNull();
+            writeFileSync(file, '{"type":"authorized_user","refresh_token":"another-account"}');
+            expect(accountChangedSince(binding)).toBe(changed);
+            expect(accountChangedSince({ ...binding, credentials: { kind: 'service_account', hash: BOUND.hash } })).toBe(changed);
+            rmSync(file);
+            expect(accountChangedSince(binding)).toBe(changed);
         });
     });
 

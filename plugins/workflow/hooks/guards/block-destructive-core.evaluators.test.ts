@@ -234,7 +234,7 @@ describe('A2 runGateRequest action parameterization', () => {
         try {
             const { mod } = await loadWithSpies();
             const refusals: string[] = [];
-            const account = { credentialsFile: join(root, 'example-co.json'), configDir: join(root, 'send-1'), defaultConfigDir: join(root, 'default') };
+            const account = { credentialsFile: join(root, 'example-co.json'), credentials: { kind: null, hash: null }, configDir: join(root, 'send-1'), defaultConfigDir: join(root, 'default') };
             const onChanged = (refusal: string) => refusals.push(refusal);
             expect(mod.runEmailGate('cmd', 'Email send', undefined, 's', undefined, undefined, { account, onChanged })).toBe('approved');
             expect(refusals).toEqual([]);

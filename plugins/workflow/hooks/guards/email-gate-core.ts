@@ -38,7 +38,7 @@
  */
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import { CARD_SUMMARY_MAX_CHARS, HTML_MAX_CHARS, clip, code, defaultGwsConfigDir, defuse, evalWord, fitLines, freshDirProblem, gwsCredentialsKind, gwsLoginsFor, gwsProxySet, htmlToText, inEmptyDir, inline, quoteBlock, readBodyFile, senderOnFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
+import { CARD_SUMMARY_MAX_CHARS, HTML_MAX_CHARS, clip, code, defaultGwsConfigDir, defuse, evalWord, fitLines, freshDirProblem, gwsCachesFor, gwsCredentials, gwsProxySet, type GwsCredentials, htmlToText, inEmptyDir, inline, quoteBlock, readBodyFile, senderOnFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
 import { readAttachments } from './gws-attachments-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
@@ -393,8 +393,10 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const shape = sendShape(command);
     const exact = shape?.complete && shape.verb !== null ? shape : null;
     // A send gws would make from another account than its credentials file is refused, and nothing is read for it.
-    const account: AccountBinding | null = shape?.credentialsFile ? {
-        credentialsFile: pathResolveFrom(env.cwd, shape.credentialsFile),
+    const credentialsFile = shape?.credentialsFile ? pathResolveFrom(env.cwd, shape.credentialsFile) : null;
+    const account: AccountBinding | null = shape && credentialsFile ? {
+        credentialsFile,
+        credentials: gwsCredentials(credentialsFile),
         configDir: shape.configDir,
         defaultConfigDir: env.gwsConfigDir ?? defaultGwsConfigDir(env.cwd),
     } : null;
@@ -831,19 +833,23 @@ const FRESH_CONFIG_DIR = 'an absolute path with no symlink in it that does not e
 /** What the account a send goes from depends on, checked when its card is made and again once it is approved. */
 export interface AccountBinding {
     credentialsFile: string;
+    /** The credentials file as the card was made from it; a file replaced or rewritten meanwhile refuses the send. */
+    credentials: GwsCredentials;
     configDir: string | null;
     defaultConfigDir: string;
 }
 
 /** Why gws would send from another account than `binding`'s credentials file; null when it would not. */
-export function accountRefusal(binding: AccountBinding): string | null {
+export function accountRefusal(binding: AccountBinding, credentials: GwsCredentials = gwsCredentials(binding.credentialsFile)): string | null {
     // Read from the environment the command inherits; one set by an earlier command in a persistent shell is not seen.
     if (process.env.GOOGLE_WORKSPACE_CLI_TOKEN) {
         return 'Email send refused: GOOGLE_WORKSPACE_CLI_TOKEN is set in the environment this command inherits, and gws ' +
             'sends with that access token ahead of GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE, from a mailbox the approval card ' +
             'does not name. Run the send from an environment without it.';
     }
-    const { configDir, defaultConfigDir, credentialsFile } = binding;
+    const { defaultConfigDir, credentialsFile } = binding;
+    // Naming the directory gws would use anyway changes nothing, so it is weighed as that directory.
+    const configDir = binding.configDir === defaultConfigDir ? null : binding.configDir;
     if (configDir !== null) {
         const problem = freshDirProblem(configDir);
         if (problem === null) return null;
@@ -852,7 +858,7 @@ export function accountRefusal(binding: AccountBinding): string | null {
             : 'could not be checked';
         return `Email send refused: GOOGLE_WORKSPACE_CLI_CONFIG_DIR ${configDir} ${why}. Set it to ${FRESH_CONFIG_DIR}.`;
     }
-    const held = gwsLoginsFor(defaultConfigDir, gwsCredentialsKind(credentialsFile));
+    const held = gwsCachesFor(defaultConfigDir, credentials.kind);
     if (held !== null && !held.length) return null;
     return `Email send refused: gws keeps a login or token in ${defaultConfigDir}${held ? ` (${held.join(', ')})` : ''}, and would ` +
         'send with it instead of GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE, from a mailbox the approval card does not name. Run ' +
@@ -862,7 +868,10 @@ export function accountRefusal(binding: AccountBinding): string | null {
 
 /** The refusal for an approved send whose account would no longer be the one its card named; null when it still is. */
 export function accountChangedSince(binding: AccountBinding): string | null {
-    const why = accountRefusal(binding);
+    const now = gwsCredentials(binding.credentialsFile);
+    const why = now.hash !== binding.credentials.hash || now.kind !== binding.credentials.kind
+        ? `Email send refused: GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE ${binding.credentialsFile} is not the file the approval card was made from, so it may hold another account. Ask for approval again.`
+        : accountRefusal(binding, now);
     return why === null ? null
         : `Email send refused after approval: what decides its account changed while the approval was pending. ${why.replace(/^Email send refused: /, '')}`;
 }
@@ -1328,7 +1337,7 @@ function draftSendTarget(shape: SendShape | null): Omit<DraftBinding, 'messageId
  * own, so it answers for the credentials and leaves no token where a later send would find it.
  */
 function gwsRead(method: string[], params: Record<string, unknown>, credentialsFile: string, gwsBin: string): Record<string, unknown> | null {
-    if (gwsProxySet() && gwsCredentialsKind(credentialsFile) === 'user') return gwsReadWith(method, params, credentialsFile, gwsBin, null);
+    if (gwsProxySet() && gwsCredentials(credentialsFile).kind === 'user') return gwsReadWith(method, params, credentialsFile, gwsBin, null);
     try {
         return inEmptyDir(own => gwsReadWith(method, params, credentialsFile, gwsBin, own));
     } catch {
