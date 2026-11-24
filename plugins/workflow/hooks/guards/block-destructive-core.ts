@@ -38,7 +38,7 @@ import { endianness, homedir } from 'os';
 import { basename, dirname, join, normalize as pathNormalize, resolve as pathResolve } from 'path';
 import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
-import { draftChangedSince, type DraftBinding, type EmailCard } from './email-gate-core';
+import { accountChangedSince, draftChangedSince, type AccountBinding, type DraftBinding, type EmailCard } from './email-gate-core';
 import { filePathsFromPatch, firstProtectedPath } from './file-protection-core';
 import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, substitutionClose, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
 
@@ -8101,9 +8101,9 @@ export function changesProduction(command: string, cwd: string = currentWorkingD
  * same structured content as Claude's in-tree card (S-QA2 parity). The 6th
  * `card` carries the verdict's own `pureSend`, `fullSummary` and `wholeEmail`: the host leaves
  * the command off the card only when one of the first two is set; `wholeEmail` is for a host that puts the whole message
- * in front of the approver when the card cuts it. The 7th `draft` carries the verdict's draft binding: once
- * approved, the draft is re-read, and a changed one is refused through
- * `onChanged` and answers 'denied'.
+ * in front of the approver when the card cuts it. The 7th carries the verdict's draft and account bindings: once
+ * approved, the account the send would go from is checked again and the draft is re-read, and a change is refused
+ * through `onChanged` and answers 'denied'.
  */
 export function runEmailGate(
     command: string,
@@ -8112,11 +8112,12 @@ export function runEmailGate(
     summary?: string,
     toolUseId?: string,
     card?: EmailCard,
-    draft?: { binding: DraftBinding; onChanged: (refusal: string) => void; gwsBin?: string },
+    draft?: { binding?: DraftBinding; account?: AccountBinding; onChanged: (refusal: string) => void; gwsBin?: string },
 ): GateDecision {
     const decision = runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId, card });
     if (decision !== 'approved' || !draft) return decision;
-    const refusal = draftChangedSince(draft.binding, draft.gwsBin);
+    const refusal = (draft.account ? accountChangedSince(draft.account) : null)
+        ?? (draft.binding ? draftChangedSince(draft.binding, draft.gwsBin) : null);
     if (refusal === null) return 'approved';
     draft.onChanged(refusal);
     return 'denied';

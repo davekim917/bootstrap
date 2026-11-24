@@ -218,13 +218,26 @@ describe('the reads a reply card makes go to the account the credentials file na
     const login = join(configDirs, 'with-login');
     mkdirSync(login, { recursive: true });
     writeFileSync(join(login, 'token_cache.json'), 'x');
-    const noLogin = join(configDirs, 'without-login');
     const answers = { headers: [['From', 'pat@example.com'], ['Message-ID', '<o@example.com>']] as Header[], profile: 'team@example.com', defaultSendAs: 'team@example.com' };
     const send = `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${join(configDirs, 'send-1')} GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${CREDS} gws gmail +reply-all --message-id ${MESSAGE_ID} --body "Thanks, that works."`;
+    const PROXY = ['http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY'];
+    const withProxy = <T>(proxy: string | null, run: () => T): T => {
+        const saved = Object.fromEntries(PROXY.map(k => [k, process.env[k]]));
+        for (const k of PROXY) delete process.env[k];
+        if (proxy) process.env.HTTPS_PROXY = proxy;
+        try {
+            return run();
+        } finally {
+            for (const k of PROXY) {
+                if (saved[k] === undefined) delete process.env[k];
+                else process.env[k] = saved[k];
+            }
+        }
+    };
 
-    test('beside a login in the default config dir, each read runs in an empty config dir of its own, removed after', () => {
+    test('with no proxy, each read runs in an empty config dir of its own, removed after, so it neither reads nor leaves a token', () => {
         const stub = gws(answers);
-        const v = evaluateEmailSend(send, { isScheduledTask: false, signaturesDir, gwsBin: stub.bin, gwsConfigDir: login });
+        const v = withProxy(null, () => evaluateEmailSend(send, { isScheduledTask: false, signaturesDir, gwsBin: stub.bin, gwsConfigDir: configDirs }));
         expect(v.deny).toBeUndefined();
         expect(recipientLines(v.summary)).toEqual(['To: pat@example.com']);
         const used = stub.config().map(line => line.split(' '));
@@ -235,16 +248,16 @@ describe('the reads a reply card makes go to the account the credentials file na
         }
     });
 
-    test('with no login there, the reads keep the config dir gws would use anyway', () => {
+    test('a user login behind a proxy, which gws refreshes without its cache, reads with the config dir gws would use anyway', () => {
         const stub = gws(answers);
-        evaluateEmailSend(send, { isScheduledTask: false, signaturesDir, gwsBin: stub.bin, gwsConfigDir: noLogin });
+        withProxy('http://proxy.example:10255', () => evaluateEmailSend(send, { isScheduledTask: false, signaturesDir, gwsBin: stub.bin, gwsConfigDir: configDirs }));
         expect(stub.config()).toEqual(Array(3).fill(`${process.env.GOOGLE_WORKSPACE_CLI_CONFIG_DIR} 0`));
     });
 
     test('a reply refused for sending from another account makes no read', () => {
         const stub = gws(answers);
-        const v = evaluateEmailSend(reply('+reply-all'), { isScheduledTask: false, signaturesDir, gwsBin: stub.bin, gwsConfigDir: login });
-        expect(v.deny).toStartWith(`Email send refused: gws keeps a login in ${login} (token_cache.json)`);
+        const v = withProxy(null, () => evaluateEmailSend(reply('+reply-all'), { isScheduledTask: false, signaturesDir, gwsBin: stub.bin, gwsConfigDir: login }));
+        expect(v.deny).toStartWith(`Email send refused: gws keeps a login or token in ${login} (token_cache.json)`);
         expect(stub.calls()).toEqual([]);
     });
 });

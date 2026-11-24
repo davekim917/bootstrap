@@ -229,6 +229,28 @@ describe('A2 runGateRequest action parameterization', () => {
         }
     });
 
+    test('an approved send goes ahead only while its account is still the one the card named', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'gws-account-recheck-'));
+        try {
+            const { mod } = await loadWithSpies();
+            const refusals: string[] = [];
+            const account = { credentialsFile: join(root, 'example-co.json'), configDir: join(root, 'send-1'), defaultConfigDir: join(root, 'default') };
+            const onChanged = (refusal: string) => refusals.push(refusal);
+            expect(mod.runEmailGate('cmd', 'Email send', undefined, 's', undefined, undefined, { account, onChanged })).toBe('approved');
+            expect(refusals).toEqual([]);
+            mkdirSync(account.configDir);
+            expect(mod.runEmailGate('cmd', 'Email send', undefined, 's', undefined, undefined, { account, onChanged })).toBe('denied');
+            expect(refusals).toEqual([
+                'Email send refused after approval: what decides its account changed while the approval was pending. ' +
+                `GOOGLE_WORKSPACE_CLI_CONFIG_DIR ${account.configDir} already exists, so it may hold a token gws would send with. ` +
+                'Set it to an absolute path with no symlink in it that does not exist yet, a new one for each send, so gws creates ' +
+                'it empty and writes its token cache there.',
+            ]);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     test('a declined send of a stored draft is not re-read', async () => {
         const root = mkdtempSync(join(tmpdir(), 'gws-rerun-stub-'));
         const bin = join(root, 'gws');

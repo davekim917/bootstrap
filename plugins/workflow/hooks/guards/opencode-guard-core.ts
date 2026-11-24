@@ -240,7 +240,9 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
     const binding = emailVerdict.draft;
     const decision = runEmailGate(command, reason, undefined, emailVerdict.summary, undefined,
     { pureSend: emailVerdict.pureSend, fullSummary: emailVerdict.fullSummary, wholeEmail: emailVerdict.wholeEmail },
-      binding ? { binding, onChanged: (refusal) => { throw new Error(`BLOCKED: ${refusal}`); } } : undefined);
+      binding || emailVerdict.account
+        ? { binding, account: emailVerdict.account, onChanged: (refusal) => { throw new Error(`BLOCKED: ${refusal}`); } }
+        : undefined);
     if (decision === 'approved') return;
     const detail =
       decision === 'denied'
