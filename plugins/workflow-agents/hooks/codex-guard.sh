@@ -46,8 +46,8 @@ wait "$guard"
 status=$?
 kill "$watchdog" 2>/dev/null
 
-if [ "$status" -eq 0 ] && [ -s "$out" ]; then
-    cat "$out"
+if [ "$status" -eq 0 ] && reply="$(<"$out")" && [ -n "$reply" ]; then
+    printf '%s' "$reply"
     exit 0
 fi
 deny "The command guard did not finish (exit $status), so the command was not run. Tell the user; do not retry or work around it."

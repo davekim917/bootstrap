@@ -269,7 +269,7 @@ describe('a bun that cannot honour --no-env-file is refused', () => {
     function bunReporting(version: string, exitCode = 0, path = process.env.PATH): Record<string, string | undefined> {
         const bin = scratch('codex-guard-bun-');
         writeFileSync(join(bin, 'version'), version);
-        writeFileSync(join(bin, 'bun'), `#!${Bun.which('bash')}\nif [ "$1" = --version ]; then cat ${JSON.stringify(join(bin, 'version'))}; exit ${exitCode}; fi\nexec ${JSON.stringify(REAL_BUN)} "$@"\n`);
+        writeFileSync(join(bin, 'bun'), `#!${Bun.which('bash')}\nif [ "$1" = --version ]; then ${Bun.which('cat')} ${JSON.stringify(join(bin, 'version'))}; exit ${exitCode}; fi\nexec ${JSON.stringify(REAL_BUN)} "$@"\n`);
         chmodSync(join(bin, 'bun'), 0o755);
         return { ...process.env, PATH: `${bin}:${path}` };
     }
@@ -277,7 +277,7 @@ describe('a bun that cannot honour --no-env-file is refused', () => {
     /** A PATH holding only what the wrapper itself runs, so a tool it does not need is missing. */
     function minimalPath(): string {
         const bin = scratch('codex-guard-path-');
-        for (const tool of ['bash', 'dirname', 'mktemp', 'cat', 'rm', 'sleep']) symlinkSync(Bun.which(tool)!, join(bin, tool));
+        for (const tool of ['bash', 'dirname', 'mktemp', 'rm', 'sleep']) symlinkSync(Bun.which(tool)!, join(bin, tool));
         return bin;
     }
 
@@ -305,7 +305,7 @@ describe('a bun that cannot honour --no-env-file is refused', () => {
         expect(JSON.parse(good.stdout)).toEqual({ continue: true });
     });
 
-    test('a PATH with only the tools the wrapper runs still reaches the guard', async () => {
+    test('a PATH with only the tools the wrapper runs, no tr or cat, still forwards the guard decision', async () => {
         const env = bunReporting('1.4.2\n', 0, minimalPath());
         expect(JSON.parse((await run(withStandIn(allowed), '{}', { env })).stdout)).toEqual({ continue: true });
     });
