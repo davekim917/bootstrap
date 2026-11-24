@@ -228,6 +228,23 @@ describe('MCP tool names reach the email gate in the token form it reads', () =>
         expect(reason).toContain(AGY_APPROVAL_HANDOFF);
     });
 
+    test.each([
+        ['gmail', 'send_message'],
+        ['Gmail', 'send_message'],
+        ['GMail', 'send_message'],
+        ['workspace', 'GMail_send'],
+        ['MyEmail', 'send'],
+        ['MyGMail', 'send_message'],
+    ])('server %s, tool %s gates as a send, whether its word is found split or as written', (server, tool) => {
+        const reason = reasonOf(call('call_mcp_tool', {
+            ServerName: server,
+            ToolName: tool,
+            Arguments: { to: 'pat@example.com', subject: 'Hi', body: 'Short note.' },
+        }));
+        expect(reason).toContain('Email send to pat@example.com');
+        expect(reason).toContain(AGY_APPROVAL_HANDOFF);
+    });
+
     test('a draft tool still passes', () => {
         expect(decideAgyCall(call('call_mcp_tool', { ServerName: 'gmail', ToolName: 'createDraft', Arguments: {} }))).toEqual({ action: 'allow' });
     });

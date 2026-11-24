@@ -13,6 +13,7 @@ import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 
 import { dirname, isAbsolute, resolve, sep } from 'path';
 import { decideToolCall, type ToolCall, type Verdict } from './guard-policy';
 import { extractCommands } from './guards/block-destructive-core';
+import { evaluateEmailToolCall } from './guards/email-gate-core';
 
 export const AGY_APPROVAL_HANDOFF =
     'This needs human approval, and this agy session cannot ask for it. Do not retry or work around it: give the user the exact command to run themselves.';
@@ -138,10 +139,15 @@ function targetsOf(args: Args): string[] {
 
 /**
  * `sendEmail` read as `send_Email`: the shared matchers fold case and punctuation themselves but split words only at
- * punctuation, so a camelCase boundary is the one thing they would miss.
+ * punctuation.
  */
 function splitCamelCase(name: string): string {
-    return name.replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2').replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+    return splitAtLowerUpper(name.replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2'));
+}
+
+/** `MyGMail` read as `My_GMail`: a split that leaves a capitalised run whole. */
+function splitAtLowerUpper(name: string): string {
+    return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
 }
 
 /** A shell command line, judged as `run_command` judges it. */
@@ -227,7 +233,13 @@ export function decideAgyCall(payload: unknown): Verdict {
             return denied('call_mcp_tool names no server or tool, so the guard cannot check it.');
         }
         const input = args.Arguments && typeof args.Arguments === 'object' ? args.Arguments as Args : {};
-        return decideToolCall({ ...base, tool_name: `mcp__${splitCamelCase(server)}__${splitCamelCase(tool)}`, tool_input: input }, AGY_APPROVAL_HANDOFF);
+        // Splitting adds a word the email matcher reads (`sendEmail`) but can also break one (`GMail` becomes `G_Mail`),
+        // so the call is judged under whichever spelling the matcher catches. One policy call, since a gate may wait.
+        const spellings = (name: string) => [name, splitCamelCase(name), splitAtLowerUpper(name)];
+        const names = [...new Set(spellings(server).flatMap((s) =>
+            [splitCamelCase(tool), ...spellings(tool)].map((t) => `mcp__${s}__${t}`)))];
+        const toolName = names.find((n) => evaluateEmailToolCall(n, input, { isScheduledTask: false }).action === 'gate') ?? names[0];
+        return decideToolCall({ ...base, tool_name: toolName, tool_input: input }, AGY_APPROVAL_HANDOFF);
     }
 
     if (SUBAGENT_TOOLS.has(name)) {
