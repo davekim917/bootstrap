@@ -5,6 +5,9 @@
 # would fire. The watchdog sits above the guard's one-hour approval wait and below the manifest's timeout.
 WATCHDOG_SECONDS=3630
 
+# An inherited SHELLOPTS can turn these on, and errexit would end the wrapper before it prints a deny.
+set +o errexit +o pipefail +o nounset
+
 deny() {
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"BLOCKED: %s"}}' "$1"
     exit 0
@@ -14,9 +17,17 @@ here="$(cd "$(dirname "$0")" && pwd)" || deny 'The command guard could not be lo
 out="$(mktemp)" || deny 'The command guard could not start, so the command was not run.'
 trap 'rm -f "$out"' EXIT
 
+# The hook runs in the agent's working directory, where a .env or a bunfig.toml preload could switch a check off.
+# Bun before 1.3.3 accepts --no-env-file and still loads the .env, so an older or unrecognised bun is refused.
+too_old='The command guard needs Bun 1.3.3 or newer, so the command was not run. Tell the user; do not retry or work around it.'
+version="$(bun --version 2>/dev/null)" || deny "$too_old"
+[[ "$version" =~ ^([0-9]{1,9})\.([0-9]{1,9})\.([0-9]{1,9})$ ]] || deny "$too_old"
+major=$((10#${BASH_REMATCH[1]})) minor=$((10#${BASH_REMATCH[2]})) patch=$((10#${BASH_REMATCH[3]}))
+(( major > 1 || (major == 1 && (minor > 3 || (minor == 3 && patch >= 3))) )) || deny "$too_old"
+
 # A background job in a non-interactive shell reads /dev/null unless given stdin explicitly.
 exec 3<&0
-bun "$here/codex-guard.ts" "$@" <&3 >"$out" &
+bun --no-env-file --config=/dev/null "$here/codex-guard.ts" "$@" <&3 >"$out" &
 guard=$!
 exec 3<&-
 (
@@ -35,8 +46,8 @@ wait "$guard"
 status=$?
 kill "$watchdog" 2>/dev/null
 
-if [ "$status" -eq 0 ] && [ -s "$out" ]; then
-    cat "$out"
+if [ "$status" -eq 0 ] && reply="$(<"$out")" && [ -n "$reply" ]; then
+    printf '%s' "$reply"
     exit 0
 fi
 deny "The command guard did not finish (exit $status), so the command was not run. Tell the user; do not retry or work around it."
