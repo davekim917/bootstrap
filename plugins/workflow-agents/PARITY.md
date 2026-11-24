@@ -76,8 +76,10 @@ Hand-maintained, because the Claude plugin has no counterpart to generate them f
   seconds). agy runs the tool when a hook exits 0 with empty output, so the wrapper denies on that
   as well as on a crash, a timeout, or output that is not a decision.
 - Both wrappers run bun with `--no-env-file --config=/dev/null`, so a `.env` or `bunfig.toml` in the
-  agent's working directory cannot change the guard, and refuse a bun older than 1.3.3, which would
-  ignore the first flag. Settings the guard reads come from the inherited environment only.
+  agent's working directory cannot change the guard, and refuse a bun that does not report a plain
+  release of 1.3.3 or newer (an older one ignores the first flag). Settings the guard reads come from
+  the inherited environment only. Each wrapper runs its whole body under one `timeout -s KILL` (GNU
+  coreutils) at its watchdog, so a stall anywhere, or a missing `timeout`, is a deny.
 - `scripts/ownership.mjs` — the ownership marker, kept only so
   `scripts/retire-bootstrap-agents.mjs` can recognise role files this plugin wrote into users'
   Codex homes before 5.7.0. Nothing writes one now. The string is frozen: rewording it orphans

@@ -192,7 +192,7 @@ function withStandIn(rt: Runtime, guard: string, seconds = 30, checker?: string)
     return join(root, rt.wrapper.split('/').pop()!);
 }
 
-/** timeout's status after it sends KILL differs by coreutils build: 137 with 9.1 on the host and in the image, 124 on the CI runner. */
+/** timeout's status after it sends KILL differs by coreutils build: 137 with 9.4 on the host, 124 on the CI runner. */
 const WATCHDOG_DENY = /did not finish.*\(exit (?:124|137)\)/;
 
 const print = (text: string) => `process.stdout.write(${JSON.stringify(text)});`;
