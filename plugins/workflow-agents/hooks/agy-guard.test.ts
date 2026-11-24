@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { AGY_APPROVAL_HANDOFF, decideAgyCall } from './agy-guard';
 
 const GUARD = join(import.meta.dir, 'agy-guard.ts');
@@ -656,6 +656,39 @@ describe('agy reads the .agent, _agents and _agent customization roots the same 
         const root = scratch();
         agentDef(join(root, '.agents', 'plugins', 'kit', 'agents'), 'writer.md', 'name: writer\ninheritCustomizations: false');
         expect(reason(invoke(root, 'writer'), home)).toMatch(/agent 'writer' .* sets inheritCustomizations/);
+    });
+});
+
+describe('the .agent, _agents and _agent rules apply only at the roots agy loads them from', () => {
+    test.each([['docs/_agent/README.md'], ['src/_agents/x.ts'], ['notes/.agent/plan.md']])('write_file to %s, below the root, is allowed', (path) => {
+        const root = scratch();
+        expect(decideAgyCall(call('write_file', { Path: path, Content: 'x' }, root))).toEqual({ action: 'allow' });
+    });
+
+    test.each([['docs/_agent/README.md'], ['src/_agents/x.ts']])('a shell write to %s, below the root, is allowed', (path) => {
+        const root = scratch();
+        const command = `mkdir -p ${dirname(path)} && printf 'x' > ${path}`;
+        expect(decideAgyCall(call('run_command', { CommandLine: command }, root))).toEqual({ action: 'allow' });
+    });
+
+    test('a link in a subdirectory that points at the root .agent/ is still a hook-config location', () => {
+        const root = scratch();
+        mkdirSync(join(root, '.agent'));
+        mkdirSync(join(root, 'sub'));
+        symlinkSync(join(root, '.agent'), join(root, 'sub', 'cfg'));
+        expect(reasonOf(call('write_file', { Path: 'sub/cfg/hooks.json', Content: '{}' }, root))).toMatch(/hook-config location/);
+        expect(reasonOf(call('run_command', { CommandLine: "printf '{}' > sub/cfg/hooks.json" }, root))).toMatch(/where hook configs live/);
+        expect(reasonOf(call('write_file', { Path: 'docs/../_agent/hooks.json', Content: '{}' }, root))).toMatch(/hook-config location/);
+    });
+
+    test("the git top level of the hook's cwd is a root too", () => {
+        const repo = scratch();
+        mkdirSync(join(repo, '.git'));
+        mkdirSync(join(repo, 'pkg'));
+        const payload = { ...(call('write_file', { Path: join(repo, '_agents', 'hooks.json'), Content: '{}' }, join(repo, 'pkg')) as object), workspacePaths: [join(repo, 'pkg')] };
+        expect(reasonOf(payload)).toMatch(/hook-config location/);
+        const below = { ...(call('write_file', { Path: join(repo, 'pkg', 'lib', '_agents', 'x.ts'), Content: 'x' }, join(repo, 'pkg')) as object), workspacePaths: [join(repo, 'pkg')] };
+        expect(decideAgyCall(below)).toEqual({ action: 'allow' });
     });
 });
 

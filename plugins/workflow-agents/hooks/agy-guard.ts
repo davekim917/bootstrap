@@ -43,8 +43,10 @@ const READ_ONLY_COMMANDS = new Set([
 const READ_ONLY_GIT = new Set(['status', 'log', 'show', 'diff', 'ls-files', 'rev-parse', 'blame']);
 /** The directory names agy reads workspace customizations, hooks among them, from; `.agents` is the documented one. */
 const WORKSPACE_CUSTOMIZATION_DIRS = ['.agents', '.agent', '_agents', '_agent'];
-const PROTECTED_TEXT = /(?:^|[\s'"=:/~])(?:\.agents?|_agents?|\.gemini)(?:[/\s'"]|$)|\/etc\/antigravity\b/;
-const PROTECTED_LOCATIONS = '.agents/ (or .agent/, _agents/, _agent/), ~/.gemini/ or /etc/antigravity/';
+/** The names besides `.agents` that agy reads only at a workspace root; anywhere else they are ordinary directories. */
+const ROOT_ONLY_CUSTOMIZATION_DIRS = WORKSPACE_CUSTOMIZATION_DIRS.filter((name) => name !== '.agents');
+const PROTECTED_TEXT = /(?:^|[\s'"=:/~])(?:\.agents|\.gemini)(?:[/\s'"]|$)|\/etc\/antigravity\b/;
+const PROTECTED_LOCATIONS = ".agents/, a workspace root's .agent/, _agents/ or _agent/, ~/.gemini/ or /etc/antigravity/";
 
 type Args = Record<string, unknown>;
 
@@ -88,16 +90,43 @@ function physicalPath(target: string, cwd: string, depth = 0): string {
     return current;
 }
 
-function isProtectedConfig(path: string): boolean {
+function isProtectedConfig(path: string, rootOnlyDirs: string[]): boolean {
     const segments = path.split(sep);
-    return segments.some((segment) => WORKSPACE_CUSTOMIZATION_DIRS.includes(segment)) || segments.includes('.gemini')
-        || path === '/etc/antigravity' || path.startsWith('/etc/antigravity/');
+    return segments.includes('.agents') || segments.includes('.gemini')
+        || path === '/etc/antigravity' || path.startsWith('/etc/antigravity/')
+        || rootOnlyDirs.some((dir) => path === dir || path.startsWith(dir + sep));
+}
+
+/** The nearest directory at or above `start` that holds a `.git` entry, or null. */
+function gitTopLevel(start: string): string | null {
+    for (let dir = physicalPath(start, sep); ; dir = dirname(dir)) {
+        try {
+            lstatSync(join(dir, '.git'));
+            return dir;
+        } catch {
+            // No .git here; try the parent.
+        }
+        if (dirname(dir) === dir) return null;
+    }
+}
+
+/**
+ * The root-only customization directories (`.agent/`, `_agents/`, `_agent/`) of each workspace root and of the git top
+ * level of the hook's cwd, as written and as the filesystem resolves them.
+ */
+function rootOnlyCustomizationDirs(roots: string[], cwd: string): string[] {
+    const top = gitTopLevel(cwd);
+    const anchors = [...roots, ...(top ? [top] : [])];
+    return [...new Set(anchors.flatMap((anchor) => ROOT_ONLY_CUSTOMIZATION_DIRS.flatMap((name) => {
+        const dir = join(anchor, name);
+        return [dir, physicalPath(dir, sep)];
+    })))];
 }
 
 /** True when `target`, as written or as the filesystem resolves it from any of `roots`, is a hook-config location. */
-export function isProtectedTarget(target: string, roots: string[]): boolean {
+export function isProtectedTarget(target: string, roots: string[], rootOnlyDirs: string[] = []): boolean {
     const bases = isAbsolute(target) ? [roots[0] ?? sep] : roots;
-    return bases.some((root) => isProtectedConfig(resolve(root, target)) || isProtectedConfig(physicalPath(target, root)));
+    return bases.some((root) => isProtectedConfig(resolve(root, target), rootOnlyDirs) || isProtectedConfig(physicalPath(target, root), rootOnlyDirs));
 }
 
 /** Every `Workspace` value anywhere in a subagent call, since agy takes one per spec in a `Subagents` list too. */
@@ -415,13 +444,13 @@ function redirectTargets(command: string): string[] | null {
 }
 
 /** True when a word or redirect target of the command line names a hook-config location through a symlink. */
-function aliasesProtectedPath(command: string, roots: string[]): boolean {
+function aliasesProtectedPath(command: string, roots: string[], rootOnlyDirs: string[]): boolean {
     const steps = stepsOf(command);
     const redirects = redirectTargets(command);
     // A line the parser cannot read is refused by the policy behind this check.
     if (steps === null || redirects === null) return false;
     return [...steps.flatMap((step) => step.args), ...redirects].some((word) =>
-        word !== '' && !word.startsWith('-') && isProtectedTarget(word, roots));
+        word !== '' && !word.startsWith('-') && isProtectedTarget(word, roots, rootOnlyDirs));
 }
 
 function targetsOf(args: Args): string[] {
@@ -451,11 +480,11 @@ function splitAtLowerUpper(name: string): string {
 }
 
 /** A shell command line, judged as `run_command` judges it. */
-function decideShell(command: unknown, runsIn: string | undefined, roots: string[], base: ToolCall): Verdict {
+function decideShell(command: unknown, runsIn: string | undefined, roots: string[], rootOnlyDirs: string[], base: ToolCall): Verdict {
     if (typeof command !== 'string' || !command.trim()) return denied('no command line to check.');
-    const inProtected = runsIn !== undefined && isProtectedTarget(runsIn, roots);
+    const inProtected = runsIn !== undefined && isProtectedTarget(runsIn, roots, rootOnlyDirs);
     const anchors = runsIn !== undefined ? [physicalPath(runsIn, roots[0])] : roots;
-    if ((PROTECTED_TEXT.test(command) || inProtected || aliasesProtectedPath(command, anchors)) && !readsOnly(command)) {
+    if ((PROTECTED_TEXT.test(command) || inProtected || aliasesProtectedPath(command, anchors, rootOnlyDirs)) && !readsOnly(command)) {
         return denied(`this command touches ${PROTECTED_LOCATIONS}, where hook configs live. Agents may not change them.`);
     }
     const workdir = runsIn !== undefined ? { workdir: runsIn } : {};
@@ -483,6 +512,7 @@ export function decideAgyCall(payload: unknown, { home = process.env.HOME || hom
         : [];
     const roots = workspaces.length ? workspaces : [typeof rawCwd === 'string' && rawCwd ? rawCwd : process.cwd()];
     const cwd = roots[0];
+    const rootOnlyDirs = rootOnlyCustomizationDirs(roots, typeof rawCwd === 'string' && rawCwd ? rawCwd : cwd);
     const base: ToolCall = { cwd, ...(typeof call.id === 'string' ? { tool_use_id: call.id } : {}) };
 
     if (name === 'ask_question') {
@@ -500,7 +530,7 @@ export function decideAgyCall(payload: unknown, { home = process.env.HOME || hom
             return denied('commands may not run outside the sandbox (BypassSandbox).');
         }
         const runsIn = typeof args.Cwd === 'string' && args.Cwd ? args.Cwd : undefined;
-        return decideShell(args.CommandLine, runsIn, roots, base);
+        return decideShell(args.CommandLine, runsIn, roots, rootOnlyDirs, base);
     }
 
     if (name === 'manage_task') {
@@ -516,7 +546,7 @@ export function decideAgyCall(payload: unknown, { home = process.env.HOME || hom
         const targets = targetsOf(args);
         if (targets.length === 0) return denied(`${name} names no file, so the guard cannot check it.`);
         for (const target of targets) {
-            if (isProtectedTarget(target, roots)) {
+            if (isProtectedTarget(target, roots, rootOnlyDirs)) {
                 return denied(`'${target}' is a hook-config location (${PROTECTED_LOCATIONS}). Agents may not change it.`);
             }
         }
