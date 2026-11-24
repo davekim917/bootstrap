@@ -5,7 +5,7 @@
  * agy reads hook commands from `hooks.json` files and passes `{hookEventName, toolCall: {name, args}, cwd}` on
  * stdin. It runs the tool when a hook exits 0 with empty output, so `agy-guard.sh` turns every failure into a deny.
  *
- * agy also hot-reloads hook configs from `.agents/` and `~/.gemini/`. Writing one can disable this guard
+ * agy also hot-reloads hook configs from `.agents/` (and its aliases `.agent/`, `_agents/`, `_agent/`) and `~/.gemini/`. Writing one can disable this guard
  * mid-session, so this adapter refuses those writes from any tool. Shell coverage is a best-effort read of the
  * command line; the sandbox the worker runs in is what makes those paths immutable.
  */
@@ -41,7 +41,10 @@ const READ_ONLY_COMMANDS = new Set([
     'readlink', 'realpath', 'du', 'jq', 'diff', 'sha256sum', 'md5sum', 'test', '[',
 ]);
 const READ_ONLY_GIT = new Set(['status', 'log', 'show', 'diff', 'ls-files', 'rev-parse', 'blame']);
-const PROTECTED_TEXT = /(?:^|[\s'"=:/~])(?:\.agents|\.gemini)(?:[/\s'"]|$)|\/etc\/antigravity\b/;
+/** The directory names agy reads workspace customizations, hooks among them, from; `.agents` is the documented one. */
+const WORKSPACE_CUSTOMIZATION_DIRS = ['.agents', '.agent', '_agents', '_agent'];
+const PROTECTED_TEXT = /(?:^|[\s'"=:/~])(?:\.agents?|_agents?|\.gemini)(?:[/\s'"]|$)|\/etc\/antigravity\b/;
+const PROTECTED_LOCATIONS = '.agents/ (or .agent/, _agents/, _agent/), ~/.gemini/ or /etc/antigravity/';
 
 type Args = Record<string, unknown>;
 
@@ -87,7 +90,7 @@ function physicalPath(target: string, cwd: string, depth = 0): string {
 
 function isProtectedConfig(path: string): boolean {
     const segments = path.split(sep);
-    return segments.includes('.agents') || segments.includes('.gemini')
+    return segments.some((segment) => WORKSPACE_CUSTOMIZATION_DIRS.includes(segment)) || segments.includes('.gemini')
         || path === '/etc/antigravity' || path.startsWith('/etc/antigravity/');
 }
 
@@ -167,7 +170,7 @@ function canonicalAgentsDir(dir: string): string | null {
     try {
         return realpathSync(dir);
     } catch (error) {
-        if (errorCode(error) !== 'ENOENT') throw new Error(`the agents directory ${dir} cannot be resolved (${errorCode(error)})`);
+        if (errorCode(error) !== 'ENOENT') throw new Error(`the directory ${dir} cannot be resolved (${errorCode(error)})`);
     }
     for (let path = dir; ; path = dirname(path)) {
         let info;
@@ -175,13 +178,13 @@ function canonicalAgentsDir(dir: string): string | null {
             info = lstatSync(path);
         } catch (error) {
             if (errorCode(error) === 'ENOENT' && dirname(path) !== path) continue;
-            throw new Error(`the agents directory ${dir} cannot be resolved (${errorCode(error)} at ${path})`);
+            throw new Error(`the directory ${dir} cannot be resolved (${errorCode(error)} at ${path})`);
         }
         if (info.isSymbolicLink()) {
             try {
                 realpathSync(path);
             } catch (error) {
-                throw new Error(`the agents directory ${dir} cannot be resolved (${path} is a link whose target cannot be resolved: ${errorCode(error)})`);
+                throw new Error(`the directory ${dir} cannot be resolved (${path} is a link whose target cannot be resolved: ${errorCode(error)})`);
             }
         }
         return null;
@@ -259,23 +262,57 @@ function readAgentFile(file: string): { frontmatter: Record<string, unknown> } |
 type Candidate = { file: string; dir: string; frontmatter?: Record<string, unknown>; error?: string };
 
 /**
- * Why invoking `typeName` would run a subagent without this guard, or null. agy loads markdown agents from each
- * workspace's `.agents/agents/` before `~/.gemini/config/agents/`, matching the frontmatter `name` exactly; the file
- * name and any deeper directory play no part. The guard checks only the definitions the first of those scopes holds
- * under that name. A readable file whose frontmatter does not parse is no candidate, unless a `name` line still names
- * `typeName`. A custom name with no definition, any lookup error before a scope resolves the name (built-ins
- * included, as a custom file may override one), or a definition that resolves outside its directory is refused,
- * since the guard cannot check what agy would run.
+ * The agents directories one customization root holds, as the filesystem resolves them: `<root>/agents/` and each
+ * `<root>/plugins/<plugin>/agents/`. Every lookup error throws, as in `agentFilesIn`.
+ */
+function agentsDirsUnder(customizationRoot: string): string[] {
+    const dirs: string[] = [];
+    const direct = canonicalAgentsDir(join(customizationRoot, 'agents'));
+    if (direct !== null) dirs.push(direct);
+    const plugins = canonicalAgentsDir(join(customizationRoot, 'plugins'));
+    if (plugins === null) return dirs;
+    let entries: string[];
+    try {
+        entries = readdirSync(plugins);
+    } catch (error) {
+        throw new Error(`the plugins directory ${plugins} cannot be listed (${errorCode(error)})`);
+    }
+    for (const entry of entries) {
+        const path = join(plugins, entry);
+        let isDirectory: boolean;
+        try {
+            isDirectory = statSync(path).isDirectory();
+        } catch (error) {
+            throw new Error(`${path} in the plugins directory cannot be checked (${errorCode(error)})`);
+        }
+        if (!isDirectory) continue;
+        const pluginAgents = canonicalAgentsDir(join(path, 'agents'));
+        if (pluginAgents !== null) dirs.push(pluginAgents);
+    }
+    return dirs;
+}
+
+/**
+ * Why invoking `typeName` would run a subagent without this guard, or null. agy loads markdown agents from the
+ * workspace before `~/.gemini/config/`: in each workspace from `<root>/agents/` under every customization directory
+ * name agy reads, and in both scopes from each plugin's `agents/`. It matches the frontmatter `name` exactly; the file
+ * name and any deeper directory play no part. agy's order among the workspace directories is undocumented, so every
+ * workspace match is checked, and the global scope only when the workspace has none. A readable file whose
+ * frontmatter does not parse is no candidate, unless a `name` line still names `typeName`. A custom name with no
+ * definition, any lookup error before a scope resolves the name (built-ins included, as a custom file may override
+ * one), or a definition that resolves outside its directory is refused, since the guard cannot check what agy would
+ * run.
  */
 function subagentRefusal(typeName: string, roots: string[], home: string): string | null {
-    const scopes = [roots.map((root) => join(root, '.agents', 'agents')), [join(home, '.gemini', 'config', 'agents')]];
+    const scopes = [
+        roots.flatMap((root) => WORKSPACE_CUSTOMIZATION_DIRS.map((name) => join(root, name))),
+        [join(home, '.gemini', 'config')],
+    ];
     const skipped: string[] = [];
     let selected: Candidate[] = [];
     try {
         for (const scope of scopes) {
-            for (const configured of scope) {
-                const dir = canonicalAgentsDir(configured);
-                if (dir === null) continue;
+            for (const dir of scope.flatMap(agentsDirsUnder)) {
                 for (const file of agentFilesIn(dir)) {
                     const read = readAgentFile(file);
                     if ('frontmatter' in read) {
@@ -295,7 +332,7 @@ function subagentRefusal(typeName: string, roots: string[], home: string): strin
     if (!selected.length) {
         if (BUILT_IN_SUBAGENTS.has(typeName)) return null;
         const searched = scopes.flat().join(', ');
-        return `no agent definition named '${typeName}' that agy would load (searched ${searched}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}), so the guard cannot check it. Invoke a built-in subagent (${[...BUILT_IN_SUBAGENTS].join(', ')}) or a markdown agent defined there.`;
+        return `no agent definition named '${typeName}' that agy would load (searched agents/ and plugins/*/agents/ under ${searched}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}), so the guard cannot check it. Invoke a built-in subagent (${[...BUILT_IN_SUBAGENTS].join(', ')}) or a markdown agent defined there.`;
     }
     for (const { file, dir, frontmatter, error } of selected) {
         if (error !== undefined || !frontmatter) {
@@ -419,7 +456,7 @@ function decideShell(command: unknown, runsIn: string | undefined, roots: string
     const inProtected = runsIn !== undefined && isProtectedTarget(runsIn, roots);
     const anchors = runsIn !== undefined ? [physicalPath(runsIn, roots[0])] : roots;
     if ((PROTECTED_TEXT.test(command) || inProtected || aliasesProtectedPath(command, anchors)) && !readsOnly(command)) {
-        return denied('this command touches .agents/, ~/.gemini/ or /etc/antigravity/, where hook configs live. Agents may not change them.');
+        return denied(`this command touches ${PROTECTED_LOCATIONS}, where hook configs live. Agents may not change them.`);
     }
     const workdir = runsIn !== undefined ? { workdir: runsIn } : {};
     return decideToolCall({ ...base, tool_name: 'Bash', tool_input: { command, ...workdir } }, AGY_APPROVAL_HANDOFF);
@@ -480,7 +517,7 @@ export function decideAgyCall(payload: unknown, { home = process.env.HOME || hom
         if (targets.length === 0) return denied(`${name} names no file, so the guard cannot check it.`);
         for (const target of targets) {
             if (isProtectedTarget(target, roots)) {
-                return denied(`'${target}' is a hook-config location (.agents/, ~/.gemini/ or /etc/antigravity/). Agents may not change it.`);
+                return denied(`'${target}' is a hook-config location (${PROTECTED_LOCATIONS}). Agents may not change it.`);
             }
         }
         const [first, ...rest] = targets;
