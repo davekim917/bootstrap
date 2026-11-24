@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, symlinkSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -266,12 +266,19 @@ describe('a bun that cannot honour --no-env-file is refused', () => {
     const REAL_BUN = Bun.which('bun')!;
 
     /** The PATH a bun reporting `version` to --version comes first on; every other call runs the real bun. */
-    function bunReporting(version: string): Record<string, string | undefined> {
+    function bunReporting(version: string, exitCode = 0, path = process.env.PATH): Record<string, string | undefined> {
         const bin = scratch('codex-guard-bun-');
         writeFileSync(join(bin, 'version'), version);
-        writeFileSync(join(bin, 'bun'), `#!/bin/bash\nif [ "$1" = --version ]; then cat ${JSON.stringify(join(bin, 'version'))}; exit 0; fi\nexec ${JSON.stringify(REAL_BUN)} "$@"\n`);
+        writeFileSync(join(bin, 'bun'), `#!${Bun.which('bash')}\nif [ "$1" = --version ]; then cat ${JSON.stringify(join(bin, 'version'))}; exit ${exitCode}; fi\nexec ${JSON.stringify(REAL_BUN)} "$@"\n`);
         chmodSync(join(bin, 'bun'), 0o755);
-        return { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+        return { ...process.env, PATH: `${bin}:${path}` };
+    }
+
+    /** A PATH holding only what the wrapper itself runs, so a tool it does not need is missing. */
+    function minimalPath(): string {
+        const bin = scratch('codex-guard-path-');
+        for (const tool of ['bash', 'dirname', 'mktemp', 'cat', 'rm', 'sleep']) symlinkSync(Bun.which(tool)!, join(bin, tool));
+        return bin;
     }
 
     const allowed = "process.stdout.write(JSON.stringify({ continue: true }));";
@@ -283,6 +290,24 @@ describe('a bun that cannot honour --no-env-file is refused', () => {
         const result = await run(withStandIn(allowed), '{}', { env: bunReporting(version) });
         expect(result.status).toBe(0);
         expect(denyReason(result.stdout)).toMatch(/needs Bun 1\.3\.3 or newer/);
+    });
+
+    test('a probe that prints a valid version and exits non-zero is denied', async () => {
+        const result = await run(withStandIn(allowed), '{}', { env: bunReporting('1.4.2\n', 7) });
+        expect(denyReason(result.stdout)).toMatch(/needs Bun 1\.3\.3 or newer/);
+    });
+
+    test('with SHELLOPTS=errexit:pipefail inherited, a failed probe still prints the deny and a good one runs the guard', async () => {
+        const failed = await run(withStandIn(allowed), '{}', { env: { ...bunReporting('1.4.2\n', 7), SHELLOPTS: 'errexit:pipefail' } });
+        expect(failed.status).toBe(0);
+        expect(denyReason(failed.stdout)).toMatch(/needs Bun 1\.3\.3 or newer/);
+        const good = await run(withStandIn(allowed), '{}', { env: { ...bunReporting('1.4.2\n'), SHELLOPTS: 'errexit:pipefail' } });
+        expect(JSON.parse(good.stdout)).toEqual({ continue: true });
+    });
+
+    test('a PATH with only the tools the wrapper runs still reaches the guard', async () => {
+        const env = bunReporting('1.4.2\n', 0, minimalPath());
+        expect(JSON.parse((await run(withStandIn(allowed), '{}', { env })).stdout)).toEqual({ continue: true });
     });
 
     test.each([['1.3.3\n'], ['1.3.10\n'], ['1.10.0\n'], ['2.0.0\n'], ['1.4.2']])('%j runs the guard', async (version) => {
