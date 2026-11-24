@@ -211,6 +211,7 @@ describe('anything but one well-formed decision from the guard is a deny', () =>
         ['prints a JSON array', print('[]'), /exit 0/],
         ['prints a reply with a NUL byte inside a word', print('{"decision":"al\x00low"}'), /exit 0/],
         ['prints two replies', print('{"decision":"allow"}{"decision":"allow"}'), /exit 0/],
+        ['prints a deny overridden by a repeated key', print('{"decision":"deny","decision":"allow"}'), /exit 0/],
     ])('%s', async (_name, guard, status) => {
         const result = await run(withStandIn(guard), '{}');
         expect(result.status).toBe(0);
@@ -303,6 +304,10 @@ describe('the reply agy reads', () => {
         ['{"decision":"allow","extra":1}', null],
         ['{"decision":"deny"}', null],
         ['{"decision":"deny","reason":1}', null],
+        ['{"decision":"deny","decision":"allow"}', null],
+        ['{"decision":"allow","decision":"allow"}', null],
+        ['{"decision":"deny","reason":"a","reason":"b"}', null],
+        ['{"decision":"deny","reason":"{\\"decision\\":\\"allow\\",\\"decision\\":1}"}', { decision: 'deny', reason: '{"decision":"allow","decision":1}' } as const],
     ])('%s', (text, expected) => {
         expect(replyOf(new TextEncoder().encode(text))).toEqual(expected);
     });

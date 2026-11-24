@@ -13,6 +13,7 @@ import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 
 import { dirname, isAbsolute, resolve, sep } from 'path';
 import { decideToolCall, type ToolCall, type Verdict } from './guard-policy';
 import { extractCommands } from './guards/block-destructive-core';
+import { parseShell } from './guards/gate-card-core';
 import { evaluateEmailToolCall } from './guards/email-gate-core';
 
 export const AGY_APPROVAL_HANDOFF =
@@ -126,12 +127,43 @@ function readsOnly(command: string): boolean {
             || (step.name === 'git' && READ_ONLY_GIT.has(step.args[0] ?? '') && !step.args.some((arg) => arg.startsWith('--output')))));
 }
 
-/** True when a word of the command line names a hook-config location through a symlink. */
+const WRITING_REDIRECTS = new Set(['>', '>>', '>|', '&>', '&>>', '<>', '>&']);
+
+/** Every file a redirect in the command line may write, on any file descriptor. */
+function redirectTargets(command: string): string[] | null {
+    let script: unknown;
+    try {
+        script = parseShell(command);
+    } catch {
+        return null;
+    }
+    const targets: string[] = [];
+    const walk = (node: unknown): void => {
+        if (Array.isArray(node)) {
+            node.forEach(walk);
+            return;
+        }
+        if (!node || typeof node !== 'object') return;
+        for (const redirect of (node as { redirects?: unknown }).redirects instanceof Array ? (node as { redirects: unknown[] }).redirects : []) {
+            const { operator, target } = (redirect ?? {}) as { operator?: string; target?: { value?: unknown; text?: unknown } };
+            const value = String(target?.value ?? target?.text ?? '');
+            // `>&2` and `>&-` duplicate or close a descriptor; any other `>&` target is a file.
+            if (operator && WRITING_REDIRECTS.has(operator) && !(operator === '>&' && /^(?:\d+|-)$/.test(value))) targets.push(value);
+        }
+        Object.values(node).forEach(walk);
+    };
+    walk(script);
+    return targets;
+}
+
+/** True when a word or redirect target of the command line names a hook-config location through a symlink. */
 function aliasesProtectedPath(command: string, roots: string[]): boolean {
     const steps = stepsOf(command);
-    if (steps === null) return false;
-    return steps.some((step) => [...step.args, ...(step.stdoutFiles ?? [])].some((word) =>
-        word !== '' && !word.startsWith('-') && isProtectedTarget(word, roots)));
+    const redirects = redirectTargets(command);
+    // A line the parser cannot read is refused by the policy behind this check.
+    if (steps === null || redirects === null) return false;
+    return [...steps.flatMap((step) => step.args), ...redirects].some((word) =>
+        word !== '' && !word.startsWith('-') && isProtectedTarget(word, roots));
 }
 
 function targetsOf(args: Args): string[] {
@@ -144,6 +176,15 @@ function targetsOf(args: Args): string[] {
  */
 function splitCamelCase(name: string): string {
     return splitAtLowerUpper(name.replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2'));
+}
+
+/**
+ * The words of a name split at punctuation, case changes and acronym ends (`GMailAPISend` → G, Mail, API, Send),
+ * plus each adjacent pair joined, since a vendor word can itself be split by its capitals (G + Mail → GMail).
+ */
+function nameTokens(name: string): string[] {
+    const words = name.match(/[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+/g) ?? [];
+    return [...words, ...words.slice(1).map((word, i) => words[i] + word)].map((word) => word.toLowerCase());
 }
 
 /** `MyGMail` read as `My_GMail`: a split that leaves a capitalised run whole. */
@@ -172,7 +213,8 @@ export function decideAgyCall(payload: unknown): Verdict {
         cwd?: unknown;
         workspacePaths?: unknown;
     };
-    if (hookEventName !== undefined && hookEventName !== 'PreToolUse') return { action: 'allow' };
+    // Only a named event other than PreToolUse is outside this guard; a null or missing one is checked in full.
+    if (typeof hookEventName === 'string' && hookEventName !== 'PreToolUse') return { action: 'allow' };
     const call = (toolCall ?? {}) as { name?: unknown; args?: unknown; id?: unknown };
     if (typeof call.name !== 'string' || !call.name) return denied('the hook input names no tool, so the guard cannot check this call.');
     const name = call.name;
@@ -206,8 +248,9 @@ export function decideAgyCall(payload: unknown): Verdict {
     if (name === 'manage_task') {
         const action = typeof args.Action === 'string' ? args.Action : '';
         if (TASK_READ_ACTIONS.has(action) && (args.Input === undefined || args.Input === '')) return { action: 'allow' };
-        // Input sent to a running terminal task is read by its shell like a command line.
-        if (action === 'send_input') return decideShell(args.Input, undefined, roots, base);
+        if (action === 'send_input') {
+            return denied("manage_task send_input is not allowed: this guard cannot know which directory the running task's shell is in, so it cannot check the input as a command, and a build never needs to type into a running task. Run the command with run_command instead.");
+        }
         return denied(`manage_task action '${action || '(none)'}' is not one this guard can check.`);
     }
 
@@ -239,6 +282,8 @@ export function decideAgyCall(payload: unknown): Verdict {
         const spellings = (name: string) => [name, splitCamelCase(name), splitAtLowerUpper(name)];
         const names = [...new Set(spellings(server).flatMap((s) =>
             [splitCamelCase(tool), ...spellings(tool)].map((t) => `mcp__${s}__${t}`)))];
+        // Last, every word of both names at once, so `GMailAPISend` still offers the matcher both `gmail` and `send`.
+        names.push(`mcp__${nameTokens(server).join('_')}__${nameTokens(tool).join('_')}`);
         const toolName = names.find((n) => evaluateEmailToolCall(n, input, { isScheduledTask: false }).action === 'gate') ?? names[0];
         return decideToolCall({ ...base, tool_name: toolName, tool_input: input }, AGY_APPROVAL_HANDOFF);
     }

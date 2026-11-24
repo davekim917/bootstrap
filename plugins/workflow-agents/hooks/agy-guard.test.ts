@@ -154,6 +154,21 @@ describe('calls agy could otherwise use to step around the guard are denied', ()
     ])('%s', (_name, payload, reason) => {
         expect(reasonOf(payload)).toMatch(reason);
     });
+
+    test.each([
+        ['null', null],
+        ['missing', undefined],
+        ['not a string', 7],
+    ])('an event name that is %s gets the full checks', (_name, hookEventName) => {
+        const sandbox = { hookEventName, toolCall: { name: 'run_command', args: { CommandLine: 'pwd', BypassSandbox: true } } };
+        expect(reasonOf(sandbox)).toMatch(/BypassSandbox/);
+        const destructive = { hookEventName, toolCall: { name: 'run_command', args: { CommandLine: 'terraform destroy' } } };
+        expect(reasonOf(destructive)).toMatch(/Terraform state/);
+    });
+
+    test('a named event other than PreToolUse is not this guard\'s to judge', () => {
+        expect(decideAgyCall({ hookEventName: 'PostToolUse', toolCall: { name: 'run_command', args: { CommandLine: 'terraform destroy' } } })).toEqual({ action: 'allow' });
+    });
 });
 
 describe('paths are judged where the filesystem puts them', () => {
@@ -169,6 +184,13 @@ describe('paths are judged where the filesystem puts them', () => {
         ['through a directory link', 'touch alias/hooks.json'],
         ['through a file link', 'cp fixture.json hooks-link'],
         ['as a redirect target', 'printf x | tee alias/plugins.json'],
+        ['through a stderr redirect', 'ls 2> hooks-link'],
+        ['through a redirect of both streams', 'ls &> hooks-link'],
+        ['through another descriptor', 'ls 3> hooks-link'],
+        ['through an appending redirect', 'ls >> hooks-link'],
+        ['through an appending stderr redirect', 'ls 2>> hooks-link'],
+        ['through a read-write redirect', 'ls 4<> hooks-link'],
+        ['through a redirect in a subshell', '(ls 2> alias/fixture.log)'],
     ])('a shell write %s into .agents is denied', (_name, command) => {
         const root = scratch();
         mkdirSync(join(root, '.agents'));
@@ -176,6 +198,11 @@ describe('paths are judged where the filesystem puts them', () => {
         symlinkSync(join(root, '.agents'), join(root, 'alias'));
         symlinkSync(join(root, '.agents', 'hooks.json'), join(root, 'hooks-link'));
         expect(reasonOf(call('run_command', { CommandLine: command }, root))).toMatch(/hook configs live/);
+    });
+
+    test('a stderr redirect to /dev/null and a descriptor copy stay allowed', () => {
+        const root = scratch();
+        expect(decideAgyCall(call('run_command', { CommandLine: 'ls 2> /dev/null >&2' }, root))).toEqual({ action: 'allow' });
     });
 
     test('a shell write through an ordinary link stays allowed', () => {
@@ -196,21 +223,22 @@ describe('paths are judged where the filesystem puts them', () => {
     });
 });
 
-describe('input sent to a running task is judged as a command line', () => {
+describe('input is never sent to a running task', () => {
     test.each([
         ['list', { Action: 'list' }],
         ['status', { Action: 'status', TaskId: 't1' }],
         ['kill', { Action: 'kill', TaskId: 't1' }],
         ['status with an empty input', { Action: 'status', TaskId: 't1', Input: '' }],
-        ['send_input of a safe command', { Action: 'send_input', TaskId: 't1', Input: 'git status\n' }],
     ])('%s is allowed', (_name, args) => {
         expect(decideAgyCall(call('manage_task', args))).toEqual({ action: 'allow' });
     });
 
     test.each([
-        ['an approval-tier command', { Action: 'send_input', TaskId: 't1', Input: 'terraform destroy\n' }, /Terraform state/],
-        ['a write to a hook config', { Action: 'send_input', TaskId: 't1', Input: "echo '{}' > .agents/hooks.json\n" }, /hook configs live/],
-        ['no input', { Action: 'send_input', TaskId: 't1' }, /no command line/],
+        ['send_input of a safe command', { Action: 'send_input', TaskId: 't1', Input: 'git status\n' }, /send_input is not allowed.*cannot know which directory/],
+        ['send_input that would touch a file in a task already in .agents', { Action: 'send_input', TaskId: 't1', Input: 'touch fixture.txt\n' }, /send_input is not allowed/],
+        ['an approval-tier command', { Action: 'send_input', TaskId: 't1', Input: 'terraform destroy\n' }, /send_input is not allowed/],
+        ['a write to a hook config', { Action: 'send_input', TaskId: 't1', Input: "echo '{}' > .agents/hooks.json\n" }, /send_input is not allowed/],
+        ['no input', { Action: 'send_input', TaskId: 't1' }, /send_input is not allowed/],
         ['an action the guard does not know', { Action: 'restart', TaskId: 't1' }, /not one this guard can check/],
         ['a read action carrying input', { Action: 'status', TaskId: 't1', Input: 'rm -rf build\n' }, /not one this guard can check/],
     ])('%s is denied', (_name, args, reason) => {
@@ -235,6 +263,10 @@ describe('MCP tool names reach the email gate in the token form it reads', () =>
         ['workspace', 'GMail_send'],
         ['MyEmail', 'send'],
         ['MyGMail', 'send_message'],
+        ['workspace', 'GMailAPISend'],
+        ['workspace', 'sendGmail'],
+        ['workspace', 'GMAIL_SEND'],
+        ['workspace', 'EMailSend'],
     ])('server %s, tool %s gates as a send, whether its word is found split or as written', (server, tool) => {
         const reason = reasonOf(call('call_mcp_tool', {
             ServerName: server,

@@ -28,11 +28,50 @@ export function bunSupported(version: string): boolean {
     return true;
 }
 
+/**
+ * True when no object in the JSON text names a key twice. JSON.parse keeps the last of a repeated key, so
+ * `{"decision":"deny","decision":"allow"}` would otherwise read as an allow.
+ */
+function keysUnique(text: string): boolean {
+    const objects: Array<{ keys: Set<string>; expectKey: boolean } | null> = [];
+    for (let i = 0; i < text.length; i += 1) {
+        const char = text[i];
+        const top = objects.at(-1);
+        if (char === '"') {
+            let end = i + 1;
+            while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+            if (top?.expectKey) {
+                let key: string;
+                try {
+                    key = JSON.parse(text.slice(i, end + 1));
+                } catch {
+                    return false;
+                }
+                if (top.keys.has(key)) return false;
+                top.keys.add(key);
+                top.expectKey = false;
+            }
+            i = end;
+        } else if (char === '{') {
+            objects.push({ keys: new Set(), expectKey: true });
+        } else if (char === '[') {
+            objects.push(null);
+        } else if (char === '}' || char === ']') {
+            objects.pop();
+        } else if (char === ',' && top) {
+            top.expectKey = true;
+        }
+    }
+    return true;
+}
+
 /** The guard's output as agy's decision, or null unless it is exactly one decision of that shape in valid UTF-8. */
 export function replyOf(output: Uint8Array): Reply | null {
     let value: unknown;
     try {
-        value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(output));
+        const text = new TextDecoder('utf-8', { fatal: true }).decode(output);
+        value = JSON.parse(text);
+        if (!keysUnique(text)) return null;
     } catch {
         return null;
     }
