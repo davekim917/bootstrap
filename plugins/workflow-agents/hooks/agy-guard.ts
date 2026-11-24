@@ -9,8 +9,9 @@
  * mid-session, so this adapter refuses those writes from any tool. Shell coverage is a best-effort read of the
  * command line; the sandbox the worker runs in is what makes those paths immutable.
  */
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 'fs';
-import { dirname, isAbsolute, resolve, sep } from 'path';
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'fs';
+import { homedir } from 'os';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'path';
 import { decideToolCall, type ToolCall, type Verdict } from './guard-policy';
 import { extractCommands, walkCommandNodes } from './guards/block-destructive-core';
 import { parseShell } from './guards/gate-card-core';
@@ -107,6 +108,131 @@ function workspacesIn(value: unknown, out: unknown[] = []): unknown[] {
         }
     }
     return out;
+}
+
+/** Every `TypeName` value anywhere in a subagent call, single or in a `Subagents` list. */
+function typeNamesIn(value: unknown, out: unknown[] = []): unknown[] {
+    if (Array.isArray(value)) {
+        for (const item of value) typeNamesIn(item, out);
+    } else if (value && typeof value === 'object') {
+        for (const [key, inner] of Object.entries(value)) {
+            if (key === 'TypeName') out.push(inner);
+            else typeNamesIn(inner, out);
+        }
+    }
+    return out;
+}
+
+/**
+ * An agent that does not inherit the user's customizations runs without the hooks in `~/.gemini/config/hooks.json`,
+ * this guard among them. Each key is read without regard to case or separators, and only the value that keeps
+ * inheritance on passes.
+ */
+const INHERITANCE_FIELDS = new Map<string, { label: string; keepsInheritance: unknown }>([
+    ['inheritcustomizations', { label: 'inheritCustomizations', keepsInheritance: true }],
+    ['inheritscopes', { label: 'inheritScopes', keepsInheritance: 'all' }],
+]);
+
+/** The first field in `value`, at any depth, that turns inheritance off, as `key: value`; null when none does. */
+function inheritanceOff(value: unknown): string | null {
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const found = inheritanceOff(item);
+            if (found) return found;
+        }
+    } else if (value && typeof value === 'object') {
+        for (const [key, inner] of Object.entries(value)) {
+            const field = INHERITANCE_FIELDS.get(key.toLowerCase().replace(/[^a-z0-9]/g, ''));
+            if (field && inner !== field.keepsInheritance) return `${field.label}: ${JSON.stringify(inner) ?? String(inner)}`;
+            const found = inheritanceOff(inner);
+            if (found) return found;
+        }
+    }
+    return null;
+}
+
+type AgentDefinition = { file: string; names: string[]; frontmatter: Record<string, unknown> } | { file: string; error: string };
+
+/** The markdown agent files in one agents directory, as `<name>.md` or `<name>/agent.md`, each with the name its path gives it. */
+function agentFilesIn(dir: string): Array<{ file: string; pathName: string }> {
+    let entries: string[];
+    try {
+        entries = readdirSync(dir);
+    } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') return [];
+        throw new Error(`the agents directory ${dir} cannot be listed (${code ?? String(error)})`);
+    }
+    const files: Array<{ file: string; pathName: string }> = [];
+    for (const entry of entries) {
+        const path = join(dir, entry);
+        let isDirectory: boolean;
+        try {
+            isDirectory = statSync(path).isDirectory();
+        } catch {
+            if (entry.endsWith('.md')) files.push({ file: path, pathName: basename(entry, '.md') });
+            continue;
+        }
+        if (isDirectory) {
+            if (existsSync(join(path, 'agent.md'))) files.push({ file: join(path, 'agent.md'), pathName: entry });
+        } else if (entry.endsWith('.md')) {
+            files.push({ file: path, pathName: basename(entry, '.md') });
+        }
+    }
+    return files;
+}
+
+/** One agent file's frontmatter, or why it cannot be read as one. */
+function readAgentDefinition(file: string, pathName: string): AgentDefinition {
+    let text: string;
+    try {
+        text = readFileSync(file, 'utf-8');
+        if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+    } catch (error) {
+        return { file, error: (error as NodeJS.ErrnoException).code ?? String(error) };
+    }
+    const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
+    if (!match) return { file, error: 'no YAML frontmatter' };
+    let frontmatter: unknown;
+    try {
+        frontmatter = Bun.YAML.parse(match[1]);
+    } catch (error) {
+        return { file, error: error instanceof Error ? error.message : String(error) };
+    }
+    if (!frontmatter || typeof frontmatter !== 'object' || Array.isArray(frontmatter)) return { file, error: 'frontmatter is not a mapping' };
+    const fields = frontmatter as Record<string, unknown>;
+    const names = [pathName, ...(typeof fields.name === 'string' ? [fields.name] : [])];
+    return { file, names, frontmatter: fields };
+}
+
+/**
+ * Why invoking the agents `typeNames` would run one without this guard, or null. Definitions come from where agy loads
+ * markdown agents: each workspace's `.agents/agents/` and `~/.gemini/config/agents/`. A definition that cannot be
+ * read could be any of them, so it refuses the call.
+ */
+function subagentInheritanceRefusal(typeNames: string[], roots: string[], home: string): string | null {
+    const wanted = new Set(typeNames.map((name) => name.toLowerCase()));
+    const dirs = [...roots.map((root) => join(root, '.agents', 'agents')), join(home, '.gemini', 'config', 'agents')];
+    for (const dir of dirs) {
+        let files: Array<{ file: string; pathName: string }>;
+        try {
+            files = agentFilesIn(dir);
+        } catch (error) {
+            return `${error instanceof Error ? error.message : String(error)}, so the guard cannot tell whether the subagent keeps this guard's hooks.`;
+        }
+        for (const { file, pathName } of files) {
+            const definition = readAgentDefinition(file, pathName);
+            if ('error' in definition) {
+                return `${file} cannot be read as an agent definition (${definition.error}), so the guard cannot tell whether a subagent it defines keeps this guard's hooks. Fix or remove that file.`;
+            }
+            const name = definition.names.find((candidate) => wanted.has(candidate.toLowerCase()));
+            const off = name === undefined ? null : inheritanceOff(definition.frontmatter);
+            if (off) {
+                return `agent '${name}' (${file}) sets ${off}, so it would run without the user's hooks, this guard among them. Agents may only invoke subagents that inherit customizations.`;
+            }
+        }
+    }
+    return null;
 }
 
 function stepsOf(command: string) {
@@ -216,8 +342,8 @@ function decideShell(command: unknown, runsIn: string | undefined, roots: string
     return decideToolCall({ ...base, tool_name: 'Bash', tool_input: { command, ...workdir } }, AGY_APPROVAL_HANDOFF);
 }
 
-/** The verdict for one agy hook payload. */
-export function decideAgyCall(payload: unknown): Verdict {
+/** The verdict for one agy hook payload. `home` is where `~/.gemini` lives, the hook's own HOME unless given. */
+export function decideAgyCall(payload: unknown, { home = process.env.HOME || homedir() }: { home?: string } = {}): Verdict {
     if (!payload || typeof payload !== 'object') return denied('the hook input is not a JSON object.');
     const { hookEventName, toolCall, cwd: rawCwd, workspacePaths } = payload as {
         hookEventName?: unknown;
@@ -309,6 +435,15 @@ export function decideAgyCall(payload: unknown): Verdict {
                 return denied(`a subagent may only work in this session's workspace (${[...allowed].join(', ')}); a workspace elsewhere loads its own hook config.`);
             }
         }
+        if (name === 'define_subagent') {
+            const off = inheritanceOff(args);
+            if (off) return denied(`define_subagent sets ${off}; a subagent that does not inherit customizations runs without the user's hooks, this guard among them.`);
+            return { action: 'allow' };
+        }
+        const typeNames = typeNamesIn(args);
+        if (typeNames.some((typeName) => typeof typeName !== 'string')) return denied(`${name} has an unreadable TypeName.`);
+        const refusal = subagentInheritanceRefusal(typeNames.filter((typeName): typeName is string => typeName !== ''), roots, home);
+        if (refusal) return denied(refusal);
         return { action: 'allow' };
     }
 

@@ -302,6 +302,106 @@ describe('any BypassSandbox value but false is a request to leave the sandbox', 
     });
 });
 
+describe('a subagent that does not inherit customizations would run without these hooks, so it is denied', () => {
+    function agentDef(dir: string, file: string, frontmatter: string): void {
+        mkdirSync(join(dir, file, '..'), { recursive: true });
+        writeFileSync(join(dir, file), `---\n${frontmatter}\n---\n\n# System Prompt\nWrite what you are asked to.\n`);
+    }
+    function invoke(root: string, typeName: string): unknown {
+        return { ...(call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: typeName }) as object), workspacePaths: [root] };
+    }
+    function homeAndRoot(): { home: string; root: string } {
+        return { home: scratch(), root: scratch() };
+    }
+
+    test.each([
+        ['inheritCustomizations', false], ['inheritCustomizations', 'false'], ['inheritCustomizations', 0], ['inheritCustomizations', null],
+        ['inheritCustomizations', 'no'], ['InheritCustomizations', false], ['inherit_customizations', false],
+        ['inheritScopes', 'none'], ['inheritScopes', 'repo_and_org'], ['inheritScopes', null],
+    ])('define_subagent with %s %j', (key, value) => {
+        const args = { Name: 'helper', Description: 'd', SystemPrompt: 's', EnableWriteTools: true, [key]: value };
+        expect(reasonOf(call('define_subagent', args))).toMatch(/define_subagent sets inherit(Customizations|Scopes)/);
+    });
+
+    test.each([
+        ['inheritCustomizations true', { inheritCustomizations: true }],
+        ['inheritScopes all', { inheritScopes: 'all' }],
+        ['neither', {}],
+        ['a key that only an object prototype has', { constructor: false, toString: 0 }],
+    ])('define_subagent with %s is allowed', (_name, extra) => {
+        const args = { Name: 'helper', Description: 'd', SystemPrompt: 's', EnableWriteTools: true, ...extra };
+        expect(decideAgyCall(call('define_subagent', args))).toEqual({ action: 'allow' });
+    });
+
+    test.each([
+        ['a workspace agent file', 'workspace', 'writer.md', 'name: writer\ninheritCustomizations: false'],
+        ['a workspace agent directory', 'workspace', 'writer/agent.md', 'name: writer\ninheritCustomizations: false'],
+        ['a global agent file', 'home', 'writer.md', 'name: writer\ninheritCustomizations: false'],
+        ['a global agent directory', 'home', 'writer/agent.md', 'name: writer\ninheritScopes: none'],
+        ['a definition named only by its file', 'workspace', 'writer.md', 'description: d\ninheritScopes: repo_and_org'],
+        ['a definition whose name differs from its file', 'workspace', 'other.md', 'name: writer\ninheritCustomizations: "false"'],
+    ])('invoke_subagent of an agent defined by %s', (_name, where, file, frontmatter) => {
+        const { home, root } = homeAndRoot();
+        const dir = where === 'home' ? join(home, '.gemini', 'config', 'agents') : join(root, '.agents', 'agents');
+        agentDef(dir, file, frontmatter);
+        const verdict = decideAgyCall(invoke(root, 'writer'), { home });
+        expect(verdict.action).toBe('deny');
+        expect(verdict.action === 'deny' ? verdict.reason : '').toMatch(/agent 'writer' .* sets inherit(Customizations|Scopes)/);
+    });
+
+    test('invoke_subagent through a Subagents list entry', () => {
+        const { home, root } = homeAndRoot();
+        agentDef(join(root, '.agents', 'agents'), 'writer.md', 'name: writer\ninheritCustomizations: false');
+        const listed = { ...(call('invoke_subagent', { Subagents: [{ Prompt: 'a', TypeName: 'self' }, { Prompt: 'b', TypeName: 'writer' }] }) as object), workspacePaths: [root] };
+        const verdict = decideAgyCall(listed, { home });
+        expect(verdict.action === 'deny' ? verdict.reason : 'allowed').toMatch(/agent 'writer'/);
+    });
+
+    test.each([
+        ['no frontmatter', 'Write what you are asked to.\n'],
+        ['frontmatter that is not YAML', '---\nname: [writer\n---\n'],
+        ['frontmatter that is not a mapping', '---\n- writer\n---\n'],
+    ])('a definition with %s fails closed', (_name, text) => {
+        const { home, root } = homeAndRoot();
+        mkdirSync(join(root, '.agents', 'agents'), { recursive: true });
+        writeFileSync(join(root, '.agents', 'agents', 'writer.md'), text);
+        const verdict = decideAgyCall(invoke(root, 'writer'), { home });
+        expect(verdict.action === 'deny' ? verdict.reason : 'allowed').toMatch(/cannot be read as an agent definition/);
+    });
+
+    test.each([
+        ['without the field', 'name: writer'],
+        ['with inheritCustomizations true', 'name: writer\ninheritCustomizations: true'],
+        ['with inheritScopes all', 'name: writer\ninheritScopes: all'],
+    ])('invoke_subagent of an agent %s is allowed', (_name, frontmatter) => {
+        const { home, root } = homeAndRoot();
+        agentDef(join(root, '.agents', 'agents'), 'writer.md', frontmatter);
+        agentDef(join(home, '.gemini', 'config', 'agents'), 'writer/agent.md', frontmatter);
+        expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
+    });
+
+    test('an agent that drops inheritance does not block invoking a different one', () => {
+        const { home, root } = homeAndRoot();
+        agentDef(join(root, '.agents', 'agents'), 'loner.md', 'name: loner\ninheritCustomizations: false');
+        agentDef(join(root, '.agents', 'agents'), 'writer.md', 'name: writer');
+        expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
+        expect(decideAgyCall(invoke(root, 'self'), { home })).toEqual({ action: 'allow' });
+    });
+
+    test('the installed guard reads the global agents of the HOME it runs with', async () => {
+        const { home, root } = homeAndRoot();
+        agentDef(join(home, '.gemini', 'config', 'agents'), 'writer.md', 'name: writer\ninheritCustomizations: false');
+        const proc = Bun.spawn(['bun', GUARD], {
+            stdin: new Blob([JSON.stringify(invoke(root, 'writer'))]),
+            stdout: 'pipe', stderr: 'pipe', env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home },
+        });
+        expect(await proc.exited).toBe(0);
+        const reply = JSON.parse(await new Response(proc.stdout).text());
+        expect(reply.decision).toBe('deny');
+        expect(reply.reason).toMatch(/agent 'writer' .* sets inheritCustomizations/);
+    });
+});
+
 describe('the adapter answers agy on stdout with an explicit decision', () => {
     async function run(stdin: string): Promise<{ status: number; stdout: string }> {
         const proc = Bun.spawn(['bun', GUARD], { stdin: new Blob([stdin]), stdout: 'pipe', stderr: 'pipe' });
