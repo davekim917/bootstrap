@@ -168,7 +168,11 @@ function canonicalAgentsDir(dir: string): string | null {
     }
 }
 
-/** The files agy reads markdown agents from in one directory: `<dir>/<file>.md` and `<dir>/<subdir>/agent.md`, no deeper. */
+/**
+ * The files agy reads markdown agents from in one directory: `<dir>/<file>.md` and `<dir>/<subdir>/agent.md`, no
+ * deeper. An entry the guard cannot inspect could hold any agent's definition, so every error but an absent
+ * `agent.md` throws.
+ */
 function agentFilesIn(dir: string): string[] {
     let entries: string[];
     try {
@@ -182,11 +186,18 @@ function agentFilesIn(dir: string): string[] {
         let isDirectory: boolean;
         try {
             isDirectory = statSync(path).isDirectory();
-        } catch {
-            continue;
+        } catch (error) {
+            throw new Error(`${path} in the agents directory cannot be checked (${errorCode(error)})`);
         }
         if (isDirectory) {
-            if (existsSync(join(path, 'agent.md'))) files.push(join(path, 'agent.md'));
+            const nested = join(path, 'agent.md');
+            try {
+                statSync(nested);
+            } catch (error) {
+                if (errorCode(error) === 'ENOENT') continue;
+                throw new Error(`${nested} cannot be checked (${errorCode(error)})`);
+            }
+            files.push(nested);
         } else if (entry.endsWith('.md')) {
             files.push(path);
         }
@@ -196,14 +207,15 @@ function agentFilesIn(dir: string): string[] {
 
 /**
  * A file's frontmatter, or why it cannot be read as one, with the `name` a line of it declares even when the
- * frontmatter does not parse: agy's YAML parser may read a file this one rejects.
+ * frontmatter does not parse: agy's YAML parser may read a file this one rejects. A file that cannot be read at all
+ * throws, since its name, and so the agent it defines, is unknown.
  */
 function readAgentFile(file: string): { frontmatter: Record<string, unknown> } | { error: string; declaredName?: string } {
     let text: string;
     try {
         text = readFileSync(file, 'utf-8');
     } catch (error) {
-        return { error: errorCode(error) };
+        throw new Error(`${file} in the agents directory cannot be read (${errorCode(error)})`);
     }
     if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
     const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
@@ -225,9 +237,10 @@ type Candidate = { file: string; dir: string; frontmatter?: Record<string, unkno
  * Why invoking `typeName` would run a subagent without this guard, or null. agy loads markdown agents from each
  * workspace's `.agents/agents/` before `~/.gemini/config/agents/`, matching the frontmatter `name` exactly; the file
  * name and any deeper directory play no part. The guard checks only the definitions the first of those scopes holds
- * under that name. A file it cannot read or parse elsewhere is no candidate, unless a `name` line still names
- * `typeName`. A custom name with no definition, a lookup error, or a definition that resolves outside its directory
- * is refused, since the guard cannot check what agy would run.
+ * under that name. A readable file whose frontmatter does not parse is no candidate, unless a `name` line still names
+ * `typeName`. A custom name with no definition, any lookup error before a scope resolves the name (built-ins
+ * included, as a custom file may override one), or a definition that resolves outside its directory is refused,
+ * since the guard cannot check what agy would run.
  */
 function subagentRefusal(typeName: string, roots: string[], home: string): string | null {
     const scopes = [roots.map((root) => join(root, '.agents', 'agents')), [join(home, '.gemini', 'config', 'agents')]];

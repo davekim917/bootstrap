@@ -435,13 +435,11 @@ describe('invoke_subagent resolves a TypeName to the one definition agy would lo
         expect(decideAgyCall(invoke(root, builtIn), { home })).toEqual({ action: 'allow' });
     });
 
-    test('a valid named agent is allowed beside a README, a broken file and an unreadable file', () => {
+    test('a valid named agent is allowed beside a README and a broken file', () => {
         const { home, root, workspaceAgents } = setup();
         agentDef(workspaceAgents, 'writer.md', 'name: writer');
         writeFileSync(join(workspaceAgents, 'README.md'), 'Agents for this repository.\n');
         writeFileSync(join(workspaceAgents, 'broken.md'), '---\nname: [broken\n---\n');
-        const locked = agentDef(workspaceAgents, 'locked.md', 'name: locked');
-        chmodSync(locked, 0o000);
         expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
     });
 
@@ -491,6 +489,67 @@ describe('invoke_subagent resolves a TypeName to the one definition agy would lo
         mkdirSync(workspaceAgents, { recursive: true });
         writeFileSync(join(workspaceAgents, 'writer.md'), '---\nname: writer\ninheritCustomizations: [false\n---\n');
         expect(reason(invoke(root, 'writer'), home)).toMatch(/defines agent 'writer' but cannot be read/);
+    });
+});
+
+describe('a lookup error on any candidate denies the call, with no fallback to a global definition or a built-in', () => {
+    const asRoot = process.getuid?.() === 0;
+    function agentDef(dir: string, file: string, frontmatter: string): string {
+        mkdirSync(join(dir, file, '..'), { recursive: true });
+        writeFileSync(join(dir, file), `---\n${frontmatter}\n---\n\n# System Prompt\nWrite what you are asked to.\n`);
+        return join(dir, file);
+    }
+    function invoke(root: string, typeName: string): unknown {
+        return { ...(call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: typeName }) as object), workspacePaths: [root] };
+    }
+    function withValidGlobal(): { home: string; root: string; workspaceAgents: string } {
+        const home = scratch();
+        const root = scratch();
+        agentDef(join(home, '.gemini', 'config', 'agents'), 'writer.md', 'name: writer');
+        return { home, root, workspaceAgents: join(root, '.agents', 'agents') };
+    }
+    function reasonWhileLocked(path: string, payload: unknown, home: string): string {
+        chmodSync(path, 0o000);
+        try {
+            const verdict = decideAgyCall(payload, { home });
+            return verdict.action === 'deny' ? verdict.reason : 'allowed';
+        } finally {
+            chmodSync(path, 0o755);
+        }
+    }
+
+    test.skipIf(asRoot).each([['writer'], ['self'], ['research'], ['browser']])('an unreadable workspace agent file denies %s', (typeName) => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        const locked = agentDef(workspaceAgents, 'writer.md', 'name: writer');
+        expect(reasonWhileLocked(locked, invoke(root, typeName), home)).toMatch(/cannot be read/);
+    });
+
+    test.skipIf(asRoot)('an unreadable <subdir>/agent.md denies the call', () => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        const locked = agentDef(workspaceAgents, 'team/agent.md', 'name: writer');
+        expect(reasonWhileLocked(locked, invoke(root, 'writer'), home)).toMatch(/cannot be read/);
+    });
+
+    test.skipIf(asRoot)('a <subdir> that cannot be listed denies the call', () => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        agentDef(workspaceAgents, 'team/agent.md', 'name: writer');
+        expect(reasonWhileLocked(join(workspaceAgents, 'team'), invoke(root, 'writer'), home)).toMatch(/cannot be (read|listed|checked)/);
+    });
+
+    test('an entry whose link target is missing denies the call', () => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        mkdirSync(workspaceAgents, { recursive: true });
+        symlinkSync(join(root, 'missing.md'), join(workspaceAgents, 'ghost.md'));
+        expect(decideAgyCall(invoke(root, 'writer'), { home }).action).toBe('deny');
+    });
+
+    test('a readable README or another agent\'s broken frontmatter still denies nothing', () => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        mkdirSync(workspaceAgents, { recursive: true });
+        writeFileSync(join(workspaceAgents, 'README.md'), 'Agents for this repository.\n');
+        writeFileSync(join(workspaceAgents, 'other.md'), '---\nname: other\ninheritCustomizations: [true\n---\n');
+        expect(decideAgyCall(invoke(root, 'writer'), { home })).toEqual({ action: 'allow' });
+        expect(decideAgyCall(invoke(root, 'self'), { home })).toEqual({ action: 'allow' });
     });
 });
 
