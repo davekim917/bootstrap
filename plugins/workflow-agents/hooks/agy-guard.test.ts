@@ -149,10 +149,97 @@ describe('calls agy could otherwise use to step around the guard are denied', ()
         ['a tool off the allowlist', call('browser_click_element', {}), /not on this guard's allowlist/],
         ['a payload with no tool', { hookEventName: 'PreToolUse' }, /names no tool/],
         ['a write naming no file', call('write_file', { Content: 'x' }), /names no file/],
-        ['a command with no command line', call('run_command', {}), /no CommandLine/],
+        ['a command with no command line', call('run_command', {}), /no command line/],
         ['an MCP call with no server', call('call_mcp_tool', { ToolName: 'search' }), /names no server or tool/],
     ])('%s', (_name, payload, reason) => {
         expect(reasonOf(payload)).toMatch(reason);
+    });
+});
+
+describe('paths are judged where the filesystem puts them', () => {
+    test('a .. after a symlink into .agents lands in .agents, not back in the workspace', () => {
+        const root = scratch();
+        mkdirSync(join(root, '.agents', 'nested'), { recursive: true });
+        symlinkSync(join(root, '.agents', 'nested'), join(root, 'alias'));
+        expect(reasonOf(call('write_file', { Path: 'alias/../fixture.txt', Content: 'x' }, root))).toMatch(/hook-config location/);
+        expect(reasonOf(call('write_file', { Path: `${root}/alias/../fixture.txt`, Content: 'x' }, root))).toMatch(/hook-config location/);
+    });
+
+    test.each([
+        ['through a directory link', 'touch alias/hooks.json'],
+        ['through a file link', 'cp fixture.json hooks-link'],
+        ['as a redirect target', 'printf x | tee alias/plugins.json'],
+    ])('a shell write %s into .agents is denied', (_name, command) => {
+        const root = scratch();
+        mkdirSync(join(root, '.agents'));
+        writeFileSync(join(root, '.agents', 'hooks.json'), '{}');
+        symlinkSync(join(root, '.agents'), join(root, 'alias'));
+        symlinkSync(join(root, '.agents', 'hooks.json'), join(root, 'hooks-link'));
+        expect(reasonOf(call('run_command', { CommandLine: command }, root))).toMatch(/hook configs live/);
+    });
+
+    test('a shell write through an ordinary link stays allowed', () => {
+        const root = scratch();
+        mkdirSync(join(root, 'src'));
+        symlinkSync(join(root, 'src'), join(root, 'alias'));
+        expect(decideAgyCall(call('run_command', { CommandLine: 'touch alias/app.ts' }, root))).toEqual({ action: 'allow' });
+    });
+
+    test('a subagent workspace is compared where it resolves', () => {
+        const root = scratch();
+        const elsewhere = scratch();
+        mkdirSync(join(elsewhere, 'nested'));
+        symlinkSync(join(elsewhere, 'nested'), join(root, 'alias'));
+        symlinkSync(root, join(elsewhere, 'root-link'));
+        expect(reasonOf(call('invoke_subagent', { Prompt: 'p', Workspace: `${root}/alias/..` }, root))).toMatch(/only work in this session's workspace/);
+        expect(decideAgyCall(call('invoke_subagent', { Prompt: 'p', Workspace: join(elsewhere, 'root-link') }, root))).toEqual({ action: 'allow' });
+    });
+});
+
+describe('input sent to a running task is judged as a command line', () => {
+    test.each([
+        ['list', { Action: 'list' }],
+        ['status', { Action: 'status', TaskId: 't1' }],
+        ['kill', { Action: 'kill', TaskId: 't1' }],
+        ['status with an empty input', { Action: 'status', TaskId: 't1', Input: '' }],
+        ['send_input of a safe command', { Action: 'send_input', TaskId: 't1', Input: 'git status\n' }],
+    ])('%s is allowed', (_name, args) => {
+        expect(decideAgyCall(call('manage_task', args))).toEqual({ action: 'allow' });
+    });
+
+    test.each([
+        ['an approval-tier command', { Action: 'send_input', TaskId: 't1', Input: 'terraform destroy\n' }, /Terraform state/],
+        ['a write to a hook config', { Action: 'send_input', TaskId: 't1', Input: "echo '{}' > .agents/hooks.json\n" }, /hook configs live/],
+        ['no input', { Action: 'send_input', TaskId: 't1' }, /no command line/],
+        ['an action the guard does not know', { Action: 'restart', TaskId: 't1' }, /not one this guard can check/],
+        ['a read action carrying input', { Action: 'status', TaskId: 't1', Input: 'rm -rf build\n' }, /not one this guard can check/],
+    ])('%s is denied', (_name, args, reason) => {
+        expect(reasonOf(call('manage_task', args))).toMatch(reason);
+    });
+});
+
+describe('MCP tool names reach the email gate in the token form it reads', () => {
+    test.each([['sendEmail'], ['SendEmail'], ['sendHTMLEmail']])('gmail %s gates as a send', (tool) => {
+        const reason = reasonOf(call('call_mcp_tool', {
+            ServerName: 'gmail',
+            ToolName: tool,
+            Arguments: { to: 'pat@example.com', subject: 'Hi', body: 'Short note.' },
+        }));
+        expect(reason).toContain(AGY_APPROVAL_HANDOFF);
+    });
+
+    test('a draft tool still passes', () => {
+        expect(decideAgyCall(call('call_mcp_tool', { ServerName: 'gmail', ToolName: 'createDraft', Arguments: {} }))).toEqual({ action: 'allow' });
+    });
+});
+
+describe('any BypassSandbox value but false is a request to leave the sandbox', () => {
+    test.each([[true], ['true'], [1], ['yes'], [null]])('%j is denied', (value) => {
+        expect(reasonOf(call('run_command', { CommandLine: 'pwd', BypassSandbox: value }))).toMatch(/BypassSandbox/);
+    });
+
+    test('false is allowed', () => {
+        expect(decideAgyCall(call('run_command', { CommandLine: 'pwd', BypassSandbox: false }))).toEqual({ action: 'allow' });
     });
 });
 

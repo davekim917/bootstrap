@@ -710,6 +710,11 @@ const codexWatchdog = Number(/^WATCHDOG_SECONDS=(\d+)$/m.exec(readText('plugins/
 if (!(codexWatchdog > GATE_WAIT_SECONDS && codexGateHook?.timeout > codexWatchdog)) {
   fail(`the Codex guard hook needs codex-guard.sh's watchdog above ${GATE_WAIT_SECONDS}s and the hook timeout above the watchdog`);
 }
+// agy's registration lives in the host install, which sets its timeout above this watchdog.
+const agyWatchdog = Number(/^WATCHDOG_SECONDS=(\d+)$/m.exec(readText('plugins/workflow-agents/hooks/agy-guard.sh') ?? '')?.[1]);
+if (!(agyWatchdog > GATE_WAIT_SECONDS)) {
+  fail(`agy-guard.sh needs a WATCHDOG_SECONDS line above the ${GATE_WAIT_SECONDS}s approval wait`);
+}
 
 // SessionStart is GONE, and the allowlist is now a single event. It existed to
 // copy a generated `worker-frontier` role TOML into `<CODEX_HOME>/agents/`,
