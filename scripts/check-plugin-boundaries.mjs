@@ -710,10 +710,11 @@ const codexWatchdog = Number(/^WATCHDOG_SECONDS=(\d+)$/m.exec(readText('plugins/
 if (!(codexWatchdog > GATE_WAIT_SECONDS && codexGateHook?.timeout > codexWatchdog)) {
   fail(`the Codex guard hook needs codex-guard.sh's watchdog above ${GATE_WAIT_SECONDS}s and the hook timeout above the watchdog`);
 }
-// agy's registration lives in the host install, which sets its timeout above this watchdog.
-const agyWatchdog = Number(/^WATCHDOG_SECONDS=(\d+)$/m.exec(readText('plugins/workflow-agents/hooks/agy-guard.sh') ?? '')?.[1]);
-if (!(agyWatchdog > GATE_WAIT_SECONDS)) {
-  fail(`agy-guard.sh needs a WATCHDOG_SECONDS line above the ${GATE_WAIT_SECONDS}s approval wait`);
+// agy's registration lives in the host install, not in this repo; it registers agy-guard.sh with this timeout.
+const AGY_HOOK_TIMEOUT_SECONDS = 3660;
+const agyWatchdog = Number(/^export const WATCHDOG_SECONDS = (\d+);$/m.exec(readText('plugins/workflow-agents/hooks/agy-supervisor.ts') ?? '')?.[1]);
+if (!(agyWatchdog > GATE_WAIT_SECONDS && agyWatchdog < AGY_HOOK_TIMEOUT_SECONDS)) {
+  fail(`agy-supervisor.ts needs a WATCHDOG_SECONDS above the ${GATE_WAIT_SECONDS}s approval wait and below agy's ${AGY_HOOK_TIMEOUT_SECONDS}s hook timeout`);
 }
 
 // SessionStart is GONE, and the allowlist is now a single event. It existed to

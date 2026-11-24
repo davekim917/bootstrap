@@ -134,6 +134,13 @@ export function emailReason(command: string, cwd?: string): { action: 'allow' } 
  * runtime has no way to ask. An approval wait blocks here; a thrown error is a denial.
  */
 export function decideToolCall(input: ToolCall, handoff: string): Verdict {
+    const verdict = decide(input, handoff);
+    // A lone surrogate (an HTML entity decoded into a summary can leave one) makes the host's JSON parser reject the
+    // whole reply, and a reply it cannot parse is no deny at all.
+    return verdict.action === 'deny' ? { action: 'deny', reason: verdict.reason.toWellFormed() } : verdict;
+}
+
+function decide(input: ToolCall, handoff: string): Verdict {
     const needsHumanApproval = (reason: string): Verdict => ({ action: 'deny', reason: `${reason}\n\n${handoff}` });
     try {
         const toolUseId = typeof input.tool_use_id === 'string' ? input.tool_use_id : undefined;

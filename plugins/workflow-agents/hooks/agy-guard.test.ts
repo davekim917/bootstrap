@@ -282,4 +282,15 @@ describe('the adapter answers agy on stdout with an explicit decision', () => {
         expect(reply.decision).toBe('deny');
         expect(reply.reason).toMatch(reason);
     });
+
+    test('a gate reason holding a lone surrogate leaves as a well-formed string', async () => {
+        const subject = 'Hi ' + String.fromCharCode(0xD800) + ' there';
+        const result = await run(JSON.stringify(call('call_mcp_tool', {
+            ServerName: 'gmail', ToolName: 'send_email', Arguments: { to: 'pat@example.com', subject, body: 'Short note.' },
+        })));
+        const reply = JSON.parse(result.stdout);
+        expect(reply.decision).toBe('deny');
+        expect(reply.reason).toContain('Email send to pat@example.com');
+        expect(reply.reason.isWellFormed()).toBe(true);
+    });
 });

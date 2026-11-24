@@ -22,7 +22,7 @@ function emitDeny(reason: string): never {
         hookSpecificOutput: {
             hookEventName: 'PreToolUse',
             permissionDecision: 'deny',
-            permissionDecisionReason: reason,
+            permissionDecisionReason: reason.toWellFormed(),
         },
     }));
     process.exit(0);

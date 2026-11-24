@@ -141,6 +141,17 @@ describe('Codex local approval transport', () => {
     expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain('> quarterly numbers attached');
   });
 
+  test('a gate reason holding a lone surrogate leaves as a well-formed string', async () => {
+    const subject = 'Report ' + String.fromCharCode(0xD800) + ' draft';
+    const result = await runGuard({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'send_email',
+      tool_input: { to: 'ops@example.com', subject, body: 'quarterly numbers attached' },
+    });
+    expectDecision(result, 'deny', /email send to ops@example.com/i);
+    expect(result.output.hookSpecificOutput.permissionDecisionReason.isWellFormed()).toBe(true);
+  });
+
   test.each(['gmail_create_draft_reply', 'gmail_search_emails', 'read_email_thread', 'send_message'])(
     'allows non-delivering native tool %s',
     async (toolName) => {

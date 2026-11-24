@@ -44,7 +44,8 @@ const PROTECTED_TEXT = /(?:^|[\s'"=:/~])(?:\.agents|\.gemini)(?:[/\s'"]|$)|\/etc
 type Args = Record<string, unknown>;
 
 function denied(reason: string): Verdict {
-    return { action: 'deny', reason: reason.startsWith('BLOCKED:') ? reason : `BLOCKED: ${reason}` };
+    const text = reason.toWellFormed();
+    return { action: 'deny', reason: text.startsWith('BLOCKED:') ? text : `BLOCKED: ${text}` };
 }
 
 /**
@@ -265,7 +266,7 @@ function main(): void {
     } catch (error) {
         reply = denied(`the guard failed closed: ${error instanceof Error ? error.message : String(error)}`);
     }
-    process.stdout.write(JSON.stringify(reply.action === 'deny' ? { decision: 'deny', reason: reply.reason } : { decision: 'allow' }));
+    process.stdout.write(JSON.stringify(reply.action === 'deny' ? { decision: 'deny', reason: reply.reason.toWellFormed() } : { decision: 'allow' }));
     process.exit(0);
 }
 

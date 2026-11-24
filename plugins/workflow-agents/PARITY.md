@@ -67,19 +67,20 @@ Hand-maintained, because the Claude plugin has no counterpart to generate them f
   `${PLUGIN_ROOT}`, not `${CLAUDE_PLUGIN_ROOT}`, so the two manifests cannot be one file.
 - `hooks/codex-guard.sh` — Codex runs the tool when a hook times out or crashes and has no
   `onFailure: block`, so the manifest runs the guard through this wrapper, which denies on both.
-- `hooks/guard-reply.ts` — both wrappers forward the guard's reply only when it parses as JSON with
-  their host's decision shape; anything else becomes a deny.
 - `hooks/guard-policy.ts` — the policy both adapters apply to a tool call, in the cores' vocabulary.
-- `hooks/agy-guard.ts` and `hooks/agy-guard.sh` — the adapter for agy (Antigravity CLI). It is not
-  wired in `workflow-hooks.json`: agy reads hooks from its own `hooks.json`, and the host install
-  registers the wrapper there, with a `timeout` above the wrapper's watchdog (agy's default is 30
-  seconds). agy runs the tool when a hook exits 0 with empty output, so the wrapper denies on that
-  as well as on a crash, a timeout, or output that is not a decision.
-- Both wrappers run bun with `--no-env-file --config=/dev/null`, so a `.env` or `bunfig.toml` in the
-  agent's working directory cannot change the guard, and refuse a bun that does not report a plain
-  release of 1.3.3 or newer (an older one ignores the first flag). Settings the guard reads come from
-  the inherited environment only. Each wrapper runs its whole body under one `timeout -s KILL` (GNU
-  coreutils) at its watchdog, so a stall anywhere, or a missing `timeout`, is a deny.
+  Every deny reason it returns is made well-formed UTF-16, since a lone surrogate would make the
+  host's JSON parser reject the whole reply.
+- `hooks/agy-guard.ts`, `hooks/agy-guard.sh` and `hooks/agy-supervisor.ts` — the adapter for agy
+  (Antigravity CLI). It is not wired in `workflow-hooks.json`: agy reads hooks from its own
+  `hooks.json`, and the host install registers `agy-guard.sh` there with `timeout: 3660`. The shell
+  file only clears shell startup variables and execs bun with `--no-env-file --config=/dev/null` on
+  the supervisor, printing a fixed deny if that exec fails. The supervisor refuses a bun that is not a
+  plain release of 1.3.3 or newer, runs the guard in its own process group under a 3630 s deadline,
+  kills that group on the deadline or a SIGTERM/SIGINT/SIGHUP, and prints exactly one reply: the
+  guard's, only when it parses as agy's decision shape, else a deny.
+- `hooks/codex-guard.sh` is unchanged by the agy adapter; its hardening (cwd `.env` and `bunfig.toml`,
+  reply validation, a whole-wrapper deadline) is tracked separately, because it changes every Codex
+  agent at once.
 - `scripts/ownership.mjs` — the ownership marker, kept only so
   `scripts/retire-bootstrap-agents.mjs` can recognise role files this plugin wrote into users'
   Codex homes before 5.7.0. Nothing writes one now. The string is frozen: rewording it orphans
