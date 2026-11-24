@@ -158,13 +158,33 @@ function errorCode(error: unknown): string {
     return (error as NodeJS.ErrnoException)?.code ?? (error instanceof Error ? error.message : String(error));
 }
 
-/** An agents directory as the filesystem resolves it, or null when it does not exist. Any other error throws. */
+/**
+ * An agents directory as the filesystem resolves it, or null when it does not exist. ENOENT alone does not mean
+ * absent: a link on the path whose target is missing also gives ENOENT, so the deepest component that exists must be
+ * a real directory. Any other error throws.
+ */
 function canonicalAgentsDir(dir: string): string | null {
     try {
         return realpathSync(dir);
     } catch (error) {
-        if (errorCode(error) === 'ENOENT') return null;
-        throw new Error(`the agents directory ${dir} cannot be resolved (${errorCode(error)})`);
+        if (errorCode(error) !== 'ENOENT') throw new Error(`the agents directory ${dir} cannot be resolved (${errorCode(error)})`);
+    }
+    for (let path = dir; ; path = dirname(path)) {
+        let info;
+        try {
+            info = lstatSync(path);
+        } catch (error) {
+            if (errorCode(error) === 'ENOENT' && dirname(path) !== path) continue;
+            throw new Error(`the agents directory ${dir} cannot be resolved (${errorCode(error)} at ${path})`);
+        }
+        if (info.isSymbolicLink()) {
+            try {
+                realpathSync(path);
+            } catch (error) {
+                throw new Error(`the agents directory ${dir} cannot be resolved (${path} is a link whose target cannot be resolved: ${errorCode(error)})`);
+            }
+        }
+        return null;
     }
 }
 
@@ -192,9 +212,14 @@ function agentFilesIn(dir: string): string[] {
         if (isDirectory) {
             const nested = join(path, 'agent.md');
             try {
-                statSync(nested);
+                lstatSync(nested);
             } catch (error) {
                 if (errorCode(error) === 'ENOENT') continue;
+                throw new Error(`${nested} cannot be checked (${errorCode(error)})`);
+            }
+            try {
+                statSync(nested);
+            } catch (error) {
                 throw new Error(`${nested} cannot be checked (${errorCode(error)})`);
             }
             files.push(nested);

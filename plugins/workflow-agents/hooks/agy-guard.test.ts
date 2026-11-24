@@ -543,6 +543,41 @@ describe('a lookup error on any candidate denies the call, with no fallback to a
         expect(decideAgyCall(invoke(root, 'writer'), { home }).action).toBe('deny');
     });
 
+    test('a <subdir>/agent.md link whose target is missing denies the call', () => {
+        const { home, root, workspaceAgents } = withValidGlobal();
+        mkdirSync(join(workspaceAgents, 'team'), { recursive: true });
+        symlinkSync(join(root, 'missing.md'), join(workspaceAgents, 'team', 'agent.md'));
+        expect(decideAgyCall(invoke(root, 'writer'), { home }).action).toBe('deny');
+    });
+
+    test.each([['.agents'], ['.agents/agents']])('a workspace %s link whose target is missing denies the call', (link) => {
+        const { home, root } = withValidGlobal();
+        mkdirSync(join(root, link, '..'), { recursive: true });
+        symlinkSync(join(root, 'missing-dir'), join(root, link));
+        expect(decideAgyCall(invoke(root, 'writer'), { home }).action).toBe('deny');
+        expect(decideAgyCall(invoke(root, 'self'), { home }).action).toBe('deny');
+    });
+
+    test('a global agents directory link whose target is missing denies a built-in', () => {
+        const home = scratch();
+        const root = scratch();
+        mkdirSync(join(home, '.gemini', 'config'), { recursive: true });
+        symlinkSync(join(home, 'missing-dir'), join(home, '.gemini', 'config', 'agents'));
+        expect(decideAgyCall(invoke(root, 'self'), { home }).action).toBe('deny');
+    });
+
+    test('an agents directory that is simply absent under an existing parent denies nothing', () => {
+        const home = scratch();
+        const root = scratch();
+        mkdirSync(join(root, '.agents'), { recursive: true });
+        mkdirSync(join(home, '.gemini', 'config'), { recursive: true });
+        expect(decideAgyCall(invoke(root, 'self'), { home })).toEqual({ action: 'allow' });
+        const linked = scratch();
+        mkdirSync(join(linked, 'shared'));
+        symlinkSync(join(linked, 'shared'), join(linked, '.agents'));
+        expect(decideAgyCall(invoke(linked, 'self'), { home })).toEqual({ action: 'allow' });
+    });
+
     test('a readable README or another agent\'s broken frontmatter still denies nothing', () => {
         const { home, root, workspaceAgents } = withValidGlobal();
         mkdirSync(workspaceAgents, { recursive: true });
