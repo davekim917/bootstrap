@@ -1183,9 +1183,9 @@ export function senderOnFile(credentialsFile: string | null, dir: string): { acc
 }
 
 // gws reads a login from its config directory, and takes the access token from that directory's token_cache.json
-// whenever no proxy variable is set. The cache is keyed by scopes alone, so a token cached for another account is
-// used in place of the credentials file's own.
-const GWS_LOGIN_FILES = ['credentials.enc', 'token_cache.json', 'client_secret.json'];
+// whenever no proxy variable is set (sa_token_cache.json for a service account, proxy or not). The caches are keyed by
+// scopes alone, so a token cached for another account is used in place of the credentials file's own.
+const GWS_LOGIN_FILES = ['credentials.enc', 'token_cache.json', 'sa_token_cache.json', 'client_secret.json'];
 
 /** The config directory gws uses when the command sets none, found as gws 0.22.5 finds it (auth_commands.rs). */
 export function defaultGwsConfigDir(cwd?: string): string {

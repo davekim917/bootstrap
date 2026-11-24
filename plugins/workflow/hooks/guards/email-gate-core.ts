@@ -4,8 +4,10 @@
  * The verdict is pure: no bun:sqlite, no writeMessageOut / awaitDeliveryAck, no
  * process.exit, and nothing it reads can change allow vs gate. Its I/O is read-only:
  * display reads (a `$(cat /absolute/path)` body, the sender and signature on file, a
- * stored draft), and a stat of each attachment, which turns a gate into a refusal
- * when gws would refuse the file after approval. It takes a bash command string or native
+ * stored draft), and a stat of each attachment and of the gws config directory, which
+ * turns a gate into a refusal when gws would refuse the file, or send from another
+ * account, after approval. Beside a gws login its Gmail reads run in a temporary empty
+ * config directory, removed after. It takes a bash command string or native
  * email-tool call plus an env snapshot and returns a verdict (allow | gate)
  * with a plain-text `label` + `summary` for the approver. The harness adapter
  * (Claude hook, OpenCode plugin, Codex runner) shows them in its own approval
@@ -1295,9 +1297,12 @@ function draftSendTarget(shape: SendShape | null): Omit<DraftBinding, 'messageId
  * Beside a login in `configDir`, gws runs with an empty config directory of its own, so it answers for the credentials.
  */
 function gwsRead(method: string[], params: Record<string, unknown>, credentialsFile: string, gwsBin: string, configDir: string): Record<string, unknown> | null {
-    return gwsLoginIn(configDir)?.length === 0
-        ? gwsReadWith(method, params, credentialsFile, gwsBin, null)
-        : inEmptyDir(own => gwsReadWith(method, params, credentialsFile, gwsBin, own));
+    if (gwsLoginIn(configDir)?.length === 0) return gwsReadWith(method, params, credentialsFile, gwsBin, null);
+    try {
+        return inEmptyDir(own => gwsReadWith(method, params, credentialsFile, gwsBin, own));
+    } catch {
+        return null;
+    }
 }
 
 function gwsReadWith(method: string[], params: Record<string, unknown>, credentialsFile: string, gwsBin: string, own: string | null): Record<string, unknown> | null {

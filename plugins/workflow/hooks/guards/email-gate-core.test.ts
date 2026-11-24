@@ -740,7 +740,7 @@ describe('evaluateEmailSend — the send goes from the account its credentials f
     });
 
     test('a config dir holding a gws login is refused, naming what it holds', () => {
-        for (const name of ['credentials.enc', 'token_cache.json', 'client_secret.json']) {
+        for (const name of ['credentials.enc', 'token_cache.json', 'sa_token_cache.json', 'client_secret.json']) {
             const held = dir(`held-${name}`, [name]);
             expect(deny(`GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${held} ${CREDS} ${SEND}`, containerDefault)).toBe(
                 `Email send refused: GOOGLE_WORKSPACE_CLI_CONFIG_DIR ${held} holds a gws login (${name}), and gws would send ` +
