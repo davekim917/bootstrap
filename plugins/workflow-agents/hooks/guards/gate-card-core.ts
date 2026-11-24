@@ -1161,16 +1161,13 @@ export function signatureOnFile(account: string | null, dir: string): string | n
 }
 
 /**
- * The account and mailbox the host recorded for exactly these credential bytes, or null. The host writes
- * `identities.json` (sha256 of a credentials file → its account and primary address) only for credentials it read the
- * mailbox with, so a renamed, copied or replaced file maps to its real account or to nothing.
+ * The account and mailbox the host recorded for the credential bytes with this sha256 (`gwsCredentials`), or null. The
+ * host writes `identities.json` (sha256 of a credentials file → its account and primary address) only for credentials
+ * it read the mailbox with, so a renamed, copied or replaced file maps to its real account or to nothing.
  */
-export function senderOnFile(credentialsFile: string | null, dir: string): { account: string; mailbox: string } | null {
-    if (!credentialsFile?.startsWith('/')) return null;
+export function senderOnFile(hash: string | null, dir: string): { account: string; mailbox: string } | null {
+    if (hash === null) return null;
     try {
-        const creds = statSync(credentialsFile);
-        if (!creds.isFile() || creds.size > 64 * 1024) return null;
-        const hash = createHash('sha256').update(readFileSync(credentialsFile)).digest('hex');
         const path = `${dir}/identities.json`;
         const map = lstatSync(path);
         if (!map.isFile() || map.size > 1024 * 1024) return null;

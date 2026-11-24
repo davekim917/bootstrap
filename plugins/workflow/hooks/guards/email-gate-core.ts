@@ -400,7 +400,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         configDir: shape.configDir,
         defaultConfigDir: env.gwsConfigDir ?? defaultGwsConfigDir(env.cwd),
     } : null;
-    const refusedAccount = account ? accountRefusal(account) : null;
+    const refusedAccount = account ? accountRefusal(account, account.credentials) : null;
     // A send of a stored draft names no envelope, so the card reads the draft. A failed read keeps the card and the
     // gate as they were.
     const draftTarget = refusedAccount ? null : draftSendTarget(shape);
@@ -439,7 +439,8 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     );
     // A command in the one shape names the account in exactly one place, which the scan above could miss for a
     // credentials-looking string inside the body.
-    const sender = shape ? senderOnFile(shape.credentialsFile, env.signaturesDir ?? SIGNATURES_DIR) : null;
+    // The bytes the binding hashed, so a file swapped between two reads can't make the card name another mailbox.
+    const sender = shape?.credentialsFile?.startsWith('/') && account ? senderOnFile(account.credentials.hash, env.signaturesDir ?? SIGNATURES_DIR) : null;
     const fromAccount = sender ? sender.mailbox : shape ? shape.account ?? 'default' : credsMatch?.[1] ?? 'default';
     // Anchor to the four allowed helper verbs only — the prior `\+(\w[\w-]*)`
     // could capture spurious `+ABC` substrings from a base64 payload in the
