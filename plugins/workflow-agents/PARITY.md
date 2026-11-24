@@ -67,6 +67,20 @@ Hand-maintained, because the Claude plugin has no counterpart to generate them f
   `${PLUGIN_ROOT}`, not `${CLAUDE_PLUGIN_ROOT}`, so the two manifests cannot be one file.
 - `hooks/codex-guard.sh` — Codex runs the tool when a hook times out or crashes and has no
   `onFailure: block`, so the manifest runs the guard through this wrapper, which denies on both.
+- `hooks/guard-policy.ts` — the policy both adapters apply to a tool call, in the cores' vocabulary.
+  Every deny reason it returns is made well-formed UTF-16, since a lone surrogate would make the
+  host's JSON parser reject the whole reply.
+- `hooks/agy-guard.ts`, `hooks/agy-guard.sh` and `hooks/agy-supervisor.ts` — the adapter for agy
+  (Antigravity CLI). It is not wired in `workflow-hooks.json`: agy reads hooks from its own
+  `hooks.json`, and the host install registers `agy-guard.sh` there with `timeout: 3660`. The shell
+  file only clears shell startup variables and execs bun with `--no-env-file --config=/dev/null` on
+  the supervisor, printing a fixed deny if that exec fails. The supervisor refuses a bun that is not a
+  plain release of 1.3.3 or newer, runs the guard in its own process group under a 3630 s deadline,
+  kills that group on the deadline or a SIGTERM/SIGINT/SIGHUP, and prints exactly one reply: the
+  guard's, only when it parses as agy's decision shape, else a deny.
+- `hooks/codex-guard.sh` is unchanged by the agy adapter; its hardening (cwd `.env` and `bunfig.toml`,
+  reply validation, a whole-wrapper deadline) is tracked separately, because it changes every Codex
+  agent at once.
 - `scripts/ownership.mjs` — the ownership marker, kept only so
   `scripts/retire-bootstrap-agents.mjs` can recognise role files this plugin wrote into users'
   Codex homes before 5.7.0. Nothing writes one now. The string is frozen: rewording it orphans

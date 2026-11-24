@@ -104,11 +104,12 @@ const SENDS: Record<string, string> = {
     'forward': `${CREDS}\n${['gws', 'gmail', '+forward'].join(' ')} --message-id 18f0aa11bb22cc33 --to lee@example.com`,
 };
 
-async function stagedRequests() {
+async function stagedRequests(inNanoclaw = false) {
     const real = await import(CORE);
     const staged: Record<string, unknown>[] = [];
     mock.module(CORE, () => ({
         ...real,
+        ...(inNanoclaw ? { IS_NANOCLAW: true } : {}),
         writeGateRequest: (...args: Parameters<typeof real.writeGateRequest>): string => {
             staged.push(JSON.parse(real.gateRequestContent(REQUEST_ID, ...args)));
             return REQUEST_ID;
@@ -117,10 +118,10 @@ async function stagedRequests() {
         claimGateRequest: (): { owner: true } => ({ owner: true }),
         publishGateClaim: (): void => {},
     }));
-    return { staged, core: await import(CORE), evaluate: (await import(EMAIL_CORE)).evaluateEmailSend, guard: await import('./codex-guard') };
+    return { staged, core: await import(CORE), evaluate: (await import(EMAIL_CORE)).evaluateEmailSend, guard: await import('./guard-policy') };
 }
 
-/** Stages one send the way codex-guard's main does for a gated shell email, and the verdict the in-tree hook reads. */
+/** Stages one send the way decideToolCall does for a gated shell email, and the verdict the in-tree hook reads. */
 async function stage(commands: string[], toolUseId: string | undefined) {
     const { staged, core, evaluate, guard } = await stagedRequests();
     const verdicts: Verdict[] = [];
@@ -165,6 +166,16 @@ describe('the email card this adapter stages is the one the in-tree Codex hook w
         const email = guard.emailReason(BODY_FROM_FILE);
         expect(email.action === 'gate' && typeof email.deny === 'string').toBe(true);
         expect(typeof (evaluate(BODY_FROM_FILE, { isScheduledTask: false }) as { deny?: unknown }).deny).toBe('string');
+    });
+
+    test("the adapter's own call carries the tool call id to the card it stages", async () => {
+        const command = SENDS['heredoc body, pure'];
+        const { staged, guard, evaluate } = await stagedRequests(true);
+        const verdict = guard.decideToolCall({ tool_name: 'Bash', tool_input: { command }, tool_use_id: 'call-1' }, 'hand-off');
+        expect(verdict).toEqual({ action: 'allow' });
+        expect(staged).toHaveLength(1);
+        const own = inTreeRequest(evaluate(command, { isScheduledTask: false }) as Verdict, command, 'call-1', REQUEST_ID);
+        expect(peerRequestMatches(staged[0], REQUEST_ID, own)).toBe(true);
     });
 
     test('a card staged for another tool call is not joined', async () => {

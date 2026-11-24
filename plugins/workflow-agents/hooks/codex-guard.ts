@@ -1,310 +1,49 @@
 #!/usr/bin/env bun
 /**
- * Codex PreToolUse adapter for the shared command and file-safety policy.
+ * Codex PreToolUse adapter for the shared command and file-safety policy (`guard-policy.ts`).
  *
- * Codex loads this adapter from the plugin's native hooks manifest. NanoClaw
- * sessions route approval-tier commands to the session-database approval
- * backend. Local sessions have no approval channel: Codex rejects a
- * PreToolUse `permissionDecision: "ask"` as unsupported and then runs the
- * command, so an approval-tier command is denied with a hand-off to the user.
+ * Codex loads this adapter from the plugin's native hooks manifest. Codex rejects a PreToolUse
+ * `permissionDecision: "ask"` as unsupported and then runs the command, so an approval-tier command outside
+ * NanoClaw is denied with a hand-off to the user.
  */
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
-import { dirname, join, resolve } from 'path';
-import {
-    IS_NANOCLAW,
-    approvalText,
-    commandLineOf,
-    describeGate,
-    evaluateBashCommand,
-    evaluateGitCloneDestination,
-    evaluateSelfApproval,
-    evaluateSnapshotGitMutation,
-    evaluateSnowflakeConnector,
-    runEmailGate,
-    runNanoclawGate,
-} from './guards/block-destructive-core';
-import { evaluateEmailSend, evaluateEmailToolCall, type DraftBinding, type EmailCard } from './guards/email-gate-core';
-import { checkEditProtection, EDIT_TOOLS } from './guards/file-protection-core';
+import { readFileSync } from 'fs';
+import { decideToolCall } from './guard-policy';
 
 export const LOCAL_APPROVAL_HANDOFF =
     'This needs human approval, and this Codex session cannot ask for it. Do not retry or work around it: give the user the exact command to run themselves.';
-const SHELL_TOOLS = new Set(['exec_command', 'local_shell_call', 'shell', 'Bash']);
-const TEAM_AUTO_SENTINEL = '.team-auto-active';
-const TEAM_AUTO_SENTINEL_MAX_AGE_MS = 2 * 60 * 60 * 1000;
-
-function isUserInputTool(toolName: unknown): boolean {
-    if (typeof toolName !== 'string') return false;
-    const normalized = toolName.toLowerCase().replace(/[^a-z0-9]+/g, '_');
-    return normalized === 'request_user_input' || normalized.endsWith('_request_user_input');
-}
-
-/**
- * Find an active /team-auto sentinel from the hook cwd or one of its parents.
- * Walking upward keeps the guard effective when Codex runs a tool from a
- * package subdirectory instead of the repository root.
- */
-export function findFreshTeamAutoSentinel(
-    startDir: string,
-    nowMs = Date.now(),
-): string | null {
-    let projectDir = resolve(startDir);
-
-    while (true) {
-        const specsRoot = join(projectDir, 'docs', 'specs');
-        if (existsSync(specsRoot)) {
-            try {
-                for (const entry of readdirSync(specsRoot)) {
-                    const sentinel = join(specsRoot, entry, TEAM_AUTO_SENTINEL);
-                    try {
-                        const stat = statSync(sentinel);
-                        if (stat.isFile() && nowMs - stat.mtimeMs <= TEAM_AUTO_SENTINEL_MAX_AGE_MS) {
-                            return sentinel;
-                        }
-                    } catch {
-                        // This feature has no readable sentinel; keep looking.
-                    }
-                }
-            } catch {
-                // This candidate is unreadable; try its parent.
-            }
-        }
-
-        const parent = dirname(projectDir);
-        if (parent === projectDir) return null;
-        projectDir = parent;
-    }
-}
-
-/** Where the shell command runs: the tool's `workdir`, relative to the hook cwd, else the hook cwd. */
-function shellCwd(input: { cwd?: unknown; tool_input?: Record<string, unknown> }): string {
-    const hookCwd = typeof input.cwd === 'string' ? input.cwd : process.cwd();
-    const workdir = input.tool_input?.workdir;
-    return typeof workdir === 'string' && workdir ? resolve(hookCwd, workdir) : hookCwd;
-}
-
-function prefixed(reason: string | undefined, fallback: string): string {
-    const value = reason ?? fallback;
-    return value.startsWith('BLOCKED:') || value.startsWith('GATED:')
-        ? value
-        : `BLOCKED: ${value}`;
-}
 
 function emitContinue(): never {
     process.stdout.write(JSON.stringify({ continue: true }));
     process.exit(0);
 }
 
-function emitDecision(permissionDecision: 'deny', reason: string): never {
+function emitDeny(reason: string): never {
     process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
             hookEventName: 'PreToolUse',
-            permissionDecision,
-            permissionDecisionReason: reason,
+            permissionDecision: 'deny',
+            permissionDecisionReason: reason.toWellFormed(),
         },
     }));
     process.exit(0);
 }
 
-function emitDeny(reason: string | undefined, fallback: string): never {
-    emitDecision('deny', prefixed(reason, fallback));
-}
-
-function emitNeedsHumanApproval(reason: string): never {
-    emitDecision('deny', `${reason}\n\n${LOCAL_APPROVAL_HANDOFF}`);
-}
-
-function deniedDetail(decision: 'denied' | 'timeout'): string {
-    return decision === 'denied'
-        ? 'Cancelled by user. Do not retry; acknowledge the cancellation briefly.'
-        : 'Timed out waiting for user approval. Do not retry.';
-}
-
-export function emailReason(command: string, cwd?: string): { action: 'allow' } | {
-    action: 'gate';
-    reason: string;
-    summary?: string;
-    deny?: string;
-    card: EmailCard;
-    draft?: DraftBinding;
-} {
-    const verdict = evaluateEmailSend(command, {
-        isScheduledTask: process.env.NANOCLAW_IS_SCHEDULED_TASK === '1',
-        cwd,
-    });
-    if (verdict.action === 'allow') return { action: 'allow' };
-    return {
-        action: 'gate',
-        reason: verdict.label ?? verdict.reason ?? 'Outbound email send requires approval.',
-        summary: verdict.summary,
-        deny: verdict.deny,
-        card: { pureSend: verdict.pureSend, fullSummary: verdict.fullSummary, wholeEmail: verdict.wholeEmail },
-        draft: verdict.draft,
-    };
-}
-
 function main(): void {
+    let verdict;
     try {
         const eventArg = process.argv[2];
         const raw = readFileSync(0, 'utf-8');
         const input = raw.trim() ? JSON.parse(raw) : {};
-        // Every PreToolUse handler of one tool call receives the SAME
-        // `tool_use_id`, and codex dispatches them concurrently. Passing it into
-        // the session-DB gate is what makes this adapter and NanoClaw's in-tree
-        // chain share ONE approval card instead of raising one each — see
-        // `claimGateRequest` in block-destructive-core.
-        const toolUseId = typeof input.tool_use_id === 'string' ? input.tool_use_id : undefined;
+        if (input === null) throw new Error('the hook input is null, not an object.');
         const event = eventArg ?? input.hook_event_name;
         if (event && event !== 'PreToolUse') emitContinue();
-
-        if (
-            process.env.SKIP_TEAM_AUTO_ASKBLOCK !== '1'
-            && isUserInputTool(input.tool_name)
-        ) {
-            const sentinel = findFreshTeamAutoSentinel(
-                typeof input.cwd === 'string' ? input.cwd : process.cwd(),
-            );
-            if (sentinel) {
-                emitDeny(
-                    `request_user_input is disabled while /team-auto is active (${sentinel}). `
-                    + 'Remove the sentinel, record one evidenced blocker in '
-                    + 'docs/specs/<feature>/run.md, and stop.',
-                    'User input is disabled while /team-auto is active.',
-                );
-            }
-        }
-
-        const nativeEmail = evaluateEmailToolCall(
-            input.tool_name ?? '',
-            input.tool_input ?? {},
-            { isScheduledTask: process.env.NANOCLAW_IS_SCHEDULED_TASK === '1' },
-        );
-        if (nativeEmail.action === 'gate') {
-            const reason = nativeEmail.label ?? nativeEmail.reason ?? 'Outbound email send requires approval.';
-            if (!IS_NANOCLAW) {
-                emitNeedsHumanApproval(`${reason}${nativeEmail.summary ? `\n\n${nativeEmail.summary}` : ''}`);
-            }
-
-            let staged = true;
-            const decision = runEmailGate(`tool:${input.tool_name}`, reason, () => {
-                staged = false;
-            }, nativeEmail.summary, toolUseId, { wholeEmail: nativeEmail.wholeEmail });
-            if (!staged) {
-                emitDeny(`${reason} — could not stage the NanoClaw approval request.`, reason);
-            }
-            if (decision !== 'approved') {
-                emitDeny(`${reason} — ${deniedDetail(decision)}`, reason);
-            }
-            emitContinue();
-        }
-
-        if (input.tool_name && EDIT_TOOLS.has(input.tool_name)) {
-            if (process.env.SKIP_FILE_PROTECTION !== '1') {
-                const protectedPath = checkEditProtection(
-                    input.tool_name,
-                    input.tool_input ?? {},
-                    typeof input.cwd === 'string' ? input.cwd : undefined,
-                );
-                if (protectedPath) {
-                    emitDeny(
-                        `file-protection — '${protectedPath}' is protected from automated edits.`,
-                        'Protected file edit blocked.',
-                    );
-                }
-            }
-            emitContinue();
-        }
-
-        if (input.tool_name && !SHELL_TOOLS.has(input.tool_name)) emitContinue();
-        const command = commandLineOf(input.tool_input?.command ?? input.tool_input?.cmd);
-        if (!command) emitContinue();
-
-        const selfApproval = evaluateSelfApproval(command);
-        if (selfApproval.action === 'block') {
-            emitDeny(selfApproval.reason, 'Self-approval is not allowed.');
-        }
-
-        const snowflake = evaluateSnowflakeConnector(command);
-        if (snowflake.action === 'block') {
-            emitDeny(snowflake.reason, 'Use snow sql instead of the Python Snowflake connector.');
-        }
-
-        const clone = evaluateGitCloneDestination(command);
-        if (clone.action !== 'allow') {
-            emitDeny(clone.reason, 'Git clone into a managed directory is not allowed.');
-        }
-
-        const snapshot = evaluateSnapshotGitMutation(command);
-        if (snapshot.action !== 'allow') {
-            emitDeny(snapshot.reason, 'Git mutations inside read-only repo snapshots are not allowed.');
-        }
-
-        const cwd = shellCwd(input);
-
-        const destructive = evaluateBashCommand(command, { cwd });
-        if (destructive.action === 'block') {
-            emitDeny(destructive.reason, 'Destructive command blocked.');
-        }
-
-        // An email send sharing its command is refused after any hard block and before any gate asks, so no approval is spent on it.
-        const email = emailReason(command, cwd);
-        if (email.action === 'gate' && email.deny) {
-            emitDeny(email.deny, email.reason);
-        }
-
-        if (destructive.action === 'gate') {
-            const reason = destructive.reason ?? 'Destructive command requires approval.';
-            const post = evaluateBashCommand(command, { skipGate: true, cwd });
-            if (post.action === 'block') {
-                emitDeny(post.reason, 'Command remains blocked after destructive-gate evaluation.');
-            }
-
-            if (!IS_NANOCLAW) {
-                const email = emailReason(command, cwd);
-                const described = approvalText(describeGate(command, reason, cwd));
-                const combined = email.action === 'gate'
-                    ? `${described}\n\nAlso requires outbound-email approval: ${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`
-                    : described;
-                emitNeedsHumanApproval(combined);
-            }
-
-            let staged = true;
-            const decision = runNanoclawGate(command, reason, () => {
-                staged = false;
-            }, toolUseId, cwd);
-            if (!staged) {
-                emitDeny(`${reason} — could not stage the NanoClaw approval request.`, reason);
-            }
-            if (decision !== 'approved') {
-                emitDeny(`${reason} — ${deniedDetail(decision)}`, reason);
-            }
-        }
-
-        if (email.action === 'gate') {
-            if (!IS_NANOCLAW) {
-                emitNeedsHumanApproval(`${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`);
-            }
-
-            let staged = true;
-            const binding = email.draft;
-            const decision = runEmailGate(command, email.reason, () => {
-                staged = false;
-            }, email.summary, toolUseId, email.card,
-            binding ? { binding, onChanged: (refusal) => emitDeny(refusal, email.reason) } : undefined);
-            if (!staged) {
-                emitDeny(`${email.reason} — could not stage the NanoClaw approval request.`, email.reason);
-            }
-            if (decision !== 'approved') {
-                emitDeny(`${email.reason} — ${deniedDetail(decision)}`, email.reason);
-            }
-        }
-
-        emitContinue();
+        verdict = decideToolCall(input, LOCAL_APPROVAL_HANDOFF);
     } catch (error) {
-        emitDeny(
-            error instanceof Error ? error.message : String(error),
-            'Command guard failed closed.',
-        );
+        const message = error instanceof Error ? error.message : String(error);
+        emitDeny(message.startsWith('BLOCKED:') || message.startsWith('GATED:') ? message : `BLOCKED: ${message}`);
     }
+    if (verdict.action === 'deny') emitDeny(verdict.reason);
+    emitContinue();
 }
 
 if (import.meta.main) main();

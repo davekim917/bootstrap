@@ -14,7 +14,7 @@ receives security, rollback, and verification depth.
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
 | Claude Code | `bootstrap-workflow` | 5.49.2 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.49.3 | The same, runtime-neutral |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.50.0 | The same, runtime-neutral |
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.8.3 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.6.0 | Boris Cherny-inspired engineering-judgment advisory skill, invoked by name or description |
 | Claude Code / Codex | `wwed` | 1.2.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill, invoked by name or description; pairs with `wwbd` |
@@ -483,7 +483,8 @@ Claude, Codex/NanoClaw, or OpenCode sessions after cleanup so cached definitions
 ## Runtime and safety boundaries
 
 - Claude's workflow plugin installs from `plugins/workflow`.
-- Codex/OpenCode's workflow plugin installs from `plugins/workflow-agents`.
+- Codex/OpenCode's workflow plugin installs from `plugins/workflow-agents`. Its `hooks/agy-guard.sh` is the same
+  policy for agy (Antigravity CLI), registered in agy's own `hooks.json` by the host install rather than by a plugin manifest.
 - `/orchestrate` installs from `plugins/orchestrate` on every runtime — one directory with both
   manifests, the `wwbd` shape. It is invoke-only, with no standing directive, no hooks and no
   scripts, so it can be disabled without touching the `team-*` skills or any safety guard.

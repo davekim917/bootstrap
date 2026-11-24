@@ -710,6 +710,12 @@ const codexWatchdog = Number(/^WATCHDOG_SECONDS=(\d+)$/m.exec(readText('plugins/
 if (!(codexWatchdog > GATE_WAIT_SECONDS && codexGateHook?.timeout > codexWatchdog)) {
   fail(`the Codex guard hook needs codex-guard.sh's watchdog above ${GATE_WAIT_SECONDS}s and the hook timeout above the watchdog`);
 }
+// agy's registration lives in the host install, not in this repo; it registers agy-guard.sh with this timeout.
+const AGY_HOOK_TIMEOUT_SECONDS = 3660;
+const agyWatchdog = Number(/^export const WATCHDOG_SECONDS = (\d+);$/m.exec(readText('plugins/workflow-agents/hooks/agy-supervisor.ts') ?? '')?.[1]);
+if (!(agyWatchdog > GATE_WAIT_SECONDS && agyWatchdog < AGY_HOOK_TIMEOUT_SECONDS)) {
+  fail(`agy-supervisor.ts needs a WATCHDOG_SECONDS above the ${GATE_WAIT_SECONDS}s approval wait and below agy's ${AGY_HOOK_TIMEOUT_SECONDS}s hook timeout`);
+}
 
 // SessionStart is GONE, and the allowlist is now a single event. It existed to
 // copy a generated `worker-frontier` role TOML into `<CODEX_HOME>/agents/`,
@@ -758,8 +764,8 @@ if (claudeManifest?.name !== 'bootstrap-workflow') {
 if (claudeManifest?.version !== '5.49.2') {
   fail(`bootstrap-workflow release must be version 5.49.2 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.49.3') {
-  fail(`bootstrap-workflow-agents release must be version 2.49.3 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.50.0') {
+  fail(`bootstrap-workflow-agents release must be version 2.50.0 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
 if (orchestrateClaudeManifest?.version !== '3.8.3') {

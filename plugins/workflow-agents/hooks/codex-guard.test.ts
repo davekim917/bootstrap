@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { findFreshTeamAutoSentinel, LOCAL_APPROVAL_HANDOFF } from './codex-guard';
+import { LOCAL_APPROVAL_HANDOFF } from './codex-guard';
+import { findFreshTeamAutoSentinel } from './guard-policy';
 
 const GUARD = join(import.meta.dir, 'codex-guard.ts');
 const temporaryRoots: string[] = [];
@@ -49,6 +50,13 @@ function expectDecision(result: GuardResult, decision: 'deny', reason: RegExp): 
 }
 
 describe('Codex local approval transport', () => {
+  test('a null hook input is denied for any event, before the event is read', async () => {
+    const proc = Bun.spawn(['bun', 'run', GUARD, 'PostToolUse'], { stdin: new Blob(['null']), stdout: 'pipe', stderr: 'pipe' });
+    expect(await proc.exited).toBe(0);
+    const output = JSON.parse(await new Response(proc.stdout).text());
+    expect(output.hookSpecificOutput?.permissionDecision).toBe('deny');
+  });
+
   test('allows safe commands', async () => {
     expect((await runGuard(shell('git status'))).output).toEqual({ continue: true });
   });
@@ -131,6 +139,17 @@ describe('Codex local approval transport', () => {
       tool_input: { to: 'ops@example.com', subject: 'Report', body: 'quarterly numbers attached' },
     });
     expect(result.output.hookSpecificOutput.permissionDecisionReason).toContain('> quarterly numbers attached');
+  });
+
+  test('a gate reason holding a lone surrogate leaves as a well-formed string', async () => {
+    const subject = 'Report ' + String.fromCharCode(0xD800) + ' draft';
+    const result = await runGuard({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'send_email',
+      tool_input: { to: 'ops@example.com', subject, body: 'quarterly numbers attached' },
+    });
+    expectDecision(result, 'deny', /email send to ops@example.com/i);
+    expect(result.output.hookSpecificOutput.permissionDecisionReason.isWellFormed()).toBe(true);
   });
 
   test.each(['gmail_create_draft_reply', 'gmail_search_emails', 'read_email_thread', 'send_message'])(
