@@ -9,5 +9,5 @@
         "noEmit": true,
         "allowImportingTsExtensions": true
     },
-    "include": ["*.ts", "guards/*.ts"]
+    "include": ["*.ts", "guards/*.ts", "test-support/*.ts"]
 }
