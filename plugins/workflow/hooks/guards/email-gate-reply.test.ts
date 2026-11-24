@@ -46,6 +46,7 @@ function gws(answers: { headers?: Header[]; profile?: string; defaultSendAs?: st
         '#!/bin/sh',
         `printf '%s\\n' "$*" >> '${dir}/calls'`,
         `printf '%s\\n' "$GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" >> '${dir}/creds'`,
+        `printf '%s %s\\n' "$\{GOOGLE_WORKSPACE_CLI_CONFIG_DIR-unset}" "$(ls -A "$\{GOOGLE_WORKSPACE_CLI_CONFIG_DIR:-/nonexistent}" 2>/dev/null | wc -l)" >> '${dir}/config'`,
         'case "$*" in',
         `  *"messages get"*) f='${dir}/message' ;;`,
         `  *getProfile*) f='${dir}/profile' ;;`,
@@ -59,7 +60,7 @@ function gws(answers: { headers?: Header[]; profile?: string; defaultSendAs?: st
     ].join('\n'));
     chmodSync(bin, 0o755);
     const lines = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8').trim().split('\n') : []);
-    return { bin, calls: () => lines('calls'), creds: () => lines('creds') };
+    return { bin, calls: () => lines('calls'), creds: () => lines('creds'), config: () => lines('config') };
 }
 
 const reply = (verb: '+reply' | '+reply-all', extra = '') =>
@@ -209,5 +210,41 @@ describe('when the gate cannot work out who a reply reaches', () => {
         const v = evaluateEmailSend(`gws gmail +reply-all --message-id ${MESSAGE_ID} --body "ok"`, { isScheduledTask: false, gwsBin: stub.bin });
         expect(stub.calls()).toEqual([]);
         expect(v.summary?.split('\n')[0]).toContain('names no absolute GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE');
+    });
+});
+
+describe('the reads a reply card makes go to the account the credentials file names', () => {
+    const configDirs = join(root, 'config-dirs');
+    const login = join(configDirs, 'with-login');
+    mkdirSync(login, { recursive: true });
+    writeFileSync(join(login, 'token_cache.json'), 'x');
+    const noLogin = join(configDirs, 'without-login');
+    const answers = { headers: [['From', 'pat@example.com'], ['Message-ID', '<o@example.com>']] as Header[], profile: 'team@example.com', defaultSendAs: 'team@example.com' };
+    const send = `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${join(configDirs, 'send-1')} GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${CREDS} gws gmail +reply-all --message-id ${MESSAGE_ID} --body "Thanks, that works."`;
+
+    test('beside a login in the default config dir, each read runs in an empty config dir of its own, removed after', () => {
+        const stub = gws(answers);
+        const v = evaluateEmailSend(send, { isScheduledTask: false, signaturesDir, gwsBin: stub.bin, gwsConfigDir: login });
+        expect(v.deny).toBeUndefined();
+        expect(recipientLines(v.summary)).toEqual(['To: pat@example.com']);
+        const used = stub.config().map(line => line.split(' '));
+        expect(used.map(([, entries]) => entries)).toEqual(['0', '0', '0']);
+        for (const [path] of used) {
+            expect(path.startsWith(join(tmpdir(), 'gws-read-'))).toBe(true);
+            expect(existsSync(path)).toBe(false);
+        }
+    });
+
+    test('with no login there, the reads keep the config dir gws would use anyway', () => {
+        const stub = gws(answers);
+        evaluateEmailSend(send, { isScheduledTask: false, signaturesDir, gwsBin: stub.bin, gwsConfigDir: noLogin });
+        expect(stub.config()).toEqual(Array(3).fill(`${process.env.GOOGLE_WORKSPACE_CLI_CONFIG_DIR} 0`));
+    });
+
+    test('a reply refused for sending from another account makes no read', () => {
+        const stub = gws(answers);
+        const v = evaluateEmailSend(reply('+reply-all'), { isScheduledTask: false, signaturesDir, gwsBin: stub.bin, gwsConfigDir: login });
+        expect(v.deny).toStartWith(`Email send refused: gws keeps a login in ${login} (token_cache.json)`);
+        expect(stub.calls()).toEqual([]);
     });
 });

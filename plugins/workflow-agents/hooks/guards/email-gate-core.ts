@@ -40,7 +40,7 @@
  */
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
-import { CARD_SUMMARY_MAX_CHARS, HTML_MAX_CHARS, clip, code, defuse, evalWord, fitLines, htmlToText, inline, quoteBlock, readBodyFile, senderOnFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
+import { CARD_SUMMARY_MAX_CHARS, HTML_MAX_CHARS, clip, code, defaultGwsConfigDir, defuse, evalWord, fitLines, gwsLoginIn, htmlToText, inEmptyDir, inline, quoteBlock, readBodyFile, senderOnFile, signatureOnFile, soleVariable, viewShell, type ShellView, withoutStoredHeredocs } from './gate-card-core';
 import { readAttachments } from './gws-attachments-core';
 
 // `gws gmail +send|+reply|+reply-all|+forward` (helper verbs) OR
@@ -123,6 +123,8 @@ export interface EnvSnapshot {
     signaturesDir?: string;
     /** The gws the draft read runs; tests point it at a stub. */
     gwsBin?: string;
+    /** The config directory gws uses when a command names none (`defaultGwsConfigDir`); tests point it elsewhere. */
+    gwsConfigDir?: string;
 }
 
 /** The stored draft a `users drafts send` will send, as it was read for the approval card. */
@@ -390,10 +392,13 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     // heredoc is enough); the summary then comes from the shape, and the shell view, when it parsed, must agree.
     const shape = sendShape(command);
     const exact = shape?.complete && shape.verb !== null ? shape : null;
+    const configDir = env.gwsConfigDir ?? defaultGwsConfigDir(env.cwd);
+    // A send gws would make from another account than its credentials file is refused, and nothing is read for it.
+    const accountRefusal = shape ? sendAccountRefusal(shape, configDir) : null;
     // A send of a stored draft names no envelope, so the card reads the draft. A failed read keeps the card and the
     // gate as they were.
-    const draftTarget = draftSendTarget(shape);
-    const draftRead = draftTarget ? readDraft(draftTarget, 'full', env.gwsBin ?? GWS_BIN) : null;
+    const draftTarget = accountRefusal ? null : draftSendTarget(shape);
+    const draftRead = draftTarget ? readDraft(draftTarget, 'full', env.gwsBin ?? GWS_BIN, configDir) : null;
     const draft = draftRead ? draftContent(draftRead) : null;
     const exactOption = (name: string) => exact?.options.get(name)?.join(', ');
     const exactAttachments = [...(exact?.options.get('-a') ?? []), ...(exact?.options.get('--attach') ?? [])];
@@ -439,8 +444,8 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
     const isReply = action === 'reply' || action === 'reply-all';
     const replyAll = action === 'reply-all';
     const replyCreds = exact?.credentialsFile;
-    const replyRead = isReply && exact && messageId && GMAIL_ID.test(messageId) && replyCreds?.startsWith('/')
-        ? readReplyContext(messageId, replyAll, alias, replyCreds, env.gwsBin ?? GWS_BIN)
+    const replyRead = isReply && exact && !accountRefusal && messageId && GMAIL_ID.test(messageId) && replyCreds?.startsWith('/')
+        ? readReplyContext(messageId, replyAll, alias, replyCreds, env.gwsBin ?? GWS_BIN, configDir)
         : null;
     const resolution = replyRead ? replyRecipients(replyAll, replyRead, { to: flagTo, cc, bcc, remove: removed }) : null;
     const reached = resolution && !('unresolved' in resolution) ? resolution : null;
@@ -549,6 +554,7 @@ export function evaluateEmailSend(command: string, env: EnvSnapshot): EmailGateV
         ? { wholeEmail: lines.flatMap((line, k) => k === wholeMessage!.noteAt || k === wholeMessage!.at - 1 ? [] : k === wholeMessage!.at ? wholeMessage!.exact : [line]).join('\n') }
         : {};
     if (!shape) return { action: 'gate', label, summary, deny: SEND_ALONE };
+    if (accountRefusal) return { action: 'gate', label, summary, deny: accountRefusal };
     if (reached?.leftOff.length) return { action: 'gate', label, summary, deny: leftOffRefusal(reached.leftOff, replyAll) };
     const attachmentsRead = readAttachments([...shape.options.get('-a') ?? [], ...shape.options.get('--attach') ?? []], env.cwd);
     if (attachmentsRead.refusal) return { action: 'gate', label, summary, deny: attachmentsRead.refusal };
@@ -803,10 +809,35 @@ export function leftOffRefusal(addresses: string[], replyAll: boolean): string {
 
 export const SEND_ALONE =
     'Email send refused: run it as its own Bash command. That command may hold only the gws gmail call, with ' +
-    'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE set on it or exported on the line before, and, for the text, one ' +
+    'GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE and, beside it when needed, GOOGLE_WORKSPACE_CLI_CONFIG_DIR (an absolute ' +
+    'path that does not exist yet) each set on it or exported on the line before, and, for the text, one ' +
     "BODY=$(cat <<'EOF' … EOF) or BODY='…' line before it. Make any folder, draft file or other step in a separate " +
     'Bash call first. Write values plainly: no globs, ~, $\'…\', escapes, command substitution or other variables. ' +
     'It may end with 2>&1 | tail -N or | head -N.';
+
+const FRESH_CONFIG_DIR = 'an absolute path that does not exist yet, a new one for each send, since gws writes its token cache there';
+
+/** Why gws would send from another account than the credentials file the command names; null when it would not. */
+function sendAccountRefusal(shape: SendShape, defaultConfigDir: string): string | null {
+    if (shape.credentialsFile === null) return null;
+    if (shape.configDir !== null) {
+        const held = gwsLoginIn(shape.configDir);
+        if (held === null) {
+            return `Email send refused: the gate could not read GOOGLE_WORKSPACE_CLI_CONFIG_DIR ${shape.configDir} to check that ` +
+                `it holds no gws login. Set it to ${FRESH_CONFIG_DIR}.`;
+        }
+        if (!held.length) return null;
+        return `Email send refused: GOOGLE_WORKSPACE_CLI_CONFIG_DIR ${shape.configDir} holds a gws login (${held.join(', ')}), ` +
+            'and gws would send with it instead of GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE, from a mailbox the approval card ' +
+            `does not name. Set it to ${FRESH_CONFIG_DIR}.`;
+    }
+    const held = gwsLoginIn(defaultConfigDir);
+    if (held !== null && !held.length) return null;
+    return `Email send refused: gws keeps a login in ${defaultConfigDir}${held ? ` (${held.join(', ')})` : ''}, and would send with ` +
+        'it instead of GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE, from a mailbox the approval card does not name. Run the send ' +
+        `again with GOOGLE_WORKSPACE_CLI_CONFIG_DIR set beside the credentials file to ${FRESH_CONFIG_DIR}, for example: ` +
+        `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=/tmp/gws-send-1 GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${shape.credentialsFile} gws gmail …`;
+}
 
 // ── The one shape a send may take ──
 // A general shell parser can't prove a summary matches what bash runs; bash rewrites words in too many ways. So a send
@@ -818,6 +849,7 @@ const SHAPE_PLAIN = /^[\w@%+=:,./-]+/;
 const SHAPE_OPTIONS = new Set(['--to', '--cc', '--bcc', '--subject', '--body', '--from', '--message-id', '--remove', '--format', '-a', '--attach']);
 const SHAPE_REPEATABLE = new Set(['-a', '--attach']);
 const SHAPE_CREDENTIALS = /^GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=(?:(?!\/accounts\/)[^\s'"$`\\])*\/accounts\/([\w.@+-]+)\.json$/;
+const SHAPE_CONFIG_DIR = /^GOOGLE_WORKSPACE_CLI_CONFIG_DIR=(\/[\w@%+=:,./-]*)$/;
 
 interface ShapeWord {
     source: string;
@@ -839,6 +871,7 @@ interface SendShape {
     body?: string;
     account: string | null;
     credentialsFile: string | null;
+    configDir: string | null;
     /** Every option is one the summary shows, each single-valued one given once. */
     complete: boolean;
     /** The words after `users <resource> send` in the raw API form; null for a helper verb. */
@@ -943,9 +976,14 @@ function shapeStatements(command: string): ShapeStatement[] | null {
     return flush() ? statements : null;
 }
 
-function credentials(word: ShapeWord | undefined): { account: string; file: string } | null {
-    const match = word ? SHAPE_CREDENTIALS.exec(word.source) : null;
-    return match ? { account: match[1], file: match[0].slice(match[0].indexOf('=') + 1) } : null;
+type ShapeAssignment = { name: 'credentials'; account: string; file: string } | { name: 'configDir'; dir: string };
+
+/** The one gws assignment a word makes, read from its source so no quoting can change it; null for any other word. */
+function shapeAssignment(word: ShapeWord | undefined): ShapeAssignment | null {
+    const creds = word ? SHAPE_CREDENTIALS.exec(word.source) : null;
+    if (creds) return { name: 'credentials', account: creds[1], file: creds[0].slice(creds[0].indexOf('=') + 1) };
+    const dir = word ? SHAPE_CONFIG_DIR.exec(word.source) : null;
+    return dir ? { name: 'configDir', dir: dir[1] } : null;
 }
 
 /**
@@ -956,16 +994,23 @@ function sendShape(command: string): SendShape | null {
     const statements = shapeStatements(command);
     const send = statements?.at(-1);
     if (!statements || !send || send.heredoc) return null;
-    let creds: { account: string; file: string } | null = null;
+    // Each of the two names once, exported on a line before the call or set on it.
+    const set: { creds: { account: string; file: string } | null; configDir: string | null } = { creds: null, configDir: null };
+    const assign = (word: ShapeWord | undefined): boolean => {
+        const a = shapeAssignment(word);
+        if (a?.name === 'credentials' && set.creds === null) set.creds = { account: a.account, file: a.file };
+        else if (a?.name === 'configDir' && set.configDir === null) set.configDir = a.dir;
+        else return false;
+        return true;
+    };
     let body: { name: string; value: string } | null = null;
     for (const s of statements.slice(0, -1)) {
         if (s.pipe || s.stderrToStdout) return null;
         // Only BODY: assigning any other name could change the account (the credentials file) or the program run (PATH).
         if (s.heredoc?.name === 'BODY' && !s.words.length && !body) {
             body = s.heredoc;
-        } else if (s.words.length === 2 && !s.heredoc && s.words[0].source === 'export' && creds === null) {
-            creds = credentials(s.words[1]);
-            if (creds === null) return null;
+        } else if (s.words.length === 2 && !s.heredoc && s.words[0].source === 'export') {
+            if (!assign(s.words[1])) return null;
         } else if (s.words.length === 1 && !s.heredoc && !body && /^BODY=['"]/.test(s.words[0].source)) {
             body = { name: 'BODY', value: s.words[0].value.slice('BODY='.length) };
         } else {
@@ -973,12 +1018,13 @@ function sendShape(command: string): SendShape | null {
         }
     }
     let words = send.words;
-    if (/^[A-Za-z_]\w*=/.test(words[0]?.source ?? '')) {
-        if (creds !== null) return null;
-        creds = credentials(words[0]);
-        if (creds === null) return null;
+    while (/^[A-Za-z_]\w*=/.test(words[0]?.source ?? '')) {
+        if (!assign(words[0])) return null;
         words = words.slice(1);
     }
+    // A config directory with no credentials file leaves gws to find a login of its own.
+    const { creds, configDir } = set;
+    if (configDir !== null && creds === null) return null;
     if (words[0]?.source !== 'gws' || words[1]?.source !== 'gmail') return null;
     const pipe = send.pipe?.map(w => w.source).join(' ');
     if (pipe !== undefined && !/^(?:head|tail) (?:-\d+|-n \d+)$/.test(pipe)) return null;
@@ -1028,7 +1074,7 @@ function sendShape(command: string): SendShape | null {
     // A variable set and never read is a step of its own.
     if (body && !bodyUsed) return null;
     return {
-        verb, options, html, account: creds?.account ?? null, credentialsFile: creds?.file ?? null, complete, raw,
+        verb, options, html, account: creds?.account ?? null, credentialsFile: creds?.file ?? null, configDir, complete, raw,
         body: options.get('--body')?.[0],
     };
 }
@@ -1108,21 +1154,21 @@ interface ReplyRead {
 }
 
 /** The original's headers and, for a reply-all, the account's own addresses; null when any read gws itself needs fails. */
-function readReplyContext(messageId: string, replyAll: boolean, fromOption: string | undefined, credentialsFile: string, gwsBin: string): ReplyRead | null {
+function readReplyContext(messageId: string, replyAll: boolean, fromOption: string | undefined, credentialsFile: string, gwsBin: string, configDir: string): ReplyRead | null {
     const message = gwsRead(['users', 'messages', 'get'], {
         userId: 'me', id: messageId, format: 'metadata', metadataHeaders: ['From', 'Reply-To', 'To', 'Cc', 'Message-ID'],
-    }, credentialsFile, gwsBin);
+    }, credentialsFile, gwsBin, configDir);
     const raw = (message?.payload as { headers?: unknown } | undefined)?.headers;
     if (message?.id !== messageId || !Array.isArray(raw)) return null;
     const headers = raw.flatMap(h => typeof h?.name === 'string' && typeof h?.value === 'string' ? [{ name: h.name as string, value: h.value as string }] : []);
     if (!replyAll) return { headers, self: [] };
-    const primary = gwsRead(['users', 'getProfile'], { userId: 'me' }, credentialsFile, gwsBin)?.emailAddress;
+    const primary = gwsRead(['users', 'getProfile'], { userId: 'me' }, credentialsFile, gwsBin, configDir)?.emailAddress;
     if (typeof primary !== 'string' || !primary) return null;
     // With no --from, gws sends as the default send-as identity. It goes on without one when its own read of that list
     // fails, which a failed read here does not show, so that case is left unresolved.
     let identity: string | undefined = addressList(fromOption)[0];
     if (identity === undefined) {
-        const sendAs = gwsRead(['users', 'settings', 'sendAs', 'list'], { userId: 'me' }, credentialsFile, gwsBin)?.sendAs;
+        const sendAs = gwsRead(['users', 'settings', 'sendAs', 'list'], { userId: 'me' }, credentialsFile, gwsBin, configDir)?.sendAs;
         if (!Array.isArray(sendAs)) return null;
         const fallback = sendAs.find(e => e?.isDefault === true)?.sendAsEmail;
         identity = typeof fallback === 'string' ? mailboxAddress(fallback) : undefined;
@@ -1248,11 +1294,20 @@ function draftSendTarget(shape: SendShape | null): Omit<DraftBinding, 'messageId
     return { draftId, userId, credentialsFile };
 }
 
-/** One read-only Gmail API call through gws with the send's credentials, bounded in time and size; null on any failure. */
-function gwsRead(method: string[], params: Record<string, unknown>, credentialsFile: string, gwsBin: string): Record<string, unknown> | null {
+/**
+ * One read-only Gmail API call through gws with the send's credentials, bounded in time and size; null on any failure.
+ * Beside a login in `configDir`, gws runs with an empty config directory of its own, so it answers for the credentials.
+ */
+function gwsRead(method: string[], params: Record<string, unknown>, credentialsFile: string, gwsBin: string, configDir: string): Record<string, unknown> | null {
+    return gwsLoginIn(configDir)?.length === 0
+        ? gwsReadWith(method, params, credentialsFile, gwsBin, null)
+        : inEmptyDir(own => gwsReadWith(method, params, credentialsFile, gwsBin, own));
+}
+
+function gwsReadWith(method: string[], params: Record<string, unknown>, credentialsFile: string, gwsBin: string, own: string | null): Record<string, unknown> | null {
     try {
         const run = spawnSync(gwsBin, ['gmail', ...method, '--params', JSON.stringify(params)], {
-            env: { ...process.env, GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE: credentialsFile },
+            env: { ...process.env, GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE: credentialsFile, ...(own ? { GOOGLE_WORKSPACE_CLI_CONFIG_DIR: own } : {}) },
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'ignore'],
             timeout: GWS_READ_TIMEOUT_MS,
@@ -1268,8 +1323,8 @@ function gwsRead(method: string[], params: Record<string, unknown>, credentialsF
 }
 
 /** Read a draft through gws; null on any failure, or a reply for another draft. */
-function readDraft(target: Omit<DraftBinding, 'messageId'>, format: 'full' | 'minimal', gwsBin: string): StoredDraft | null {
-    const draft = gwsRead(['users', 'drafts', 'get'], { userId: target.userId, id: target.draftId, format }, target.credentialsFile, gwsBin) as Partial<StoredDraft> | null;
+function readDraft(target: Omit<DraftBinding, 'messageId'>, format: 'full' | 'minimal', gwsBin: string, configDir: string): StoredDraft | null {
+    const draft = gwsRead(['users', 'drafts', 'get'], { userId: target.userId, id: target.draftId, format }, target.credentialsFile, gwsBin, configDir) as Partial<StoredDraft> | null;
     if (draft?.id !== target.draftId || typeof draft.message?.id !== 'string' || !draft.message.id) return null;
     return draft as StoredDraft;
 }
@@ -1384,8 +1439,8 @@ function draftContent(draft: StoredDraft): DraftView {
  * the refusal to give the agent. A failed read refuses too, since nothing else shows this is the approved version.
  * Gmail has no conditional send, so an edit in the moment between this read and the send is not seen.
  */
-export function draftChangedSince(binding: DraftBinding, gwsBin: string = GWS_BIN): string | null {
-    const now = readDraft(binding, 'minimal', gwsBin);
+export function draftChangedSince(binding: DraftBinding, gwsBin: string = GWS_BIN, configDir: string = defaultGwsConfigDir()): string | null {
+    const now = readDraft(binding, 'minimal', gwsBin, configDir);
     if (now === null) {
         return `Email send refused: draft ${binding.draftId} could not be re-read to confirm it is the version that was ` +
             'approved. Ask for approval again with the same command.';

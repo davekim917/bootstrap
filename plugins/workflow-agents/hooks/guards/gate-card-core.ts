@@ -10,9 +10,9 @@
  * surface (a native permission prompt, a chat card, a hand-off message).
  */
 import { createHash } from 'crypto';
-import { closeSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'fs';
+import { closeSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
-import { extname, resolve as pathResolve, sep } from 'path';
+import { extname, join, resolve as pathResolve, sep } from 'path';
 import { parse } from 'unbash';
 
 // Short enough for the tightest known surface: NanoClaw posts it into a Slack
@@ -1183,6 +1183,57 @@ export function senderOnFile(credentialsFile: string | null, dir: string): { acc
             : null;
     } catch {
         return null;
+    }
+}
+
+// gws reads a login from its config directory, and takes the access token from that directory's token_cache.json
+// whenever no proxy variable is set. The cache is keyed by scopes alone, so a token cached for another account is
+// used in place of the credentials file's own.
+const GWS_LOGIN_FILES = ['credentials.enc', 'token_cache.json', 'client_secret.json'];
+
+/** The config directory gws uses when the command sets none, found as gws 0.22.5 finds it (auth_commands.rs). */
+export function defaultGwsConfigDir(cwd?: string): string {
+    const named = process.env.GOOGLE_WORKSPACE_CLI_CONFIG_DIR;
+    if (named !== undefined) return pathResolve(cwd ?? '.', named);
+    // gws (the dirs crate) takes $HOME before the password database.
+    const home = process.env.HOME || homedir();
+    const primary = join(home, '.config', 'gws');
+    const xdg = process.env.XDG_CONFIG_HOME;
+    const legacy = join(xdg?.startsWith('/') ? xdg : join(home, '.config'), 'gws');
+    return present(primary) || !present(legacy) ? primary : legacy;
+}
+
+function present(path: string): boolean {
+    try {
+        lstatSync(path);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** The gws login files `dir` holds; null when the gate can't tell. A missing directory holds none. */
+export function gwsLoginIn(dir: string): string[] | null {
+    const held: string[] = [];
+    for (const name of GWS_LOGIN_FILES) {
+        try {
+            lstatSync(join(dir, name));
+            held.push(name);
+        } catch (error) {
+            const reason = (error as { code?: string }).code;
+            if (reason !== 'ENOENT' && reason !== 'ENOTDIR') return null;
+        }
+    }
+    return held;
+}
+
+/** `run` given a new empty directory, which is removed after. */
+export function inEmptyDir<T>(run: (dir: string) => T): T {
+    const dir = mkdtempSync(join(tmpdir(), 'gws-read-'));
+    try {
+        return run(dir);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
     }
 }
 

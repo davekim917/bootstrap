@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { defaultGwsConfigDir } from './gate-card-core';
 import {
     evaluateEmailSend,
     evaluateEmailToolCall,
@@ -698,6 +699,122 @@ describe('envelopeFromJsonRaw (raw-API envelope decode)', () => {
     });
 });
 
+describe('evaluateEmailSend — the send goes from the account its credentials file names', () => {
+    // gws takes its access token from token_cache.json in its config directory, keyed by scopes alone, so a cache left
+    // by any other account's run (or the machine's own login) sends as that account instead.
+    const root = mkdtempSync(join(tmpdir(), 'email-gate-account-'));
+    afterAll(() => rmSync(root, { recursive: true, force: true }));
+    const creds = join(root, 'accounts', 'example-co.json');
+    mkdirSync(join(root, 'accounts'));
+    writeFileSync(creds, '{"refresh_token":"e"}');
+    const dir = (name: string, files: string[]) => {
+        const path = join(root, name);
+        mkdirSync(path, { recursive: true });
+        for (const f of files) writeFileSync(join(path, f), 'x');
+        return path;
+    };
+    const hostDefault = dir('host-default', ['credentials.enc', 'token_cache.json', 'client_secret.json']);
+    const cacheOnly = dir('cache-only', ['token_cache.json']);
+    const containerDefault = dir('container-default', ['.encryption_key']);
+    mkdirSync(join(containerDefault, 'accounts'));
+    mkdirSync(join(containerDefault, 'cache'));
+    const notYet = join(root, 'send-1');
+    const empty = dir('send-2', []);
+    const CREDS = `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${creds}`;
+    const SEND = 'gws gmail +send --to pat@example.com --subject Hi --body "Can you confirm the file works?"';
+    const deny = (command: string, gwsConfigDir: string) => {
+        const v = evaluateEmailSend(command, { isScheduledTask: false, gwsConfigDir });
+        expect(v.action).toBe('gate');
+        return v.deny;
+    };
+
+    test('a config dir that does not exist yet, or is empty, is accepted on the command or exported, in either order', () => {
+        for (const command of [
+            `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${notYet} ${CREDS} ${SEND}`,
+            `${CREDS} GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${notYet} ${SEND} 2>&1 | tail -5`,
+            `export ${CREDS}\nexport GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${empty}\n${SEND}`,
+            `export GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${empty}\n${CREDS} ${SEND}`,
+        ]) {
+            expect([command, deny(command, hostDefault)]).toEqual([command, undefined]);
+        }
+    });
+
+    test('a config dir holding a gws login is refused, naming what it holds', () => {
+        for (const name of ['credentials.enc', 'token_cache.json', 'client_secret.json']) {
+            const held = dir(`held-${name}`, [name]);
+            expect(deny(`GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${held} ${CREDS} ${SEND}`, containerDefault)).toBe(
+                `Email send refused: GOOGLE_WORKSPACE_CLI_CONFIG_DIR ${held} holds a gws login (${name}), and gws would send ` +
+                'with it instead of GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE, from a mailbox the approval card does not name. Set ' +
+                'it to an absolute path that does not exist yet, a new one for each send, since gws writes its token cache there.',
+            );
+        }
+    });
+
+    test('beside a login or a token cache in the default config dir, a credentials-only send is refused with the shape to use', () => {
+        for (const defaultDir of [hostDefault, cacheOnly]) {
+            for (const command of [`${CREDS} ${SEND}`, `export ${CREDS}\n${SEND}`]) {
+                const why = deny(command, defaultDir);
+                expect(why).toStartWith(`Email send refused: gws keeps a login in ${defaultDir} (`);
+                expect(why).toEndWith(
+                    'Run the send again with GOOGLE_WORKSPACE_CLI_CONFIG_DIR set beside the credentials file to an absolute path ' +
+                    'that does not exist yet, a new one for each send, since gws writes its token cache there, for example: ' +
+                    `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=/tmp/gws-send-1 GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${creds} gws gmail …`,
+                );
+            }
+        }
+    });
+
+    test('with no login in the default config dir (the container case), a credentials-only send is allowed as today', () => {
+        for (const defaultDir of [containerDefault, join(root, 'no-such-dir')]) {
+            expect(deny(`export ${CREDS}\n${SEND}`, defaultDir)).toBeUndefined();
+        }
+    });
+
+    test('a send naming no credentials file goes from the default login, which the card names', () => {
+        const v = evaluateEmailSend(SEND, { isScheduledTask: false, gwsConfigDir: hostDefault });
+        expect(v.deny).toBeUndefined();
+        expect(v.summary).toContain('From: default');
+    });
+
+    test('a config dir is read only as one plain absolute path beside one credentials file', () => {
+        for (const command of [
+            `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${notYet} ${SEND}`,
+            `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=relative/dir ${CREDS} ${SEND}`,
+            `GOOGLE_WORKSPACE_CLI_CONFIG_DIR='${notYet}' ${CREDS} ${SEND}`,
+            `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/gws ${CREDS} ${SEND}`,
+            `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${root}/$X ${CREDS} ${SEND}`,
+            `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${notYet} GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${empty} ${CREDS} ${SEND}`,
+            `export GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${notYet}\nGOOGLE_WORKSPACE_CLI_CONFIG_DIR=${empty} ${CREDS} ${SEND}`,
+            `export ${CREDS}\n${CREDS} ${SEND}`,
+        ]) {
+            expect([command, deny(command, containerDefault)]).toEqual([command, SEND_ALONE]);
+        }
+    });
+
+    test('the default config dir is the one gws 0.22.5 reads: GOOGLE_WORKSPACE_CLI_CONFIG_DIR, else ~/.config/gws, else the XDG one', () => {
+        const saved = { dir: process.env.GOOGLE_WORKSPACE_CLI_CONFIG_DIR, home: process.env.HOME, xdg: process.env.XDG_CONFIG_HOME };
+        const home = dir('home', []);
+        const xdg = dir('xdg', []);
+        try {
+            process.env.GOOGLE_WORKSPACE_CLI_CONFIG_DIR = 'rel';
+            expect(defaultGwsConfigDir('/work')).toBe('/work/rel');
+            delete process.env.GOOGLE_WORKSPACE_CLI_CONFIG_DIR;
+            process.env.HOME = home;
+            process.env.XDG_CONFIG_HOME = xdg;
+            expect(defaultGwsConfigDir()).toBe(join(home, '.config', 'gws'));
+            mkdirSync(join(xdg, 'gws'));
+            expect(defaultGwsConfigDir()).toBe(join(xdg, 'gws'));
+            mkdirSync(join(home, '.config', 'gws'), { recursive: true });
+            expect(defaultGwsConfigDir()).toBe(join(home, '.config', 'gws'));
+        } finally {
+            for (const [key, value] of [['GOOGLE_WORKSPACE_CLI_CONFIG_DIR', saved.dir], ['HOME', saved.home], ['XDG_CONFIG_HOME', saved.xdg]] as const) {
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+            }
+        }
+    });
+});
+
 describe('purity — no I/O imports', () => {
     test('module imports no bun:sqlite / fs (statement-level, comments allowed)', async () => {
         const src = await Bun.file(
@@ -889,6 +1006,7 @@ describe('evaluateEmailSend — a send runs as its own command, or is refused', 
         expect(v.deny).toBe(SEND_ALONE);
         expect(SEND_ALONE).toContain('separate Bash call');
         expect(SEND_ALONE).toContain('GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE');
+        expect(SEND_ALONE).toContain('GOOGLE_WORKSPACE_CLI_CONFIG_DIR (an absolute path that does not exist yet)');
     });
 
     test('the same reply on its own cards with no command, and the summary shows the email', () => {
