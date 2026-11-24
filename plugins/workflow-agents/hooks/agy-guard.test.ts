@@ -191,6 +191,16 @@ describe('paths are judged where the filesystem puts them', () => {
         ['through an appending stderr redirect', 'ls 2>> hooks-link'],
         ['through a read-write redirect', 'ls 4<> hooks-link'],
         ['through a redirect in a subshell', '(ls 2> alias/fixture.log)'],
+        ['through a redirect in a command substitution', "printf '%s' \"$(true >> hooks-link)\""],
+        ['through a redirect in backticks', 'echo `true 2> hooks-link`'],
+        ['through a redirect in a nested command substitution', 'echo "$(echo "$(true 2> hooks-link)")"'],
+        ['through a redirect in an output process substitution', 'echo x > >(cat > hooks-link)'],
+        ['through a redirect in an input process substitution', 'cat <(true 3> hooks-link)'],
+        ['through a subshell\'s own redirect', '(ls) 2> hooks-link'],
+        ['through a group\'s own redirect', '{ ls; } > hooks-link'],
+        ['through a loop\'s own redirect', 'for i in a; do ls; done 2> hooks-link'],
+        ['through a redirect on an if', 'if true; then ls; fi 2>> hooks-link'],
+        ['through a redirect on a case', 'case a in a) ls ;; esac &> hooks-link'],
     ])('a shell write %s into .agents is denied', (_name, command) => {
         const root = scratch();
         mkdirSync(join(root, '.agents'));
