@@ -4482,6 +4482,7 @@ const SNOW_SQL_BARE_FLAGS = new Set(['--silent', '--verbose', '--debug', '--enha
 // Wrappers that leave the command's user and environment alone (`sudo` and `env` do not, so they never qualify).
 const SAFE_WRAPPERS_PREFIX = String.raw`^(?:(?:g?timeout\s+\d+(?:\.\d+)?[smhd]?|nohup|time)\s+)*`;
 const SNOW_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}snow\\s`);
+const RENDER_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}render\\s`);
 // Commands that change what a later command sees: its environment, or code it sources.
 const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare', 'typeset', 'env', 'eval', 'readonly', 'local', 'alias', 'unset', 'read', 'mapfile', 'readarray', 'getopts', 'let', 'trap']);
 
@@ -7365,16 +7366,61 @@ const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
 };
 
 /** A held Render read's card: it says the step reads, why it is held, and whether its target is listed as dev. */
-function renderReadEffect(cmd: ResolvedCommand, reason: string): [effect: string, loss: string] {
+/** The resource ids a render step names, split by whether the dev list holds them. */
+function renderListing(cmd: ResolvedCommand): { on: string[]; off: string[] } {
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
-    const on = ids.filter(id => listed.has(id));
-    const off = ids.filter(id => !listed.has(id));
-    const names = (list: string[]) => `${list.map(id => code(id)).join(', ')} ${list.length > 1 ? 'are' : 'is'}`;
-    const where = !ids.length ? ''
-        : !off.length ? ' Its target is listed as dev.'
-        : !on.length ? ' Its target is not listed as dev, so treat it as production.'
-        : ` ${names(on)} listed as dev, but ${names(off)} not, so treat it as production.`;
+    return { on: ids.filter(id => listed.has(id)), off: ids.filter(id => !listed.has(id)) };
+}
+
+const listedNames = (list: string[]): string => `${list.map(id => code(id)).join(', ')} ${list.length > 1 ? 'are' : 'is'}`;
+
+/** A held Render change's card: a step on listed ids is held for its form, never for being unlisted. */
+type RenderTargetClaim = { kind: 'dev' | 'mixed' | 'unproven' | 'unlisted'; on: string[]; off: string[] };
+
+/**
+ * What a step's card may say about the dev list. `dev` (or `mixed`) needs the step's one target to be a listed id that
+ * the command provably acts on (a `proof` command, or a read `renderDevRead` knows), with nothing on the line able to
+ * send it elsewhere; `unlisted` needs no listed id, or such a target that is unlisted. Every other form is `unproven`.
+ */
+function renderTargetClaim(cmd: ResolvedCommand): RenderTargetClaim {
+    const { on, off } = renderListing(cmd);
+    let target: string | undefined;
+    if (cmd.name === 'render') {
+        const literal = renderLiteralArgs(cmd);
+        const named = new Set(renderResourceIds(literal));
+        target = renderProvenTarget({ ...cmd, args: literal }, r => named.has(r)) ?? renderDevRead(literal, named) ?? undefined;
+    }
+    if (!on.length || (target !== undefined && RENDER_RESOURCE_ID_RE.test(target) && !on.includes(target))) return { kind: 'unlisted', on, off };
+    const proven = target !== undefined && on.includes(target) && !cmd.args.some(a => a.includes('\\'))
+        && RENDER_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw) && renderExpansionsAreSql(cmd) && !programCanDiffer(cmd);
+    if (!proven) return { kind: 'unproven', on, off };
+    return { kind: off.length ? 'mixed' : 'dev', on, off };
+}
+
+/** A held Render change's card. The production warning leads, so a long id list can't push it off a clipped card. */
+function renderChangeEffect(cmd: ResolvedCommand): [effect: string, loss: string] {
+    const [unlisted, loss] = GENERIC_EFFECTS.render;
+    const { kind, on, off } = renderTargetClaim(cmd);
+    const lead = 'Changes the Render service, database or job named in the step below; treat it as production';
+    switch (kind) {
+        case 'unlisted':
+            return [unlisted, loss];
+        case 'unproven':
+            return [`${lead}, since the guard can't confirm which resource the step reaches.`, loss];
+        case 'mixed':
+            return [`${lead}: ${listedNames(off)} not listed as dev, though ${listedNames(on)}.`, loss];
+        case 'dev':
+            return [`${lead}, since the guard can't confirm this form stays on ${on.map(id => code(id)).join(', ')}, listed as dev.`, loss];
+    }
+}
+
+function renderReadEffect(cmd: ResolvedCommand, reason: string): [effect: string, loss: string] {
+    const { kind, on, off } = renderTargetClaim(cmd);
+    const where = kind === 'dev' ? ' Its target is listed as dev.'
+        : kind === 'mixed' ? ` Treat it as production: ${listedNames(off)} not listed as dev, though ${listedNames(on)}.`
+        : kind === 'unproven' ? " The guard can't confirm which resource it reads, so treat it as production."
+        : on.length || off.length ? ' Its target is not listed as dev, so treat it as production.' : '';
     const why = reason.includes('interactive menu')
         ? 'with no plain output (-o json, yaml or text) it can open an interactive menu that deploys'
         : "the guard can't account for every word on the line, so it can't rule out a different command";
@@ -7390,6 +7436,8 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
         ? ['Changes the Render dev resource named in the step below.', "some changes, such as a deleted database, can't be undone"]
         : cmd.name === 'render' && reason.includes(RENDER_READ_HOLD)
         ? renderReadEffect(cmd, reason)
+        : cmd.name === 'render'
+        ? renderChangeEffect(cmd)
         : cmd.name === 'terraform' && targets.length
         ? [`Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`, "anything it destroys can't be brought back"]
         : GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
@@ -7617,7 +7665,15 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             lines.push('', `Approving runs the whole command (${commands.length} steps), not only the step${gated.length > 1 ? 's' : ''} described here.`);
         }
         const prodChange = (step: GatedStep): boolean => onProduction(step) && !heldRead(step);
-        if (gated.some(prodChange) && !lines[0].includes('treat it as production')) lines.unshift('Treat this as production: its target is not listed as dev.', '');
+        const prodSteps = gated.filter(prodChange);
+        if (prodSteps.length && !lines[0].includes('treat it as production')) {
+            const claims = prodSteps.map(step => renderTargetClaim(step.cmd).kind);
+            lines.unshift(claims.every(kind => kind === 'dev')
+                ? "Treat this as production: its target is listed as dev, but the guard can't confirm the step stays on it."
+                : claims.every(kind => kind === 'dev' || kind === 'unproven')
+                ? "Treat this as production: the guard can't confirm which resource it reaches."
+                : 'Treat this as production: its target is not listed as dev.', '');
+        }
         lines.push(`Guard rule: ${clip(oneLine(reason), 200)}`);
         return { label: clip(label, CARD_LABEL_MAX_CHARS), summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
     } catch {
