@@ -917,13 +917,14 @@ describe('a Render read with a flag the CLI does not take', () => {
 describe('a held Render read says it is a read', () => {
     test.each([
         [`render jobs list ${PROD}`, 'interactive menu', 'not listed as dev'],
-        [`render jobs list ${DEV} --confirm`, 'interactive menu', 'Its target is listed as dev.'],
+        [`render jobs list ${DEV} --confirm`, 'interactive menu', "The guard can't confirm which resource it reads, so treat it as production."],
         ['render logs -r $SRV --bogus', "can't account for every word", 'reads from Render'],
         [`xargs -I{} render jobs list {} < /tmp/ids`, 'interactive menu', 'reads from Render'],
         [`J=${RUN}; S=${DEV}; render logs --resources $S --task-run-ids $J -o text`, "can't account for every word", "The guard can't confirm which resource it reads, so treat it as production."],
         [`J=${RUN}; S=${PROD}; render logs --resources $S --task-run-ids $J -o text`, "can't account for every word", 'Its target is not listed as dev, so treat it as production.'],
         [`S=${DEV}; P=${PROD}; render logs --resources $S --task-run-ids $P -o text`, "can't account for every word", "The guard can't confirm which resource it reads, so treat it as production."],
         [`render logs -r "$SRV" --text '${DEV}' --help=false -o json`, "can't account for every word", "The guard can't confirm which resource it reads, so treat it as production."],
+        [`render projects ${DEV} -o interactive`, 'interactive menu', "The guard can't confirm which resource it reads, so treat it as production."],
     ])('%s', (command, why, where) => {
         const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
         expect(action).toBe('gate');

@@ -7383,15 +7383,18 @@ const listedNames = (list: string[]): string => `${list.map(id => code(id)).join
 type RenderTargetClaim = { kind: 'dev' | 'mixed' | 'unproven' | 'unlisted'; on: string[]; off: string[] };
 
 /**
- * What a step's card may say about the dev list. `dev` (or `mixed`) needs the step's one target read as a listed id,
- * with nothing on the line able to send it elsewhere; `unlisted` needs no listed id, or a literal target that is unlisted.
+ * What a step's card may say about the dev list. `dev` (or `mixed`) needs the step's one target to be a listed id that
+ * the command provably acts on (a `proof` command, or a read `renderDevRead` knows), with nothing on the line able to
+ * send it elsewhere; `unlisted` needs no listed id, or such a target that is unlisted. Every other form is `unproven`.
  */
 function renderTargetClaim(cmd: ResolvedCommand): RenderTargetClaim {
     const { on, off } = renderListing(cmd);
-    const shape = cmd.name === 'render' ? renderShape(cmd.args) : null;
-    const literal = cmd.name === 'render' ? renderLiteralArgs(cmd) : cmd.args;
-    const target = shape?.operands.length === 1 ? shape.operands[0]
-        : cmd.name === 'render' ? renderDevRead(literal, new Set(renderResourceIds(literal))) ?? undefined : undefined;
+    let target: string | undefined;
+    if (cmd.name === 'render') {
+        const literal = renderLiteralArgs(cmd);
+        const named = new Set(renderResourceIds(literal));
+        target = renderProvenTarget({ ...cmd, args: literal }, r => named.has(r)) ?? renderDevRead(literal, named) ?? undefined;
+    }
     if (!on.length || (target !== undefined && RENDER_RESOURCE_ID_RE.test(target) && !on.includes(target))) return { kind: 'unlisted', on, off };
     const proven = target !== undefined && on.includes(target) && !cmd.args.some(a => a.includes('\\'))
         && RENDER_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw) && renderExpansionsAreSql(cmd) && !programCanDiffer(cmd);
