@@ -4347,9 +4347,34 @@ function programCanDiffer(cmd: ResolvedCommand): boolean {
         || cmd.args.some(a => a.search(COPY_PROGRAM) >= 0);
 }
 
+// Wrappers that never get a dev Render resource its exemption: sudo and env run render as another user or with an
+// edited environment (as `snow sql` refuses them), and a package runner can run a different program named render.
+const RENDER_UNEXEMPT_WRAPPERS = new Set(['sudo', 'env', 'npx', 'bunx', 'pnpm', 'yarn']);
+
+/** The words before `render` on its own command, or null when the guard can't line them up with what runs. */
+function renderWrapperWords(cmd: ResolvedCommand): string[] | null {
+    if (cmd.raw.startsWith('render ')) return [];
+    const script = cmd.script;
+    if (!script || cmd.pos === undefined) return null;
+    let node: any;
+    try {
+        node = walkCommandNodes(parseShell(script.command)).find(n => n.pos === cmd.pos);
+    } catch {
+        return null;
+    }
+    if (!node?.name) return null;
+    const words = [node.name, ...(node.suffix ?? [])].map(wordValue);
+    const at = words.length - cmd.args.length - 1;
+    if (at < 0 || commandName(words[at]) !== 'render' || words.slice(at + 1).some((w, i) => w !== cmd.args[i])) return null;
+    return words.slice(0, at);
+}
+
 function renderDevTarget(cmd: ResolvedCommand): string | null {
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
+    if ((cmd.env ?? []).length) return null;
+    const wrappers = renderWrapperWords(cmd);
+    if (!wrappers || wrappers.some(w => RENDER_UNEXEMPT_WRAPPERS.has(commandName(w)))) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const args = renderLiteralArgs(cmd);
     const accepts = (r: string) => listed.has(r);
@@ -4370,7 +4395,8 @@ function renderExpansionsAreSql(cmd: ResolvedCommand): boolean {
 
 /** The listed dev resources a held step acts on, when every resource it names is listed; null names no dev resource it can be sure of. */
 function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
-    if (!cmd.raw.startsWith(`${cmd.name} `) || programCanDiffer(cmd)) return null;
+    const leads = cmd.name === 'render' ? RENDER_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw) : cmd.raw.startsWith(`${cmd.name} `);
+    if (!leads || programCanDiffer(cmd)) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
     if (!ids.length || !ids.every(id => listed.has(id))) return null;

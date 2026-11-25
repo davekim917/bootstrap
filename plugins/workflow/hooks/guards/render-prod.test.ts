@@ -953,13 +953,14 @@ describe('a held Render change says whether its target is listed as dev', () => 
     const card = (command: string): string => describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp').summary;
     const passthrough = `render psql ${DEV_DB} -c 'select 1' -- -d postgresql://db.example.com/app -c 'DROP TABLE accounts'`;
 
-    test('a listed target held only for a wrapper and a pipe is called dev, and stays a production gate', () => {
+    test('a listed target held only for a wrapper and a pipe gets the dev hold and its card', () => {
         const command = `cd /tmp/rv; timeout 60 render psql ${DEV_DB} --command "select now()" -o json 2>&1 | head -20`;
         expect(verdict(command)).toBe('gate');
-        expect(changesProduction(command, '/tmp')).toBe(true);
+        expect(changesProduction(command, '/tmp')).toBe(false);
         const summary = card(command);
-        expect(summary).toContain(`treat it as production, since the guard can't confirm this form stays on \`${DEV_DB}\`, listed as dev`);
-        expect(summary).not.toContain('not listed as dev');
+        expect(summary).toContain('Changes the Render dev resource named in the step below.');
+        expect(summary).not.toContain('treat it as production');
+        expect(summary).not.toContain('Treat this as production');
     });
 
     test.each([
@@ -978,11 +979,16 @@ describe('a held Render change says whether its target is listed as dev', () => 
     });
 
     test.each([
-        [`timeout 60 render psql ${DEV_DB} --command "select 1" -o json`, "Treat this as production: its target is listed as dev, but the guard can't confirm the step stays on it."],
         [passthrough, "Treat this as production: the guard can't confirm which resource it reaches."],
         [`timeout 60 render psql ${PROD_DB} --command "select 1" -o json`, 'Treat this as production: its target is not listed as dev.'],
     ])('the headline over a first step that is not Render follows what the guard proved: %s', (step, headline) => {
         expect(card(`docker volume rm data; ${step}`)).toStartWith(headline);
+    });
+
+    test('a listed target on the dev hold puts no production headline over a first step that is not Render', () => {
+        const summary = card(`docker volume rm data; timeout 60 render psql ${DEV_DB} --command "select 1" -o json | tail -1`);
+        expect(summary).toStartWith('Runs `docker volume rm`');
+        expect(summary).not.toContain('Treat this as production');
     });
 
     test('a change naming a listed and an unlisted target warns before either list', () => {
@@ -1013,5 +1019,58 @@ describe('a held Render change says whether its target is listed as dev', () => 
         const summary = card(command);
         expect(summary).toContain('not listed as dev, so treat it as production');
         expect(summary).not.toContain('is listed as dev');
+    });
+});
+
+describe('a dev Render resource behind a wrapper', () => {
+    test.each([
+        ['timeout, with a pipe into head', `timeout 60 render psql ${DEV_DB} -c 'select 1' | head -5`],
+        ['timeout, with a pipe into tail', `timeout 60 render psql ${DEV_DB} -c 'select 1' | tail -1`],
+        ['nohup, with a pipe into head', `nohup render psql ${DEV_DB} -c 'select 1' | head -5`],
+        ['nohup, with a pipe into tail', `nohup render psql ${DEV_DB} -c 'select 1' | tail -1`],
+        ['a directory change, timeout and a pipe', `cd /tmp/rv; timeout 60 render psql ${DEV_DB} --command "select now()" -o json 2>&1 | head -20`],
+    ])('%s gets the dev hold, not the production gate', (_label, command) => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(false);
+    });
+
+    test.each([
+        ['an environment prefix', `PGOPTIONS='-c default_transaction_read_only=on' timeout 60 render psql ${DEV_DB} -c 'select 1' | head -5`],
+        ['env', `env timeout 60 render psql ${DEV_DB} -c 'select 1' | head -5`],
+        ['psql arguments after --', `timeout 60 render psql ${DEV_DB} -o text -- -At -f /tmp/rv/t.sql`],
+        ['sudo inside timeout', `timeout 60 sudo render psql ${DEV_DB} -c 'select 1' | head -5`],
+    ])('%s keeps the production gate', (_label, command) => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test.each([
+        ['sudo', `sudo render restart ${DEV} --confirm`],
+        ['sudo as another user, on a read', `sudo -u other render psql ${DEV_DB} -c 'select 1'`],
+        ['sudo as another user, on a change', `sudo -u other render restart ${DEV} --confirm`],
+        ['sudo inside timeout', `timeout 60 sudo render restart ${DEV} --confirm`],
+        ['env', `env render restart ${DEV} --confirm`],
+        ['env with an assignment', `env FOO=1 render restart ${DEV} --confirm`],
+        ['an assignment prefix', `FOO=1 render restart ${DEV} --confirm`],
+        ['npx', `npx render restart ${DEV} --confirm`],
+        ['npx, on a read', `npx render psql ${DEV_DB} -c 'select 1'`],
+        ['bunx', `bunx render restart ${DEV} --confirm`],
+        ['pnpm exec', `pnpm exec render restart ${DEV} --confirm`],
+        ['pnpm dlx', `pnpm dlx render restart ${DEV} --confirm`],
+        ['yarn exec', `yarn exec render restart ${DEV} --confirm`],
+        ['yarn dlx', `yarn dlx render restart ${DEV} --confirm`],
+        ['a package runner inside timeout', `timeout 60 npx render restart ${DEV} --confirm`],
+    ])('%s is not exempt, and gets the production gate', (_label, command) => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test.each([
+        `timeout 60 render restart ${DEV} --confirm`,
+        `nohup render psql ${DEV_DB} -c 'select 1'`,
+        `time render restart ${DEV} --confirm`,
+        `onecli run --agent ag-example -- render restart ${DEV} --confirm`,
+    ])('%s stays exempt', command => {
+        expect(verdict(command)).toBe('allow');
     });
 });
