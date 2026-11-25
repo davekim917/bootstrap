@@ -1036,6 +1036,8 @@ describe('a dev Render resource behind a wrapper', () => {
         ['a render named by path', `./render restart ${DEV} --confirm`],
         ['a render named by path, behind a wrapper', `timeout 60 ./render restart ${DEV} --confirm`],
         ['a render named by path, behind a wrapper in a substitution', `echo $(timeout 60 ./render restart ${DEV} --confirm)`],
+        ['a PATH change before it', `export PATH=/tmp/bin:$PATH; render restart ${DEV} --confirm`],
+        ['a function named render', `render() { echo; }; render restart ${DEV} --confirm`],
     ])('%s is not exempt, and gets the production gate', (_label, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
@@ -1053,6 +1055,10 @@ describe('a dev Render resource behind a wrapper', () => {
         `time render restart ${DEV} --confirm`,
         `onecli run --agent ag-example -- render restart ${DEV} --confirm`,
         `/usr/bin/time -o /tmp/env render restart ${DEV} --confirm`,
+        `set -e; render restart ${DEV} --confirm`,
+        `export X=1; render restart ${DEV} --confirm`,
+        `N=1; render deploys create ${DEV} --confirm`,
+        `for s in a; do render restart ${DEV} --confirm; done`,
     ])('%s stays exempt', command => {
         expect(verdict(command)).toBe('allow');
     });

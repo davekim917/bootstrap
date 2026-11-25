@@ -4355,10 +4355,19 @@ function programCanDiffer(cmd: ResolvedCommand): boolean {
 // edited environment (as `snow sql` refuses them), and a package runner can run a different program named render.
 const RENDER_UNEXEMPT_WRAPPERS = new Set(['sudo', 'env', 'npx', 'bunx', 'pnpm', 'yarn']);
 
+// A line that can change which program `render` resolves to: a PATH change, or a function, alias or hash entry named render.
+const RENDER_LOOKUP_CHANGERS = /\bPATH\b|(?:^|[\s;&|(){}])(?:function\s+render\b|render\s*\(\s*\))|\b(?:alias|hash|enable|shopt)\b/;
+
+/** Whether the program that runs may not be the `render` on PATH: named by a path, or looked up after the line changes it. */
+function renderProgramCanDiffer(cmd: ResolvedCommand): boolean {
+    const line = cmd.script?.command;
+    return line === undefined || /(?:^|\s)\S*\/render\s/.test(cmd.raw) || RENDER_LOOKUP_CHANGERS.test(line);
+}
+
 function renderDevTarget(cmd: ResolvedCommand): string | null {
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
-    if ((cmd.env ?? []).length || programCanDiffer(cmd)) return null;
+    if ((cmd.env ?? []).length || renderProgramCanDiffer(cmd)) return null;
     if ((cmd.wrappers ?? []).some(w => RENDER_UNEXEMPT_WRAPPERS.has(w))) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const args = renderLiteralArgs(cmd);
