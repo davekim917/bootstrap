@@ -945,3 +945,39 @@ describe('a held Render read says it is a read', () => {
         expect(summary).toContain("such as a deleted database, can't be undone");
     });
 });
+
+describe('a held Render change says whether its target is listed as dev', () => {
+    test.each([
+        ['a wrapped read with a pipe', `cd /tmp/rv; timeout 60 render psql ${DEV_DB} --command "select now()" -o json 2>&1 | head -20`],
+        ['an environment prefix and psql arguments', `PGOPTIONS='-c default_transaction_read_only=on' timeout 60 render psql ${DEV_DB} -o text -- -At -f /tmp/rv/t.sql`],
+    ])('a listed target held for its form (%s) is not called unlisted', (_shape, command) => {
+        const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(action).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+        const { summary } = describeGate(command, reason!, '/tmp');
+        expect(summary).toContain(`\`${DEV_DB}\` is listed as dev, but the guard can't confirm this form stays on it, so treat it as production`);
+        expect(summary).not.toContain('not listed as dev');
+    });
+
+    test.each([
+        [DEV_DB, "Treat this as production: its target is listed as dev, but the guard can't confirm the step stays on it."],
+        [PROD_DB, 'Treat this as production: its target is not listed as dev.'],
+    ])('the headline over a first step that is not Render matches the listing of %s', (db, headline) => {
+        const command = `docker volume rm data; timeout 60 render psql ${db} --command "select 1" -o json`;
+        const { summary } = describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp');
+        expect(summary).toStartWith(headline);
+    });
+
+    test('a change naming a listed and an unlisted target names each', () => {
+        const command = `render jobs create ${DEV} --start-command "echo ${PROD}"`;
+        const { summary } = describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp');
+        expect(summary).toContain(`\`${DEV}\` is listed as dev, but \`${PROD}\` is not, so treat it as production`);
+    });
+
+    test('the same form on an unlisted target still says it is not listed', () => {
+        const command = `cd /tmp/rv; timeout 60 render psql ${PROD_DB} --command "select now()" -o json 2>&1 | head -20`;
+        const { summary } = describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp');
+        expect(summary).toContain('not listed as dev, so treat it as production');
+        expect(summary).not.toContain('is listed as dev');
+    });
+});

@@ -7365,16 +7365,30 @@ const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
 };
 
 /** A held Render read's card: it says the step reads, why it is held, and whether its target is listed as dev. */
-function renderReadEffect(cmd: ResolvedCommand, reason: string): [effect: string, loss: string] {
+/** The resource ids a render step names, split by whether the dev list holds them. */
+function renderListing(cmd: ResolvedCommand): { on: string[]; off: string[] } {
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
-    const on = ids.filter(id => listed.has(id));
-    const off = ids.filter(id => !listed.has(id));
-    const names = (list: string[]) => `${list.map(id => code(id)).join(', ')} ${list.length > 1 ? 'are' : 'is'}`;
-    const where = !ids.length ? ''
+    return { on: ids.filter(id => listed.has(id)), off: ids.filter(id => !listed.has(id)) };
+}
+
+const listedNames = (list: string[]): string => `${list.map(id => code(id)).join(', ')} ${list.length > 1 ? 'are' : 'is'}`;
+
+/** A held Render change's card: a step on listed ids is held for its form, never for being unlisted. */
+function renderChangeEffect(cmd: ResolvedCommand): [effect: string, loss: string] {
+    const { on, off } = renderListing(cmd);
+    const [unlisted, loss] = GENERIC_EFFECTS.render;
+    if (!on.length) return [unlisted, loss];
+    const why = off.length ? `${listedNames(off)} not` : "the guard can't confirm this form stays on it";
+    return [`Changes the Render service, database or job named in the step below: ${listedNames(on)} listed as dev, but ${why}, so treat it as production.`, loss];
+}
+
+function renderReadEffect(cmd: ResolvedCommand, reason: string): [effect: string, loss: string] {
+    const { on, off } = renderListing(cmd);
+    const where = !on.length && !off.length ? ''
         : !off.length ? ' Its target is listed as dev.'
         : !on.length ? ' Its target is not listed as dev, so treat it as production.'
-        : ` ${names(on)} listed as dev, but ${names(off)} not, so treat it as production.`;
+        : ` ${listedNames(on)} listed as dev, but ${listedNames(off)} not, so treat it as production.`;
     const why = reason.includes('interactive menu')
         ? 'with no plain output (-o json, yaml or text) it can open an interactive menu that deploys'
         : "the guard can't account for every word on the line, so it can't rule out a different command";
@@ -7390,6 +7404,8 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
         ? ['Changes the Render dev resource named in the step below.', "some changes, such as a deleted database, can't be undone"]
         : cmd.name === 'render' && reason.includes(RENDER_READ_HOLD)
         ? renderReadEffect(cmd, reason)
+        : cmd.name === 'render'
+        ? renderChangeEffect(cmd)
         : cmd.name === 'terraform' && targets.length
         ? [`Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`, "anything it destroys can't be brought back"]
         : GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
@@ -7617,7 +7633,16 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             lines.push('', `Approving runs the whole command (${commands.length} steps), not only the step${gated.length > 1 ? 's' : ''} described here.`);
         }
         const prodChange = (step: GatedStep): boolean => onProduction(step) && !heldRead(step);
-        if (gated.some(prodChange) && !lines[0].includes('treat it as production')) lines.unshift('Treat this as production: its target is not listed as dev.', '');
+        const prodSteps = gated.filter(prodChange);
+        if (prodSteps.length && !lines[0].includes('treat it as production')) {
+            const onlyListed = prodSteps.every(step => {
+                const { on, off } = renderListing(step.cmd);
+                return on.length > 0 && off.length === 0;
+            });
+            lines.unshift(onlyListed
+                ? "Treat this as production: its target is listed as dev, but the guard can't confirm the step stays on it."
+                : 'Treat this as production: its target is not listed as dev.', '');
+        }
         lines.push(`Guard rule: ${clip(oneLine(reason), 200)}`);
         return { label: clip(label, CARD_LABEL_MAX_CHARS), summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS) };
     } catch {
