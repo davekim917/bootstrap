@@ -1024,6 +1024,7 @@ describe('a dev Render resource behind a wrapper', () => {
         ['nohup, with a pipe into head', `nohup render psql ${DEV_DB} -c 'select 1' | head -5`],
         ['nohup, with a pipe into tail', `nohup render psql ${DEV_DB} -c 'select 1' | tail -1`],
         ['a directory change, timeout and a pipe', `cd /tmp/rv; timeout 60 render psql ${DEV_DB} --command "select now()" -o json 2>&1 | head -20`],
+        ['a timed pipeline into head', `time render psql ${DEV_DB} -c 'select 1' | head -5`],
     ])('%s gets the dev hold, not the production gate', (_label, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(false);
@@ -1040,6 +1041,10 @@ describe('a dev Render resource behind a wrapper', () => {
         ['an interactive session', `timeout 60 render psql ${DEV_DB}`],
         ['a listed id only in a flag value, behind a wrapper', `timeout 60 render jobs create my-service --start-command "echo ${DEV}"`],
         ['a listed id only in a flag value', `render jobs create my-service --start-command "echo ${DEV}"`],
+        ['a SQL delete behind a wrapper', `timeout 60 render psql ${DEV_DB} -c 'delete from accounts' | head -5`],
+        ['a SQL insert behind a wrapper', `timeout 60 render psql ${DEV_DB} -c 'insert into accounts values (1)' | head -5`],
+        ['a select that calls a side-effecting function behind a wrapper', `timeout 60 render psql ${DEV_DB} -c 'select pg_terminate_backend(42)' | head -5`],
+        ['an interactive session in a timed pipeline into cat', `time render psql ${DEV_DB} | cat`],
     ])('%s keeps the production gate', (_label, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
@@ -1061,6 +1066,9 @@ describe('a dev Render resource behind a wrapper', () => {
         ['yarn exec', `yarn exec render restart ${DEV} --confirm`],
         ['yarn dlx', `yarn dlx render restart ${DEV} --confirm`],
         ['a package runner inside timeout', `timeout 60 npx render restart ${DEV} --confirm`],
+        ['a render named by path', `./render restart ${DEV} --confirm`],
+        ['a render named by path, behind a wrapper', `timeout 60 ./render restart ${DEV} --confirm`],
+        ['a render named by path, behind a wrapper in a substitution', `echo $(timeout 60 ./render restart ${DEV} --confirm)`],
     ])('%s is not exempt, and gets the production gate', (_label, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);

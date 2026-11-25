@@ -4358,7 +4358,7 @@ const RENDER_UNEXEMPT_WRAPPERS = new Set(['sudo', 'env', 'npx', 'bunx', 'pnpm', 
 function renderDevTarget(cmd: ResolvedCommand): string | null {
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
-    if ((cmd.env ?? []).length) return null;
+    if ((cmd.env ?? []).length || programCanDiffer(cmd)) return null;
     if ((cmd.wrappers ?? []).some(w => RENDER_UNEXEMPT_WRAPPERS.has(w))) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const args = renderLiteralArgs(cmd);
@@ -4378,8 +4378,48 @@ function renderExpansionsAreSql(cmd: ResolvedCommand): boolean {
         || (cmd.args[0] === 'psql' && /^(?:-c|--command)$/.test(cmd.args[i - 1] ?? '') && !a.startsWith('$') && !a.includes('@') && !!words[i].parts?.length && words[i].parts.every(quoted)));
 }
 
-// The line around a wrapped dev read: `cd <dir>;` steps before it, and after it stderr merged and a pipe into head or tail.
-const WRAPPED_READ_BEFORE = /^\s*(?:cd\s+[\w./~-]+\s*;\s*)*$/;
+// The line around a wrapped dev read: `cd <dir>;` steps and bash's `time` before it, and after it stderr merged and a
+// pipe into head or tail.
+const WRAPPED_READ_BEFORE = /^\s*(?:cd\s+[\w./~-]+\s*;\s*)*(?:time\s+(?:-p\s+)?)?$/;
+const TIMED_PIPELINE = /(?:^|[\s;&|(])time\s+(?:-p\s+)?$/;
+
+// SQL a wrapped dev read may run: statements that open as a query, with no word that writes, locks or runs a program,
+// and no function call outside these, none of which changes anything.
+const READ_SQL_OPENERS = /^(?:select|show|table|values|with)\b/;
+const SQL_NOT_READ = /\b(?:insert|update|delete|merge|upsert|into|copy|create|drop|alter|truncate|grant|revoke|call|do|lock|vacuum|analyze|refresh|set|reset|notify|listen|prepare|execute|declare|begin|commit|rollback|savepoint|cluster|reindex|comment|import|load|discard|checkpoint|for)\b/;
+const SQL_PURE_FUNCTIONS = new Set([
+    'abs', 'age', 'array_agg', 'avg', 'bool_and', 'bool_or', 'cast', 'ceil', 'char_length', 'coalesce', 'concat', 'count',
+    'current_database', 'current_schema', 'current_setting', 'date_part', 'date_trunc', 'extract', 'floor', 'greatest',
+    'json_agg', 'jsonb_agg', 'least', 'length', 'lower', 'max', 'min', 'now', 'nullif', 'pg_database_size',
+    'pg_relation_size', 'pg_size_pretty', 'pg_total_relation_size', 'round', 'string_agg', 'substr', 'substring', 'sum',
+    'to_char', 'to_timestamp', 'trim', 'upper', 'version',
+]);
+const SQL_PAREN_KEYWORDS = new Set([
+    'all', 'and', 'any', 'as', 'between', 'by', 'case', 'distinct', 'else', 'exists', 'filter', 'from', 'in', 'is', 'join',
+    'lateral', 'like', 'not', 'on', 'or', 'over', 'select', 'some', 'then', 'using', 'values', 'when', 'where', 'with', 'within',
+]);
+
+/** Whether `sql` provably only reads; anything it can't vouch for counts as a write. */
+function sqlOnlyReads(sql: string): boolean {
+    if (findDestructiveSqlStatement(sql)) return false;
+    const text = stripSqlLiteralsAndComments(sql).toLowerCase();
+    if (/["$\\]/.test(text) || SQL_NOT_READ.test(text)) return false;
+    const statements = text.split(';').map(s => s.trim()).filter(Boolean);
+    if (!statements.length || !statements.every(s => READ_SQL_OPENERS.test(s))) return false;
+    for (const call of text.matchAll(/([a-z_][\w.]*)\s*\(/g)) {
+        const name = call[1];
+        if (!SQL_PAREN_KEYWORDS.has(name) && !SQL_PURE_FUNCTIONS.has(name)) return false;
+    }
+    return true;
+}
+
+/** Whether bash's `time` keyword heads the pipeline this step is in; the parser keeps it off the step's own words. */
+function inTimedPipeline(cmd: ResolvedCommand): boolean {
+    const line = cmd.script?.command;
+    if (line === undefined) return false;
+    const at = cmd.pos ?? line.indexOf(cmd.raw);
+    return at > 0 && TIMED_PIPELINE.test(line.slice(0, at));
+}
 const WRAPPED_READ_AFTER = /^\s*(?:2>&1\s*)?(?:\|\s*(?:head|tail)(?:\s+(?:-n\s*)?-?\d+)?\s*)?$/;
 
 /**
@@ -4393,12 +4433,16 @@ function renderWrappedDevRead(cmd: ResolvedCommand): boolean {
     if (line === undefined || at < 0 || line.lastIndexOf(cmd.raw) !== at) return false;
     if (!WRAPPED_READ_BEFORE.test(line.slice(0, at)) || !WRAPPED_READ_AFTER.test(line.slice(at + cmd.raw.length))) return false;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
-    return renderDevRead(renderLiteralArgs(cmd), listed) !== null;
+    const args = renderLiteralArgs(cmd);
+    if (renderDevRead(args, listed) === null) return false;
+    if (args[0] !== 'psql') return true;
+    const sql = cmd.args.filter((_, i) => /^(?:-c|--command)$/.test(cmd.args[i - 1] ?? ''));
+    return sql.length === 1 && sqlOnlyReads(sql[0]);
 }
 
 /** The listed dev resources a held step acts on, when every resource it names is listed; null names no dev resource it can be sure of. */
 function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
-    const wrapped = !cmd.raw.startsWith(`${cmd.name} `);
+    const wrapped = !cmd.raw.startsWith(`${cmd.name} `) || inTimedPipeline(cmd);
     if ((wrapped && !renderWrappedDevRead(cmd)) || programCanDiffer(cmd)) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
