@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { findFreshSentinel } from './block-askuser-during-auto';
@@ -55,6 +55,38 @@ describe('the Claude launcher', () => {
         });
         expect(await proc.exited).toBe(2);
         expect(await new Response(proc.stderr).text()).toMatch(/file-protection|File protection/);
+    });
+});
+
+describe('the Claude launcher bun version gate', () => {
+    /** A PATH whose bun reports `version` to --version and runs the real bun for everything else. */
+    function bunReporting(version: string): Record<string, string | undefined> {
+        const bin = mkdtempSync(join(tmpdir(), 'run-hook-bun-'));
+        temporaryRoots.push(bin);
+        writeFileSync(join(bin, 'version'), version);
+        writeFileSync(join(bin, 'bun'), `#!${Bun.which('bash')}\nif [ "$1" = --version ]; then cat ${JSON.stringify(join(bin, 'version'))}; exit 0; fi\nexec ${JSON.stringify(Bun.which('bun'))} "$@"\n`);
+        chmodSync(join(bin, 'bun'), 0o755);
+        return { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+    }
+
+    async function launch(version: string): Promise<{ status: number; stderr: string }> {
+        const proc = Bun.spawn([join(import.meta.dir, '..', 'run-hook.sh'), 'guards/block-destructive.ts'], {
+            stdin: new Blob([JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo hi' } })]),
+            stdout: 'pipe',
+            stderr: 'pipe',
+            env: bunReporting(version),
+        });
+        return { status: await proc.exited, stderr: await new Response(proc.stderr).text() };
+    }
+
+    test.each([['1.3.3\n'], ['1.4.2'], ['1.4.2-canary.1\n'], ['1.4.2+abc'], ['2.0.0-beta\n']])('%j runs the hook', async (version) => {
+        expect((await launch(version)).status).toBe(0);
+    });
+
+    test.each([['1.3.2\n'], ['1.3.2-canary.1'], ['1.4'], ['canary'], ['']])('%j is refused before the hook runs', async (version) => {
+        const result = await launch(version);
+        expect(result.status).toBe(2);
+        expect(result.stderr).toMatch(/Bun 1\.3\.3 or newer/);
     });
 });
 
