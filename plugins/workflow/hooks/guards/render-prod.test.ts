@@ -974,6 +974,16 @@ describe('a held Render change says whether its target is listed as dev', () => 
         expect(summary).toContain(`\`${DEV}\` is listed as dev, but \`${PROD}\` is not, so treat it as production`);
     });
 
+    test.each([
+        ['a target read from a variable', `timeout 60 render psql "$DB" --command "select '${DEV_DB}'" -o json`],
+        ['a target read from a variable, on a change', `render jobs create $SRV --start-command "echo ${DEV}"`],
+        ['an unlisted target', `timeout 60 render psql ${PROD_DB} --command "select '${DEV_DB}'" -o json`],
+    ])('a listed id that is not the target does not make it dev (%s)', (_shape, command) => {
+        const { summary } = describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp');
+        expect(summary).toContain('not listed as dev, so treat it as production');
+        expect(summary).not.toContain('is listed as dev');
+    });
+
     test('the same form on an unlisted target still says it is not listed', () => {
         const command = `cd /tmp/rv; timeout 60 render psql ${PROD_DB} --command "select now()" -o json 2>&1 | head -20`;
         const { summary } = describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp');

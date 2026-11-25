@@ -7379,10 +7379,20 @@ function renderListing(cmd: ResolvedCommand): { on: string[]; off: string[] } {
 const listedNames = (list: string[]): string => `${list.map(id => code(id)).join(', ')} ${list.length > 1 ? 'are' : 'is'}`;
 
 /** A held Render change's card: a step on listed ids is held for its form, never for being unlisted. */
+/** renderListing for a render step whose own target is a listed id; null when the target is unlisted, unread or not one id. */
+function renderListedTarget(cmd: ResolvedCommand): { on: string[]; off: string[] } | null {
+    if (cmd.name !== 'render') return null;
+    const shape = renderShape(cmd.args);
+    const target = shape ? (shape.operands.length === 1 ? shape.operands[0] : undefined) : cmd.args[1];
+    const listing = renderListing(cmd);
+    return target !== undefined && listing.on.includes(target) ? listing : null;
+}
+
 function renderChangeEffect(cmd: ResolvedCommand): [effect: string, loss: string] {
-    const { on, off } = renderListing(cmd);
     const [unlisted, loss] = GENERIC_EFFECTS.render;
-    if (!on.length) return [unlisted, loss];
+    const listing = renderListedTarget(cmd);
+    if (!listing) return [unlisted, loss];
+    const { on, off } = listing;
     const why = off.length ? `${listedNames(off)} not` : "the guard can't confirm this form stays on it";
     return [`Changes the Render service, database or job named in the step below: ${listedNames(on)} listed as dev, but ${why}, so treat it as production.`, loss];
 }
@@ -7639,10 +7649,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
         const prodChange = (step: GatedStep): boolean => onProduction(step) && !heldRead(step);
         const prodSteps = gated.filter(prodChange);
         if (prodSteps.length && !lines[0].includes('treat it as production')) {
-            const onlyListed = prodSteps.every(step => {
-                const { on, off } = renderListing(step.cmd);
-                return on.length > 0 && off.length === 0;
-            });
+            const onlyListed = prodSteps.every(step => renderListedTarget(step.cmd)?.off.length === 0);
             lines.unshift(onlyListed
                 ? "Treat this as production: its target is listed as dev, but the guard can't confirm the step stays on it."
                 : 'Treat this as production: its target is not listed as dev.', '');
