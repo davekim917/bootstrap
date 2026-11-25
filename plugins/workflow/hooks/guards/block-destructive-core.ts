@@ -4482,6 +4482,7 @@ const SNOW_SQL_BARE_FLAGS = new Set(['--silent', '--verbose', '--debug', '--enha
 // Wrappers that leave the command's user and environment alone (`sudo` and `env` do not, so they never qualify).
 const SAFE_WRAPPERS_PREFIX = String.raw`^(?:(?:g?timeout\s+\d+(?:\.\d+)?[smhd]?|nohup|time)\s+)*`;
 const SNOW_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}snow\\s`);
+const RENDER_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}render\\s`);
 // Commands that change what a later command sees: its environment, or code it sources.
 const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare', 'typeset', 'env', 'eval', 'readonly', 'local', 'alias', 'unset', 'read', 'mapfile', 'readarray', 'getopts', 'let', 'trap']);
 
@@ -7385,11 +7386,11 @@ function renderTargetClaim(cmd: ResolvedCommand): RenderTargetClaim {
     const { on, off } = renderListing(cmd);
     const shape = cmd.name === 'render' ? renderShape(cmd.args) : null;
     const literal = cmd.name === 'render' ? renderLiteralArgs(cmd) : cmd.args;
-    const target = shape?.entry.kind === 'proof' && shape.operands.length === 1 ? shape.operands[0]
+    const target = shape?.operands.length === 1 ? shape.operands[0]
         : cmd.name === 'render' ? renderDevRead(literal, new Set(renderResourceIds(literal))) ?? undefined : undefined;
     if (!on.length || (target !== undefined && RENDER_RESOURCE_ID_RE.test(target) && !on.includes(target))) return { kind: 'unlisted', on, off };
     const proven = target !== undefined && on.includes(target) && !cmd.args.some(a => a.includes('\\'))
-        && renderExpansionsAreSql(cmd) && !programCanDiffer(cmd);
+        && RENDER_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw) && renderExpansionsAreSql(cmd) && !programCanDiffer(cmd);
     if (!proven) return { kind: 'unproven', on, off };
     return { kind: off.length ? 'mixed' : 'dev', on, off };
 }
@@ -7412,11 +7413,11 @@ function renderChangeEffect(cmd: ResolvedCommand): [effect: string, loss: string
 }
 
 function renderReadEffect(cmd: ResolvedCommand, reason: string): [effect: string, loss: string] {
-    const { on, off } = renderListing(cmd);
-    const where = !on.length && !off.length ? ''
-        : !off.length ? ' Its target is listed as dev.'
-        : !on.length ? ' Its target is not listed as dev, so treat it as production.'
-        : ` ${listedNames(on)} listed as dev, but ${listedNames(off)} not, so treat it as production.`;
+    const { kind, on, off } = renderTargetClaim(cmd);
+    const where = kind === 'dev' ? ' Its target is listed as dev.'
+        : kind === 'mixed' ? ` Treat it as production: ${listedNames(off)} not listed as dev, though ${listedNames(on)}.`
+        : kind === 'unproven' ? " The guard can't confirm which resource it reads, so treat it as production."
+        : on.length || off.length ? ' Its target is not listed as dev, so treat it as production.' : '';
     const why = reason.includes('interactive menu')
         ? 'with no plain output (-o json, yaml or text) it can open an interactive menu that deploys'
         : "the guard can't account for every word on the line, so it can't rule out a different command";
