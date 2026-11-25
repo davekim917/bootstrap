@@ -332,6 +332,11 @@ describe('Codex protected edits', () => {
     expectDecision(result, 'deny', reason);
   });
 
+  test('denies a shell write into a protected file and allows one into an ordinary file', async () => {
+    expectDecision(await runGuard(shell('echo EXAMPLE=1 > .env')), 'deny', /file-protection — '\.env'/);
+    expect((await runGuard(shell('echo note > notes.txt'))).output).toEqual({ continue: true });
+  });
+
   test('allows ordinary edits', async () => {
     const result = await runGuard({
       hook_event_name: 'PreToolUse',

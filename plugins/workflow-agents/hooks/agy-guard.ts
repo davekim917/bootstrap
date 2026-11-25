@@ -13,8 +13,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpat
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, resolve, sep } from 'path';
 import { decideToolCall, type ToolCall, type Verdict } from './guard-policy';
-import { extractCommands, walkCommandNodes } from './guards/block-destructive-core';
-import { parseShell } from './guards/gate-card-core';
+import { extractCommands, lineRedirectWrites } from './guards/block-destructive-core';
 import { evaluateEmailToolCall } from './guards/email-gate-core';
 
 export const AGY_APPROVAL_HANDOFF =
@@ -402,51 +401,15 @@ function readsOnly(command: string): boolean {
             || (step.name === 'git' && READ_ONLY_GIT.has(step.args[0] ?? '') && !step.args.some((arg) => arg.startsWith('--output')))));
 }
 
-const WRITING_REDIRECTS = new Set(['>', '>>', '>|', '&>', '&>>', '<>', '>&']);
-
-/**
- * The statements and compound commands of the script, whose own redirects (`(…) 2> f`, `{ …; } > f`, `done 2> f`)
- * apply to everything inside them. The shared walker yields only simple commands; this follows the same structural
- * fields it does, and leaves words and substitutions to it.
- */
-function compoundNodes(node: unknown, out: Array<{ redirects?: unknown }> = []): Array<{ redirects?: unknown }> {
-    if (Array.isArray(node)) {
-        for (const item of node) compoundNodes(item, out);
-        return out;
-    }
-    if (!node || typeof node !== 'object') return out;
-    const value = node as Record<string, unknown> & { type?: unknown; items?: unknown; redirects?: unknown };
-    if (value.type === 'Command') return out;
-    out.push(value);
-    for (const key of ['commands', 'command', 'body', 'clause', 'then', 'else']) compoundNodes(value[key], out);
-    if (Array.isArray(value.items)) for (const item of value.items) compoundNodes((item as { body?: unknown })?.body, out);
-    return out;
-}
-
-/**
- * Every file a simple command's redirect may write, on any file descriptor, found by the walker `extractCommands`
- * uses, so commands inside `$(…)`, backticks and process substitutions count too.
- */
-function redirectTargets(command: string): string[] | null {
-    let commands: Array<{ redirects?: unknown }>;
-    try {
-        const script = parseShell(command);
-        commands = [...walkCommandNodes(script), ...compoundNodes(script)];
-    } catch {
-        return null;
-    }
-    return commands.flatMap((node) => (Array.isArray(node.redirects) ? node.redirects : []).flatMap((redirect: unknown) => {
-        const { operator, target } = (redirect ?? {}) as { operator?: string; target?: { value?: unknown; text?: unknown } };
-        const value = String(target?.value ?? target?.text ?? '');
-        // `>&2` and `>&-` duplicate or close a descriptor; any other `>&` target is a file.
-        return operator && WRITING_REDIRECTS.has(operator) && !(operator === '>&' && /^(?:\d+|-)$/.test(value)) ? [value] : [];
-    }));
-}
-
 /** True when a word or redirect target of the command line names a hook-config location through a symlink. */
 function aliasesProtectedPath(command: string, roots: string[], rootOnlyDirs: string[]): boolean {
     const steps = stepsOf(command);
-    const redirects = redirectTargets(command);
+    let redirects: string[] | null;
+    try {
+        redirects = lineRedirectWrites(command).map((write) => write.target);
+    } catch {
+        redirects = null;
+    }
     // A line the parser cannot read is refused by the policy behind this check.
     if (steps === null || redirects === null) return false;
     return [...steps.flatMap((step) => step.args), ...redirects].some((word) =>

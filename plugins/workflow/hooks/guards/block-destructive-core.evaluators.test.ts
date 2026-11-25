@@ -1,4 +1,4 @@
-import { describe, test, expect, mock, afterEach } from 'bun:test';
+import { describe, test, expect, mock, afterAll, afterEach } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -557,5 +557,127 @@ describe('apply_patch run from the shell', () => {
         ['a path that leaves terraform/ again', "apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: terraform/../notes.txt\n+x\n*** End Patch\nEOF"],
     ])('allows %s', (_name, command) => {
         expect(evaluateBashCommand(command, { skipGate: true, cwd: '/tmp' }).action).toBe('allow');
+    });
+});
+
+describe('a shell write into a protected file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'shell-write-protect-'));
+    mkdirSync(join(root, 'config'));
+    afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+    test.each([
+        ['a redirect', 'echo EXAMPLE=1 > .env', '.env'],
+        ['an append', "printf 'EXAMPLE=1\\n' >> .env.local", '.env.local'],
+        ['a clobbering redirect', 'echo EXAMPLE=1 >| .env', '.env'],
+        ['a stderr redirect', 'npm view example-pkg 2> package-lock.json', 'package-lock.json'],
+        ['a both-streams redirect', 'echo EXAMPLE=1 &> .env', '.env'],
+        ['a both-streams append', 'echo EXAMPLE=1 &>> .env', '.env'],
+        ['>& onto a file', 'echo EXAMPLE=1 >& .env', '.env'],
+        ['a read-write redirect', 'exec 3<> .env', '.env'],
+        ['a redirect with no command', '> .env', '.env'],
+        ['an append with no command', '>> yarn.lock', 'yarn.lock'],
+        ['a redirect on :', ': > .env', '.env'],
+        ['a redirect on a group', '{ echo A=1; echo B=2; } > .env', '.env'],
+        ['a redirect on a loop', 'for k in A B; do echo $k=1; done >> .env', '.env'],
+        ['a redirect on a subshell', '( echo A=1 ) > .env', '.env'],
+        ['a redirect on an if', 'if true; then echo A=1; fi > .env', '.env'],
+        ['a heredoc written to the file', "cat > .env <<'EOF'\nEXAMPLE=1\nEOF", '.env'],
+        ['a redirect inside $( )', 'echo "$(echo EXAMPLE=1 > .env)"', '.env'],
+        ['a redirect with no command inside $( )', 'echo "$(> .env)"', '.env'],
+        ['a quoted target', "echo EXAMPLE=1 > './.env'", './.env'],
+        ['a relative target after cd .git', 'cd .git && echo x > config', 'config'],
+        ['tee', 'echo EXAMPLE=1 | tee .env', '.env'],
+        ['tee -a', 'tee -a .env < notes.txt', '.env'],
+        ['dd of=', 'echo EXAMPLE=1 | dd of=.env status=none', '.env'],
+        ['sed -i', "sed -i 's/A=1/A=2/' .env", '.env'],
+        ['sed -i with a suffix and -e', 'sed -i.bak -e s/A/B/ .env.production', '.env.production'],
+        ['sed --in-place=', "sed --in-place=.orig 's/a/b/' pnpm-lock.yaml", 'pnpm-lock.yaml'],
+        ['sed with -i in a cluster', "sed -ni 's/a/b/p' .env", '.env'],
+        ["BSD sed -i ''", "sed -i '' 's/a/b/' .env", '.env'],
+        ['cp onto the file', 'cp .env.example .env', '.env'],
+        ['cp into .', 'cp /tmp/staged/.env .', '.env'],
+        ['cp -t', 'cp -t . /tmp/staged/.env', '.env'],
+        ['mv onto the file', 'mv notes.txt .env', '.env'],
+        ['mv of the file itself', 'mv .env notes.txt', '.env'],
+        ['mv into ./', 'mv /tmp/staged/yarn.lock ./', 'yarn.lock'],
+    ])('blocks %s', (_name, command, path) => {
+        const v = evaluateBashCommand(command, { skipGate: true, cwd: '/tmp' });
+        expect(v.action).toBe('block');
+        expect(v.reason).toBe(`file-protection — '${path}' is protected from automated edits.`);
+    });
+
+    test.each([
+        ['a redirect', '(cd terraform && pwd); printf x > out.txt'],
+        ['tee', '(cd terraform && pwd); printf x | tee out.txt'],
+        ['sed -i', "(cd terraform && pwd); sed -i 's/a/b/' out.txt"],
+        ['cp', '(cd terraform && pwd); cp in.txt out.txt'],
+        ['mv', '(cd terraform && pwd); mv in.txt out.txt'],
+        ['apply_patch', "(cd terraform && pwd); apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: out.txt\n+x\n*** End Patch\nEOF"],
+        ['a redirect after a cd in a pipeline stage', 'cd terraform | cat; printf x > out.txt'],
+        ['a redirect after a cd in $( )', 'd=$(cd terraform && pwd); printf x > out.txt'],
+    ])("a subshell's cd does not move %s after it", (_name, command) => {
+        expect(evaluateBashCommand(command, { skipGate: true, cwd: '/repo' }).action).toBe('allow');
+    });
+
+    test.each([
+        ['a redirect inside the subshell', '(cd terraform && printf x > main.tf)', 'main.tf'],
+        ['a redirect after the subshell, past a cd of its own', '(cd /tmp); cd terraform && printf x > main.tf', 'main.tf'],
+        ['a write inside $( ) after a cd there', 'echo "$(cd .git && echo x > config)"', 'config'],
+    ])('a cd still counts for %s', (_name, command, path) => {
+        expect(evaluateBashCommand(command, { skipGate: true, cwd: '/repo' }).reason).toBe(`file-protection — '${path}' is protected from automated edits.`);
+    });
+
+    test('a line whose writes the parser cannot read is refused', () => {
+        const v = evaluateBashCommand('{ '.repeat(20000) + 'echo x; ' + '} '.repeat(20000) + '> .env', { skipGate: true, cwd: '/tmp' });
+        expect(v.action).toBe('block');
+        expect(v.reason).toMatch(/can't read/);
+    });
+
+    test('cp run by find -exec', () => {
+        const v = evaluateBashCommand('find /tmp/staged -name x -exec cp {} .env \\;', { skipGate: true, cwd: '/tmp' });
+        expect(v.reason).toBe("find -exec runs a blocked command. file-protection — '.env' is protected from automated edits.");
+    });
+
+    test('a relative redirect is placed against the working directory', () => {
+        const v = evaluateBashCommand('echo x > main.tf', { skipGate: true, cwd: '/repo/terraform' });
+        expect(v.reason).toBe("file-protection — 'main.tf' is protected from automated edits.");
+    });
+
+    test('cp into an existing directory writes the source name there', () => {
+        const v = evaluateBashCommand('cp /tmp/staged/.env config', { skipGate: true, cwd: root });
+        expect(v.reason).toBe("file-protection — 'config/.env' is protected from automated edits.");
+        expect(evaluateBashCommand('cp /tmp/staged/.env backup.txt', { skipGate: true, cwd: root }).action).toBe('allow');
+    });
+
+    test.each([
+        ['a redirect to an ordinary file', 'echo hi > notes.txt'],
+        ['stderr onto stdout, then /dev/null', 'echo x 2>&1 > /dev/null'],
+        ['>&2', 'echo x >&2'],
+        ['a build log', 'make 2> build.log'],
+        ['reading the file', 'cat .env'],
+        ['sed without -i', 'sed -n p .env'],
+        ['sed output redirected elsewhere', "sed 's/a/b/' .env > notes.txt"],
+        ['sed -i whose script names .env', "sed -i 's/.env/x/' README.md"],
+        ['an allowed template', 'echo EXAMPLE= > .env.example'],
+        ['.gitignore', 'echo node_modules >> .gitignore'],
+        ['a heredoc that mentions .env', "cat > notes.txt <<'EOF'\nsee .env\nEOF"],
+        ['a relative redirect after cd src', 'cd src && echo x > a.ts'],
+        ['tee to an ordinary file', 'echo x | tee notes.txt'],
+        ['dd to an ordinary file', 'echo x | dd of=out.bin status=none'],
+        ['grep of the file into another', 'grep EXAMPLE .env > keys.txt'],
+        ['cp of an ordinary file into a directory', 'cp notes.txt out/'],
+        ['process substitutions', 'diff <(sort a.txt) <(sort b.txt) > d.txt'],
+    ])('allows %s', (_name, command) => {
+        expect(evaluateBashCommand(command, { skipGate: true, cwd: '/tmp' }).action).toBe('allow');
+    });
+
+    test('SKIP_FILE_PROTECTION=1 lets the write through', () => {
+        process.env.SKIP_FILE_PROTECTION = '1';
+        try {
+            expect(evaluateBashCommand('echo EXAMPLE=1 > .env', { skipGate: true, cwd: '/tmp' }).action).toBe('allow');
+            expect(evaluateBashCommand("sed -i 's/a/b/' .env", { skipGate: true, cwd: '/tmp' }).action).toBe('allow');
+        } finally {
+            delete process.env.SKIP_FILE_PROTECTION;
+        }
     });
 });
