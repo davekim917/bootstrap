@@ -10,9 +10,9 @@
  * surface (a native permission prompt, a chat card, a hand-off message).
  */
 import { createHash } from 'crypto';
-import { closeSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'fs';
+import { closeSync, lstatSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, rmSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
-import { extname, resolve as pathResolve, sep } from 'path';
+import { dirname, extname, join, resolve as pathResolve, sep } from 'path';
 import { parse } from 'unbash';
 
 // Short enough for the tightest known surface: NanoClaw posts it into a Slack
@@ -1161,16 +1161,13 @@ export function signatureOnFile(account: string | null, dir: string): string | n
 }
 
 /**
- * The account and mailbox the host recorded for exactly these credential bytes, or null. The host writes
- * `identities.json` (sha256 of a credentials file → its account and primary address) only for credentials it read the
- * mailbox with, so a renamed, copied or replaced file maps to its real account or to nothing.
+ * The account and mailbox the host recorded for the credential bytes with this sha256 (`gwsCredentials`), or null. The
+ * host writes `identities.json` (sha256 of a credentials file → its account and primary address) only for credentials
+ * it read the mailbox with, so a renamed, copied or replaced file maps to its real account or to nothing.
  */
-export function senderOnFile(credentialsFile: string | null, dir: string): { account: string; mailbox: string } | null {
-    if (!credentialsFile?.startsWith('/')) return null;
+export function senderOnFile(hash: string | null, dir: string): { account: string; mailbox: string } | null {
+    if (hash === null) return null;
     try {
-        const creds = statSync(credentialsFile);
-        if (!creds.isFile() || creds.size > 64 * 1024) return null;
-        const hash = createHash('sha256').update(readFileSync(credentialsFile)).digest('hex');
         const path = `${dir}/identities.json`;
         const map = lstatSync(path);
         if (!map.isFile() || map.size > 1024 * 1024) return null;
@@ -1183,6 +1180,128 @@ export function senderOnFile(credentialsFile: string | null, dir: string): { acc
             : null;
     } catch {
         return null;
+    }
+}
+
+// gws 0.22.5 (auth.rs) loads a credentials file ahead of the login in its config directory (load_credentials_inner), but takes the access
+// token from that directory's cache: token_cache.json for a user login unless a proxy variable is set, and
+// sa_token_cache.json for a service account, proxy or not. The caches are keyed by scopes alone, so a token cached for
+// another account is used in place of the credentials file's own.
+
+/** The config directory gws uses when the command sets none, found as gws 0.22.5 finds it (auth_commands.rs). */
+export function defaultGwsConfigDir(cwd?: string, platform: string = process.platform): string {
+    const named = process.env.GOOGLE_WORKSPACE_CLI_CONFIG_DIR;
+    if (named !== undefined) return pathResolve(cwd ?? '.', named);
+    // gws (the dirs crate) takes $HOME before the password database.
+    const home = process.env.HOME || homedir();
+    const primary = join(home, '.config', 'gws');
+    const xdg = process.env.XDG_CONFIG_HOME;
+    const config = platform === 'darwin' ? join(home, 'Library', 'Application Support')
+        : xdg?.startsWith('/') ? xdg : join(home, '.config');
+    const legacy = join(config, 'gws');
+    return present(primary) || !present(legacy) ? primary : legacy;
+}
+
+function present(path: string): boolean {
+    try {
+        lstatSync(path);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function absent(error: unknown): boolean {
+    const reason = (error as { code?: string }).code;
+    return reason === 'ENOENT' || reason === 'ENOTDIR';
+}
+
+export interface GwsCredentials {
+    /** The login the file holds, which decides the cache gws reads for it; null when it can't be read. */
+    kind: 'service_account' | 'user' | null;
+    /** sha256 of the file's bytes; null when it can't be read. */
+    hash: string | null;
+}
+
+export function gwsCredentials(file: string): GwsCredentials {
+    try {
+        const stat = statSync(file);
+        if (!stat.isFile() || stat.size > 64 * 1024) return { kind: null, hash: null };
+        const bytes = readFileSync(file);
+        const hash = createHash('sha256').update(bytes).digest('hex');
+        try {
+            const type = (JSON.parse(bytes.toString('utf8')) as { type?: unknown } | null)?.type;
+            return { kind: type === 'service_account' ? 'service_account' : 'user', hash };
+        } catch {
+            return { kind: null, hash };
+        }
+    } catch {
+        return { kind: null, hash: null };
+    }
+}
+
+/** True when gws refreshes a user login directly through the proxy, without its token cache (auth.rs has_proxy_env). */
+export function gwsProxySet(): boolean {
+    return Boolean(process.env.http_proxy || process.env.HTTP_PROXY || process.env.https_proxy || process.env.HTTPS_PROXY
+        || process.env.all_proxy || process.env.ALL_PROXY);
+}
+
+/**
+ * The token caches in `dir`, as the kernel resolves it, that gws would send with for credentials of `kind` (null: not
+ * known, so both count); null when the gate can't tell. A missing directory holds none. A login there (credentials.enc,
+ * client_secret.json) does not count: gws loads the credentials file ahead of it.
+ */
+export function gwsCachesFor(dir: string, kind: 'service_account' | 'user' | null): string[] | null {
+    let real: string;
+    try {
+        real = realpathSync(dir);
+    } catch (error) {
+        return absent(error) ? [] : null;
+    }
+    const names = [
+        ...(kind !== 'service_account' && !gwsProxySet() ? ['token_cache.json'] : []),
+        ...(kind !== 'user' ? ['sa_token_cache.json'] : []),
+    ];
+    const held: string[] = [];
+    for (const name of names) {
+        try {
+            lstatSync(join(real, name));
+            held.push(name);
+        } catch (error) {
+            if (!absent(error)) return null;
+        }
+    }
+    return held;
+}
+
+/**
+ * Why gws would not create `dir` fresh at exactly that path: it already exists, it is not written the way the kernel
+ * resolves it (`.`, `..`, a repeated or trailing slash), or a directory on the way is a symlink. Null when it would.
+ */
+export function freshDirProblem(dir: string): 'exists' | 'indirect' | 'unreadable' | null {
+    if (pathResolve(dir) !== dir) return 'indirect';
+    try {
+        lstatSync(dir);
+        return 'exists';
+    } catch (error) {
+        if ((error as { code?: string }).code !== 'ENOENT') return absent(error) ? 'indirect' : 'unreadable';
+    }
+    for (let at = dirname(dir); ; at = dirname(at)) {
+        try {
+            return realpathSync(at) === at ? null : 'indirect';
+        } catch (error) {
+            if ((error as { code?: string }).code !== 'ENOENT') return 'unreadable';
+        }
+    }
+}
+
+/** `run` given a new empty directory, which is removed after. */
+export function inEmptyDir<T>(run: (dir: string) => T): T {
+    const dir = mkdtempSync(join(tmpdir(), 'gws-read-'));
+    try {
+        return run(dir);
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
     }
 }
 

@@ -13,8 +13,8 @@ receives security, rollback, and verification depth.
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.49.2 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.50.1 | The same, runtime-neutral |
+| Claude Code | `bootstrap-workflow` | 5.49.3 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.50.2 | The same, runtime-neutral |
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.8.3 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.6.0 | Boris Cherny-inspired engineering-judgment advisory skill, invoked by name or description |
 | Claude Code / Codex | `wwed` | 1.2.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill, invoked by name or description; pairs with `wwbd` |

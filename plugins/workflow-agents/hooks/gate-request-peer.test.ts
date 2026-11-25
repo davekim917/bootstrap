@@ -100,6 +100,7 @@ const SENDS: Record<string, string> = {
     'quoted body variable': `${CREDS}\nBODY='Hi Pat,\n\nCan you confirm the file works?'\n${SEND} --to pat@example.com --subject Hi --body "$BODY"`,
     'inline body': `${CREDS}\n${SEND} --to pat@example.com --subject Hi --body 'Can you confirm the file works?'`,
     'prefixed credentials': `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${accounts}/example-co.json ${SEND} --to pat@example.com --subject Hi --body 'Short note.'`,
+    'config dir beside credentials': `GOOGLE_WORKSPACE_CLI_CONFIG_DIR=${root}/send-1 GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE=${accounts}/example-co.json ${SEND} --to pat@example.com --subject Hi --body 'Short note.'`,
     'reply': `${CREDS}\nBODY='Thanks, confirmed.'\n${['gws', 'gmail', '+reply'].join(' ')} --message-id 18f0aa11bb22cc33 --body "$BODY"`,
     'forward': `${CREDS}\n${['gws', 'gmail', '+forward'].join(' ')} --message-id 18f0aa11bb22cc33 --to lee@example.com`,
 };
