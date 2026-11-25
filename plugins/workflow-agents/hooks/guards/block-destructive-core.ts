@@ -82,6 +82,7 @@ export interface ResolvedCommand {
     argsAreValues?: boolean;    // pos is not this command's own, so its args are expanded from their values, not the view's words
     expandAs?: ResolvedCommand[] | null; // inside `$(…)`: the views its words expand in; null past the cap, so they're unknown
     script?: ScriptContext;     // what the whole command line shows, shared by its commands
+    wrappers?: string[];        // the wrapper commands stripped to reach `name`, outermost first
 }
 
 /** Facts about the whole command line that a single step's checks need. */
@@ -2794,11 +2795,12 @@ function splitEnvString(text: string): string[] | null {
  * assignments and `env -C` directory picked up on the way. Shared by the top-level resolver and by the commands
  * xargs and find -exec run, so a wrapper is unwrapped the same way wherever it appears.
  */
-export function stripWrappers(word: string, rest: string[]): { name: string; args: string[]; env: string[]; chdir?: string } {
+export function stripWrappers(word: string, rest: string[]): { name: string; args: string[]; env: string[]; chdir?: string; wrappers: string[] } {
     let name = commandName(word);
     let args = rest;
     let chdir: string | undefined;
     const env: string[] = [];
+    const wrappers: string[] = [];
     // Resolve through wrapper commands
     while (WRAPPERS.has(name) && args.length > 0) {
         let skip = 0;
@@ -2901,10 +2903,11 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
 
         if (skip >= args.length) break;
 
+        wrappers.push(name);
         name = commandName(args[skip]);
         args = args.slice(skip + 1);
     }
-    return { name, args, env, ...(chdir !== undefined ? { chdir } : {}) };
+    return { name, args, env, wrappers, ...(chdir !== undefined ? { chdir } : {}) };
 }
 
 const BRACE_EXPANSION_MAX = 1024;
@@ -3032,6 +3035,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         raw: rawParts.join(' '),
         env,
         ...(chdir !== undefined ? { chdir } : {}),
+        ...(stripped.wrappers.length ? { wrappers: stripped.wrappers } : {}),
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
         ...(stdinTexts.length ? { stdinTexts } : {}),
@@ -3439,8 +3443,8 @@ export function commandLineOf(command: unknown): string {
 function innerCommand(words: string[], outer: ResolvedCommand): ResolvedCommand | null {
     const [first, ...rest] = words;
     if (first === undefined) return null;
-    const { name, args, env, chdir } = stripWrappers(first, rest);
-    return { name, args, raw: outer.raw, env, ...(chdir !== undefined ? { chdir } : {}), hasInputRedirect: false };
+    const { name, args, env, chdir, wrappers } = stripWrappers(first, rest);
+    return { name, args, raw: outer.raw, env, ...(chdir !== undefined ? { chdir } : {}), ...(wrappers.length ? { wrappers } : {}), hasInputRedirect: false };
 }
 
 /**
@@ -4355,30 +4359,11 @@ function programCanDiffer(cmd: ResolvedCommand): boolean {
 // edited environment (as `snow sql` refuses them), and a package runner can run a different program named render.
 const RENDER_UNEXEMPT_WRAPPERS = new Set(['sudo', 'env', 'npx', 'bunx', 'pnpm', 'yarn']);
 
-/** The words before `render` on its own command, or null when the guard can't line them up with what runs. */
-function renderWrapperWords(cmd: ResolvedCommand): string[] | null {
-    if (cmd.raw.startsWith('render ')) return [];
-    const script = cmd.script;
-    if (!script || cmd.pos === undefined) return null;
-    let node: any;
-    try {
-        node = walkCommandNodes(parseShell(script.command)).find(n => n.pos === cmd.pos);
-    } catch {
-        return null;
-    }
-    if (!node?.name) return null;
-    const words = [node.name, ...(node.suffix ?? [])].map(wordValue);
-    const at = words.length - cmd.args.length - 1;
-    if (at < 0 || commandName(words[at]) !== 'render' || words.slice(at + 1).some((w, i) => w !== cmd.args[i])) return null;
-    return words.slice(0, at);
-}
-
 function renderDevTarget(cmd: ResolvedCommand): string | null {
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
     if ((cmd.env ?? []).length) return null;
-    const wrappers = renderWrapperWords(cmd);
-    if (!wrappers || wrappers.some(w => RENDER_UNEXEMPT_WRAPPERS.has(commandName(w)))) return null;
+    if ((cmd.wrappers ?? []).some(w => RENDER_UNEXEMPT_WRAPPERS.has(w))) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const args = renderLiteralArgs(cmd);
     const accepts = (r: string) => listed.has(r);
@@ -4397,10 +4382,28 @@ function renderExpansionsAreSql(cmd: ResolvedCommand): boolean {
         || (cmd.args[0] === 'psql' && /^(?:-c|--command)$/.test(cmd.args[i - 1] ?? '') && !a.startsWith('$') && !a.includes('@') && !!words[i].parts?.length && words[i].parts.every(quoted)));
 }
 
+// The line around a wrapped dev read: `cd <dir>;` steps before it, and after it stderr merged and a pipe into head or tail.
+const WRAPPED_READ_BEFORE = /^\s*(?:cd\s+[\w./~-]+\s*;\s*)*$/;
+const WRAPPED_READ_AFTER = /^\s*(?:2>&1\s*)?(?:\|\s*(?:head|tail)(?:\s+(?:-n\s*)?-?\d+)?\s*)?$/;
+
+/**
+ * Whether a render step behind a wrapper may take the dev hold: only `timeout <n>`, `nohup` or `time` before it, a
+ * read the guard knows (`renderDevRead`) on a listed resource, and nothing else on the line but the shapes above.
+ */
+function renderWrappedDevRead(cmd: ResolvedCommand): boolean {
+    if (cmd.name !== 'render' || !RENDER_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return false;
+    const line = cmd.script?.command;
+    const at = line?.indexOf(cmd.raw) ?? -1;
+    if (line === undefined || at < 0 || line.lastIndexOf(cmd.raw) !== at) return false;
+    if (!WRAPPED_READ_BEFORE.test(line.slice(0, at)) || !WRAPPED_READ_AFTER.test(line.slice(at + cmd.raw.length))) return false;
+    const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    return renderDevRead(renderLiteralArgs(cmd), listed) !== null;
+}
+
 /** The listed dev resources a held step acts on, when every resource it names is listed; null names no dev resource it can be sure of. */
 function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
-    const leads = cmd.name === 'render' ? RENDER_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw) : cmd.raw.startsWith(`${cmd.name} `);
-    if (!leads || programCanDiffer(cmd)) return null;
+    const wrapped = !cmd.raw.startsWith(`${cmd.name} `);
+    if ((wrapped && !renderWrappedDevRead(cmd)) || programCanDiffer(cmd)) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
     if (!ids.length || !ids.every(id => listed.has(id))) return null;
@@ -4409,7 +4412,9 @@ function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | 
     if (cmd.name === 'render') {
         if (!renderExpansionsAreSql(cmd)) return null;
         const shape = renderShape(cmd.args);
-        return (shape ? shape.entry.kind === 'proof' && shape.operands.length === 1 : !RENDER_EXPANDS.test(cmd.args[0]) && listed.has(cmd.args[1])) ? ids : null;
+        const target = shape ? (shape.entry.kind === 'proof' && shape.operands.length === 1 ? shape.operands[0] : undefined)
+            : RENDER_EXPANDS.test(cmd.args[0]) ? undefined : cmd.args[1];
+        return target !== undefined && listed.has(target) ? ids : null;
     }
     if (RENDER_API_CLIENTS.has(cmd.name)) return runsAlone(cmd) && curlWordsAreKnown(cmd, RENDER_API_ANY_RESOURCE) ? ids : null;
     return pgStaysOnListedHost(cmd, ids, psqlrcAllowed) ? ids : null;

@@ -979,16 +979,11 @@ describe('a held Render change says whether its target is listed as dev', () => 
     });
 
     test.each([
+        [`timeout 60 render psql ${DEV_DB} --command "select 1" -o json`, "Treat this as production: its target is listed as dev, but the guard can't confirm the step stays on it."],
         [passthrough, "Treat this as production: the guard can't confirm which resource it reaches."],
         [`timeout 60 render psql ${PROD_DB} --command "select 1" -o json`, 'Treat this as production: its target is not listed as dev.'],
     ])('the headline over a first step that is not Render follows what the guard proved: %s', (step, headline) => {
         expect(card(`docker volume rm data; ${step}`)).toStartWith(headline);
-    });
-
-    test('a listed target on the dev hold puts no production headline over a first step that is not Render', () => {
-        const summary = card(`docker volume rm data; timeout 60 render psql ${DEV_DB} --command "select 1" -o json | tail -1`);
-        expect(summary).toStartWith('Runs `docker volume rm`');
-        expect(summary).not.toContain('Treat this as production');
     });
 
     test('a change naming a listed and an unlisted target warns before either list', () => {
@@ -1039,6 +1034,12 @@ describe('a dev Render resource behind a wrapper', () => {
         ['env', `env timeout 60 render psql ${DEV_DB} -c 'select 1' | head -5`],
         ['psql arguments after --', `timeout 60 render psql ${DEV_DB} -o text -- -At -f /tmp/rv/t.sql`],
         ['sudo inside timeout', `timeout 60 sudo render psql ${DEV_DB} -c 'select 1' | head -5`],
+        ['a pipe into a program other than head or tail', `timeout 60 render psql ${DEV_DB} -c 'select 1' | cat`],
+        ['a step chained before it', `true && timeout 60 render psql ${DEV_DB} -c 'select 1'`],
+        ['another step before it', `docker volume rm data; timeout 60 render psql ${DEV_DB} -c 'select 1' | tail -1`],
+        ['an interactive session', `timeout 60 render psql ${DEV_DB}`],
+        ['a listed id only in a flag value, behind a wrapper', `timeout 60 render jobs create my-service --start-command "echo ${DEV}"`],
+        ['a listed id only in a flag value', `render jobs create my-service --start-command "echo ${DEV}"`],
     ])('%s keeps the production gate', (_label, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
@@ -1070,6 +1071,7 @@ describe('a dev Render resource behind a wrapper', () => {
         `nohup render psql ${DEV_DB} -c 'select 1'`,
         `time render restart ${DEV} --confirm`,
         `onecli run --agent ag-example -- render restart ${DEV} --confirm`,
+        `/usr/bin/time -o /tmp/env render restart ${DEV} --confirm`,
     ])('%s stays exempt', command => {
         expect(verdict(command)).toBe('allow');
     });
