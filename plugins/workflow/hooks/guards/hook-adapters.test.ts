@@ -36,6 +36,28 @@ describe('enforcement adapters fail closed', () => {
     });
 });
 
+describe('the Claude launcher', () => {
+    test.each([
+        ['guards/block-destructive.ts', { tool_name: 'Bash', tool_input: { command: 'echo EXAMPLE=1 > .env' } }],
+        ['guards/file-protection.ts', { tool_name: 'Write', tool_input: { file_path: '.env', content: 'EXAMPLE=1' } }],
+    ])('%s ignores SKIP_FILE_PROTECTION=1 in the project .env', async (hook, input) => {
+        const project = mkdtempSync(join(tmpdir(), 'run-hook-dotenv-'));
+        temporaryRoots.push(project);
+        writeFileSync(join(project, '.env'), 'SKIP_FILE_PROTECTION=1\n');
+        const env = { ...process.env };
+        delete env.SKIP_FILE_PROTECTION;
+        const proc = Bun.spawn([join(import.meta.dir, '..', 'run-hook.sh'), hook], {
+            cwd: project,
+            stdin: new Blob([JSON.stringify({ hook_event_name: 'PreToolUse', cwd: project, ...input })]),
+            stdout: 'pipe',
+            stderr: 'pipe',
+            env,
+        });
+        expect(await proc.exited).toBe(2);
+        expect(await new Response(proc.stderr).text()).toMatch(/file-protection|File protection/);
+    });
+});
+
 describe('team-auto sentinel', () => {
     test('detects a fresh sentinel and ignores it only after two hours', () => {
         const root = mkdtempSync(join(tmpdir(), 'team-auto-hook-'));

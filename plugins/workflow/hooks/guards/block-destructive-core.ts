@@ -272,6 +272,7 @@ interface ChainLink {
 interface CdStep {
     pos: number;
     target: string | undefined;
+    scopeEnd?: number;          // where the subshell or pipeline stage it runs in ends; its cd does not outlive that
 }
 
 export interface DestructiveMatch {
@@ -3526,6 +3527,30 @@ function renderEscapes(text: string): string {
  * text each file is written with, what each pipeline stage feeds the next,
  * each command's place in its &&/|| chain, and the cds.
  */
+/**
+ * The end of the innermost subshell or pipeline stage around each command of the script, by the command's offset. bash
+ * runs those in a child process, so a cd there ends with it.
+ */
+function childShellEnds(node: any, end?: number, out = new Map<number, number>()): Map<number, number> {
+    if (Array.isArray(node)) {
+        for (const item of node) childShellEnds(item, end, out);
+        return out;
+    }
+    if (!node || typeof node !== 'object') return out;
+    if (node.type === 'Command') {
+        if (end !== undefined && typeof node.pos === 'number') out.set(node.pos, end);
+        return out;
+    }
+    if (node.type === 'Pipeline' && Array.isArray(node.commands) && node.commands.length > 1) {
+        for (const stage of node.commands) childShellEnds(stage, typeof stage?.end === 'number' ? stage.end : end, out);
+        return out;
+    }
+    const inner = node.type === 'Subshell' && typeof node.end === 'number' ? node.end : end;
+    for (const key of ['commands', 'command', 'body', 'clause', 'then', 'else']) childShellEnds(node[key], inner, out);
+    if (Array.isArray(node.items)) for (const item of node.items) childShellEnds(item?.body, inner, out);
+    return out;
+}
+
 function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string): ScriptContext {
     const byPos = new Map<number, ResolvedCommand>();
     for (const c of commands) if (c.pos !== undefined) byPos.set(c.pos, c);
@@ -3597,10 +3622,12 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             writes.push({ writer: cmd, target, input });
         }
     }
+    const childEnds = childShellEnds(ast);
     const cds = commands
         .filter(c => c.name === 'cd' || c.name === 'pushd' || c.name === 'popd')
         .map(c => ({
             pos: c.pos ?? -1,
+            ...(c.pos !== undefined && childEnds.has(c.pos) ? { scopeEnd: childEnds.get(c.pos) } : {}),
             // `pushd DIR` changes directory like `cd DIR`; `pushd +N`/`-N` rotates the stack to a directory unknown here.
             target: (c.name === 'cd' || c.name === 'pushd') && c.args.length === 1 && !/^(?:-|[+-]\d+)$/.test(c.args[0]) ? c.args[0] : undefined,
         }));
@@ -5603,15 +5630,57 @@ const APPLY_PATCH_COMMANDS = new Set(['apply_patch', 'applypatch']);
 // `command -v`/`-V` only looks the name up; the wrapper stripping leaves it looking like a run.
 const COMMAND_LOOKUP = /(?:^|[\s;&|(])command\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*[vV]\b/;
 
-/** The directory a command (or a redirect at `pos`) runs in, or undefined when a cd before it can't be followed. */
-function commandDir(cmd: Pick<ResolvedCommand, 'chdir' | 'pos' | 'script'>): string | undefined {
-    let dir = cmd.chdir ?? cmd.script?.cwd;
-    for (const step of cmd.script?.cds ?? []) {
-        if (cmd.pos === undefined || step.pos >= cmd.pos) continue;
-        if (step.target === undefined || (!dir && !step.target.startsWith('/'))) return undefined;
-        dir = step.target.startsWith('/') ? step.target : `${dir}/${step.target}`;
+function movedDir(dir: string | undefined, target: string | undefined): string | undefined {
+    if (target === undefined || (!dir && !target.startsWith('/'))) return undefined;
+    return target.startsWith('/') ? target : `${dir}/${target}`;
+}
+
+/**
+ * The shell's directory at offsets of the line, asked in increasing order; undefined once a cd can't be followed. A cd
+ * before the offset moves it, unless it ran in a subshell or pipeline stage the offset is outside, or inside a `$(…)`.
+ */
+function directoryTracker(script: ScriptContext | undefined, start: string | undefined): (pos: number) => string | undefined {
+    const cds = (script?.cds ?? []).filter(step => step.pos >= 0);
+    const scopes: Array<{ end: number; dir: string | undefined }> = [];
+    let dir = start;
+    let next = 0;
+    const leave = (at: number) => {
+        while (scopes.length && scopes[scopes.length - 1].end <= at) dir = scopes.pop()!.dir;
+    };
+    return pos => {
+        for (; next < cds.length && cds[next].pos < pos; next++) {
+            const step = cds[next];
+            leave(step.pos);
+            if (step.scopeEnd !== undefined && scopes[scopes.length - 1]?.end !== step.scopeEnd) scopes.push({ end: step.scopeEnd, dir });
+            dir = movedDir(dir, step.target);
+        }
+        leave(pos);
+        return dir;
+    };
+}
+
+/**
+ * The directories something at `pos` may run in. Inside a `$(…)`, which has no offset on the line, that is the starting
+ * directory or the one any cd inside a substitution moves to.
+ */
+function directoriesAt(script: ScriptContext | undefined, start: string | undefined, pos: number | undefined, at = directoryTracker(script, start)): Array<string | undefined> {
+    if (pos !== undefined) return [at(pos)];
+    const nested = (script?.cds ?? []).filter(step => step.pos < 0 && step.target !== undefined);
+    return [start, ...nested.map(step => movedDir(start, step.target))];
+}
+
+/** The directories a command may run in: the shell's, after the cds before it. */
+function commandDirs(cmd: Pick<ResolvedCommand, 'chdir' | 'pos' | 'script'>): Array<string | undefined> {
+    return directoriesAt(cmd.script, cmd.chdir ?? cmd.script?.cwd, cmd.pos);
+}
+
+/** The first of `paths` that is protected in any of `dirs`. */
+function protectedIn(paths: string[], dirs: Array<string | undefined>): string | null {
+    for (const dir of dirs) {
+        const path = firstProtectedPath(paths, dir);
+        if (path) return path;
     }
-    return dir;
+    return null;
 }
 
 function applyPatchProtectionReason(cmd: ResolvedCommand): string | null {
@@ -5639,13 +5708,14 @@ function applyPatchProtectionReason(cmd: ResolvedCommand): string | null {
     }
     const paths = filePathsFromPatch(patch);
     if (paths.length === 0 || (expanded && (cmd.args.length === 1 || paths.some(p => /[$`\\]/.test(p))))) return unreadable;
-    const protectedPath = firstProtectedPath(paths, commandDir(cmd));
+    const protectedPath = protectedIn(paths, commandDirs(cmd));
     return protectedPath ? `file-protection — '${protectedPath}' is protected from automated edits.` : null;
 }
 
 // ── File protection for shell writes ────────────────────────────────────────
 
 const PROTECTED_WRITE = (path: string) => `file-protection — '${path}' is protected from automated edits.`;
+const UNREADABLE_WRITES = "file-protection — the guard can't read which files this command line writes, so it is refused. Run it as simpler separate commands.";
 
 /** Options, as [letter or long name, value], and operands. `valued` options take the rest of a cluster or the next word. */
 function parseOptions(args: string[], valued: { short: string; long: string[] }, attachedOnly = ''): { options: Array<[string, string | undefined]>; operands: string[] } {
@@ -5729,8 +5799,8 @@ function operandWrites(cmd: ResolvedCommand, dir: string | undefined): string[] 
 /** The file-protection refusal for a command that writes a protected file through its operands, or null. */
 function shellWriteProtectionReason(cmd: ResolvedCommand): string | null {
     if (process.env.SKIP_FILE_PROTECTION === '1' || !OPERAND_WRITERS.has(cmd.name)) return null;
-    const dir = commandDir(cmd);
-    const path = firstProtectedPath(operandWrites(cmd, dir).filter(Boolean), dir);
+    const dirs = commandDirs(cmd);
+    const path = protectedIn(operandWrites(cmd, dirs[0]).filter(Boolean), dirs);
     return path ? PROTECTED_WRITE(path) : null;
 }
 
@@ -5759,15 +5829,10 @@ function compoundNodes(node: unknown, out: any[] = []): any[] {
  * (inside `$(…)`, backticks and process substitutions too), on a compound command, and on a command with no name,
  * whose redirects unbash leaves out of the tree (`> f`). `pos` is the redirect's offset in the line, absent inside a
  * substitution, where offsets are the substitution's own. `parsed` is the line's tree when the caller already has it.
- * Null when the line can't be parsed.
+ * Throws when the line, or a redirect in it, can't be read.
  */
-export function lineRedirectWrites(command: string, parsed?: unknown): Array<{ target: string; pos?: number }> | null {
-    let ast: any = parsed;
-    try {
-        ast ??= parseShell(command);
-    } catch {
-        return null;
-    }
+export function lineRedirectWrites(command: string, parsed?: unknown): Array<{ target: string; pos?: number }> {
+    const ast: any = parsed ?? parseShell(command);
     const commands = walkCommandNodes(ast);
     const scripts = new Set<object>([ast]);
     for (const node of commands) {
@@ -5789,7 +5854,7 @@ export function lineRedirectWrites(command: string, parsed?: unknown): Array<{ t
                 try {
                     redirects = walkCommandNodes(parseShell(`: ${span}`))[0]?.redirects ?? [];
                 } catch {
-                    redirects = [];
+                    throw new Error('a redirect on a command with no name that cannot be read');
                 }
             }
         }
@@ -5806,22 +5871,24 @@ export function lineRedirectWrites(command: string, parsed?: unknown): Array<{ t
     return writes;
 }
 
-/** The file-protection refusal for a line whose redirects write a protected file, or null. */
+/**
+ * The file-protection refusal for a line whose redirects write a protected file, or null. A line whose redirects can't
+ * be read is refused, with the parse refusal when that is why.
+ */
 function redirectProtectionReason(command: string, commands: ResolvedCommand[], cwd: string): string | null {
     if (process.env.SKIP_FILE_PROTECTION === '1') return null;
-    const writes = (lineRedirectWrites(command, commands[0]?.script?.ast) ?? []).filter(w => w.target && !DISCARD_TARGETS.has(w.target));
-    // One pass over the cds in source order, so a line of many cds and redirects costs their sum, not their product.
-    const cds = commands[0]?.script?.cds ?? [];
-    const placed = writes.filter(w => w.pos !== undefined).sort((a, b) => a.pos! - b.pos!);
-    let dir: string | undefined = cwd;
-    let next = 0;
-    for (const write of [...writes.filter(w => w.pos === undefined), ...placed]) {
-        for (; write.pos !== undefined && next < cds.length && cds[next].pos < write.pos; next++) {
-            const step = cds[next];
-            dir = step.target === undefined || (!dir && !step.target.startsWith('/')) ? undefined
-                : step.target.startsWith('/') ? step.target : `${dir}/${step.target}`;
-        }
-        const path = firstProtectedPath([write.target], dir);
+    let writes: Array<{ target: string; pos?: number }>;
+    try {
+        writes = lineRedirectWrites(command, commands[0]?.script?.ast).filter(w => w.target && !DISCARD_TARGETS.has(w.target));
+    } catch {
+        return shellParseProblem(command) ?? UNREADABLE_WRITES;
+    }
+    const script = commands[0]?.script;
+    const at = directoryTracker(script, cwd);
+    // In source order, so a line of many cds and redirects costs their sum, not their product.
+    const ordered = [...writes.filter(w => w.pos === undefined), ...writes.filter(w => w.pos !== undefined).sort((a, b) => a.pos! - b.pos!)];
+    for (const write of ordered) {
+        const path = protectedIn([write.target], directoriesAt(script, cwd, write.pos, at));
         if (path) return PROTECTED_WRITE(path);
     }
     return null;

@@ -404,7 +404,12 @@ function readsOnly(command: string): boolean {
 /** True when a word or redirect target of the command line names a hook-config location through a symlink. */
 function aliasesProtectedPath(command: string, roots: string[], rootOnlyDirs: string[]): boolean {
     const steps = stepsOf(command);
-    const redirects = lineRedirectWrites(command)?.map((write) => write.target) ?? null;
+    let redirects: string[] | null;
+    try {
+        redirects = lineRedirectWrites(command).map((write) => write.target);
+    } catch {
+        redirects = null;
+    }
     // A line the parser cannot read is refused by the policy behind this check.
     if (steps === null || redirects === null) return false;
     return [...steps.flatMap((step) => step.args), ...redirects].some((word) =>

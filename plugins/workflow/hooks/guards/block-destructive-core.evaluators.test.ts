@@ -606,6 +606,33 @@ describe('a shell write into a protected file', () => {
         expect(v.reason).toBe(`file-protection — '${path}' is protected from automated edits.`);
     });
 
+    test.each([
+        ['a redirect', '(cd terraform && pwd); printf x > out.txt'],
+        ['tee', '(cd terraform && pwd); printf x | tee out.txt'],
+        ['sed -i', "(cd terraform && pwd); sed -i 's/a/b/' out.txt"],
+        ['cp', '(cd terraform && pwd); cp in.txt out.txt'],
+        ['mv', '(cd terraform && pwd); mv in.txt out.txt'],
+        ['apply_patch', "(cd terraform && pwd); apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: out.txt\n+x\n*** End Patch\nEOF"],
+        ['a redirect after a cd in a pipeline stage', 'cd terraform | cat; printf x > out.txt'],
+        ['a redirect after a cd in $( )', 'd=$(cd terraform && pwd); printf x > out.txt'],
+    ])("a subshell's cd does not move %s after it", (_name, command) => {
+        expect(evaluateBashCommand(command, { skipGate: true, cwd: '/repo' }).action).toBe('allow');
+    });
+
+    test.each([
+        ['a redirect inside the subshell', '(cd terraform && printf x > main.tf)', 'main.tf'],
+        ['a redirect after the subshell, past a cd of its own', '(cd /tmp); cd terraform && printf x > main.tf', 'main.tf'],
+        ['a write inside $( ) after a cd there', 'echo "$(cd .git && echo x > config)"', 'config'],
+    ])('a cd still counts for %s', (_name, command, path) => {
+        expect(evaluateBashCommand(command, { skipGate: true, cwd: '/repo' }).reason).toBe(`file-protection — '${path}' is protected from automated edits.`);
+    });
+
+    test('a line whose writes the parser cannot read is refused', () => {
+        const v = evaluateBashCommand('{ '.repeat(20000) + 'echo x; ' + '} '.repeat(20000) + '> .env', { skipGate: true, cwd: '/tmp' });
+        expect(v.action).toBe('block');
+        expect(v.reason).toMatch(/can't read/);
+    });
+
     test('cp run by find -exec', () => {
         const v = evaluateBashCommand('find /tmp/staged -name x -exec cp {} .env \\;', { skipGate: true, cwd: '/tmp' });
         expect(v.reason).toBe("find -exec runs a blocked command. file-protection — '.env' is protected from automated edits.");
