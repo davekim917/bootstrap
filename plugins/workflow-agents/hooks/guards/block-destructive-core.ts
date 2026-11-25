@@ -7379,22 +7379,40 @@ function renderListing(cmd: ResolvedCommand): { on: string[]; off: string[] } {
 const listedNames = (list: string[]): string => `${list.map(id => code(id)).join(', ')} ${list.length > 1 ? 'are' : 'is'}`;
 
 /** A held Render change's card: a step on listed ids is held for its form, never for being unlisted. */
-/** renderListing for a render step whose own target is a listed id; null when the target is unlisted, unread or not one id. */
-function renderListedTarget(cmd: ResolvedCommand): { on: string[]; off: string[] } | null {
-    if (cmd.name !== 'render') return null;
-    const shape = renderShape(cmd.args);
-    const target = shape ? (shape.operands.length === 1 ? shape.operands[0] : undefined) : cmd.args[1];
-    const listing = renderListing(cmd);
-    return target !== undefined && listing.on.includes(target) ? listing : null;
+type RenderTargetClaim = { kind: 'dev' | 'mixed' | 'unproven' | 'unlisted'; on: string[]; off: string[] };
+
+/**
+ * What a step's card may say about the dev list. `dev` (or `mixed`) needs the step's one target read as a listed id,
+ * with nothing on the line able to send it elsewhere; `unlisted` needs no listed id, or a literal target that is unlisted.
+ */
+function renderTargetClaim(cmd: ResolvedCommand): RenderTargetClaim {
+    const { on, off } = renderListing(cmd);
+    const shape = cmd.name === 'render' ? renderShape(cmd.args) : null;
+    const literal = cmd.name === 'render' ? renderLiteralArgs(cmd) : cmd.args;
+    const target = shape?.entry.kind === 'proof' && shape.operands.length === 1 ? shape.operands[0]
+        : cmd.name === 'render' ? renderDevRead(literal, new Set(renderResourceIds(literal))) ?? undefined : undefined;
+    if (!on.length || (target !== undefined && RENDER_RESOURCE_ID_RE.test(target) && !on.includes(target))) return { kind: 'unlisted', on, off };
+    const proven = target !== undefined && on.includes(target) && !cmd.args.some(a => a.includes('\\'))
+        && renderExpansionsAreSql(cmd) && !programCanDiffer(cmd);
+    if (!proven) return { kind: 'unproven', on, off };
+    return { kind: off.length ? 'mixed' : 'dev', on, off };
 }
 
+/** A held Render change's card. The production warning leads, so a long id list can't push it off a clipped card. */
 function renderChangeEffect(cmd: ResolvedCommand): [effect: string, loss: string] {
     const [unlisted, loss] = GENERIC_EFFECTS.render;
-    const listing = renderListedTarget(cmd);
-    if (!listing) return [unlisted, loss];
-    const { on, off } = listing;
-    const why = off.length ? `${listedNames(off)} not` : "the guard can't confirm this form stays on it";
-    return [`Changes the Render service, database or job named in the step below: ${listedNames(on)} listed as dev, but ${why}, so treat it as production.`, loss];
+    const { kind, on, off } = renderTargetClaim(cmd);
+    const lead = 'Changes the Render service, database or job named in the step below; treat it as production';
+    switch (kind) {
+        case 'unlisted':
+            return [unlisted, loss];
+        case 'unproven':
+            return [`${lead}, since the guard can't confirm which resource the step reaches.`, loss];
+        case 'mixed':
+            return [`${lead}: ${listedNames(off)} not listed as dev, though ${listedNames(on)}.`, loss];
+        case 'dev':
+            return [`${lead}, since the guard can't confirm this form stays on ${on.map(id => code(id)).join(', ')}, listed as dev.`, loss];
+    }
 }
 
 function renderReadEffect(cmd: ResolvedCommand, reason: string): [effect: string, loss: string] {
@@ -7649,9 +7667,11 @@ export function describeGate(command: string, reason: string, cwd: string = curr
         const prodChange = (step: GatedStep): boolean => onProduction(step) && !heldRead(step);
         const prodSteps = gated.filter(prodChange);
         if (prodSteps.length && !lines[0].includes('treat it as production')) {
-            const onlyListed = prodSteps.every(step => renderListedTarget(step.cmd)?.off.length === 0);
-            lines.unshift(onlyListed
+            const claims = prodSteps.map(step => renderTargetClaim(step.cmd).kind);
+            lines.unshift(claims.every(kind => kind === 'dev')
                 ? "Treat this as production: its target is listed as dev, but the guard can't confirm the step stays on it."
+                : claims.every(kind => kind === 'dev' || kind === 'unproven')
+                ? "Treat this as production: the guard can't confirm which resource it reaches."
                 : 'Treat this as production: its target is not listed as dev.', '');
         }
         lines.push(`Guard rule: ${clip(oneLine(reason), 200)}`);

@@ -14,6 +14,7 @@ import {
     evaluateBashCommand,
     parseDevScope,
 } from './block-destructive-core';
+import { CARD_SUMMARY_MAX_CHARS } from './gate-card-core';
 
 /**
  * RENDER PRODUCTION CHANGES. Every Render command except a short read-only list
@@ -947,46 +948,66 @@ describe('a held Render read says it is a read', () => {
 });
 
 describe('a held Render change says whether its target is listed as dev', () => {
-    test.each([
-        ['a wrapped read with a pipe', `cd /tmp/rv; timeout 60 render psql ${DEV_DB} --command "select now()" -o json 2>&1 | head -20`],
-        ['an environment prefix and psql arguments', `PGOPTIONS='-c default_transaction_read_only=on' timeout 60 render psql ${DEV_DB} -o text -- -At -f /tmp/rv/t.sql`],
-    ])('a listed target held for its form (%s) is not called unlisted', (_shape, command) => {
-        const { action, reason } = evaluateBashCommand(command, { cwd: '/tmp' });
-        expect(action).toBe('gate');
+    const card = (command: string): string => describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp').summary;
+    const passthrough = `render psql ${DEV_DB} -c 'select 1' -- -d postgresql://db.example.com/app -c 'DROP TABLE accounts'`;
+
+    test('a listed target held only for a wrapper and a pipe is called dev, and stays a production gate', () => {
+        const command = `cd /tmp/rv; timeout 60 render psql ${DEV_DB} --command "select now()" -o json 2>&1 | head -20`;
+        expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
-        const { summary } = describeGate(command, reason!, '/tmp');
-        expect(summary).toContain(`\`${DEV_DB}\` is listed as dev, but the guard can't confirm this form stays on it, so treat it as production`);
+        const summary = card(command);
+        expect(summary).toContain(`treat it as production, since the guard can't confirm this form stays on \`${DEV_DB}\`, listed as dev`);
         expect(summary).not.toContain('not listed as dev');
     });
 
     test.each([
-        [DEV_DB, "Treat this as production: its target is listed as dev, but the guard can't confirm the step stays on it."],
-        [PROD_DB, 'Treat this as production: its target is not listed as dev.'],
-    ])('the headline over a first step that is not Render matches the listing of %s', (db, headline) => {
-        const command = `docker volume rm data; timeout 60 render psql ${db} --command "select 1" -o json`;
-        const { summary } = describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp');
-        expect(summary).toStartWith(headline);
-    });
-
-    test('a change naming a listed and an unlisted target names each', () => {
-        const command = `render jobs create ${DEV} --start-command "echo ${PROD}"`;
-        const { summary } = describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp');
-        expect(summary).toContain(`\`${DEV}\` is listed as dev, but \`${PROD}\` is not, so treat it as production`);
+        ['an environment prefix and psql arguments', `PGOPTIONS='-c default_transaction_read_only=on' timeout 60 render psql ${DEV_DB} -o text -- -At -f /tmp/rv/t.sql`],
+        ['psql arguments that name another database', passthrough],
+        ['a target read from a variable', `timeout 60 render psql "$DB" --command "select '${DEV_DB}'" -o json`],
+        ['a target read from a variable, on a change', `render jobs create $SRV --start-command "echo ${DEV}"`],
+    ])('a listed id whose destination is unproven is called neither dev nor unlisted (%s)', (_shape, command) => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+        const summary = card(command);
+        expect(summary).toContain("treat it as production, since the guard can't confirm which resource the step reaches");
+        expect(summary).not.toContain('is listed as dev');
+        expect(summary).not.toContain('not listed as dev');
     });
 
     test.each([
-        ['a target read from a variable', `timeout 60 render psql "$DB" --command "select '${DEV_DB}'" -o json`],
-        ['a target read from a variable, on a change', `render jobs create $SRV --start-command "echo ${DEV}"`],
-        ['an unlisted target', `timeout 60 render psql ${PROD_DB} --command "select '${DEV_DB}'" -o json`],
-    ])('a listed id that is not the target does not make it dev (%s)', (_shape, command) => {
-        const { summary } = describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp');
-        expect(summary).toContain('not listed as dev, so treat it as production');
-        expect(summary).not.toContain('is listed as dev');
+        [`timeout 60 render psql ${DEV_DB} --command "select 1" -o json`, "Treat this as production: its target is listed as dev, but the guard can't confirm the step stays on it."],
+        [passthrough, "Treat this as production: the guard can't confirm which resource it reaches."],
+        [`timeout 60 render psql ${PROD_DB} --command "select 1" -o json`, 'Treat this as production: its target is not listed as dev.'],
+    ])('the headline over a first step that is not Render follows what the guard proved: %s', (step, headline) => {
+        expect(card(`docker volume rm data; ${step}`)).toStartWith(headline);
     });
 
-    test('the same form on an unlisted target still says it is not listed', () => {
-        const command = `cd /tmp/rv; timeout 60 render psql ${PROD_DB} --command "select now()" -o json 2>&1 | head -20`;
-        const { summary } = describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason!, '/tmp');
+    test('a change naming a listed and an unlisted target warns before either list', () => {
+        const summary = card(`render jobs create ${DEV} --start-command "echo ${PROD}"`);
+        expect(summary).toContain(`treat it as production: \`${PROD}\` is not listed as dev, though \`${DEV}\` is`);
+    });
+
+    test('a long list of listed ids does not push the production warning off the card', () => {
+        const many = Array.from({ length: 80 }, (_, i) => `srv-devlisted${String(i).padStart(11, '0')}`);
+        const longScope = join(dir, 'dev-scope-long.local.json');
+        writeFileSync(longScope, JSON.stringify({ snowflake: [], render: { resources: many } }));
+        const before = process.env[DEV_SCOPE_FILE_ENV];
+        process.env[DEV_SCOPE_FILE_ENV] = longScope;
+        try {
+            const summary = card(`render jobs create ${many[0]} --start-command "echo ${many.slice(1).join(' ')} ${PROD}"`);
+            expect(summary.length).toBeLessThanOrEqual(CARD_SUMMARY_MAX_CHARS);
+            expect(summary).toContain(PROD);
+            expect(summary).toContain(`treat it as production: \`${PROD}\` is not listed as dev`);
+        } finally {
+            process.env[DEV_SCOPE_FILE_ENV] = before;
+        }
+    });
+
+    test.each([
+        ['the same wrapped form on an unlisted target', `cd /tmp/rv; timeout 60 render psql ${PROD_DB} --command "select now()" -o json 2>&1 | head -20`],
+        ['an unlisted target with a listed id in its SQL', `timeout 60 render psql ${PROD_DB} --command "select '${DEV_DB}'" -o json`],
+    ])('%s still says it is not listed', (_shape, command) => {
+        const summary = card(command);
         expect(summary).toContain('not listed as dev, so treat it as production');
         expect(summary).not.toContain('is listed as dev');
     });
