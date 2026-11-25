@@ -30,6 +30,7 @@ function reasonOf(payload: unknown): string {
 describe('agy tool calls reach the shared policy under the names the cores read', () => {
     test.each([
         ['a safe shell command', call('run_command', { CommandLine: 'git status' })],
+        ['a shell write to an ordinary file', call('run_command', { CommandLine: 'echo note > notes.txt' })],
         ['a source write', call('write_file', { Path: 'src/app.ts', Content: 'x' })],
         ['an MCP call that sends nothing', call('call_mcp_tool', { ServerName: 'docs', ToolName: 'search', Arguments: { q: 'x' } })],
         ['a read-only tool', call('read_file', { Path: 'README.md' })],
@@ -49,6 +50,7 @@ describe('agy tool calls reach the shared policy under the names the cores read'
         ['write_file', { Path: '.env', Content: 'x' }],
         ['edit_file', { Path: '.env', Target: 'a', Replacement: 'b' }],
         ['replace_file_content', { TargetFile: 'pnpm-lock.yaml' }],
+        ['run_command', { CommandLine: 'echo EXAMPLE=1 > .env' }],
     ])('%s reaches file protection', (name, args) => {
         expect(reasonOf(call(name, args))).toMatch(/file-protection/);
     });

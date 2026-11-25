@@ -87,6 +87,7 @@ export interface ScriptContext {
     cds: CdStep[];              // every cd/pushd/popd, in source order
     links: Map<number, ChainLink>; // where each top-level command sits in its &&/|| chain, by command offset
     command: string;            // the whole command line, for resolving variables
+    ast?: unknown;              // the parsed line its commands came from
     cwd?: string;               // the directory the command line starts in
     view?: ReturnType<typeof viewShell>; // the parsed variable view of `command`, built on first use
     words?: Map<string, string | null>; // provableWord results by position and text
@@ -3468,6 +3469,7 @@ function commandsOf(ast: any, command: string): ResolvedCommand[] {
     }).filter((c): c is ResolvedCommand => c !== null);
     traceSubstitutionPipes(nested, command);
     const script = scriptContextOf(ast, commands, command);
+    script.ast = ast;
     for (const cmd of commands) cmd.script = script;
     return commands;
 }
@@ -5579,6 +5581,8 @@ export function checkHardBlock(cmd: ResolvedCommand): string | null {
 
     const applyPatch = applyPatchProtectionReason(cmd);
     if (applyPatch) return applyPatch;
+    const shellWrite = shellWriteProtectionReason(cmd);
+    if (shellWrite) return shellWrite;
 
     // Simple dangerous commands
     if (cmd.name === 'eval') return 'eval is not allowed. Run commands directly.';
@@ -5599,8 +5603,8 @@ const APPLY_PATCH_COMMANDS = new Set(['apply_patch', 'applypatch']);
 // `command -v`/`-V` only looks the name up; the wrapper stripping leaves it looking like a run.
 const COMMAND_LOOKUP = /(?:^|[\s;&|(])command\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*[vV]\b/;
 
-/** The directory a command runs in, or undefined when a cd before it can't be followed. */
-function applyPatchCwd(cmd: ResolvedCommand): string | undefined {
+/** The directory a command (or a redirect at `pos`) runs in, or undefined when a cd before it can't be followed. */
+function commandDir(cmd: Pick<ResolvedCommand, 'chdir' | 'pos' | 'script'>): string | undefined {
     let dir = cmd.chdir ?? cmd.script?.cwd;
     for (const step of cmd.script?.cds ?? []) {
         if (cmd.pos === undefined || step.pos >= cmd.pos) continue;
@@ -5635,8 +5639,192 @@ function applyPatchProtectionReason(cmd: ResolvedCommand): string | null {
     }
     const paths = filePathsFromPatch(patch);
     if (paths.length === 0 || (expanded && (cmd.args.length === 1 || paths.some(p => /[$`\\]/.test(p))))) return unreadable;
-    const protectedPath = firstProtectedPath(paths, applyPatchCwd(cmd));
+    const protectedPath = firstProtectedPath(paths, commandDir(cmd));
     return protectedPath ? `file-protection — '${protectedPath}' is protected from automated edits.` : null;
+}
+
+// ── File protection for shell writes ────────────────────────────────────────
+
+const PROTECTED_WRITE = (path: string) => `file-protection — '${path}' is protected from automated edits.`;
+
+/** Options, as [letter or long name, value], and operands. `valued` options take the rest of a cluster or the next word. */
+function parseOptions(args: string[], valued: { short: string; long: string[] }, attachedOnly = ''): { options: Array<[string, string | undefined]>; operands: string[] } {
+    const options: Array<[string, string | undefined]> = [];
+    const operands: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') {
+            operands.push(...args.slice(i + 1));
+            break;
+        }
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const name = a.slice(2, eq < 0 ? undefined : eq);
+            options.push([name, eq >= 0 ? a.slice(eq + 1) : valued.long.includes(name) ? args[++i] : undefined]);
+        } else if (a.startsWith('-') && a.length > 1) {
+            for (let c = 1; c < a.length; c++) {
+                const letter = a[c];
+                if (attachedOnly.includes(letter)) {
+                    options.push([letter, a.slice(c + 1)]);
+                    break;
+                }
+                if (valued.short.includes(letter)) {
+                    options.push([letter, a.slice(c + 1) || args[++i]]);
+                    break;
+                }
+                options.push([letter, undefined]);
+            }
+        } else {
+            operands.push(a);
+        }
+    }
+    return { options, operands };
+}
+
+/** The files `sed` edits in place: its operands after the script, when -i or --in-place is given. */
+function sedInPlaceFiles(args: string[]): string[] {
+    const { options, operands } = parseOptions(args, { short: 'efl', long: ['expression', 'file', 'line-length'] }, 'i');
+    if (!options.some(([o]) => o === 'i' || o === 'in-place')) return [];
+    const scriptGiven = options.some(([o]) => ['e', 'f', 'expression', 'file'].includes(o));
+    // BSD sed takes the backup suffix as the next word, so `-i ''` leaves an empty operand before the script.
+    const rest = !scriptGiven && operands[0] === '' ? operands.slice(1) : operands;
+    return scriptGiven ? rest : rest.slice(1);
+}
+
+/** Whether `path` names a directory, or might: relative with no known directory to place it in. */
+function mayBeDirectory(path: string, dir: string | undefined): boolean {
+    if (path.endsWith('/') || path === '.' || path === '..') return true;
+    if (!path.startsWith('/') && dir === undefined) return true;
+    try {
+        return statSync(pathResolve(dir ?? '/', path)).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
+/** The files cp or mv writes, and the ones mv removes: a target directory gets each source's name. */
+function copyMoveWrites(cmd: ResolvedCommand, dir: string | undefined): string[] {
+    const { options, operands } = parseOptions(cmd.args, { short: 'St', long: ['suffix', 'target-directory'] });
+    const target = options.find(([o]) => o === 't' || o === 'target-directory')?.[1];
+    const sources = target === undefined ? operands.slice(0, -1) : operands;
+    const dest = target ?? operands[operands.length - 1];
+    if (dest === undefined || !sources.length) return [];
+    const intoDir = target !== undefined || sources.length > 1
+        || (!options.some(([o]) => o === 'T' || o === 'no-target-directory') && mayBeDirectory(dest, dir));
+    const writes = [dest, ...(intoDir ? sources.map(s => join(dest, basename(s))) : [])];
+    return cmd.name === 'mv' ? [...writes, ...sources] : writes;
+}
+
+const OPERAND_WRITERS = new Set(['tee', 'sponge', 'dd', 'sed', 'cp', 'mv']);
+
+/** The files a command writes through its operands: tee, sponge, dd of=, sed -i, cp and mv. */
+function operandWrites(cmd: ResolvedCommand, dir: string | undefined): string[] {
+    if (cmd.name === 'tee' || cmd.name === 'sponge') return operandsOf(cmd.args);
+    if (cmd.name === 'dd') return cmd.args.filter(a => a.startsWith('of=')).map(a => a.slice(3));
+    if (cmd.name === 'sed') return sedInPlaceFiles(cmd.args);
+    if (cmd.name === 'cp' || cmd.name === 'mv') return copyMoveWrites(cmd, dir);
+    return [];
+}
+
+/** The file-protection refusal for a command that writes a protected file through its operands, or null. */
+function shellWriteProtectionReason(cmd: ResolvedCommand): string | null {
+    if (process.env.SKIP_FILE_PROTECTION === '1' || !OPERAND_WRITERS.has(cmd.name)) return null;
+    const dir = commandDir(cmd);
+    const path = firstProtectedPath(operandWrites(cmd, dir).filter(Boolean), dir);
+    return path ? PROTECTED_WRITE(path) : null;
+}
+
+const WRITING_REDIRECTS = new Set(['>', '>>', '>|', '&>', '&>>', '<>', '>&']);
+
+/**
+ * The script's own statements and compound commands, whose redirects (`{ …; } > f`, `done >> f`) apply to everything
+ * inside them. walkCommandNodes yields only simple commands; this follows the same structural fields.
+ */
+function compoundNodes(node: unknown, out: any[] = []): any[] {
+    if (Array.isArray(node)) {
+        for (const item of node) compoundNodes(item, out);
+        return out;
+    }
+    if (!node || typeof node !== 'object') return out;
+    const value = node as Record<string, unknown>;
+    if (value.type === 'Command') return out;
+    out.push(value);
+    for (const key of ['commands', 'command', 'body', 'clause', 'then', 'else']) compoundNodes(value[key], out);
+    if (Array.isArray(value.items)) for (const item of value.items) compoundNodes((item as { body?: unknown })?.body, out);
+    return out;
+}
+
+/**
+ * Every file a redirect on the line may write, on any file descriptor: on a simple command anywhere bash runs one
+ * (inside `$(…)`, backticks and process substitutions too), on a compound command, and on a command with no name,
+ * whose redirects unbash leaves out of the tree (`> f`). `pos` is the redirect's offset in the line, absent inside a
+ * substitution, where offsets are the substitution's own. `parsed` is the line's tree when the caller already has it.
+ * Null when the line can't be parsed.
+ */
+export function lineRedirectWrites(command: string, parsed?: unknown): Array<{ target: string; pos?: number }> | null {
+    let ast: any = parsed;
+    try {
+        ast ??= parseShell(command);
+    } catch {
+        return null;
+    }
+    const commands = walkCommandNodes(ast);
+    const scripts = new Set<object>([ast]);
+    for (const node of commands) {
+        const owner = SUBSTITUTION_OF.get(node);
+        if (owner) scripts.add(owner);
+    }
+    const holders: Array<[any, object | undefined]> = [
+        ...commands.map((node): [any, object | undefined] => [node, SUBSTITUTION_OF.get(node)]),
+        ...[...scripts].flatMap(s => compoundNodes(s).map((node): [any, object | undefined] => [node, s === ast ? undefined : s])),
+    ];
+    const writes: Array<{ target: string; pos?: number }> = [];
+    for (const [node, owner] of holders) {
+        let redirects = Array.isArray(node.redirects) ? node.redirects : [];
+        const nameless = node.type === 'Command' && !node.name && !node.prefix?.length && !node.suffix?.length && !redirects.length;
+        if (nameless && typeof node.pos === 'number' && typeof node.end === 'number') {
+            const text = owner ? SUBSTITUTION_TEXT.get(owner) : command;
+            const span = text?.slice(node.pos, node.end).trim();
+            if (span) {
+                try {
+                    redirects = walkCommandNodes(parseShell(`: ${span}`))[0]?.redirects ?? [];
+                } catch {
+                    redirects = [];
+                }
+            }
+        }
+        for (const r of redirects) {
+            if (!WRITING_REDIRECTS.has(r?.operator) || !r.target) continue;
+            if (r.target.parts?.length === 1 && r.target.parts[0]?.type === 'ProcessSubstitution') continue;
+            const target = wordValue(r.target);
+            // `>&2` and `>&-` duplicate or close a descriptor; any other `>&` target is a file.
+            if (r.operator === '>&' && /^(?:\d+|-)$/.test(target)) continue;
+            const pos = owner === undefined && !nameless && typeof r.pos === 'number' ? r.pos : owner === undefined ? node.pos : undefined;
+            writes.push({ target, ...(typeof pos === 'number' ? { pos } : {}) });
+        }
+    }
+    return writes;
+}
+
+/** The file-protection refusal for a line whose redirects write a protected file, or null. */
+function redirectProtectionReason(command: string, commands: ResolvedCommand[], cwd: string): string | null {
+    if (process.env.SKIP_FILE_PROTECTION === '1') return null;
+    const writes = (lineRedirectWrites(command, commands[0]?.script?.ast) ?? []).filter(w => w.target && !DISCARD_TARGETS.has(w.target));
+    // One pass over the cds in source order, so a line of many cds and redirects costs their sum, not their product.
+    const cds = commands[0]?.script?.cds ?? [];
+    const placed = writes.filter(w => w.pos !== undefined).sort((a, b) => a.pos! - b.pos!);
+    let dir: string | undefined = cwd;
+    let next = 0;
+    for (const write of [...writes.filter(w => w.pos === undefined), ...placed]) {
+        for (; write.pos !== undefined && next < cds.length && cds[next].pos < write.pos; next++) {
+            const step = cds[next];
+            dir = step.target === undefined || (!dir && !step.target.startsWith('/')) ? undefined
+                : step.target.startsWith('/') ? step.target : `${dir}/${step.target}`;
+        }
+        const path = firstProtectedPath([write.target], dir);
+        if (path) return PROTECTED_WRITE(path);
+    }
+    return null;
 }
 
 // ── Self-matching kills ──────────────────────────────────────────────────────
@@ -7522,6 +7710,8 @@ function evaluateBashLine(
             return { action: 'block', reason };
         }
     }
+    const redirectWrite = redirectProtectionReason(command, commands, cwd);
+    if (redirectWrite) return { action: 'block', reason: redirectWrite };
     const onecliScriptTokens = onecliTokenInScripts(commands, command);
     if (onecliScriptTokens) return { action: 'block', reason: onecliScriptTokens };
     const selfKill = selfMatchingKillReason(commands, command);

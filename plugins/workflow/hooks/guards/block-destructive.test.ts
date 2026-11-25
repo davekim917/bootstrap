@@ -72,6 +72,7 @@ describe('hard blocks', () => {
         ['shred secret.txt', 'shred'],
         ['truncate -s 0 file.txt', 'truncate'],
         ['bash -c "echo hello"', 'shell -c'],
+        ['echo EXAMPLE=1 > .env', 'file-protection'],
     ])('%s → BLOCKED (%s)', async (cmd) => {
         const { exitCode, stderr } = await runHook(cmd);
         expect(exitCode).toBe(2);

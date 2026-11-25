@@ -113,6 +113,12 @@ interface GuardRow {
 
 const BASH_ROWS: GuardRow[] = [
   {
+    name: 'file-protection (shell redirect)',
+    command: 'echo EXAMPLE=1 > .env',
+    outcome: 'block',
+    throws: /file-protection — '\.env'/,
+  },
+  {
     name: 'self-approval',
     command: 'touch .claude-destructive-gate',
     outcome: 'block',
