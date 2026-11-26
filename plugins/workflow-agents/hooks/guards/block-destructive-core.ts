@@ -4356,8 +4356,13 @@ function programCanDiffer(cmd: ResolvedCommand): boolean {
     // For a direct Postgres client PGPASSWORD only authenticates, so setting it, as a prefix or by export, leaves the
     // program where it is. Any other client may read it, or a name beside it, differently.
     const authOnly = (assignments: string[]) => PG_DIRECT_CLIENTS.has(cmd.name) ? assignments.every(a => /^PGPASSWORD=/.test(a)) : !assignments.length;
-    return line === undefined || !authOnly(cmd.env ?? []) || new RegExp(`(?:^|\\s)\\S*/${cmd.name}\\s`).test(cmd.raw)
-        || changesShellState(line, name => name === 'PGPASSWORD' && PG_DIRECT_CLIENTS.has(cmd.name)) || extractCommands(line).some(c => ENVIRONMENT_CHANGERS.has(c.name) && !(c.name === 'export' && c.args.length > 0 && authOnly(c.args)))
+    if (line === undefined) return true;
+    // Only what runs before the step can change it; a loop runs its body again, so there the whole line counts.
+    const looped = /\b(?:for|while|until)\b/.test(line);
+    const upTo = cmd.pos === undefined || looped ? line : line.slice(0, cmd.pos + cmd.raw.length);
+    const before = (c: ResolvedCommand) => looped || cmd.pos === undefined || c.pos === undefined || c.pos < cmd.pos;
+    return !authOnly(cmd.env ?? []) || new RegExp(`(?:^|\\s)\\S*/${cmd.name}\\s`).test(cmd.raw)
+        || changesShellState(upTo, name => name === 'PGPASSWORD' && PG_DIRECT_CLIENTS.has(cmd.name)) || extractCommands(line).some(c => before(c) && ENVIRONMENT_CHANGERS.has(c.name) && !(c.name === 'export' && c.args.length > 0 && authOnly(c.args)))
         || cmd.args.some(a => a.search(COPY_PROGRAM) >= 0);
 }
 

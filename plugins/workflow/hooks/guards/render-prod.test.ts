@@ -291,6 +291,11 @@ describe('a listed dev resource', () => {
         }
     });
 
+    test('an export after a listed read runs later, so the read stays card-free', () => {
+        expect(verdict(`render deploys list ${DEV} --limit 1; export PGPASSWORD=x`)).toBe('allow');
+        expect(verdict(`export HTTPS_PROXY=http://203.0.113.5:3128; render deploys list ${DEV} --limit 1`)).not.toBe('allow');
+    });
+
     test('a listed render restart alone stays card-free', () => {
         expect(verdict(`render restart ${DEV}`)).toBe('allow');
     });
