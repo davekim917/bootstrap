@@ -36,7 +36,7 @@ const BASH_CORPUS = [
   // gate
   'terraform destroy -auto-approve',
   'psql -c "DROP TABLE users"',
-  'snow sql -q "DROP TABLE prod.orders"',
+  'snow sql -c prod -q "DROP TABLE prod.orders"',
   'aws s3 rb s3://prod --force',
   'gcloud compute instances delete vm-1',
   'kubectl delete deployment api',

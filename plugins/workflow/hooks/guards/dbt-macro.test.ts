@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { describeGate, evaluateBashCommand } from './block-destructive-core';
+import { DBT_WRITE, DEV_SCOPE_FILE_ENV, describeGate, evaluateBashCommand } from './block-destructive-core';
 
 /**
  * dbt run-operation. A macro's SQL sits in Jinja strings and template text, so the guard hands those to the SQL scanner
@@ -11,6 +11,8 @@ import { describeGate, evaluateBashCommand } from './block-destructive-core';
  */
 
 let project = '';
+let savedScope: string | undefined;
+let savedHome: string | undefined;
 const inProject = (command: string) => evaluateBashCommand(command, { cwd: project });
 
 const macro = (name: string, body: string) => `{% macro ${name}(dry_run='false') %}\n${body}\n{% endmacro %}\n`;
@@ -18,6 +20,16 @@ const macro = (name: string, body: string) => `{% macro ${name}(dry_run='false')
 beforeAll(() => {
     project = mkdtempSync(join(tmpdir(), 'dbt-macro-test-'));
     writeFileSync(join(project, 'dbt_project.yml'), 'name: example\nprofile: example\n');
+    // Every dbt write needs a target proven dev: here the profile's targets build in a listed dev database, or in prod.
+    const output = (database: string) => `      type: snowflake\n      database: ${database}\n`;
+    // The staged ~/.dbt profiles file: one in the project directory isn't trusted.
+    savedHome = process.env.HOME;
+    process.env.HOME = join(project, 'home');
+    mkdirSync(join(project, 'home', '.dbt'), { recursive: true });
+    writeFileSync(join(project, 'home', '.dbt', 'profiles.yml'), `example:\n  target: dev\n  outputs:\n    dev:\n${output('dev_db')}    drops:\n${output('dev_db')}    prod:\n${output('prod_db')}`);
+    writeFileSync(join(project, 'dev-scope.local.json'), JSON.stringify({ snowflake: [{ connection: 'example_dev', databases: ['dev_db'] }] }));
+    savedScope = process.env[DEV_SCOPE_FILE_ENV];
+    process.env[DEV_SCOPE_FILE_ENV] = join(project, 'dev-scope.local.json');
     mkdirSync(join(project, 'macros', 'ops'), { recursive: true });
     mkdirSync(join(project, 'dbt_packages', 'pkg', 'macros'), { recursive: true });
     writeFileSync(join(project, 'macros', 'reads.sql'), macro('reads', `{% set r = run_query("select count(*) from s.t") %}{{ log(r) }}`));
@@ -31,12 +43,18 @@ beforeAll(() => {
     writeFileSync(join(project, 'dbt_packages', 'pkg', 'macros', 'wipe.sql'), macro('wipe', `{% do run_query('drop schema s') %}`));
 });
 
-afterAll(() => rmSync(project, { recursive: true, force: true }));
+afterAll(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedScope === undefined) delete process.env[DEV_SCOPE_FILE_ENV];
+    else process.env[DEV_SCOPE_FILE_ENV] = savedScope;
+    rmSync(project, { recursive: true, force: true });
+});
 
 describe('a macro in the project', () => {
     test.each([
         ['a read-only macro', 'dbt run-operation reads'],
-        ['a read-only macro with options around it', `dbt -q run-operation reads --target prod --args '{a: 1}' 2>&1 | tail -3`],
+        ['a read-only macro with options around it', `dbt -q run-operation reads --target dev --args '{a: 1}' 2>&1 | tail -3`],
         ['a drop that is only a Jinja comment', 'dbt run-operation commented'],
         ['a package macro named with its package', 'dbt run-operation pkg.tool'],
         ['a macro with no file, alone on the line', 'dbt run-operation a_dbt_builtin'],
@@ -45,6 +63,12 @@ describe('a macro in the project', () => {
         ['a known option whose value matches a macro', 'dbt run-operation reads --target drops'],
     ])('%s runs with no card', (_label, command) => {
         expect(inProject(command).action).toBe('allow');
+    });
+
+    test('a read-only macro on a target whose database is not listed as dev takes the card', () => {
+        const verdict = inProject(`dbt -q run-operation reads --target prod --args '{a: 1}' 2>&1 | tail -3`);
+        expect(verdict.action).toBe('gate');
+        expect(verdict.reason).toContain('not proven dev');
     });
 
     test.each([
@@ -127,8 +151,11 @@ describe('a macro a program generates on the line', () => {
         expect(inProject(`cd ${project} && dbt run-operation a_dbt_builtin`).action).toBe('allow');
     });
 
+    // Outside a project the macro is left unjudged; the step takes only the card a dbt write on an unproven target does.
     test('a directory that is not a dbt project stays as it was', () => {
-        expect(evaluateBashCommand('python3 gen.py; dbt run-operation generated', { cwd: tmpdir() }).action).toBe('allow');
+        const verdict = evaluateBashCommand('python3 gen.py; dbt run-operation generated', { cwd: tmpdir() });
+        expect(verdict.action).toBe('gate');
+        expect(verdict.reason).toBe(`dbt run-operation ${DBT_WRITE}.`);
     });
 });
 
@@ -139,7 +166,10 @@ test('custom macro paths are read, and a form the guard cannot read leaves the m
     writeFileSync(join(other, 'dbt_project.yml'), 'name: other\nmacro-paths: ["lib"]\n');
     expect(evaluateBashCommand('dbt run-operation drops', { cwd: other }).action).toBe('gate');
     writeFileSync(join(other, 'dbt_project.yml'), 'name: other\nmacro-paths:\n  - lib\n');
-    expect(evaluateBashCommand('python3 gen.py; dbt run-operation drops', { cwd: other }).action).toBe('allow');
+    // Unjudged: the macro rule doesn't fire, and the project's profile isn't one the guard can resolve to dev.
+    const unjudged = evaluateBashCommand('python3 gen.py; dbt run-operation drops', { cwd: other });
+    expect(unjudged.action).toBe('gate');
+    expect(unjudged.reason).toBe(`dbt run-operation ${DBT_WRITE}.`);
     rmSync(other, { recursive: true, force: true });
 });
 

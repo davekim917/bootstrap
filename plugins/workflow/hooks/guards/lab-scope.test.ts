@@ -117,8 +117,8 @@ const NON_LAB_TARGETS: Array<[string, string]> = [
   // a runtime-constructed target has no visible lab signal — fails closed
   ['psql "$DATABASE_URL" -c "DROP TABLE users"', LAB_WORKTREE],
   // Snowflake has no lab tenant
-  ['snow sql -q "DROP TABLE prod.orders"', LAB_WORKTREE],
-  ['snow sql -q "DROP TABLE lab_app.orders"', LAB_WORKTREE],
+  ['snow sql -c prod -q "DROP TABLE prod.orders"', LAB_WORKTREE],
+  ['snow sql -c prod -q "DROP TABLE lab_app.orders"', LAB_WORKTREE],
   // non-LAB repos, by URL and by checkout
   ['git push --force https://github.com/Lab-Org/APP.git main', LAB_WORKTREE],
   ['git push --force Lab-Org/APP main', LAB_WORKTREE],

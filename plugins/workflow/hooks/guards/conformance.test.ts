@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import {
+import { SQL_WRITE,
   evaluateBashCommand,
   evaluateGitCloneDestination,
   evaluateSelfApproval,
@@ -140,6 +140,11 @@ const BASH_GATE = [
   'curl -X DELETE https://api.ren\\\nder.com/v1/postgres/dpg-example',
   'wget\\\n --method=DELETE https://api.render.com/v1/postgres/dpg-example',
   'snow sql -c prod -q "DROP TAB\\\nLE t"',
+  // Single-quoted, the backslash-newline stays as written: nothing destructive, but a statement led by DROP on a
+  // connection not proven dev is a write.
+  "snow sql -c prod -q 'DROP TAB\\\nLE t'",
+  // Not destructive, but a write on a connection not proven dev.
+  'snow sql -c prod -q "alter table prod.orders rename column a to b"',
   'curl -X DELETE https://api.render.com/v1/postgres/dpg-example',
   'git push --force{,}',
   'git push origin {main,--force}',
@@ -151,7 +156,7 @@ const BASH_GATE = [
   '\\psql -h db.example -c "DROP TABLE x"',
   'terraform destroy -auto-approve',
   'psql -h db.example -c "DROP TABLE users"',
-  'snow sql -q "DROP TABLE prod.orders"',
+  'snow sql -c prod -q "DROP TABLE prod.orders"',
   'aws s3 rb s3://prod --force',
   'gcloud compute instances delete vm-1',
   'kubectl delete deployment api',
@@ -212,8 +217,8 @@ const BASH_GATE = [
   'git push -- -o +main',
   'aws --profile prod s3 rm s3://bucket/key',
   'echo $(psql -h db.example -c "DROP TABLE users")',
-  'X=$(snow sql -q "DROP TABLE prod.orders")',
-  'snow sql -q "select 1;\ndrop table prod.orders"',
+  'X=$(snow sql -c prod -q "DROP TABLE prod.orders")',
+  'snow sql -c prod -q "select 1;\ndrop table prod.orders"',
   // Places bash runs a command that the walker once skipped: if/while/until
   // conditions, case arms and subjects, redirect targets, unquoted heredoc
   // bodies, ${x:-…} operands, array elements, [[ ]], $(( )) and the command
@@ -233,21 +238,21 @@ const BASH_GATE = [
   'if $(psql -h db.example -c "DROP TABLE users"); then :; fi',
   // SQL the scanner once could not see: glued option values, stdin, files
   // written in the same command, includes, templates, scripting blocks.
-  'snow sql --query="drop table prod.orders"',
-  'snow sql -q"drop table prod.orders"',
+  'snow sql -c prod --query="drop table prod.orders"',
+  'snow sql -c prod -q"drop table prod.orders"',
   'psql -h db.example -c"drop table users"',
   'mysql -e"drop table users"',
   'psql -h db.example <<EOF\ndrop table users;\nEOF',
   'psql -h db.example <<< "drop table users"',
   'echo "drop table users" > x.sql; psql -h db.example -f x.sql',
-  "cat > x.sql <<'EOF'\ndrop table users;\nEOF\nsnow sql -f x.sql",
-  'snow sql -q "&{x}" -D "x=drop table prod.orders"',
-  'snow sql -q "drop &{k} prod.orders" -D k=table',
-  'snow sql -q "begin drop table prod.orders; end"',
+  "cat > x.sql <<'EOF'\ndrop table users;\nEOF\nsnow sql -c prod -f x.sql",
+  'snow sql -c prod -q "&{x}" -D "x=drop table prod.orders"',
+  'snow sql -c prod -q "drop &{k} prod.orders" -D k=table',
+  'snow sql -c prod -q "begin drop table prod.orders; end"',
   'psql -h db.example -c "DO $$ BEGIN DROP TABLE users; END $$"',
-  'snow sql -q "alter table prod.orders swap with prod.orders_new"',
-  'snow sql -q "alter table prod.orders rename to prod.orders_old"',
-  'snow sql -q "grant ownership on table prod.orders to role r"',
+  'snow sql -c prod -q "alter table prod.orders swap with prod.orders_new"',
+  'snow sql -c prod -q "alter table prod.orders rename to prod.orders_old"',
+  'snow sql -c prod -q "grant ownership on table prod.orders to role r"',
   'git push --prune origin',
   'echo "drop table users" | psql -h db.example',
   'psql -h db.example -c "DO LANGUAGE plpgsql $$ BEGIN DROP TABLE users; END $$"',
@@ -323,8 +328,6 @@ const BASH_GATE = [
 const BASH_ALLOW = [
   'gi\\\nt status',
   'terraform\\\n plan',
-  // A single-quoted backslash-newline stays as written, so this SQL says nothing destructive.
-  "snow sql -c prod -q 'DROP TAB\\\nLE t'",
   'curl https://api.render.com/v1/postgres/dpg-example',
   'mkdir -p src/{a,b}',
   'git clean -n {a,b} -f',
@@ -384,7 +387,6 @@ const BASH_ALLOW = [
   'git push -o :note origin main',
   'git push -- -f/repo main',
   'if git status; then :; fi',
-  'snow sql -q "alter table prod.orders rename column a to b"',
   'psql -c "select \'drop table t\'"',
   'snow sql -q "select 1" -D x=y',
   'echo "drop table t"; psql -c "select 1"',
@@ -481,8 +483,15 @@ describe('parity contract — destructive bash', () => {
   for (const cmd of BASH_BLOCK) {
     it(`blocks: ${cmd}`, () => expect(evaluateBashCommand(cmd).action).toBe('block'));
   }
+  // A gated row is held by the rule it was written for: only these two are held as writes, so a broken destructive rule
+  // can't pass behind the card every write takes.
+  const WRITE_ONLY = new Set(["snow sql -c prod -q 'DROP TAB\\\nLE t'", 'snow sql -c prod -q "alter table prod.orders rename column a to b"']);
   for (const cmd of BASH_GATE) {
-    it(`gates: ${cmd}`, () => expect(evaluateBashCommand(cmd).action).toBe('gate'));
+    it(`gates: ${cmd}`, () => {
+      const verdict = evaluateBashCommand(cmd);
+      expect(verdict.action).toBe('gate');
+      expect(verdict.reason?.includes(SQL_WRITE) ?? false).toBe(WRITE_ONLY.has(cmd));
+    });
   }
   for (const cmd of BASH_ALLOW) {
     it(`allows: ${cmd}`, () => expect(evaluateBashCommand(cmd).action).toBe('allow'));

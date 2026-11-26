@@ -243,7 +243,7 @@ describe('destructive approval description', () => {
 
     test('a description that would overflow is cut to the budget', () => {
         const long = (i: number) => `delete from analytics.scratch.${'t'.repeat(400)}${i}`;
-        const c = card(`snow sql -q "${long(1)}; ${long(2)}; ${long(3)}"`);
+        const c = card(`snow sql -c prod -q "${long(1)}; ${long(2)}; ${long(3)}"`);
         expect(c.summary.length).toBeLessThanOrEqual(CARD_SUMMARY_MAX_CHARS);
         expect(c.summary.length).toBeGreaterThan(CARD_SUMMARY_MAX_CHARS - 60);
         expect(c.label.length).toBeLessThanOrEqual(CARD_LABEL_MAX_CHARS);

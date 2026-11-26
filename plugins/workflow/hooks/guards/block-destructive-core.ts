@@ -114,6 +114,7 @@ interface PipedInput {
     textFrom?: PipedInput[];    // inputs whose text (not files) also flows in
     emitters?: ResolvedCommand[]; // emitters whose words hold a variable, expanded only when a SQL client traces them
     unknown?: boolean;          // its text can't be worked out (a substitution past the expansion cap), so a reader gates
+    opaque?: string[];          // programs before it in the pipeline whose output isn't traced (anything but echo/printf/cat/tee)
 }
 
 /**
@@ -3572,6 +3573,7 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             if (i === 0) return;
             const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [], emitters: [] };
             for (const up of stageCommands(stages[i - 1])) {
+                if (!TEXT_EMITTERS.has(up.name) && !up.stdoutFiles?.length) (input.opaque ??= []).push(up.name);
                 if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
                 const fed = up.pos === undefined ? undefined : pipedInto.get(up.pos);
                 input.texts.push(...emittedText(up));
@@ -4394,7 +4396,7 @@ const isListedPgHost = (host: string | undefined, ids: string[]): boolean =>
 function pgStaysOnListedHost(cmd: ResolvedCommand, ids: string[], psqlrcAllowed: boolean): boolean {
     if (cmd.chdir !== undefined || LIBPQ_REDIRECT_ENV.some(k => LIVE_LOCAL_PG_HOST.env[k] !== undefined)) return false;
     if (!writtenArgs(cmd)?.every(isLiteralShellWord)) return false;
-    const target = cmd.name === 'psql' ? psqlTarget(cmd.args) : cmd.name === 'dropdb' ? dropdbTarget(cmd.args) : null;
+    const target = cmd.name === 'psql' ? psqlTarget(cmd.args) : cmd.name === 'dropdb' ? dropdbTarget(cmd.args) : cmd.name === 'pg_restore' ? pgRestoreTarget(cmd.args) : null;
     return !!target && (psqlrcAllowed || target.noPsqlrc) && isListedPgHost(target.host, ids);
 }
 
@@ -4838,9 +4840,13 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     for (const arg of input.texts) {
         if (!splitsLikeSnow(arg)) return null;
         if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b|^\s*DO\b|[!\\]\w/im.test(arg)) return null;
-        if (!findDestructiveSqlStatement(arg)) continue;
-        for (const st of destructiveStatements(arg)) {
-            const target = statementTarget(st.pattern, st.statement);
+        const destructive = findDestructiveSqlStatement(arg) ? destructiveStatements(arg) : [];
+        const writes = writeStatements(arg).filter(w => !destructive.some(d => d.text === w.text));
+        if (!destructive.length && !writes.length && !findDestructiveSqlStatement(arg)) continue;
+        for (const st of [...destructive, ...writes]) {
+            const target = destructive.includes(st) ? statementTarget(st.pattern, st.statement) : writeTarget(st.text);
+            // A task, alert or pipe runs a statement of its own, which its name says nothing about.
+            if (target && /^(?:task|alert|pipe)$/.test(target.kind)) return null;
             if (!target) return null;
             const needed = target.kind === 'schema' ? 2 : target.kind === 'database' ? 0 : 3;
             if (needed === 0 || target.parts.length !== needed || !allowed.has(target.parts[0])) return null;
@@ -6206,6 +6212,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
 
     const device = diskDeviceWrite(cmd);
     if (device) return device;
+    const interpreter = interpreterDbReason(cmd);
+    if (interpreter) return interpreter;
 
     // ── Databases ────────────────────────────────────────────────────────
 
@@ -6229,6 +6237,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         if (name === 'snow' && input.texts.some(t => /^\s*!(?:source|load)\s+\w+:\/\//im.test(t))) {
             return 'Snowflake SQL that snow fetches from a URL (!source/!load) can\'t be checked before it runs.';
         }
+        const egress = sqlEgressOf(cmd);
+        if (egress?.definite) return egress.reason;
         for (const text of input.texts) {
             for (const statements of name === 'psql' ? psqlStatementTexts(text) : name === 'snow' ? [snowTempTablesAsSelect(text)] : [text]) {
                 const snow = name === 'snow' ? snowLexed(statements) : null;
@@ -6238,6 +6248,12 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
                     return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
                 }
             }
+        }
+        if (name === 'psql' || name === 'snow') {
+            const write = firstSqlWrite(cmd, input.texts);
+            if (write) return `${sqlDialect} ${SQL_WRITE} (${write.pattern}) — ${write.statement}`;
+            const unread = unreadSqlExpansion(cmd);
+            if (unread) return `${sqlDialect} ${SQL_WRITE}: its SQL comes from ${unread}, which the guard can't read before the line runs, so it can't rule out a write.`;
         }
     }
 
@@ -6254,6 +6270,11 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     // dropdb reads help and version only as its first argument; anywhere else they are options or the database.
     if (name === 'dropdb' && !['--help', '-?', '--version', '-V'].includes(args[0])) {
         return 'dropdb drops a whole PostgreSQL database';
+    }
+    if (name === 'pg_restore' && pgRestoreWrites(args)) {
+        return pgRestoreOptions(args)?.some(([o]) => o === '--clean')
+            ? 'pg_restore --clean drops each object it restores into a PostgreSQL database before recreating it.'
+            : `pg_restore writes into a PostgreSQL database: ${SQL_WRITE}.`;
     }
 
     // ── Cloud providers ──────────────────────────────────────────────────
@@ -6315,6 +6336,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         return `Destructive ${name} CLI command.`;
     }
     if (name === 'render') {
+        const egress = sqlEgressOf(cmd);
+        if (egress?.definite) return egress.reason;
         const change = renderChangeReason(args);
         if (change) return change;
     }
@@ -6428,6 +6451,14 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (name === 'dbt' && args.includes('run-operation')) {
         const reason = dbtMacroReason(cmd);
         if (reason) return reason;
+    }
+    if (name === 'snow' && !args.some(a => a === '--help' || a === '-h')) {
+        const snowStep = snowCommandReason(args);
+        if (snowStep) return snowStep;
+    }
+    const dbtCommand = name === 'dbt' ? dbtSubcommand(args) : undefined;
+    if (dbtCommand && DBT_WRITE_SUBCOMMANDS.has(dbtCommand) && !args.some(a => a === '--help' || a === '-h')) {
+        return `dbt ${dbtCommand} ${DBT_WRITE}.`;
     }
 
     // ── dd (disk overwrite) ──────────────────────────────────────────────
@@ -6737,6 +6768,708 @@ function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgs
     return found;
 }
 
+// ── Database access from interpreter code ────────────────────────────────────
+// Code run by an interpreter can reach a database through a driver, or by launching psql or snow, where no SQL client
+// step shows. Its string literals go through the same SQL readers; SQL the code builds or loads, and every target (a
+// connection the code opens), can't be read, so a write or a statement the guard can't see takes the card.
+
+const INTERPRETERS = /^(?:python(?:\d+(?:\.\d+)?)?|pypy3?|node(?:js)?|bun|deno|tsx|ts-node(?:-esm)?|esno|ruby|perl)$/;
+const INTERPRETER_RUNNERS = new Set(['uv', 'poetry', 'pipenv', 'pdm', 'rye', 'hatch']);
+const PY_DRIVER = /^[ \t]*(?:import|from)[ \t]+(?:snowflake(?:\.connector|\.snowpark)?|psycopg2?|asyncpg|pg8000|sqlalchemy|databricks\.sql)\b/m;
+const JS_DRIVERS = /^(?:pg|postgres|snowflake-sdk|knex|kysely|@neondatabase\/serverless|@vercel\/postgres|slonik|pg-promise|duckdb)$/;
+// Launching a client whose first word is written in the call, or a command list that starts with one.
+const DB_CLIENT_LAUNCH = /\b(?:subprocess\.\w+|os\.(?:system|popen)|check_output|check_call|Popen|exec(?:Sync|File(?:Sync)?)?|spawn(?:Sync)?|Bun\.spawn|Deno\.Command|system)\s*\(\s*(?:\[\s*)?[fr]?['"`](?:psql|snow|pg_restore|dropdb)\b|Bun\.\$`\s*(?:psql|snow)\b|\[\s*['"](?:psql|snow|pg_restore|dropdb)['"]\s*,/;
+const SQL_CALL = /\.(?:execute|executemany|executescript|exec_driver_sql|query|sql|run_query|copy_expert|unsafe|raw)\s*\(/;
+const CODE_LITERAL = /[rRbBfFuU]{0,2}(?:"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\[\s\S])*`)/g;
+// A literal that reads as a SQL statement, not prose: its verb is followed by what the statement needs.
+const SQL_STATEMENT_SHAPE = /^\s*(?:(?:--[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:INSERT\s+(?:INTO|OVERWRITE)\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b|MERGE\s+INTO\b|(?:CREATE|ALTER|DROP|UNDROP)\s+(?:OR\s+REPLACE\s+)?[A-Z]+\b\s+\S|TRUNCATE\s+\S|(?:GRANT|REVOKE)\s+[\s\S]*\b(?:ON|TO|FROM)\b|COPY\s+(?:INTO\s+)?\S+[\s\S]*\b(?:FROM|TO)\b|CALL\s+\S+\s*\(|PUT\s+'?file:|GET\s+@|REMOVE\s+@|EXECUTE\s+IMMEDIATE\b|DO\s+\$|SELECT\b|WITH\b|BEGIN\b)/i;
+
+/** The body of each string literal in `code`, with an f-string's or template's placeholders read as a plain value. */
+function codeLiterals(code: string): string[] {
+    return [...code.matchAll(CODE_LITERAL)].map(m => {
+        const quote = /("""|'''|["'`])/.exec(m[0])!;
+        const prefix = m[0].slice(0, quote.index).toLowerCase();
+        const body = m[0].slice(quote.index + quote[1].length, m[0].length - quote[1].length);
+        return prefix.includes('f') || quote[1] === '`' ? body.replace(/\$?\{[^{}]*\}/g, 'x') : body;
+    });
+}
+
+/** Whether interpreter code opens a database driver, read as code: an import spelled inside a string doesn't count. */
+function importsDbDriver(name: string, code: string): boolean {
+    if (/^(?:python|pypy)/.test(name)) return PY_DRIVER.test(code.replace(/"""[\s\S]*?"""|'''[\s\S]*?'''/g, ''));
+    // In JavaScript the module is a string, so only one in import or require position names a module.
+    for (const m of code.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)(['"`])([^'"`\n]+)\1/g)) if (JS_DRIVERS.test(m[2])) return true;
+    return false;
+}
+
+/** The interpreter a step runs, past a runner such as §uv run§; null for any other step. */
+function interpreterOf(cmd: ResolvedCommand): { name: string; args: string[] } | null {
+    if (INTERPRETERS.test(cmd.name)) return { name: cmd.name, args: cmd.args };
+    if (!INTERPRETER_RUNNERS.has(cmd.name) || cmd.args[0] !== 'run') return null;
+    const at = cmd.args.findIndex((a, i) => i > 0 && !a.startsWith('-'));
+    return at > 0 && INTERPRETERS.test(cmd.args[at]) ? { name: cmd.args[at], args: cmd.args.slice(at + 1) } : null;
+}
+
+/** The code an interpreter step runs: inline, piped or here-doc text, and its script file as written on the line and on disk. */
+function interpreterCode(cmd: ResolvedCommand, run: { name: string; args: string[] }): { texts: string[]; unread: boolean } {
+    const texts = [...(cmd.stdinTexts ?? [])];
+    let unread = false;
+    const piped = cmd.pos !== undefined ? cmd.script?.pipedInto.get(cmd.pos) ?? cmd.pipedInput : cmd.pipedInput;
+    if (piped) {
+        const flat = flattenInput(piped, cmd.script);
+        texts.push(...flat.texts);
+        if (flat.over) unread = true;
+        for (const f of flat.catFiles) for (const r of readSqlFiles(f, cmd)) if (typeof r.content === 'string') texts.push(r.content);
+    }
+    const inline = /^python|^pypy/.test(run.name) ? ['-c'] : ['-e', '--eval', '-p', '--print', '-E'];
+    let script: string | undefined;
+    for (let i = 0; i < run.args.length; i++) {
+        const a = run.args[i];
+        if (inline.includes(a)) {
+            if (run.args[i + 1] !== undefined) texts.push(run.args[i + 1]);
+            return { texts, unread };
+        }
+        const glued = inline.map(o => (a.startsWith(o) && o.length === 2 && a.length > 2 ? a.slice(2) : null)).find(v => v !== null);
+        if (glued) return { texts: [...texts, glued], unread };
+        if (run.name === 'deno' && a === 'eval') return { texts: [...texts, ...run.args.slice(i + 1, i + 2)], unread };
+        if (a === '-m') return { texts, unread: true };
+        if (a.startsWith('-')) continue;
+        if (run.name === 'deno' && a === 'run') continue;
+        script = a;
+        break;
+    }
+    if (script !== undefined && script !== '-') {
+        const written = writesTo(script, cmd);
+        if (written === null) unread = true;
+        else for (const input of written) texts.push(...flattenInput(input, cmd.script).texts);
+        const read = readSqlFiles(script, cmd);
+        for (const r of read) {
+            if (typeof r.content === 'string') texts.push(r.content);
+            else unread = true;
+        }
+        if (!read.length && !written?.length) unread = true;
+    }
+    return { texts, unread };
+}
+
+/** Why an interpreter step that reaches a database needs approval, or null when it reaches none or only reads. */
+function interpreterDbReason(cmd: ResolvedCommand): string | null {
+    const run = interpreterOf(cmd);
+    if (!run) return null;
+    const { texts, unread } = interpreterCode(cmd, run);
+    const code = texts.join('\n');
+    const how = `${run.name} code that reaches a database`;
+    const fix = 'The guard reads SQL only from psql and snow sql: run the SQL through one of them, with the host or connection written out, and a listed dev target runs without approval.';
+    if (!importsDbDriver(run.name, code) && !DB_CLIENT_LAUNCH.test(code)) {
+        // Code the guard can't read is judged by the line, which may name a driver for it.
+        const line = cmd.script?.command ?? cmd.raw;
+        return unread && importsDbDriver(run.name, line)
+            ? `${run.name} runs code the guard can't read, on a line that imports a database driver for it, so whether it writes can't be checked. ${fix}`
+            : null;
+    }
+    const literals = codeLiterals(code);
+    // A .sql file the code opens by a written path is read like one psql or snow is given.
+    const sqlFiles = literals.filter(l => /^[\w./~-]+\.sql$/.test(l));
+    const sql = [...literals];
+    let hidden = unread;
+    for (const f of sqlFiles) {
+        const read = readSqlFiles(expandPath(f), cmd);
+        if (!read.length) hidden = true;
+        for (const r of read) {
+            if (typeof r.content === 'string') sql.push(r.content);
+            else hidden = true;
+        }
+    }
+    let statements = 0;
+    for (const body of sql) {
+        if (!SQL_STATEMENT_SHAPE.test(body)) continue;
+        statements++;
+        const egress = egressIn(body);
+        if (egress && egress !== 'unreadable') return `${SQL_EGRESS}: ${how} sends data out (${egress.pattern}) — ${egress.statement}. ${fix}`;
+        const destructive = findDestructiveSqlStatement(body);
+        if (destructive) return `Destructive SQL in ${how} (${destructive.pattern}) — ${destructive.statement}. ${fix}`;
+        const write = writeStatements(body)[0];
+        if (write) return `${how} runs ${SQL_WRITE} (${write.pattern}) — ${oneLine(write.statement).slice(0, STATEMENT_PREVIEW_CHARS)}. ${fix}`;
+    }
+    if (hidden) return `${how} runs SQL the guard can't read (a script or .sql file it can't open), so whether it writes can't be checked. ${fix}`;
+    if (!statements && (SQL_CALL.test(code) || DB_CLIENT_LAUNCH.test(code))) {
+        return `${how} runs SQL that no string in it spells out, so whether it writes can't be checked. ${fix}`;
+    }
+    return null;
+}
+
+// ── Writes, and data leaving the account ─────────────────────────────────────
+// Off a target proven dev, SQL that writes at all takes a card, not only SQL that deletes or overwrites. Data that
+// leaves the account takes one wherever it runs, dev included, because a dev login can read production tables.
+
+/** Statement verbs that write in Postgres or Snowflake. Any other leading word reads, sets the session, or declares. */
+const SQL_WRITE_VERBS = new Set(['INSERT', 'UPDATE', 'DELETE', 'MERGE', 'UPSERT', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE', 'GRANT',
+    'REVOKE', 'COPY', 'CALL', 'EXECUTE', 'PUT', 'REMOVE', 'RM', 'UNDROP', 'COMMENT', 'REFRESH', 'VACUUM', 'REINDEX', 'CLUSTER',
+    'IMPORT', 'LOAD', 'REASSIGN', 'SECURITY']);
+const SQL_WRITE_PREFILTER = new RegExp(String.raw`\b(?:${[...SQL_WRITE_VERBS, 'INTO', 'DO', 'ANALYZE', 'ANALYSE'].join('|')})\b`, 'i');
+export const SQL_WRITE = 'SQL that writes, on a target not proven dev';
+export const SQL_EGRESS = 'Data leaving the account';
+
+/** The skeleton with everything inside parentheses blanked, so a clause found in it is the statement's own. */
+function topLevelOf(skeleton: string): string {
+    let depth = 0;
+    let out = '';
+    for (const c of skeleton) {
+        if (c === '(') depth++;
+        out += depth > 0 ? ' ' : c;
+        if (c === ')' && depth > 0) depth--;
+    }
+    return out;
+}
+
+/** What a statement (as a skeleton, from its verb on) writes, as a label; null when it only reads. */
+function writeLabel(s: string, plpgsql: boolean): string | null {
+    const verb = /^([A-Za-z]+)\b/.exec(s)?.[1].toUpperCase();
+    if (!verb) return null;
+    if (verb === 'EXPLAIN') {
+        // EXPLAIN ANALYZE runs the statement it explains.
+        if (!/^EXPLAIN\s*(?:\([^)]*\bANALY[SZ]E\b|\s+ANALY[SZ]E\b)/i.test(s)) return null;
+        const inner = writeLabel(s.replace(/^EXPLAIN\s*(?:\([^)]*\)\s*|(?:ANALY[SZ]E|VERBOSE)\s+)*/i, ''), plpgsql);
+        return inner && `EXPLAIN ANALYZE ${inner}`;
+    }
+    // Postgres SELECT … INTO creates a table; in PL/pgSQL, and as Snowflake Scripting's INTO :var, it sets a variable.
+    if (verb === 'SELECT') return !plpgsql && /\bINTO\s+(?!:|OUTFILE\b|DUMPFILE\b)\S/i.test(topLevelOf(s)) ? 'SELECT INTO' : null;
+    if (!SQL_WRITE_VERBS.has(verb)) return null;
+    // The SQL these run is read where it is written, by findExecuteImmediateLiterals.
+    if (verb === 'EXECUTE' && (plpgsql || /^EXECUTE\s+IMMEDIATE\b/i.test(s))) return null;
+    if (verb === 'COPY' && /\bTO\s+STDOUT\b/i.test(s)) return null;
+    if (verb === 'ALTER' && /^ALTER\s+SESSION\b/i.test(s)) return null;
+    // A temporary object lives and dies with the session.
+    if (verb === 'CREATE' && /^CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:LOCAL|GLOBAL)\s+)?TEMP(?:ORARY)?\s/i.test(s)) return null;
+    if (verb === 'CREATE' || verb === 'ALTER' || verb === 'DROP' || verb === 'UNDROP') {
+        const kind = new RegExp(String.raw`^${verb}\s+(?:OR\s+REPLACE\s+)?((?:(?:SECURE|TRANSIENT|EXTERNAL|MATERIALIZED|DYNAMIC|ICEBERG|HYBRID|UNIQUE|RECURSIVE|UNLOGGED|DATABASE)\s+)*[A-Za-z]+)`, 'i').exec(s)?.[1];
+        return kind ? `${verb} ${kind.toUpperCase().replace(/\s+/g, ' ')}` : verb;
+    }
+    return verb;
+}
+
+/** checkSqlBody for writes: the statement's own verb, and in a scripting block each statement a boundary word starts. */
+function checkWriteBody(body: string, isCTE: boolean, plpgsql: boolean): string | null {
+    const whole = body.trim();
+    let trimmed = whole;
+    let scripted = false;
+    for (let i = 0; i < BLOCK_LEAD_MAX_STRIPS && BLOCK_LEAD.test(trimmed); i++) {
+        trimmed = trimmed.replace(BLOCK_LEAD, '').trim();
+        scripted = true;
+    }
+    const found = writeLabel(trimmed, plpgsql);
+    if (found || !scripted) return found && (isCTE ? `CTE-wrapped ${found}` : found);
+    let candidates = 0;
+    for (const m of whole.matchAll(SCRIPT_BOUNDARY)) {
+        if (++candidates > SCRIPT_CANDIDATES_MAX) return TOO_COMPLEX;
+        BOUNDARY_LEAD.lastIndex = m.index + m[0].length;
+        BOUNDARY_LEAD.exec(whole);
+        const at = BOUNDARY_LEAD.lastIndex;
+        BOUNDARY_WORD.lastIndex = at;
+        const word = BOUNDARY_WORD.exec(whole);
+        if (!word || word[2] || !SQL_WRITE_VERBS.has(word[1].toUpperCase())) continue;
+        const inner = writeLabel(whole.slice(at), plpgsql);
+        if (inner) return inner;
+    }
+    return null;
+}
+
+/** Every statement in `sql` that writes, with dynamic SQL read where it is written and SQL the guard can't read counted. */
+function writeStatements(sql: string, depth = 0, outerParsed = true, plpgsql = false): FoundStatement[] {
+    if (!SQL_WRITE_PREFILTER.test(sql)) return [];
+    if (depth === 0 && outerParsed && !plpgsql) return memoized(writeMemo, sql, () => writeStatements(sql, -1));
+    depth = Math.max(depth, 0);
+    if (depth > SQL_RECURSION_LIMIT) {
+        const text = sql.trim();
+        return [{ pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: text, text, skeleton: stripSqlLiteralsAndComments(text), parsed: false }];
+    }
+    const found: FoundStatement[] = [];
+    for (const backslash of sql.includes('\\') ? [false, true] : [false]) {
+        const lexed = sqlSkeleton(sql, backslash);
+        for (const { segment, original, text, skeleton, parsed } of sqlStatements(sql, outerParsed, lexed)) {
+            for (const { body, isCTE } of decomposeSqlSegment(segment)) {
+                const label = checkWriteBody(body, isCTE, plpgsql);
+                if (label) {
+                    found.push({ pattern: label, statement: original, text, skeleton, parsed });
+                    break;
+                }
+            }
+        }
+        const dynamic = findExecuteImmediateLiterals(sql, lexed.skeleton, { plpgsql, backslash });
+        for (const { start, end, label } of dynamic.unreadable) {
+            const text = sql.slice(start, end).trimEnd();
+            found.push({ pattern: label, statement: text.trim(), text, skeleton: lexed.skeleton.slice(start, start + text.length), parsed: false });
+        }
+        for (const literal of dynamic.literals) found.push(...writeStatements(literal.body, depth + 1, outerParsed && lexed.openAt < 0, literal.plpgsql));
+        if (found.length) break;
+    }
+    return found;
+}
+
+// Statements that send data out of the account, matched anywhere in a statement once literals and comments are blanked.
+const SQL_EGRESS_PATTERNS: Array<{ rx: RegExp; label: string }> = [
+    { rx: /\bCOPY\s+(?:FILES\s+)?INTO\s+(?:@|')/i, label: 'COPY INTO a stage or external location' },
+    { rx: /\b(?:CREATE|ALTER)\s+(?:OR\s+REPLACE\s+)?SHARE\b/i, label: 'a share' },
+    { rx: /\bGRANT\b[\s\S]*\bTO\s+SHARE\b/i, label: 'a grant to a share' },
+    { rx: /\b(?:CREATE|ALTER)\s+(?:OR\s+REPLACE\s+)?MANAGED\s+ACCOUNT\b/i, label: 'a reader account' },
+    { rx: /\b(?:CREATE|ALTER)\s+(?:OR\s+REPLACE\s+)?(?:REPLICATION|FAILOVER)\s+GROUP\b|\bENABLE\s+(?:REPLICATION|FAILOVER)\s+TO\s+ACCOUNTS?\b/i, label: 'replication to another account' },
+    { rx: /\b(?:CREATE|ALTER)\s+(?:OR\s+REPLACE\s+)?(?:(?:ORGANIZATION|EXTERNAL)\s+)?LISTING\b/i, label: 'a listing' },
+    { rx: /\bSYSTEM\$SEND_(?:EMAIL|SNOWFLAKE_NOTIFICATION)\b/i, label: 'an email or notification' },
+    { rx: /\b(?:lo_export|pg_file_write)\s*\(/i, label: 'a file written on the database server' },
+    { rx: /\bdblink\w*\s*\(/i, label: 'dblink to another server' },
+    { rx: /\bCREATE\s+(?:SUBSCRIPTION|PUBLICATION|(?:FOREIGN\s+)?SERVER)\b|\b(?:CREATE|ALTER)\s+USER\s+MAPPING\b/i, label: 'replication or a foreign server' },
+];
+// At a statement's start: Snowflake's GET downloads stage files, and a server-side COPY … TO writes a file or feeds a program.
+const SQL_EGRESS_LEADS: Array<{ rx: RegExp; label: string }> = [
+    { rx: /^GET\s+(?:@|')/i, label: 'GET from a stage' },
+    { rx: /^COPY\b(?![\s\S]*\bTO\s+STDOUT\b)[\s\S]*?\bTO\s+(?:PROGRAM\b|E?')/i, label: 'COPY … TO a server file or program' },
+];
+
+// One line can hand the same text to thousands of client steps; each text is read once.
+const SQL_SCAN_MEMO_MAX = 64;
+const egressMemo = new Map<string, DestructiveMatch | 'unreadable' | null>();
+const writeMemo = new Map<string, FoundStatement[]>();
+function memoized<T>(memo: Map<string, T>, key: string, compute: () => T): T {
+    if (memo.has(key)) return memo.get(key)!;
+    const value = compute();
+    if (memo.size >= SQL_SCAN_MEMO_MAX) memo.delete(memo.keys().next().value!);
+    memo.set(key, value);
+    return value;
+}
+
+/** The first statement in `sql` that sends data out of the account, `'unreadable'` when dynamic SQL hides what runs, or null. */
+function egressIn(sql: string, depth = 0, plpgsql = false): DestructiveMatch | 'unreadable' | null {
+    if (depth === 0 && !plpgsql) return memoized(egressMemo, sql, () => egressIn(sql, -1));
+    if (depth > SQL_RECURSION_LIMIT) return 'unreadable';
+    depth = Math.max(depth, 0);
+    for (const backslash of sql.includes('\\') ? [false, true] : [false]) {
+        const lexed = sqlSkeleton(sql, backslash);
+        for (const { text, skeleton } of sqlStatements(sql, true, lexed)) {
+            const hit = SQL_EGRESS_PATTERNS.find(p => p.rx.test(skeleton)) ?? SQL_EGRESS_LEADS.find(p => p.rx.test(skeleton));
+            if (hit) return { pattern: hit.label, statement: oneLine(text).slice(0, STATEMENT_PREVIEW_CHARS) };
+        }
+        const dynamic = findExecuteImmediateLiterals(sql, lexed.skeleton, { plpgsql, backslash });
+        if (dynamic.unreadable.length) return 'unreadable';
+        for (const literal of dynamic.literals) {
+            const inner = egressIn(literal.body, depth + 1, literal.plpgsql);
+            if (inner) return inner;
+        }
+    }
+    return null;
+}
+
+/** The SQL a client step reads, the way the destructive scan reads it, each with whether snow's lexing was read exactly. */
+function sqlReadings(cmd: ResolvedCommand, texts: string[]): Array<{ text: string; exact: boolean }> {
+    const out: Array<{ text: string; exact: boolean }> = [];
+    for (const text of texts) {
+        for (const statements of cmd.name === 'psql' ? psqlStatementTexts(text) : cmd.name === 'snow' ? [snowTempTablesAsSelect(text)] : [text]) {
+            if (cmd.name !== 'snow') {
+                out.push({ text: statements, exact: true });
+                continue;
+            }
+            const lexed = snowLexed(statements);
+            out.push(lexed.exact ? { text: lexed.text, exact: true } : { text: statements, exact: false });
+        }
+    }
+    return out;
+}
+
+/** The SQL a `render psql` step passes with -c or --command; null for any other step. */
+function renderPsqlTexts(cmd: ResolvedCommand): string[] | null {
+    if (cmd.name !== 'render' || cmd.args[0] !== 'psql') return null;
+    const texts: string[] = [];
+    cmd.args.forEach((a, i) => {
+        if ((a === '-c' || a === '--command') && cmd.args[i + 1] !== undefined) texts.push(cmd.args[i + 1]);
+        else if (a.startsWith('--command=')) texts.push(a.slice('--command='.length));
+    });
+    return texts;
+}
+
+type SqlEgress = { definite: true; reason: string } | { definite: false };
+const sqlEgresses = new WeakMap<ResolvedCommand, SqlEgress | null>();
+
+/**
+ * Whether a Postgres or Snowflake client step sends data out of the account (definite), or runs SQL the guard can't
+ * read (not definite): then no dev exemption applies, since what it hides could send data out.
+ */
+function sqlEgressOf(cmd: ResolvedCommand): SqlEgress | null {
+    if (sqlEgresses.has(cmd)) return sqlEgresses.get(cmd)!;
+    const found = ((): SqlEgress | null => {
+        const render = renderPsqlTexts(cmd);
+        const dialect = cmd.name === 'psql' || render ? 'PostgreSQL' : cmd.name === 'snow' && cmd.args[0] === 'sql' ? 'Snowflake' : null;
+        if (!dialect) return null;
+        let texts = render;
+        if (!texts) {
+            const input = sqlInputFor(cmd);
+            if (input.unreadable) return { definite: false };
+            if (cmd.name === 'snow') {
+                const templating = snowTemplating(cmd);
+                if (templating.some(t => t === 'JINJA' || t === 'ALL')) return { definite: false };
+                // A `<% %>` or `&{ }` template the line doesn't fill takes its value from config or the environment; a bare
+                // `&name` is left alone, since it is mostly text such as `P&L`.
+                const envNames = new Set(cmd.args.filter((_, i) => cmd.args[i - 1] === '--env').map(v => v.split('=')[0]));
+                const unfilled = (t: string) => unfilledSnowTemplate(t.replace(/&(?!\{)/g, ' ').replace(/<%\s*ctx\.env\.(\w+)\s*%>/g, (m, n) => (envNames.has(n) ? ' ' : m)), cmd);
+                if (!(templating.length && templating.every(t => t === 'NONE')) && input.texts.some(t => /<%|&\{/.test(t) && unfilled(t))) return { definite: false };
+                if (input.texts.some(t => /^\s*!(?:source|load)\s+\w+:\/\//im.test(t))) return { definite: false };
+            }
+            // A -D or --env value is text snow may put into the SQL; a template the line doesn't fill takes no hidden SQL from it.
+            const filled = cmd.name === 'snow' ? cmd.args.filter((_, i) => /^(?:-D|--variable|--env)$/.test(cmd.args[i - 1] ?? '')) : [];
+            texts = [...input.texts, ...filled];
+        }
+        let unreadable = !render && unreadSqlExpansion(cmd) !== null;
+        if (cmd.name === 'psql') texts = [...texts, ...psqlVariableValues(cmd, texts)];
+        for (const { text, exact } of sqlReadings(cmd, texts)) {
+            const hit = egressIn(text);
+            if (hit === 'unreadable') unreadable = true;
+            else if (hit) return { definite: true, reason: `${SQL_EGRESS}: ${dialect} SQL sends data out (${hit.pattern}) — ${hit.statement}` };
+            // Text snow lexes differently from the scanner is also read with its literals and comments in place.
+            const loose = exact ? undefined : SQL_EGRESS_PATTERNS.find(p => p.rx.test(text));
+            if (loose) return { definite: true, reason: `${SQL_EGRESS}: ${dialect} SQL may send data out (${loose.label}) — ${oneLine(text).slice(0, STATEMENT_PREVIEW_CHARS)}` };
+        }
+        return unreadable ? { definite: false } : null;
+    })();
+    sqlEgresses.set(cmd, found);
+    return found;
+}
+
+const SQL_TEXT_OPTION = /^(?:-c|--command|-q|--query)$/;
+
+/**
+ * An expansion the guard can't read before the line runs, in the SQL a psql or snow step is handed: a -c/-q value, a
+ * here-string or piped text. Its text then isn't the SQL that runs, so neither whether it writes nor whether it sends
+ * data out is known.
+ */
+function unreadSqlExpansion(cmd: ResolvedCommand): string | null {
+    if (cmd.name !== 'psql' && !(cmd.name === 'snow' && cmd.args[0] === 'sql')) return null;
+    const script = cmd.script;
+    if (!script || cmd.pos === undefined) return null;
+    script.view ??= viewShell(script.command);
+    const view = script.view;
+    // A value spliced into SQL that is otherwise written out leaves its statements readable; SQL that is wholly an
+    // expansion, or built by a command, is not.
+    const hidden = (word: string, pos: number): string | null => {
+        const whole = /^"?\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})"?$/.test(word.trim());
+        // Unquoted, a known value still splits into words; the value is what is asked about.
+        const unresolved = evalWord(whole && !word.trim().startsWith('"') ? `"${word.trim()}"` : word, view, pos).unresolved;
+        const built = unresolved.find(u => u.startsWith('$(') || u.startsWith('`'));
+        return built ?? (whole && unresolved.length ? unresolved[0] : null);
+    };
+    const sqlAt = (i: number) => SQL_TEXT_OPTION.test(cmd.args[i - 1] ?? '') || /^--(?:command|query)=/.test(cmd.args[i]);
+    const words = view.commandAt(cmd.pos)?.argTexts;
+    if (words && words.length >= cmd.args.length) {
+        const own = words.slice(words.length - cmd.args.length);
+        for (let i = 0; i < cmd.args.length; i++) {
+            const found = sqlAt(i) ? hidden(own[i].replace(/^--(?:command|query)=/, ''), cmd.pos) : null;
+            if (found) return found;
+        }
+    }
+    for (const w of cmd.stdinExpanded ?? []) {
+        const found = hidden(w.word, cmd.pos);
+        if (found) return found;
+    }
+    // What echo or printf feeds the client through a pipe, and the output of any other program, which isn't traced.
+    const readsStdin = cmd.name === 'psql'
+        ? !cmd.args.some((a, i) => /^(?:-[A-Za-z]*[cf]|--command|--file)(?:=|$)/.test(a) && !(/^(?:-f|--file)$/.test(a) && cmd.args[i + 1] === '-'))
+        : cmd.args.some(a => a === '-i' || a === '--stdin');
+    const stack = [script.pipedInto.get(cmd.pos) ?? cmd.pipedInput].filter((p): p is PipedInput => !!p);
+    const seen = new Set<PipedInput>();
+    while (stack.length && seen.size < PIPE_NESTING_MAX) {
+        const node = stack.pop()!;
+        if (seen.has(node)) continue;
+        seen.add(node);
+        if (readsStdin && node.opaque?.length) return `the output of ${node.opaque[0]}`;
+        for (const emitter of node.emitters ?? []) {
+            const texts = emitter.pos === undefined ? undefined : view.commandAt(emitter.pos)?.argTexts;
+            for (const t of texts?.slice(texts.length - emitter.args.length) ?? []) {
+                const found = hidden(t, emitter.pos!);
+                if (found) return found;
+            }
+        }
+        stack.push(...node.from ?? [], ...node.textFrom ?? []);
+    }
+    return null;
+}
+
+/** The values psql variables hold, set by -v/--set or `\set`: a `:name` in the input runs one as SQL. */
+function psqlVariableValues(cmd: ResolvedCommand, texts: string[]): string[] {
+    const values = psqlArgAssignments(cmd.args).map(v => v.slice(v.indexOf('=') + 1)).filter(Boolean);
+    for (const t of texts) for (const m of t.matchAll(/\\set[ \t]+\S+[ \t]+([^\n]*)/g)) values.push(m[1].replace(/^(['"])([\s\S]*)\1$/, '$2'));
+    return values;
+}
+
+/** psql backslash commands that write: `\copy … FROM` loads a table, and `\gexec` runs each value a query returns as SQL. */
+function psqlMetaWrite(text: string): DestructiveMatch | null {
+    for (const line of text.split('\n')) {
+        if (/\\gexec\b/.test(line)) return { pattern: '\\gexec', statement: oneLine(line).slice(0, STATEMENT_PREVIEW_CHARS) };
+        const copy = /^\s*\\copy\s+([\s\S]*)$/i.exec(line);
+        if (!copy) continue;
+        let rest = copy[1];
+        if (rest.startsWith('(')) {
+            let depth = 0;
+            let i = 0;
+            for (; i < rest.length; i++) {
+                if (rest[i] === '(') depth++;
+                else if (rest[i] === ')' && --depth === 0) break;
+            }
+            rest = rest.slice(i + 1);
+        } else {
+            rest = rest.replace(/^\S+\s*(?:\([^)]*\))?/, '');
+        }
+        if (/^\s*from\b/i.test(rest)) return { pattern: '\\copy FROM', statement: oneLine(line).slice(0, STATEMENT_PREVIEW_CHARS) };
+    }
+    return null;
+}
+
+/** The first write a psql or snow step makes, or null when every statement only reads. */
+function firstSqlWrite(cmd: ResolvedCommand, texts: string[]): DestructiveMatch | null {
+    if (cmd.name === 'psql') texts = [...texts, ...psqlVariableValues(cmd, texts)];
+    if (cmd.name === 'psql') {
+        for (const text of texts) {
+            const meta = psqlMetaWrite(text);
+            if (meta) return meta;
+        }
+    }
+    for (const { text, exact } of sqlReadings(cmd, texts)) {
+        const st = writeStatements(text)[0];
+        if (st) return { pattern: st.pattern, statement: oneLine(st.statement).slice(0, STATEMENT_PREVIEW_CHARS) };
+        if (!exact) {
+            // Snow may lex this text differently from the scanner (a `$` inside a name opens no quote for snow), so it is
+            // also read with only quotes and comments blanked.
+            const loose = text.replace(/'(?:[^'\\]|\\[\s\S]|'')*'|"(?:[^"]|"")*"|--[^\n]*|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, m => ' '.repeat(m.length));
+            for (const segment of loose.split(';')) {
+                for (const { body, isCTE } of decomposeSqlSegment(segment)) {
+                    const label = checkWriteBody(body, isCTE, false);
+                    if (label) return { pattern: label, statement: oneLine(segment).slice(0, STATEMENT_PREVIEW_CHARS) };
+                }
+            }
+        }
+    }
+    return null;
+}
+
+/** Why a snow command other than `snow sql` writes or sends data out, or null. */
+function snowCommandReason(args: string[]): string | null {
+    const [group, sub] = args;
+    const operands = args.slice(2).filter(a => !a.startsWith('-'));
+    const onStage = (p: string | undefined) => !!p && /^(?:@|snow:\/\/)/.test(p);
+    if ((group === 'stage' || group === 'git') && sub === 'copy') {
+        const [from, to] = operands;
+        if (onStage(to)) return `snow ${group} copy writes to a stage: ${SQL_WRITE}.`;
+        if (group === 'stage' && onStage(from)) return `${SQL_EGRESS}: snow stage copy downloads stage files out of the account.`;
+        return null;
+    }
+    if ((group === 'stage' || group === 'git') && sub === 'execute') return `snow ${group} execute runs SQL files from a stage, which the guard can't read: ${SQL_WRITE}.`;
+    if ((group === 'stage' && ['create', 'drop', 'remove'].includes(sub)) || (group === 'git' && ['setup', 'drop', 'fetch'].includes(sub)) || (group === 'object' && ['create', 'drop'].includes(sub))) {
+        return `snow ${group} ${sub} changes a Snowflake object: ${SQL_WRITE}.`;
+    }
+    return null;
+}
+
+/** The object a write statement names, as Snowflake identifiers, with its kind; null when it names none the guard reads. */
+function writeTarget(statement: string): { kind: string; parts: string[] } | null {
+    const s = oneLine(statement.slice(0, STATEMENT_MAX_CHARS));
+    const name = String.raw`((?:"(?:[^"]|"")+"|[A-Za-z0-9_$]+)(?:\.(?:"(?:[^"]|"")+"|[A-Za-z0-9_$]+))*)`;
+    const kinds = String.raw`((?:(?:SECURE|TRANSIENT|EXTERNAL|MATERIALIZED|DYNAMIC|ICEBERG|HYBRID|RECURSIVE)\s+)*(?:FILE\s+FORMAT|\w+))`;
+    const end = String.raw`(?:\s|\(|$)`;
+    const m = s.match(new RegExp(String.raw`^INSERT\s+(?:OVERWRITE\s+)?INTO()\s+${name}${end}`, 'i'))
+        ?? s.match(new RegExp(String.raw`^UPDATE()\s+${name}\s`, 'i'))
+        ?? s.match(new RegExp(String.raw`^COPY\s+INTO()\s+${name}${end}`, 'i'))
+        ?? s.match(new RegExp(String.raw`^CREATE\s+(?:OR\s+REPLACE\s+)?${kinds}\s+(?:IF\s+NOT\s+EXISTS\s+)?${name}${end}`, 'i'))
+        ?? s.match(new RegExp(String.raw`^(?:ALTER|DROP|UNDROP)\s+${kinds}\s+(?:IF\s+EXISTS\s+)?${name}${end}`, 'i'))
+        ?? s.match(new RegExp(String.raw`^COMMENT\s+(?:IF\s+EXISTS\s+)?ON\s+${kinds}\s+${name}\s+IS\b`, 'i'));
+    if (!m) return null;
+    const parts = m[2].match(/"(?:[^"]|"")+"|[^.]+/g)?.map(snowflakeIdentifier) ?? [];
+    if (parts.some(p => p === null)) return null;
+    const kind = (m[1] || 'table').toLowerCase().replace(/\s+/g, ' ').replace(/^(?:(?:secure|transient|external|materialized|dynamic|iceberg|hybrid|recursive) )+/, '');
+    return { kind, parts: parts as string[] };
+}
+
+const DBT_WRITE_SUBCOMMANDS = new Set(['run', 'build', 'seed', 'snapshot', 'clone', 'retry', 'run-operation']);
+const DBT_GLOBAL_VALUE_FLAGS = new Set(['--log-format', '--log-format-file', '--log-level', '--log-level-file', '--log-path', '--profiles-dir', '--project-dir', '--target-path', '--printer-width', '--record-timing-info', '-r']);
+export const DBT_WRITE = 'writes to its dbt target, which is not proven dev';
+
+/** The dbt subcommand a step runs, past dbt's own options. */
+function dbtSubcommand(args: string[]): string | undefined {
+    for (let i = 0; i < args.length; i++) {
+        if (DBT_GLOBAL_VALUE_FLAGS.has(args[i])) i++;
+        else if (!args[i].startsWith('-')) return args[i];
+    }
+    return undefined;
+}
+
+/**
+ * The dbt target a step writes to and that output's database, read from the default profiles file; null when any part
+ * can't be read, or when the line can move the database: another profiles file, a dbt variable or environment setting
+ * that names a database.
+ */
+function dbtTargetDatabase(cmd: ResolvedCommand, dir: string): { target: string; database: string } | null {
+    const yaml = (globalThis as { Bun?: { YAML?: { parse(text: string): unknown } } }).Bun?.YAML;
+    if (!yaml || flagValue(cmd.args, ['--profiles-dir']) !== undefined || process.env.DBT_PROFILES_DIR !== undefined) return null;
+    if ((cmd.env ?? []).some(e => /^DBT_|DATABASE/i.test(e))) return null;
+    if (flagValues(cmd.args, ['--vars']).some(v => /database|\bdb\b/i.test(v))) return null;
+    const literal = (v: string | undefined) => v === undefined || !/[$`{}*?]/.test(v);
+    const projectFlag = flagValue(cmd.args, ['--project-dir']) ?? process.env.DBT_PROJECT_DIR;
+    const targetFlag = flagValue(cmd.args, ['--target', '-t']) ?? process.env.DBT_TARGET;
+    const profileFlag = flagValue(cmd.args, ['--profile']) ?? process.env.DBT_PROFILE;
+    if (![projectFlag, targetFlag, profileFlag].every(literal)) return null;
+    const project = projectFlag ? pathResolve(dir, expandPath(projectFlag)) : dir;
+    const profile = profileFlag ?? readConfigFile(join(project, 'dbt_project.yml'))?.match(/^profile:\s*['"]?([\w.-]+)['"]?\s*(?:#.*)?$/m)?.[1];
+    if (!profile) return null;
+    // dbt reads a profiles.yml in the working directory before ~/.dbt; only the staged ~/.dbt one is read here.
+    if (existsSync(join(dir, 'profiles.yml'))) return null;
+    const file = join(process.env.HOME || homedir(), '.dbt', 'profiles.yml');
+    const text = readConfigFile(file);
+    if (!text || text.includes('{{') || text.includes('{%')) return null;
+    let doc: any;
+    try {
+        doc = yaml.parse(text);
+    } catch {
+        return null;
+    }
+    const entry = doc?.[profile];
+    const target = targetFlag ?? entry?.target;
+    const output = typeof target === 'string' ? entry?.outputs?.[target] : undefined;
+    if (!output || typeof output !== 'object') return null;
+    const { type, database } = output as { type?: unknown; database?: unknown };
+    if (type !== 'snowflake' || typeof database !== 'string' || !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(database)) return null;
+    return { target, database: database.toUpperCase() };
+}
+
+/**
+ * The listed dev database a dbt step builds in, when every directory it may run from resolves its target to one.
+ * dbt writes each model into the target's database unless the project sends it elsewhere, which this doesn't read.
+ */
+function dbtDevTarget(cmd: ResolvedCommand, dirs: string[] | null): string | null {
+    const scope = currentDevScope();
+    if (!scope || !dirs?.length) return null;
+    const dev = new Set(scope.snowflake.flatMap(e => e.databases.map(d => d.toUpperCase())));
+    let found: string | null = null;
+    for (const dir of dirs) {
+        const t = dbtTargetDatabase(cmd, dir);
+        const here = t && `dbt target ${t.target}, database ${t.database}`;
+        if (!t || !dev.has(t.database) || (found !== null && found !== here)) return null;
+        found = here;
+    }
+    return found;
+}
+
+const PG_RESTORE_VALUE_LETTERS = 'dfFjLnNPStTIhpU';
+const PG_RESTORE_FLAG_LETTERS = 'lsvVxacCeOwW1?';
+const PG_RESTORE_LONG_VALUES = new Set(['--dbname', '--host', '--port', '--username', '--file', '--format', '--jobs', '--use-list', '--schema',
+    '--exclude-schema', '--function', '--superuser', '--table', '--trigger', '--index', '--role', '--section', '--exclude-database']);
+const PG_RESTORE_SHORT_NAMES: Record<string, string> = { d: '--dbname', h: '--host', p: '--port', U: '--username', f: '--file', l: '--list', c: '--clean' };
+
+/** pg_restore's options as [option, value] pairs, long names spelled out; null when one can't be placed. */
+function pgRestoreOptions(args: string[]): Array<[string, string | undefined]> | null {
+    const out: Array<[string, string | undefined]> = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const name = eq < 0 ? a : a.slice(0, eq);
+            out.push([name, PG_RESTORE_LONG_VALUES.has(name) ? (eq < 0 ? args[++i] : a.slice(eq + 1)) : undefined]);
+            continue;
+        }
+        if (a.length > 1 && a.startsWith('-')) {
+            for (let j = 1; j < a.length; j++) {
+                const name = PG_RESTORE_SHORT_NAMES[a[j]] ?? `-${a[j]}`;
+                if (PG_RESTORE_FLAG_LETTERS.includes(a[j])) {
+                    out.push([name, undefined]);
+                    continue;
+                }
+                if (!PG_RESTORE_VALUE_LETTERS.includes(a[j])) return null;
+                out.push([name, j + 1 < a.length ? a.slice(j + 1) : args[++i]]);
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+/** Whether a pg_restore step writes into a database: it does when it connects (-d), not when it lists or prints the script. */
+function pgRestoreWrites(args: string[]): boolean {
+    if (['--help', '-?', '--version', '-V'].includes(args[0])) return false;
+    const opts = pgRestoreOptions(args);
+    if (opts === null) return true;
+    return opts.some(([o]) => o === '--dbname') && !opts.some(([o]) => o === '--list');
+}
+
+/** The host and port a pg_restore step connects to, for the listed-dev check; null when the database is a connection string. */
+function pgRestoreTarget(args: string[]): { host?: string; port?: string; noPsqlrc: boolean } | null {
+    const opts = pgRestoreOptions(args);
+    if (!opts) return null;
+    const last = (o: string) => opts.filter(([n]) => n === o).pop()?.[1];
+    const db = last('--dbname');
+    if (db === undefined || db.includes('=') || /^postgres(?:ql)?:\/\//.test(db)) return null;
+    return { host: last('--host'), port: last('--port'), noPsqlrc: true };
+}
+
+/** For a pg_restore that writes: a refusal when the line doesn't write out the server it reaches, as unresolvedPgTargetFix does for psql. */
+function unresolvedPgRestoreTargetFix(cmd: ResolvedCommand): string | null {
+    if (cmd.name !== 'pg_restore' || !pgRestoreWrites(cmd.args)) return null;
+    const written = writtenArgs(cmd);
+    const literal = (v: string) => !/[$`\\]/.test(v) && (written === null || written.every(isLiteralShellWord));
+    for (const assignment of cmd.env ?? []) {
+        const m = assignment.match(/^PGHOST(?:ADDR)?=(.+)$/);
+        if (m && literal(m[1])) return null;
+    }
+    for (const [option, value] of pgRestoreOptions(cmd.args) ?? []) {
+        if (value === undefined || !literal(value)) continue;
+        if (option === '--host' && value) return null;
+        if (option === '--dbname' && (value.match(PG_URI_HOSTS_RE)?.[1] || [...value.matchAll(PG_CONNINFO_HOST_RE)].length)) return null;
+    }
+    return "this pg_restore writes into a database the guard can't name, through a variable or libpq's defaults, so it is refused instead of sent for approval. Write the server out in the command and keep the password out of it: -h <host> -p <port> -U <user> -d <db>, with the password in ~/.pgpass or PGPASSWORD=\"$VAR\". That goes to a person for approval, unless it is a listed dev database.";
+}
+
+/**
+ * For a snow step that writes: a refusal when its connection can't be mapped, because it names none (snow's default
+ * connection, which config and the environment choose) or names it through an expansion.
+ */
+function unresolvedSnowConnectionFix(cmd: ResolvedCommand, reason: string): string | null {
+    if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
+    if (!reason.startsWith('Destructive Snowflake SQL') && !reason.includes(SQL_WRITE)) return null;
+    const written = writtenArgs(cmd);
+    let named: string | null = null;
+    for (let i = 1; i < cmd.args.length; i++) {
+        const a = cmd.args[i];
+        if (a === '-x' || a === '--temporary-connection') return null;
+        const m = /^(?:-c|--connection)(?:=([\s\S]*))?$/.exec(a) ?? /^-c([\s\S]+)$/.exec(a);
+        if (!m) continue;
+        const at = m[1] === undefined ? i + 1 : i;
+        if (at >= cmd.args.length) return null;
+        const word = written?.[at] ?? cmd.args[at];
+        named = isLiteralShellWord(word) ? (m[1] ?? cmd.args[at]) : '';
+        if (at > i) i++;
+    }
+    if (named) return null;
+    const why = named === null
+        ? "names no connection, so it runs on snow's default one, which its config and environment choose"
+        : "takes its connection from an expansion the guard can't read";
+    return `${reason}: this snow step ${why}, so the guard can't tell which account and login it writes with, and it is refused instead of sent for approval. Write the connection out: snow sql -c <connection> …. A listed dev connection then runs without approval, and any other goes to a person for approval.`;
+}
+
+/** What a write statement does, for its card. */
+function writeEffect(st: { pattern: string; text: string }, dialect: string): SqlEffect {
+    const target = writeTarget(st.text);
+    const object = target ? target.parts.join('.') : null;
+    return {
+        title: `${st.pattern} in ${dialect}${object ? ` ${object}` : ''}`,
+        effect: `Runs ${st.pattern}${object ? ` on ${code(object)}` : ''}, on a target the guard can't prove is dev: ${code(clip(oneLine(st.text), 160))}.`,
+        plain: `Changes ${object ? code(object) : 'data'} with ${st.pattern}`,
+        note: "(a target the guard can't prove is dev)",
+    };
+}
+
+/** What a statement that sends data out does, for its card. */
+function egressEffect(hit: { pattern: string; text: string }, dialect: string): SqlEffect {
+    return {
+        title: `Send ${dialect} data out of the account (${hit.pattern})`,
+        effect: `Sends data out of the account (${hit.pattern}): ${code(clip(oneLine(hit.text), 160))}.`,
+        plain: `Sends data out of the account (${hit.pattern})`,
+        loss: "data that has left the account can't be called back",
+    };
+}
+
 /** The condition after a statement's own WHERE (not one inside parentheses), as written, up to RETURNING. */
 function topLevelWhere(text: string, skeleton: string): string | null {
     let depth = 0;
@@ -6998,15 +7731,35 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
             statements.push({ ...found, effect });
         }
     });
-    const lines = statements.slice(0, 3).map((st, i) => `${i === 0 ? 'If you approve:' : 'And:'} ${st.effect.effect}`);
-    const first = statements[0]?.effect;
+    // Data sent out leads, then what deletes or overwrites, then the other writes.
+    const egress: SqlEffect[] = [];
+    const writes: SqlEffect[] = [];
+    const described = new Set(statements.map(st => oneLine(st.text)));
+    const meta = cmd.name === 'psql' ? sqlInputOf(cmd).texts.map(psqlMetaWrite).find(m => m !== null) : null;
+    if (meta) writes.push(writeEffect({ pattern: meta.pattern, text: meta.statement }, dialect));
+    for (const { text } of readings) {
+        const hit = egressIn(text);
+        if (hit && hit !== 'unreadable' && !egress.some(e => e.title === egressEffect({ pattern: hit.pattern, text: hit.statement }, dialect).title)) {
+            egress.push(egressEffect({ pattern: hit.pattern, text: hit.statement }, dialect));
+        }
+        for (const st of writeStatements(text)) {
+            if (described.has(oneLine(st.text)) || egressIn(st.text)) continue;
+            described.add(oneLine(st.text));
+            writes.push(writeEffect(st, dialect));
+        }
+    }
+    // A card that already names what deletes or overwrites stays about that; other writes are named only without one.
+    const effects = [...egress, ...statements.map(st => st.effect), ...(statements.length ? [] : writes)];
+    const lines = effects.slice(0, 3).map((effect, i) => `${i === 0 ? 'If you approve:' : 'And:'} ${effect.effect}`);
+    const first = effects[0];
     let label = first?.title ?? `Run destructive ${dialect} SQL`;
-    if (statements.length > 1) label += ` (+${Math.min(statements.length, 3) - 1} more)`;
-    const more = statements.length > 1 ? `, plus ${statements.length - 1} more statement${statements.length > 2 ? 's' : ''} that can delete or overwrite data` : '';
+    if (effects.length > 1) label += ` (+${Math.min(effects.length, 3) - 1} more)`;
+    const kinds = egress.length || writes.length ? 'that change or send data' : 'that can delete or overwrite data';
+    const more = effects.length > 1 ? `, plus ${effects.length - 1} more statement${effects.length > 2 ? 's' : ''} ${kinds}` : '';
     const plain = first
         ? `${first.plain} ${databasePlace(cmd, dialect)}${first.note ? ` ${first.note}` : ''}${more}`
         : `Runs ${dialect} commands the guard couldn't fully check ${databasePlace(cmd, dialect)}, so it can't say what they change`;
-    lines.push(dialect === 'Snowflake'
+    lines.push(egress.length ? "Undo: none for data that has left the account; it can't be called back." : dialect === 'Snowflake'
         ? 'Undo: only through Snowflake Time Travel or UNDROP, and only within the retention window.'
         : 'Undo: only from a backup.');
     const db = databaseLine(cmd);
@@ -7130,6 +7883,16 @@ function dbtMacroReason(cmd: ResolvedCommand): string | null {
 }
 
 function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
+    if (!cmd.args.includes('--full-refresh')) {
+        const target = flagValue(cmd.args, ['--target', '-t']) ?? (dir ? dbtTargetDatabase(cmd, dir)?.target : undefined) ?? defaultDbtTarget(dir, cmd);
+        const where = target ? `the dbt target ${code(target)}` : "the profile's default dbt target";
+        const sub = dbtSubcommand(cmd.args) ?? 'run';
+        return {
+            label: `Run dbt ${sub} on ${target ? `target ${target}` : "the profile's default target"}`,
+            lines: [`If you approve: dbt ${sub} writes the models, seeds or snapshots it selects into ${where}, which the guard can't prove is dev.`],
+            plain: { what: `Runs dbt ${sub}, writing into ${where}`, loss: "only Snowflake Time Travel can bring back what it overwrites, and only for a limited time" },
+        };
+    }
     const models = flagList(cmd.args, ['--select', '-s', '--models', '-m']);
     const selector = flagValue(cmd.args, ['--selector']);
     const runtime = models.some(m => m.includes('$') || m.includes(FILLED));
@@ -7385,6 +8148,7 @@ const GENERIC_EFFECTS: Record<string, [effect: string, loss: string]> = {
     'trash-rm': ['Permanently deletes every trashed item whose original path or file name matches the pattern in the step below: an absolute path matches every copy trashed from that path, a bare file name every item of that name, and a wildcard more.', "they skip any further recovery and can't be restored"],
     'trash-empty': ['Permanently deletes everything in the trash, or with a number of days, everything trashed longer ago than that.', "what it deletes can't be restored"],
     dd: ['Writes raw bytes to the output target; pointed at a disk, it overwrites it.', "whatever it overwrites can't be recovered"],
+    pg_restore: ['Restores the dump into the PostgreSQL database named in the step below, which the guard can\'t prove is dev: it creates objects and loads rows.', 'only a backup can undo it'],
     render: ['Changes the Render service, database or job named in the step below, which is not listed as dev, so treat it as production.', "some changes, such as a deleted database, can't be undone"],
 };
 
@@ -7461,6 +8225,8 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
         ? renderReadEffect(cmd, reason)
         : cmd.name === 'render'
         ? renderChangeEffect(cmd)
+        : /code that reaches a database|names a database driver/.test(reason)
+        ? [`Runs ${cmd.name} code that can reach a database. ${clip(reason, 400)}`, 'what it writes may not be undoable']
         : cmd.name === 'terraform' && targets.length
         ? [`Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`, "anything it destroys can't be brought back"]
         : GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
@@ -7511,7 +8277,19 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves };
                 continue;
             }
-            const dev = devScopeTargetOf(cmd, commands, command, cmd === outer);
+            const egress = sqlEgressOf(cmd);
+            if (egress?.definite && (cmd !== outer || localPgTargetOf(cmd, commands, command, localPg) === null)) {
+                yield { cmd, reason: egress.reason, outer, moves };
+                continue;
+            }
+            let stepDirs: string[] | null = dirs && cmd.chdir ? dirs.map(d => pathResolve(d, cmd.chdir!)) : dirs;
+            for (const move of moves ?? []) stepDirs = directoriesAfter(stepDirs, move);
+            // SQL the guard can't read could send data out, so no dev exemption covers it.
+            const listedDb = !egress && cmd === outer && reason.includes(SQL_WRITE) ? renderDevHeld(cmd) : null;
+            const dev = egress ? null
+                : devScopeTargetOf(cmd, commands, command, cmd === outer)
+                ?? (listedDb ? `dev database ${listedDb.join(', ')}` : null)
+                ?? (cmd.name === 'dbt' && reason === `dbt ${dbtSubcommand(cmd.args)} ${DBT_WRITE}.` ? dbtDevTarget(cmd, cmd === outer ? sqlPathCandidates('.', cmd) : stepDirs) : null);
             if (dev !== null) {
                 if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
                 continue;
@@ -7527,7 +8305,7 @@ function* gatedSteps(
                 if (log) console.error(`local-redis: allowed ${cmd.name} against ${redis}`);
                 continue;
             }
-            if (lab) {
+            if (lab && !egress) {
                 // A step under `env -C`, or after a `cd`, resolves its target (a bare remote, a checkout) from there;
                 // it is exempt only if every directory it may be in is.
                 let from: string[] | null = dirs && cmd.chdir ? dirs.map(d => pathResolve(d, cmd.chdir!)) : dirs;
@@ -7583,6 +8361,16 @@ function* gatedSteps(
             const unresolved = cmd === outer ? unresolvedPgTargetFix(cmd) : null;
             if (unresolved !== null) {
                 yield { cmd, reason, outer, moves, fix: `${reason}: ${unresolved}` };
+                continue;
+            }
+            const restore = cmd === outer ? unresolvedPgRestoreTargetFix(cmd) : null;
+            if (restore !== null) {
+                yield { cmd, reason, outer, moves, fix: `${reason} ${restore}` };
+                continue;
+            }
+            const snowConnection = cmd === outer ? unresolvedSnowConnectionFix(cmd, reason) : null;
+            if (snowConnection !== null) {
+                yield { cmd, reason, outer, moves, fix: snowConnection };
                 continue;
             }
             if (cmd.name === 'snow' && reason.includes(SQL_PATH_UNPROVEN)) {
