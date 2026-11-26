@@ -734,7 +734,8 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^TRUNCATE\b(?!\s*\()/i, label: 'TRUNCATE' },
     { rx: /^DELETE\s+FROM\b/i, label: 'DELETE FROM' },
     // A load with PURGE = TRUE deletes the files it loaded from their stage.
-    { rx: /^COPY\s+INTO\b[\s\S]*\bPURGE\s*=\s*TRUE\b/i, label: 'COPY … PURGE = TRUE' },
+    // VALIDATION_MODE loads nothing, so it purges nothing.
+    { rx: /^COPY\s+INTO\b(?![\s\S]*\bVALIDATION_MODE\s*=)[\s\S]*\bPURGE\s*=\s*TRUE\b/i, label: 'COPY … PURGE = TRUE' },
     // Replacing any object drops the one there: a database or schema with everything in it, a stage with its files, a
     // role or share with its grants.
     { rx: /^CREATE\s+OR\s+REPLACE\b/i, label: 'CREATE OR REPLACE' },
@@ -5067,13 +5068,15 @@ function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], com
             };
             if (!inDev(target)) return null;
             // A load that purges deletes files from whatever stage it reads, which the table's name says nothing about.
-            if (/\bPURGE\s*=\s*TRUE\b/i.test(st.skeleton)) return null;
+            if (/\bPURGE\s*=\s*TRUE\b/i.test(st.skeleton) && !COPY_VALIDATION_ONLY.test(topLevelOf(st.skeleton))) return null;
             // A task, alert or pipe runs a statement of its own, which its name says nothing about. Creating one or changing
             // what it runs has that statement judged too; RESUME starts whatever it already holds, so it keeps its card.
             // Dropping, suspending or setting a property starts nothing, as on main.
             // Suspending or resuming an alert, and pausing or unpausing a pipe, ran card-free on main and keep doing so.
-            const pauses = (target.kind === 'alert' && /^\s*ALTER\s+ALERT\s+(?:IF\s+EXISTS\s+)?\S+\s+(?:SUSPEND|RESUME)\s*;?\s*$/i.test(st.skeleton))
-                || (target.kind === 'pipe' && /^\s*ALTER\s+PIPE\s+(?:IF\s+EXISTS\s+)?\S+\s+SET\s+PIPE_EXECUTION_PAUSED\s*=\s*(?:TRUE|FALSE)\s*;?\s*$/i.test(st.skeleton));
+            // An identifier part is a quoted name (blanked to spaces in the skeleton) or an unquoted one.
+            const ident = String.raw`(?:"[^"]*"|[^\s".;]+)(?:\.(?:"[^"]*"|[^\s".;]+))*`;
+            const pauses = (target.kind === 'alert' && new RegExp(String.raw`^\s*ALTER\s+ALERT\s+(?:IF\s+EXISTS\s+)?${ident}\s+(?:SUSPEND|RESUME)\s*;?\s*$`, 'i').test(st.skeleton))
+                || (target.kind === 'pipe' && new RegExp(String.raw`^\s*ALTER\s+PIPE\s+(?:IF\s+EXISTS\s+)?${ident}\s+SET\s+PIPE_EXECUTION_PAUSED\s*=\s*(?:TRUE|FALSE)\s*;?\s*$`, 'i').test(st.skeleton));
             if (!pauses && /^(?:task|alert|pipe)$/.test(target.kind) && /^\s*(?:CREATE|ALTER)\b/i.test(st.skeleton)) {
                 if (/\bRESUME\s*;?\s*$/i.test(st.skeleton)) return null;
                 const body = target.kind === 'task' ? taskBody(st.text, st.skeleton) : null;
@@ -7147,6 +7150,8 @@ function interpreterCode(cmd: ResolvedCommand, run: { name: string; args: string
         if (glued) return { texts: [...texts, glued], unread };
         if (run.name === 'deno' && a === 'eval') return { texts: [...texts, ...run.args.slice(i + 1, i + 2)], unread };
         if (a === '-m') return { texts, unread: true };
+        // `-` reads the program from stdin and ends the options; what follows is the program's own arguments.
+        if (a === '-') { script = '-'; break; }
         if (valueOptions?.has(a)) { i++; continue; }
         if (a.startsWith('-')) continue;
         if ((run.name === 'deno' || run.name === 'bun') && a === 'run' && i === 0) continue;
@@ -7731,20 +7736,11 @@ function dbtProjectRoot(dir: string): string | null {
 }
 
 /**
- * Whether a dbt test step stores its failures in tables: by its flag, an environment variable, or the project's own
- * config (`+store_failures: true` or a `store_failures_as` for tests), read from every directory the step may run in.
+ * Whether a dbt test step may store its failures in tables. Any test, or the project, can turn store_failures on in
+ * config the guard doesn't read, so only an explicit --no-store-failures rules it out.
  */
 function dbtStoresFailures(cmd: ResolvedCommand): boolean {
-    if (cmd.args.includes('--store-failures') || (cmd.env ?? []).some(e => /^DBT_STORE_FAILURES=/.test(e))
-        || process.env.DBT_STORE_FAILURES !== undefined || exportsOnLine(cmd, /^DBT_STORE_FAILURES$/)) return true;
-    if (cmd.args.includes('--no-store-failures')) return false;
-    const named = lastFlag(cmd.args, ['--project-dir']);
-    const dirs = sqlPathCandidates(named ?? '.', cmd) ?? [];
-    return dirs.some(d => {
-        const root = named ? d : dbtProjectRoot(d);
-        const project = root ? readConfigFile(join(root, 'dbt_project.yml')) ?? '' : '';
-        return /^\s*\+?store_failures\s*:\s*(?:true|yes|on)\b|^\s*\+?store_failures_as\s*:/im.test(project);
-    });
+    return !cmd.args.includes('--no-store-failures');
 }
 
 /** Whether the line exports a name `name` matches, or turns on allexport, before a step could inherit it. */
@@ -7781,17 +7777,8 @@ function dbtTargetDatabase(cmd: ResolvedCommand, dir: string): { target: string;
     const project = projectFlag ? pathResolve(dir, expandPath(projectFlag)) : dbtProjectRoot(dir) ?? dir;
     // dbt retry reruns the saved invocation: its target, profile and full refresh come from run_results.json.
     if (dbtSubcommand(cmd.args) === 'retry') {
-        // dbt also takes the state path from DBT_STATE and the target path from the project file, which this doesn't read.
-        if (process.env.DBT_STATE !== undefined || /^target-path\s*:/m.test(readConfigFile(join(project, 'dbt_project.yml')) ?? '')) return null;
-        const statePath = lastFlag(cmd.args, ['--state']) ?? lastFlag(cmd.args, ['--target-path']) ?? process.env.DBT_TARGET_PATH ?? 'target';
-        if (!literal(statePath)) return null;
-        let saved: any;
-        try {
-            saved = JSON.parse(readConfigFile(join(pathResolve(project, statePath), 'run_results.json')) ?? '')?.args;
-        } catch {
-            return null;
-        }
-        if (!saved || typeof saved !== 'object' || saved.full_refresh || !['build', 'run', 'seed', 'snapshot', 'test', 'clone', 'compile'].includes(saved.which)) return null;
+        const saved = dbtSavedRun(cmd, project);
+        if (!saved || saved.full_refresh || !['build', 'run', 'seed', 'snapshot', 'test', 'clone', 'compile'].includes(saved.which)) return null;
         if (saved.vars && /database|\bdb\b/i.test(JSON.stringify(saved.vars))) return null;
         targetFlag = typeof saved.target === 'string' ? saved.target : undefined;
         if (saved.profile !== undefined) profileFlag = typeof saved.profile === 'string' ? saved.profile : undefined;
@@ -7817,6 +7804,22 @@ function dbtTargetDatabase(cmd: ResolvedCommand, dir: string): { target: string;
     const { type, database, account } = output as { type?: unknown; database?: unknown; account?: unknown };
     if (type !== 'snowflake' || typeof database !== 'string' || !/^[A-Za-z_][A-Za-z0-9_$]*$/.test(database)) return null;
     return { target, database: database.toUpperCase(), ...(typeof account === 'string' ? { account } : {}) };
+}
+
+/**
+ * The arguments of the run a `dbt retry` replays, from run_results.json under --state or the target path, as RetryTask
+ * reads them; null when that file can't be read, or DBT_STATE or the project's target-path could move it.
+ */
+function dbtSavedRun(cmd: ResolvedCommand, project: string): Record<string, any> | null {
+    if (process.env.DBT_STATE !== undefined || /^target-path\s*:/m.test(readConfigFile(join(project, 'dbt_project.yml')) ?? '')) return null;
+    const statePath = lastFlag(cmd.args, ['--state']) ?? lastFlag(cmd.args, ['--target-path']) ?? process.env.DBT_TARGET_PATH ?? 'target';
+    if (/[$`{}*?]/.test(statePath)) return null;
+    try {
+        const saved = JSON.parse(readConfigFile(join(pathResolve(project, statePath), 'run_results.json')) ?? '')?.args;
+        return saved && typeof saved === 'object' ? saved : null;
+    } catch {
+        return null;
+    }
 }
 
 /** The account a Snowflake CLI connection names in ~/.snowflake/connections.toml; null when it can't be read. */
@@ -8467,10 +8470,21 @@ function dbtMacroReason(cmd: ResolvedCommand): string | null {
 function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
     if (!cmd.args.some(a => a === '--full-refresh' || a === '-f')) {
         const sub = dbtSubcommand(cmd.args) ?? 'run';
-        // A retry reruns the saved invocation, so its target is the saved one when that can be read.
-        const target = dbtTargetFlag(cmd.args) ?? (dir ? dbtTargetDatabase(cmd, dir)?.target : undefined) ?? (sub === 'retry' ? undefined : defaultDbtTarget(dir, cmd));
+        // A retry reruns the saved invocation, so its target and any full refresh are the saved ones when they can be read.
+        const saved = sub === 'retry' && dir ? dbtSavedRun(cmd, lastFlag(cmd.args, ['--project-dir']) ?? dbtProjectRoot(dir) ?? dir) : null;
+        const savedTarget = typeof saved?.target === 'string' ? saved.target : undefined;
+        const target = sub === 'retry'
+            ? savedTarget ?? (saved ? defaultDbtTarget(dir, cmd) ?? undefined : undefined)
+            : dbtTargetFlag(cmd.args) ?? (dir ? dbtTargetDatabase(cmd, dir)?.target : undefined) ?? defaultDbtTarget(dir, cmd) ?? undefined;
         const where = target ? `the dbt target ${code(target)}` : sub === 'retry' ? 'the dbt target of the saved run, which the guard could not read' : "the profile's default dbt target";
-        const tests = sub === 'test' ? 'stores the failing rows of the tests it selects as tables' : null;
+        if (saved?.full_refresh) {
+            return {
+                label: `Rerun the saved dbt ${saved.which ?? 'run'} with --full-refresh on ${target ? `target ${target}` : 'its saved target'}`,
+                lines: [`If you approve: dbt retry reruns the failed nodes of the saved ${code(String(saved.which ?? 'run'))} with --full-refresh, dropping and rebuilding each incremental model it reruns in ${where}. Rows that exist only from earlier incremental runs are lost.`],
+                plain: { what: `Reruns the saved dbt ${saved.which ?? 'run'} with --full-refresh, rebuilding models from scratch in ${where}`, loss: 'rows that only earlier runs kept are lost for good' },
+            };
+        }
+        const tests = sub === 'test' ? 'may store the failing rows of the tests it selects as tables (a test or the project can turn store_failures on)' : null;
         return {
             label: `Run dbt ${sub} on ${target ? `target ${target}` : "the profile's default target"}`,
             lines: [`If you approve: dbt ${sub} ${tests ?? 'writes the models, seeds or snapshots it selects'} into ${where}, which the guard can't prove is dev.`],
@@ -9025,7 +9039,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
         // `outer` is the top-level command `target` runs inside (itself, unless xargs or find -exec runs it), and
         // `moves` the `cd`s its script makes before it.
         const directoryBefore = (target: ResolvedCommand, outer: ResolvedCommand, moves: ResolvedCommand[] = []): string | undefined => {
-            let dir: string | undefined;
+            let dir: string | undefined = cwd;
             for (const c of commands) {
                 if (c === outer) break;
                 if (c.name !== 'cd' || !c.args[0]) continue;
@@ -9046,7 +9060,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             const step: StepCard =
                 override ? overrideStep(cmd, override)
                 : sqlDialect ? sqlStep(sqlDialect, cmd)
-                : dbtCommandOf(cmd) && dbtSubcommand(dbtCommandOf(cmd)!.args) !== 'run-operation' ? dbtStep(dbtCommandOf(cmd)!, dirBefore ?? cwd)
+                : dbtCommandOf(cmd) && dbtSubcommand(dbtCommandOf(cmd)!.args) !== 'run-operation' ? dbtStep(dbtCommandOf(cmd)!, dirBefore)
                 : cmd.name === 'git-clean' ? gitCleanStep({ ...cmd, args: ['clean', ...cmd.args] })
                 : cmd.name === 'git' ? (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean' ? gitCleanStep(cmd) : gitPushStep(cmd))
                 : cmd.name === 'aws' ? awsStep(cmd)

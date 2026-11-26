@@ -47,10 +47,10 @@ beforeAll(() => {
     ].join('\n'));
     mkdirSync(join(dir, 'farproject'));
     writeFileSync(join(dir, 'farproject', 'dbt_project.yml'), "name: far\nprofile: 'acme_far'\n");
-    for (const [name, target] of [['retrydev', 'dev'], ['retryprod', 'prod'], ['retrynone', null], ['retrypath', 'dev']] as const) {
+    for (const [name, target] of [['retrydev', 'dev'], ['retryprod', 'prod'], ['retrynone', null], ['retrypath', 'dev'], ['retryfr', 'dev']] as const) {
         mkdirSync(join(dir, name, 'target'), { recursive: true });
         writeFileSync(join(dir, name, 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n" + (name === 'retrypath' ? 'target-path: elsewhere\n' : ''));
-        if (target) writeFileSync(join(dir, name, 'target', 'run_results.json'), JSON.stringify({ args: { which: 'build', target } }));
+        if (target) writeFileSync(join(dir, name, 'target', 'run_results.json'), JSON.stringify({ args: { which: 'build', target, ...(name === 'retryfr' ? { full_refresh: true } : {}) } }));
     }
     writeFileSync(join(dir, 'project', 'load.py'), "import psycopg2\nc = psycopg2.connect('dbname=app')\nc.cursor().execute('insert into orders values (1)')\n");
     writeFileSync(join(dir, 'project', 'render-load.sql'), 'insert into orders values (1);\n');
@@ -806,5 +806,43 @@ describe('final round', () => {
     test('a load that purges its stage says so on the card', () => {
         const command = 'snow sql -c acme_shared -q "copy into dev_db.core.t from @prod_db.core.s purge = true"';
         expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toMatch(/PURGE/i);
+    });
+});
+
+describe('review 245d', () => {
+    test('dbt test on another target cards, since any test can store its failures', () => {
+        const command = 'cd PROJECT && dbt test --target prod';
+        const verdict = evaluate(command);
+        expect(verdict.action).toBe('gate');
+        expect(describeGate(command.replaceAll('PROJECT', join(dir, 'project')), verdict.reason ?? '', dir).summary).toContain('may store the failing rows');
+    });
+    test('dbt test with --no-store-failures runs without a card', () => {
+        expect(evaluate('cd PROJECT && dbt test --target prod --no-store-failures').action).toBe('allow');
+    });
+    test.each([
+        ['a pipe', "printf 'import psycopg2\\npsycopg2.connect(\"dbname=app\").cursor().execute(\"insert into orders values (1)\")\\n' | python3 - warehouse"],
+        ['a heredoc', "python3 - warehouse <<'EOF'\nimport psycopg2\npsycopg2.connect('dbname=app').cursor().execute('insert into orders values (1)')\nEOF"],
+    ])('python3 - with arguments reads the program from %s', (_name, command) => {
+        expect(evaluate(command).action).toBe('gate');
+    });
+    test.each([
+        ['a quoted alert', 'snow sql -c acme_shared -q \'alter alert dev_db.core."Daily Alert" suspend\''],
+        ['a quoted pipe', 'snow sql -c acme_shared -q \'alter pipe dev_db.core."Load Pipe" set pipe_execution_paused = true\''],
+    ])('pausing %s on a listed connection with no login runs as on main', (_name, command) => {
+        expect(evaluate(command).action).toBe('allow');
+    });
+    test('a validation-only load with PURGE purges nothing', () => {
+        expect(evaluate('snow sql -c acme_prod -q "copy into prod_db.core.t from @prod_db.core.s purge = true validation_mode = return_errors"').action).toBe('allow');
+    });
+    test('the retry card follows a relative cd to the project it reruns', () => {
+        const command = 'cd retryprod && dbt retry';
+        const verdict = evaluateBashCommand(command, { cwd: dir });
+        expect(describeGate(command, verdict.reason ?? '', dir).label).toBe('Run dbt retry on target prod');
+    });
+    test('the retry card shows a saved full refresh', () => {
+        const at = join(dir, 'retryfr');
+        const verdict = evaluateBashCommand('dbt retry', { cwd: at });
+        expect(verdict.action).toBe('gate');
+        expect(describeGate('dbt retry', verdict.reason ?? '', at).label).toContain('--full-refresh');
     });
 });
