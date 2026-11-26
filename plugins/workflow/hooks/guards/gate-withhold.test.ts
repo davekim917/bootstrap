@@ -184,6 +184,32 @@ describe('refusals and gate reasons withhold the same way', () => {
         expect(verdict.reason).not.toContain('dropdb postgres');
     });
 
+    test.each([
+        ['--maintenance-db before it', 'dropdb --maintenance-db=postgres app_test', 'dropdb app_test'],
+        ['a separate --maintenance-db value', 'dropdb --maintenance-db postgres app_test', 'dropdb app_test'],
+        ['a username cluster and a port before it', 'dropdb -Upostgres -p 5432 app_test', 'dropdb app_test'],
+    ])('the retry keeps the database operand with %s', (_name, tail, line) => {
+        const verdict = evaluateBashCommand(`PGPASSWORD=${SECRET} ${tail}`, { cwd: '/tmp' });
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).toContain(`/app/skills/scratch-postgres/scratch-pg ${line}`);
+        expect(verdict.reason ?? '').not.toContain(SECRET);
+    });
+
+    test('a credential either reading finds is kept: Snowflake files first, a PostgreSQL credential after them', () => {
+        const work = mkdtempSync(join(tmpdir(), 'withhold-union-'));
+        try {
+            for (let i = 1; i <= 5; i++) writeFileSync(join(work, `big${i}.sql`), 'select 1;\n'.repeat(90_000));
+            writeFileSync(join(work, 'creds.sql'), "alter role app password '" + SECRET + "';\ndrop table orders;\n");
+            const command = `snow sql -c acme_prod -f big1.sql -f big2.sql -f big3.sql -f big4.sql -f big5.sql; ${H} -f creds.sql`;
+            const verdict = evaluateBashCommand(command, { cwd: work });
+            expect(verdict.action).not.toBe('allow');
+            expect(verdict.reason).not.toContain(SECRET);
+            expect(approvalCard(command, verdict.reason ?? '', work).withheld).toBe(true);
+        } finally {
+            rmSync(work, { recursive: true, force: true });
+        }
+    });
+
     test('a step the shared trace budget reached too late is read again before deciding to withhold', () => {
         const work = mkdtempSync(join(tmpdir(), 'withhold-budget-'));
         try {
