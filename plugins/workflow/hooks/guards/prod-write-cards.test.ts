@@ -53,6 +53,18 @@ beforeAll(() => {
         if (target) writeFileSync(join(dir, name, 'target', 'run_results.json'), JSON.stringify({ args: { which: 'build', target } }));
     }
     writeFileSync(join(dir, 'project', 'load.py'), "import psycopg2\nc = psycopg2.connect('dbname=app')\nc.cursor().execute('insert into orders values (1)')\n");
+    writeFileSync(join(dir, 'project', 'render-load.sql'), 'insert into orders values (1);\n');
+    writeFileSync(join(dir, 'project', 'render-escape.sql'), 'insert into orders values (1);\n\\! ls\n');
+    writeFileSync(join(dir, 'project', 'unload.sql'), "copy into 's3://example-bucket/x/' from dev_db.core.orders;\n");
+    writeFileSync(join(dir, 'project', 'huge.sql'), 'select 1;\n'.repeat(120_000));
+    writeFileSync(join(dir, 'project', 'migration.sql'), 'insert into orders values (1);\n');
+    mkdirSync(join(dir, 'blockproj', 'ops'), { recursive: true });
+    writeFileSync(join(dir, 'blockproj', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\nmacro-paths:\n  - ops\n");
+    writeFileSync(join(dir, 'blockproj', 'ops', 'ops.sql'), [
+        "{% macro wrapper() %}{% do unload_helper() %}{% endmacro %}",
+        "{% macro unload_helper() %}{% do run_query(\"copy into @dev_db.raw.out from dev_db.core.orders\") %}{% endmacro %}",
+        "{% macro block_unload() %}{% do run_query(\"copy into @dev_db.raw.out from dev_db.core.orders\") %}{% endmacro %}", '',
+    ].join('\n'));
     writeFileSync(join(dir, 'project', 'load.js'), "const { Client } = require('pg');\nconst c = new Client();\nc.query('insert into orders values (1)');\n");
     writeFileSync(join(dir, 'project', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
     writeFileSync(join(dir, 'project', 'load.sql'), 'insert into orders values (1);\n');
@@ -500,6 +512,10 @@ describe('what main ran without a card still does', () => {
     test.each([
         ['a fully qualified task whose body reads, on a listed connection with no login', "snow sql -c acme_shared -q \"create or replace task dev_db.core.ping warehouse = wh schedule = '60 minute' as select 1\""],
         ['suspending a task in the dev database', 'snow sql -c acme_shared -q "alter task dev_db.core.fill suspend"'],
+        ['a task changed with SET, as on main', 'snow sql -c acme_shared -q "alter task dev_db.core.fill set warehouse = wh2"'],
+        ['dropping a task in the dev database, as on main', 'snow sql -c acme_shared -q "drop task dev_db.core.fill"'],
+        ['replacing a task whose body deletes from the dev database', "snow sql -c acme_shared -q \"create or replace task dev_db.core.trim warehouse = wh schedule = '60 minute' as delete from dev_db.core.t where d < current_date\""],
+        ['a readable -f file on Render dev', DEV_PG + ' -f PROJECT/render-load.sql'],
         ['a task whose body writes into the dev database', "snow sql -c acme_shared -q \"create or replace task dev_db.core.fill warehouse = wh schedule = '60 minute' as insert into dev_db.core.t select 1\""],
         ['a literal \\copy FROM a file on Render dev', DEV_PG + " -c \"\\\\copy orders from 'orders.csv' csv\""],
         ['a literal dev write after a PGPASSWORD prefix', 'PGPASSWORD=example ' + DEV_PG + ' -c "insert into orders values (1)"'],
@@ -509,12 +525,12 @@ describe('what main ran without a card still does', () => {
 
     test.each([
         ['an alert, whose action follows THEN', "snow sql -c acme_shared -q \"create or replace alert dev_db.core.a warehouse = wh schedule = '1 minute' if (exists (select 1)) then insert into prod_db.core.t select 1\""],
-        ['a task changed with SET, which main also carded', 'snow sql -c acme_shared -q "alter task dev_db.core.fill set warehouse = wh2"'],
         ['a task whose body writes outside the dev database', "snow sql -c acme_shared -q \"create or replace task dev_db.core.fill warehouse = wh schedule = '60 minute' as insert into prod_db.core.t select 1\""],
         ['\\copy FROM a program on Render dev', DEV_PG + " -c \"\\\\copy orders from program 'cat orders.csv' csv\""],
         ['\\copy beside a shell escape on Render dev', DEV_PG + " -c \"\\\\copy orders from 'orders.csv' csv\" -c '\\\\! ls'"],
         ['PGHOST beside PGPASSWORD', 'PGPASSWORD=example PGHOST=db.example ' + DEV_PG + ' -c "insert into orders values (1)"'],
         ['PGSERVICE', 'PGSERVICE=prod ' + DEV_PG + ' -c "insert into orders values (1)"'],
+        ['resuming a task, which starts what it holds', 'snow sql -c acme_shared -q "alter task dev_db.core.fill resume"'],
     ])('%s keeps its card', (_name, command) => {
         expect(evaluate(command).action).not.toBe('allow');
     });
@@ -612,7 +628,6 @@ describe('account-admin holds administration, never data that moves', () => {
     test.each([
         ['a quoted own role', 'snow sql -c acme_ops -q \'use role "OPS_ROLE"; create database loads\''],
         ['suspending a task', 'snow sql -c acme_ops -q "alter task loads.raw.fill suspend"'],
-        ['resuming a task', 'snow sql -c acme_ops -q "alter task loads.raw.fill resume"'],
     ])('%s runs without a card', (_name, command) => {
         expect(evaluate(command).action).toBe('allow');
     });
@@ -627,5 +642,112 @@ describe('account-admin holds administration, never data that moves', () => {
         ['a task changed to run a write', 'snow sql -c acme_ops -q "alter task loads.raw.fill modify as insert into loads.raw.t values (1)"'],
     ])('%s keeps its card', (_name, command) => {
         expect(evaluate(command).action).toBe('gate');
+    });
+});
+
+describe('one option table per CLI: snow global options, dbt repeated flags', () => {
+    test.each([
+        ['snow sql after --config-file', 'snow --config-file /srv/other.toml sql -c acme_prod -q "insert into prod_db.core.orders values (1)"'],
+        ['snow sql after --config-file= on the dev login', 'snow --config-file=/srv/other.toml sql -c acme_dev -q "insert into dev_db.core.orders values (1)"'],
+        ['snow stage copy after --config-file', 'snow --config-file /srv/other.toml stage copy ./a @prod_db.core.s/'],
+        ['snow with an option before its command that the reference does not list', 'snow --made-up sql -c acme_prod -q "insert into prod_db.core.orders values (1)"'],
+        ['a repeated --project-dir, whose last names another account', 'dbt build --project-dir PROJECT --project-dir __DIR__/farproject'],
+        ['a repeated --state, whose last holds a prod run', 'cd PROJECT && dbt retry --state __DIR__/retrydev/target --state __DIR__/retryprod/target'],
+        ['a repeated --profile, whose last is the other account', 'cd PROJECT && dbt build --profile acme --profile acme_far'],
+        ['HOME on the dbt step', 'cd PROJECT && HOME=/srv/other dbt build'],
+        ['an exported DBT_STORE_FAILURES before dbt test', 'cd PROJECT && export DBT_STORE_FAILURES=true && dbt test --target prod'],
+    ])('%s keeps its card', (_name, command) => {
+        expect(evaluate(command.replaceAll('__DIR__', dir)).action).not.toBe('allow');
+    });
+});
+
+describe('known egress is never discarded', () => {
+    test('a readable unload beside a file too large to read, on the dev login', () => {
+        expect(evaluate('snow sql -c acme_dev -f PROJECT/unload.sql -f PROJECT/huge.sql').reason).toStartWith(SQL_EGRESS);
+    });
+    test('an unload whose stage --env fills', () => {
+        const command = "snow sql -c acme_dev --env stage=@dev_db.raw.out -q \"copy into <% ctx.env.stage %> from dev_db.core.orders\"";
+        expect(evaluate(command).reason).toStartWith(SQL_EGRESS);
+    });
+    test('a load that purges its stage keeps its card on a listed connection', () => {
+        expect(evaluate('snow sql -c acme_shared -q "copy into dev_db.core.t from @prod_db.core.s purge = true"').action).toBe('gate');
+    });
+    test('an Iceberg table on an external volume is egress', () => {
+        expect(evaluate("snow sql -c acme_dev -q \"create iceberg table dev_db.core.ice external_volume = 'vol' catalog = 'SNOWFLAKE' base_location = 'x' as select * from dev_db.core.orders\"").reason).toStartWith(SQL_EGRESS);
+    });
+    test('a quoted VALIDATION_MODE only reads', () => {
+        expect(evaluate("snow sql -c acme_prod -q \"copy into @prod_db.core.s from prod_db.core.orders validation_mode = 'RETURN_ROWS'\"").action).toBe('allow');
+    });
+});
+
+describe('dbt macros read the way dbt finds them', () => {
+    test.each([
+        ['a macro under a block-list macro-paths', 'cd __DIR__/blockproj && dbt run-operation block_unload'],
+        ['a helper a macro calls', 'cd __DIR__/blockproj && dbt run-operation wrapper'],
+    ])('%s takes the egress card on the dev target', (_name, command) => {
+        expect(evaluate(command.replaceAll('__DIR__', dir)).reason).toStartWith(SQL_EGRESS);
+    });
+});
+
+describe('interpreter options read from each runtime\'s table', () => {
+    test.each([
+        ['bun run with a file', 'bun run PROJECT/load.js'],
+        ['node after a bare --preserve-symlinks-main', 'node --preserve-symlinks-main PROJECT/load.js'],
+        ['a Python driver imported after a semicolon', "python3 -c \"import os; import psycopg2; psycopg2.connect('dbname=app').cursor().execute('insert into orders values (1)')\""],
+        ['a literal UPDATE ONLY', "python3 -c \"import psycopg2; psycopg2.connect('dbname=app').cursor().execute('update only orders set s = 1 where id = 1')\""],
+        ['a literal UPDATE of a quoted table with a space', "python3 -c \"import psycopg2; psycopg2.connect('dbname=app').cursor().execute('update \\\"my orders\\\" set s = 1 where id = 1')\""],
+    ])('%s takes a card', (_name, command) => {
+        expect(evaluate(command).action).toBe('gate');
+    });
+    test('a Python command that prints a migration handed on stdin runs as before', () => {
+        expect(evaluate('python3 -c "import sys, psycopg2; print(sys.stdin.read())" < PROJECT/migration.sql').action).toBe('allow');
+    });
+});
+
+describe('standing grants and roles, as Snowflake stores them', () => {
+    let previous: string | undefined;
+    beforeAll(() => {
+        previous = process.env[DEV_SCOPE_FILE_ENV];
+        const scope = join(dir, 'dev-scope-admin-r3.local.json');
+        writeFileSync(scope, JSON.stringify({
+            snowflake: [{ connection: 'acme_dev', databases: ['dev_db'] }],
+            standingGrants: { acme_ops: ['account-admin'], acme_narrow: ['CREATE DATABASE'] },
+            ownRoles: { acme_ops: ['OPS_ROLE', 'MixedRole'] },
+        }));
+        process.env[DEV_SCOPE_FILE_ENV] = scope;
+    });
+    afterAll(() => { process.env[DEV_SCOPE_FILE_ENV] = previous; });
+    test.each([
+        ['resuming a task, which starts what it holds', 'snow sql -c acme_ops -q "alter task loads.raw.fill resume"'],
+        ['a database restored from a backup set', 'snow sql -c acme_ops -q "create database loads from backup set prod_bs identifier \'x\'"'],
+        ['a backup restore under the narrow class', 'snow sql -c acme_narrow -q "create database loads from backup set prod_bs identifier \'x\'"'],
+        ['an unquoted switch to a mixed-case own role, which Snowflake reads as MIXEDROLE', 'snow sql -c acme_ops -q "use role mixedrole; create database loads"'],
+    ])('%s keeps its card', (_name, command) => {
+        expect(evaluate(command).action).toBe('gate');
+    });
+    test('a quoted mixed-case own role matches exactly', () => {
+        expect(evaluate('snow sql -c acme_ops -q \'use role "MixedRole"; create database loads\'').action).toBe('allow');
+    });
+});
+
+describe('refusals and cards for the review round', () => {
+    test('pg_restore with a variable -d is refused, whatever -h says', () => {
+        expect(evaluate('pg_restore -h db.example -d "$DATABASE_URL" dump.pgdump').action).toBe('block');
+    });
+    test('templated SQL on the default snow connection is refused', () => {
+        expect(evaluate('snow sql --enable-templating JINJA -q "select {{ x }}"').action).toBe('block');
+    });
+    test('a Render dev file with a shell escape keeps its card', () => {
+        expect(evaluate(DEV_PG + ' -f PROJECT/render-escape.sql').action).not.toBe('allow');
+    });
+    const body = (command: string) => describeGate(command, evaluate(command).reason ?? '', dir).summary.split('\nStep needing approval')[0];
+    test('pg_restore --clean --create says it replaces the database the archive names', () => {
+        expect(body('pg_restore -h db.example -U app -d postgres --clean --create dump.pgdump')).toContain('the archive chooses which database it replaces');
+    });
+    test('the destructive UPDATE ONLY card names the table', () => {
+        expect(describeGate(PG + ' -c "update only orders set s = 1"', evaluate(PG + ' -c "update only orders set s = 1"').reason ?? '', dir).label).toMatch(/table orders/i);
+    });
+    test('a retry with no readable saved run says so', () => {
+        expect(body('cd ' + join(dir, 'retrynone') + ' && dbt retry')).toContain('the saved run');
     });
 });

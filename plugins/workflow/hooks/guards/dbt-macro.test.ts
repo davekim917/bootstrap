@@ -166,6 +166,8 @@ test('custom macro paths are read, and a form the guard cannot read leaves the m
     writeFileSync(join(other, 'dbt_project.yml'), 'name: other\nmacro-paths: ["lib"]\n');
     expect(evaluateBashCommand('dbt run-operation drops', { cwd: other }).action).toBe('gate');
     writeFileSync(join(other, 'dbt_project.yml'), 'name: other\nmacro-paths:\n  - lib\n');
+    expect(evaluateBashCommand('dbt run-operation drops', { cwd: other }).reason).toContain('dbt macro drops runs destructive SQL');
+    writeFileSync(join(other, 'dbt_project.yml'), "name: other\nmacro-paths: \"{{ env_var('MACRO_DIRS') }}\"\n");
     // Unjudged: the macro rule doesn't fire, and the project's profile isn't one the guard can resolve to dev.
     const unjudged = evaluateBashCommand('python3 gen.py; dbt run-operation drops', { cwd: other });
     expect(unjudged.action).toBe('gate');
