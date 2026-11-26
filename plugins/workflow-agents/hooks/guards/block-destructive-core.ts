@@ -5432,7 +5432,7 @@ function mayWriteFiles(command: string): boolean {
 const PG_RESTORE_LONG_VALUES = new Set(['--dbname', '--file', '--format', '--host', '--port', '--username', '--jobs', '--use-list',
     '--schema', '--exclude-schema', '--function', '--index', '--section', '--table', '--trigger', '--role', '--superuser', '--filter',
     '--exclude-database', '--transaction-size']);
-const PG_RESTORE_LONG_FLAGS = new Set(['--data-only', '--clean', '--create', '--exit-on-error', '--list', '--no-owner', '--no-reconnect',
+const PG_RESTORE_LONG_FLAGS = new Set(['--help', '--version', '--data-only', '--clean', '--create', '--exit-on-error', '--list', '--no-owner', '--no-reconnect',
     '--schema-only', '--verbose', '--no-password', '--password', '--single-transaction', '--disable-triggers', '--enable-row-security',
     '--if-exists', '--no-comments', '--no-data-for-failed-tables', '--no-publications', '--no-security-labels', '--no-subscriptions',
     '--no-table-access-method', '--no-tablespaces', '--strict-names', '--use-set-session-authorization', '--no-acl', '--no-privileges',
@@ -5441,8 +5441,23 @@ const PG_RESTORE_SHORT_NAMES: Record<string, string> = { d: '--dbname', f: '--fi
     L: '--use-list', n: '--schema', N: '--exclude-schema', p: '--port', P: '--function', S: '--superuser', t: '--table', T: '--trigger',
     U: '--username' };
 
-// libpq conninfo keywords the guard can follow; any other one (hostaddr, service, options) may move the connection.
-const CONNINFO_KNOWN = new Set(['host', 'port', 'dbname', 'user', 'password', 'sslmode', 'application_name', 'connect_timeout']);
+// libpq's connection keywords, complete from its documentation (libpq-connect, "Parameter Key Words").
+const CONNINFO_KNOWN = new Set(['host', 'hostaddr', 'port', 'dbname', 'user', 'password', 'passfile', 'require_auth', 'channel_binding',
+    'connect_timeout', 'client_encoding', 'options', 'application_name', 'fallback_application_name', 'keepalives', 'keepalives_idle',
+    'keepalives_interval', 'keepalives_count', 'tcp_user_timeout', 'replication', 'gssencmode', 'sslmode', 'requiressl', 'sslnegotiation',
+    'sslcompression', 'sslcert', 'sslkey', 'sslkeylogfile', 'sslpassword', 'sslcertmode', 'sslrootcert', 'sslcrl', 'sslcrldir', 'sslsni',
+    'requirepeer', 'ssl_min_protocol_version', 'ssl_max_protocol_version', 'krbsrvname', 'gsslib', 'gssdelegation', 'service',
+    'target_session_attrs', 'load_balance_hosts']);
+
+// psql's options, complete from its documentation, for a parse that only asks which database a step selects.
+const PSQL_ALL_SHORT_VALUES: Record<string, string> = { c: '--command', d: '--dbname', f: '--file', F: '--field-separator', h: '--host',
+    L: '--log-file', o: '--output', p: '--port', P: '--pset', R: '--record-separator', T: '--table-attr', U: '--username', v: '--set' };
+const PSQL_ALL_SHORT_FLAGS = 'aAbeEHlnqsStVwWxXz01?';
+const PSQL_ALL_LONG_VALUES = new Set(['--command', '--dbname', '--file', '--field-separator', '--host', '--log-file', '--output', '--port',
+    '--pset', '--record-separator', '--table-attr', '--username', '--set', '--variable']);
+const PSQL_ALL_LONG_FLAGS = new Set(['--echo-all', '--no-align', '--echo-errors', '--echo-queries', '--echo-hidden', '--html', '--list',
+    '--no-readline', '--quiet', '--single-step', '--single-line', '--tuples-only', '--version', '--no-password', '--password', '--expanded',
+    '--no-psqlrc', '--field-separator-zero', '--record-separator-zero', '--single-transaction', '--help', '--csv']);
 
 /** A libpq keyword/value string's settings, single-quoted values unescaped; null when it isn't one the guard can follow. */
 function parseConninfo(text: string): Map<string, string> | null {
@@ -5488,7 +5503,8 @@ type PgTarget = { host?: string; port?: string; db?: string; user?: string; file
 /**
  * Where psql or pg_restore connects, read as the client and libpq read it: options by the client's getopt tables (the
  * last of a repeated one wins), psql's first operand as its database, and a conninfo string or URI given as the
- * database, whose settings override -h, -p and -U. Without `expand`, a conninfo or URI database is not followed and
+ * database, whose settings override -h, -p and -U. `db` is set only when the step names its database. With `expand`
+ * (the waiver check) every documented psql option is accepted. Without it, a conninfo or URI database is not followed and
  * the target is null: an exemption never rests on the guard's own reading of one. Null too when an option is one the
  * guard can't follow, or (for psql, unless fromFiles) when no -c runs.
  */
@@ -5504,9 +5520,11 @@ function pgConnectionTarget(client: 'psql' | 'pg_restore', args: string[], fromF
         else if (option === '--file' && psql) files++;
         else last.set(option, value);
     };
-    const longValues = psql ? (fromFiles ? new Set([...PSQL_LONG_VALUES, '--file']) : PSQL_LONG_VALUES) : PG_RESTORE_LONG_VALUES;
-    const longFlags = psql ? PSQL_LONG_FLAGS : PG_RESTORE_LONG_FLAGS;
-    const shortValues: Record<string, string> = psql ? (fromFiles ? { ...PSQL_SHORT_VALUES, f: '--file' } : PSQL_SHORT_VALUES) : PG_RESTORE_SHORT_NAMES;
+    // An exemption accepts only the psql options it was written for; the waiver check takes every documented one.
+    const longValues = !psql ? PG_RESTORE_LONG_VALUES : expand ? PSQL_ALL_LONG_VALUES : fromFiles ? new Set([...PSQL_LONG_VALUES, '--file']) : PSQL_LONG_VALUES;
+    const longFlags = !psql ? PG_RESTORE_LONG_FLAGS : expand ? PSQL_ALL_LONG_FLAGS : PSQL_LONG_FLAGS;
+    const shortValues: Record<string, string> = !psql ? PG_RESTORE_SHORT_NAMES : expand ? PSQL_ALL_SHORT_VALUES : fromFiles ? { ...PSQL_SHORT_VALUES, f: '--file' } : PSQL_SHORT_VALUES;
+    const shortFlags = expand ? PSQL_ALL_SHORT_FLAGS : PSQL_SHORT_FLAGS;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         if (a === '--') {
@@ -5516,7 +5534,7 @@ function pgConnectionTarget(client: 'psql' | 'pg_restore', args: string[], fromF
         if (a.startsWith('--')) {
             const eq = a.indexOf('=');
             const option = eq < 0 ? a : a.slice(0, eq);
-            if (eq < 0 && longFlags.has(option)) {
+            if (longFlags.has(option) && (eq < 0 || option === '--help')) {
                 if (option === '--no-psqlrc') noPsqlrc = true;
                 continue;
             }
@@ -5529,7 +5547,7 @@ function pgConnectionTarget(client: 'psql' | 'pg_restore', args: string[], fromF
             for (let j = 1; j < a.length; j++) {
                 const option = shortValues[a[j]];
                 if (!option) {
-                    if (psql && !PSQL_SHORT_FLAGS.includes(a[j])) return null;
+                    if (psql && !shortFlags.includes(a[j])) return null;
                     if (psql && a[j] === 'X') noPsqlrc = true;
                     continue;
                 }
@@ -5555,7 +5573,8 @@ function pgConnectionTarget(client: 'psql' | 'pg_restore', args: string[], fromF
         host: settings.get('host') ?? target.host,
         port: settings.get('port') ?? target.port,
         user: settings.get('user') ?? target.user,
-        db: settings.get('dbname') ?? settings.get('user') ?? target.user,
+        // No default: without a dbname, an inherited PGDATABASE (or the user's name) picks the database.
+        db: settings.get('dbname'),
     };
 }
 
