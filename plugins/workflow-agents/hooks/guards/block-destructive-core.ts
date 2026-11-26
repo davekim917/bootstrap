@@ -5447,7 +5447,7 @@ const CONNINFO_KNOWN = new Set(['host', 'hostaddr', 'port', 'dbname', 'user', 'p
     'keepalives_interval', 'keepalives_count', 'tcp_user_timeout', 'replication', 'gssencmode', 'sslmode', 'requiressl', 'sslnegotiation',
     'sslcompression', 'sslcert', 'sslkey', 'sslkeylogfile', 'sslpassword', 'sslcertmode', 'sslrootcert', 'sslcrl', 'sslcrldir', 'sslsni',
     'requirepeer', 'ssl_min_protocol_version', 'ssl_max_protocol_version', 'krbsrvname', 'gsslib', 'gssdelegation', 'service',
-    'target_session_attrs', 'load_balance_hosts']);
+    'target_session_attrs', 'load_balance_hosts','oauth_issuer','oauth_client_id','oauth_client_secret','oauth_scope']);
 
 // psql's options, complete from its documentation, for a parse that only asks which database a step selects.
 const PSQL_ALL_SHORT_VALUES: Record<string, string> = { c: '--command', d: '--dbname', f: '--file', F: '--field-separator', h: '--host',
