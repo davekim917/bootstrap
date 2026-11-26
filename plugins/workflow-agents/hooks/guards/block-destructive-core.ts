@@ -82,7 +82,8 @@ export interface ResolvedCommand {
     argsAreValues?: boolean;    // pos is not this command's own, so its args are expanded from their values, not the view's words
     expandAs?: ResolvedCommand[] | null; // inside `$(…)`: the views its words expand in; null past the cap, so they're unknown
     script?: ScriptContext;     // what the whole command line shows, shared by its commands
-    wrappers?: string[];        // the wrapper commands stripped to reach `name`, outermost first
+    wrappers?: string[];        // the wrapper commands stripped to reach `name`, outermost first, as written
+    program?: string;           // the word `name` was resolved from, as written (a path stays a path)
 }
 
 /** Facts about the whole command line that a single step's checks need. */
@@ -2795,8 +2796,9 @@ function splitEnvString(text: string): string[] | null {
  * assignments and `env -C` directory picked up on the way. Shared by the top-level resolver and by the commands
  * xargs and find -exec run, so a wrapper is unwrapped the same way wherever it appears.
  */
-export function stripWrappers(word: string, rest: string[]): { name: string; args: string[]; env: string[]; chdir?: string; wrappers: string[] } {
+export function stripWrappers(word: string, rest: string[]): { name: string; args: string[]; env: string[]; chdir?: string; wrappers: string[]; program: string } {
     let name = commandName(word);
+    let program = word;
     let args = rest;
     let chdir: string | undefined;
     const env: string[] = [];
@@ -2903,11 +2905,12 @@ export function stripWrappers(word: string, rest: string[]): { name: string; arg
 
         if (skip >= args.length) break;
 
-        wrappers.push(name);
-        name = commandName(args[skip]);
+        wrappers.push(program);
+        program = args[skip];
+        name = commandName(program);
         args = args.slice(skip + 1);
     }
-    return { name, args, env, wrappers, ...(chdir !== undefined ? { chdir } : {}) };
+    return { name, args, env, wrappers, program, ...(chdir !== undefined ? { chdir } : {}) };
 }
 
 const BRACE_EXPANSION_MAX = 1024;
@@ -3036,6 +3039,7 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         env,
         ...(chdir !== undefined ? { chdir } : {}),
         ...(stripped.wrappers.length ? { wrappers: stripped.wrappers } : {}),
+        program: stripped.program,
         hasInputRedirect,
         pos: typeof node.pos === 'number' ? node.pos : undefined,
         ...(stdinTexts.length ? { stdinTexts } : {}),
@@ -3443,8 +3447,8 @@ export function commandLineOf(command: unknown): string {
 function innerCommand(words: string[], outer: ResolvedCommand): ResolvedCommand | null {
     const [first, ...rest] = words;
     if (first === undefined) return null;
-    const { name, args, env, chdir, wrappers } = stripWrappers(first, rest);
-    return { name, args, raw: outer.raw, env, ...(chdir !== undefined ? { chdir } : {}), ...(wrappers.length ? { wrappers } : {}), hasInputRedirect: false };
+    const { name, args, env, chdir, wrappers, program } = stripWrappers(first, rest);
+    return { name, args, raw: outer.raw, env, ...(chdir !== undefined ? { chdir } : {}), ...(wrappers.length ? { wrappers } : {}), program, hasInputRedirect: false };
 }
 
 /**
@@ -4359,20 +4363,67 @@ function programCanDiffer(cmd: ResolvedCommand): boolean {
 // edited environment (as `snow sql` refuses them), and a package runner can run a different program named render.
 const RENDER_UNEXEMPT_WRAPPERS = new Set(['sudo', 'env', 'npx', 'bunx', 'pnpm', 'yarn']);
 
-// A line that can change which program `render` resolves to: a PATH change, or a function, alias or hash entry named render.
-const RENDER_LOOKUP_CHANGERS = /\bPATH\b|(?:^|[\s;&|(){}])(?:function\s+render\b|render\s*\(\s*\))|\b(?:alias|hash|enable|shopt)\b/;
+// Commands that change how a later name is looked up, or run text the guard can't see: no step after them is proven.
+const LOOKUP_CHANGERS = new Set(['hash', 'alias', 'enable', 'shopt', 'source', '.', 'eval']);
+// Commands that set the variable they name.
+const VARIABLE_SETTERS = new Set(['export', 'declare', 'typeset', 'readonly', 'local', 'read', 'mapfile', 'readarray', 'getopts', 'printf']);
+// A program or wrapper named by a path is proven only inside the system binary directories, which a container user can't write.
+const SYSTEM_BINARY_PATH = /^\/(?:usr\/)?s?bin\/[^/]+$/;
 
-/** Whether the program that runs may not be the `render` on PATH: named by a path, or looked up after the line changes it. */
-function renderProgramCanDiffer(cmd: ResolvedCommand): boolean {
+/** Whether a parsed command changes what a later command name resolves to. */
+function changesLookup(node: any): boolean {
+    const name = node.name ? commandName(wordValue(node.name)) : '';
+    const words: string[] = (node.suffix ?? []).map(wordValue);
+    if ((node.prefix ?? []).some((p: any) => p?.type === 'Assignment' && String(p.name ?? '').replace(/['"\\]/g, '') === 'PATH')) return true;
+    if (LOOKUP_CHANGERS.has(name)) return true;
+    if (VARIABLE_SETTERS.has(name) && words.some(w => /^(?:-v)?PATH(?:=|$)/.test(w))) return true;
+    if (name === 'command' || name === 'builtin') {
+        for (const w of words) {
+            if (!w.startsWith('-') || w === '--') break;
+            if (w.includes('p')) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Whether the program a step runs is the one its name finds on PATH: neither it nor a wrapper is named by a path outside
+ * the system binary directories, and nothing on the line defines a function by its name or a wrapper's, changes PATH,
+ * or changes lookup. Read from the parsed line, so a literal argument (`--start-command 'node hash.js'`) is data.
+ */
+function programProven(cmd: ResolvedCommand): boolean {
     const line = cmd.script?.command;
-    return line === undefined || /(?:^|\s)\S*\/render\s/.test(cmd.raw) || RENDER_LOOKUP_CHANGERS.test(line);
+    if (line === undefined || cmd.program === undefined) return false;
+    const pathed = (w: string) => w.includes('/') && (w.includes('..') || !SYSTEM_BINARY_PATH.test(w));
+    if ([...(cmd.wrappers ?? []), cmd.program].some(pathed)) return false;
+    const names = new Set([cmd.name, ...WRAPPERS, ...(cmd.wrappers ?? []).map(commandName)]);
+    let tree: any;
+    try {
+        tree = parseShell(line);
+    } catch {
+        return false;
+    }
+    if (walkCommandNodes(tree).some(changesLookup)) return false;
+    // A function or loop variable is found in the tree itself; one inside a substitution sits behind a getter the walk
+    // can't reach, so a substitution beside a definition-shaped text is not proven either.
+    const defines = (node: unknown): boolean => {
+        if (!node || typeof node !== 'object') return false;
+        if (Array.isArray(node)) return node.some(defines);
+        const n = node as any;
+        if (n.type === 'Function' && names.has(commandName(wordValue(n.name)))) return true;
+        if ((n.type === 'For' || n.type === 'Select') && wordValue(n.name) === 'PATH') return true;
+        return Object.values(n).some(defines);
+    };
+    if (defines(tree)) return false;
+    if (/\$\{\s*PATH\s*:?[=]|\(\(\s*PATH\s*=/.test(line)) return false;
+    return !(/\$\(|`/.test(line) && /\bfunction\b|\w\s*\(\s*\)\s*[{(]/.test(line));
 }
 
 function renderDevTarget(cmd: ResolvedCommand): string | null {
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
-    if ((cmd.env ?? []).length || renderProgramCanDiffer(cmd)) return null;
-    if ((cmd.wrappers ?? []).some(w => RENDER_UNEXEMPT_WRAPPERS.has(w))) return null;
+    if ((cmd.env ?? []).length || !programProven(cmd)) return null;
+    if ((cmd.wrappers ?? []).some(w => RENDER_UNEXEMPT_WRAPPERS.has(commandName(w)))) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const args = renderLiteralArgs(cmd);
     const accepts = (r: string) => listed.has(r);
@@ -4393,7 +4444,7 @@ function renderExpansionsAreSql(cmd: ResolvedCommand): boolean {
 
 /** The listed dev resources a held step acts on, when every resource it names is listed; null names no dev resource it can be sure of. */
 function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
-    if (!cmd.raw.startsWith(`${cmd.name} `) || programCanDiffer(cmd)) return null;
+    if (!cmd.raw.startsWith(`${cmd.name} `) || programCanDiffer(cmd) || (cmd.name === 'render' && !programProven(cmd))) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
     if (!ids.length || !ids.every(id => listed.has(id))) return null;
@@ -6319,6 +6370,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (name === 'render') {
         const change = renderChangeReason(args);
         if (change) return change;
+        if (!programProven(cmd)) return `${RENDER_CHANGE_REASON} (the guard can't confirm the program that runs is render).`;
     }
     const renderDelete = renderApiDeleteReason(cmd);
     if (renderDelete) return renderDelete;

@@ -1038,7 +1038,21 @@ describe('a dev Render resource behind a wrapper', () => {
         ['a render named by path, behind a wrapper in a substitution', `echo $(timeout 60 ./render restart ${DEV} --confirm)`],
         ['a PATH change before it', `export PATH=/tmp/bin:$PATH; render restart ${DEV} --confirm`],
         ['a function named render', `render() { echo; }; render restart ${DEV} --confirm`],
+        ['a quoted path behind builtin exec', `builtin exec "/tmp/render" restart ${DEV} --confirm`],
+        ['a wrapper named by path', `./timeout 60 render restart ${DEV} --confirm`],
+        ['a function named like a wrapper', `timeout() { :; }; timeout 60 render restart ${DEV} --confirm`],
+        ['a PATH export spelled with quotes', `export P''ATH=/tmp/bin; render restart ${DEV} --confirm`],
+        ['command -p', `command -p render restart ${DEV} --confirm`],
+        ['a sourced file before it', `source .env; render restart ${DEV} --confirm`],
     ])('%s is not exempt, and gets the production gate', (_label, command) => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test.each([
+        ['a hash entry for render before a dev read', `hash -p /tmp/shim render; render psql ${DEV_DB} -c 'select 1' | head`],
+        ['a read run by path', './render --version'],
+    ])('%s gets the production gate', (_label, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
     });
@@ -1059,6 +1073,7 @@ describe('a dev Render resource behind a wrapper', () => {
         `export X=1; render restart ${DEV} --confirm`,
         `N=1; render deploys create ${DEV} --confirm`,
         `for s in a; do render restart ${DEV} --confirm; done`,
+        `render jobs create ${DEV} --start-command 'node hash.js'`,
     ])('%s stays exempt', command => {
         expect(verdict(command)).toBe('allow');
     });
