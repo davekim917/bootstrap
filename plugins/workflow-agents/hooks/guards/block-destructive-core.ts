@@ -4512,6 +4512,17 @@ function changesClusterRoles(cmd: ResolvedCommand): boolean {
         || psqlStatementTexts(t).some(s => destructiveStatements(s, 0, true, false, true).some(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern) || PG_UNREADABLE_LABELS.has(st.pattern))));
 }
 
+/**
+ * Whether a step drops a whole database. That is never inside the database the connection names, whichever one the
+ * statement names, so no connection-based waiver covers it.
+ */
+function dropsDatabase(cmd: ResolvedCommand): boolean {
+    if (!SQL_CLIS[cmd.name]) return false;
+    const postgres = cmd.name === 'psql';
+    const texts = sqlInputFor(cmd).texts.flatMap(t => (postgres ? psqlStatementTexts(t) : [t]));
+    return texts.some(t => destructiveStatements(t, 0, true, false, postgres).some(st => st.pattern === 'DROP' && /^\s*DROP\s+DATABASE\b/i.test(st.skeleton)));
+}
+
 // psql's \c or \connect, which moves the rest of the script to another database.
 const PSQL_CONNECT = /(?:^|\n)[ \t]*\\c(?:onnect)?\b/;
 
@@ -4598,7 +4609,7 @@ export function labTargetOf(cmd: ResolvedCommand, cwd: string = currentWorkingDi
         case 'gh':
             return cmd.args[0] === 'repo' && cmd.args[1] === 'delete' ? labGhTarget(cmd) : null;
         default:
-            return LAB_SQL_CLIS.has(cmd.name) && !changesClusterRoles(cmd) ? labSqlTarget(cmd) : null;
+            return LAB_SQL_CLIS.has(cmd.name) && !changesClusterRoles(cmd) && !dropsDatabase(cmd) ? labSqlTarget(cmd) : null;
     }
 }
 
