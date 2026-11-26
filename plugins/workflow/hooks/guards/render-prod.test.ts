@@ -296,6 +296,13 @@ describe('a listed dev resource', () => {
         expect(verdict(`export HTTPS_PROXY=http://203.0.113.5:3128; render deploys list ${DEV} --limit 1`)).not.toBe('allow');
     });
 
+    test.each([
+        ['inside an if', `if true; then render deploys list ${DEV} --limit 1; fi`],
+        ['render psql in a subshell', `(render psql ${DEV_DB} -c 'select 1')`],
+    ])('a listed read %s stays card-free', (_label, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
     test('a listed render restart alone stays card-free', () => {
         expect(verdict(`render restart ${DEV}`)).toBe('allow');
     });

@@ -4357,12 +4357,13 @@ function programCanDiffer(cmd: ResolvedCommand): boolean {
     // program where it is. Any other client may read it, or a name beside it, differently.
     const authOnly = (assignments: string[]) => PG_DIRECT_CLIENTS.has(cmd.name) ? assignments.every(a => /^PGPASSWORD=/.test(a)) : !assignments.length;
     if (line === undefined) return true;
-    // Only what runs before the step can change it; a loop runs its body again, so there the whole line counts.
+    // Only what runs before the step can change it, judged by position in the whole parse; a loop runs its body again,
+    // so there the whole line counts.
     const looped = /\b(?:for|while|until)\b/.test(line);
-    const upTo = cmd.pos === undefined || looped ? line : line.slice(0, cmd.pos + cmd.raw.length);
+    const after = cmd.pos === undefined || looped ? Infinity : cmd.pos + cmd.raw.length;
     const before = (c: ResolvedCommand) => looped || cmd.pos === undefined || c.pos === undefined || c.pos < cmd.pos;
     return !authOnly(cmd.env ?? []) || new RegExp(`(?:^|\\s)\\S*/${cmd.name}\\s`).test(cmd.raw)
-        || changesShellState(upTo, name => name === 'PGPASSWORD' && PG_DIRECT_CLIENTS.has(cmd.name)) || extractCommands(line).some(c => before(c) && ENVIRONMENT_CHANGERS.has(c.name) && !(c.name === 'export' && c.args.length > 0 && authOnly(c.args)))
+        || changesShellState(line, name => name === 'PGPASSWORD' && PG_DIRECT_CLIENTS.has(cmd.name), after) || extractCommands(line).some(c => before(c) && ENVIRONMENT_CHANGERS.has(c.name) && !(c.name === 'export' && c.args.length > 0 && authOnly(c.args)))
         || cmd.args.some(a => a.search(COPY_PROGRAM) >= 0);
 }
 
@@ -4534,10 +4535,13 @@ function setsVariableByOption(cmd: ResolvedCommand): boolean {
  * defines a function, or can't be parsed to tell. A function can take the name of the command an exemption reads, and
  * run something else under it.
  */
-function changesShellState(command: string, harmless: (name: string) => boolean = () => false): boolean {
+function changesShellState(command: string, harmless: (name: string) => boolean = () => false, from = Infinity): boolean {
     const found = (node: unknown): boolean => {
         if (!node || typeof node !== 'object') return false;
         if (Array.isArray(node)) return node.some(found);
+        // A node that starts at or past `from` runs after the step asking, so it can't change that step.
+        const pos = (node as { pos?: unknown }).pos;
+        if (typeof pos === 'number' && pos >= from) return false;
         const type = (node as { type?: unknown }).type;
         const name = (node as { name?: unknown }).name;
         if (type === 'Assignment' && typeof name === 'string' && harmless(name)) return false;
