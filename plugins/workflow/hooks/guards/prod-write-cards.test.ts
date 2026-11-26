@@ -168,6 +168,8 @@ describe('database code run by an interpreter goes through the same readers', ()
         ['tsx run through npx, with pg', 'npx tsx -e "import pg from \'pg\'; new pg.Client().query(\'update orders set a = 1 where id = 1\')"'],
         ['node pg UPDATE', 'node -e "const { Client } = require(\'pg\'); new Client().query(\'update orders set a = 1 where id = 2\')"'],
         ['psql launched from python', 'python3 -c "import subprocess; subprocess.run([\'psql\', \'-h\', \'db.example\', \'-c\', \'delete from orders\'])"'],
+        ['a command list whose connection comes from the environment', 'python3 -c "import os, subprocess; cmd = [\'psql\', os.environ[\'DATABASE_URL\'], \'-c\', \'delete from orders\']; subprocess.run(cmd)"'],
+        ['a psql launch in a template placeholder', "node -e 'const { execSync } = require(\"child_process\"); console.log(`${execSync(\"psql -h db.example -c \\\"delete from orders\\\"\")}`)'"],
         ['a psql launch inside a string the code runs', 'python3 -c "exec(\\"import subprocess; subprocess.run([\'psql\', \'-h\', \'db.example\', \'-c\', \'delete from orders\'])\\")"'],
         ['SQL a script loads from a file the guard cannot open', "python3 - <<'EOF'\nimport psycopg2\npsycopg2.connect().cursor().execute(open('missing.sql').read())\nEOF"],
     ])('%s takes the card', (_name, command) => {

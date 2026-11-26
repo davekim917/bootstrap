@@ -6781,9 +6781,9 @@ const INTERPRETERS = /^(?:python(?:\d+(?:\.\d+)?)?|pypy3?|node(?:js)?|bun|deno|t
 const INTERPRETER_RUNNERS = new Set(['uv', 'poetry', 'pipenv', 'pdm', 'rye', 'hatch']);
 const PY_DRIVER = /^[ \t]*(?:import|from)[ \t]+(?:snowflake(?:\.connector|\.snowpark)?|psycopg2?|asyncpg|pg8000|sqlalchemy|databricks\.sql)\b/m;
 const JS_DRIVERS = /^(?:pg|postgres|snowflake-sdk|knex|kysely|@neondatabase\/serverless|@vercel\/postgres|slonik|pg-promise|duckdb)$/;
-// Launching a client whose first word is written in the call, or a command list that starts with one and passes it
-// flags: a list of program names is not a command.
-const DB_CLIENT_LAUNCH = /\b(?:subprocess\.\w+|os\.(?:system|popen)|check_output|check_call|Popen|exec(?:Sync|File(?:Sync)?)?|spawn(?:Sync)?|Bun\.spawn|Deno\.Command|system)\s*\(\s*(?:\[\s*)?[fr]?['"`](?:psql|snow|pg_restore|dropdb)\b|Bun\.\$`\s*(?:psql|snow)\b|\[\s*['"](?:psql|snow|pg_restore|dropdb)['"]\s*,[^\]]*['"]-/;
+// Launching a client whose first word is written in the call, or a command list that starts with one; a list of three
+// or more plain words, such as program names, is not a command.
+const DB_CLIENT_LAUNCH = /\b(?:subprocess\.\w+|os\.(?:system|popen)|check_output|check_call|Popen|exec(?:Sync|File(?:Sync)?)?|spawn(?:Sync)?|Bun\.spawn|Deno\.Command|system)\s*\(\s*(?:\[\s*)?[fr]?['"`](?:psql|snow|pg_restore|dropdb)\b|Bun\.\$`\s*(?:psql|snow)\b|\[\s*['"](?:psql|snow|pg_restore|dropdb)['"]\s*,(?!(?:\s*['"][\w.]+['"]\s*,)+\s*['"][\w.]+['"]\s*,?\s*\])/;
 const SQL_CALL = /\.(?:execute|executemany|executescript|exec_driver_sql|query|sql|run_query|copy_expert|unsafe|raw)\s*\(/;
 const CODE_LITERAL = /[rRbBfFuU]{0,2}(?:"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\[\s\S])*`)/g;
 // A literal that reads as a SQL statement, not prose: its verb is followed by what the statement needs.
@@ -6807,7 +6807,10 @@ function codeLiterals(code: string): string[] {
 function launchesDbClient(code: string): boolean {
     if (!DB_CLIENT_LAUNCH.test(code)) return false;
     if (/\b(?:exec|eval|compile|Function|runInThisContext|runInNewContext)\s*\(|\brunpy\b/.test(code)) return true;
-    const spans = [...code.matchAll(CODE_LITERAL)].map(m => [m.index!, m.index! + m[0].length] as const);
+    // A template or f-string runs the code in its placeholders, so it is no hiding place.
+    const spans = [...code.matchAll(CODE_LITERAL)]
+        .filter(m => !(m[0].includes('${') || (/^[rRbBuU]?[fF]/.test(m[0]) && m[0].includes('{'))))
+        .map(m => [m.index!, m.index! + m[0].length] as const);
     const launch = new RegExp(DB_CLIENT_LAUNCH.source, 'g');
     for (const m of code.matchAll(launch)) if (!spans.some(([s, e]) => m.index! > s && m.index! < e)) return true;
     return false;
