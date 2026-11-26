@@ -276,8 +276,21 @@ describe('a listed dev resource', () => {
         expect(changesProduction(command, '/tmp')).toBe(false);
     });
 
+    // PGPASSWORD only authenticates: it can't move psql to another server, so it leaves the listed host held as dev.
+    test.each([
+        ['a literal password', `PGPASSWORD=example-pw psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['a password from a variable', `PGPASSWORD="$PW" psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['an exported password', `export PGPASSWORD="$PW"; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+    ])('psql on a listed host with %s in PGPASSWORD is held as dev', (_label, command) => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(false);
+    });
+
     test.each([
         ['a variable', `psql -h ${DEV_HOST} -X "$DATABASE_URL" -c 'delete from accounts'`],
+        ['a host from the environment beside a password', `PGPASSWORD=x PGHOST=prod.example.com psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['an exported host beside an exported password', `export PGPASSWORD=x PGHOST=prod.example.com; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['a service file beside a password', `PGPASSWORD=x PGSERVICE=prod psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
         ['a URL as the database', `psql -h ${DEV_HOST} -X -d postgresql://prod.example.com/app -c 'delete from accounts'`],
         ['a URL as a word', `psql -h ${DEV_HOST} -X postgresql://prod.example.com/app -c 'delete from accounts'`],
         ['a connection string', `psql -h ${DEV_HOST} -X --dbname='host=prod.example.com' -c 'delete from accounts'`],

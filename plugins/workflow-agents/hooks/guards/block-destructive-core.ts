@@ -4350,8 +4350,10 @@ function runsAlone(cmd: ResolvedCommand): boolean {
 /** Whether what runs can differ from what the line shows: a path or prefix, an earlier change on the line, or SQL that runs a program. */
 function programCanDiffer(cmd: ResolvedCommand): boolean {
     const line = cmd.script?.command;
-    return line === undefined || !!cmd.env?.length || new RegExp(`(?:^|\\s)\\S*/${cmd.name}\\s`).test(cmd.raw)
-        || changesShellState(line) || extractCommands(line).some(c => ENVIRONMENT_CHANGERS.has(c.name))
+    // PGPASSWORD only authenticates, so setting it, as a prefix or by export, leaves the program where it is.
+    const authOnly = (assignments: string[]) => assignments.every(a => /^PGPASSWORD=/.test(a));
+    return line === undefined || !authOnly(cmd.env ?? []) || new RegExp(`(?:^|\\s)\\S*/${cmd.name}\\s`).test(cmd.raw)
+        || changesShellState(line, name => name === 'PGPASSWORD') || extractCommands(line).some(c => ENVIRONMENT_CHANGERS.has(c.name) && !(c.name === 'export' && c.args.length > 0 && authOnly(c.args)))
         || cmd.args.some(a => a.search(COPY_PROGRAM) >= 0);
 }
 
@@ -4380,7 +4382,9 @@ function renderExpansionsAreSql(cmd: ResolvedCommand): boolean {
 
 /** The listed dev resources a held step acts on, when every resource it names is listed; null names no dev resource it can be sure of. */
 function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
-    if (!cmd.raw.startsWith(`${cmd.name} `) || programCanDiffer(cmd) || !renderEnvironmentProven(cmd, cmd.script?.command)) return null;
+    // A PGPASSWORD prefix is the one assignment that leaves the step where it is.
+    const raw = (cmd.env ?? []).every(e => /^PGPASSWORD=/.test(e)) ? cmd.raw.replace(/^(?:PGPASSWORD=(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^\s'"]+)\s+)+/, '') : cmd.raw;
+    if (!raw.startsWith(`${cmd.name} `) || programCanDiffer(cmd) || !renderEnvironmentProven(cmd, cmd.script?.command)) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
     if (!ids.length || !ids.every(id => listed.has(id))) return null;
@@ -4521,11 +4525,13 @@ function setsVariableByOption(cmd: ResolvedCommand): boolean {
  * defines a function, or can't be parsed to tell. A function can take the name of the command an exemption reads, and
  * run something else under it.
  */
-function changesShellState(command: string): boolean {
+function changesShellState(command: string, harmless: (name: string) => boolean = () => false): boolean {
     const found = (node: unknown): boolean => {
         if (!node || typeof node !== 'object') return false;
         if (Array.isArray(node)) return node.some(found);
         const type = (node as { type?: unknown }).type;
+        const name = (node as { name?: unknown }).name;
+        if (type === 'Assignment' && typeof name === 'string' && harmless(name)) return false;
         if (type === 'Assignment' || type === 'For' || type === 'Select' || type === 'Function' || type === 'ArithmeticCommand' || type === 'ArithmeticFor') return true;
         return Object.values(node).some(found);
     };
@@ -4658,7 +4664,8 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
 // EXECIGNORE is not inherited, but this shell's PATH search for `snow` skips what it names.
 const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|EXECIGNORE|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
 // The same for the render CLI, the psql and ssh it starts, and curl to the Render API.
-const RENDER_ENVIRONMENT_NAME = /^(?:HOME|PATH|EXECIGNORE|RENDER_\w*|CURL_HOME|XDG_\w+|SSL_\w+|SSH_\w+|PG\w+|LD_\w+)$/;
+// PGPASSWORD only authenticates, so it can't move a client to another server; every other PG variable can.
+const RENDER_ENVIRONMENT_NAME = /^(?:HOME|PATH|EXECIGNORE|RENDER_\w*|CURL_HOME|XDG_\w+|SSL_\w+|SSH_\w+|PG(?!PASSWORD$)\w+|LD_\w+)$/;
 // bash's own variables: an integer one (RANDOM, SECONDS, OPTIND) evaluates an assigned value as arithmetic, which can
 // assign any name, and BASH_CMDS/BASH_ALIASES repoint a command.
 const BASH_SPECIAL_NAME = /^(?:BASH\w*|RANDOM|SRANDOM|SECONDS|OPTIND|OPTARG|OPTERR|LINENO|HISTCMD|EPOCH\w+|FUNCNAME|FUNCNEST|GROUPS|DIRSTACK|COMP_\w+|IFS|OLDPWD|PWD|SHELLOPTS|PS4|PROMPT_COMMAND|ENV|CDPATH|GLOBIGNORE|HIST\w*|TMOUT|IGNOREEOF|POSIXLY_CORRECT|PPID|UID|EUID|SHLVL)$/;
@@ -4805,6 +4812,13 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
             if (!words) return false;
             if (words.length === 2) return literal(words[0]) && /^-[bcdefghknprstuwxzGLNOS]$/.test(shellUnquote(words[0])) && operand(words[1]);
             return words.length === 3 && literal(words[1]) && /^(?:=|==|!=|<|>|-(?:eq|ne|lt|le|gt|ge|nt|ot|ef))$/.test(shellUnquote(words[1])) && operand(words[0]) && operand(words[2]);
+        }
+        // export of names that steer nothing (PGPASSWORD under the Render list) only sets them for later commands.
+        if (name === 'export') {
+            return !(n.prefix ?? []).length && quiet(n) && args.length > 0 && args.every(a => {
+                const m = /^([A-Za-z_]\w*)=/.exec(a);
+                return !!m && variableSafe(m[1]) && assignsNothing(withoutSingleQuoted(a));
+            });
         }
         if (name === 'set') {
             return !(n.prefix ?? []).length && !((n as { redirects?: unknown[] }).redirects ?? []).length
