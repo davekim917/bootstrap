@@ -1420,7 +1420,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         // A file that isn't there may be generated on the line by a writer the guard doesn't model (cp, curl, a script).
         // A written-out path keeps running on every client but snow and psql.
         const named = /[$`]/.test(f);
-        if (candidates && !writes.length && (named || (cmd.name === 'psql' && f !== '-' && ownFiles.has(f)) || (cmd.name === 'snow' && commandFiles.has(f))) && !candidates.some(path => existsSync(path))) {
+        if (candidates && !writes.length && (named || (cmd.name === 'psql' && f !== '-' && ownFiles.has(f)) || (cmd.name === 'snow' && commandFiles.has(f))) && candidates.every(pathIsMissing)) {
             unreadable ??= `${f}, ${SQL_PATH_MISSING}`;
         }
         for (const written of writes.map(w => flattenInput(w, cmd.script))) {
@@ -1905,6 +1905,16 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] | null {
     return out;
 }
 
+// Not there at all: a path the guard may not look into exists as far as it knows, and is read below as unreadable.
+const pathIsMissing = (path: string): boolean => {
+    try {
+        statSync(path);
+        return false;
+    } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        return code === 'ENOENT' || code === 'ENOTDIR';
+    }
+};
 const SQL_PATH_UNPROVEN = "a path the command line doesn't prove";
 const SQL_PATH_MISSING = "a file that isn't there yet";
 const SQL_PATH_NOT_FILE = 'a device, pipe or socket, not a file';

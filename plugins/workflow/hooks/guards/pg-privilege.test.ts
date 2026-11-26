@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -83,6 +83,15 @@ describe('a role or privilege change on a reachable Postgres is never run withou
         expect(run("render psql " + DEV_DB + " -c 'DO $$BEGIN GRANT SELECT ON public.orders TO app_reader; END$$'").action).toBe('gate');
     });
 
+    test.each([
+        ['a quoted heredoc', "psql -X -h " + host(PROD_DB) + " -U app -d app <<'EOF'\nGRANT SELECT ON public.orders TO app_reader;\nEOF"],
+        ['a pipe', 'echo "GRANT SELECT ON public.orders TO app_reader" | psql -X -h ' + host(PROD_DB) + ' -U app -d app'],
+        ['one transaction with other statements', "psql -X -h " + host(PROD_DB) + " -U app -d app -1 -c 'BEGIN; CREATE ROLE app_reader; COMMIT'"],
+        ['under timeout, piped to tail', "timeout 30 psql -X -h " + host(PROD_DB) + " -U app -d app -c 'GRANT SELECT ON t TO r' 2>&1 | tail -3"],
+    ])('from %s', (_how, command) => {
+        expect(run(command).action).toBe('gate');
+    });
+
     test('a listed dev database holds it as dev and says why', () => {
         const command = viaRender(DEV_DB, 'GRANT SELECT ON public.orders TO app_reader');
         const { reason } = run(command);
@@ -137,12 +146,25 @@ describe('a psql file the guard cannot read before the line runs', () => {
         }
     });
 
+    test('a file in a directory the guard may not look into is carded, not refused as missing', () => {
+        const closed = join(dir, 'closed');
+        mkdirSync(closed);
+        writeFileSync(join(closed, 'x.sql'), 'select 1;\n');
+        chmodSync(closed, 0o000);
+        try {
+            expect(run('psql -X -h ' + host(PROD_DB) + ' -U app -d app -f ' + join(closed, 'x.sql')).action).toBe('gate');
+        } finally {
+            chmodSync(closed, 0o700);
+        }
+    });
+
     test('a readable file is read: a grant in it is carded, a select runs', () => {
         const grants = join(dir, 'grants.sql');
         const reads = join(dir, 'reads.sql');
         writeFileSync(grants, 'GRANT SELECT ON public.orders TO app_reader;\n');
         writeFileSync(reads, 'select count(*) from public.orders;\n');
         expect(run('psql -X -h ' + host(PROD_DB) + ' -U app -d app -f ' + grants).action).toBe('gate');
+        expect(run('psql -X -h ' + host(PROD_DB) + ' -U app -d app < ' + grants).action).toBe('gate');
         expect(run('psql -X -h ' + host(PROD_DB) + ' -U app -d app -f ' + reads).action).toBe('allow');
     });
 });

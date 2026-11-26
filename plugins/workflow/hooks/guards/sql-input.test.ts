@@ -81,7 +81,9 @@ test('a cd the step does not depend on leaves both directories possible, and eac
     expect(verdict(`cd /does/not/exist || psql -h db.example -f bad.sql`)).toBe('gate');
     expect(verdict(`cd /does/not/exist; psql -h db.example -f bad.sql`)).toBe('gate');
     // Only the directory the cd moves to is possible, and the file isn't there.
-    expect(verdict(`cd /does/not/exist && psql -f bad.sql`)).toBe('block');
+    const moved = evaluateBashCommand(`cd /does/not/exist && psql -h db.example -f bad.sql`, { cwd: dir });
+    expect(moved.action).toBe('block');
+    expect(moved.reason).toContain("isn't there yet");
 });
 
 test('env -C with a relative directory resolves from where the command starts', () => {
@@ -515,7 +517,9 @@ test('text echoed to the terminal is not fed to a client that is not in its pipe
 });
 
 test('after a cd the command implies, a relative file is not read from the starting directory, where it names a different file', () => {
-    expect(verdict(`cd /elsewhere && psql -f bad.sql`)).toBe('block');
+    const moved = evaluateBashCommand(`cd /elsewhere && psql -h db.example -f bad.sql`, { cwd: dir });
+    expect(moved.action).toBe('block');
+    expect(moved.reason).toContain("isn't there yet");
 });
 
 test('a SQL client inside a substitution expands its own variables', () => {
