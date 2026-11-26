@@ -2133,7 +2133,11 @@ const FILE_WRITER_OUTPUTS: Record<string, (args: string[]) => string[]> = {
     curl: args => optionValues(args, ['-o', '--output']), wget: args => optionValues(args, ['-O', '--output-document']),
     psql: args => optionValues(args, ['-o', '--output', '-L', '--log-file']),
     pg_dump: args => optionValues(args, ['-f', '--file']),
-    pg_restore: args => optionValues(args, ['-f', '--file']), pg_dumpall: args => optionValues(args, ['-f', '--file']),
+    pg_restore: args => {
+        // Read with pg_restore's own option clusters, so -vf names the file.
+        const restore = pgConnectionTarget('pg_restore', args);
+        return restore === null ? optionValues(args, ['-f', '--file']) : restore.file ? [restore.file] : [];
+    }, pg_dumpall: args => optionValues(args, ['-f', '--file']),
     dd: args => args.filter(a => a.startsWith('of=')).map(a => a.slice(3)),
     sed: args => (args.some(a => /^(?:-[a-zA-Z]*i|--in-place)/.test(a)) ? operands(args).slice(args.some(a => /^(?:-e|--expression|-f|--file)/.test(a)) ? 0 : 1) : []),
     perl: args => (args.some(a => /^-[a-zA-Z]*i/.test(a)) ? operands(args) : []),
@@ -2223,7 +2227,8 @@ function indexLineWriters(script: ScriptContext): Map<string, LineWriter[]> {
     for (const c of script.commands ?? []) {
         if (c.pos === undefined) continue;
         for (const target of [...(c.stdoutFiles ?? []), ...(FILE_WRITER_OUTPUTS[c.name]?.(c.args) ?? [])]) {
-            const resolved = sqlPathCandidates(target, c);
+            // A directory written with a trailing slash names the same directory without one.
+            const resolved = sqlPathCandidates(target, c)?.map(p => p.replace(/(.)\/+$/, '$1'));
             const w: LineWriter = { pos: c.pos, target, c, resolved: resolved?.length ? resolved : null };
             if (COPY_WRITERS.has(c.name) && copiesIntoDirectory(c, target)) {
                 add(DIRECTORY_TARGET, w);
@@ -4503,66 +4508,16 @@ function changesClusterRoles(cmd: ResolvedCommand): boolean {
         || psqlStatementTexts(t).some(s => destructiveStatements(s, 0, true, false, true).some(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern) || PG_UNREADABLE_LABELS.has(st.pattern))));
 }
 
-// pg_restore's short options that take a value, as its getopt string declares them.
-const PG_RESTORE_SHORT_VALUES = 'dfFhIjLnNpPStTU';
-
-/**
- * The server pg_restore -d restores into, as getopt reads its options (the last -h or -p wins); null for a restore
- * with no -d, which only writes a script, or an option the guard doesn't know. pg_restore reads no psqlrc.
- */
-function pgRestoreTarget(args: string[]): { host?: string; port?: string; noPsqlrc: boolean } | null {
-    if (!pgRestoreDatabase(args)) return null;
-    let host: string | undefined;
-    let port: string | undefined;
-    for (let i = 0; i < args.length; i++) {
-        const a = args[i];
-        if (a === '--') break;
-        const long = /^--(host|port)(?:=(.*))?$/.exec(a);
-        if (long) {
-            const value = long[2] ?? args[++i];
-            if (long[1] === 'host') host = value;
-            else port = value;
-            continue;
-        }
-        if (!/^-[^-]/.test(a)) continue;
-        for (let j = 1; j < a.length; j++) {
-            if (!PG_RESTORE_SHORT_VALUES.includes(a[j])) continue;
-            const value = j + 1 < a.length ? a.slice(j + 1) : args[++i];
-            if (a[j] === 'h') host = value;
-            if (a[j] === 'p') port = value;
-            break;
-        }
-    }
-    return { host, port, noPsqlrc: true };
-}
-
-/** The database pg_restore -d restores into, read the way getopt reads short-option clusters; null when there is none. */
-function pgRestoreDatabase(args: string[]): string | null {
-    let db: string | null = null;
-    for (let i = 0; i < args.length; i++) {
-        const a = args[i];
-        if (a === '--') break;
-        const long = /^--dbname(?:=(.*))?$/.exec(a);
-        if (long) {
-            db = long[1] ?? args[++i] ?? '';
-            continue;
-        }
-        if (!/^-[^-]/.test(a)) continue;
-        for (let j = 1; j < a.length; j++) {
-            if (!PG_RESTORE_SHORT_VALUES.includes(a[j])) continue;
-            const value = j + 1 < a.length ? a.slice(j + 1) : args[++i] ?? '';
-            if (a[j] === 'd') db = value;
-            break;
-        }
-    }
-    return db;
-}
-
 // psql's \c or \connect, which moves the rest of the script to another database.
 const PSQL_CONNECT = /(?:^|\n)[ \t]*\\c(?:onnect)?\b/;
 
 function labSqlTarget(cmd: ResolvedCommand): string | null {
     const { args } = cmd;
+    if (cmd.name === 'psql' || cmd.name === 'pg_restore') {
+        // The database decides, read from a conninfo or URI too.
+        const target = pgConnectionTarget(cmd.name, args, true, true);
+        return target?.db !== undefined && LAB_DB_NAME_RE.test(target.db) ? target.db : null;
+    }
     // The database the step selects decides. A Lab-named user or host can reach any database, so neither proves one.
     let db: string | undefined;
     const fromConnection = (value: string): string | undefined => {
@@ -4845,7 +4800,7 @@ const isListedPgHost = (host: string | undefined, ids: string[]): boolean =>
 function pgStaysOnListedHost(cmd: ResolvedCommand, ids: string[], psqlrcAllowed: boolean): boolean {
     if (cmd.chdir !== undefined || LIBPQ_REDIRECT_ENV.some(k => LIVE_LOCAL_PG_HOST.env[k] !== undefined)) return false;
     if (!writtenArgs(cmd)?.every(isLiteralShellWord)) return false;
-    const target = cmd.name === 'psql' ? psqlTarget(cmd.args) : cmd.name === 'dropdb' ? dropdbTarget(cmd.args) : null;
+    const target = cmd.name === 'psql' ? pgConnectionTarget('psql', cmd.args) : cmd.name === 'dropdb' ? dropdbTarget(cmd.args) : null;
     return !!target && (psqlrcAllowed || target.noPsqlrc) && isListedPgHost(target.host, ids);
 }
 
@@ -5469,19 +5424,85 @@ function mayWriteFiles(command: string): boolean {
  * whether -X skips the startup files. Null when an option is one the guard doesn't place, no -c gives the SQL, or the
  * dbname is a connection string libpq would expand.
  */
-function psqlTarget(args: string[], fromFiles = false): { host?: string; port?: string; noPsqlrc: boolean; commands: number; files: number } | null {
+// pg_restore's long options, as its getopt table declares them: those that take a value, and those that don't.
+const PG_RESTORE_LONG_VALUES = new Set(['--dbname', '--file', '--format', '--host', '--port', '--username', '--jobs', '--use-list',
+    '--schema', '--exclude-schema', '--function', '--index', '--section', '--table', '--trigger', '--role', '--superuser', '--filter',
+    '--exclude-database', '--transaction-size']);
+const PG_RESTORE_LONG_FLAGS = new Set(['--data-only', '--clean', '--create', '--exit-on-error', '--list', '--no-owner', '--no-reconnect',
+    '--schema-only', '--verbose', '--no-password', '--password', '--single-transaction', '--disable-triggers', '--enable-row-security',
+    '--if-exists', '--no-comments', '--no-data-for-failed-tables', '--no-publications', '--no-security-labels', '--no-subscriptions',
+    '--no-table-access-method', '--no-tablespaces', '--strict-names', '--use-set-session-authorization', '--no-acl', '--no-privileges',
+    '--statistics-only', '--no-statistics', '--no-data', '--no-schema', '--with-data', '--with-schema', '--with-statistics', '--globals-only']);
+const PG_RESTORE_SHORT_NAMES: Record<string, string> = { d: '--dbname', f: '--file', F: '--format', h: '--host', I: '--index', j: '--jobs',
+    L: '--use-list', n: '--schema', N: '--exclude-schema', p: '--port', P: '--function', S: '--superuser', t: '--table', T: '--trigger',
+    U: '--username' };
+
+// libpq conninfo keywords the guard can follow; any other one (hostaddr, service, options) may move the connection.
+const CONNINFO_KNOWN = new Set(['host', 'port', 'dbname', 'user', 'password', 'sslmode', 'application_name', 'connect_timeout']);
+
+/** A libpq keyword/value string's settings, single-quoted values unescaped; null when it isn't one the guard can follow. */
+function parseConninfo(text: string): Map<string, string> | null {
+    const out = new Map<string, string>();
+    // libpq splits on ASCII whitespace only: a non-ASCII space is part of the value.
+    const rx = /[ \t\n\r\f\v]*([A-Za-z_]+)[ \t\n\r\f\v]*=[ \t\n\r\f\v]*(?:'((?:[^'\\]|\\.)*)'|([^ \t\n\r\f\v']*))/gy;
+    let at = 0;
+    for (let m = rx.exec(text); m; m = rx.exec(text)) {
+        const key = m[1].toLowerCase();
+        if (!CONNINFO_KNOWN.has(key)) return null;
+        out.set(key, m[2] !== undefined ? m[2].replace(/\\(.)/g, '$1') : m[3]);
+        at = rx.lastIndex;
+    }
+    return /^[ \t\n\r\f\v]*$/.test(text.slice(at)) && out.size ? out : null;
+}
+
+/** A postgres:// URI's settings (its query keywords included), for one host; null for a form the guard can't follow. */
+function parsePgUri(text: string): Map<string, string> | null {
+    const m = /^postgres(?:ql)?:\/\/(?:([^@/?#]*)@)?([^/?#]*)(?:\/([^?#]*))?(?:\?([^#]*))?$/.exec(text);
+    if (!m || m[2].includes(',')) return null;
+    const out = new Map<string, string>();
+    try {
+        const user = m[1]?.split(':')[0];
+        if (user) out.set('user', decodeURIComponent(user));
+        const hostPort = /^(\[[^\]]*\]|[^:]*)(?::(\d*))?$/.exec(m[2]);
+        if (!hostPort) return null;
+        if (hostPort[1]) out.set('host', decodeURIComponent(hostPort[1].replace(/^\[|\]$/g, '')));
+        if (hostPort[2]) out.set('port', hostPort[2]);
+        if (m[3]) out.set('dbname', decodeURIComponent(m[3]));
+        for (const pair of (m[4] ?? '').split('&').filter(Boolean)) {
+            const [key, value = ''] = pair.split('=');
+            if (!CONNINFO_KNOWN.has(key)) return null;
+            out.set(key, decodeURIComponent(value));
+        }
+    } catch {
+        return null;
+    }
+    return out;
+}
+
+type PgTarget = { host?: string; port?: string; db?: string; user?: string; file?: string; noPsqlrc: boolean; commands: number; files: number };
+
+/**
+ * Where psql or pg_restore connects, read as the client and libpq read it: options by the client's getopt tables (the
+ * last of a repeated one wins), psql's first operand as its database, and a conninfo string or URI given as the
+ * database, whose settings override -h, -p and -U. Without `expand`, a conninfo or URI database is not followed and
+ * the target is null: an exemption never rests on the guard's own reading of one. Null too when an option is one the
+ * guard can't follow, or (for psql, unless fromFiles) when no -c runs.
+ */
+function pgConnectionTarget(client: 'psql' | 'pg_restore', args: string[], fromFiles = false, expand = false): PgTarget | null {
+    const psql = client === 'psql';
     const last = new Map<string, string>();
     const positionals: string[] = [];
     let commands = 0;
     let files = 0;
-    let noPsqlrc = false;
+    let noPsqlrc = !psql;
     const take = (option: string, value: string) => {
         if (option === '--command') commands++;
-        else if (option === '--file') files++;
+        else if (option === '--file' && psql) files++;
         else last.set(option, value);
     };
-    const longValues = fromFiles ? new Set([...PSQL_LONG_VALUES, '--file']) : PSQL_LONG_VALUES;
-    const shortValues: Record<string, string> = fromFiles ? { ...PSQL_SHORT_VALUES, f: '--file' } : PSQL_SHORT_VALUES;
+    const longValues = psql ? (fromFiles ? new Set([...PSQL_LONG_VALUES, '--file']) : PSQL_LONG_VALUES) : PG_RESTORE_LONG_VALUES;
+    const longFlags = psql ? PSQL_LONG_FLAGS : PG_RESTORE_LONG_FLAGS;
+    const shortValues: Record<string, string> = psql ? (fromFiles ? { ...PSQL_SHORT_VALUES, f: '--file' } : PSQL_SHORT_VALUES) : PG_RESTORE_SHORT_NAMES;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         if (a === '--') {
@@ -5491,7 +5512,7 @@ function psqlTarget(args: string[], fromFiles = false): { host?: string; port?: 
         if (a.startsWith('--')) {
             const eq = a.indexOf('=');
             const option = eq < 0 ? a : a.slice(0, eq);
-            if (eq < 0 && PSQL_LONG_FLAGS.has(option)) {
+            if (eq < 0 && longFlags.has(option)) {
                 if (option === '--no-psqlrc') noPsqlrc = true;
                 continue;
             }
@@ -5502,13 +5523,14 @@ function psqlTarget(args: string[], fromFiles = false): { host?: string; port?: 
         }
         if (a.length > 1 && a.startsWith('-')) {
             for (let j = 1; j < a.length; j++) {
-                if (PSQL_SHORT_FLAGS.includes(a[j])) {
-                    if (a[j] === 'X') noPsqlrc = true;
+                const option = shortValues[a[j]];
+                if (!option) {
+                    if (psql && !PSQL_SHORT_FLAGS.includes(a[j])) return null;
+                    if (psql && a[j] === 'X') noPsqlrc = true;
                     continue;
                 }
-                const option = shortValues[a[j]];
                 const value = j + 1 < a.length ? a.slice(j + 1) : args[++i];
-                if (!option || value === undefined) return null;
+                if (value === undefined) return null;
                 take(option, value);
                 break;
             }
@@ -5516,12 +5538,21 @@ function psqlTarget(args: string[], fromFiles = false): { host?: string; port?: 
         }
         positionals.push(a);
     }
-    if (commands === 0 && !fromFiles) return null;
-    // Without -d, psql takes the first operand as the dbname (later ones as the username, or ignored). libpq expands a
-    // dbname holding `=` or a URI prefix, and what that holds overrides -h and -p.
-    const dbname = last.get('--dbname') ?? positionals[0];
-    if (dbname !== undefined && (dbname.includes('=') || /^postgres(?:ql)?:\/\//.test(dbname))) return null;
-    return { host: last.get('--host'), port: last.get('--port'), noPsqlrc, commands, files };
+    if (psql && commands === 0 && !fromFiles) return null;
+    const target: PgTarget = { host: last.get('--host'), port: last.get('--port'), user: last.get('--username'), file: last.get('--file'), noPsqlrc, commands, files };
+    const dbname = last.get('--dbname') ?? (psql ? positionals[0] : undefined);
+    if (dbname === undefined) return target;
+    if (!dbname.includes('=') && !/^postgres(?:ql)?:\/\//.test(dbname)) return { ...target, db: dbname };
+    if (!expand) return null;
+    const settings = /^postgres(?:ql)?:\/\//.test(dbname) ? parsePgUri(dbname) : parseConninfo(dbname);
+    if (!settings) return null;
+    return {
+        ...target,
+        host: settings.get('host') ?? target.host,
+        port: settings.get('port') ?? target.port,
+        user: settings.get('user') ?? target.user,
+        db: settings.get('dbname') ?? settings.get('user') ?? target.user,
+    };
 }
 
 /**
@@ -5739,8 +5770,11 @@ export function localPgTargetOf(
     const written = writtenArgs(cmd);
     if (!written || !written.every(isLiteralShellWord) || cmd.args.some(a => a.includes('\\'))) return null;
 
-    const psql = cmd.name === 'psql' ? psqlTarget(cmd.args, true) : null;
-    const target = psql ?? (cmd.name === 'psql' ? null : cmd.name === 'pg_restore' ? pgRestoreTarget(cmd.args) : dropdbTarget(cmd.args));
+    const psql = cmd.name === 'psql' ? pgConnectionTarget('psql', cmd.args, true) : null;
+    // A restore with no -d only writes a script.
+    const restore = cmd.name === 'pg_restore' ? pgConnectionTarget('pg_restore', cmd.args) : null;
+    const target = psql ?? restore ?? (cmd.name === 'psql' || cmd.name === 'pg_restore' ? null : dropdbTarget(cmd.args));
+    if (cmd.name === 'pg_restore' && !restore?.db) return null;
     if (!target || (!target.noPsqlrc && !assumeNoPsqlrc)) return null;
     if (psql && !psqlScratchInputRead(cmd, psql)) return null;
     if (!target.host || !target.port || !/^\d{1,5}$/.test(target.port)) return null;
@@ -6801,7 +6835,9 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if ((name === 'createuser' || name === 'dropuser') && !['--help', '-?', '--version', '-V'].includes(args[0])) {
         return `${name} ${name === 'createuser' ? 'creates' : 'drops'} a PostgreSQL role, which the whole cluster holds`;
     }
-    if (name === 'pg_restore' && pgRestoreDatabase(args) !== null) {
+    const restore = name === 'pg_restore' ? pgConnectionTarget('pg_restore', args) : undefined;
+    // A form the parser can't follow may name a database too.
+    if (name === 'pg_restore' && (restore === null || restore?.db !== undefined)) {
         return 'pg_restore -d applies an archive to a database: its tables and data, and the grants and ownership it holds, which the guard can\'t read';
     }
     // dropdb reads help and version only as its first argument; anywhere else they are options or the database.

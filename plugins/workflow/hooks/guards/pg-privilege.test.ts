@@ -366,6 +366,8 @@ describe('psql input, writers and coverage after review', () => {
         ['NO FORCE ROW LEVEL SECURITY', () => `${H} -c "ALTER TABLE t NO FORCE ROW LEVEL SECURITY"`],
         ['a copy to a variable path the file is read under', () => `F=${f('migration.sql')}; cp ${f('staging/migration.sql')} "$F" && ${H} -f ${f('migration.sql')}`],
         ['a copy made after a cd into the file\'s directory', () => `cd ${f('staging')} && cp ${f('grant.sql')} migration.sql && cd ${fx} && ${H} -f staging/migration.sql`],
+        ['a copy into the file\'s directory written with a trailing slash', () => `cp ${f('staging/migration.sql')} ${fx}/ && ${H} -f ${f('migration.sql')}`],
+        ['a script pg_restore -vf writes', () => `pg_restore -vf ${f('migration.sql')} dump.custom; ${H} -f ${f('migration.sql')}`],
         ['a script pg_restore -f writes', () => `pg_restore -f ${f('migration.sql')} dump.custom; ${H} -f ${f('migration.sql')}`],
         ['pg_restore with -d clustered after another flag', () => 'pg_restore -cd app -h db.example.com dump.custom'],
         ['CREATE POLICY', () => `${H} -c "CREATE POLICY p ON t USING (true)"`],
@@ -458,12 +460,16 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['a Lab-named user in a conninfo string', `psql "host=db.example.com user=lab_app_admin dbname=prod_app" -c "GRANT SELECT ON t TO r"`],
         ['a Lab-named user in a URI', `psql "postgresql://lab_app_admin@db.example.com/prod_app" -c "GRANT SELECT ON t TO r"`],
         ['a Lab-named host', `psql -h lab-db.example.com -d prod_app -c "GRANT SELECT ON t TO r"`],
+        ['a later attached -d that overrides a Lab database', `psql -h db.example.com -d lab_app -dprod_app -c "GRANT SELECT ON t TO r"`],
+        ['a conninfo whose Lab-looking text sits past a non-ASCII space', `psql "host=db.example.com dbname=prod_app\u{a0}dbname=lab_app" -c "GRANT SELECT ON t TO r"`],
     ])('%s on a lab database gates', (_name, command) => {
         expect(run(typeof command === 'function' ? command() : command).action).toBe('gate');
     });
     test.each([
         ['a grant on an object', `${LAB} -c "GRANT SELECT ON t TO app_reader"`],
         ['CREATE USER MAPPING', `${LAB} -c "CREATE USER MAPPING FOR app SERVER s"`],
+        ['a quoted Lab dbname in a conninfo', `psql "host=db.example.com dbname='lab_app'" -c "GRANT SELECT ON t TO r"`],
+        ['a Lab database in a URI', `psql "postgresql://app@db.example.com/lab_app" -c "GRANT SELECT ON t TO r"`],
         ['a grant on an object, chosen by the database and not the user', `psql -h db.example.com -U app -d lab_app -c "GRANT SELECT ON t TO r"`],
     ])('%s on a lab database runs', (_name, command) => {
         expect(run(command).action).toBe('allow');

@@ -105,6 +105,13 @@ describe('a custom-format restore into the scratch postgres skips approval', () 
         expect(evaluateBashCommand(command, { cwd: '/tmp', localPg: fixtureHost(scratch) }).action).toBe('allow');
     });
 
+    test.each([
+        ['a conninfo -d naming another server', 'pg_restore -h 127.0.0.1 -p 55432 -d "host=db.example.com dbname=prod" /tmp/embedded-pg/dump.custom'],
+        ['a URI -d naming another server', 'pg_restore -h 127.0.0.1 -p 55432 -d postgresql://db.example.com/prod /tmp/embedded-pg/dump.custom'],
+    ])('%s, which overrides -h and -p, keeps its card', (_name, command) => {
+        expect(evaluateBashCommand(command, { cwd: '/tmp', localPg: fixtureHost(scratch) }).action).not.toBe('allow');
+    });
+
     test('a restore to another server keeps its card', () => {
         expect(evaluateBashCommand('pg_restore -h db.example.com -d app /tmp/embedded-pg/dump.custom', { cwd: '/tmp', localPg: fixtureHost(scratch) }).action).toBe('gate');
     });
