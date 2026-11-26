@@ -8397,8 +8397,10 @@ function macroSqlTexts(macro: string): string[] {
  */
 function macroDevDatabases(cmd: ResolvedCommand): Set<string> {
     const scope = currentDevScope();
-    const dirs = sqlPathCandidates('.', cmd);
-    const targets = (dirs ?? []).map(d => dbtTargetDatabase(cmd, d));
+    // dbt refuses to run outside a project, so a directory the step may run in that holds none is not one it writes from.
+    const named = lastFlag(cmd.args, ['--project-dir']) ?? process.env.DBT_PROJECT_DIR;
+    const dirs = (sqlPathCandidates('.', cmd) ?? []).filter(d => named !== undefined || dbtProjectRoot(d) !== null);
+    const targets = dirs.map(d => dbtTargetDatabase(cmd, d));
     const account = targets[0]?.account;
     if (!scope || !targets.length || account === undefined || targets.some(t => t?.account === undefined || accountKey(t.account) !== accountKey(account))) return new Set();
     return new Set(scope.snowflake

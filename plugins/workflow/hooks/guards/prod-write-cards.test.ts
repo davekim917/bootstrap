@@ -480,6 +480,7 @@ describe('dbt targets read the way dbt reads them', () => {
         ['dbt retry of a dev run', 'cd __DIR__/retrydev && dbt retry'],
         ['a macro that only reads', 'cd PROJECT && dbt run-operation count_orders'],
         ['a macro that writes into the dev database', 'cd PROJECT && dbt run-operation fill_dev'],
+        ['a macro that writes into the dev database, after a cd that may fail from a start directory with no project', 'cd PROJECT; dbt run-operation fill_dev'],
         ['dbt seed --full-refresh on the dev target, as on main', 'cd PROJECT && dbt seed --full-refresh'],
     ])('%s runs without a card', (_name, command) => {
         expect(evaluate(command.replaceAll('__DIR__', dir)).action).toBe('allow');
