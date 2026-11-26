@@ -195,6 +195,13 @@ describe('refusals and gate reasons withhold the same way', () => {
         expect(verdict.reason ?? '').not.toContain(SECRET);
     });
 
+    test('a chained line retries the step that was refused, not the first dropdb on it', () => {
+        const verdict = evaluateBashCommand(`dropdb -h db.example.com --maintenance-db postgres old_archive && PGPASSWORD=${SECRET} dropdb app_test`, { cwd: '/tmp' });
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).toContain('/app/skills/scratch-postgres/scratch-pg dropdb app_test');
+        expect(verdict.reason).not.toContain('old_archive');
+    });
+
     test('a credential either reading finds is kept: Snowflake files first, a PostgreSQL credential after them', () => {
         const work = mkdtempSync(join(tmpdir(), 'withhold-union-'));
         try {

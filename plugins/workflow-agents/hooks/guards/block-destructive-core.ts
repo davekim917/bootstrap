@@ -8330,20 +8330,22 @@ function databaseOperand(tool: 'dropdb' | 'createdb', args: string[]): string | 
 }
 
 /**
- * The scratch-pg line a refusal suggests, per program: psql's SQL is the agent's to fill in, and dropdb or createdb
- * keep their own database name when it is a plain word with no credential.
+ * The scratch-pg line a refusal suggests, built from the step it refused: psql's SQL is the agent's to fill in, and
+ * dropdb or createdb keep their own database name when it is a plain word with no credential.
  */
-function scratchRetry(command: string): string {
-    let commands: ResolvedCommand[] = [];
+function scratchRetry(command: string, cwd: string): string {
+    // The step the refusal is about: the first gated step that carries a fix, as evaluateBashCommand reads it.
+    let refused: ResolvedCommand | undefined;
     try {
-        commands = extractCommands(command);
+        const commands = extractCommands(command);
+        if (commands[0]?.script) commands[0].script.cwd = cwd;
+        refused = [...gatedSteps(commands, command, cwd, isLabSession(), false)].find(s => s.fix)?.cmd;
     } catch {
-        commands = [];
+        refused = undefined;
     }
-    const db = commands.find((c): c is ResolvedCommand & { name: 'dropdb' | 'createdb' } => c.name === 'dropdb' || c.name === 'createdb');
-    if (!db) return `${SCRATCH_PG} psql <db> -c '<your SQL>'`;
-    const name = databaseOperand(db.name, db.args);
-    return `${SCRATCH_PG} ${db.name} ${name && /^[A-Za-z_][\w-]*$/.test(name) && !containsCredential(name) ? name : '<db>'}`;
+    if (refused?.name !== 'dropdb' && refused?.name !== 'createdb') return `${SCRATCH_PG} psql <db> -c '<your SQL>'`;
+    const name = databaseOperand(refused.name, refused.args);
+    return `${SCRATCH_PG} ${refused.name} ${name && /^[A-Za-z_][\w-]*$/.test(name) && !containsCredential(name) ? name : '<db>'}`;
 }
 
 /**
@@ -8353,7 +8355,7 @@ function scratchRetry(command: string): string {
  */
 function withheldReason(reason: string, command: string, cwd: string): string {
     const advice = RETRY_TEMPLATES.filter(([rx]) => rx.test(reason)).map(([, text]) => text);
-    if (/scratch-postgres helper/.test(reason)) advice.unshift(`If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval: ${scratchRetry(command)}.`);
+    if (/scratch-postgres helper/.test(reason)) advice.unshift(`If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval: ${scratchRetry(command, cwd)}.`);
     return [ruleName(reason), ...withheldSteps(command, reason, cwd).described, ...advice, '', WITHHELD_NOTE].join('\n');
 }
 
