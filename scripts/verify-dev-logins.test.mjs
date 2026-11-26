@@ -326,7 +326,7 @@ test('publishing one entry rewrites only its login, keeps what another writer pu
     assert.equal(after.snowflake[0].login.verifiedUntil, RENEWED);
     assert.equal(after.snowflake[1].login.verifiedUntil, '2027-03-01T20:00:00.000Z');
     assert.deepEqual(after.render, { resources: ['srv-x'] });
-    assert.deepEqual(fs.readdirSync(dir), ['dev-scope.local.json']);
+    assert.deepEqual(fs.readdirSync(dir).filter(n => !n.endsWith('.lock')), ['dev-scope.local.json']);
     publishEntry(file, { connection: 'gone', login: { user: 'X', account: 'Y' } });
     assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf-8')), after);
     const newer = structuredClone(after);
@@ -339,44 +339,50 @@ test('publishing one entry rewrites only its login, keeps what another writer pu
   }
 });
 
-// Publishes `entry` from a separate process, holding the read for `holdMs` before the rename.
+// Publishes `entry` from a separate process group, holding the lock for `holdMs` between the read and the rename.
 function publishFromChild(file, entry, holdMs) {
   const code = `import { publishEntry } from ${JSON.stringify(MODULE)};
-const until = Date.now() + ${holdMs};
-publishEntry(${JSON.stringify(file)}, ${JSON.stringify(entry)}, { hold: () => { while (Date.now() < until) {} } });`;
-  const child = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: 'inherit' });
-  return new Promise((resolve, reject) => child.on('exit', c => (c === 0 ? resolve() : reject(new Error(`exit ${c}`)))));
+publishEntry(${JSON.stringify(file)}, ${JSON.stringify(entry)}, { holdMs: ${holdMs} });`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: 'inherit', detached: true });
+  const done = new Promise(resolve => child.on('exit', (code, signal) => resolve(signal ?? code)));
+  return { child, done };
 }
+const pause = ms => new Promise(r => setTimeout(r, ms));
+const stamp = (c, until) => ({ ...entryFor(c), login: { ...entryFor(c).login, lastCheckedAt: '2027-03-01T00:06:00.000Z', verifiedUntil: until } });
 
 test('two writers interleaving, the second reading before the first renames, both land', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-race-'));
   try {
     const file = path.join(dir, 'dev-scope.local.json');
     fs.writeFileSync(file, JSON.stringify({ snowflake: [entryFor('a'), entryFor('b')] }));
-    const stamp = (c, until) => ({ ...entryFor(c), login: { ...entryFor(c).login, lastCheckedAt: '2027-03-01T00:06:00.000Z', verifiedUntil: until } });
     const first = publishFromChild(file, stamp('a', RENEWED), 800);
-    await new Promise(r => setTimeout(r, 250));
-    await Promise.all([first, publishFromChild(file, stamp('b', '2027-03-02T09:00:00.000Z'), 0)]);
+    await pause(250);
+    const second = publishFromChild(file, stamp('b', '2027-03-02T09:00:00.000Z'), 0);
+    assert.deepEqual(await Promise.all([first.done, second.done]), [0, 0]);
     const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
     assert.equal(after.snowflake[0].login.verifiedUntil, RENEWED);
     assert.equal(after.snowflake[1].login.verifiedUntil, '2027-03-02T09:00:00.000Z');
-    assert.deepEqual(fs.readdirSync(dir), ['dev-scope.local.json']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('a lock left by a writer that died is broken; a fresh one is waited for', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-lock-'));
+test('a writer killed while it holds the lock releases it, and the next writer publishes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-kill-'));
   try {
     const file = path.join(dir, 'dev-scope.local.json');
-    fs.writeFileSync(file, JSON.stringify({ snowflake: [entryFor('a')] }));
-    fs.writeFileSync(`${file}.lock`, '');
-    const old = new Date(Date.now() - 120_000);
-    fs.utimesSync(`${file}.lock`, old, old);
-    publishEntry(file, { ...entryFor('a'), login: { ...entryFor('a').login, lastCheckedAt: '2027-03-01T00:06:00.000Z', verifiedUntil: RENEWED } });
-    assert.equal(JSON.parse(fs.readFileSync(file, 'utf-8')).snowflake[0].login.verifiedUntil, RENEWED);
-    assert.deepEqual(fs.readdirSync(dir), ['dev-scope.local.json']);
+    fs.writeFileSync(file, JSON.stringify({ snowflake: [entryFor('a'), entryFor('b')] }));
+    const holder = publishFromChild(file, stamp('a', RENEWED), 30_000);
+    await pause(400);
+    process.kill(-holder.child.pid, 'SIGKILL');
+    assert.equal(await holder.done, 'SIGKILL');
+    const started = Date.now();
+    const next = publishFromChild(file, stamp('b', '2027-03-02T09:00:00.000Z'), 0);
+    assert.equal(await next.done, 0);
+    assert.ok(Date.now() - started < 5_000);
+    const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    assert.equal(after.snowflake[0].login.verifiedUntil, '2027-03-01T12:00:00.000Z');
+    assert.equal(after.snowflake[1].login.verifiedUntil, '2027-03-02T09:00:00.000Z');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

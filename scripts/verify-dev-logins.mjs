@@ -262,58 +262,37 @@ export function duplicateConnections(scope) {
   return (scope.snowflake ?? []).map(e => e.connection).filter(c => (seen.has(c) ? true : (seen.add(c), false)));
 }
 
-const LOCK_WAIT_MS = 10_000;
-const LOCK_STALE_MS = 60_000;
+const SELF = fileURLToPath(import.meta.url);
 
 /**
- * Run `body` holding a sibling lock file, so two writers can't interleave a read and a rename. The lock is taken around
- * one publish only. One older than LOCK_STALE_MS was left by a run that died, and is broken.
+ * Write one entry's login into the file as it is now, leaving every other entry as the file holds it. The re-read,
+ * compare and rename run in a child process under flock(1) on a sibling lock file: the kernel releases the lock when
+ * the last process holding it exits, killed or not, so there is no stale lock to break. A result is not written back
+ * for an entry no longer in the file, when it is older than the one the file holds, or while the file lists a
+ * connection twice. `holdMs` keeps the lock between the read and the rename, for tests of two writers.
  */
-function withLock(file, body) {
-  const lock = `${file}.lock`;
-  const start = Date.now();
-  for (;;) {
-    try {
-      fs.closeSync(fs.openSync(lock, 'wx'));
-      break;
-    } catch (err) {
-      if (err?.code !== 'EEXIST') throw err;
-      let age = 0;
-      try {
-        age = Date.now() - fs.statSync(lock).mtimeMs;
-      } catch {
-        continue;
-      }
-      if (age > LOCK_STALE_MS) fs.rmSync(lock, { force: true });
-      else if (Date.now() - start > LOCK_WAIT_MS) throw new Error(`${lock} is held; this result was not published`);
-      else sleepSync(25);
-    }
-  }
+export function publishEntry(file, entry, { holdMs = 0 } = {}) {
   try {
-    return body();
-  } finally {
-    fs.rmSync(lock, { force: true });
+    execFileSync('flock', ['-w', '10', '-E', '75', `${file}.lock`, process.execPath, SELF, '--publish-entry', file, '--hold-ms', String(holdMs)], {
+      input: JSON.stringify(entry), stdio: ['pipe', 'inherit', 'pipe'], encoding: 'utf-8',
+    });
+  } catch (err) {
+    if (err?.status === 75) throw new Error(`${file}.lock stayed held for 10 s; this result was not published`);
+    const reason = String(err?.stderr ?? '').split('\n').find(l => /^Error: /.test(l));
+    throw new Error(reason ? reason.slice(7) : String(err?.message ?? err));
   }
 }
 
-/**
- * Write one entry's login into the file as it is now, leaving every other entry as the file holds it, through a
- * temporary file and a rename under the lock. An entry no longer in the file is not written back, nor is a result
- * older than the one the file holds, nor anything while the file lists a connection twice. `hold` runs between the
- * read and the rename.
- */
-export function publishEntry(file, entry, { hold = () => {} } = {}) {
-  withLock(file, () => {
-    const current = JSON.parse(fs.readFileSync(file, 'utf-8'));
-    if (duplicateConnections(current).length) throw new Error(`${file} lists a connection twice; not publishing`);
-    const target = (current.snowflake ?? []).find(e => e.connection === entry.connection && e.login);
-    if (!target || Date.parse(target.login.lastCheckedAt ?? '') > Date.parse(entry.login.lastCheckedAt ?? '')) return;
-    target.login = structuredClone(entry.login);
-    hold();
-    const tmp = `${file}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, `${JSON.stringify(current, null, 2)}\n`);
-    fs.renameSync(tmp, file);
-  });
+function publishLocked(file, entry, holdMs) {
+  const current = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  if (duplicateConnections(current).length) throw new Error(`${file} lists a connection twice; not publishing`);
+  const target = (current.snowflake ?? []).find(e => e.connection === entry.connection && e.login);
+  if (!target || Date.parse(target.login.lastCheckedAt ?? '') > Date.parse(entry.login.lastCheckedAt ?? '')) return;
+  target.login = structuredClone(entry.login);
+  if (holdMs > 0) sleepSync(holdMs);
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(current, null, 2)}\n`);
+  fs.renameSync(tmp, file);
 }
 
 function sleepSync(ms) {
@@ -323,6 +302,10 @@ function sleepSync(ms) {
 function main() {
   const args = process.argv.slice(2);
   const arg = (flag, fallback) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : fallback);
+  if (args[0] === '--publish-entry') {
+    publishLocked(args[1], JSON.parse(fs.readFileSync(0, 'utf-8')), Number(arg('--hold-ms', '0')));
+    return;
+  }
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const file = arg('--file', process.env.BOOTSTRAP_DEV_SCOPE_FILE || path.join(repoRoot, 'dev-scope.local.json'));
   const hours = Number(arg('--hours', '48'));
