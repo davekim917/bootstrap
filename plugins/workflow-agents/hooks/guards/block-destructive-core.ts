@@ -4863,7 +4863,7 @@ export const DEV_ONLY_LOGIN = 'dev-only login';
  * options that change neither the account, user, role nor SQL, nothing on the line that changes its environment, no
  * templating, and SQL that splits as snow splits it with nothing run indirectly. Null for anything else.
  */
-function plainSnowSql(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string): { connection: string; texts: string[] } | null {
+function plainSnowSql(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, files = false): { connection: string; texts: string[] } | null {
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
@@ -4873,7 +4873,7 @@ function plainSnowSql(cmd: ResolvedCommand, commands: ResolvedCommand[], command
         const a = cmd.args[i];
         const [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, undefined];
         if (SNOW_SQL_BARE_FLAGS.has(flag) && inline === undefined) continue;
-        if (!SNOW_SQL_VALUE_FLAGS.has(flag)) return null;
+        if (!SNOW_SQL_VALUE_FLAGS.has(flag) && !(files && (flag === '-f' || flag === '--filename'))) return null;
         const value = inline ?? cmd.args[++i];
         if (value === undefined) return null;
         if (flag === '-c' || flag === '--connection') {
@@ -4900,7 +4900,8 @@ function standingGrantOf(cmd: ResolvedCommand, commands: ResolvedCommand[], comm
     const scope = currentDevScope();
     const grants = scope?.standingGrants;
     if (!grants) return null;
-    const plain = plainSnowSql(cmd, commands, command);
+    // A file the guard reads is judged like SQL on the line; one it can't read leaves the input unreadable.
+    const plain = plainSnowSql(cmd, commands, command, true);
     const held = new Set(plain ? grants[plain.connection] ?? [] : []);
     if (!plain || !held.size) return null;
     const own = new Set((scope?.ownRoles?.[plain.connection] ?? []).map(r => r.toUpperCase()));

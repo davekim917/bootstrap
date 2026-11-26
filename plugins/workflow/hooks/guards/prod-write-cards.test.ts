@@ -37,6 +37,7 @@ beforeAll(() => {
     mkdirSync(join(dir, 'project'));
     writeFileSync(join(dir, 'project', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
     writeFileSync(join(dir, 'project', 'load.sql'), 'insert into orders values (1);\n');
+    writeFileSync(join(dir, 'project', 'setup.sql'), '-- setup\nuse role ops_role;\ncreate database if not exists loads;\ncreate schema if not exists loads.raw;\ngrant usage on database loads to role loads_reader;\n');
     mkdirSync(join(dir, 'project', 'local'));
     writeFileSync(join(dir, 'project', 'local', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
     writeFileSync(join(dir, 'project', 'local', 'profiles.yml'), 'acme:\n  target: dev\n  outputs:\n    dev:\n      type: snowflake\n      database: dev_db\n');
@@ -296,6 +297,7 @@ describe('the account-admin standing grant, with the roles a connection may swit
         ['a task whose body reads', 'snow sql -c acme_ops -q "create task loads.raw.ping warehouse = loads_wh schedule = \'60 minute\' as select 1"'],
         ['a share with its grants and a reader account', "snow sql -c acme_ops -q \"create share loads_share; grant usage on database loads to share loads_share; grant select on table loads.raw.t to share loads_share; create managed account loads_reader admin_name = 'r1', admin_password = 'Example-pass-1', type = reader\""],
         ['a revoke from a role', 'snow sql -c acme_ops -q "revoke usage on warehouse loads_wh from role loads_reader"'],
+        ['a setup file it reads', 'snow sql -c acme_ops -f PROJECT/setup.sql'],
     ])('%s runs without a card', (_name, command) => {
         expect(evaluate(command).action).toBe('allow');
     });
@@ -311,8 +313,13 @@ describe('the account-admin standing grant, with the roles a connection may swit
         ['a storage integration, which the class leaves out', "snow sql -c acme_ops -q \"create storage integration ext type = external_stage storage_provider = 's3' enabled = true storage_allowed_locations = ('s3://example-bucket/')\""],
         ['a destructive statement', 'snow sql -c acme_ops -q "drop role loads_reader"'],
         ['the class on a connection without it', 'snow sql -c acme_prod -q "create database loads"'],
+        ['a setup file that also loads a table', 'snow sql -c acme_ops -f PROJECT/load.sql'],
     ])('%s keeps its card', (_name, command) => {
         expect(evaluate(command).action).toBe('gate');
+    });
+
+    test('a setup file that is not there yet is refused with the fix, not exempt', () => {
+        expect(evaluate('snow sql -c acme_ops -f PROJECT/not-there.sql').action).toBe('block');
     });
 
     test('an own role outside the list voids the file', () => {
