@@ -145,11 +145,8 @@ describe("the agent's working directory cannot configure the guard", () => {
         writeFileSync(join(cwd, '.env'), `${name}=planted\n`);
         const guard = `process.stdout.write(JSON.stringify({ value: process.env[${JSON.stringify(name)}] ?? 'unset' }));`;
         const wrapper = withStandIn(guard);
-        // PATH must still find the wrapper's own programs, so its rows keep the inherited one beside the value set.
-        const inherited = name === 'PATH' ? `${cwd}:${process.env.PATH}` : cwd;
-        expect(JSON.parse((await run(wrapper, '{}', { cwd, env: { ...without(name), [name]: inherited } })).stdout)).toEqual({ value: inherited });
-        const unset = name === 'PATH' ? { env: process.env, value: process.env.PATH } : { env: without(name), value: 'unset' };
-        expect(JSON.parse((await run(wrapper, '{}', { cwd, env: unset.env })).stdout)).toEqual({ value: unset.value });
+        expect(JSON.parse((await run(wrapper, '{}', { cwd, env: { ...without(name), [name]: cwd } })).stdout)).toEqual({ value: cwd });
+        expect(JSON.parse((await run(wrapper, '{}', { cwd, env: without(name) })).stdout)).toEqual({ value: 'unset' });
     });
 
     test('the shipped guard loads its own dependencies from a cwd with no package.json', async () => {

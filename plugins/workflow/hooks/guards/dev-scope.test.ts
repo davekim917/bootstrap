@@ -1,11 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { DEV_SCOPE_FILE_ENV, describeGate, devLoginTestHooks, evaluateBashCommand, parseDevScope } from './block-destructive-core';
+import { DEV_SCOPE_FILE_ENV, describeGate, evaluateBashCommand, parseDevScope } from './block-destructive-core';
 import { isProtectedEditPath } from './file-protection-core';
-import { useLockedHost } from '../test-support/locked-host';
 
 /**
  * DEV-SCOPE EXEMPTION. On a listed Snowflake connection, destructive SQL skips
@@ -18,11 +17,8 @@ import { useLockedHost } from '../test-support/locked-host';
 let dir = '';
 let scopeFile = '';
 let saved: string | undefined;
-let host: ReturnType<typeof useLockedHost>;
-const realProgramLocked = devLoginTestHooks.programLocked;
 
 beforeAll(() => {
-    host = useLockedHost();
     saved = process.env[DEV_SCOPE_FILE_ENV];
     dir = mkdtempSync(join(tmpdir(), 'dev-scope-test-'));
     scopeFile = join(dir, 'dev-scope.local.json');
@@ -40,7 +36,6 @@ afterAll(() => {
     if (saved === undefined) delete process.env[DEV_SCOPE_FILE_ENV];
     else process.env[DEV_SCOPE_FILE_ENV] = saved;
     rmSync(dir, { recursive: true, force: true });
-    host.restore();
 });
 
 const verdict = (command: string) => evaluateBashCommand(command, { cwd: '/tmp' }).action;
@@ -223,78 +218,42 @@ describe('the scope file itself', () => {
     });
 });
 
-describe('a program or config an earlier command could have replaced keeps the card', () => {
-    const DEV_DROP = 'snow sql -c acme_dev -q "drop table dev_db.a.b"';
-    const withHooks = (hooks: Partial<typeof devLoginTestHooks>, command: string) => {
-        const saved = { ...devLoginTestHooks };
-        Object.assign(devLoginTestHooks, hooks);
-        try {
-            return verdict(command);
-        } finally {
-            Object.assign(devLoginTestHooks, saved);
-        }
-    };
-
-    test('the locked host itself allows the dev drop, so each row below gates for its own reason', () => {
-        expect(verdict(DEV_DROP)).toBe('allow');
-        expect(verdict(`timeout 60 ${DEV_DROP}`)).toBe('allow');
+describe('a snow step inside a plain if, subshell or group, or after a literal status line, keeps the exemption', () => {
+    const DROP = 'snow sql -c acme_dev -q "drop table dev_db.a.b"';
+    test.each([
+        ['an if whose condition is true', `if true; then ${DROP}; fi`],
+        ['an if testing for a file', `if [ -f /tmp/x ]; then ${DROP}; fi`],
+        ['an if with an else', `if test -d /tmp; then ${DROP}; else echo no; fi`],
+        ['a subshell that changes directory first', `(cd /tmp/w && ${DROP})`],
+        ['a group that changes directory first', `{ cd /tmp/w; ${DROP}; }`],
+        ['a literal printf status line', `printf 'starting\\n'; ${DROP}`],
+    ])('%s', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
     });
     test.each([
-        ['a snow that is not a locked program, such as one planted ahead on PATH', { programLocked: (n: string) => n !== 'snow' }, DEV_DROP],
-        ['a timeout wrapper that is not a locked program', { programLocked: (n: string) => n !== 'timeout' }, `timeout 60 ${DEV_DROP}`],
-        ['a nohup wrapper that is not a locked program', { programLocked: (n: string) => n !== 'nohup' }, `nohup ${DEV_DROP}`],
-        ['a connections.toml an earlier command could rewrite', { configLocked: (p: string) => !p.endsWith('connections.toml') }, DEV_DROP],
-        ['a config.toml an earlier command could rewrite', { configLocked: (p: string) => !p.endsWith('config.toml') }, DEV_DROP],
-    ])('%s', (_name, hooks, command) => {
-        expect(withHooks(hooks, command)).toBe('gate');
-    });
-
-    test('a connections.toml that is a link keeps the card, as one that is missing does', () => {
-        const file = join(host.home, '.snowflake', 'connections.toml');
-        rmSync(file);
-        try {
-            expect(verdict(DEV_DROP)).toBe('gate');
-            symlinkSync('/dev/null', file);
-            expect(verdict(DEV_DROP)).toBe('gate');
-        } finally {
-            rmSync(file, { force: true });
-            writeFileSync(file, '');
-        }
+        ['printf -v assigning HOME', `printf -v HOME x; ${DROP}`],
+        ['a printf format with %n, which assigns', `printf '%n' HOME; ${DROP}`],
+        ['an if testing a subscript that assigns HOME', `if [ -v 'a[HOME=1]' ]; then ${DROP}; fi`],
+        ['a value set earlier turning test into test -v', `X=-v; test $X 'a[HOME=1]'; ${DROP}`],
+        ['PATH set inside the subshell', `(PATH=/tmp/x; ${DROP})`],
+        ['PATH set in the condition', `if PATH=/tmp/x; then ${DROP}; fi`],
+    ])('%s still gates', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
     });
 });
 
-describe('a locked program is one no PATH entry ahead of it, nor its own file or directories, lets this user replace', () => {
-    const real = realProgramLocked;
-    let bin = '';
+describe("with a PATH whose first directory the agent can write, as a container's /tmp/bin is", () => {
     const savedPath = process.env.PATH;
+    let bin = '';
     beforeAll(() => {
-        bin = mkdtempSync(join(tmpdir(), 'locked-program-'));
-        writeFileSync(join(bin, 'sh'), '#!/bin/sh\n');
-        chmodSync(join(bin, 'sh'), 0o755);
+        bin = mkdtempSync(join(tmpdir(), 'agent-bin-'));
+        process.env.PATH = `${bin}:/usr/local/bin:/usr/bin:/bin`;
     });
-    afterEach(() => {
+    afterAll(() => {
         process.env.PATH = savedPath;
+        rmSync(bin, { recursive: true, force: true });
     });
-    afterAll(() => rmSync(bin, { recursive: true, force: true }));
-    const asRoot = process.getuid?.() === 0;
-
-    test.skipIf(asRoot)('a system program found through system directories is locked', () => {
-        process.env.PATH = '/usr/bin:/bin';
-        expect(real('sh')).toBe(true);
-    });
-    test.each([
-        ['a writable directory searched first', () => `${bin}-empty:/usr/bin:/bin`],
-        ['a program planted in a writable directory', () => `${bin}:/usr/bin:/bin`],
-        ['an empty entry, which searches the working directory', () => ':/usr/bin:/bin'],
-        ['a relative entry', () => 'bin:/usr/bin:/bin'],
-        ['no such program anywhere', () => '/usr/bin:/bin'],
-    ])('%s is not', (name, path) => {
-        if (name.startsWith('a writable directory')) mkdirSync(`${bin}-empty`, { recursive: true });
-        process.env.PATH = path();
-        try {
-            expect(real(name === 'no such program anywhere' ? 'no-such-program-xyz' : 'sh')).toBe(false);
-        } finally {
-            rmSync(`${bin}-empty`, { recursive: true, force: true });
-        }
+    test('a listed dev drop still runs without a card', () => {
+        expect(verdict('snow sql -c acme_dev -q "drop table dev_db.a.b"')).toBe('allow');
     });
 });

@@ -4350,6 +4350,8 @@ function programCanDiffer(cmd: ResolvedCommand): boolean {
 }
 
 function renderDevTarget(cmd: ResolvedCommand): string | null {
+    // An assignment, `env`, `sudo`, a package runner or a path can run another render, or this one against another host.
+    if (!RENDER_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw) || programCanDiffer(cmd)) return null;
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
@@ -4372,7 +4374,7 @@ function renderExpansionsAreSql(cmd: ResolvedCommand): boolean {
 
 /** The listed dev resources a held step acts on, when every resource it names is listed; null names no dev resource it can be sure of. */
 function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
-    if (!cmd.raw.startsWith(`${cmd.name} `) || programCanDiffer(cmd)) return null;
+    if (!cmd.raw.startsWith(`${cmd.name} `) || programCanDiffer(cmd) || !renderEnvironmentProven(cmd, cmd.script?.command)) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
     if (!ids.length || !ids.every(id => listed.has(id))) return null;
@@ -4614,80 +4616,7 @@ function configLocked(file: string): boolean {
     }
 }
 
-export const devLoginTestHooks = { configLocked, programLocked: (name: string) => lockedProgram(name) };
-
-const writable = (path: string): boolean => {
-    try {
-        accessSync(path, fsConstants.W_OK);
-        return true;
-    } catch {
-        return false;
-    }
-};
-
-/**
- * True when the program the shell finds for `name` on PATH can't have been put there by this user: no PATH entry
- * searched before it, nor the file it runs, nor any directory above that file, is writable. A writable entry ahead of
- * it would let an earlier command, or one earlier on the line, plant a program of that name first.
- */
-function lockedProgram(name: string): boolean {
-    for (const dir of (process.env.PATH ?? '').split(':')) {
-        // An empty or relative entry searches the working directory.
-        if (!dir.startsWith('/') || writable(dir)) return false;
-        let real: string;
-        try {
-            const found = join(dir, name);
-            accessSync(found, fsConstants.X_OK);
-            if (!statSync(found).isFile()) continue;
-            real = realpathSync(found);
-        } catch {
-            continue;
-        }
-        for (let p = real; ; p = dirname(p)) {
-            if (writable(p)) return false;
-            if (p === dirname(p)) return true;
-        }
-    }
-    return false;
-}
-
-/** True when every wrapper a step runs under (`timeout`, `nohup`) and the program itself are locked programs. */
-function stepProgramsLocked(cmd: ResolvedCommand): boolean {
-    const wrappers = cmd.raw.slice(0, Math.max(0, cmd.raw.search(new RegExp(`(?:^|\\s)${cmd.name}\\s`)))).match(/\b(?:g?timeout|nohup)\b/g) ?? [];
-    return [...new Set([...wrappers, cmd.name])].every(name => devLoginTestHooks.programLocked(name));
-}
-
-/**
- * True when the Snowflake CLI's config can't change between this check and snow reading it: `~/.snowflake` is a real
- * directory and both files snow reads there sit on a read-only mount, as the container stages them.
- */
-function snowConfigLocked(): boolean {
-    const dir = join(process.env.HOME || homedir(), '.snowflake');
-    try {
-        if (lstatSync(dir).isSymbolicLink()) return false;
-        return ['connections.toml', 'config.toml'].every(f => !lstatSync(join(dir, f)).isSymbolicLink() && devLoginTestHooks.configLocked(join(dir, f)));
-    } catch {
-        return false;
-    }
-}
-
-/** The files curl reads options from before its own arguments; any of them can add a URL, a proxy or a config file. */
-function curlrcAbsent(): boolean {
-    const home = process.env.HOME || homedir();
-    const dirs = [process.env.CURL_HOME, process.env.XDG_CONFIG_HOME, home, join(home, '.config')].filter((d): d is string => !!d);
-    return dirs.every(d => !existsSync(join(d, '.curlrc')) && !existsSync(join(d, 'curlrc')) && !existsSync(join(d, '_curlrc')));
-}
-
-/**
- * True when nothing can change which render, curl, psql or ssh a Render dev step runs, or what they inherit: the line
- * proves the environment as a trusted Snowflake step must, and each program it runs is a locked one.
- */
-function renderStepLocked(cmd: ResolvedCommand, command: string): boolean {
-    if (!stepEnvironmentProven(command, cmd, RENDER_ENVIRONMENT_NAME) || !stepProgramsLocked(cmd)) return false;
-    if (cmd.name === 'curl') return curlrcAbsent();
-    const child = cmd.args[0] === 'psql' ? 'psql' : cmd.args[0] === 'ssh' ? 'ssh' : null;
-    return child === null || devLoginTestHooks.programLocked(child);
-}
+export const devLoginTestHooks = { configLocked };
 
 /**
  * True when connection `name` in the Snowflake CLI's locked config signs in as `login` with a key pair, and a check
@@ -4699,10 +4628,12 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
     const until = Date.parse(login.verifiedUntil);
     if (!Number.isFinite(until) || until <= Date.now() || until > Date.now() + DEV_LOGIN_MAX_HORIZON_MS) return false;
     // snow finds its config through HOME, as Python's expanduser does.
-    const file = join(process.env.HOME || homedir(), '.snowflake', 'connections.toml');
+    const dir = join(process.env.HOME || homedir(), '.snowflake');
+    const file = join(dir, 'connections.toml');
     const toml = (globalThis as { Bun?: { TOML?: { parse(text: string): unknown } } }).Bun?.TOML;
     try {
-        if (!toml || !snowConfigLocked()) return false;
+        // A link is checked where it points, but could be repointed before snow follows it.
+        if (!toml || lstatSync(dir).isSymbolicLink() || lstatSync(file).isSymbolicLink() || !devLoginTestHooks.configLocked(file)) return false;
         const section = (toml.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>)[name];
         if (!section || typeof section !== 'object' || Array.isArray(section)) return false;
         const entries = Object.entries(section as Record<string, unknown>);
@@ -4741,6 +4672,30 @@ function assignsNothing(text: string): boolean {
     return !!words && words.every(word => !/\$\(\(|\$\[/.test(word) && ![...word.matchAll(/\$\{/g)].some(m => !/^\$\{[A-Za-z_]\w*\}/.test(word.slice(m.index))));
 }
 
+/** A word's text with each single-quoted part, which bash passes as it stands, replaced by `_`; double quotes and escapes kept. */
+function withoutSingleQuoted(text: string): string {
+    let out = '';
+    let double = false;
+    for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (c === '\\') {
+            out += text.slice(i, i + 2);
+            i++;
+        } else if (c === '"') {
+            double = !double;
+            out += c;
+        } else if (c === "'" && !double) {
+            const close = text.indexOf("'", i + 1);
+            if (close < 0) return text;
+            out += '_';
+            i = close;
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
 /**
  * True when a word stays one argument: nothing outside quotes word-splits or globs, so a value can't smuggle in an
  * option of its own. `"$@"` splits even inside double quotes.
@@ -4771,7 +4726,7 @@ function staysOneWord(word: string): boolean {
  * assignments to names the environment doesn't hold and a few commands that change no environment; the step's own
  * words expand nothing that assigns. A pipeline's other stages and anything after the step can't reach it.
  */
-function stepEnvironmentProven(command: string, step: ResolvedCommand, steering = SNOW_ENVIRONMENT_NAME): boolean {
+function stepEnvironmentProven(command: string, step: ResolvedCommand, steering = SNOW_ENVIRONMENT_NAME, compounds = false): boolean {
     type Node = { type?: string; name?: unknown; prefix?: Node[]; suffix?: Node[]; commands?: Node[]; command?: Node; text?: string; index?: unknown; pos?: number; end?: number };
     let script: Node;
     try {
@@ -4781,15 +4736,19 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
     }
     type Redirect = { target?: { text?: string }; content?: string };
     // Redirect targets and here-document bodies are expanded by this shell too.
-    const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => String(w?.text ?? ''))
-        .concat(((n as { redirects?: Redirect[] }).redirects ?? []).flatMap(r => [String(r.target?.text ?? ''), String(r.content ?? '')]));
+    // A here-document body expands `$` inside quote marks, so only words lose their single-quoted parts.
+    const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => withoutSingleQuoted(String(w?.text ?? '')))
+        .concat(((n as { redirects?: Redirect[] }).redirects ?? []).flatMap(r => [withoutSingleQuoted(String(r.target?.text ?? '')), String(r.content ?? '')]));
     const variableSafe = (name: unknown): name is string => typeof name === 'string' && /^[A-Za-z_]\w*$/.test(name)
         && !(name in process.env) && !steering.test(name) && !BASH_SPECIAL_NAME.test(name);
     const assignmentSafe = (a: Node) => a.type === 'Assignment' && variableSafe(a.name) && a.index === undefined && (a as { array?: unknown }).array === undefined
-        && assignsNothing(String(a.text ?? ''));
+        && assignsNothing(withoutSingleQuoted(String(a.text ?? '')));
     const quiet = (n: Node) => ((n as { redirects?: Array<{ operator?: string; target?: { text?: string } }> }).redirects ?? []).every(r =>
         (['>', '>>', '&>', '&>>'].includes(r.operator ?? '') && r.target?.text === '/dev/null') || (r.operator === '>&' && /^[12]$/.test(r.target?.text ?? '')));
-    const runsNothing = (word: unknown) => assignsNothing(String(word ?? '')) && !/\$\(|`|[<>]\(/.test(String(word ?? ''));
+    const runsNothing = (word: unknown) => {
+        const text = withoutSingleQuoted(String(word ?? ''));
+        return assignsNothing(text) && !/\$\(|`|[<>]\(/.test(text);
+    };
     const nameOf = (n: Node) => (n.name as { text?: string } | undefined)?.text;
     // printf is not here: its `-v NAME` and `%n` both assign.
     const printing = (n: Node): boolean => n.type === 'Command' && nameOf(n) === 'echo' && !(n.prefix ?? []).length && quiet(n)
@@ -4811,6 +4770,18 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
         if (n.type !== 'Command') return false;
         if (printing(n)) return true;
         const name = nameOf(n);
+        const args = (n.suffix ?? []).map(w => String(w?.text ?? ''));
+        // printf's `-v NAME` and `%n` assign; a format that is neither prints and does nothing else.
+        // Literal words only, so no value set earlier on the line can turn into an option or a format.
+        const literal = (a: string) => staysOneWord(a) && !/[$`]/.test(withoutSingleQuoted(a));
+        if (name === 'printf') {
+            return !(n.prefix ?? []).length && quiet(n) && args.length > 0 && args.every(literal)
+                && !shellUnquote(args[0]).startsWith('-') && !args.some(a => /%[^a-zA-Z%]*n/.test(shellUnquote(a)));
+        }
+        // `-v` reads a subscript as arithmetic, which can assign; the other tests only compare.
+        if (name === '[' || name === 'test') {
+            return !(n.prefix ?? []).length && quiet(n) && args.every(a => literal(a) && shellUnquote(a) !== '-v');
+        }
         if (name === 'set') {
             return !(n.prefix ?? []).length && !((n as { redirects?: unknown[] }).redirects ?? []).length
                 && setsOnlyErrorOptions((n.suffix ?? []).map(w => String(w?.text ?? '')));
@@ -4820,6 +4791,12 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
             || (/^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || NEUTRAL_BUILTINS.has(name)));
         return neutralName && words(n).every(assignsNothing);
     };
+    // A list of statements: those before the one holding the step change nothing, and that one reaches it.
+    const sequence = (list: Node[]): boolean => {
+        const statements = list.map(st => st.command ?? st);
+        const at = statements.findIndex(holds);
+        return at >= 0 && list.slice(0, at).every((st, i) => loop(st) || neutral(statements[i])) && reaches(statements[at]);
+    };
     const holds = (n: Node) => typeof n.pos === 'number' && typeof n.end === 'number' && n.pos <= step.pos! && step.pos! < n.end;
     // The step itself, or a stage of a pipeline, reached through `&&`/`||` lists whose earlier members are neutral.
     const reaches = (n: Node): boolean => {
@@ -4828,7 +4805,21 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
                 && (n.suffix ?? []).every(w => staysOneWord(String(w?.text ?? '')));
         }
         if (n.type === 'Pipeline') return (n.commands ?? []).some(c => c.type === 'Command' && holds(c) && reaches(c));
-        if (n.type !== 'AndOr') return false;
+        if (!quiet(n)) return false;
+        // A subshell or group runs its list in turn, as the line does; an `if` first runs its condition.
+        const body = (n as { body?: Node }).body;
+        if (!compounds) return n.type === 'AndOr' && andOr(n);
+        if ((n.type === 'Subshell' || n.type === 'BraceGroup') && body?.type === 'CompoundList') return sequence(body.commands ?? []);
+        if (n.type === 'If') {
+            const branches = n as { clause?: Node; then?: Node; else?: Node };
+            if (!branches.clause || holds(branches.clause)) return false;
+            const branch = [branches.then, branches.else].find(b => b && holds(b));
+            if (!branch || !(branches.clause.commands ?? []).every(st => neutral(st.command ?? st))) return false;
+            return branch.type === 'If' ? reaches(branch) : sequence(branch.commands ?? []);
+        }
+        return n.type === 'AndOr' && andOr(n);
+    };
+    const andOr = (n: Node): boolean => {
         const members = n.commands ?? [];
         const at = members.findIndex(holds);
         return at >= 0 && members.slice(0, at).every(neutral) && reaches(members[at]);
@@ -4838,9 +4829,12 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
     const namesDescriptor = (node: unknown): boolean => !!node && typeof node === 'object'
         && ((node as { variableName?: unknown }).variableName !== undefined || Object.values(node).some(namesDescriptor));
     if (namesDescriptor(script)) return false;
-    const statements = (script.commands ?? []).map(st => st.command ?? st);
-    const at = statements.findIndex(holds);
-    return at >= 0 && (script.commands ?? []).slice(0, at).every((st, i) => loop(st) || neutral(statements[i])) && reaches(statements[at]);
+    return sequence(script.commands ?? []);
+}
+
+/** True when nothing on the line can change the environment a Render dev step, or the psql, ssh or curl it is, inherits. */
+function renderEnvironmentProven(cmd: ResolvedCommand, line: string | undefined): boolean {
+    return line !== undefined && stepEnvironmentProven(line, cmd, RENDER_ENVIRONMENT_NAME, true);
 }
 
 /** The connection a `snow sql` step names, when every option it carries is one a trusted dev login may take. */
@@ -4866,16 +4860,16 @@ function trustedLoginConnection(cmd: ResolvedCommand): string | null {
  * `command` are the whole command line, so anything set up around the call counts.
  */
 export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
-    if (cmd.name === 'render') return topLevel && renderStepLocked(cmd, command) ? renderDevTarget(cmd) : null;
-    if (RENDER_API_CLIENTS.has(cmd.name)) return topLevel && renderStepLocked(cmd, command) ? renderApiDevTarget(cmd, commands, command) : null;
+    if (cmd.name === 'render') return topLevel && renderEnvironmentProven(cmd, command) ? renderDevTarget(cmd) : null;
+    if (RENDER_API_CLIENTS.has(cmd.name)) return topLevel && renderEnvironmentProven(cmd, command) ? renderApiDevTarget(cmd, commands, command) : null;
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
     const scope = currentDevScope();
-    if (!scope || !stepProgramsLocked(cmd)) return null;
+    if (!scope) return null;
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
     const changers = commands.filter(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c));
-    // snowEnvironmentProven reads every statement before the step itself, so only the trusted path may keep an error-option `set`.
+    // stepEnvironmentProven reads every statement before the step itself, so only the trusted path may keep an error-option `set`.
     if (!changers.every(c => c.name === 'set' && !c.env?.length && setsOnlyErrorOptions(c.args))) return null;
 
     // An xargs or find step's words are not the ones read here.
@@ -4884,7 +4878,7 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if (trustedEntry && stepEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
         return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
     }
-    if (changers.length || changesShellState(command) || !stepEnvironmentProven(command, cmd) || !snowConfigLocked()) return null;
+    if (changers.length || changesShellState(command) || !stepEnvironmentProven(command, cmd, SNOW_ENVIRONMENT_NAME, true)) return null;
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {

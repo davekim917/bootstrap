@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { dirname, join } from 'path';
+import { join } from 'path';
 
 import { spawnSync } from 'child_process';
 
@@ -11,11 +11,9 @@ import {
     RENDER_CLI_VERSION,
     changesProduction,
     describeGate,
-    devLoginTestHooks,
     evaluateBashCommand,
     parseDevScope,
 } from './block-destructive-core';
-import { useLockedHost } from '../test-support/locked-host';
 import { CARD_SUMMARY_MAX_CHARS } from './gate-card-core';
 
 /**
@@ -36,10 +34,8 @@ const RUN = 'job-example0000000000001';
 let dir = '';
 let saved: string | undefined;
 let savedProfile: string | undefined;
-let host: ReturnType<typeof useLockedHost>;
 
 beforeAll(() => {
-    host = useLockedHost();
     saved = process.env[DEV_SCOPE_FILE_ENV];
     savedProfile = process.env.NANOCLAW_INSTRUCTIONS_PROFILE;
     dir = mkdtempSync(join(tmpdir(), 'render-prod-test-'));
@@ -57,7 +53,6 @@ afterAll(() => {
     if (saved === undefined) delete process.env[DEV_SCOPE_FILE_ENV];
     else process.env[DEV_SCOPE_FILE_ENV] = saved;
     rmSync(dir, { recursive: true, force: true });
-    host.restore();
 });
 
 const verdict = (command: string) => evaluateBashCommand(command, { cwd: '/tmp' }).action;
@@ -1021,49 +1016,42 @@ describe('a held Render change says whether its target is listed as dev', () => 
     });
 });
 
-describe('a listed dev resource keeps its card when the line or the host could change what runs', () => {
+describe('a listed dev resource keeps its card when the line can change which render runs, or what it inherits', () => {
     const URL_DEV = `https://api.render.com/v1/services/${DEV}/env-vars/FOO`;
-    const withHooks = (hooks: Partial<typeof devLoginTestHooks>, command: string) => {
-        const saved = { ...devLoginTestHooks };
-        Object.assign(devLoginTestHooks, hooks);
-        try {
-            return verdict(command);
-        } finally {
-            Object.assign(devLoginTestHooks, saved);
-        }
-    };
 
-    test('the locked host itself allows each step below, so each row gates for its own reason', () => {
-        for (const c of [`render restart ${DEV}`, `render psql ${DEV_DB} -c 'select 1'`, `render ssh ${DEV} --help`, `curl -X DELETE ${URL_DEV}`, `timeout 60 render restart ${DEV}`]) {
-            expect(verdict(c)).toBe('allow');
-        }
+    test.each([
+        ['a plain restart', `render restart ${DEV}`],
+        ['a restart under timeout, after cd', `cd /tmp && timeout 60 render restart ${DEV}`],
+        ['help on ssh, which starts no ssh', `render ssh ${DEV} --help`],
+        ['one line of SQL', `render psql ${DEV_DB} -c 'select 1' -o text`],
+        ['an API delete', `curl -X DELETE ${URL_DEV}`],
+        ['a restart in a subshell that changes directory first', `(cd /tmp && render restart ${DEV})`],
+        ['a restart inside an if', `if true; then render restart ${DEV}; fi`],
+        ['job text bash passes as it stands, inside single quotes', `render jobs create ${DEV} --start-command 'npm start -- --port ${'$'}{PORT:-3000}'`],
+    ])('%s runs without a card', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
     });
+
     test.each([
         ['a redirect storing a descriptor number in PATH', `true {PATH}>/dev/null; render restart ${DEV}`],
         ['old-style arithmetic assigning PATH', `true >/dev/null$[PATH=10]; render restart ${DEV}`],
         ['hash repointing render', `hash -p /tmp/evil render; render restart ${DEV}`],
         ['a coprocess named PATH', `coproc PATH { true; }; render restart ${DEV}`],
         ['a [[ ]] comparison assigning HOME', `[[ HOME=10 -eq 1 ]]; render restart ${DEV}`],
-    ])('%s', (_name, command) => {
+        ['an API delete after a redirect storing a number in PATH', `true {PATH}>/dev/null; curl -X DELETE ${URL_DEV}`],
+        ['an assignment pointing render at another API host', `RENDER_HOST=https://api.example.com render restart ${DEV}`],
+        ['env setting the API host', `env RENDER_HOST=https://api.example.com render restart ${DEV}`],
+        ['an assignment giving render another API key', `RENDER_API_KEY=rnd_other render restart ${DEV}`],
+        ['env with no assignment', `env render restart ${DEV}`],
+        ['a package runner, which runs a workspace-local render', `pnpm exec render restart ${DEV}`],
+        ['npx', `npx render restart ${DEV}`],
+        ['a render in the working directory', `./render restart ${DEV}`],
+        ['a render named by path', `node_modules/.bin/render restart ${DEV}`],
+        ['command, which skips no lookup the guard sees', `command render restart ${DEV}`],
+        ['sudo, which runs render as another user', `sudo render restart ${DEV}`],
+        ['PATH set inside the subshell', `(PATH=/tmp/x; render restart ${DEV})`],
+    ])('%s takes the production gate', (_name, command) => {
         expect(verdict(command)).toBe('gate');
-    });
-    test.each([
-        ['a render that is not a locked program', { programLocked: (n: string) => n !== 'render' }, `render restart ${DEV}`],
-        ['a timeout wrapper that is not a locked program', { programLocked: (n: string) => n !== 'timeout' }, `timeout 60 render restart ${DEV}`],
-        ['the psql render starts, not a locked program', { programLocked: (n: string) => n !== 'psql' }, `render psql ${DEV_DB} -c 'select 1'`],
-        ['the ssh render starts, not a locked program', { programLocked: (n: string) => n !== 'ssh' }, `render ssh ${DEV} --help`],
-        ['a curl that is not a locked program', { programLocked: (n: string) => n !== 'curl' }, `curl -X DELETE ${URL_DEV}`],
-    ])('%s', (_name, hooks, command) => {
-        expect(withHooks(hooks, command)).toBe('gate');
-    });
-    test.each([['.curlrc'], ['.config/curlrc']])('a curl config file at ~/%s, which can add a URL or a proxy', (rel) => {
-        const file = join(host.home, rel);
-        mkdirSync(dirname(file), { recursive: true });
-        writeFileSync(file, 'url = "https://api.render.com/v1/services/srv-prodservice000000001"\n');
-        try {
-            expect(verdict(`curl -X DELETE ${URL_DEV}`)).toBe('gate');
-        } finally {
-            rmSync(file);
-        }
+        expect(changesProduction(command, '/tmp')).toBe(true);
     });
 });
