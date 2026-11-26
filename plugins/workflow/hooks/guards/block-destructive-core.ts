@@ -782,7 +782,7 @@ const HAS_WHERE = /\bWHERE\b/i;
 // Cheap superset prefilter — if none of these verbs appear anywhere in the
 // SQL arg, no destructive pattern can match. Skips the full strip+scan
 // pipeline on SELECT-only queries (the common case).
-const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE|GRANT|PROCEDURE|DO)\b/i;
+const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE|GRANT|PROCEDURE|DO|PURGE)\b/i;
 
 // Hoisted to module scope — these regexes are matched per-segment / per-call
 // inside the SQL scanner; defining them inline would recompile on every
@@ -5067,7 +5067,10 @@ function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], com
             // A task, alert or pipe runs a statement of its own, which its name says nothing about. Creating one or changing
             // what it runs has that statement judged too; RESUME starts whatever it already holds, so it keeps its card.
             // Dropping, suspending or setting a property starts nothing, as on main.
-            if (/^(?:task|alert|pipe)$/.test(target.kind) && /^\s*(?:CREATE|ALTER)\b/i.test(st.skeleton)) {
+            // Suspending or resuming an alert, and pausing or unpausing a pipe, ran card-free on main and keep doing so.
+            const pauses = (target.kind === 'alert' && /^\s*ALTER\s+ALERT\s+(?:IF\s+EXISTS\s+)?\S+\s+(?:SUSPEND|RESUME)\s*;?\s*$/i.test(st.skeleton))
+                || (target.kind === 'pipe' && /^\s*ALTER\s+PIPE\s+(?:IF\s+EXISTS\s+)?\S+\s+SET\s+PIPE_EXECUTION_PAUSED\s*=\s*(?:TRUE|FALSE)\s*;?\s*$/i.test(st.skeleton));
+            if (!pauses && /^(?:task|alert|pipe)$/.test(target.kind) && /^\s*(?:CREATE|ALTER)\b/i.test(st.skeleton)) {
                 if (/\bRESUME\s*;?\s*$/i.test(st.skeleton)) return null;
                 const body = target.kind === 'task' ? taskBody(st.text, st.skeleton) : null;
                 if (!body && (target.kind !== 'task' || /^\s*CREATE\b/i.test(st.skeleton) || /\bMODIFY\b/i.test(st.skeleton))) return null;
@@ -7024,7 +7027,7 @@ const JS_DRIVERS = /^(?:pg|postgres|snowflake-sdk|knex|kysely|@neondatabase\/ser
 const DB_CLIENT_LAUNCH = /\b(?:subprocess\.\w+|os\.(?:system|popen)|check_output|check_call|Popen|exec(?:Sync|File(?:Sync)?)?|spawn(?:Sync)?|Bun\.spawn|Deno\.Command|system)\s*\(\s*(?:\[\s*)?[fr]?['"`](?:psql|snow|pg_restore|dropdb)\b|Bun\.\$`\s*(?:psql|snow)\b|\[\s*['"](?:psql|snow|pg_restore|dropdb)['"]\s*,(?!(?:\s*['"][\w.]+['"]\s*,)+\s*['"][\w.]+['"]\s*,?\s*\])/;
 const CODE_LITERAL = /[rRbBfFuU]{0,2}(?:"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\[\s\S])*`)/g;
 // A literal that reads as a SQL statement, not prose: its verb is followed by what the statement needs.
-const SQL_STATEMENT_SHAPE = /^\s*(?:(?:--[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:INSERT\s+(?:INTO|OVERWRITE|ALL|FIRST)\b|EXPLAIN\b|REFRESH\s+MATERIALIZED\b|COMMIT\s+PREPARED\b|UPDATE\s+(?:ONLY\s+)?(?:"[^"\n]+"|[^\s"]+)(?:\.(?:"[^"\n]+"|[^\s".]+))*\s+(?:AS\s+\w+\s+|\w+\s+)?SET\b|DELETE\s+FROM\b|MERGE\s+INTO\b|(?:CREATE|ALTER|DROP|UNDROP)\s+(?:OR\s+REPLACE\s+)?[A-Z]+\b\s+\S|TRUNCATE\s+\S|(?:GRANT|REVOKE)\s+[\s\S]*\b(?:ON|TO|FROM)\b|COPY\s+(?:INTO\s+)?\S+[\s\S]*\b(?:FROM|TO)\b|CALL\s+\S+\s*\(|PUT\s+'?file:|GET\s+@|REMOVE\s+@|EXECUTE\s+IMMEDIATE\b|DO\s+\$|SELECT\b|WITH\b|BEGIN\b)/i;
+const SQL_STATEMENT_SHAPE = /^\s*(?:(?:--[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:INSERT\s+(?:INTO|OVERWRITE|ALL|FIRST)\b|EXPLAIN\b|REFRESH\s+MATERIALIZED\b|COMMIT\s+PREPARED\b|UPDATE\s+(?:ONLY\s+)?(?:"[^"\n]+"|[^\s"]+)(?:\.(?:"[^"\n]+"|[^\s".]+))*\s+(?:AS\s+\w+\s+|\w+\s+)?SET\b|DELETE\s+FROM\b|MERGE\s+INTO\b|COMMENT\s+(?:IF\s+EXISTS\s+)?ON\b|(?:CREATE|ALTER|DROP|UNDROP)\s+(?:OR\s+REPLACE\s+)?[A-Z]+\b\s+\S|TRUNCATE\s+\S|(?:GRANT|REVOKE)\s+[\s\S]*\b(?:ON|TO|FROM)\b|COPY\s+(?:INTO\s+)?\S+[\s\S]*\b(?:FROM|TO)\b|CALL\s+\S+\s*\(|PUT\s+'?file:|GET\s+@|REMOVE\s+@|EXECUTE\s+IMMEDIATE\b|DO\s+\$|SELECT\b|WITH\b|BEGIN\b)/i;
 
 /** The body of each string literal in `code`, with an f-string's or template's placeholders read as a plain value. */
 function codeLiterals(code: string): string[] {
@@ -7112,19 +7115,22 @@ const BUN_VALUE_OPTIONS = new Set([
 const PYTHON_VALUE_OPTIONS = new Set(['-W', '-X', '--check-hash-based-pycs']);
 
 function interpreterCode(cmd: ResolvedCommand, run: { name: string; args: string[] }): { texts: string[]; unread: boolean } {
-    const texts = [...(cmd.stdinTexts ?? [])];
+    const texts: string[] = [];
     let unread = false;
-    // `python < load.py` runs the file it is handed; with code of its own on the line, the file is data.
-    const stdinCode = () => { for (const f of cmd.stdinFiles ?? []) for (const r of readSqlFiles(f, cmd)) if (typeof r.content === 'string') texts.push(r.content); };
-    const python = /^python|^pypy/.test(run.name);
-    const valueOptions = python ? PYTHON_VALUE_OPTIONS : run.name === 'bun' ? BUN_VALUE_OPTIONS : /^(?:node(?:js)?|tsx|ts-node(?:-esm)?)$/.test(run.name) ? NODE_VALUE_OPTIONS : null;
-    const piped = cmd.pos !== undefined ? cmd.script?.pipedInto.get(cmd.pos) ?? cmd.pipedInput : cmd.pipedInput;
-    if (piped) {
+    // What reaches stdin (a heredoc, a pipe, a `<` file) is the program only when the line gives no script or inline
+    // code; with code of its own on the line, stdin is that code's data.
+    const stdinCode = () => {
+        texts.push(...(cmd.stdinTexts ?? []));
+        for (const f of cmd.stdinFiles ?? []) for (const r of readSqlFiles(f, cmd)) if (typeof r.content === 'string') texts.push(r.content);
+        const piped = cmd.pos !== undefined ? cmd.script?.pipedInto.get(cmd.pos) ?? cmd.pipedInput : cmd.pipedInput;
+        if (!piped) return;
         const flat = flattenInput(piped, cmd.script);
         texts.push(...flat.texts);
         if (flat.over) unread = true;
         for (const f of flat.catFiles) for (const r of readSqlFiles(f, cmd)) if (typeof r.content === 'string') texts.push(r.content);
-    }
+    };
+    const python = /^python|^pypy/.test(run.name);
+    const valueOptions = python ? PYTHON_VALUE_OPTIONS : run.name === 'bun' ? BUN_VALUE_OPTIONS : /^(?:node(?:js)?|tsx|ts-node(?:-esm)?)$/.test(run.name) ? NODE_VALUE_OPTIONS : null;
     const inline = /^python|^pypy/.test(run.name) ? ['-c'] : ['-e', '--eval', '-p', '--print', '-E'];
     let script: string | undefined;
     for (let i = 0; i < run.args.length; i++) {
@@ -7720,10 +7726,21 @@ function dbtProjectRoot(dir: string): string | null {
     }
 }
 
-/** Whether a dbt test step stores its failures in tables, by its flag or environment variable. */
+/**
+ * Whether a dbt test step stores its failures in tables: by its flag, an environment variable, or the project's own
+ * config (`+store_failures: true` or a `store_failures_as` for tests), read from every directory the step may run in.
+ */
 function dbtStoresFailures(cmd: ResolvedCommand): boolean {
-    return cmd.args.includes('--store-failures') || (cmd.env ?? []).some(e => /^DBT_STORE_FAILURES=/.test(e))
-        || process.env.DBT_STORE_FAILURES !== undefined || exportsOnLine(cmd, /^DBT_STORE_FAILURES$/);
+    if (cmd.args.includes('--store-failures') || (cmd.env ?? []).some(e => /^DBT_STORE_FAILURES=/.test(e))
+        || process.env.DBT_STORE_FAILURES !== undefined || exportsOnLine(cmd, /^DBT_STORE_FAILURES$/)) return true;
+    if (cmd.args.includes('--no-store-failures')) return false;
+    const named = lastFlag(cmd.args, ['--project-dir']);
+    const dirs = sqlPathCandidates(named ?? '.', cmd) ?? [];
+    return dirs.some(d => {
+        const root = named ? d : dbtProjectRoot(d);
+        const project = root ? readConfigFile(join(root, 'dbt_project.yml')) ?? '' : '';
+        return /^\s*\+?store_failures\s*:\s*(?:true|yes|on)\b|^\s*\+?store_failures_as\s*:/im.test(project);
+    });
 }
 
 /** Whether the line exports a name `name` matches, or turns on allexport, before a step could inherit it. */
@@ -8374,6 +8391,21 @@ function macroSqlTexts(macro: string): string[] {
     return [macro.replace(/\{%[\s\S]*?%\}/g, ' ; ').replace(/\{\{[\s\S]*?\}\}/g, 'x'), ...strings];
 }
 
+/**
+ * The listed dev databases a dbt step's macros may write to: those of the entries on the account its resolved target
+ * is on, as the target check scopes them. None when the target or its account can't be read.
+ */
+function macroDevDatabases(cmd: ResolvedCommand): Set<string> {
+    const scope = currentDevScope();
+    const dirs = sqlPathCandidates('.', cmd);
+    const targets = (dirs ?? []).map(d => dbtTargetDatabase(cmd, d));
+    const account = targets[0]?.account;
+    if (!scope || !targets.length || account === undefined || targets.some(t => t?.account === undefined || accountKey(t.account) !== accountKey(account))) return new Set();
+    return new Set(scope.snowflake
+        .filter(e => [snowConnectionAccount(e.connection), ...(e.dbtAccounts ?? [])].some(a => a !== null && accountKey(a) === accountKey(account)))
+        .flatMap(e => e.databases.map(d => d.toUpperCase())));
+}
+
 function dbtMacroReason(cmd: ResolvedCommand): string | null {
     const names = dbtMacroNames(cmd.args);
     if (!names.length) return null;
@@ -8405,7 +8437,7 @@ function dbtMacroReason(cmd: ResolvedCommand): string | null {
             if (egress && egress !== 'unreadable') return `${SQL_EGRESS}: dbt macro ${name} sends data out (${egress.pattern}) — ${egress.statement}`;
             // A macro's SQL names its own tables: a write counts as dev only when it names a listed dev database, and any
             // other write keeps its card even on a dev target.
-            const dev = new Set(currentDevScope()?.snowflake.flatMap(e => e.databases.map(d => d.toUpperCase())) ?? []);
+            const dev = macroDevDatabases(cmd);
             const write = text.trim() ? writeStatements(text).find(w => {
                 const t = writeTarget(w.text);
                 const needed = t?.kind === 'schema' ? 2 : 3;
@@ -9008,7 +9040,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
             const step: StepCard =
                 override ? overrideStep(cmd, override)
                 : sqlDialect ? sqlStep(sqlDialect, cmd)
-                : dbtCommandOf(cmd) && dbtSubcommand(dbtCommandOf(cmd)!.args) !== 'run-operation' ? dbtStep(dbtCommandOf(cmd)!, dirBefore)
+                : dbtCommandOf(cmd) && dbtSubcommand(dbtCommandOf(cmd)!.args) !== 'run-operation' ? dbtStep(dbtCommandOf(cmd)!, dirBefore ?? cwd)
                 : cmd.name === 'git-clean' ? gitCleanStep({ ...cmd, args: ['clean', ...cmd.args] })
                 : cmd.name === 'git' ? (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean' ? gitCleanStep(cmd) : gitPushStep(cmd))
                 : cmd.name === 'aws' ? awsStep(cmd)

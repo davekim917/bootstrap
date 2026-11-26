@@ -65,6 +65,10 @@ beforeAll(() => {
         "{% macro unload_helper() %}{% do run_query(\"copy into @dev_db.raw.out from dev_db.core.orders\") %}{% endmacro %}",
         "{% macro block_unload() %}{% do run_query(\"copy into @dev_db.raw.out from dev_db.core.orders\") %}{% endmacro %}", '',
     ].join('\n'));
+    mkdirSync(join(dir, 'sfproj'));
+    writeFileSync(join(dir, 'sfproj', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\ndata_tests:\n  +store_failures: true\n");
+    mkdirSync(join(dir, 'farproject', 'macros'), { recursive: true });
+    writeFileSync(join(dir, 'farproject', 'macros', 'fill.sql'), "{% macro fill_far() %}{% do run_query(\"insert into acme_only.core.t select 1\") %}{% endmacro %}\n");
     writeFileSync(join(dir, 'project', 'load.js'), "const { Client } = require('pg');\nconst c = new Client();\nc.query('insert into orders values (1)');\n");
     writeFileSync(join(dir, 'project', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
     writeFileSync(join(dir, 'project', 'load.sql'), 'insert into orders values (1);\n');
@@ -749,5 +753,57 @@ describe('refusals and cards for the review round', () => {
     });
     test('a retry with no readable saved run says so', () => {
         expect(body('cd ' + join(dir, 'retrynone') + ' && dbt retry')).toContain('the saved run');
+    });
+});
+
+describe('final round', () => {
+    test('dbt test on another target cards when the project stores test failures', () => {
+        expect(evaluate('cd ' + join(dir, 'sfproj') + ' && dbt test --target prod').action).toBe('gate');
+    });
+    test('dbt test on the dev target of such a project runs without a card', () => {
+        expect(evaluate('cd ' + join(dir, 'sfproj') + ' && dbt test').action).toBe('allow');
+    });
+    test('a literal COMMENT ON in interpreter code takes a card', () => {
+        expect(evaluate("python3 -c \"import psycopg2; psycopg2.connect('dbname=app').cursor().execute('comment on table orders is \\'x\\'')\"").action).toBe('gate');
+    });
+    test('a file piped into inline code that only reads stdin is data', () => {
+        expect(evaluate("cat PROJECT/load.py | python3 -c 'import sys; print(sys.stdin.read())'").action).toBe('allow');
+    });
+    test('a file piped into python with no code of its own is the program', () => {
+        expect(evaluate('cat PROJECT/load.py | python3').action).toBe('gate');
+    });
+    test.each([
+        ['suspending an alert', 'snow sql -c acme_shared -q "alter alert dev_db.core.a suspend"'],
+        ['resuming an alert', 'snow sql -c acme_shared -q "alter alert dev_db.core.a resume"'],
+        ['pausing a pipe', 'snow sql -c acme_shared -q "alter pipe dev_db.core.p set pipe_execution_paused = true"'],
+    ])('%s on a listed connection with no login runs as on main', (_name, command) => {
+        expect(evaluate(command).action).toBe('allow');
+    });
+    test('changing what an alert runs keeps its card', () => {
+        expect(evaluate('snow sql -c acme_shared -q "alter alert dev_db.core.a modify action insert into prod_db.core.t select 1"').action).toBe('gate');
+    });
+    test('a macro write into a dev database listed only on another account keeps its card', () => {
+        const previous = process.env[DEV_SCOPE_FILE_ENV];
+        const scope = join(dir, 'dev-scope-macro-accounts.local.json');
+        writeFileSync(scope, JSON.stringify({ snowflake: [
+            { connection: 'acme_dev', databases: ['dev_db', 'acme_only'] },
+            { connection: 'far_dev', databases: ['dev_db'], dbtAccounts: ['FAR-ACCT1'] },
+        ] }));
+        process.env[DEV_SCOPE_FILE_ENV] = scope;
+        try {
+            expect(evaluate('cd ' + join(dir, 'farproject') + ' && dbt build').action).toBe('allow');
+            expect(evaluate('cd ' + join(dir, 'farproject') + ' && dbt run-operation fill_far').action).toBe('gate');
+        } finally {
+            process.env[DEV_SCOPE_FILE_ENV] = previous;
+        }
+    });
+    test('the retry card reads the saved target from the directory the command runs in', () => {
+        const at = join(dir, 'retryprod');
+        const verdict = evaluateBashCommand('dbt retry', { cwd: at });
+        expect(describeGate('dbt retry', verdict.reason ?? '', at).label).toBe('Run dbt retry on target prod');
+    });
+    test('a load that purges its stage says so on the card', () => {
+        const command = 'snow sql -c acme_shared -q "copy into dev_db.core.t from @prod_db.core.s purge = true"';
+        expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toMatch(/PURGE/i);
     });
 });
