@@ -18,8 +18,10 @@ describe('a credential in a gated command never reaches the staged request', () 
         ['a PGPASSWORD assignment', 'PGPASSWORD=s3cretvalue psql -h db.example.com -c "drop table t"', 's3cretvalue', 'PGPASSWORD=[redacted]'],
         ['curl -u glued to its value', 'curl -uadmin:s3cretvalue -X DELETE https://api.example.com/v1/x', 's3cretvalue', 'admin:[redacted]'],
         ['curl -u ending a cluster of flags', 'curl -sSu admin:s3cretvalue -X DELETE https://api.example.com/v1/x', 's3cretvalue', 'admin:[redacted]'],
-        ['a bearer header written with escaped spaces', 'curl -H Authorization:\\ Bearer\\ s3cretvalue -X DELETE https://api.example.com/v1/x', 's3cretvalue', 'Bearer\\ [redacted]'],
+        ['a bearer header written with escaped spaces', 'curl -H Authorization:\\ Bearer\\ s3cretvalue -X DELETE https://api.example.com/v1/x', 's3cretvalue', 'Bearer [redacted]'],
         ['a libpq password in a connection string', 'psql "host=db.example.com password=s3cretvalue dbname=app" -c "drop table t"', 's3cretvalue', 'password=[redacted]'],
+        ['curl -u with a quoted password holding a space', "curl -sSu 'admin:two words' -X DELETE https://api.example.com/v1/x", 'words', 'admin:[redacted]'],
+        ['curl -U for a proxy', 'curl -U proxyuser:s3cretvalue https://api.example.com/v1/x', 's3cretvalue', 'proxyuser:[redacted]'],
         ['a bare TOKEN assignment', 'TOKEN=s3cretvalue ./deploy.sh --force', 's3cretvalue', 'TOKEN=[redacted]'],
         ['a Postgres role password', `psql -h db.example.com -c "CREATE ROLE app LOGIN PASSWORD 's3cretvalue'"`, 's3cretvalue', "PASSWORD '[redacted]'"],
         ['an encrypted password holding a quote', `psql -h db.example.com -c "ALTER USER app WITH ENCRYPTED PASSWORD 's3cret''value'"`, 'value', "PASSWORD '[redacted]'"],
@@ -28,7 +30,7 @@ describe('a credential in a gated command never reaches the staged request', () 
         const request = staged(command, `The command runs: ${command}`);
         expect(JSON.stringify(request)).not.toContain(secret);
         expect(request.command).toContain(shown);
-        expect(request.summary).toContain(shown);
+        expect(request.summary).toContain('[redacted]');
     });
 
     test('an email card stays exactly as it will send, since the person approves that text', () => {
@@ -39,7 +41,7 @@ describe('a credential in a gated command never reaches the staged request', () 
     });
 
     test('a command with no credential is staged as written', () => {
-        for (const command of ['rm -rf /tmp/build', 'git push --force origin main', `psql -h db.example.com -c "select password_changed_at from users"`]) {
+        for (const command of ['rm -rf /tmp/build', 'git push --force origin main', 'git push -fu git@github.com:org/repo main', 'git push -fu https://github.com/org/repo main', 'echo password=abc', `psql -h db.example.com -c "select password_changed_at from users"`]) {
             expect(staged(command).command).toBe(command);
         }
     });

@@ -4797,6 +4797,8 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
             const words = name === '[' ? (shellUnquote(args.at(-1) ?? '') === ']' ? args.slice(0, -1) : null) : args;
             const quoted = (a: string) => /^"[^"]*"$/.test(a) && runsNothing(a);
             const operand = (a: string) => quoted(a) || (literal(a) && shellUnquote(a) !== '-v');
+            // A leading literal `!` negates the test that follows and changes nothing about how it reads.
+            if (words && words.length > 1 && literal(words[0]) && shellUnquote(words[0]) === '!') words.shift();
             if (!words) return false;
             if (words.length === 2) return literal(words[0]) && /^-[bcdefghknprstuwxzGLNOS]$/.test(shellUnquote(words[0])) && operand(words[1]);
             return words.length === 3 && literal(words[1]) && /^(?:=|==|!=|<|>|-(?:eq|ne|lt|le|gt|ge|nt|ot|ef))$/.test(shellUnquote(words[1])) && operand(words[0]) && operand(words[2]);
@@ -8292,26 +8294,143 @@ export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'req
  * NanoClaw's in-tree email hook joins a peer's card only when the stored request equals, field for field, the one it
  * would file itself for the same tool call, and that one carries the tool call.
  */
+/** A value as one shell word: plain when it needs no quoting, else single-quoted. */
+const shellWord = (value: string, written = ''): string => (/^[\w@%+=:,./-]+$/.test(value) ? value
+    : written.startsWith('"') && !/["$`\\]/.test(value) ? `"${value}"` : `'${value.replace(/'/g, `'\\''`)}'`);
+
+// A Postgres or Snowflake role password, or MySQL's IDENTIFIED BY, as a quoted SQL literal.
+const SQL_PASSWORD_LITERAL = /(\b(?:PASSWORD|IDENTIFIED\s+BY)\s*(?:=\s*)?)('(?:[^']|'')*'|"(?:[^"\\]|\\.)*")/gi;
+const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"]*:)([^\s@/'"]+)@/gi;
+const CREDENTIAL_NAME = /^[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY)$/i;
+const CURL_CREDENTIAL_LETTERS = new Set(['u', 'U']);
+const CURL_HEADER_LETTERS = new Set(['H']);
+const PG_CLIENTS = new Set(['psql', 'pg_dump', 'pg_dumpall', 'pg_restore', 'pgcli', 'createdb', 'dropdb', 'createuser', 'dropuser', 'vacuumdb', 'reindexdb', 'pg_isready']);
+const SQL_TEXT_FLAGS: Record<string, RegExp> = { psql: /^(?:-c|--command)$/, snow: /^(?:-q|--query)$/, mysql: /^(?:-e|--execute)$/ };
+
+/** What a curl -u/-U value or a header value shows, and the secret it hides; null when it holds none. */
+function curlCredential(kind: 'user' | 'header', value: string): { shown: string; secret: string } | null {
+    if (kind === 'user') {
+        const colon = value.indexOf(':');
+        return colon >= 0 && colon < value.length - 1 ? { shown: `${value.slice(0, colon + 1)}[redacted]`, secret: value.slice(colon + 1) } : null;
+    }
+    const auth = /^((?:Proxy-)?Authorization\s*:\s*(?:(?:Bearer|Basic|Token|Bot|Digest|Negotiate)\s+)?)(\S[\s\S]*)$/i.exec(value)
+        ?? /^((?:X-)?(?:Api|Auth)[-_]?(?:Key|Token)\s*:\s*)(\S[\s\S]*)$/i.exec(value);
+    return auth ? { shown: `${auth[1]}[redacted]`, secret: auth[2] } : null;
+}
+
 /**
- * The text with each credential it carries replaced by `[redacted]`: an HTTP authorization or API-key header's value,
- * curl's `-u user:password`, a URL's password, a `PGPASSWORD`-style assignment, and a SQL role password. The staged
- * request is persisted and shown on the card, so neither may hold the secret the command passes.
+ * The command with each credential it passes replaced by `[redacted]`, read from the shell's own words: curl's -u, -U,
+ * --user and --proxy-user values and its authorization or API-key headers; libpq's password= in a connection string; a
+ * URL's password; an assignment to a password, secret, token or API-key variable; and a quoted SQL role password in a
+ * SQL client's text. A quoted value is one word, so a password with spaces goes whole. Also returns each secret, so
+ * text quoting the command can be scrubbed of them. Null when the line can't be parsed.
  */
-export function redactCredentials(text: string): string {
-    const R = '[redacted]';
-    // A shell-escaped space (`Authorization:\ Bearer\ tok`) separates words in the header as a plain one does.
-    const gap = String.raw`(?:\\?[ \t])*`;
-    const value = String.raw`("[^"]*"|'[^']*'|[^\s'"\\]+)`;
+function redactCommandCredentials(command: string): { text: string; secrets: string[] } | null {
+    let script: any;
+    try {
+        script = parseShell(command);
+    } catch {
+        return null;
+    }
+    const edits: Array<{ pos: number; end: number; text: string }> = [];
+    const secrets: string[] = [];
+    const replace = (word: any, text: string, secret: string) => {
+        if (typeof word?.pos !== 'number' || typeof word?.end !== 'number') return;
+        edits.push({ pos: word.pos, end: word.end, text });
+        secrets.push(secret);
+    };
+    const withUrlsAndSql = (value: string, sql: boolean): string => {
+        let out = value.replace(URL_PASSWORD, (_m, head, secret) => (secrets.push(secret), `${head}[redacted]@`));
+        if (sql) out = out.replace(SQL_PASSWORD_LITERAL, (_m, head, literal) => (secrets.push(literal.slice(1, -1)), `${head}'[redacted]'`));
+        return out;
+    };
+    for (const node of walkCommandNodes(script)) {
+        for (const p of node.prefix ?? []) {
+            if (p?.type === 'Assignment' && typeof p.name === 'string' && CREDENTIAL_NAME.test(p.name)) {
+                const value = String(p.value?.value ?? p.value?.text ?? '');
+                if (value) replace(p, `${p.name}=[redacted]`, value);
+            }
+        }
+        const words: any[] = [node.name, ...(node.suffix ?? [])].filter(Boolean);
+        const at = words.findIndex(w => ['curl', ...PG_CLIENTS, 'snow', 'mysql'].includes(basename(wordValue(w))));
+        const name = at >= 0 ? basename(wordValue(words[at])) : '';
+        const args = at >= 0 ? words.slice(at + 1) : [];
+        for (let i = 0; i < args.length; i++) {
+            const word = args[i];
+            const value = wordValue(word);
+            if (name === 'curl') {
+                let kind: 'user' | 'header' | null = null;
+                let head = '';
+                let target = word;
+                let given: string | undefined;
+                const long = /^(--user|--proxy-user|--header|--proxy-header)(?:=([\s\S]*))?$/.exec(value);
+                if (long) {
+                    kind = /user/.test(long[1]) ? 'user' : 'header';
+                    if (long[2] !== undefined) [head, given] = [`${long[1]}=`, long[2]];
+                } else if (/^-[^-]/.test(value)) {
+                    for (let c = 1; c < value.length; c++) {
+                        if (!CURL_VALUE_LETTERS.includes(value[c])) continue;
+                        kind = CURL_CREDENTIAL_LETTERS.has(value[c]) ? 'user' : CURL_HEADER_LETTERS.has(value[c]) ? 'header' : null;
+                        if (c + 1 < value.length) [head, given] = [value.slice(0, c + 1), value.slice(c + 1)];
+                        if (!kind) i += c + 1 < value.length ? 0 : 1;
+                        break;
+                    }
+                }
+                if (!kind) continue;
+                if (given === undefined) {
+                    target = args[++i];
+                    given = target === undefined ? undefined : wordValue(target);
+                }
+                const found = given === undefined ? null : curlCredential(kind, given);
+                if (found) replace(target, head + shellWord(found.shown), found.secret);
+                continue;
+            }
+            const sql = !!SQL_TEXT_FLAGS[name]?.test(wordValue(args[i - 1] ?? {}));
+            let shown = withUrlsAndSql(value, sql);
+            if (PG_CLIENTS.has(name) && /\b(?:host|hostaddr|dbname|user|port|service)\s*=/i.test(shown)) {
+                shown = shown.replace(/(\bpassword\s*=\s*)('(?:\\.|[^'\\])*'|[^\s']+)/gi, (_m, head, secret) => (secrets.push(secret.replace(/^'|'$/g, '')), `${head}[redacted]`));
+            }
+            if (shown !== value) edits.push({ pos: word.pos, end: word.end, text: shellWord(shown, String(word.text ?? '')) });
+        }
+        if (SQL_TEXT_FLAGS[name] || name === 'psql') {
+            for (const r of node.redirects ?? []) {
+                if (typeof r?.content !== 'string' || !r.content) continue;
+                const shown = withUrlsAndSql(r.content, true);
+                const start = command.indexOf(r.content, typeof r.end === 'number' ? r.end : 0);
+                if (shown !== r.content && start >= 0) edits.push({ pos: start, end: start + r.content.length, text: shown });
+            }
+        }
+    }
+    let text = command;
+    for (const e of edits.sort((a, b) => b.pos - a.pos)) {
+        if (e.pos < 0 || e.end > text.length) continue;
+        text = text.slice(0, e.pos) + e.text + text.slice(e.end);
+    }
+    return { text, secrets: secrets.filter(s => s.length >= 3) };
+}
+
+/** `text` with every one of `secrets` replaced by `[redacted]`. */
+function scrubSecrets(text: string, secrets: string[]): string {
+    return [...secrets].sort((a, b) => b.length - a.length).reduce((t, s) => t.split(s).join('[redacted]'), text);
+}
+
+/**
+ * A command and the text that quotes it, as the staged request shows them: each credential the command passes is
+ * `[redacted]` (redactCommandCredentials), and so is every copy of it in `quoting`. The staged request is persisted and
+ * shown on the card, so neither may hold it. A line the shell parser can't read falls back to matching credential
+ * shapes in the raw text.
+ */
+export function redactCredentials(command: string, ...quoting: string[]): string[] {
+    const read = redactCommandCredentials(command);
+    if (read) return [read.text, ...quoting.map(t => scrubSecrets(t, read.secrets))];
+    return [command, ...quoting].map(redactCredentialShapes);
+}
+
+function redactCredentialShapes(text: string): string {
     return text
-        .replace(new RegExp(String.raw`\b((?:Proxy-)?Authorization${gap}:${gap}(?:(?:Bearer|Basic|Token|Bot|Digest)\\?[ \t]${gap})?)${value}`, 'gi'), (_, head) => head + R)
-        .replace(new RegExp(String.raw`\b((?:X-)?(?:Api|Auth)[-_]?(?:Key|Token)${gap}:${gap})${value}`, 'gi'), (_, head) => head + R)
-        // curl's -u, alone, glued to its value or ending a cluster of flags (`-u a:b`, `-ua:b`, `-sSu a:b`).
-        .replace(/((?:^|\s)(?:-[A-Za-z]*u|--user|--proxy-user)(?:\s+|=)?['"]?[^\s:'"]*:)[^\s'"]+/g, (_, head) => head + R)
-        .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"]*:)[^\s@/'"]+@/gi, (_, head) => head + R + '@')
-        .replace(/(\b[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY)=)("[^"]*"|'[^']*'|\S+)/g, (_, head) => head + R)
-        .replace(/(\b(?:PASSWORD|IDENTIFIED\s+BY)\s*(?:=\s*)?)('(?:[^']|'')*'|"(?:[^"\\]|\\.)*")/gi, (_, head) => head + "'" + R + "'")
-        // libpq's `password=value` in a connection string, unquoted.
-        .replace(/(\bpassword\s*=\s*)(?!['"]|\[redacted\])[^\s'"]+/gi, (_, head) => head + R);
+        .replace(/\b((?:Proxy-)?Authorization\s*:\s*(?:(?:Bearer|Basic|Token|Bot|Digest)\s+)?)("[^"]*"|'[^']*'|[^\s'"\\]+)/gi, (_, head) => head + '[redacted]')
+        .replace(URL_PASSWORD, (_m, head) => `${head}[redacted]@`)
+        .replace(SQL_PASSWORD_LITERAL, (_m, head) => `${head}'[redacted]'`);
 }
 
 export function gateRequestContent(
@@ -8324,18 +8443,20 @@ export function gateRequestContent(
     toolUseId?: string,
 ): string {
     // An email card shows the message exactly as it will send, and the in-tree email hook joins it only field for field.
-    const shown = action === 'request_bash_gate' ? (text: string) => text : redactCredentials;
+    const [shownCommand, shownLabel, shownSummary, shownFull] = action === 'request_bash_gate'
+        ? [command, label, summary, card.fullSummary ?? '']
+        : redactCredentials(command, label, summary, card.fullSummary ?? '');
     return JSON.stringify({
         action,
         requestId,
-        label: shown(label),
-        summary: shown(summary),
+        label: shownLabel,
+        summary: shownSummary,
         // The host renders a bounded head+tail preview and retains the full
         // command in its approval record. Truncating here would discard final
         // arguments before the approver or audit trail could inspect them.
-        command: shown(command),
+        command: shownCommand,
         ...(card.pureSend ? { pureSend: true } : {}),
-        ...(card.fullSummary !== undefined ? { fullSummary: shown(card.fullSummary) } : {}),
+        ...(card.fullSummary !== undefined ? { fullSummary: shownFull } : {}),
         ...(card.wholeEmail !== undefined ? { wholeEmail: card.wholeEmail } : {}),
         ...(toolUseId ? { toolUseId } : {}),
     });
@@ -8526,7 +8647,8 @@ export function runNanoclawGate(
  */
 export function nanoclawGateParts(command: string, reason: string, cwd?: string): { action: GateAction; label: string; summary: string } {
     const action = changesProduction(command, cwd) ? 'request_prod_gate' : 'request_destructive_gate';
-    return { action, ...describeGate(redactCredentials(command), redactCredentials(reason), cwd) };
+    const [shownCommand, shownReason] = redactCredentials(command, reason);
+    return { action, ...describeGate(shownCommand, shownReason, cwd) };
 }
 
 const heldOnDev = (step: GatedStep): boolean => step.cmd === step.outer && renderDevHeld(step.cmd) !== null;

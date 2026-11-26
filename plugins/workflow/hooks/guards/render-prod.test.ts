@@ -1062,6 +1062,7 @@ describe('a listed dev resource keeps its card when the line can change which re
 describe('a listed dev step needs the forms that run only what the guard read', () => {
     test.each([
         ['a quoted file test before a restart', `if [ -f "$manifest" ]; then render restart ${DEV}; fi`],
+        ['a negated quoted file test before a restart', `if [ ! -f "$manifest" ]; then render restart ${DEV}; fi`],
         ['a quoted string test before a restart', `[ -n "$X" ] && render restart ${DEV}`],
         ['a quoted comparison before a restart', `if [ "$a" = "b" ]; then render restart ${DEV}; fi`],
         ['an integer comparison before a restart', `if test "$a" -eq "$b"; then render restart ${DEV}; fi`],
