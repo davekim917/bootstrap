@@ -202,6 +202,86 @@ const BASH_GATE = [
   'git clean -f -e -npattern',
   'git clean -fe -n',
   'ENV=false git --config-env clean.requireForce=ENV clean',
+  // A global option's value is not git's own -h.
+  'git --namespace -h clean -fd',
+  // A subcommand git doesn't ship runs an alias, however it was defined.
+  "git -c alias.wipe='clean -fd' wipe",
+  "git config alias.p 'push --force' && git p origin main",
+  'git -p wipe',
+  'git --bare --no-pager wipe',
+  // A moved exec path decides what even git's own script commands run (an alias where one is missing).
+  'GIT_EXEC_PATH=/tmp/empty git submodule update',
+  'git --exec-path=/tmp/empty submodule x',
+  // Config that changes what a later, ordinary-looking git command runs, written by git or handed to it.
+  "git config alias.p 'push --force'",
+  "git config --global alias.wipe '!git clean -fdx'",
+  'git config set alias.st status',
+  'git config --rename-section stash alias',
+  'git config remote.origin.mirror true',
+  "git config remote.origin.push '+refs/heads/*:refs/heads/*'",
+  "git config core.sshCommand 'ssh -i key'",
+  'git config core.pager less',
+  'git -c remote.origin.mirror=true push origin',
+  "git -c core.sshCommand='ssh -i key' fetch",
+  'git -c core.pager=less log',
+  'git --config-env=core.pager=PAGER_CMD log',
+  'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true git push origin',
+  'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.mirror GIT_CONFIG_VALUE_0=true; git push origin',
+  'declare -x GIT_CONFIG_KEY_0=remote.origin.mirror; git push origin',
+  'GIT_CONFIG_KEY_0=remote.origin.mirror; export GIT_CONFIG_KEY_0; git push origin',
+  'export GIT_CONFIG_KEY_0=$(cat key.txt); git push origin',
+  "export GIT_CONFIG_PARAMETERS=\"'remote.origin.mirror'='true'\"; git push origin",
+  'git remote add --mirror=push backup https://example.com/r.git',
+  'git clone --mirror https://example.com/r.git',
+  'git clone -c remote.origin.mirror=true https://example.com/r.git',
+  'git clone --config=alias.st=status https://example.com/r.git',
+  'git remote -v add --mirror=push backup https://example.com/r.git',
+  // Options read as git's parse-options reads them: a short one in a cluster, a long one abbreviated.
+  'git clone -4c remote.origin.mirror=true https://example.com/r.git',
+  'git clone --conf=alias.st=status https://example.com/r.git',
+  'git clone --mirr https://example.com/r.git',
+  'git remote add --mirr=push backup https://example.com/r.git',
+  // A value that starts with a dash is still the value.
+  "git config set alias.x '-c core.pager=less log'",
+  "git config set core.pager '-R'",
+  // The key comes first in every git config write.
+  'git config --replace-all alias.x status old',
+  // A word the guard can't resolve before the first name may shift the key, so every name is read as the key.
+  'git config $OPT user.name alias.x',
+  'git config "$F" core.pager less',
+  'git config set $OPT user.name alias.x',
+  // An option's value from a variable doesn't move the key.
+  'git config -f "$F" core.pager less',
+  // An option the line doesn't show may be --add, so one name alone isn't known to be a read.
+  'git config -$X alias.x',
+  // A command substitution in an option's value can split into the key, so the words it shows are read as names.
+  "git config --type $(printf 'path alias.x') '!cmd'",
+  "git config --type `printf 'path alias.x'` '!cmd'",
+  "git -c $(printf 'core.sshCommand=evil') fetch",
+  // git config whose words a runner fills in where the guard can't see them.
+  "printf '%s\\n' 'alias.st status' 'alias.co checkout' | xargs -n2 git config --local",
+  "find . -name '*.cfg' -exec git config {} status \\;",
+  // parallel quotes each replacement string into one word, so a write takes two of them, or -X.
+  'parallel git config --local {1} {2} ::: alias.st ::: status',
+  'parallel -X git config --local {} ::: alias.st status',
+  // More than one argument a run: -m, or -n above 1, even with -n1 before -m.
+  'parallel -n2 git config --local ::: alias.st status',
+  'parallel -m git config --local ::: alias.st status',
+  'parallel -n1 -m git config --local ::: alias.st status',
+  // An unquoted variable, or an array's elements, can be a key and its value.
+  "printf '%s\\n' user.name | while read -r key; do git config --local $key; done",
+  'mapfile -t keys < keys.txt; git config --local "${keys[@]}"',
+  // Unbounded, xargs hands git config a key and a value, and so does one line under -L1.
+  "printf '%s\\n' 'alias.st status' | xargs git config --local",
+  "printf '%s\\n' 'alias.st status' | xargs -L1 git config --local",
+  // Neither the agent container's git nor this host's has these, so git runs an alias of that name.
+  'git p4 sync',
+  'git svn x',
+  'git refs verify',
+  'git backfill',
+  'printf "alias.st status\\n" | while read k v; do git config --local "$k" "$v"; done',
+  // An alias takes -h as one more argument.
+  'git wipe -h',
   'git push -f',
   'git -C /workspace/worktrees/APP push -f origin develop',
   // Spellings that once slipped through: a clustered short flag, AWS global
@@ -402,9 +482,71 @@ const BASH_ALLOW = [
   // Bare xargs runs echo, and a wrapper that names its own command passes.
   "printf '%s\\n' a b | xargs",
   "printf '%s\\n' a b | xargs -n1 env FOO=1 echo",
-  // A dry run whose words are all literal, and git's global help for clean, delete nothing.
+  // A dry run whose words are all literal, and a git global option that prints and exits, run nothing.
   'git clean -n -d -x -- build/',
   'git --help clean',
+  'git --version clean -fd',
+  'git --help wipe',
+  'git -v wipe',
+  'git --html-path wipe',
+  'git --exec-path clean -fd',
+  'git --list-cmds=main wipe',
+  // Options held in a variable are not an alias, and git <word> --help only shows help.
+  'C="-c user.name=t"; git $C commit -m x',
+  'git co --help',
+  'git push --help -f',
+  // A global option left without its value runs nothing.
+  'git --exec-path',
+  'git -C',
+  'git --namespace',
+  // Reading risky config, and writing other config, change nothing a later command runs.
+  'git config alias.st',
+  'git config --get remote.origin.push',
+  'git config user.name t',
+  'git -c user.name=t commit -m x',
+  'git -c core.pager=cat log',
+  'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=t; git commit -m x',
+  'git remote add backup https://example.com/r.git',
+  'git clone -c user.name=t https://example.com/r.git',
+  // git config stops reading options at the first name, so a value like this one is not -e.
+  "git config set gui.diffopts '-U5 --ignore-space-change'",
+  "git config gui.diffopts '-U5 --ignore-space-change'",
+  // A value or value-pattern that looks like a key is not the key.
+  'git config --replace-all user.name new alias.x',
+  'git config --replace-all example.flags -f core.hooksPath',
+  'git config set user.name core.hooksPath',
+  // One name alone is read, whatever file an option's value names.
+  'git config --file "$CONFIG_FILE" core.hooksPath',
+  'git config --file "$(git rev-parse --show-toplevel)/.gitmodules" submodule.x.url https://example.com/x',
+  'git ls-files -m | xargs git add',
+  // One key per run under xargs -n1 (the last of -n and -L wins), and reads under any runner.
+  "printf '%s\\n' user.name user.email | xargs -n1 git config --local",
+  "printf '%s\\n' user.name | xargs --max-args=1 git config --local",
+  "printf '%s\\n' user.name | xargs -rn1 git config --local",
+  "printf '%s\\n' 'alias.st status' | xargs -L1 -n1 git config --local",
+  'parallel git -C {} config --get user.email ::: repo-a repo-b',
+  'parallel git config get user.{} ::: name email',
+  "parallel 'git config --list' ::: a",
+  'printf "user.name\\n" | while read k; do git config --get "$k"; done',
+  // One argument a run under parallel -n1 or -N1, and a quoted variable that read sets stays one word.
+  'parallel -n 1 git config --local ::: user.name user.email',
+  'parallel -n1 git config --local ::: user.name',
+  'parallel --max-args=1 git config --local ::: user.name',
+  'parallel -N1 git config --local ::: user.name',
+  "printf '%s\\n' user.name | while read -r key; do git config --local \"$key\"; done",
+  "printf '%s\\n' user.name | while read -r key; do git config --local \"${key}\"; done",
+  // An installed contrib command, and -h after one of git's own commands, which prints its usage.
+  'git subtree -h',
+  'git subtree split --prefix=lib',
+  'git clean -h -fdx',
+  'git config -f "$F" core.hooksPath',
+  // Removing config can't add an alias, a mirror or a program to run.
+  'git config --unset alias.st',
+  'git config --remove-section remote.old',
+  // Built into both installs' git, or shipped with it as a script.
+  'git annotate README.md',
+  'git merge-octopus HEAD -- HEAD topic',
+  'git merge-resolve HEAD -- HEAD topic',
   "git clean -n -- 'dir with spaces'",
   "git clean -n 'dir with spaces'",
   "git submodule foreach --recursive 'git status --short'",

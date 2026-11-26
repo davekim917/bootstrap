@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -69,6 +69,24 @@ function outsideLab(): void {
 const LAB_WORKTREE = '/workspace/worktrees/LAB-APP';
 const PROD_WORKTREE = '/workspace/worktrees/APP';
 
+// Checkouts on disk, since where a git config write lands is read from there: a lab clone, a non-lab sibling, a linked
+// worktree of that sibling under a lab name, and a link from LAB_CLONE to the sibling's git directory.
+const CHECKOUTS = realpathSync(mkdtempSync(join(tmpdir(), 'lab-config-')));
+const LAB_CLONE = join(CHECKOUTS, 'worktrees', 'LAB-APP');
+const SIBLING = join(CHECKOUTS, 'worktrees', 'APP');
+const LAB_NAMED_WORKTREE = join(CHECKOUTS, 'worktrees', 'LAB-LINK');
+const SIBLING_WORKTREE_DIR = join(SIBLING, '.git', 'worktrees', 'LAB-LINK');
+mkdirSync(join(LAB_CLONE, '.git'), { recursive: true });
+mkdirSync(join(LAB_CLONE, 'sub'));
+writeFileSync(join(LAB_CLONE, '.git', 'config'), '');
+mkdirSync(SIBLING_WORKTREE_DIR, { recursive: true });
+writeFileSync(join(SIBLING, '.git', 'config'), '');
+writeFileSync(join(SIBLING_WORKTREE_DIR, 'commondir'), '../..\n');
+mkdirSync(LAB_NAMED_WORKTREE);
+writeFileSync(join(LAB_NAMED_WORKTREE, '.git'), `gitdir: ${SIBLING_WORKTREE_DIR}\n`);
+symlinkSync(join(SIBLING, '.git'), join(LAB_CLONE, 'shared'));
+afterAll(() => rmSync(CHECKOUTS, { recursive: true, force: true }));
+
 // (command, cwd) pairs whose target IS a lab target.
 const LAB_TARGETS: Array<[string, string]> = [
   // git — bare remote resolved through a lab worktree checkout
@@ -103,6 +121,16 @@ const LAB_TARGETS: Array<[string, string]> = [
   ['render postgres delete lab-app-db', '/tmp'],
   // gh — LAB-* repos only
   ['gh repo delete Lab-Org/LAB-APP --yes', '/tmp'],
+  // git config — a write that lands in a lab clone's own config, wherever it is run from
+  ['git config alias.st status', LAB_CLONE],
+  [`git config --file ${LAB_CLONE}/.git/config alias.st status`, '/tmp'],
+  [`git -C ${CHECKOUTS}/worktrees -C LAB-APP config alias.st status`, '/tmp'],
+  [`GIT_DIR=${LAB_CLONE}/.git git config alias.st status`, '/tmp'],
+  // a clone that makes a lab checkout
+  [`git clone -c alias.st=status https://github.com/Lab-Org/LAB-APP.git ${CHECKOUTS}/worktrees/LAB-NEW`, '/tmp'],
+  // other steps on the line that write nowhere a config write can be moved from
+  [`mkdir -p ${CHECKOUTS}/elsewhere && git config alias.st status`, LAB_CLONE],
+  ['git config alias.st status 2>/dev/null', LAB_CLONE],
 ];
 
 // (command, cwd) pairs whose target is NOT a lab target. These must keep today's
@@ -143,6 +171,62 @@ const NON_LAB_TARGETS: Array<[string, string]> = [
   ['fly apps destroy lab-app-api', LAB_WORKTREE],
   ['kubectl delete deployment lab-app-api', LAB_WORKTREE],
   ['aws s3 rb s3://lab-app --force', LAB_WORKTREE],
+  // config every repository reads belongs to the user or the machine, not to a lab repository
+  ["git config --global core.sshCommand 'ssh -i key'", LAB_CLONE],
+  ['git config --system alias.st status', LAB_CLONE],
+  ['git config --file ~/.gitconfig alias.st status', LAB_CLONE],
+  ['git config -f "$HOME/.gitconfig" remote.origin.mirror true', LAB_CLONE],
+  ['git config -f"$HOME/.gitconfig" alias.st status', LAB_CLONE],
+  ['git config -f~/.gitconfig alias.st status', LAB_CLONE],
+  ['git config -zf ~/.gitconfig alias.st status', LAB_CLONE],
+  ['git config --glob alias.st status', LAB_CLONE],
+  // a config write run from a lab clone that lands in another checkout's config
+  [`git config --file ${SIBLING}/.git/config alias.st status`, LAB_CLONE],
+  [`git --git-dir=${SIBLING}/.git config alias.st status`, LAB_CLONE],
+  [`git -C ${SIBLING} config alias.st status`, LAB_CLONE],
+  [`git -C ${LAB_CLONE} -C ${SIBLING} config alias.st status`, '/tmp'],
+  [`git --work-tree ${LAB_CLONE} config alias.st status`, SIBLING],
+  [`GIT_DIR=${SIBLING}/.git git config alias.st status`, LAB_CLONE],
+  [`export GIT_DIR=${SIBLING}/.git; git config alias.st status`, LAB_CLONE],
+  [`export GIT_'DIR'=${SIBLING}/.git; git config alias.st status`, LAB_CLONE],
+  [`export GIT_DIR=${SIBLING}/.git; printf x | xargs sh -c 'git config alias.st status'`, LAB_CLONE],
+  [`GIT_CONFIG=${SIBLING}/.git/config git config alias.st status`, LAB_CLONE],
+  [`GIT_COMMON_DIR=${SIBLING}/.git git config alias.st status`, LAB_CLONE],
+  [`git -C ${SIBLING}/.git --bare -C ${LAB_CLONE} config alias.st status`, '/tmp'],
+  ['git config --file ../APP/.git/config alias.st status', LAB_CLONE],
+  [`git config --file ${LAB_CLONE}/shared/config alias.st status`, LAB_CLONE],
+  ['git config alias.st status', LAB_NAMED_WORKTREE],
+  [`git --git-dir=${SIBLING_WORKTREE_DIR} config alias.st status`, LAB_CLONE],
+  [`git --git-dir=${SIBLING}/.git remote add --mirror=push lab https://github.com/Lab-Org/LAB-APP`, LAB_CLONE],
+  // no repository there to write to
+  ['git config alias.st status', LAB_WORKTREE],
+  // an alias, or a program from a moved exec path, can act on any checkout
+  [`git -C ${LAB_CLONE} sync`, LAB_CLONE],
+  ['GIT_EXEC_PATH=/tmp/x git push --force origin main', LAB_CLONE],
+  // a clone writes into the checkout it makes, whatever its source
+  [`git clone -c alias.st=status https://github.com/Lab-Org/LAB-APP.git ${CHECKOUTS}/worktrees/APP2`, LAB_CLONE],
+  [`git clone --mirror https://github.com/Lab-Org/LAB-APP.git ${CHECKOUTS}/worktrees/APP-MIRROR`, LAB_CLONE],
+  ['git clone -c alias.st=status https://github.com/Lab-Org/LAB-APP.git', SIBLING],
+  [`git clone -c alias.st=status https://github.com/Lab-Org/APP.git ${CHECKOUTS}/worktrees/LAB-NEW`, '/tmp'],
+  // a word the shell fills in where an option goes may be --global, --file or --git-dir
+  ['scope=--global; git config "$scope" alias.st status', LAB_CLONE],
+  ['git config -$X alias.st status', LAB_CLONE],
+  ['git --$X config alias.st status', LAB_CLONE],
+  // an option's value the shell fills in, unquoted, can split into more options
+  ["git config --type $(printf 'path --global') alias.st status", LAB_CLONE],
+  [`git -c $(printf 'a.b=c --git-dir=${SIBLING}/.git') config alias.st status`, LAB_CLONE],
+  // a directory that isn't there yet, and a blob, which git config doesn't write
+  [`git -C ${LAB_CLONE}/nope config alias.st status`, LAB_CLONE],
+  [`git config --file ${LAB_CLONE}/nope/config alias.st status`, LAB_CLONE],
+  ['git config --blob HEAD:x alias.st status', LAB_CLONE],
+  // another step on the line writes where git looks for the config, so the write can land elsewhere
+  [`git -C ${SIBLING} worktree add ${LAB_CLONE}/dependency && git -C ${LAB_CLONE}/dependency config alias.st status`, LAB_CLONE],
+  [`ln -s ${SIBLING}/.git ${LAB_CLONE}/linked && git config --file ${LAB_CLONE}/linked/config alias.st status`, LAB_CLONE],
+  [`mv ${LAB_CLONE}/sub ${LAB_CLONE}/sub-old && ln -s ${SIBLING} ${LAB_CLONE}/sub && git -C ${LAB_CLONE}/sub config alias.st status`, LAB_CLONE],
+  [`echo x > ${LAB_CLONE}/sub/marker && git -C ${LAB_CLONE}/sub config alias.st status`, LAB_CLONE],
+  [`tar -xf ${CHECKOUTS}/drop.tar -C ${LAB_CLONE} && git config alias.st status`, LAB_CLONE],
+  [`printf x | xargs mkdir -p ${LAB_CLONE}/sub/.git; git -C ${LAB_CLONE}/sub config alias.st status`, LAB_CLONE],
+  ['mkdir -p build && git config alias.st status', LAB_CLONE],
 ];
 
 describe('predicate 1 — lab session', () => {
