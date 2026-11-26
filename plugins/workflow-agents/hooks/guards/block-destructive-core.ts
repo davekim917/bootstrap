@@ -4253,6 +4253,28 @@ export interface DevLogin {
 export interface DevScope {
     snowflake: Array<{ connection: string; databases: string[]; login?: DevLogin }>;
     render?: { resources: string[] };
+    standingGrants?: Record<string, string[]>;
+}
+
+/**
+ * Statement classes an operator can grant a connection's role standing permission for, card-free, in the dev-scope
+ * file as `"standingGrants": { "<connection>": ["CREATE DATABASE", …] }`.
+ */
+export const STANDING_GRANT_CLASSES = new Set(['CREATE DATABASE', 'CREATE WAREHOUSE', 'ALTER WAREHOUSE', 'CREATE SHARE',
+    'ALTER SHARE ADD ACCOUNTS', 'CREATE MANAGED ACCOUNT', 'GRANT USAGE TO SHARE', 'GRANT SELECT TO SHARE', 'GRANT REFERENCE_USAGE TO SHARE']);
+
+/** The standing-grant classes one statement (as a skeleton) needs; null when it is none of them. */
+function standingGrantClasses(skeleton: string): string[] | null {
+    const s = skeleton.trim().replace(/\s+/g, ' ');
+    if (/^CREATE (?:TRANSIENT )?DATABASE (?!ROLE\b)/i.test(s)) return ['CREATE DATABASE'];
+    if (/^CREATE WAREHOUSE\b/i.test(s)) return ['CREATE WAREHOUSE'];
+    if (/^ALTER WAREHOUSE\b/i.test(s)) return ['ALTER WAREHOUSE'];
+    if (/^CREATE SHARE\b/i.test(s)) return ['CREATE SHARE'];
+    if (/^ALTER SHARE (?:IF EXISTS )?\S+ ADD ACCOUNTS?\b/i.test(s)) return ['ALTER SHARE ADD ACCOUNTS'];
+    if (/^CREATE MANAGED ACCOUNT\b/i.test(s)) return ['CREATE MANAGED ACCOUNT'];
+    const grant = /^GRANT ([A-Z_][A-Z_ ,]*?) ON .+ TO SHARE \S+$/i.exec(s);
+    if (grant) return grant[1].split(',').map(p => `GRANT ${p.trim().toUpperCase()} TO SHARE`);
+    return null;
 }
 
 /** Parse a dev-scope file's text. Null when anything about it is unusable. */
@@ -4282,14 +4304,26 @@ export function parseDevScope(text: string): DevScope | null {
             }
         }
     }
+    const scope: DevScope = { snowflake: entries as DevScope['snowflake'] };
+    const grants = (raw as { standingGrants?: unknown }).standingGrants;
+    if (grants !== undefined) {
+        if (!grants || typeof grants !== 'object' || Array.isArray(grants)) return null;
+        for (const [connection, classes] of Object.entries(grants)) {
+            if (!SNOWFLAKE_NAME_RE.test(connection) || !Array.isArray(classes)
+                || !classes.every((c: unknown) => typeof c === 'string' && STANDING_GRANT_CLASSES.has(c))) {
+                return null;
+            }
+        }
+        scope.standingGrants = grants as Record<string, string[]>;
+    }
     const render = (raw as { render?: unknown }).render;
-    if (render === undefined) return { snowflake: entries as DevScope['snowflake'] };
+    if (render === undefined) return scope;
     const resources = (render as { resources?: unknown } | null)?.resources;
     if (!Array.isArray(resources) || resources.length === 0
         || !resources.every((r: unknown) => typeof r === 'string' && RENDER_RESOURCE_ID_RE.test(r))) {
         return null;
     }
-    return { snowflake: entries as DevScope['snowflake'], render: { resources: resources as string[] } };
+    return { ...scope, render: { resources: resources as string[] } };
 }
 
 /** The words of a render command as the shell passes them, or null when the guard can't line them up with the script. */
@@ -4798,7 +4832,69 @@ function trustedLoginConnection(cmd: ResolvedCommand): string | null {
  * The dev database a `snow sql` command is exempt under, or null. `commands` and
  * `command` are the whole command line, so anything set up around the call counts.
  */
-export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
+export const DEV_ONLY_LOGIN = 'dev-only login';
+
+/**
+ * A top-level `snow sql` step whose connection and SQL the line shows plainly: one written-out connection, only the
+ * options that change neither the account, user, role nor SQL, nothing on the line that changes its environment, no
+ * templating, and SQL that splits as snow splits it with nothing run indirectly. Null for anything else.
+ */
+function plainSnowSql(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string): { connection: string; texts: string[] } | null {
+    if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
+    if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
+    if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
+    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c)) || changesShellState(command)) return null;
+    let connection: string | undefined;
+    for (let i = 1; i < cmd.args.length; i++) {
+        const a = cmd.args[i];
+        const [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, undefined];
+        if (SNOW_SQL_BARE_FLAGS.has(flag) && inline === undefined) continue;
+        if (!SNOW_SQL_VALUE_FLAGS.has(flag)) return null;
+        const value = inline ?? cmd.args[++i];
+        if (value === undefined) return null;
+        if (flag === '-c' || flag === '--connection') {
+            if (connection !== undefined || !SNOWFLAKE_NAME_RE.test(value)) return null;
+            connection = value;
+        }
+    }
+    if (connection === undefined || snowTemplating(cmd).some(t => t !== 'NONE')) return null;
+    if (cmd.stdinTexts?.length || cmd.stdinFiles?.length) return null;
+    const input = sqlInputOf(cmd);
+    if (input.unreadable) return null;
+    for (const arg of input.texts) {
+        if (!splitsLikeSnow(arg)) return null;
+        if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b|^\s*DO\b|[!\\]\w/im.test(arg)) return null;
+    }
+    return { connection, texts: input.texts };
+}
+
+/**
+ * The standing grants a top-level `snow sql` step runs under, when every statement that writes or sends data out is a
+ * class the dev-scope file grants its connection's role. A role switch or a destructive statement voids it.
+ */
+function standingGrantOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string): string | null {
+    const grants = currentDevScope()?.standingGrants;
+    if (!grants) return null;
+    const plain = plainSnowSql(cmd, commands, command);
+    const held = new Set(plain ? grants[plain.connection] ?? [] : []);
+    if (!plain || !held.size) return null;
+    const used = new Set<string>();
+    for (const arg of plain.texts) {
+        for (const { text, skeleton } of sqlStatements(arg)) {
+            if (!skeleton.trim()) continue;
+            if (/^\s*USE\s+(?:SECONDARY\s+)?ROLES?\b/i.test(skeleton) || findDestructiveSqlStatement(text)) return null;
+            const egress = egressIn(text);
+            if (egress === 'unreadable') return null;
+            if (!egress && !writeStatements(text).length) continue;
+            const classes = standingGrantClasses(skeleton);
+            if (!classes || !classes.every(c => held.has(c))) return null;
+            for (const c of classes) used.add(c);
+        }
+    }
+    return used.size ? `standing grant ${[...used].join(', ')} on snowflake connection ${plain.connection}` : null;
+}
+
+function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
     if (cmd.name === 'render') return topLevel ? renderDevTarget(cmd) : null;
     if (RENDER_API_CLIENTS.has(cmd.name)) return topLevel ? renderApiDevTarget(cmd, commands, command) : null;
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
@@ -4815,35 +4911,15 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     const trusted = topLevel ? trustedLoginConnection(cmd) : null;
     const trustedEntry = trusted === null ? undefined : scope.snowflake.find(e => e.connection === trusted);
     if (trustedEntry && snowEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
-        return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
+        return `snowflake connection ${trustedEntry.connection}, ${DEV_ONLY_LOGIN} ${trustedEntry.login!.user}`;
     }
-    if (changers.length || changesShellState(command)) return null;
-
-    let connection: string | undefined;
-    for (let i = 1; i < cmd.args.length; i++) {
-        const a = cmd.args[i];
-        const [flag, inline] = a.startsWith('--') && a.includes('=') ? [a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1)] : [a, undefined];
-        if (SNOW_SQL_BARE_FLAGS.has(flag) && inline === undefined) continue;
-        if (!SNOW_SQL_VALUE_FLAGS.has(flag)) return null;
-        const value = inline ?? cmd.args[++i];
-        if (value === undefined) return null;
-        if (flag === '-c' || flag === '--connection') {
-            if (connection !== undefined || !SNOWFLAKE_NAME_RE.test(value)) return null;
-            connection = value;
-        }
-    }
-    const entry = scope.snowflake.find(e => e.connection === connection);
-    if (!entry) return null;
-    if (snowTemplating(cmd).some(t => t !== 'NONE')) return null;
+    const plain = plainSnowSql(cmd, commands, command);
+    const entry = plain && scope.snowflake.find(e => e.connection === plain.connection);
+    if (!plain || !entry) return null;
 
     const allowed = new Set(entry.databases.map(d => d.toUpperCase()));
     let matched = false;
-    if (cmd.stdinTexts?.length || cmd.stdinFiles?.length) return null;
-    const input = sqlInputOf(cmd);
-    if (input.unreadable) return null;
-    for (const arg of input.texts) {
-        if (!splitsLikeSnow(arg)) return null;
-        if (/[$&]|<%|\bIDENTIFIER\s*\(|\bEXECUTE\b|\bBEGIN\b|\bDECLARE\b|\bCALL\b|^\s*DO\b|[!\\]\w/im.test(arg)) return null;
+    for (const arg of plain.texts) {
         const destructive = findDestructiveSqlStatement(arg) ? destructiveStatements(arg) : [];
         const writes = writeStatements(arg).filter(w => !destructive.some(d => d.text === w.text));
         if (!destructive.length && !writes.length && !findDestructiveSqlStatement(arg)) continue;
@@ -6784,7 +6860,6 @@ const JS_DRIVERS = /^(?:pg|postgres|snowflake-sdk|knex|kysely|@neondatabase\/ser
 // Launching a client whose first word is written in the call, or a command list that starts with one; a list of three
 // or more plain words, such as program names, is not a command.
 const DB_CLIENT_LAUNCH = /\b(?:subprocess\.\w+|os\.(?:system|popen)|check_output|check_call|Popen|exec(?:Sync|File(?:Sync)?)?|spawn(?:Sync)?|Bun\.spawn|Deno\.Command|system)\s*\(\s*(?:\[\s*)?[fr]?['"`](?:psql|snow|pg_restore|dropdb)\b|Bun\.\$`\s*(?:psql|snow)\b|\[\s*['"](?:psql|snow|pg_restore|dropdb)['"]\s*,(?!(?:\s*['"][\w.]+['"]\s*,)+\s*['"][\w.]+['"]\s*,?\s*\])/;
-const SQL_CALL = /\.(?:execute|executemany|executescript|exec_driver_sql|query|sql|run_query|copy_expert|unsafe|raw)\s*\(/;
 const CODE_LITERAL = /[rRbBfFuU]{0,2}(?:"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\[\s\S])*`)/g;
 // A literal that reads as a SQL statement, not prose: its verb is followed by what the statement needs.
 const SQL_STATEMENT_SHAPE = /^\s*(?:(?:--[^\n]*\n|\/\*[\s\S]*?\*\/)\s*)*(?:INSERT\s+(?:INTO|OVERWRITE)\b|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b|MERGE\s+INTO\b|(?:CREATE|ALTER|DROP|UNDROP)\s+(?:OR\s+REPLACE\s+)?[A-Z]+\b\s+\S|TRUNCATE\s+\S|(?:GRANT|REVOKE)\s+[\s\S]*\b(?:ON|TO|FROM)\b|COPY\s+(?:INTO\s+)?\S+[\s\S]*\b(?:FROM|TO)\b|CALL\s+\S+\s*\(|PUT\s+'?file:|GET\s+@|REMOVE\s+@|EXECUTE\s+IMMEDIATE\b|DO\s+\$|SELECT\b|WITH\b|BEGIN\b)/i;
@@ -6877,34 +6952,20 @@ function interpreterCode(cmd: ResolvedCommand, run: { name: string; args: string
 function interpreterDbReason(cmd: ResolvedCommand): string | null {
     const run = interpreterOf(cmd);
     if (!run) return null;
-    const { texts, unread } = interpreterCode(cmd, run);
+    const { texts } = interpreterCode(cmd, run);
     const code = texts.join('\n');
     const how = `${run.name} code that reaches a database`;
     const fix = 'The guard reads SQL only from psql and snow sql: run the SQL through one of them, with the host or connection written out, and a listed dev target runs without approval.';
-    if (!importsDbDriver(run.name, code) && !launchesDbClient(code)) {
-        // Code the guard can't read is judged by the line, which may name a driver for it.
-        const line = cmd.script?.command ?? cmd.raw;
-        return unread && importsDbDriver(run.name, line)
-            ? `${run.name} runs code the guard can't read, on a line that imports a database driver for it, so whether it writes can't be checked. ${fix}`
-            : null;
-    }
-    const literals = codeLiterals(code);
+    // Only SQL the code spells out is judged: SQL it builds, loads from a computed path or can't be read is left alone.
+    if (!importsDbDriver(run.name, code) && !launchesDbClient(code)) return null;
+    const literals = [...codeLiterals(code), ...[...code.matchAll(CODE_LITERAL)].flatMap(m => codeLiterals(m[0].slice(1, -1)))];
     // A .sql file the code opens by a written path is read like one psql or snow is given.
-    const sqlFiles = literals.filter(l => /^[\w./~-]+\.sql$/.test(l));
-    const sql = [...literals];
-    let hidden = unread;
-    for (const f of sqlFiles) {
-        const read = readSqlFiles(expandPath(f), cmd);
-        if (!read.length) hidden = true;
-        for (const r of read) {
-            if (typeof r.content === 'string') sql.push(r.content);
-            else hidden = true;
-        }
+    const sql = [...literals, ...literals.flatMap(clientCommandSql)];
+    for (const f of literals.filter(l => /^[\w./~-]+\.sql$/.test(l))) {
+        for (const r of readSqlFiles(expandPath(f), cmd)) if (typeof r.content === 'string') sql.push(r.content);
     }
-    let statements = 0;
     for (const body of sql) {
         if (!SQL_STATEMENT_SHAPE.test(body)) continue;
-        statements++;
         const egress = egressIn(body);
         if (egress && egress !== 'unreadable') return `${SQL_EGRESS}: ${how} sends data out (${egress.pattern}) — ${egress.statement}. ${fix}`;
         const destructive = findDestructiveSqlStatement(body);
@@ -6912,11 +6973,18 @@ function interpreterDbReason(cmd: ResolvedCommand): string | null {
         const write = writeStatements(body)[0];
         if (write) return `${how} runs ${SQL_WRITE} (${write.pattern}) — ${oneLine(write.statement).slice(0, STATEMENT_PREVIEW_CHARS)}. ${fix}`;
     }
-    if (hidden) return `${how} runs SQL the guard can't read (a script or .sql file it can't open), so whether it writes can't be checked. ${fix}`;
-    if (!statements && (SQL_CALL.test(code) || launchesDbClient(code))) {
-        return `${how} runs SQL that no string in it spells out, so whether it writes can't be checked. ${fix}`;
-    }
     return null;
+}
+
+/** The SQL a psql or snow command written as one string passes with -c, --command, -q or --query. */
+function clientCommandSql(literal: string): string[] {
+    if (!/^\s*(?:\S*\/)?(?:psql|snow)\b/.test(literal)) return [];
+    literal = literal.replace(/\\(["'\\])/g, '$1');
+    const out: string[] = [];
+    for (const m of literal.matchAll(/(?:^|\s)(?:-c|--command|-q|--query)(?:\s+|=)(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+))/g)) {
+        out.push(m[1] !== undefined ? m[1].replace(/\\(.)/g, '$1') : m[2] ?? m[3]);
+    }
+    return out;
 }
 
 // ── Writes, and data leaving the account ─────────────────────────────────────
@@ -8310,6 +8378,11 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves };
                 continue;
             }
+            const standing = cmd === outer ? standingGrantOf(cmd, commands, command) : null;
+            if (standing !== null) {
+                if (log) console.error(`dev-scope: allowed ${cmd.name} under ${standing}`);
+                continue;
+            }
             const egress = sqlEgressOf(cmd);
             if (egress?.definite && (cmd !== outer || localPgTargetOf(cmd, commands, command, localPg) === null)) {
                 yield { cmd, reason: egress.reason, outer, moves };
@@ -8317,10 +8390,11 @@ function* gatedSteps(
             }
             let stepDirs: string[] | null = dirs && cmd.chdir ? dirs.map(d => pathResolve(d, cmd.chdir!)) : dirs;
             for (const move of moves ?? []) stepDirs = directoriesAfter(stepDirs, move);
-            // SQL the guard can't read could send data out, so no dev exemption covers it.
+            // SQL the guard can't read could send data out, so only a verified dev login, which runs any SQL, still covers it.
             const listedDb = !egress && cmd === outer && reason.includes(SQL_WRITE) ? renderDevHeld(cmd) : null;
-            const dev = egress ? null
-                : devScopeTargetOf(cmd, commands, command, cmd === outer)
+            const scoped = devScopeTargetOf(cmd, commands, command, cmd === outer);
+            const dev = egress ? (scoped?.includes(DEV_ONLY_LOGIN) ? scoped : null)
+                : scoped
                 ?? (listedDb ? `dev database ${listedDb.join(', ')}` : null)
                 ?? (cmd.name === 'dbt' && reason === `dbt ${dbtSubcommand(cmd.args)} ${DBT_WRITE}.` ? dbtDevTarget(cmd, cmd === outer ? sqlPathCandidates('.', cmd) : stepDirs, commands) : null);
             if (dev !== null) {

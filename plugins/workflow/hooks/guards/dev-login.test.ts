@@ -93,6 +93,8 @@ describe('a verified dev login runs any SQL without a card', () => {
     test.each([
         ['a prod drop, which the login cannot do', 'snow sql -c acme_dev -q "drop table prod_db.s.t"'],
         ['a file it reads', 'snow sql -c acme_dev -f /tmp/dev-login-never-written.sql'],
+        ['a file written on the line', `python3 gen.py > /tmp/q.sql; snow sql -c acme_dev -f /tmp/q.sql`],
+        ['a file that is not there yet', 'snow sql -c acme_dev -f /tmp/dev-login-not-there.sql'],
         ['a role and database of its own choosing', 'snow sql --connection=acme_dev --role OTHER --database prod_db -q "delete from s.t"'],
         ['templating', `snow sql -c acme_dev -q '<% ctx.env.q %>' --env 'q=drop table t'`],
         ['after a cd', 'cd /tmp && snow sql -c acme_dev -q "truncate table s.t"'],
@@ -103,6 +105,7 @@ describe('a verified dev login runs any SQL without a card', () => {
         ['PATH named on the line', 'ls $PATH; snow sql -c acme_dev -q "drop table t"'],
         ['HOME read on the line', 'cd $HOME/work && snow sql -c acme_dev -q "drop table t"'],
         ['a steering name inside the SQL itself', `snow sql -c acme_dev -q "select 'PATH', home_dir from s.t"`],
+        ['a file under HOME', 'snow sql -c acme_dev -f "$HOME/q.sql"'],
         ['a shell variable the environment does not hold', 'S=dev_db.scratch; snow sql -c acme_dev -q "drop table $S.t"'],
         ['a quoted variable as an option value', 'R=DEV_RW; snow sql -c acme_dev --role "$R" -q "drop table t"'],
         ['echo before the step', 'echo hi; snow sql -c acme_dev -q "drop table t"'],
@@ -142,18 +145,8 @@ describe('a verified dev login runs any SQL without a card', () => {
     });
 });
 
-// SQL the guard can't read could send data out of the account, which takes a card even on a dev login. A file a program
-// writes on the same line is refused with the fix: write it in one call and run it in the next, so it can be read.
-describe('SQL the guard cannot read is not exempt on a dev login', () => {
-    test.each([
-        ['a file a program writes on the line', 'python3 gen.py > /tmp/dev-login-generated.sql; snow sql -c acme_dev -f /tmp/dev-login-generated.sql'],
-        ['a file that is not there yet', 'snow sql -c acme_dev -f /tmp/dev-login-not-there.sql'],
-    ])('%s', (_name, command) => {
-        const result = evaluateBashCommand(command, { cwd: '/tmp' });
-        expect(result.action).toBe('block');
-        expect(result.reason).toContain("Write the file in one call, then run it in the next");
-    });
-
+// Data sent out of the account takes a card even on a dev login, when the SQL spells it out.
+describe('a dev login and data leaving the account', () => {
     test('a COPY INTO an external location takes the card on a dev login', () => {
         const result = evaluateBashCommand(`snow sql -c acme_dev -q "copy into 's3://example-bucket/x' from dev_db.s.t"`, { cwd: '/tmp' });
         expect(result.action).toBe('gate');
@@ -436,9 +429,4 @@ describe('a connection the guard cannot map is refused with the fix', () => {
         expect(result.reason).toContain('Write the connection out: snow sql -c <connection>');
     });
 
-    test('a file under HOME is refused, since the line does not prove the path', () => {
-        writeFileSync(join(home, 'q.sql'), 'select 1;\n');
-        const result = evaluateBashCommand('snow sql -c acme_dev -f "$HOME/q.sql"', { cwd: '/tmp' });
-        expect(result.action).toBe('block');
-    });
 });

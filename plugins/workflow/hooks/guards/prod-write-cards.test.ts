@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -36,6 +36,7 @@ beforeAll(() => {
     ].join('\n'));
     mkdirSync(join(dir, 'project'));
     writeFileSync(join(dir, 'project', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
+    writeFileSync(join(dir, 'project', 'load.sql'), 'insert into orders values (1);\n');
     mkdirSync(join(dir, 'project', 'local'));
     writeFileSync(join(dir, 'project', 'local', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
     writeFileSync(join(dir, 'project', 'local', 'profiles.yml'), 'acme:\n  target: dev\n  outputs:\n    dev:\n      type: snowflake\n      database: dev_db\n');
@@ -122,9 +123,8 @@ describe('data leaving the account takes the card on any target, dev included', 
         expect(result.reason).toStartWith(SQL_EGRESS);
     });
 
-    test('SQL a dev login runs that the guard cannot read is not exempt', () => {
-        const result = evaluate('snow sql -c acme_dev -q "execute immediate \'cop\' || \'y into @dev_db.s.out from prod_db.core.orders\'"');
-        expect(result.action).toBe('gate');
+    test('SQL a dev login builds where the guard cannot read it runs as it does on main', () => {
+        expect(evaluate('snow sql -c acme_dev -q "execute immediate \'cop\' || \'y into @dev_db.s.out from prod_db.core.orders\'"').action).toBe('allow');
     });
 });
 
@@ -174,7 +174,7 @@ describe('database code run by an interpreter goes through the same readers', ()
         ['a command list whose connection comes from the environment', 'python3 -c "import os, subprocess; cmd = [\'psql\', os.environ[\'DATABASE_URL\'], \'-c\', \'delete from orders\']; subprocess.run(cmd)"'],
         ['a psql launch in a template placeholder', "node -e 'const { execSync } = require(\"child_process\"); console.log(`${execSync(\"psql -h db.example -c \\\"delete from orders\\\"\")}`)'"],
         ['a psql launch inside a string the code runs', 'python3 -c "exec(\\"import subprocess; subprocess.run([\'psql\', \'-h\', \'db.example\', \'-c\', \'delete from orders\'])\\")"'],
-        ['SQL a script loads from a file the guard cannot open', "python3 - <<'EOF'\nimport psycopg2\npsycopg2.connect().cursor().execute(open('missing.sql').read())\nEOF"],
+        ['a written .sql path the code opens, whose file writes', "python3 - <<'EOF'\nimport psycopg2\npsycopg2.connect().cursor().execute(open('PROJECT/load.sql').read())\nEOF"],
     ])('%s takes the card', (_name, command) => {
         expect(evaluate(command).action).toBe('gate');
     });
@@ -184,7 +184,20 @@ describe('database code run by an interpreter goes through the same readers', ()
         ['code that names a driver only in a string', 'python3 -c "print(\'import psycopg2\')"'],
         ['code with no database', 'python3 -c "print(\'Update complete\')"'],
         ['a list of program names that starts with snow', 'python3 -c "tools = [\'snow\', \'dbt\', \'render\']; print(len(tools))"'],
+        ['SQL a script loads from a file the guard cannot open', "python3 - <<'EOF'\nimport psycopg2\npsycopg2.connect().cursor().execute(open('missing.sql').read())\nEOF"],
+        ['SQL the code builds from a variable', 'python3 -c "import sys, psycopg2; psycopg2.connect(\'host=db.example\').cursor().execute(sys.argv[1])"'],
+        ['psql launched with SQL from a variable', 'python3 -c "import os, subprocess; subprocess.run([\'psql\', \'-h\', \'db.example\', \'-c\', os.environ[\'Q\']])"'],
     ])('%s stays card-free', (_name, command) => {
+        expect(evaluate(command).action).toBe('allow');
+    });
+});
+
+describe('SQL a verified dev login runs where the guard cannot read it runs as it does on main', () => {
+    test.each([
+        ['the output of a program piped into snow', 'some-program | snow sql -c acme_dev -i'],
+        ['a template that config fills', "snow sql -c acme_dev -q 'select <% ctx.env.x %>'"],
+        ['a URL snow fetches', 'snow sql -c acme_dev -q "!source https://example.test/x.sql"'],
+    ])('%s', (_name, command) => {
         expect(evaluate(command).action).toBe('allow');
     });
 });
@@ -195,9 +208,7 @@ describe('SQL the guard cannot read is not a silent allow', () => {
         ['SQL wholly from a variable the line does not set', PG + ' -c "$SQL"'],
         ['a here-string from such a variable', PG + ' <<<"$SQL"'],
         ['the output of a program piped into psql', 'python3 gen.py | ' + PG],
-        ['the output of a program piped into snow on a dev login', 'some-program | snow sql -c acme_dev -i'],
-        ['a template that config fills, on a dev login', "snow sql -c acme_dev -q 'select <% ctx.env.x %>'"],
-        ['a URL snow fetches, on a dev login', 'snow sql -c acme_dev -q "!source https://example.test/x.sql"'],
+        ['the output of a program piped into snow off dev', 'some-program | snow sql -c acme_prod -i'],
         ['a $ inside a name that hides a statement from the scanner', "snow sql -c acme_prod -q 'select a$$b; insert into prod_db.core.orders values (1)'"],
     ])('%s', (_name, command) => {
         expect(evaluate(command).action).toBe('gate');
@@ -215,6 +226,54 @@ test('a script that holds a psql launch only as sample text in a string stays ca
     const script = join(dir, 'samples.ts');
     writeFileSync(script, "const rows = [\n  `python3 -c \"import subprocess; subprocess.run(['psql', '-c', 'drop table t'])\"`,\n];\nconsole.log(rows.length);\n");
     expect(evaluate(`bun ${script}`).action).toBe('allow');
+});
+
+describe('a standing grant keeps its statement classes card-free on its connection', () => {
+    let previous: string | undefined;
+    const withGrants = (grants: unknown) => {
+        const scope = join(dir, 'dev-scope-grants.local.json');
+        writeFileSync(scope, JSON.stringify({
+            snowflake: [{ connection: 'acme_dev', databases: ['dev_db'], login: { user: 'AGENT_DEV_USER', account: 'ACME-DEV1', verifiedUntil: hours(24) } }],
+            standingGrants: grants,
+        }));
+        process.env[DEV_SCOPE_FILE_ENV] = scope;
+    };
+    beforeAll(() => { previous = process.env[DEV_SCOPE_FILE_ENV]; });
+    beforeEach(() => withGrants({ acme_ops: ['CREATE DATABASE', 'CREATE WAREHOUSE', 'ALTER WAREHOUSE', 'CREATE SHARE', 'ALTER SHARE ADD ACCOUNTS', 'CREATE MANAGED ACCOUNT', 'GRANT SELECT TO SHARE', 'GRANT REFERENCE_USAGE TO SHARE'] }));
+    afterAll(() => { process.env[DEV_SCOPE_FILE_ENV] = previous; });
+
+    test.each([
+        ['a database', 'snow sql -c acme_ops -q "create database if not exists analytics_tools"'],
+        ['a warehouse, then resizing it', 'snow sql -c acme_ops -q "create warehouse ops_wh warehouse_size = xsmall; alter warehouse ops_wh set warehouse_size = small"'],
+        ['a share, a grant to it and a consumer account', 'snow sql -c acme_ops -q "create share sales_share; grant select on table prod_db.core.orders to share sales_share; alter share sales_share add accounts = partner_org.partner_acct"'],
+        ['a reader account', "snow sql -c acme_ops -q \"create managed account reader_one admin_name = 'r1', admin_password = 'Example-pass-1', type = reader\""],
+        ['a granted class beside a read', 'snow sql -c acme_ops -q "select 1; create database scratch_tools"'],
+    ])('%s runs without a card', (_name, command) => {
+        expect(evaluate(command).action).toBe('allow');
+    });
+
+    test.each([
+        ['a class the connection is not granted', 'snow sql -c acme_ops -q "insert into prod_db.core.orders values (1)"'],
+        ['a granted class beside one it is not', 'snow sql -c acme_ops -q "create database scratch_tools; insert into prod_db.core.orders values (1)"'],
+        ['a privilege on a share it is not granted', 'snow sql -c acme_ops -q "grant usage on database prod_db to share sales_share"'],
+        ['a destructive statement', 'snow sql -c acme_ops -q "drop database scratch_tools"'],
+        ['a role switch before a granted class', 'snow sql -c acme_ops -q "use role accountadmin; create database scratch_tools"'],
+        ['a granted class on a connection without the grant', 'snow sql -c acme_prod -q "create database scratch_tools"'],
+        ['a granted class with a role option', 'snow sql -c acme_ops --role accountadmin -q "create database scratch_tools"'],
+    ])('%s keeps its card', (_name, command) => {
+        expect(evaluate(command).action).toBe('gate');
+    });
+
+    test('the grant list is empty unless the file names one', () => {
+        withGrants({});
+        expect(evaluate('snow sql -c acme_ops -q "create database scratch_tools"').action).toBe('gate');
+    });
+
+    test('a class the guard does not know voids the whole dev-scope file', () => {
+        withGrants({ acme_ops: ['CREATE DATABASE', 'INSERT'] });
+        expect(evaluate('snow sql -c acme_ops -q "create database scratch_tools"').action).toBe('gate');
+        expect(evaluate('snow sql -c acme_dev -q "drop table dev_db.s.t"').action).toBe('gate');
+    });
 });
 
 describe('the card says what the step does', () => {
