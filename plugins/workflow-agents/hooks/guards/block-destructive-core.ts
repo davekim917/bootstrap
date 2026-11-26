@@ -8234,6 +8234,10 @@ const CREDENTIAL_SHAPES: RegExp[] = [
     // Any URL with user info: `user:password@`, or a token alone before the @.
     /[a-z][a-z0-9+.-]*:\/\/[^/@\s]{1,400}@/i,
     /\b[A-Za-z_][A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD)\+?=\S/i,
+    // A token, password, secret or key given as an option's value: `--token=…`, `--auth-token …`, `--client-secret …`.
+    /(?:^|[\s'"])--[a-z0-9-]*(?:token|password|passwd|secret|api-?key)(?:=|\s+)(?!-)\S/i,
+    // SQL comparing or assigning a literal to a column named for a key, secret or token: `WHERE api_key = '…'`.
+    /\b[a-z0-9_]*(?:api_?key|secret|token)[a-z0-9_]*\s*(?:=|<>|!=|\bLIKE\b)\s*(?:[EeUu]&?)?['$]/i,
 ];
 const CURL_USER_FLAG = /(?:^|[\s'"])(?:-[A-Za-z]*[uU]|--(?:proxy-)?(?:user|oauth2-bearer)\b)/;
 const MYSQL_ATTACHED_PASSWORD = /(?:^|\s)-p[^\s]/;
@@ -8340,8 +8344,30 @@ function databaseOperand(tool: 'dropdb' | 'createdb', args: string[]): string | 
  * The scratch-pg line a refusal suggests, built from the step it refused: psql's SQL is the agent's to fill in, and
  * dropdb or createdb keep their own database name when it is a plain word with no credential.
  */
+/**
+ * The refused psql's options a retry keeps: the flags scratch-pg accepts, and -v for psql's own settings (an upper-case
+ * name and a plain value, as ON_ERROR_STOP=1). -1 and ON_ERROR_STOP decide whether a failed statement rolls back the
+ * ones before it. A variable of the command's own can hold anything, so it is not copied.
+ */
+function retryOptions(cmd: ResolvedCommand | undefined): string[] {
+    if (cmd?.name !== 'psql') return [];
+    const out: string[] = [];
+    for (let i = 0; i < cmd.args.length; i++) {
+        const a = cmd.args[i];
+        if (new RegExp(`^-[${PSQL_SHORT_FLAGS}]+$`).test(a) || SCRATCH_PG_LONG_FLAGS.has(a)) {
+            out.push(a);
+            continue;
+        }
+        const set = /^(?:-v|--set=?|--variable=?)(.*)$/.exec(a);
+        if (!set) continue;
+        const setting = set[1] || cmd.args[++i];
+        if (setting !== undefined && /^[A-Z][A-Z0-9_]*=[A-Za-z0-9_]*$/.test(setting)) out.push(`-v ${setting}`);
+    }
+    return [...new Set(out)];
+}
+
 function scratchRetry(refused: ResolvedCommand | undefined): string {
-    if (refused?.name !== 'dropdb' && refused?.name !== 'createdb') return `${SCRATCH_PG} psql <db> -c '<your SQL>'`;
+    if (refused?.name !== 'dropdb' && refused?.name !== 'createdb') return [`${SCRATCH_PG} psql <db>`, ...retryOptions(refused), "-c '<your SQL>'"].join(' ');
     const name = databaseOperand(refused.name, refused.args);
     return `${SCRATCH_PG} ${refused.name} ${name && /^[A-Za-z_][\w-]*$/.test(name) && !containsCredential(name) ? name : '<db>'}`;
 }
@@ -8352,7 +8378,8 @@ function scratchRetry(refused: ResolvedCommand | undefined): string {
  * '<your SQL>', and the note that the text is withheld.
  */
 function withheldReason(reason: string, command: string, cwd: string, refused: ResolvedCommand | undefined): string {
-    const advice = RETRY_TEMPLATES.filter(([rx]) => rx.test(reason)).map(([, text]) => text);
+    const options = retryOptions(refused).filter(o => o !== '-X' && o !== '--no-psqlrc');
+    const advice = RETRY_TEMPLATES.filter(([rx]) => rx.test(reason)).map(([, text]) => text.replace('<user> -X -c', ['<user> -X', ...options, '-c'].join(' ')));
     if (/scratch-postgres helper/.test(reason)) advice.unshift(`If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval: ${scratchRetry(refused)}.`);
     return [ruleName(reason), ...withheldSteps(command, reason, cwd, REASON_STEP_LIMIT).described, ...advice, '', WITHHELD_NOTE].join('\n');
 }
@@ -8371,6 +8398,13 @@ function urlShown(value: string): string | null {
     }
 }
 
+/** A git remote as a card can show it: a URL without its user info or query, an scp-style address without its user. */
+function remoteShown(remote: string): string {
+    if (remote.includes('://')) return urlShown(remote) ?? '<url withheld>';
+    const scp = /^[^@\s/]+@([^:\s/]+):(.+)$/.exec(remote);
+    return scp ? `${scp[1]}:${scp[2]}` : remote;
+}
+
 /** Text with every URL in it cut to its scheme, host and path. */
 const withoutUrlSecrets = (text: string): string =>
     text.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s'"]+/gi, u => urlShown(u) ?? '[a URL]');
@@ -8378,7 +8412,7 @@ const withoutUrlSecrets = (text: string): string =>
 /** What a gated step acts on, from its arguments as the card resolves them: a host, database, connection, remote or URL. */
 function withheldTarget(cmd: ResolvedCommand): string[] {
     const args = cmd.args;
-    const value = (...names: string[]): string | undefined => {
+    const valueIn = (args: string[], ...names: string[]): string | undefined => {
         for (let i = 0; i < args.length; i++) {
             for (const n of names) {
                 if (args[i] === n && args[i + 1] !== undefined) return args[i + 1];
@@ -8388,6 +8422,7 @@ function withheldTarget(cmd: ResolvedCommand): string[] {
         }
         return undefined;
     };
+    const value = (...names: string[]) => valueIn(args, ...names);
     const out: string[] = [];
     const add = (what: string, v: string | null | undefined) => {
         const shown = v && withoutUrlSecrets(v);
@@ -8409,18 +8444,35 @@ function withheldTarget(cmd: ResolvedCommand): string[] {
         const { positional } = gitPushOperands(cmd);
         // A URL or user@host remote can carry a token, and so can a refspec that names one: neither is shown.
         const shownRef = (v: string | undefined) => (v && /:\/\/|@/.test(v) ? '<url withheld>' : v);
-        if (positional[0]) out.push(`remote ${code(shownRef(positional[0])!)}`);
+        if (positional[0]) {
+            const remote = remoteShown(positional[0]);
+            out.push(`remote ${code(containsCredential(remote) ? '<url withheld>' : remote)}`);
+        }
         // Each refspec's target: the branch or tag the push overwrites.
         for (const spec of positional.slice(1)) {
             const target = shownRef(spec) === '<url withheld>' ? '<url withheld>' : spec.replace(/^\+/, '').split(':').pop();
             if (target) out.push(`branch ${code(target)}`);
         }
     } else if (cmd.name === 'curl' || cmd.name === 'wget' || cmd.name === 'http' || cmd.name === 'https') {
-        add('method', value('-X', '--request'));
-        add('URL', value('--url'));
-        for (const a of args) if (/^https?:\/\//.test(a)) add('URL', a);
+        // curl's --next starts another transfer with options of its own: each URL goes with its own transfer's method.
+        const transfers: string[][] = [[]];
+        for (const a of args) {
+            if (cmd.name === 'curl' && (a === '--next' || a === '-:')) transfers.push([]);
+            else transfers[transfers.length - 1].push(a);
+        }
+        for (const t of transfers) {
+            const method = valueIn(t, '-X', '--request');
+            const urls = [valueIn(t, '--url'), ...t.filter(a => /^https?:\/\//.test(a))].filter((u): u is string => u !== undefined);
+            for (const url of new Set(urls)) {
+                const shown = urlShown(url);
+                if (shown && !containsCredential(shown)) out.push(`${method && /^[A-Za-z]+$/.test(method) ? method.toUpperCase() : 'request'} ${code(shown)}`);
+            }
+        }
     } else if (cmd.name === 'aws') {
-        add('operation', args.filter(a => !a.startsWith('-')).slice(0, 2).join(' ') || undefined);
+        // The structured AWS card's own description: the operation, and for S3 the bucket, prefix and --recursive.
+        const action = withoutUrlSecrets(awsStep(cmd).label);
+        out.push(containsCredential(action) || action.includes('`') ? `operation ${code(awsServiceAndOperation(args).slice(0, 2).join(' '))}` : clip(action, 200));
+        add('AWS profile', value('--profile'));
     }
     return [...new Set(out)];
 }
@@ -8453,23 +8505,49 @@ export type ApprovalCard = GateCard & { withheld?: true };
 export function approvalCard(command: string, reason: string, cwd: string = currentWorkingDir()): ApprovalCard {
     const card = describeGate(command, reason, cwd);
     if (!carriesCredential(command, cwd) && !containsCredential(`${card.label}\n${card.summary}`)) return card;
-    const { programs, described } = withheldSteps(command, reason, cwd);
-    return { label: `Run ${programs.join(', ') || 'a command'} (command text withheld)`, summary: [WITHHELD_NOTE, '', ...described].join('\n'), withheld: true };
+    const { programs, described, others, total } = withheldSteps(command, reason, cwd);
+    const lines = [WITHHELD_NOTE, '', ...described];
+    if (others.length) {
+        lines.push('', `Approving runs the whole command (${total} steps), not only the step${described.length > 1 ? 's' : ''} described here. It also runs:`, ...others.map(c => `- ${code(withheldWords(c))}`));
+    }
+    return { label: `Run ${programs.join(', ') || 'a command'} (command text withheld)`, summary: fitLines(lines, CARD_SUMMARY_MAX_CHARS), withheld: true };
+}
+
+/** A step's program and words, each word that holds a credential (alone or as an option's value) or any text shown as a placeholder. */
+function withheldWords(cmd: ResolvedCommand): string {
+    const words = [cmd.name, ...cmd.args].map((w, i, all) =>
+        containsCredential(w) || (i > 0 && containsCredential(`${all[i - 1]} ${w}`)) ? '<withheld>'
+        : /[\s`]/.test(w) ? '<text>'
+        : withoutUrlSecrets(w));
+    return clip(words.join(' '), 200);
 }
 
 /** Each gated step as a withheld card lists it: its rule, program, targets and SQL statement kinds, from the parse. */
-function withheldSteps(command: string, reason: string, cwd: string, limit = Infinity): { programs: string[]; described: string[] } {
+function withheldSteps(
+    command: string,
+    reason: string,
+    cwd: string,
+    limit = Infinity,
+): { programs: string[]; described: string[]; others: ResolvedCommand[]; total: number } {
     let steps: Array<{ cmd: ResolvedCommand; reason: string }> = [];
     let more = false;
+    let others: ResolvedCommand[] = [];
+    let total = 0;
     try {
         const commands = evaluatedCommands(command, cwd);
         const view = viewShell(command);
+        const outers = new Set<ResolvedCommand>();
         for (const s of gatedSteps(commands, command, cwd, isLabSession(), false)) {
             if (steps.length === limit) {
                 more = true;
                 break;
             }
+            outers.add(s.outer);
             steps.push({ ...s, cmd: cardArgs(s.cmd, view, new Set()) });
+        }
+        if (!more) {
+            total = commands.length;
+            others = commands.filter(c => !outers.has(c)).map(c => cardArgs(c, view, new Set()));
         }
     } catch {
         steps = [];
@@ -8484,7 +8562,7 @@ function withheldSteps(command: string, reason: string, cwd: string, limit = Inf
         return `- ${facts.join('. ').replace(/\.\./g, '.')}.`;
     });
     if (more) described.push('- More gated steps follow.');
-    return { programs: [...new Set(steps.map(s => s.cmd.name))], described };
+    return { programs: [...new Set(steps.map(s => s.cmd.name))], described, others, total };
 }
 
 export function gateRequestContent(

@@ -111,13 +111,13 @@ describe('a withheld card keeps the destination, from the unaltered parse', () =
         ['the default postgres password', `psql postgresql://postgres:postgres@192.0.2.20/postgres -c "drop table orders"`, ['192.0.2.20', '/postgres']],
         ['host and dbname after password= in a URI query', `psql "postgresql:///?password=${SECRET}&host=192.0.2.20&dbname=app" -c "drop table orders"`, ['host `192.0.2.20`', 'database `app`']],
         // A user@host remote can carry a token as its user, so it is withheld like a URL; the branch stays.
-        ['a force-push to a branch named curl', 'git push -fu git@github.com:org/repo curl', ['remote `<url withheld>`', 'branch `curl`']],
+        ['a force-push to a branch named curl', 'git push -fu git@github.com:org/repo curl', ['remote `github.com:org/repo`', 'branch `curl`']],
         ['curl data that reads like -u', `curl -X DELETE -H "Authorization: Bearer ${SECRET}" -d '-u' ${PROD}`, ['https://api.render.com/v1/services/srv-prodservice000000001/env-vars/FOO', 'DELETE']],
         ['a PASSWORD word inside a dollar-quoted DELETE', `${H} -d app -c "DELETE FROM accounts WHERE note = $$PASSWORD 'expired'$$"`, ['db.example.com', 'database `app`', 'SQL: DELETE']],
         ['a variable the card resolves', `DB=app; PGPASSWORD=x ${H} -d "$DB" -c "drop table orders"`, ['database `app`']],
         ['a curl --url= destination', `curl -X DELETE -H "Authorization: Bearer ${SECRET}" --url=${PROD}`, [PROD]],
-        ['a git push option value before the remote', `git push -o ci.skip --force https://${SECRET}@github.com/org/repo main`, ['remote `<url withheld>`', 'branch `main`']],
-        ['a token URL after a clustered -fo option', `git push -fo ci.skip https://${SECRET}@github.com/org/repo main`, ['remote `<url withheld>`', 'branch `main`']],
+        ['a git push option value before the remote', `git push -o ci.skip --force https://${SECRET}@github.com/org/repo main`, ['remote `https://github.com/org/repo`', 'branch `main`']],
+        ['a token URL after a clustered -fo option', `git push -fo ci.skip https://${SECRET}@github.com/org/repo main`, ['remote `https://github.com/org/repo`', 'branch `main`']],
         ['the branch a refspec overwrites', `git push https://${SECRET}@github.com/org/repo +HEAD:release`, ['branch `release`']],
         ['every statement kind, not only the first', `PGPASSWORD=x ${H} -c "drop table a; truncate b"`, ['SQL: DROP, TRUNCATE']],
         ['a URI given to -d, without its user info or query', `PGPASSWORD=x psql -d "postgresql://app:${SECRET}@192.0.2.20/app?sslmode=require" -c "drop table orders"`, ['database `postgresql://192.0.2.20/app`']],
@@ -279,3 +279,73 @@ test('an email card stays exactly as it will send, since the person approves tha
     expect(staged.summary).toBe(text);
     expect(staged.command).toContain('temp-pass-1');
 });
+
+describe('review246fresh', () => {
+    test.each([
+        ['kubectl --token=', `kubectl delete deployment old-api -n staging --token=${SECRET}`],
+        ['kubectl --token with a separate value', `kubectl delete deployment old-api -n staging --token ${SECRET}`],
+    ])('%s reaches no surface', (_name, command) => {
+        const { prompt, staged, stagedText } = surfaces(command);
+        expect(prompt).not.toContain(SECRET);
+        expect(stagedText).not.toContain(SECRET);
+        expect(staged.command).toBe('');
+    });
+
+    test('an api_key literal in SQL stays out of the refusal and its retry', () => {
+        const verdict = evaluateBashCommand(`psql -d billing -c "DELETE FROM integrations WHERE api_key = '${SECRET}'"`, { cwd: '/tmp' });
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).not.toContain(SECRET);
+        expect(verdict.reason).toContain('Command text withheld');
+    });
+
+    test.each([
+        ['a secret column', `UPDATE integrations SET client_secret = '${SECRET}'`],
+        ['a token column', `DELETE FROM sessions WHERE refresh_token LIKE '${SECRET}%'`],
+    ])('the detector finds %s given a literal', (_name, sql) => {
+        expect(containsCredential(sql)).toBe(true);
+    });
+
+    test.each([
+        ['a token file option', 'kubectl delete pod web-1 --token-file /var/run/token'],
+        ['a column count', 'SELECT * FROM t WHERE token_count = 5'],
+    ])('the detector passes %s', (_name, text) => {
+        expect(containsCredential(text)).toBe(false);
+    });
+
+    test('a withheld S3 delete keeps the bucket, prefix and recursive scope', () => {
+        const { prompt } = surfaces(`AWS_SESSION_TOKEN=${SECRET} aws s3 rm s3://example-prod/backups/ --recursive`);
+        expect(prompt).not.toContain(SECRET);
+        expect(prompt).toContain('Delete S3 objects under s3://example-prod/backups/');
+    });
+
+    test('a withheld git push keeps the repository without its user info', () => {
+        const { prompt } = surfaces(`git push --force https://alice:${SECRET}@github.com/example/release main`);
+        expect(prompt).not.toContain(SECRET);
+        expect(prompt).not.toContain('alice');
+        expect(prompt).toContain('remote `https://github.com/example/release`');
+        expect(prompt).toContain('branch `main`');
+    });
+
+    test('each curl transfer shows its own method beside its URL', () => {
+        const { prompt } = surfaces(`curl -X GET https://api.render.com/v1/services --next -H 'Authorization: Bearer ${SECRET}' -X DELETE ${PROD}`);
+        expect(prompt).not.toContain(SECRET);
+        expect(prompt).toContain('GET `https://api.render.com/v1/services`');
+        expect(prompt).toContain(`DELETE \`${PROD}\``);
+        expect(prompt).not.toContain('GET `' + PROD);
+    });
+
+    test('a withheld card says approval runs the whole line, and lists the step that needs none', () => {
+        const { prompt } = surfaces(`kubectl scale deployment archive-worker -n staging --replicas=0 && PGPASSWORD=${SECRET} ${H} -d billing -c 'DROP TABLE old_invoices'`);
+        expect(prompt).not.toContain(SECRET);
+        expect(prompt).toContain('Approving runs the whole command (2 steps)');
+        expect(prompt).toContain('`kubectl scale deployment archive-worker -n staging --replicas=0`');
+    });
+
+    test('the retry keeps -1 and psql settings, and no variable of the command own', () => {
+        const verdict = evaluateBashCommand(`PGPASSWORD=${SECRET} psql -d app_test -1 -v ON_ERROR_STOP=1 -v note=x -c 'DROP TABLE stage_a' -c 'DROP TABLE stage_b'`, { cwd: '/tmp' });
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).toContain("scratch-pg psql <db> -1 -v ON_ERROR_STOP=1 -c '<your SQL>'");
+        expect(verdict.reason).not.toContain('note=x');
+    });
+});
+
