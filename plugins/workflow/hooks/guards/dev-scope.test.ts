@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -131,6 +131,14 @@ describe('everything else stays gated', () => {
 
     test('with no scope file nothing is exempt', () => {
         process.env[DEV_SCOPE_FILE_ENV] = join(dir, 'missing.json');
+        expect(verdict('snow sql -c acme_dev -q "drop table dev_db.a.b"')).toBe('gate');
+    });
+
+    test('a scope file listing one connection twice exempts nothing', () => {
+        const twice = join(dir, 'twice.json');
+        writeFileSync(twice, JSON.stringify({ snowflake: [{ connection: 'acme_dev', databases: ['dev_db'] }, { connection: 'acme_dev', databases: ['prod_db'] }] }));
+        expect(parseDevScope(readFileSync(twice, 'utf-8'))).toBeNull();
+        process.env[DEV_SCOPE_FILE_ENV] = twice;
         expect(verdict('snow sql -c acme_dev -q "drop table dev_db.a.b"')).toBe('gate');
     });
 

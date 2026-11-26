@@ -256,19 +256,64 @@ export function verifyAll(scope, { rowsFor, hours, publish, log = () => {}, now 
   return entries.filter(e => outcomes.get(e)).length;
 }
 
+/** Connection names listed more than once, which the guard refuses and the verifier won't publish. */
+export function duplicateConnections(scope) {
+  const seen = new Set();
+  return (scope.snowflake ?? []).map(e => e.connection).filter(c => (seen.has(c) ? true : (seen.add(c), false)));
+}
+
+const LOCK_WAIT_MS = 10_000;
+const LOCK_STALE_MS = 60_000;
+
+/**
+ * Run `body` holding a sibling lock file, so two writers can't interleave a read and a rename. The lock is taken around
+ * one publish only. One older than LOCK_STALE_MS was left by a run that died, and is broken.
+ */
+function withLock(file, body) {
+  const lock = `${file}.lock`;
+  const start = Date.now();
+  for (;;) {
+    try {
+      fs.closeSync(fs.openSync(lock, 'wx'));
+      break;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+      let age = 0;
+      try {
+        age = Date.now() - fs.statSync(lock).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (age > LOCK_STALE_MS) fs.rmSync(lock, { force: true });
+      else if (Date.now() - start > LOCK_WAIT_MS) throw new Error(`${lock} is held; this result was not published`);
+      else sleepSync(25);
+    }
+  }
+  try {
+    return body();
+  } finally {
+    fs.rmSync(lock, { force: true });
+  }
+}
+
 /**
  * Write one entry's login into the file as it is now, leaving every other entry as the file holds it, through a
- * temporary file and a rename. An entry no longer in the file is not written back, and neither is a result older than
- * the one the file holds, which another run published meanwhile.
+ * temporary file and a rename under the lock. An entry no longer in the file is not written back, nor is a result
+ * older than the one the file holds, nor anything while the file lists a connection twice. `hold` runs between the
+ * read and the rename.
  */
-export function publishEntry(file, entry) {
-  const current = JSON.parse(fs.readFileSync(file, 'utf-8'));
-  const target = (current.snowflake ?? []).find(e => e.connection === entry.connection && e.login);
-  if (!target || Date.parse(target.login.lastCheckedAt ?? '') > Date.parse(entry.login.lastCheckedAt ?? '')) return;
-  target.login = structuredClone(entry.login);
-  const tmp = `${file}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(current, null, 2)}\n`);
-  fs.renameSync(tmp, file);
+export function publishEntry(file, entry, { hold = () => {} } = {}) {
+  withLock(file, () => {
+    const current = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (duplicateConnections(current).length) throw new Error(`${file} lists a connection twice; not publishing`);
+    const target = (current.snowflake ?? []).find(e => e.connection === entry.connection && e.login);
+    if (!target || Date.parse(target.login.lastCheckedAt ?? '') > Date.parse(entry.login.lastCheckedAt ?? '')) return;
+    target.login = structuredClone(entry.login);
+    hold();
+    const tmp = `${file}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, `${JSON.stringify(current, null, 2)}\n`);
+    fs.renameSync(tmp, file);
+  });
 }
 
 function sleepSync(ms) {
@@ -283,6 +328,11 @@ function main() {
   const hours = Number(arg('--hours', '48'));
   if (!Number.isFinite(hours) || hours <= 0 || hours > 72) throw new Error(`--hours must be between 0 and 72, not ${arg('--hours')}`);
   const scope = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  const twice = duplicateConnections(scope);
+  if (twice.length) {
+    console.error(`${file} lists connection ${[...new Set(twice)].join(', ')} more than once; fix the file, nothing was checked`);
+    process.exit(1);
+  }
   const failed = verifyAll(scope, {
     rowsFor: entry => sql => snowRows(entry.connection, sql),
     hours,

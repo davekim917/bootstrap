@@ -5,7 +5,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { collectGrants, publishEntry, SnowTimeout, verifyAll, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+import { collectGrants, duplicateConnections, publishEntry, SnowTimeout, verifyAll, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
+
+const MODULE = process.env.VERIFY_DEV_LOGINS_MODULE || fileURLToPath(new URL('./verify-dev-logins.mjs', import.meta.url));
 
 const g = (privilege, granted_on, name) => ({ privilege, granted_on, name });
 // Every role has no future grants unless a fixture lists some.
@@ -329,6 +334,66 @@ test('publishing one entry rewrites only its login, keeps what another writer pu
     fs.writeFileSync(file, JSON.stringify(newer));
     publishEntry(file, { ...stale, login: { ...stale.login, lastCheckedAt: '2027-03-01T00:06:00.000Z' } });
     assert.equal(JSON.parse(fs.readFileSync(file, 'utf-8')).snowflake[0].login.lastProblem, 'can write outside DEV_DB');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Publishes `entry` from a separate process, holding the read for `holdMs` before the rename.
+function publishFromChild(file, entry, holdMs) {
+  const code = `import { publishEntry } from ${JSON.stringify(MODULE)};
+const until = Date.now() + ${holdMs};
+publishEntry(${JSON.stringify(file)}, ${JSON.stringify(entry)}, { hold: () => { while (Date.now() < until) {} } });`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: 'inherit' });
+  return new Promise((resolve, reject) => child.on('exit', c => (c === 0 ? resolve() : reject(new Error(`exit ${c}`)))));
+}
+
+test('two writers interleaving, the second reading before the first renames, both land', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-race-'));
+  try {
+    const file = path.join(dir, 'dev-scope.local.json');
+    fs.writeFileSync(file, JSON.stringify({ snowflake: [entryFor('a'), entryFor('b')] }));
+    const stamp = (c, until) => ({ ...entryFor(c), login: { ...entryFor(c).login, lastCheckedAt: '2027-03-01T00:06:00.000Z', verifiedUntil: until } });
+    const first = publishFromChild(file, stamp('a', RENEWED), 800);
+    await new Promise(r => setTimeout(r, 250));
+    await Promise.all([first, publishFromChild(file, stamp('b', '2027-03-02T09:00:00.000Z'), 0)]);
+    const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    assert.equal(after.snowflake[0].login.verifiedUntil, RENEWED);
+    assert.equal(after.snowflake[1].login.verifiedUntil, '2027-03-02T09:00:00.000Z');
+    assert.deepEqual(fs.readdirSync(dir), ['dev-scope.local.json']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a lock left by a writer that died is broken; a fresh one is waited for', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-lock-'));
+  try {
+    const file = path.join(dir, 'dev-scope.local.json');
+    fs.writeFileSync(file, JSON.stringify({ snowflake: [entryFor('a')] }));
+    fs.writeFileSync(`${file}.lock`, '');
+    const old = new Date(Date.now() - 120_000);
+    fs.utimesSync(`${file}.lock`, old, old);
+    publishEntry(file, { ...entryFor('a'), login: { ...entryFor('a').login, lastCheckedAt: '2027-03-01T00:06:00.000Z', verifiedUntil: RENEWED } });
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf-8')).snowflake[0].login.verifiedUntil, RENEWED);
+    assert.deepEqual(fs.readdirSync(dir), ['dev-scope.local.json']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a connection listed twice: nothing is checked or published', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-dup-'));
+  try {
+    const file = path.join(dir, 'dev-scope.local.json');
+    const text = JSON.stringify({ snowflake: [entryFor('a'), { ...entryFor('a'), databases: ['OTHER_DB'] }] });
+    fs.writeFileSync(file, text);
+    assert.deepEqual(duplicateConnections(JSON.parse(text)), ['a']);
+    assert.throws(() => publishEntry(file, { ...entryFor('a'), login: { ...entryFor('a').login, lastCheckedAt: '2027-03-01T00:06:00.000Z' } }), /lists a connection twice/);
+    const run = spawnSync(process.execPath, [MODULE, '--file', file, '--hours', '24'], { encoding: 'utf-8', env: { ...process.env, PATH: '/nonexistent' } });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /lists connection a more than once/);
+    assert.equal(fs.readFileSync(file, 'utf-8'), text);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

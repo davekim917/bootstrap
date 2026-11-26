@@ -4259,6 +4259,8 @@ export function parseDevScope(text: string): DevScope | null {
     }
     const entries = (raw as { snowflake?: unknown } | null)?.snowflake;
     if (!Array.isArray(entries)) return null;
+    // Two entries of one name would let the guard and the verifier each read a different one.
+    if (new Set(entries.map(e => e?.connection)).size !== entries.length) return null;
     for (const e of entries) {
         if (!e || typeof e !== 'object' || typeof e.connection !== 'string' || !SNOWFLAKE_NAME_RE.test(e.connection)) return null;
         if (!Array.isArray(e.databases) || e.databases.length === 0
