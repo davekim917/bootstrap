@@ -101,6 +101,7 @@ describe('destructive psql against a scratch postgres in this container skips ap
         ['clustered flags, a long option and a pipe into tail', "psql -XAtq --host=127.0.0.1 -p55432 -d foo_test -c 'DROP SCHEMA tmp CASCADE' 2>&1 | tail -3"],
         ['an operand psql ignores, since -d and -U are given', "psql -X -h 127.0.0.1 -p 55432 -U tester -d foo_test 'host=203.0.113.9' -c 'DROP TABLE orders'"],
         ['a cd first, and psql by path under timeout', "cd /tmp && timeout 60 /tmp/embedded-pg/bin/psql -X -h /tmp/embedded-pg -p 55432 -c \"DROP TABLE orders\" > /dev/null"],
+        ['a role and a grant', "psql -X -h 127.0.0.1 -p 55432 -d foo_test -c 'CREATE ROLE app_reader LOGIN; GRANT SELECT ON orders TO app_reader'"],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });

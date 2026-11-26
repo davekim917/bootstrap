@@ -22,6 +22,7 @@ beforeAll(() => {
     mkdirSync(join(dir, 'job'));
     writeFileSync(join(dir, 'job', 'outer.sql'), '\\ir drop.sql\n');
     writeFileSync(join(dir, 'job', 'drop.sql'), 'drop table users;\n');
+    writeFileSync(join(dir, 'job', 'ok.sql'), 'select 1;\n');
     writeFileSync(join(dir, 'drop schema.sql'), 'drop schema s;\n');
     writeFileSync(join(dir, 'template.sql'), '<% action %> TABLE users;\n');
     writeFileSync(join(dir, 'include-template.sql'), '!source <% path %>\n');
@@ -79,7 +80,8 @@ test('a file path the command proves is read: a variable with a known value, or 
 test('a cd the step does not depend on leaves both directories possible, and each is read', () => {
     expect(verdict(`cd /does/not/exist || psql -h db.example -f bad.sql`)).toBe('gate');
     expect(verdict(`cd /does/not/exist; psql -h db.example -f bad.sql`)).toBe('gate');
-    expect(verdict(`cd /does/not/exist && psql -f bad.sql`)).toBe('allow');
+    // Only the directory the cd moves to is possible, and the file isn't there.
+    expect(verdict(`cd /does/not/exist && psql -f bad.sql`)).toBe('block');
 });
 
 test('env -C with a relative directory resolves from where the command starts', () => {
@@ -119,7 +121,7 @@ test('env -C with a variable directory reads the file from that directory', () =
 });
 
 test('a write after the SQL client does not count as the file it read', () => {
-    expect(verdict(`psql -f safe.sql; echo 'DROP TABLE users' > safe.sql`)).toBe('allow');
+    expect(verdict(`psql -f ok.sql; echo 'DROP TABLE users' > ok.sql`)).toBe('allow');
 });
 
 test('many SQL readers over a deep variable chain resolve in bounded time', () => {
@@ -252,9 +254,10 @@ describe('a SQL file named through a value on the line', () => {
         expect(refused.reason).toContain('run it in the next');
     });
 
-    test('a file that is not there keeps its card on another client, and a written-out one still runs there', () => {
-        expect(inDir(`D=DIR/loop; psql -h db.example -f $D/missing.sql`)).toBe('gate');
-        expect(inDir(`psql -h db.example -f DIR/loop/missing.sql`)).toBe('allow');
+    test('a file that is not there is refused on psql too, and a written-out one still runs on another client', () => {
+        expect(inDir(`D=DIR/loop; psql -h db.example -f $D/missing.sql`)).toBe('block');
+        expect(inDir(`psql -h db.example -f DIR/loop/missing.sql`)).toBe('block');
+        expect(inDir(`duckdb -f DIR/loop/missing.sql`)).toBe('allow');
     });
 
     test.each([
@@ -340,12 +343,17 @@ describe('a SQL file path held in a variable set on the line gets the verdict of
     // A file the line may create with a writer the guard doesn't model, or a value the shell reads differently from
     // the guard, is held for a variable path when no candidate exists yet.
     test.each([
-        ['a file a cp makes on the line', `cd Q; cp cleanup.sql fresh.sql; F=fresh.sql; psql -h db.example -f "$F"`],
         ['an array element set after the value', `cd Q; F=cleanup.sql; F[1]=missing.sql; sqlite3 local.db < "$F"`],
     ])('%s needs approval', (_label, command) => {
         const verdict = run(command);
         expect(verdict.action).toBe('gate');
         expect(verdict.reason).toContain("a file that isn't there yet");
+    });
+
+    test('a psql file a cp makes on the line is refused with the next-call fix', () => {
+        const refused = run(`cd Q; cp cleanup.sql fresh.sql; F=fresh.sql; psql -h db.example -f "$F"`);
+        expect(refused.action).toBe('block');
+        expect(refused.reason).toContain('run it in the next');
     });
 
     test('an include naming a shell variable is held when the variable names nothing there', () => {
@@ -507,7 +515,7 @@ test('text echoed to the terminal is not fed to a client that is not in its pipe
 });
 
 test('after a cd the command implies, a relative file is not read from the starting directory, where it names a different file', () => {
-    expect(verdict(`cd /elsewhere && psql -f bad.sql`)).toBe('allow');
+    expect(verdict(`cd /elsewhere && psql -f bad.sql`)).toBe('block');
 });
 
 test('a SQL client inside a substitution expands its own variables', () => {

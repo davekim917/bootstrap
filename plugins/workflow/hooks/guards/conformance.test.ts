@@ -391,10 +391,10 @@ const BASH_ALLOW = [
   'git fetch --prune',
   'git remote prune origin',
   // Text the command writes elsewhere is not the SQL a client reads from a file.
-  'psql -f migration.sql && echo "dropped the old users table"',
-  'echo "DROP TABLE users"; psql < safe.sql',
+  'psql -f /dev/null && echo "dropped the old users table"',
+  'echo "DROP TABLE users"; psql < /dev/null',
   "printf 'DROP TABLE %s\\n' users; mysql < safe.sql",
-  'cat drop.sql; psql < safe.sql',
+  'cat drop.sql; psql < /dev/null',
   // A shell under xargs that passes what it reads to a command without operation or modifier power.
   "git ls-files -z | xargs -0 sh -c 'git add \"$@\"' _",
   "printf '%s\\n' a.txt | xargs sh -c 'wc -l \"$@\"' _",

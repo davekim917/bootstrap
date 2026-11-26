@@ -751,6 +751,24 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^ALTER\b[\s\S]*\bSET\s+TAG\b/i, label: 'ALTER ... SET TAG' },
 ];
 
+// Postgres role and privilege changes outlive the data they were made for: a login, a grant or an owner stays after a
+// dev table is dropped. Checked only for Postgres clients; Snowflake and the other dialects keep their own rules. A
+// statement matching one of these and a destructive pattern reads as the privilege change.
+export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
+    { rx: /^CREATE\s+(?:ROLE|USER|GROUP)\b/i, label: 'CREATE ROLE' },
+    { rx: /^ALTER\s+DEFAULT\s+PRIVILEGES\b/i, label: 'ALTER DEFAULT PRIVILEGES' },
+    { rx: /^ALTER\s+(?:ROLE|USER|GROUP)\b/i, label: 'ALTER ROLE' },
+    { rx: /^DROP\s+(?:ROLE|USER|GROUP)\b/i, label: 'DROP ROLE' },
+    { rx: /^GRANT\s/i, label: 'GRANT' },
+    { rx: /^REVOKE\s/i, label: 'REVOKE' },
+    { rx: /^REASSIGN\s+OWNED\b/i, label: 'REASSIGN OWNED' },
+    { rx: /^ALTER\b[\s\S]*(?<!\bRENAME\s+(?:COLUMN\s+)?)\bOWNER\s+TO\b/i, label: 'ALTER ... OWNER TO' },
+    { rx: /^CREATE\b[\s\S]*?\b(?:FUNCTION|PROCEDURE)\b[\s\S]*\bSECURITY\s+DEFINER\b/i, label: 'SECURITY DEFINER' },
+    { rx: /^ALTER\s+(?:FUNCTION|PROCEDURE|ROUTINE)\b[\s\S]*\bSECURITY\s+DEFINER\b/i, label: 'SECURITY DEFINER' },
+];
+const PG_SQL_PATTERNS = [...PG_PRIVILEGE_SQL_PATTERNS, ...DESTRUCTIVE_SQL_PATTERNS];
+const PG_PRIVILEGE_LABELS = new Set(PG_PRIVILEGE_SQL_PATTERNS.map(p => p.label));
+
 // Control-flow words that can open a statement inside a scripting block
 // (Snowflake Scripting, PL/pgSQL, T-SQL). Stripped before matching, so the
 // statement they lead into is checked like a top-level one.
@@ -772,13 +790,13 @@ const SCRIPT_STATEMENTS_MAX = 32;
 const TOO_COMPLEX = 'SQL too complex to scan';
 
 const UPDATE_LEADING = /^UPDATE\b/i;
-const STATEMENT_VERBS = new Set(['UPDATE', ...DESTRUCTIVE_SQL_PATTERNS.map(p => /^\^([A-Z]+)/.exec(p.rx.source)![1])]);
+const STATEMENT_VERBS = new Set(['UPDATE', ...PG_SQL_PATTERNS.map(p => /^\^([A-Z]+)/.exec(p.rx.source)![1])]);
 const HAS_WHERE = /\bWHERE\b/i;
 
 // Cheap superset prefilter — if none of these verbs appear anywhere in the
 // SQL arg, no destructive pattern can match. Skips the full strip+scan
 // pipeline on SELECT-only queries (the common case).
-const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE|GRANT|PROCEDURE|DO)\b/i;
+const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE|GRANT|REVOKE|REASSIGN|PROCEDURE|DO)\b/i;
 
 // Hoisted to module scope — these regexes are matched per-segment / per-call
 // inside the SQL scanner; defining them inline would recompile on every
@@ -959,7 +977,7 @@ export function decomposeSqlSegment(skel: string): Array<{ body: string; isCTE: 
     return bodies;
 }
 
-export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | null {
+export function checkSqlBody(body: string, isCTE: boolean, postgres = false): DestructiveMatch | null {
     const whole = body.trim();
     let trimmed = whole;
     let scripted = false;
@@ -967,7 +985,7 @@ export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | n
         trimmed = trimmed.replace(BLOCK_LEAD, '').trim();
         scripted = true;
     }
-    const found = checkStatement(trimmed, isCTE);
+    const found = checkStatement(trimmed, isCTE, postgres);
     if (found || !scripted) return found;
     let candidates = 0;
     let statements = 0;
@@ -980,17 +998,17 @@ export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | n
         const word = BOUNDARY_WORD.exec(whole);
         if (!word || word[2] || !STATEMENT_VERBS.has(word[1].toUpperCase())) continue;
         if (++statements > SCRIPT_STATEMENTS_MAX) return { pattern: TOO_COMPLEX, statement: whole.slice(0, STATEMENT_PREVIEW_CHARS) };
-        const inner = checkStatement(whole.slice(at), isCTE);
+        const inner = checkStatement(whole.slice(at), isCTE, postgres);
         if (inner) return inner;
     }
     return null;
 }
 
-function checkStatement(trimmed: string, isCTE: boolean): DestructiveMatch | null {
+function checkStatement(trimmed: string, isCTE: boolean, postgres: boolean): DestructiveMatch | null {
     if (!trimmed) return null;
     const preview = trimmed.slice(0, STATEMENT_PREVIEW_CHARS);
 
-    for (const { rx, label } of DESTRUCTIVE_SQL_PATTERNS) {
+    for (const { rx, label } of postgres ? PG_SQL_PATTERNS : DESTRUCTIVE_SQL_PATTERNS) {
         if (rx.test(trimmed)) {
             return { pattern: isCTE ? `CTE-wrapped ${label}` : label, statement: preview };
         }
@@ -1144,7 +1162,7 @@ export function findExecuteImmediateLiterals(
  * `snowflake`: `sql` is snow's input as snowLexed reads it exactly, so a dynamic body that reading can't vouch for is
  * also checked for a destructive keyword anywhere in it.
  */
-export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpgsql = false, snowflake = false): DestructiveMatch | null {
+export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpgsql = false, snowflake = false, postgres = false): DestructiveMatch | null {
     if (!SQL_PREFILTER.test(sql)) return null;
     if (depth > SQL_RECURSION_LIMIT) return { pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: sql.trim().slice(0, STATEMENT_PREVIEW_CHARS) };
 
@@ -1154,7 +1172,7 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpg
         const skeleton = sqlSkeleton(sql, backslash).skeleton;
         for (const segment of skeleton.split(';')) {
             for (const { body, isCTE } of decomposeSqlSegment(segment)) {
-                const match = checkSqlBody(body, isCTE);
+                const match = checkSqlBody(body, isCTE, postgres);
                 if (match) return match;
             }
         }
@@ -1166,8 +1184,8 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpg
         }
         for (const literal of dynamic.literals) {
             const lexedBody = snowLexed(literal.body);
-            const inner = findDestructiveSqlStatement(literal.body, depth + 1, literal.plpgsql, snowflake)
-                ?? findDestructiveSqlStatement(lexedBody.text, depth + 1, literal.plpgsql, snowflake)
+            const inner = findDestructiveSqlStatement(literal.body, depth + 1, literal.plpgsql, snowflake, postgres)
+                ?? findDestructiveSqlStatement(lexedBody.text, depth + 1, literal.plpgsql, snowflake, postgres)
                 ?? (snowflake && !lexedBody.exact ? destructiveKeywordAnywhere(literal.body) : null);
             if (inner) {
                 return { pattern: `EXECUTE IMMEDIATE → ${inner.pattern}`, statement: inner.statement };
@@ -1357,6 +1375,8 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         // sqlite3 [OPTIONS] [FILENAME [SQL]]: given SQL as an operand it runs that and never reads stdin.
         readsStdin = true;
     }
+    // The files the client opens itself, apart from what a piped `cat` reads, which may be read from either side of a cd.
+    const ownFiles = new Set(files);
     // `/dev/stdin` names the client's own stdin; stat-ing it in the guard would find the guard's.
     const namesStdin = (f: string) => {
         const paths = f === '-' ? null : sqlPathCandidates(f, cmd);
@@ -1398,9 +1418,9 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
             continue;
         }
         // A file that isn't there may be generated on the line by a writer the guard doesn't model (cp, curl, a script).
-        // A written-out path keeps running on every client but snow.
+        // A written-out path keeps running on every client but snow and psql.
         const named = /[$`]/.test(f);
-        if (candidates && !writes.length && (named || (cmd.name === 'snow' && commandFiles.has(f))) && !candidates.some(path => existsSync(path))) {
+        if (candidates && !writes.length && (named || (cmd.name === 'psql' && f !== '-' && ownFiles.has(f)) || (cmd.name === 'snow' && commandFiles.has(f))) && !candidates.some(path => existsSync(path))) {
             unreadable ??= `${f}, ${SQL_PATH_MISSING}`;
         }
         for (const written of writes.map(w => flattenInput(w, cmd.script))) {
@@ -1417,7 +1437,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
             pending.push(...written.catFiles);
         }
         for (const { path, content } of readSqlFiles(f, cmd)) {
-            if (content === 'too-large') {
+            if (content === 'too-large' || content === 'unreadable') {
                 unreadable ??= f;
                 continue;
             }
@@ -1795,9 +1815,9 @@ const PIPE_NESTING_MAX = 64;
  * sqlInputOf scans), and so is a path the command line does not prove. A
  * device, pipe or socket hands the client text the guard can't read first.
  */
-function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string; content: string | 'too-large' | 'not-a-file' }> {
+function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string; content: string | 'too-large' | 'not-a-file' | 'unreadable' }> {
     if (!file || file === '-') return [];
-    const out: Array<{ path: string; content: string | 'too-large' | 'not-a-file' }> = [];
+    const out: Array<{ path: string; content: string | 'too-large' | 'not-a-file' | 'unreadable' }> = [];
     for (const path of sqlPathCandidates(file, cmd) ?? []) {
         if (path === '/dev/null') continue;
         if (FD_PATH.test(fdLinkTarget(path))) {
@@ -1812,8 +1832,10 @@ function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string;
                 continue;
             }
             out.push({ path, content: st.size > SQL_FILE_MAX_BYTES ? 'too-large' : readFileSync(path, 'utf-8') });
-        } catch {
-            continue;
+        } catch (e) {
+            // A file that is there but can't be read (permissions) still runs: only one that isn't there is skipped.
+            const missing = (e as NodeJS.ErrnoException).code === 'ENOENT' || (e as NodeJS.ErrnoException).code === 'ENOTDIR';
+            if (!missing) out.push({ path, content: 'unreadable' });
         }
     }
     return out;
@@ -4353,12 +4375,24 @@ function renderDevTarget(cmd: ResolvedCommand): string | null {
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    if (renderPsqlPrivilegeChange(cmd.args)) return null;
     const args = renderLiteralArgs(cmd);
     const accepts = (r: string) => listed.has(r);
     const unread = args.some(a => RENDER_EXPANDS.test(a)) || programCanDiffer(cmd) || (cmd.args[0] === 'psql' && !runsAlone(cmd));
     const read = unread ? null : renderDevRead(args, listed);
     const target = read && renderResourceIds(args).every(accepts) ? read : renderProvenTarget({ ...cmd, args }, accepts);
     return target ? `render resource ${target}` : null;
+}
+
+/** A role or privilege change in render psql's SQL, which keeps its card even on a listed dev database. */
+function renderPsqlPrivilegeChange(args: string[]): string | null {
+    if (args[0] !== 'psql') return null;
+    for (const word of args.slice(2)) {
+        const sql = word.replace(/^(?:--command=|-c)/, '');
+        const found = destructiveStatements(sql, 0, true, false, true).find(st => PG_PRIVILEGE_LABELS.has(st.pattern));
+        if (found) return found.pattern;
+    }
+    return null;
 }
 
 /** Whether each word the guard can't read is quoted SQL for render psql: anywhere else it can be, or split into, another target or flag. */
@@ -4407,7 +4441,10 @@ type GatedStep = { cmd: ResolvedCommand; reason: string; outer: ResolvedCommand 
 function renderDevHoldReason(cmd: ResolvedCommand, reason: string): string {
     const ids = reason.includes(RENDER_CHANGE_REASON) ? renderDevHeld(cmd) : null;
     if (!ids) return reason;
-    const why = renderDeletesDatastore(cmd) ? 'Render keeps no backup of a deleted datastore' : "the guard can't confirm what this form does there";
+    const privilege = cmd.name === 'render' ? renderPsqlPrivilegeChange(cmd.args) : null;
+    const why = renderDeletesDatastore(cmd) ? 'Render keeps no backup of a deleted datastore'
+        : privilege ? `it changes database roles or privileges (${privilege}), which outlive the dev data`
+        : "the guard can't confirm what this form does there";
     return `${RENDER_DEV_HOLD} ${ids.join(', ')}: ${why}.`;
 }
 
@@ -6233,7 +6270,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
             for (const statements of name === 'psql' ? psqlStatementTexts(text) : name === 'snow' ? [snowTempTablesAsSelect(text)] : [text]) {
                 const snow = name === 'snow' ? snowLexed(statements) : null;
                 const matched = snow?.exact ? findDestructiveSqlStatement(snow.text, 0, false, true)
-                    : findDestructiveSqlStatement(statements) ?? (snow ? destructiveKeywordAnywhere(statements) : null);
+                    : findDestructiveSqlStatement(statements, 0, false, false, name === 'psql') ?? (snow ? destructiveKeywordAnywhere(statements) : null);
                 if (matched) {
                     return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
                 }
@@ -6709,7 +6746,7 @@ function sqlStatements(
     return out;
 }
 
-function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgsql = false): FoundStatement[] {
+function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgsql = false, postgres = false): FoundStatement[] {
     if (!SQL_PREFILTER.test(sql)) return [];
     if (depth > SQL_RECURSION_LIMIT) {
         const text = sql.trim();
@@ -6719,7 +6756,7 @@ function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgs
     const lexed = sqlSkeleton(sql);
     for (const { segment, original, text, skeleton, parsed } of sqlStatements(sql, outerParsed, lexed)) {
         for (const { body, isCTE } of decomposeSqlSegment(segment)) {
-            const match = checkSqlBody(body, isCTE);
+            const match = checkSqlBody(body, isCTE, postgres);
             if (match) {
                 found.push({ pattern: match.pattern, statement: original, text, skeleton, parsed });
                 break;
@@ -6732,7 +6769,7 @@ function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgs
         found.push({ pattern: label, statement: text.trim(), text, skeleton: lexed.skeleton.slice(start, start + text.length), parsed: false });
     }
     for (const literal of dynamic.literals) {
-        found.push(...destructiveStatements(literal.body, depth + 1, outerParsed && lexed.openAt < 0, literal.plpgsql));
+        found.push(...destructiveStatements(literal.body, depth + 1, outerParsed && lexed.openAt < 0, literal.plpgsql, postgres));
     }
     return found;
 }
@@ -6851,6 +6888,14 @@ function sqlEffect(st: FoundStatement, dialect: string, whereElsewhere: WhereEls
                 plain: `Changes rows in the table ${code(m[1])}`,
                 note: "(the guard couldn't tell which rows)",
             };
+    }
+    if (PG_PRIVILEGE_LABELS.has(pattern)) {
+        return {
+            title: `Change ${dialect} roles or privileges (${pattern})`,
+            effect: `Changes who can sign in, or what a role can read or change: ${code(clip(s, 160))}.`,
+            plain: 'Changes who can sign in to the database, or what they can read or change',
+            loss: 'a login, grant or owner stays in place until someone reverses it',
+        };
     }
     return { title: `Run destructive ${dialect} SQL (${pattern})`, effect: `Runs a ${pattern} statement.`, plain: `Runs a ${pattern} statement that can delete or overwrite data` };
 }
@@ -6977,7 +7022,7 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
         const segs = segments[r];
         // Statements come in the order of their segments; one run from an EXECUTE IMMEDIATE literal matches none.
         let next = 0;
-        for (const st of destructiveStatements(text)) {
+        for (const st of destructiveStatements(text, 0, true, false, cmd.name === 'psql')) {
             if (cmd.name === 'snow' && st.pattern === 'CREATE OR REPLACE' && !findDestructiveSqlStatement(snowTempTablesAsSelect(st.text))) continue;
             const found = { ...st, parsed: st.parsed && !guessed };
             let at = -1;
@@ -7593,7 +7638,7 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves, fix: `${reason} Write the macro in one call, then run it in the next, and the guard reads it first.` };
                 continue;
             }
-            if (cmd.name === 'snow' && reason.includes(SQL_PATH_MISSING)) {
+            if ((cmd.name === 'snow' || cmd.name === 'psql') && reason.includes(SQL_PATH_MISSING)) {
                 yield { cmd, reason, outer, moves, fix: `${reason} Write the file in one call, then run it in the next with its path written out, and the guard reads it first.` };
                 continue;
             }
