@@ -12,6 +12,8 @@ beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), 'withhold-'));
     writeFileSync(join(dir, 'scram.sql'), "create role app login password '" + 'SCRAM-SHA-256$4096:' + SECRET + 'Zk9x'.repeat(60) + "';\ndrop table orders;\n");
     writeFileSync(join(dir, 'dynamic.sql'), "DO $$ BEGIN EXECUTE 'DROP TABLE orders; ALTER ROLE app PASSWORD ''" + SECRET + 'x'.repeat(300) + "'''; END $$;\n");
+    // The card quotes this file's statement, password included.
+    writeFileSync(join(dir, 'scram-quoted.sql'), "delete from accounts where password = 'short-" + SECRET + "';\n");
     writeFileSync(join(dir, 'comments.sql'), "-- don't run on prod\nselect 'password reset';\n-- it's the cleanup step\ndrop table staging_orders;\n");
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -21,7 +23,8 @@ const surfaces = (command: string) => {
     expect(verdict.action).not.toBe('allow');
     const card = approvalCard(command, verdict.reason ?? '', '/tmp');
     const action = changesProduction(command, '/tmp') ? 'request_prod_gate' : 'request_destructive_gate';
-    const staged = JSON.parse(gateRequestContent('gate-1', card.label, card.summary, command, action)) as Record<string, string>;
+    // As runNanoclawGate stages it: the card's decision to withhold travels with it.
+    const staged = JSON.parse(gateRequestContent('gate-1', card.label, card.summary, command, action, {}, undefined, card.withheld)) as Record<string, string>;
     return { prompt: approvalText(card), staged, stagedText: JSON.stringify(staged) };
 };
 
@@ -57,6 +60,9 @@ describe('no surface carries a credential the command passes', () => {
         ['an escape-string password', `${H} -c "ALTER ROLE app PASSWORD E'${SECRET}'; DROP TABLE orders"`],
         ['a dollar-quoted password', `${H} -c 'ALTER ROLE app PASSWORD $p$${SECRET}$p$; DROP TABLE orders'`],
         ['a comment between PASSWORD and its value', `${H} -c "ALTER ROLE app PASSWORD /* new */ '${SECRET}'; DROP TABLE orders"`],
+        ['a MySQL password attached to -p', `mysql -h db.example.com -p${SECRET} -e "drop table orders"`],
+        ['a token as the only HTTPS user info', `git push --force https://${SECRET}@github.com/org/repo main`],
+        ['a URI with user info and query given to -d', `PGPASSWORD=x psql -d "postgresql://app:${SECRET}@192.0.2.20/app?sslmode=require&password=${SECRET}" -c "drop table orders"`],
         ['a Snowflake user password', `snow sql -c acme_prod -q "create user u password = '${SECRET}'; drop table orders"`],
     ])('%s', (_name, command) => {
         const { prompt, staged, stagedText } = surfaces(command);
@@ -68,7 +74,7 @@ describe('no surface carries a credential the command passes', () => {
     });
 });
 
-// A file's SQL reaches the card only as the card quotes it, so the card is withheld exactly when its own text would carry one.
+// SQL a command reads from a file counts as part of the command: a credential in it withholds every surface.
 test.each([
     ['a long SCRAM verifier in a SQL file', 'scram.sql'],
     ['a long password in opaque dynamic SQL in a file', 'dynamic.sql'],
@@ -76,7 +82,20 @@ test.each([
     const { prompt, stagedText } = surfaces(`${H} -f ${join(dir, name)}`);
     expect(prompt).not.toContain(SECRET);
     expect(stagedText).not.toContain(SECRET);
-    expect(/password/i.test(prompt)).toBe(prompt.includes('Command text withheld'));
+    expect(prompt).toContain('Command text withheld');
+});
+
+test('a credential found only in what the card quotes from a file keeps the request withheld', () => {
+    const { prompt, staged } = surfaces(`${H} -f ${join(dir, 'scram.sql')}`);
+    if (prompt.includes('Command text withheld')) {
+        expect(staged.command).toBe('');
+        expect(staged.commandSha256).toMatch(/^[0-9a-f]{64}$/);
+    }
+    const card = approvalCard(`${H} -f ${join(dir, 'scram-quoted.sql')}`, 'x', '/tmp');
+    expect(card.withheld).toBe(true);
+    const staged2 = JSON.parse(gateRequestContent('gate-3', card.label, card.summary, `${H} -f ${join(dir, 'scram-quoted.sql')}`, 'request_destructive_gate', {}, undefined, card.withheld)) as Record<string, string>;
+    expect(staged2.command).toBe('');
+    expect(staged2.commandSha256).toMatch(/^[0-9a-f]{64}$/);
 });
 
 describe('a withheld card keeps the destination, from the unaltered parse', () => {
@@ -87,6 +106,11 @@ describe('a withheld card keeps the destination, from the unaltered parse', () =
         ['a force-push to a branch named curl', 'git push -fu git@github.com:org/repo curl', ['git@github.com:org/repo']],
         ['curl data that reads like -u', `curl -X DELETE -H "Authorization: Bearer ${SECRET}" -d '-u' ${PROD}`, ['https://api.render.com/v1/services/srv-prodservice000000001/env-vars/FOO', 'DELETE']],
         ['a PASSWORD word inside a dollar-quoted DELETE', `${H} -d app -c "DELETE FROM accounts WHERE note = $$PASSWORD 'expired'$$"`, ['db.example.com', 'database `app`', 'SQL: DELETE']],
+        ['a variable the card resolves', `DB=app; PGPASSWORD=x ${H} -d "$DB" -c "drop table orders"`, ['database `app`']],
+        ['a curl --url= destination', `curl -X DELETE -H "Authorization: Bearer ${SECRET}" --url=${PROD}`, [PROD]],
+        ['a git push option value before the remote', `git push -o ci.skip --force https://${SECRET}@github.com/org/repo main`, ['remote `https://github.com/org/repo`']],
+        ['every statement kind, not only the first', `PGPASSWORD=x ${H} -c "drop table a; truncate b"`, ['SQL: DROP, TRUNCATE']],
+        ['a URI given to -d, without its user info or query', `PGPASSWORD=x psql -d "postgresql://app:${SECRET}@192.0.2.20/app?sslmode=require" -c "drop table orders"`, ['database `postgresql://192.0.2.20/app`']],
         ['a migration whose comments hold apostrophes', () => `${H} -f ${join(dir, 'comments.sql')}`, ['drop table staging_orders']],
     ])('%s', (_name, made, shown) => {
         const command = typeof made === 'function' ? made() : made;
@@ -96,7 +120,27 @@ describe('a withheld card keeps the destination, from the unaltered parse', () =
     });
 });
 
+describe('refusals and gate reasons withhold the same way', () => {
+    test.each([
+        ['a refusal for a target the guard cannot name', `psql "$DATABASE_URL" -c "ALTER ROLE app PASSWORD '${SECRET}'; DROP TABLE orders"`],
+        ['a gate over opaque dynamic SQL from a file', () => `${H} -f ${join(dir, 'dynamic.sql')}`],
+        ['a gate with a password in -c', `${H} -c "ALTER ROLE app PASSWORD '${SECRET}'; DROP TABLE orders"`],
+    ])('%s', (_name, made) => {
+        const command = typeof made === 'function' ? made() : made;
+        const verdict = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(verdict.action).not.toBe('allow');
+        expect(verdict.reason).not.toContain(SECRET);
+        if (containsCredential(command)) expect(verdict.reason).toContain('Command text withheld');
+    });
+});
+
 describe('a command with no credential keeps its full card', () => {
+    test('a table named for passwords keeps its table and predicate', () => {
+        const { prompt } = surfaces(`${H} -c "DELETE FROM password_reset_tokens WHERE id = 1"`);
+        expect(prompt).toContain('password_reset_tokens');
+        expect(prompt).not.toContain('Command text withheld');
+    });
+
     test('the step and its SQL are shown', () => {
         const { prompt, staged } = surfaces(`${H} -c "drop table orders"`);
         expect(prompt).toContain('drop table orders');
@@ -104,8 +148,13 @@ describe('a command with no credential keeps its full card', () => {
         expect(staged.commandSha256).toBeUndefined();
     });
 
-    test.each([['rm -rf /tmp/build'], ['git push origin main'], ['select password_changed_at']])('the detector reads %s by its words', (text) => {
-        expect(containsCredential(text)).toBe(text.includes('password'));
+    // A password is a credential only when given a value; a column or table named for one is not.
+    test.each([
+        ['rm -rf /tmp/build', false], ['git push origin main', false], ['select password_changed_at from users', false],
+        ['DELETE FROM password_reset_tokens', false], ["ALTER ROLE app PASSWORD 'x'", true], ['PGPASSWORD=x psql', true],
+        ['mysql -h db -px -e "select 1"', true], ['git push https://tok@github.com/org/repo', true],
+    ] as const)('the detector reads %s as %p', (text, expected) => {
+        expect(containsCredential(text)).toBe(expected);
     });
 });
 

@@ -7167,7 +7167,8 @@ function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
     };
 }
 
-function gitPushStep(cmd: ResolvedCommand): StepCard {
+/** A git push's directory (-C), its operands (remote, then refspecs) and its flags, with option values skipped. */
+function gitPushOperands(cmd: ResolvedCommand): { dir?: string; positional: string[]; flags: Set<string> } {
     const valueOpts = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
     let i = 0;
     let dir: string | undefined;
@@ -7188,6 +7189,11 @@ function gitPushStep(cmd: ResolvedCommand): StepCard {
             if (GIT_PUSH_SHORT_VALUE_FLAGS.includes(ch)) break;
         }
     }
+    return { dir, positional, flags };
+}
+
+function gitPushStep(cmd: ResolvedCommand): StepCard {
+    const { dir, positional, flags } = gitPushOperands(cmd);
     const remote = positional[0] ?? 'the upstream remote';
     const refs = positional.slice(1);
     const remoteRef = (spec: string) => { const s = spec.replace(/^\+/, ''); return s.includes(':') ? s.slice(s.indexOf(':') + 1) : s; };
@@ -7607,6 +7613,21 @@ function* gatedSteps(
  * changed, what approving does, and the exact step that tripped the gate with
  * the variables the command provably sets filled in.
  */
+/** A gated command with its arguments as the card shows them: each shell variable resolved where the line proves it. */
+function cardArgs(cmd: ResolvedCommand, view: ReturnType<typeof viewShell>, unresolved: Set<string>): ResolvedCommand {
+    const texts = cmd.pos === undefined ? undefined : view.commandAt(cmd.pos)?.argTexts;
+    if (!texts || texts.length < cmd.args.length) {
+        cmd.args.filter(a => a.includes('$')).forEach(a => unresolved.add(clip(a, 40)));
+        return cmd;
+    }
+    const args = texts.slice(texts.length - cmd.args.length).map(t => {
+        const r = evalWord(t, view, cmd.pos!);
+        r.unresolved.forEach(u => unresolved.add(u));
+        return r.value;
+    });
+    return { ...cmd, args };
+}
+
 export function describeGate(command: string, reason: string, cwd: string = currentWorkingDir()): GateCard {
     const fallback = {
         label: reason,
@@ -7620,19 +7641,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
         const gated = [...found.filter(s => !heldRead(s)), ...found.filter(heldRead)];
         const view = viewShell(command);
 
-        const evaluated = (cmd: ResolvedCommand, unresolved: Set<string>): ResolvedCommand => {
-            const texts = cmd.pos === undefined ? undefined : view.commandAt(cmd.pos)?.argTexts;
-            if (!texts || texts.length < cmd.args.length) {
-                cmd.args.filter(a => a.includes('$')).forEach(a => unresolved.add(clip(a, 40)));
-                return cmd;
-            }
-            const args = texts.slice(texts.length - cmd.args.length).map(t => {
-                const r = evalWord(t, view, cmd.pos!);
-                r.unresolved.forEach(u => unresolved.add(u));
-                return r.value;
-            });
-            return { ...cmd, args };
-        };
+        const evaluated = (cmd: ResolvedCommand, unresolved: Set<string>): ResolvedCommand => cardArgs(cmd, view, unresolved);
         const cdTo = (dir: string | undefined, next: string): string | undefined =>
             next.includes('$') ? undefined : next.startsWith('/') ? next : dir && join(dir, next);
         // `outer` is the top-level command `target` runs inside (itself, unless xargs or find -exec runs it), and
@@ -7830,10 +7839,10 @@ export function evaluateBashCommand(
     command: string,
     opts: { skipGate?: boolean; cwd?: string; localPg?: LocalPgHost } = {},
 ): GateEvaluation {
-    if (clientShellVerdicts) return evaluateBashLine(command, opts);
+    if (clientShellVerdicts) return withheldVerdict(command, evaluateBashLine(command, opts));
     clientShellVerdicts = new Map();
     try {
-        return evaluateBashLine(command, opts);
+        return withheldVerdict(command, evaluateBashLine(command, opts));
     } finally {
         clientShellVerdicts = null;
     }
@@ -8203,16 +8212,58 @@ export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'req
 const CREDENTIAL_SHAPES: RegExp[] = [
     /\b(?:proxy-)?authorization\s*:/i,
     /\b(?:x-)?(?:api|auth)[-_]?(?:key|token)\s*:/i,
-    /passw(?:or)?d/i,
+    // A password given a value: `password=`, `PGPASSWORD+=`, or SQL's PASSWORD before a literal, past any comment.
+    /passw(?:or)?d(?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*(?:\+?=\S|\+?=\s*['"$]|['"$]|[EeUu]&?')/i,
     /\bidentified\s+by\b/i,
-    /:\/\/[^/@\n]{0,200}:[^/@\n]{0,200}@/,
-    /\b[A-Za-z_][A-Za-z0-9_]*(?:TOKEN|KEY|SECRET)\+?=/i,
+    // Any URL with user info: `user:password@`, or a token alone before the @.
+    /[a-z][a-z0-9+.-]*:\/\/[^/@\s]{1,400}@/i,
+    /\b[A-Za-z_][A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD)\+?=\S/i,
 ];
 const CURL_USER_FLAG = /(?:^|[\s'"])(?:-[A-Za-z]*[uU]|--(?:proxy-)?user\b)/;
+const MYSQL_ATTACHED_PASSWORD = /(?:^|\s)-p[^\s]/;
 
-/** True when the text holds anything that looks like a credential (CREDENTIAL_SHAPES, or a curl user flag). */
+/** True when the text holds anything that looks like a credential (CREDENTIAL_SHAPES, a curl user flag, mysql -p…). */
 export function containsCredential(text: string): boolean {
-    return CREDENTIAL_SHAPES.some(rx => rx.test(text)) || (/\bcurl\b/.test(text) && CURL_USER_FLAG.test(text));
+    return CREDENTIAL_SHAPES.some(rx => rx.test(text))
+        || (/\bcurl\b/.test(text) && CURL_USER_FLAG.test(text))
+        || (/\b(?:mysql|mariadb|mysqldump|mysqladmin)\b/.test(text) && MYSQL_ATTACHED_PASSWORD.test(text));
+}
+
+/**
+ * A verdict whose reason can show no credential the command passes: when the command or the reason trips the detector,
+ * the reason keeps only each rule's name, without quoted arguments, SQL or a suggested command, and says the text is
+ * withheld. Every adapter prints this reason when it refuses, asks, or reports a rejected gate.
+ */
+function withheldVerdict(command: string, verdict: GateEvaluation): GateEvaluation {
+    if (verdict.action === 'allow' || !verdict.reason || !carriesCredential(command)) return verdict;
+    return { ...verdict, reason: withheldReason(verdict.reason) };
+}
+
+/** The command, or SQL its clients read from files, looks like it holds a credential. */
+function carriesCredential(command: string): boolean {
+    if (containsCredential(command)) return true;
+    try {
+        return extractCommands(command).some(cmd => (SQL_CLIS[cmd.name] || (cmd.name === 'snow' && cmd.args[0] === 'sql'))
+            && sqlInputOf(cmd).texts.some(containsCredential));
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * A reason as it may be shown for a command that carries a credential: no SQL or argument it quotes after a rule's
+ * `—`, and no quoted span that looks like a credential. A suggested command the guard wrote, holding none, stays, so a
+ * refusal still says what to run instead.
+ */
+function withheldReason(reason: string): string {
+    // The guard's own advice names where a password goes without holding one.
+    const unsafe = (text: string) => containsCredential(text.replace(/PGPASSWORD="\$VAR"|<password>/g, ''));
+    const kept = reason.split('\n').map(line => {
+        // The SQL or argument a rule quotes sits between its `—` and the next `: `.
+        const rule = line.replace(/ — [\s\S]*?(: |$)/, (_m, end: string) => (end ? ' — …: ' : ''));
+        return unsafe(rule) ? rule.replace(/`[^`]*`/g, span => (unsafe(span) ? '…' : span)) : rule;
+    }).filter(line => !unsafe(line));
+    return `${kept.join('\n').trim()}\n\n${WITHHELD_NOTE}`.trim();
 }
 
 const WITHHELD_NOTE = 'Command text withheld: it contains a credential.';
@@ -8221,13 +8272,17 @@ const WITHHELD_NOTE = 'Command text withheld: it contains a credential.';
 function urlShown(value: string): string | null {
     try {
         const url = new URL(value);
-        return url.host ? `${url.protocol}//${url.host}${url.pathname}` : null;
+        return url.host ? `${url.protocol}//${url.host}${url.pathname}` : `${url.protocol}//${url.pathname}`;
     } catch {
         return null;
     }
 }
 
-/** What a gated step acts on, read from its parsed arguments: a host, database, connection, remote or URL. */
+/** Text with every URL in it cut to its scheme, host and path. */
+const withoutUrlSecrets = (text: string): string =>
+    text.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s'"]+/gi, u => urlShown(u) ?? '[a URL]');
+
+/** What a gated step acts on, from its arguments as the card resolves them: a host, database, connection, remote or URL. */
 function withheldTarget(cmd: ResolvedCommand): string[] {
     const args = cmd.args;
     const value = (...names: string[]): string | undefined => {
@@ -8242,14 +8297,15 @@ function withheldTarget(cmd: ResolvedCommand): string[] {
     };
     const out: string[] = [];
     const add = (what: string, v: string | null | undefined) => {
-        if (v && !containsCredential(v) && !/[\s`]/.test(v)) out.push(`${what} ${code(v)}`);
+        const shown = v && withoutUrlSecrets(v);
+        if (shown && !containsCredential(shown) && !/[\s`]/.test(shown)) out.push(`${what} ${code(shown)}`);
     };
     if (cmd.name === 'psql' || cmd.name.startsWith('pg_') || cmd.name === 'render') {
         if (cmd.name === 'render') add('Render database', args[0] === 'psql' ? args[1] : undefined);
         add('host', value('-h', '--host'));
         add('database', value('-d', '--dbname'));
         for (const a of args) {
-            if (/^postgres(?:ql)?:\/\//.test(a)) add('server', urlShown(a));
+            if (/^postgres(?:ql)?:\/\//.test(a)) add('server', a);
             // A conninfo string, or a URI's query, can name the host and database too.
             add('host', /(?:^|[\s?&])host\s*=\s*([^\s'&]+)/.exec(a)?.[1]);
             add('database', /(?:^|[\s?&])dbname\s*=\s*([^\s'&]+)/.exec(a)?.[1]);
@@ -8257,53 +8313,68 @@ function withheldTarget(cmd: ResolvedCommand): string[] {
     } else if (cmd.name === 'snow') {
         add('connection', value('-c', '--connection'));
     } else if (cmd.name === 'git') {
-        const at = gitSubcommandIndex(args);
-        const rest = args.slice(at + 1).filter(a => !a.startsWith('-'));
-        if (args[at] === 'push' && rest[0]) add('remote', urlShown(rest[0]) ?? rest[0]);
+        const { positional } = gitPushOperands(cmd);
+        add('remote', positional[0]);
     } else if (cmd.name === 'curl' || cmd.name === 'wget' || cmd.name === 'http' || cmd.name === 'https') {
         add('method', value('-X', '--request'));
-        for (const a of args) if (/^https?:\/\//.test(a)) add('URL', urlShown(a));
+        add('URL', value('--url'));
+        for (const a of args) if (/^https?:\/\//.test(a)) add('URL', a);
     } else if (cmd.name === 'aws') {
         add('operation', args.filter(a => !a.startsWith('-')).slice(0, 2).join(' ') || undefined);
     }
-    return out;
+    return [...new Set(out)];
 }
+
+/** The destructive statement kinds a SQL client step runs, from every statement its input holds. */
+function statementKinds(cmd: ResolvedCommand, why: string): string[] {
+    const kinds = [...why.matchAll(/\bSQL detected \(([^)]+)\)/g)].map(m => m[1]);
+    if (SQL_CLIS[cmd.name] || (cmd.name === 'snow' && cmd.args[0] === 'sql')) {
+        try {
+            for (const text of sqlInputOf(cmd).texts) {
+                const statements = cmd.name === 'psql' ? psqlStatementTexts(text) : [text];
+                for (const s of statements) kinds.push(...destructiveStatements(s).map(st => st.pattern));
+            }
+        } catch {
+            // The step's own reason still names one.
+        }
+    }
+    return [...new Set(kinds)].filter(k => !containsCredential(k));
+}
+
+/** A gate card, and whether its text was withheld because the command looked like it held a credential. */
+export type ApprovalCard = GateCard & { withheld?: true };
 
 /**
  * The card an approval shows for a gated command. When the command, or any text its card would quote, looks like it
  * holds a credential (containsCredential), the card shows no command text and no SQL: only what each gated step is,
- * computed from the unaltered parse (the rule, the program, its host, database, connection, remote or URL, and the
- * SQL statement kind), and says the text is withheld. The command itself is never edited.
+ * from the parse with its variables resolved as the card resolves them (every rule, the program, its host, database,
+ * connection, remote or URL, and every SQL statement kind), and says the text is withheld. The command is never edited.
  */
-export function approvalCard(command: string, reason: string, cwd: string = currentWorkingDir()): GateCard {
+export function approvalCard(command: string, reason: string, cwd: string = currentWorkingDir()): ApprovalCard {
     const card = describeGate(command, reason, cwd);
-    if (!containsCredential(command) && !containsCredential(`${card.label}\n${card.summary}`)) return card;
+    if (!carriesCredential(command) && !containsCredential(`${card.label}\n${card.summary}`)) return card;
     let steps: Array<{ cmd: ResolvedCommand; reason: string }> = [];
     try {
         const commands = extractCommands(command);
         if (commands[0]?.script) commands[0].script.cwd = cwd;
-        steps = [...gatedSteps(commands, command, cwd, isLabSession(), false)];
+        const view = viewShell(command);
+        steps = [...gatedSteps(commands, command, cwd, isLabSession(), false)]
+            .map(s => ({ ...s, cmd: cardArgs(s.cmd, view, new Set()) }));
     } catch {
         steps = [];
     }
-    const ruleOf = (why: string) => {
-        const rule = why.split(' — ')[0].replace(/\s+/g, ' ').trim();
-        return containsCredential(rule) ? 'a guarded change' : clip(rule, 160);
-    };
-    const kindOf = (why: string) => /\bSQL detected \(([^)]+)\)/.exec(why)?.[1];
-    const described = (steps.length ? steps : [{ cmd: undefined, reason }]).slice(0, 3).map(({ cmd, reason: why }) => {
-        const facts = [ruleOf(why)];
-        if (cmd) facts.push(`Program: ${code(cmd.name)}`, ...withheldTarget(cmd));
-        const kind = kindOf(why);
-        if (kind && !containsCredential(kind)) facts.push(`SQL: ${kind}`);
-        return `- ${facts.join('. ')}.`;
+    const described = (steps.length ? steps : [{ cmd: undefined, reason }]).map(({ cmd, reason: why }) => {
+        const rule = why.split('\n')[0].split(' — ')[0].replace(/`[^`]*`/g, '…').replace(/\s+/g, ' ').trim();
+        const facts = [rule && !containsCredential(rule) ? clip(rule, 160) : 'A guarded change'];
+        if (cmd) {
+            facts.push(`Program: ${code(cmd.name)}`, ...withheldTarget(cmd));
+            const kinds = statementKinds(cmd, why);
+            if (kinds.length) facts.push(`SQL: ${kinds.join(', ')}`);
+        }
+        return `- ${facts.join('. ').replace(/\.\./g, '.')}.`;
     });
-    const programs = [...new Set(steps.map(s => s.cmd.name))].slice(0, 3).join(', ') || 'a command';
-    const count = steps.length > 3 ? [`…and ${steps.length - 3} more gated steps.`] : [];
-    return {
-        label: `Run ${programs} (${WITHHELD_NOTE.split(':')[0].toLowerCase()})`,
-        summary: [WITHHELD_NOTE, '', ...described, ...count].join('\n'),
-    };
+    const programs = [...new Set(steps.map(s => s.cmd.name))].join(', ') || 'a command';
+    return { label: `Run ${programs} (command text withheld)`, summary: [WITHHELD_NOTE, '', ...described].join('\n'), withheld: true };
 }
 
 export function gateRequestContent(
@@ -8314,9 +8385,10 @@ export function gateRequestContent(
     action: GateAction,
     card: EmailCard = {},
     toolUseId?: string,
+    withheldCard = false,
 ): string {
     // An email card shows the message exactly as it will send: the person approves that text, credential or not.
-    const withheld = action !== 'request_bash_gate' && [command, label, summary, card.fullSummary ?? ''].some(containsCredential);
+    const withheld = action !== 'request_bash_gate' && (withheldCard || [command, label, summary, card.fullSummary ?? ''].some(containsCredential));
     return JSON.stringify({
         action,
         requestId,
@@ -8343,6 +8415,7 @@ export function writeGateRequest(
     action: GateAction = 'request_destructive_gate',
     card: EmailCard = {},
     toolUseId?: string,
+    withheld = false,
 ): string {
     // Dynamic import so non-NanoClaw environments (plain Claude Code) never
     // touch bun:sqlite — the module is only present under bun runtime.
@@ -8350,7 +8423,7 @@ export function writeGateRequest(
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
 
     const requestId = `gate-${Date.now()}-${randomBytes(4).toString('hex')}`;
-    const content = gateRequestContent(requestId, label, summary, command, action, card, toolUseId);
+    const content = gateRequestContent(requestId, label, summary, command, action, card, toolUseId, withheld);
 
     const outbound = new Database(NANOCLAW_OUTBOUND_DB);
     outbound.exec('PRAGMA busy_timeout = 5000');
@@ -8460,6 +8533,8 @@ export function runGateRequest(
         toolUseId?: string;
         // The email gate's word on whether the card may leave the command off (EmailGateVerdict).
         card?: EmailCard;
+        // approvalCard withheld the command's text, so the request must not carry it either.
+        withheld?: boolean;
     },
 ): GateDecision {
     const key = opts.toolUseId ? gateClaimKey(opts.toolUseId, opts.action) : null;
@@ -8477,7 +8552,7 @@ export function runGateRequest(
 
     let requestId: string;
     try {
-        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action, opts.card, key ? opts.toolUseId : undefined);
+        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action, opts.card, key ? opts.toolUseId : undefined, opts.withheld);
     } catch (err) {
         // If we can't even stage the request, the session DBs are in a broken
         // state. Deny rather than silently allowing — the gate is fail-closed.
