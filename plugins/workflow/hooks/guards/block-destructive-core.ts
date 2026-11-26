@@ -4811,7 +4811,7 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if (trustedEntry && snowEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
         return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
     }
-    if (changers.length || changesShellState(command)) return null;
+    if (changers.length || changesShellState(command) || !snowEnvironmentProven(command, cmd)) return null;
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {
