@@ -16,6 +16,7 @@ __pycache__/
 # Deployment-local guard configuration (see block-destructive-core.ts "Lab-scoped exemption")
 lab-scope.local.json
 dev-scope.local.json
+dev-scope.local.json.lock
 merge-scope.local.json
 response-secrets.local.json
 
