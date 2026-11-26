@@ -1,10 +1,6 @@
 {
     "capturedAgyVersion": "1.5.16",
     "subagents": {
-        "browser": [
-            "agy 1.5.16 changelog, 1.5.1 entry: the built-in browser agent runs only as a subagent",
-            "agy 1.5.16 bundled skill migrate-agent-settings: names browser beside self and research as built-in"
-        ],
         "image-generator": [
             "agy 1.5.16: listed under 'Available subagents' in a stored system prompt"
         ],

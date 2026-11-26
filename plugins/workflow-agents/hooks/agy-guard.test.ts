@@ -436,7 +436,7 @@ describe('invoke_subagent resolves a TypeName to the one definition agy would lo
         return verdict.action === 'deny' ? verdict.reason : 'allowed';
     }
 
-    test.each([['self'], ['research'], ['browser'], ['image-generator']])('the built-in %s is allowed beside an unrelated README and a broken agent file', (builtIn) => {
+    test.each([['self'], ['research'], ['image-generator']])('the built-in %s is allowed beside an unrelated README and a broken agent file', (builtIn) => {
         const { home, root, workspaceAgents } = setup();
         mkdirSync(workspaceAgents, { recursive: true });
         writeFileSync(join(workspaceAgents, 'README.md'), 'Agents for this repository.\n');
@@ -462,6 +462,11 @@ describe('invoke_subagent resolves a TypeName to the one definition agy would lo
         const { home, root } = setup();
         expect(BUILT_IN_SUBAGENTS.size).toBeGreaterThan(0);
         for (const builtIn of BUILT_IN_SUBAGENTS) expect(decideAgyCall(invoke(root, builtIn), { home })).toEqual({ action: 'allow' });
+    });
+
+    test('browser, which agy 1.5.16 does not offer in the container and whose children were never seen reach this hook, is denied without a definition', () => {
+        const { home, root } = setup();
+        expect(reason(invoke(root, 'browser'), home)).toMatch(/no agent definition named 'browser'/);
     });
 
     test('a made-up name with no definition anywhere is denied, naming the built-ins and where they came from', () => {
