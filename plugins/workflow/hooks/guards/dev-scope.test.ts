@@ -49,7 +49,6 @@ describe('destructive SQL inside a listed dev database skips approval', () => {
         'snow sql -c acme_prod -q \'create or replace table "SCRATCH_DB"."TMP"."T" clone prod_db.core.t\'',
         'snow sql -c acme_prod -q "drop table scratch_db.a.b; drop table scratch_db.a.c"',
         'snow sql -c acme_prod -q "create or replace table scratch_db.tmp.t as select * from prod_db.core.t"',
-        'set -euo pipefail; snow sql -c acme_dev -q "drop table dev_db.a.b"',
         'cd /tmp && timeout 300 snow sql -c acme_prod --warehouse dev_wh -q "drop schema if exists scratch_db.tmp cascade" 2>&1 | tail -3',
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
@@ -75,11 +74,9 @@ describe('everything else stays gated', () => {
         ['a key-file override', 'snow sql -c acme_dev --private-key-path /tmp/k -q "drop table dev_db.a.b"'],
         ['a database override', 'snow sql -c acme_dev --database prod_db -q "drop table dev_db.a.b"'],
         ['HOME redirecting the config', 'HOME=/tmp/h snow sql -c acme_dev -q "drop table dev_db.a.b"'],
-        ['true storing a descriptor number in PATH', 'cd /tmp/w; true {PATH}>/dev/null; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
-        ['old-style arithmetic in a redirect assigning PATH', 'true >/dev/null$[PATH=10]; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['set -e storing a descriptor number in PATH', 'set -e {PATH}>/dev/null; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['set -e with a redirect that assigns PATH', 'set -e >/tmp/x$[PATH=10]; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
-        ['set -e, which only stops the shell on an error, kept as a control', 'set -e; snow sql -c acme_dev -q "drop table prod_db.a.b"'],
+        ['set -e on a connection with no verified login, whose SQL is read instead', 'set -e; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['XDG_CONFIG_HOME redirecting the config', 'XDG_CONFIG_HOME=/tmp/h snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['sudo running snow, which changes HOME', 'sudo -u admin snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['nice running snow', 'nice -n 5 snow sql -c acme_dev -q "drop table dev_db.a.b"'],

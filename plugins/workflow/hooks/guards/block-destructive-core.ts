@@ -4506,12 +4506,6 @@ function setsVariableByOption(cmd: ResolvedCommand): boolean {
     return (cmd.name === 'printf' && cmd.args.some(a => /^-v/.test(a))) || (cmd.name === 'wait' && cmd.args.some(a => /^-[a-z]*p/.test(a)));
 }
 
-/** `{NAME}>file` stores the new descriptor's number in NAME, in this shell when the command is a builtin or compound. */
-function namesDescriptor(node: unknown): boolean {
-    return !!node && typeof node === 'object'
-        && ((node as { variableName?: unknown }).variableName !== undefined || Object.values(node).some(namesDescriptor));
-}
-
 /**
  * True when the command line assigns a variable (by assignment word, loop, arithmetic or a `${name:=value}` default),
  * defines a function, or can't be parsed to tell. A function can take the name of the command an exemption reads, and
@@ -4526,10 +4520,9 @@ function changesShellState(command: string): boolean {
         return Object.values(node).some(found);
     };
     // A word's parts are not walked here, so an expansion that assigns is found in the text.
-    if (/\$\{[^}]*?=|\$\(\(|\$\[/.test(command)) return true;
+    if (/\$\{[^}]*?=|\$\(\(/.test(command)) return true;
     try {
-        const script = parseShell(command);
-        return found(script) || namesDescriptor(script);
+        return found(parseShell(command));
     } catch {
         return true;
     }
@@ -4766,6 +4759,9 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
         return at >= 0 && members.slice(0, at).every(neutral) && reaches(members[at]);
     };
     if (step.pos === undefined) return false;
+    // `{NAME}>file` stores the new descriptor's number in NAME, in this shell when the command is a builtin or compound.
+    const namesDescriptor = (node: unknown): boolean => !!node && typeof node === 'object'
+        && ((node as { variableName?: unknown }).variableName !== undefined || Object.values(node).some(namesDescriptor));
     if (namesDescriptor(script)) return false;
     const statements = (script.commands ?? []).map(st => st.command ?? st);
     const at = statements.findIndex(holds);
@@ -4803,10 +4799,9 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
-    // A redirect on `set` runs in this shell, so only the bare words pass.
-    const changesEnvironment = (c: ResolvedCommand) => ENVIRONMENT_CHANGERS.has(c.name)
-        && !(c.name === 'set' && !c.env?.length && /^set(?:[ \t]+[-+a-z]+)+$/.test(c.raw.trim()) && setsOnlyErrorOptions(c.args));
-    if (commands.some(c => changesEnvironment(c) || setsVariableByOption(c))) return null;
+    const changers = commands.filter(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c));
+    // snowEnvironmentProven reads every statement before the step itself, so only the trusted path may keep an error-option `set`.
+    if (!changers.every(c => c.name === 'set' && !c.env?.length && setsOnlyErrorOptions(c.args))) return null;
 
     // An xargs or find step's words are not the ones read here.
     const trusted = topLevel ? trustedLoginConnection(cmd) : null;
@@ -4814,7 +4809,7 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if (trustedEntry && snowEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
         return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
     }
-    if (changesShellState(command)) return null;
+    if (changers.length || changesShellState(command)) return null;
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {

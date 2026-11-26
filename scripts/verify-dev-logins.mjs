@@ -204,9 +204,7 @@ export function verifyEntry(entry, rows) {
     collectGrants(String(me.U), rows, String(me.R), read);
   } catch (err) {
     // A grant already read still counts when a later call times out.
-    const early = err instanceof SnowTimeout ? writeGrantsOutside(read, entry.databases) : [];
-    if (early.length) return `can write outside ${entry.databases.join('/')}: ${early.slice(0, 5).join('; ')}${early.length > 5 ? ` (+${early.length - 5} more)` : ''}`;
-    throw err;
+    if (!(err instanceof SnowTimeout) || !writeGrantsOutside(read, entry.databases).length) throw err;
   }
   const problems = writeGrantsOutside(read, entry.databases);
   if (process.env.VERIFY_DEV_LOGINS_VERBOSE) for (const p of problems) console.error(`  ${entry.connection}: ${p}`);
