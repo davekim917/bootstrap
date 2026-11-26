@@ -412,13 +412,13 @@ export function definedAgentNames(workspaces: string[], globalConfig: string): S
 
 const REFERENCE_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
 /** Each upload type agy accepts as a reference image, by extension, with the leading bytes its files start with. */
-const REFERENCE_IMAGE_TYPES: Record<string, (head: Buffer) => boolean> = {
-    png: (head) => head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
-    jpg: (head) => head.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])),
-    jpeg: (head) => head.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])),
-    gif: (head) => ['GIF87a', 'GIF89a'].includes(head.subarray(0, 6).toString('latin1')),
-    webp: (head) => head.subarray(0, 4).toString('latin1') === 'RIFF' && head.subarray(8, 12).toString('latin1') === 'WEBP',
-};
+const REFERENCE_IMAGE_TYPES = new Map<string, (head: Buffer) => boolean>([
+    ['png', (head) => head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))],
+    ['jpg', (head) => head.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))],
+    ['jpeg', (head) => head.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))],
+    ['gif', (head) => ['GIF87a', 'GIF89a'].includes(head.subarray(0, 6).toString('latin1'))],
+    ['webp', (head) => head.subarray(0, 4).toString('latin1') === 'RIFF' && head.subarray(8, 12).toString('latin1') === 'WEBP'],
+]);
 
 /**
  * Why `target` is not an image agy may upload as a reference, or null. agy reads the whole file and sends it, so a
@@ -428,7 +428,7 @@ const REFERENCE_IMAGE_TYPES: Record<string, (head: Buffer) => boolean> = {
 function referenceImageRefusal(target: string, cwd: string): string | null {
     const absolute = resolve(cwd, target);
     const extension = absolute.slice(absolute.lastIndexOf('.') + 1).toLowerCase();
-    const matches = absolute.includes('.') ? REFERENCE_IMAGE_TYPES[extension] : undefined;
+    const matches = absolute.includes('.') ? REFERENCE_IMAGE_TYPES.get(extension) : undefined;
     if (!matches) return 'is not a .png, .jpg, .jpeg, .webp or .gif file';
     try {
         if (realpathSync(dirname(absolute)) !== dirname(absolute)) return 'is reached through a link';
@@ -437,7 +437,8 @@ function referenceImageRefusal(target: string, cwd: string): string | null {
     }
     let fd: number;
     try {
-        fd = openSync(absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
+        // Non-blocking, so a named pipe is refused by the regular-file check instead of stalling the open.
+        fd = openSync(absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     } catch (error) {
         return errorCode(error) === 'ELOOP' ? 'is a link' : `cannot be opened (${errorCode(error)})`;
     }

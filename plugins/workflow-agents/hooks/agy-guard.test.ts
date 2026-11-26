@@ -441,6 +441,8 @@ describe('generate_image uploads its reference images, so each must be an image 
         ['a .json file', 'service-account.json', '{"type": "service_account"}\n', /is not a \.png, \.jpg/],
         ['a text file renamed .png', 'notes.png', 'token=example\n', /does not start with the bytes of a \.png image/],
         ['a png named .jpg', 'swapped.jpg', PNG, /does not start with the bytes of a \.jpg image/],
+        ['a file whose extension names an inherited object key', 'creds.constructor', 'token=example\n', /is not a \.png, \.jpg/],
+        ['another inherited-key extension', 'creds.__proto__', 'token=example\n', /is not a \.png, \.jpg/],
     ])('%s is refused', (_name, file, content, expected) => {
         const root = scratch();
         writeFileSync(join(root, file), content);
@@ -462,6 +464,12 @@ describe('generate_image uploads its reference images, so each must be an image 
         expect(reason(edit(root, ['missing.png']))).toMatch(/cannot be opened \(ENOENT\)/);
         expect(reason(edit(root, ['huge.png']))).toMatch(/larger than 20 MiB/);
     });
+
+    test('a named pipe with an image name is refused without waiting for a writer', () => {
+        const root = scratch();
+        expect(Bun.spawnSync(['mkfifo', join(root, 'pipe.png')]).exitCode).toBe(0);
+        expect(reason(edit(root, ['pipe.png']))).toMatch(/'pipe\.png' is not a regular file/);
+    }, 5000);
 });
 
 describe('invoke_subagent resolves a TypeName to the one definition agy would load', () => {
