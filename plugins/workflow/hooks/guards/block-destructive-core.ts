@@ -5045,7 +5045,7 @@ function psqlTarget(args: string[]): { host?: string; port?: string; noPsqlrc: b
  * when an option is one the guard doesn't place (`--maintenance-db` takes a connection string), or the line names
  * anything but one plain database.
  */
-function dropdbTarget(args: string[]): { host?: string; port?: string; noPsqlrc: boolean } | null {
+function dropdbTarget(args: string[]): { host?: string; port?: string; noPsqlrc: boolean; db?: string } | null {
     const last = new Map<string, string>();
     const positionals: string[] = [];
     for (let i = 0; i < args.length; i++) {
@@ -5077,7 +5077,7 @@ function dropdbTarget(args: string[]): { host?: string; port?: string; noPsqlrc:
         positionals.push(a);
     }
     if (positionals.length !== 1 || !/^[A-Za-z0-9_.-]+$/.test(positionals[0])) return null;
-    return { host: last.get('--host'), port: last.get('--port'), noPsqlrc: true };
+    return { host: last.get('--host'), port: last.get('--port'), noPsqlrc: true, db: positionals[0] };
 }
 
 /** A /proc/net/tcp{,6} address in network byte order as hex; the kernel prints each 32-bit word in host order. */
@@ -8266,8 +8266,12 @@ function carriesCredential(command: string, cwd: string): boolean {
     try {
         // The line evaluateBashCommand just read, whose SQL inputs it has already traced (sqlInputFor caches them).
         const reuse = lastEvaluated?.command === command && lastEvaluated.cwd === cwd ? lastEvaluated.commands : null;
-        const commands = reuse ?? extractCommands(command);
-        if (!reuse && commands[0]?.script) commands[0].script.cwd = cwd;
+        const sqlClient = (cmd: ResolvedCommand) => SQL_CLIS[cmd.name] || (cmd.name === 'snow' && cmd.args[0] === 'sql');
+        // The evaluator's trace budget is shared across the line, so a step it reached late may be only partly read;
+        // then the line is read again here with a budget of its own.
+        const complete = reuse !== null && reuse.filter(sqlClient).every(cmd => !sqlInputFor(cmd).unreadable);
+        const commands = complete ? reuse! : extractCommands(command);
+        if (!complete && commands[0]?.script) commands[0].script.cwd = cwd;
         return commands.some(cmd => (SQL_CLIS[cmd.name] || (cmd.name === 'snow' && cmd.args[0] === 'sql'))
             && sqlInputFor(cmd).texts.some(sqlCarriesCredential));
     } catch {
@@ -8303,7 +8307,8 @@ function scratchRetry(command: string): string {
     }
     const db = commands.find(c => c.name === 'dropdb' || c.name === 'createdb');
     if (!db) return `${SCRATCH_PG} psql <db> -c '<your SQL>'`;
-    const name = db.args.filter(a => !a.startsWith('-')).pop();
+    // The database as dropdb's own option parser reads it, so -U's value is never taken for it.
+    const name = dropdbTarget(db.args)?.db;
     return `${SCRATCH_PG} ${db.name} ${name && /^[A-Za-z_][\w-]*$/.test(name) && !containsCredential(name) ? name : '<db>'}`;
 }
 

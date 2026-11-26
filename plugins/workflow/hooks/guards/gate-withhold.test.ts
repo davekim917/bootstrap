@@ -178,6 +178,28 @@ describe('refusals and gate reasons withhold the same way', () => {
         expect(verdict.reason).not.toContain(SECRET);
     });
 
+    test('dropdb keeps the database its own parser reads, never -U\'s value', () => {
+        const verdict = evaluateBashCommand(`PGPASSWORD=${SECRET} dropdb app_test -U postgres`, { cwd: '/tmp' });
+        expect(verdict.reason).toContain('/app/skills/scratch-postgres/scratch-pg dropdb app_test');
+        expect(verdict.reason).not.toContain('dropdb postgres');
+    });
+
+    test('a step the shared trace budget reached too late is read again before deciding to withhold', () => {
+        const work = mkdtempSync(join(tmpdir(), 'withhold-budget-'));
+        try {
+            writeFileSync(join(work, 'creds.sql'), "create user u password = '" + SECRET + "';\ndrop table orders;\n");
+            // Each under the per-file cap, together past the line's shared trace budget.
+            for (let i = 1; i <= 5; i++) writeFileSync(join(work, `big${i}.sql`), 'select 1;\n'.repeat(90_000));
+            const command = `snow sql -c acme_prod -f creds.sql; ${H} -f big1.sql -f big2.sql -f big3.sql -f big4.sql -f big5.sql`;
+            const verdict = evaluateBashCommand(command, { cwd: work });
+            expect(verdict.action).not.toBe('allow');
+            expect(verdict.reason).not.toContain(SECRET);
+            expect(approvalCard(command, verdict.reason ?? '', work).withheld).toBe(true);
+        } finally {
+            rmSync(work, { recursive: true, force: true });
+        }
+    });
+
     test('a relative SQL file is read from the directory the evaluator was given', () => {
         const work = mkdtempSync(join(tmpdir(), 'withhold-cwd-'));
         try {
