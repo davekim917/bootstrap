@@ -4258,7 +4258,8 @@ export interface PgReader {
     resource: string;
     host: string;
     user: string;
-    database: string;
+    /** The databases the login reads; the first is the one a hint names. */
+    databases: string[];
 }
 
 const PG_IDENTIFIER_RE = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -4295,17 +4296,19 @@ export function parseDevScope(text: string): DevScope | null {
         || !resources.every((r: unknown) => typeof r === 'string' && RENDER_RESOURCE_ID_RE.test(r))) {
         return null;
     }
-    const readers = (render as { readers?: unknown }).readers;
-    if (readers === undefined) return { snowflake: entries as DevScope['snowflake'], render: { resources: resources as string[] } };
-    if (!Array.isArray(readers) || !readers.every((r: unknown) => {
-        const { resource, host, user, database } = (r ?? {}) as Record<string, unknown>;
-        return typeof resource === 'string' && resources.includes(resource) && typeof host === 'string'
+    const raw_readers = (render as { readers?: unknown }).readers;
+    const readers = (Array.isArray(raw_readers) ? raw_readers : []).filter((r: unknown): r is PgReader => {
+        const { resource, host, user, databases } = (r ?? {}) as Record<string, unknown>;
+        const ok = typeof resource === 'string' && resources.includes(resource) && typeof host === 'string'
             && isListedPgHost(host, [resource]) && typeof user === 'string' && PG_IDENTIFIER_RE.test(user)
-            && typeof database === 'string' && PG_IDENTIFIER_RE.test(database);
-    })) {
-        return null;
-    }
-    return { snowflake: entries as DevScope['snowflake'], render: { resources: resources as string[], readers: readers as PgReader[] } };
+            && Array.isArray(databases) && databases.length > 0
+            && databases.every((d: unknown) => typeof d === 'string' && PG_IDENTIFIER_RE.test(d));
+        // A bad reader entry drops itself, never the rest of the file's exemptions.
+        if (!ok) console.error(`dev-scope: ignored a render.readers entry that is not a listed resource, its host, a user and databases: ${JSON.stringify(r)}`);
+        return ok;
+    });
+    if (raw_readers !== undefined && !Array.isArray(raw_readers)) console.error('dev-scope: ignored render.readers, which is not a list');
+    return { snowflake: entries as DevScope['snowflake'], render: { resources: resources as string[], ...(readers.length ? { readers } : {}) } };
 }
 
 /** The words of a render command as the shell passes them, or null when the guard can't line them up with the script. */
@@ -4410,13 +4413,16 @@ function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | 
 }
 
 // ── Read-only dev login ──────────────────────────────────────────────────────
-// A login the database itself keeps read-only needs no card for any SQL, but only in one exact shape: proving an
-// arbitrary line safe from its text does not converge, so anything else falls through to today's rules, and a line
-// aimed at that database gets the reader command to run instead of a card.
+// A login the database itself keeps read-only needs no card for any SQL, but only in one exact shape, run by absolute
+// path so no function, alias or PATH entry can stand in for a program: proving an arbitrary line safe from its text
+// does not converge, so anything else falls through to today's rules, and a gated step aimed at that database gets
+// the reader command to run instead of a card when it reads.
 
+const READER_PROGRAMS = { psql: '/usr/local/bin/psql', timeout: '/usr/bin/timeout', head: '/usr/bin/head', tail: '/usr/bin/tail' } as const;
 const PSQL_READER_BARE_FLAGS = /^-[AtqxXeb]+$|^--(?:no-align|tuples-only|quiet|csv|expanded|no-psqlrc|echo-queries|echo-errors)$/;
-const PSQL_READER_VALUE_FLAGS = new Set(['-h', '--host', '-U', '--username', '-d', '--dbname', '-p', '--port', '-c', '--command', '-F', '--field-separator', '-R', '--record-separator']);
+const PSQL_READER_VALUE_FLAGS = new Set(['-h', '--host', '-U', '--username', '-d', '--dbname', '-p', '--port', '-c', '--command', '-F', '--field-separator', '-R', '--record-separator', '-P', '--pset']);
 const PAGE_COUNT = /^(?:-\d+|-n ?\d+)$/;
+const READ_SQL_OPENER = /^\s*(?:select|with|show|table|values|explain)\b/i;
 
 /** A word's text when bash reads it as written: only literal and quoted text, no expansion, glob, brace or tilde. */
 function literalWord(word: any): string | null {
@@ -4435,6 +4441,7 @@ function literalWord(word: any): string | null {
 function readerPsqlArgs(args: string[], readers: PgReader[]): PgReader | null {
     let host: string | undefined, user: string | undefined, database: string | undefined, port: string | undefined;
     let noPsqlrc = false;
+    let pagerOff = false;
     const sql: string[] = [];
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
@@ -4445,21 +4452,24 @@ function readerPsqlArgs(args: string[], readers: PgReader[]): PgReader | null {
         if (!PSQL_READER_VALUE_FLAGS.has(a) || args[i + 1] === undefined) return null;
         const value = args[++i];
         if (a === '-c' || a === '--command') sql.push(value);
-        else if (/[=\\]|:\/\//.test(value)) return null;
+        else if (a === '-P' || a === '--pset') {
+            if (value !== 'pager=off') return null;
+            pagerOff = true;
+        } else if (/[=\\]|:\/\//.test(value)) return null;
         else if (a === '-h' || a === '--host') host = value;
         else if (a === '-U' || a === '--username') user = value;
         else if (a === '-d' || a === '--dbname') database = value;
         else if (a === '-p' || a === '--port') port = value;
     }
-    if (!noPsqlrc || !sql.length || sql.some(s => s.includes('\\')) || (port !== undefined && port !== '5432')) return null;
-    if (database === undefined || !PG_IDENTIFIER_RE.test(database)) return null;
-    return readers.find(r => r.host === host && r.user === user) ?? null;
+    if (!noPsqlrc || !pagerOff || !sql.length || sql.some(s => s.includes('\\')) || (port !== undefined && port !== '5432')) return null;
+    return readers.find(r => r.host === host && r.user === user && database !== undefined && r.databases.includes(database)) ?? null;
 }
 
 /**
- * The reader a whole line runs as, when the line is only that psql: bare, or under `timeout <n>`, optionally with
- * stderr merged and piped into `head` or `tail` with a line count. No assignment, other command, substitution or
- * redirect, and no libpq variable in the environment that could repoint the connection.
+ * The reader a whole line runs as, when the line is only that psql, by absolute path: bare, or under
+ * `/usr/bin/timeout <n>`, optionally with stderr merged and piped into `/usr/bin/head` or `/usr/bin/tail` with a line
+ * count. No assignment, other command, substitution, other redirect or background `&`, and no libpq variable in the
+ * hook's environment that could repoint the connection.
  */
 export function pgReaderLine(command: string): PgReader | null {
     const readers = currentDevScope()?.render?.readers ?? [];
@@ -4471,7 +4481,7 @@ export function pgReaderLine(command: string): PgReader | null {
         return null;
     }
     const statement = tree?.commands?.length === 1 ? tree.commands[0] : null;
-    if (statement?.type !== 'Statement' || statement.redirects?.length) return null;
+    if (statement?.type !== 'Statement' || statement.background || statement.redirects?.length) return null;
     const node = statement.command;
     const stages: any[] = node?.type === 'Pipeline' && !node.time && !node.negated && node.operators?.every((o: string) => o === '|')
         ? node.commands : [node];
@@ -4483,50 +4493,80 @@ export function pgReaderLine(command: string): PgReader | null {
     const [psqlStage, pager] = stages;
     if (pager) {
         const pw = words(pager);
-        const count = pw?.slice(1).join(' ') ?? '';
-        if (!pw || !['head', 'tail'].includes(pw[0]) || pager.redirects?.length || !(count === '' || PAGE_COUNT.test(count))) return null;
+        if (!pw || (pw[0] !== READER_PROGRAMS.head && pw[0] !== READER_PROGRAMS.tail) || pager.redirects?.length || !PAGE_COUNT.test(pw.slice(1).join(' '))) return null;
     }
     const redirects: any[] = psqlStage.redirects ?? [];
     if (redirects.some(r => !(r?.operator === '>&' && r.fileDescriptor === 2 && r.target?.value === '1'))) return null;
     let w = words(psqlStage);
     if (!w) return null;
-    if (w[0] === 'timeout') {
+    if (w[0] === READER_PROGRAMS.timeout) {
         if (!/^\d+(?:\.\d+)?[smhd]?$/.test(w[1] ?? '')) return null;
         w = w.slice(2);
     }
-    return w[0] === 'psql' ? readerPsqlArgs(w.slice(1), readers) : null;
+    return w[0] === READER_PROGRAMS.psql ? readerPsqlArgs(w.slice(1), readers) : null;
 }
 
-const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+/** pflag's boolean spellings: `--confirm`, or `--confirm=` one of its true values. */
+const confirms = (args: string[]): boolean => args.some(a => a === '--confirm' || /^--confirm=(?:1|t|T|true|TRUE|True)$/.test(a));
+
+/** The SQL a step's `-c`/`--command` values carry, or null when it also reads SQL from elsewhere or carries none. */
+function stepSql(args: string[]): string[] | null {
+    const sql: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '-c' || a === '--command') {
+            if (args[i + 1] === undefined) return null;
+            sql.push(args[++i]);
+        } else if (a.startsWith('--command=')) sql.push(a.slice('--command='.length));
+        else if (/^-c./.test(a)) sql.push(a.slice(2));
+        else if (/^(?:-f|--file)(?:=|$)/.test(a) || /^-[A-Za-z]*f/.test(a)) return null;
+    }
+    return sql.length ? sql : null;
+}
+
+const readsOnly = (sql: string): boolean =>
+    !findDestructiveSqlStatement(sql) && READ_SQL_OPENER.test(stripSqlLiteralsAndComments(sql)) && !/^\s*explain\s+analy[sz]e\b/i.test(sql);
+
+/** A shell word bash reads back as exactly `s`, in a form literalWord accepts; null when there is none. */
+function sqlWord(s: string): string | null {
+    if (!s.includes("'")) return `'${s}'`;
+    return /[$`"\\!]/.test(s) ? null : `"${s}"`;
+}
 
 /**
- * What to run instead of a step aimed at a reader's database: the reader command, carrying the step's SQL when it is
- * in `-c`, and the write path. Null when the step aims elsewhere or is the explicit write path (`render psql --confirm`).
+ * What a gated step aimed at a reader's database is told instead of a card: for a read, the reader command carrying
+ * the same SQL, emitted only when that command itself passes the reader shape; the write path always. Null when the
+ * step aims at no reader, its target can't be read, or it is the explicit write path (`render psql <id> --confirm`).
  */
-function readerRewrite(cmd: ResolvedCommand): string | null {
+function readerHint(cmd: ResolvedCommand): string | null {
     const readers = currentDevScope()?.render?.readers ?? [];
     let reader: PgReader | undefined;
-    let args: string[];
+    let sql: string[] | null;
+    let database: string | undefined;
     if (cmd.name === 'render' && cmd.args[0] === 'psql') {
-        if (cmd.args.includes('--confirm')) return null;
+        if (confirms(cmd.args)) return null;
         reader = readers.find(r => r.resource === cmd.args[1]);
-        args = cmd.args.slice(2);
+        sql = stepSql(cmd.args.slice(2));
     } else if (cmd.name === 'psql') {
-        reader = readers.find(r => cmd.args.some(a => a.includes(r.host)));
-        args = cmd.args;
+        const target = psqlTarget([...cmd.args, '-c', '']);
+        reader = readers.find(r => target?.host === r.host);
+        sql = stepSql(cmd.args);
+        database = flagValue(cmd.args, ['-d', '--dbname']);
     } else {
         return null;
     }
     if (!reader) return null;
-    const sql: string[] = [];
-    for (let i = 0; i < args.length; i++) {
-        if (/^(?:-c|--command)$/.test(args[i]) && args[i + 1] !== undefined) sql.push(args[++i]);
-    }
-    const db = cmd.name === 'psql' ? flagValue(cmd.args, ['-d', '--dbname']) : undefined;
-    const database = db && PG_IDENTIFIER_RE.test(db) ? db : reader.database;
-    const commands = sql.length && !sql.some(s => s.includes('\\')) ? sql.map(s => `-c ${shellQuote(s)}`).join(' ') : "-c '<sql>'";
-    const read = `psql -X -h ${reader.host} -U ${reader.user} -d ${database} ${commands}`;
-    return `${reader.resource} has a read-only login, so a read needs no approval in this shape. read → run: ${read} (on its own line; it may run under timeout <n> or pipe into head or tail). write → add --confirm: render psql ${reader.resource} --confirm …, which asks for approval as before.`;
+    const write = `write → add --confirm: render psql ${reader.resource} --confirm …, which asks for approval as before.`;
+    const shape = (db: string, sqlWords: string) =>
+        `${READER_PROGRAMS.psql} -X -P pager=off -h ${reader!.host} -U ${reader!.user} -d ${db} ${sqlWords}`;
+    const template = `a read runs with no approval as ${shape(`<${reader.databases.join('|')}>`, "-c '<sql>'")}, on its own line.`;
+    if (sql === null) return `${reader.resource} has a read-only login: ${template} ${write}`;
+    if (!sql.every(readsOnly)) return `${reader.resource}: this step writes, so it runs as the owner. ${write}`;
+    const words = sql.map(sqlWord);
+    const db = database && reader.databases.includes(database) ? database : reader.databases[0];
+    const retry = words.every(w => w !== null) ? shape(db, words.map(w => `-c ${w}`).join(' ')) : null;
+    if (retry === null || pgReaderLine(retry) === null) return `${reader.resource} has a read-only login: ${template} ${write}`;
+    return `${reader.resource} has a read-only login, so this read needs no approval. read → run: ${retry} (on its own line; it may run under ${READER_PROGRAMS.timeout} <n> or pipe into ${READER_PROGRAMS.head} or ${READER_PROGRAMS.tail} with a line count). ${write}`;
 }
 
 const isListedPgHost = (host: string | undefined, ids: string[]): boolean =>
@@ -7951,10 +7991,10 @@ export function evaluateBashCommand(
     command: string,
     opts: { skipGate?: boolean; cwd?: string; localPg?: LocalPgHost } = {},
 ): GateEvaluation {
-    if (clientShellVerdicts) return evaluateBashLine(command, opts);
+    if (clientShellVerdicts) return evaluateBashLine(command, opts, false);
     clientShellVerdicts = new Map();
     try {
-        return evaluateBashLine(command, opts);
+        return evaluateBashLine(command, opts, true);
     } finally {
         clientShellVerdicts = null;
     }
@@ -7963,6 +8003,7 @@ export function evaluateBashCommand(
 function evaluateBashLine(
     command: string,
     opts: { skipGate?: boolean; cwd?: string; localPg?: LocalPgHost },
+    toolCall: boolean,
 ): GateEvaluation {
     const commands = extractCommands(command);
     const ephemeralMktempVariables = findEphemeralMktempVariables(command);
@@ -8017,7 +8058,8 @@ function evaluateBashLine(
     }
 
     // --- Gated checks ---
-    const reader = opts.skipGate ? null : pgReaderLine(command);
+    // Only the tool call's own line: one a SQL client's escape runs must never clear the client's gate.
+    const reader = opts.skipGate || !toolCall ? null : pgReaderLine(command);
     if (reader) {
         console.error(`dev-scope: allowed psql as read-only login ${reader.user} on ${reader.resource}`);
         return { action: 'allow' };
@@ -8026,13 +8068,16 @@ function evaluateBashLine(
         // A step the guard refuses outright (one flag short of the scratch-Postgres exemption, a database it can't
         // name) is refused wherever it sits in the line: an earlier gated step must not turn it into an approvable card.
         let first: string | undefined;
+        const gated: ResolvedCommand[] = [];
         for (const step of gatedSteps(commands, command, cwd, lab, true, opts.localPg)) {
             if (step.fix) return { action: 'block', reason: step.fix };
             first ??= step.reason;
+            gated.push(step.cmd);
         }
         if (first !== undefined) {
-            const rewrite = commands.map(readerRewrite).find(r => r !== null);
-            if (rewrite) return { action: 'block', reason: rewrite };
+            // A hint replaces the card only when every gated step is one aimed at a reader's database.
+            const hints = gated.map(readerHint);
+            if (toolCall && hints.every(h => h !== null)) return { action: 'block', reason: [...new Set(hints)].join('\n') };
             return { action: 'gate', reason: first };
         }
     }

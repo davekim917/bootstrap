@@ -7,14 +7,15 @@ import { DEV_SCOPE_FILE_ENV, changesProduction, evaluateBashCommand, parseDevSco
 
 /**
  * READ-ONLY DEV LOGIN. A database that refuses writes from a login needs no card for any SQL run as it, in one exact
- * shape. A line aimed at that database in any other shape is refused with the reader command to run instead; the
- * owner login stays reachable for writes through `render psql <id> --confirm`, which asks for approval as before.
+ * shape run by absolute path. A gated step aimed at that database is refused instead: a read with the reader command
+ * to run, a write with the owner path, `render psql <id> --confirm`, which asks for approval as before.
  */
 
 const DEV_DB = 'dpg-devdatabase000000001-a';
 const PROD_DB = 'dpg-proddatabase00000001-a';
 const HOST = `${DEV_DB}.virginia-postgres.render.com`;
-const READER = `psql -X -h ${HOST} -U app_reader -d app_dev`;
+const PSQL = '/usr/local/bin/psql';
+const READER = `${PSQL} -X -P pager=off -h ${HOST} -U app_reader -d app_dev`;
 
 let dir = '';
 let saved: string | undefined;
@@ -25,7 +26,7 @@ beforeAll(() => {
     const scopeFile = join(dir, 'dev-scope.local.json');
     writeFileSync(scopeFile, JSON.stringify({
         snowflake: [],
-        render: { resources: [DEV_DB], readers: [{ resource: DEV_DB, host: HOST, user: 'app_reader', database: 'app_dev' }] },
+        render: { resources: [DEV_DB], readers: [{ resource: DEV_DB, host: HOST, user: 'app_reader', databases: ['app_dev', 'app_test'] }] },
     }));
     process.env[DEV_SCOPE_FILE_ENV] = scopeFile;
 });
@@ -41,93 +42,126 @@ afterAll(() => {
 });
 
 const run = (command: string) => evaluateBashCommand(command, { cwd: '/tmp' });
-const rewriteIn = (reason: string): string => reason.match(/read → run: (.*?) \(on its own line/)![1];
+const retryIn = (reason: string): string => reason.match(/read → run: (.*?) \(on its own line/)![1];
 
-describe('psql as the read-only login runs with no card, for any SQL', () => {
+describe('psql as the read-only login, by absolute path, runs with no card, for any SQL', () => {
     test.each([
         [`${READER} -c 'select 1'`],
         [`${READER} -c 'delete from app.accounts'`],
-        [`${READER} -c 'drop table app.accounts'`],
-        [`timeout 60 ${READER} -c 'select now()'`],
-        [`${READER} -c 'select 1' | head -5`],
-        [`timeout 60 ${READER} -A -t -c 'select 1' 2>&1 | tail -n 20`],
-        [`${READER} --csv -c 'select 1' -c 'select 2'`],
+        [`${PSQL} -X -P pager=off -h ${HOST} -U app_reader -d app_test -c 'drop table app.accounts'`],
+        [`/usr/bin/timeout 60 ${READER} -c 'select now()'`],
+        [`${READER} -c 'select 1' | /usr/bin/head -5`],
+        [`/usr/bin/timeout 60 ${READER} -A -t -c 'select 1' 2>&1 | /usr/bin/tail -n 20`],
+        [`${READER} --csv -p 5432 -c 'select 1' -c 'select 2'`],
     ])('%s', command => {
         expect(run(command).action).toBe('allow');
     });
 });
 
-describe('any other shape aimed at the read-only database gets the reader command instead of a card', () => {
+describe('anything outside the exact shape is not card-free', () => {
     test.each([
-        ['a conninfo dbname', `psql -X -h ${HOST} -U app_reader -d "host=${HOST} user=owner dbname=app_dev" -c 'drop table a'`],
-        ['a URI dbname', `psql -X -h ${HOST} -U app_reader -d postgresql://owner:pw@${HOST}/app_dev -c 'drop table a'`],
-        ['a service', `psql -X -h ${HOST} -U app_reader -d service=app -c 'drop table a'`],
-        ['a positional dbname', `psql -X -h ${HOST} -U app_reader app_dev -c 'drop table a'`],
-        ['another login', `psql -X -h ${HOST} -U owner -d app_dev -c 'drop table a'`],
+        ['psql by name', `psql -X -P pager=off -h ${HOST} -U app_reader -d app_dev -c 'drop table a'`],
+        ['a function named psql defined first', `psql() { sh -c 'echo x'; }; psql -X -P pager=off -h ${HOST} -U app_reader -d app_dev -c 'drop table a'`],
+        ['an alias named psql defined first', `alias psql='sh -c echo'; psql -X -P pager=off -h ${HOST} -U app_reader -d app_dev -c 'drop table a'`],
+        ['timeout by name', `timeout 60 ${READER} -c 'drop table a'`],
+        ['head by name', `${READER} -c 'drop table a' | head -5`],
+        ['head with no count', `${READER} -c 'drop table a' | /usr/bin/head`],
+        ['the pager left on', `${PSQL} -X -h ${HOST} -U app_reader -d app_dev -c 'drop table a'`],
+        ['a database not configured', `${PSQL} -X -P pager=off -h ${HOST} -U app_reader -d postgres -c 'drop table a'`],
+        ['another port', `${PSQL} -X -P pager=off -h ${HOST} -p 6432 -U app_reader -d app_dev -c 'drop table a'`],
+        ['a trailing &', `${READER} -c 'drop table a' &`],
         ['an environment prefix', `PGOPTIONS=-cx=1 ${READER} -c 'drop table a'`],
-        ['a pipe into another program', `${READER} -c 'drop table a' | cat`],
         ['a step chained before it', `true && ${READER} -c 'drop table a'`],
-        ['an output file', `${READER} -o /tmp/out -c 'drop table a'`],
-        ['another port', `psql -X -h ${HOST} -p 6432 -U app_reader -d app_dev -c 'drop table a'`],
     ])('%s', (_label, command) => {
+        expect(run(command).action).not.toBe('allow');
+    });
+
+    test('a reader-shaped command run by a SQL client escape does not clear the client gate', () => {
+        const inner = `${READER} -c 'drop table a'`;
+        expect(run(`psql -h db.example.com -c "\\! ${inner}"`).action).not.toBe('allow');
+    });
+
+    test('a libpq variable in the environment that could repoint the connection takes the shape away', () => {
+        process.env.PGHOSTADDR = '203.0.113.9';
+        expect(run(`${READER} -c 'drop table a'`).action).not.toBe('allow');
+    });
+});
+
+describe('a gated step aimed at the read-only database gets a hint instead of a card', () => {
+    test.each([
+        [`cd /tmp/rv; timeout 60 render psql ${DEV_DB} --command "select now()" -o json 2>&1 | head -20`, `${READER} -c 'select now()'`],
+        [`timeout 60 render psql ${DEV_DB} --command="select 1" -o json | cat`, `${READER} -c 'select 1'`],
+        [`timeout 60 render psql ${DEV_DB} --command "select 'x'" -o json | cat`, `${READER} -c "select 'x'"`],
+    ])('a read: %s', (command, retry) => {
         const { action, reason } = run(command);
         expect(action).toBe('block');
-        expect(reason).toContain('read → run: psql -X -h');
+        expect(retryIn(reason!)).toBe(retry);
+        expect(run(retry).action).toBe('allow');
         expect(reason).toContain(`write → add --confirm: render psql ${DEV_DB} --confirm`);
     });
 
     test.each([
-        [`cd /tmp/rv; timeout 60 render psql ${DEV_DB} --command "select now()" -o json 2>&1 | head -20`, `${READER} -c 'select now()'`],
-        [`PGOPTIONS='-c default_transaction_read_only=on' timeout 60 render psql ${DEV_DB} -o text -- -At -f /tmp/rv/t.sql`, `${READER} -c '<sql>'`],
-        [`render psql ${DEV_DB}`, `${READER} -c '<sql>'`],
-        [`timeout 60 render psql ${DEV_DB} --command "select 'it''s'" -o json | cat`, `${READER} -c 'select '\\''it'\\'''\\''s'\\'''`],
-    ])('%s rewrites to the reader command', (command, rewrite) => {
+        [`timeout 60 render psql ${DEV_DB} --command "drop table a" -o json | cat`],
+        [`timeout 60 render psql ${DEV_DB} --command "insert into a values (1)" -o json | cat`],
+        [`timeout 60 psql -X -h ${HOST} -U owner -d app_dev -c 'delete from a'`],
+    ])('a write gets only the write line: %s', command => {
         const { action, reason } = run(command);
         expect(action).toBe('block');
-        expect(rewriteIn(reason!)).toBe(rewrite);
+        expect(reason).not.toContain('read → run');
+        expect(reason).toContain('this step writes');
+        expect(reason).toContain(`render psql ${DEV_DB} --confirm`);
     });
 
     test.each([
-        ['no -X', `psql -h ${HOST} -U app_reader -d app_dev -c 'drop table a'`],
-        ['a meta-command', `${READER} -c '\\! rm -rf x'`],
-    ])('%s is refused with its own fix, not carded', (_label, command) => {
-        expect(run(command).action).toBe('block');
-    });
-
-    test('the rewritten command runs with no card', () => {
-        const { reason } = run(`cd /tmp/rv; timeout 60 render psql ${DEV_DB} --command "select now()" -o json 2>&1 | head -20`);
-        expect(run(rewriteIn(reason!)).action).toBe('allow');
+        [`PGOPTIONS='-c default_transaction_read_only=on' timeout 60 render psql ${DEV_DB} -o text -- -At -f /tmp/rv/t.sql`],
+        [`render psql ${DEV_DB}`],
+    ])('SQL the guard can see none of gets the template and the write line: %s', command => {
+        const { action, reason } = run(command);
+        expect(action).toBe('block');
+        expect(reason).not.toContain('read → run');
+        expect(reason).toContain(`-d <app_dev|app_test> -c '<sql>'`);
     });
 });
 
 describe('what keeps its card', () => {
-    test('the explicit write path asks for approval as before', () => {
-        const command = `render psql ${DEV_DB} --confirm -o text -- -f /tmp/migrate.sql`;
+    test.each([
+        [`render psql ${DEV_DB} --confirm -o text -- -f /tmp/migrate.sql`],
+        [`render psql ${DEV_DB} --confirm=true -o text -- -f /tmp/migrate.sql`],
+    ])('the explicit write path asks for approval as before: %s', command => {
         expect(run(command).action).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+
+    test('a step aimed at the reader never suppresses another step\'s card', () => {
+        expect(run(`docker volume rm data; timeout 60 render psql ${DEV_DB} --command "select 1" -o json | cat`).action).toBe('gate');
     });
 
     test('a database with no read-only login is unchanged', () => {
         expect(run(`timeout 60 render psql ${PROD_DB} --command "select 1" -o json | head`).action).toBe('gate');
     });
 
-    test('a libpq variable in the environment that could repoint the connection takes the reader shape away', () => {
-        process.env.PGHOSTADDR = '203.0.113.9';
-        expect(run(`${READER} -c 'drop table a'`).action).not.toBe('allow');
+    test('a hostname that only appears in SQL is not a target', () => {
+        expect(run(`timeout 60 psql -X -h db.example.com -U owner -d app -c "delete from hosts where name = '${HOST}'"`).action).toBe('gate');
     });
 });
 
 describe('the reader list in dev-scope.local.json', () => {
-    const scope = (readers: unknown) => JSON.stringify({ snowflake: [], render: { resources: [DEV_DB], readers } });
+    const scope = (readers: unknown) => JSON.stringify({
+        snowflake: [{ connection: 'example', databases: ['EXAMPLE_DEV'] }],
+        render: { resources: [DEV_DB], readers },
+    });
     test('parses a reader on a listed resource and host', () => {
-        expect(parseDevScope(scope([{ resource: DEV_DB, host: HOST, user: 'app_reader', database: 'app_dev' }]))?.render?.readers).toHaveLength(1);
+        expect(parseDevScope(scope([{ resource: DEV_DB, host: HOST, user: 'app_reader', databases: ['app_dev'] }]))?.render?.readers).toHaveLength(1);
     });
     test.each([
-        ['an unlisted resource', [{ resource: PROD_DB, host: `${PROD_DB}.virginia-postgres.render.com`, user: 'r', database: 'd' }]],
-        ['a host that is not the resource', [{ resource: DEV_DB, host: 'db.example.com', user: 'r', database: 'd' }]],
-        ['a user that is not an identifier', [{ resource: DEV_DB, host: HOST, user: 'r;x', database: 'd' }]],
-        ['a missing database', [{ resource: DEV_DB, host: HOST, user: 'r' }]],
-    ])('rejects the whole file for %s', (_label, readers) => {
-        expect(parseDevScope(scope(readers))).toBeNull();
+        ['an unlisted resource', { resource: PROD_DB, host: `${PROD_DB}.virginia-postgres.render.com`, user: 'r', databases: ['d'] }],
+        ['a host that is not the resource', { resource: DEV_DB, host: 'db.example.com', user: 'r', databases: ['d'] }],
+        ['a user that is not an identifier', { resource: DEV_DB, host: HOST, user: 'r;x', databases: ['d'] }],
+        ['no databases', { resource: DEV_DB, host: HOST, user: 'r', databases: [] }],
+    ])('drops only an entry with %s, keeping the rest of the file', (_label, bad) => {
+        const parsed = parseDevScope(scope([bad, { resource: DEV_DB, host: HOST, user: 'app_reader', databases: ['app_dev'] }]));
+        expect(parsed?.render?.readers?.map(r => r.user)).toEqual(['app_reader']);
+        expect(parsed?.render?.resources).toEqual([DEV_DB]);
+        expect(parsed?.snowflake).toHaveLength(1);
     });
 });
