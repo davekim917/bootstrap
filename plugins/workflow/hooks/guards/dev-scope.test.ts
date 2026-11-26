@@ -50,6 +50,8 @@ describe('destructive SQL inside a listed dev database skips approval', () => {
         'snow sql -c acme_prod -q "drop table scratch_db.a.b; drop table scratch_db.a.c"',
         'snow sql -c acme_prod -q "create or replace table scratch_db.tmp.t as select * from prod_db.core.t"',
         'cd /tmp && timeout 300 snow sql -c acme_prod --warehouse dev_wh -q "drop schema if exists scratch_db.tmp cascade" 2>&1 | tail -3',
+        'cd /tmp/w || exit 1; snow sql -c acme_dev -q "drop table dev_db.a.b"',
+        'pwd; type snow && snow sql -c acme_dev -q "drop table dev_db.a.b"',
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -79,7 +81,7 @@ describe('everything else stays gated', () => {
         ['set -e on a connection with no verified login, whose SQL is read instead', 'set -e; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['true storing a descriptor number in PATH', "cd /tmp/w; true {PATH}>/dev/null; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
         ['old-style arithmetic in a redirect assigning PATH', "true >/dev/null$[PATH=10]; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
-        ['a [[ ]] comparison assigning HOME', "cd /tmp/w; [[ 1 -eq HOME=10 ]] && snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
+        ['a [[ ]] comparison assigning HOME', "cd /tmp/w; [[ 1 -eq HOME=10 ]] || snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
         ['a [[ ]] comparison assigning HOME on its left', "[[ HOME=10 -eq 1 ]]; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
         ['test -v with a subscript assigning HOME', "test -v 'a[HOME=1]'; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
         ['[ -v ] with a subscript assigning HOME', "[ -v 'a[HOME=1]' ]; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],

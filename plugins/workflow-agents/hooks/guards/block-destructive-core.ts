@@ -4660,7 +4660,7 @@ const BASH_SPECIAL_NAME = /^(?:BASH\w*|RANDOM|SRANDOM|SECONDS|OPTIND|OPTARG|OPTE
 // any other command is a child process.
 const BASH_BUILTINS = new Set(['.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait']);
 // The builtins that assign no variable and change no lookup (`hash -p` repoints a command, so it is not here).
-const NEUTRAL_BUILTINS = new Set(['cd', 'true', ':']);
+const NEUTRAL_BUILTINS = new Set(['cd', 'true', ':', 'exit', 'pwd', 'type']);
 
 /**
  * True when a word expands nothing that can assign: only `$NAME`, `${NAME}`, command substitutions (a subshell) and
