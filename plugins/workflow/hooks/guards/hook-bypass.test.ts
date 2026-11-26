@@ -23,6 +23,18 @@ const BLOCKED = [
   'git -c core.hookspath=/tmp/empty push origin feature',
   'git --config-env=core.hooksPath=EMPTY commit -m x',
   'git config core.hooksPath /dev/null',
+  'git config --rename-section legacy core',
+  'git config -ze',
+  // An option the line doesn't show may be --unset.
+  'git config --$X core.hooksPath',
+  'git config --$X bootstrap.boundaryChecker',
+  "git config --type $(printf 'path core.hooksPath') /tmp/hooks",
+  // clone writes its -c and --config values into the repository it makes.
+  'git clone -c core.hooksPath=/tmp/hooks https://example.com/r.git',
+  'git clone --config core.hooksPath=/tmp/hooks https://example.com/r.git',
+  'git clone --config=core.hooksPath=/tmp/hooks https://example.com/r.git',
+  'git clone -qc core.hooksPath=/tmp/hooks https://example.com/r.git',
+  'git clone --conf=core.hooksPath=/tmp/hooks https://example.com/r.git',
   'git config --local core.hooksPath .nohooks',
   'git config --unset core.hooksPath',
   'git config set core.hooksPath /dev/null',

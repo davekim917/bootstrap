@@ -3262,25 +3262,29 @@ const EACH_SUBMODULE_DIR = 'each submodule';
 
 /**
  * What xargs, or each find -exec/-execdir/-ok/-okdir, runs: the option that runs it and the command it runs, with
- * FILLED where its input or a match goes. `tail`: xargs appends what it reads, so more words may follow the last.
+ * FILLED where its input or a match goes. `tail`: xargs appends what it reads, or find's `{} +` the matches, so a
+ * FILLED word may be several and more may follow the last; otherwise each FILLED word is exactly one.
  */
 function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCommand | null; tail?: boolean }> {
     if (cmd.name === 'xargs') {
         const words = xargsCommand(cmd.args);
         const replace = xargsReplaceString(cmd.args);
-        const filled = replace !== null ? words.map(w => w.split(replace).join(FILLED)) : words.length ? [...words, ...FILLED_TAIL] : [];
-        return [{ via: 'xargs', inner: innerCommand(filled, cmd), tail: replace === null }];
+        const max = replace === null ? xargsMaxArgs(cmd.args) : null;
+        // -n hands each run at most that many words, one to a slot; otherwise any number may follow.
+        const tail = max === null ? FILLED_TAIL : FILLED_TAIL.slice(0, max);
+        const filled = replace !== null ? words.map(w => w.split(replace).join(FILLED)) : words.length ? [...words, ...tail] : [];
+        return [{ via: 'xargs', inner: innerCommand(filled, cmd), tail: replace === null && (max === null || max > FILLED_TAIL.length) }];
     }
     if (cmd.name === 'git') return submoduleForeach(cmd);
     if (cmd.name !== 'find') return [];
-    const runs: Array<{ via: string; inner: ResolvedCommand | null }> = [];
+    const runs: Array<{ via: string; inner: ResolvedCommand | null; tail: boolean }> = [];
     for (let i = 0; i < cmd.args.length; i++) {
         if (!['-exec', '-execdir', '-ok', '-okdir'].includes(cmd.args[i])) continue;
         // The command runs up to its `;`, or a `+` right after `{}`; what follows is find's own expression.
         const end = cmd.args.findIndex((a, j) => j > i && (a === ';' || (a === '+' && cmd.args[j - 1] === '{}')));
         const inner = innerCommand(cmd.args.slice(i + 1, end < 0 ? undefined : end), cmd);
         if (inner && cmd.args[i].endsWith('dir') && inner.chdir === undefined) inner.chdir = EACH_MATCH_DIR;
-        runs.push({ via: `find ${cmd.args[i]}`, inner });
+        runs.push({ via: `find ${cmd.args[i]}`, inner, tail: cmd.args[end] === '+' });
         if (end > i) i = end;
     }
     return runs;
@@ -3299,6 +3303,30 @@ function submoduleForeach(cmd: ResolvedCommand): Array<{ via: string; inner: Res
 }
 
 /** The string xargs replaces with its input (`-I R`, `-J R`, `-i`/`--replace` → `{}`), or null when it appends instead. */
+/**
+ * How many words xargs hands each run when -n (--max-args) bounds it, or null. Of -n and -L, the one given last wins, and
+ * -L (--max-lines, -l) bounds lines, each of which can hold several words: a key and its value.
+ */
+function xargsMaxArgs(args: string[]): number | null {
+    let max: number | null = null;
+    for (let i = 0; i < args.length && args[i].startsWith('-') && args[i] !== '--'; i += optionWords(args[i], 'adEIJLnPRsS', XARGS_LONG_VALUE_OPTIONS, XARGS_LONG_FLAGS)) {
+        const a = args[i];
+        const count = (value: string | undefined) => (/^[1-9]\d*$/.test(value ?? '') ? Number(value) : null);
+        if (a.startsWith('--')) {
+            const name = a.slice(2).split('=')[0];
+            if (name.length > 4 && 'max-args'.startsWith(name)) max = count(a.includes('=') ? a.slice(a.indexOf('=') + 1) : args[i + 1]);
+            else if (name.length > 4 && 'max-lines'.startsWith(name)) max = null;
+            continue;
+        }
+        for (let k = 1; k < a.length; k++) {
+            if (a[k] === 'n') max = count(a.slice(k + 1) || args[i + 1]);
+            if (a[k] === 'L' || a[k] === 'l') max = null;
+            if ('adEIJLnPRsSl'.includes(a[k])) break;
+        }
+    }
+    return max;
+}
+
 function xargsReplaceString(args: string[]): string | null {
     for (let i = 0; i < args.length && args[i].startsWith('-') && args[i] !== '--'; i += optionWords(args[i], 'adEIJLnPRsS', XARGS_LONG_VALUE_OPTIONS, XARGS_LONG_FLAGS)) {
         const a = args[i];
@@ -3321,7 +3349,7 @@ function xargsReplaceString(args: string[]): string | null {
 // it), a modifier, or text a client runs. A word filled in at run time is tried as each, so a rule whose words are
 // missing here lets xargs input or a find match choose them unseen; runtime-words.test.ts holds every rule to it.
 const RUNTIME_PROBES: string[][] = [
-    ['push', '--force'], ['clean'], ['--no-dry-run'], ['--force'], ['-f'], ['--delete'], ['-d'], ['--mirror'], ['--prune'],
+    ['push', '--force'], ['clean'], ['alias.x', '!x'], ['--no-dry-run'], ['--force'], ['-f'], ['--delete'], ['-d'], ['--mirror'], ['--prune'],
     ['+main'], [':main'],
     ['destroy'], ['delete'], ['apply', '-auto-approve'], ['-auto-approve'], ['uninstall'], ['remove'], ['drain'], ['cordon'],
     ['rm'], ['rb'], ['rmi'], ['system', 'prune'], ['volume', 'rm'], ['s3', 'rm'], ['ec2', 'terminate-instances'],
@@ -3335,11 +3363,13 @@ const RUNTIME_FILLS = [...new Map(RUNTIME_PROBES.flatMap(probe => probe.flatMap(
     .map(words => [words.join('\0'), words])).values()];
 const RUNTIME_PROBE_WORDS = [...new Set(RUNTIME_PROBES.flat())];
 
-/** Each way to fill `args`' FILLED words from RUNTIME_PROBES, with the words it put there. */
-function* runtimeFills(args: string[]): Generator<{ args: string[]; words: string }> {
+/** Each way to fill `args`' FILLED words from RUNTIME_PROBES, with the words it put there; `several` as execRuns' `tail`. */
+function* runtimeFills(args: string[], several: boolean): Generator<{ args: string[]; words: string }> {
     for (let i = 0; i < args.length; i++) {
         if (args[i] === FILLED) {
-            for (const fill of RUNTIME_FILLS) yield { args: [...args.slice(0, i), ...fill, ...args.slice(i + 1)], words: fill.join(' ') };
+            for (const fill of several ? RUNTIME_FILLS : RUNTIME_PROBE_WORDS.map(word => [word])) {
+                yield { args: [...args.slice(0, i), ...fill, ...args.slice(i + 1)], words: fill.join(' ') };
+            }
         } else if (args[i].includes(FILLED)) {
             // Part of a word (`FLUSH{}`, `select … {}`) can complete a probe word around the written text, or hold one.
             const [before, after] = [args[i].slice(0, args[i].indexOf(FILLED)), args[i].slice(args[i].lastIndexOf(FILLED) + FILLED.length)];
@@ -3372,9 +3402,9 @@ function shellFileWords(shell: ResolvedCommand): string[] {
 /**
  * What a word filled in at run time decides in `step` that makes what it runs unknowable, or null: the command it
  * runs (its name, its environment, or find's expression), the script a shell runs, or arguments that make it need
- * approval when it doesn't otherwise.
+ * approval when it doesn't otherwise. `several` as execRuns' `tail`.
  */
-function runtimeReach(step: ResolvedCommand): string | null {
+function runtimeReach(step: ResolvedCommand, several: boolean): string | null {
     if (!holdsFilled(step)) return null;
     if (step.name.includes(FILLED) || step.env?.some(e => e.includes(FILLED))) return 'takes the command it runs';
     if (step.name === 'find' && step.args.some(a => a.includes(FILLED))) return "takes find's expression";
@@ -3382,7 +3412,7 @@ function runtimeReach(step: ResolvedCommand): string | null {
         return `supplies ${step.name}'s script`;
     }
     if (checkGatedCommand(step)) return null;
-    for (const fill of runtimeFills(step.args)) {
+    for (const fill of runtimeFills(step.args, several)) {
         if (checkGatedCommand({ ...step, args: fill.args })) return `can fill in "${fill.words}" for ${step.name}`;
     }
     return null;
@@ -3408,7 +3438,7 @@ function innerGatedSteps(cmd: ResolvedCommand, depth = 0): InnerGate[] {
                 continue;
             }
             const at = moves.length ? [...moves] : undefined;
-            const reach = via === 'git submodule foreach' ? null : runtimeReach(step);
+            const reach = via === 'git submodule foreach' ? null : runtimeReach(step, tail ?? false);
             if (reach) {
                 gated.push({ step: { ...step, pos: undefined }, reason: `${via} ${reach} from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Write it in the command.`, runtime: true });
                 continue;
@@ -4168,6 +4198,39 @@ function currentWorkingDir(): string {
 // ── git target resolution ────────────────────────────────────────────────────
 
 const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--attr-source', '--super-prefix', '--shallow-file']);
+// Commands both installs add beside git's own: their git packages put contrib's subtree and sh-prompt, and the
+// sh-i18n--envsubst helper, in the exec path (/usr/lib/git-core), where git runs them ahead of an alias. Its
+// remote-http, remote-https, remote-ftp and remote-ftps helpers stay out, since a helper can push what it reads on stdin,
+// and so does a git-<name> program on PATH (git-filter-repo rewrites history).
+const GIT_INSTALLED_COMMANDS = ['subtree', 'sh-prompt', 'sh-i18n--envsubst'];
+// Git 2.51.0's own commands, which it runs ahead of an alias of the same name: the git-<name> entries of
+// command-list.txt, the builtins in git.c's commands[] table, and the Makefile's SCRIPT_SH and SCRIPT_LIB, at tag v2.51.0.
+// Only those that both the agent container's git (2.39.5) and this host's (2.43.0) can run are kept, since git runs an
+// alias for a name its install lacks: `git --list-cmds=builtins` and the git-<name> files in the exec path and on PATH.
+const GIT_COMMANDS = new Set([
+    'add', 'am', 'annotate', 'apply', 'archive', 'bisect', 'blame', 'branch', 'bugreport',
+    'bundle', 'cat-file', 'check-attr', 'check-ignore', 'check-mailmap', 'check-ref-format', 'checkout',
+    'checkout--worker', 'checkout-index', 'cherry', 'cherry-pick', 'clean', 'clone', 'column', 'commit',
+    'commit-graph', 'commit-tree', 'config', 'count-objects', 'credential', 'credential-cache',
+    'credential-cache--daemon', 'credential-store', 'daemon', 'describe',
+    'diagnose', 'diff', 'diff-files', 'diff-index', 'diff-tree', 'difftool', 'difftool--helper',
+    'fast-export', 'fast-import', 'fetch', 'fetch-pack', 'filter-branch', 'fmt-merge-msg', 'for-each-ref',
+    'for-each-repo', 'format-patch', 'fsck', 'fsck-objects', 'fsmonitor--daemon', 'gc', 'get-tar-commit-id', 'grep',
+    'hash-object', 'help', 'hook', 'http-backend', 'http-fetch', 'http-push', 'imap-send', 'index-pack', 'init',
+    'init-db', 'instaweb', 'interpret-trailers', 'log', 'ls-files', 'ls-remote', 'ls-tree', 'mailinfo', 'mailsplit',
+    'maintenance', 'merge', 'merge-base', 'merge-file', 'merge-index', 'merge-octopus', 'merge-one-file', 'merge-ours',
+    'merge-recursive', 'merge-recursive-ours', 'merge-recursive-theirs', 'merge-resolve', 'merge-subtree', 'merge-tree',
+    'mergetool', 'mergetool--lib', 'mktag', 'mktree', 'multi-pack-index', 'mv', 'name-rev', 'notes',
+    'pack-objects', 'pack-redundant', 'pack-refs', 'patch-id', 'pickaxe', 'prune', 'prune-packed', 'pull', 'push',
+    'quiltimport', 'range-diff', 'read-tree', 'rebase', 'receive-pack', 'reflog', 'remote', 'remote-ext',
+    'remote-fd', 'repack', 'replace', 'request-pull', 'rerere', 'reset', 'restore', 'rev-list', 'rev-parse',
+    'revert', 'rm', 'send-pack', 'sh-i18n', 'sh-setup', 'shell', 'shortlog', 'show', 'show-branch',
+    'show-index', 'show-ref', 'sparse-checkout', 'stage', 'stash', 'status', 'stripspace', 'submodule',
+    'submodule--helper', 'switch', 'symbolic-ref', 'tag', 'unpack-file', 'unpack-objects', 'update-index',
+    'update-ref', 'update-server-info', 'upload-archive', 'upload-archive--writer', 'upload-pack', 'var',
+    'verify-commit', 'verify-pack', 'verify-tag', 'version', 'web--browse', 'whatchanged', 'worktree', 'write-tree',
+    ...GIT_INSTALLED_COMMANDS,
+]);
 // URL and scp-style (`git@github.com:org/repo`) remotes.
 const REPO_URL_RE = /^(?:(?:https?|ssh|git|git\+ssh|file):\/\/|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:)/;
 // A bare `org/repo` positional. Only consulted in the REMOTE position, so a
@@ -4182,7 +4245,417 @@ function gitSubcommandIndex(args: string[]): number {
         if (args[i].startsWith('-')) { i += 1; continue; }
         break;
     }
-    return i;
+    return Math.min(i, args.length);
+}
+
+/** git's global options before the subcommand, without the values of those that take one. */
+function gitGlobalOptions(args: string[]): string[] {
+    const options: string[] = [];
+    for (let i = 0; i < gitSubcommandIndex(args); i++) {
+        options.push(args[i]);
+        if (GIT_GLOBAL_VALUE_OPTS.has(args[i])) i++;
+    }
+    return options;
+}
+
+// A bare --exec-path prints the path and exits; with `=` it sets the path instead.
+const GIT_PRINT_OPTIONS = new Set(['--help', '-h', '--version', '-v', '--html-path', '--man-path', '--info-path', '--exec-path']);
+
+/** git prints and exits without running the subcommand: a global option before it, or `--help` right after it. */
+function gitOnlyPrints(args: string[]): boolean {
+    const sub = gitSubcommandIndex(args);
+    // git turns `git <word> --help` into `git help <word>` before it looks the word up. Its own commands print usage for
+    // `-h`, which an alias would take as one more argument.
+    return args[sub + 1] === '--help' || (args[sub + 1] === '-h' && GIT_COMMANDS.has(args[sub] ?? ''))
+        || gitGlobalOptions(args).some(a => GIT_PRINT_OPTIONS.has(a) || a.startsWith('--list-cmds='));
+}
+
+/**
+ * A variable that moves where git config is written: the value the command's own prefix gives it, undefined when
+ * `line` never names it, or null when it is set some other way. An export, an assignment and a subshell read alike from
+ * here, and the prefix overrides them all. `line` is the whole command line, since an export there reaches a command
+ * that xargs or find runs, and quotes are dropped because bash drops them from a name (`export GIT_'DIR'=…`).
+ */
+function gitLocationEnv(cmd: ResolvedCommand, name: string, line: string): string | undefined | null {
+    const own = (cmd.env ?? []).findLast(e => e.startsWith(`${name}=`));
+    if (own !== undefined) return own.slice(name.length + 1);
+    return new RegExp(`\\b${name}\\b`).test(line.replace(/['"\\]/g, '')) ? null : undefined;
+}
+
+/**
+ * Where a `git config` or `git remote` write lands, by git v2.51.0's rules: the `--file` or `GIT_CONFIG` file, else the
+ * repository's own and shared git directories, found from `dir`, the directory the `-C` options leave git in. Null for
+ * the user's or the machine's config, and when the line doesn't fix it: a word the shell fills in where a path or an
+ * option goes, a `..`, `--bare`, `--blob`, a directory that isn't there yet, or a location variable set off the command.
+ */
+function gitConfigDestinations(cmd: ResolvedCommand, cwd: string, line: string): { files: string[]; dir: string } | null {
+    // chdir(2) follows a link before a `..`, which path.resolve would cancel out without looking.
+    const path = (base: string, word: string | undefined): string | null => {
+        const value = word === undefined ? null : provableWord(word, cmd, cmd.pos ?? -1);
+        return value === null || value.split('/').includes('..') ? null : physicalPath(pathResolve(base, value));
+    };
+    if (gitLocationEnv(cmd, 'GIT_COMMON_DIR', line) !== undefined) return null;
+    const at = gitSubcommandIndex(cmd.args);
+    let dir: string | null = physicalPath(cwd);
+    let gitDir = gitLocationEnv(cmd, 'GIT_DIR', line);
+    for (let i = 0; i < at && dir !== null; i++) {
+        const a = cmd.args[i];
+        if (unresolvedWord(a)) return null;
+        if (a === '-C') dir = path(dir, cmd.args[++i]);
+        else if (a === '--git-dir') gitDir = cmd.args[++i];
+        else if (a.startsWith('--git-dir=')) gitDir = a.slice('--git-dir='.length);
+        // --bare points GIT_DIR at the directory git is in when it reads the option, which a later -C doesn't move.
+        else if (a === '--bare') return null;
+        // An option's value the shell fills in, unquoted, can split into more options: `-c $(…)` may hold `--git-dir=…`.
+        else if (GIT_GLOBAL_VALUE_OPTS.has(a) && unresolvedWord(cmd.args[++i] ?? '')) return null;
+    }
+    if (dir === null || !isDirectory(dir)) return null;
+    if (cmd.args[at] === 'clone') {
+        const { options, optionNames, operands } = parseGitOptions(cmd.args.slice(at + 1), GIT_CLONE_OPTIONS);
+        if (gitConfigOptionUnknown({ optionNames, operands }) || options.some(([, value]) => value !== undefined && unresolvedWord(value))) return null;
+        const bare = options.some(([name]) => name === 'bare' || name === 'mirror');
+        const name = operands[1] ?? (operands[0] === undefined ? undefined : cloneDirectoryName(operands[0], bare));
+        const target = name === undefined ? null : path(dir, name);
+        if (target === null || !isDirectory(dirname(target))) return null;
+        const files = [target];
+        for (const [option, value] of options) {
+            if (option !== 'separate-git-dir') continue;
+            const gitDir = path(dir, value);
+            if (gitDir === null) return null;
+            files.push(gitDir);
+        }
+        return { files, dir };
+    }
+    if (cmd.args[at] === 'config') {
+        const parsed = parseGitConfig(cmd.args.slice(at + 1));
+        if (gitConfigOptionUnknown(parsed)) return null;
+        let file: string | null | undefined;
+        for (const [name, value] of parsed.options) {
+            if (name === 'global' || name === 'system' || name === 'blob') return null;
+            if (name !== 'file' && value !== undefined && unresolvedWord(value)) return null;
+            if (name === 'file' || name === 'no-file') file = value;
+        }
+        file ??= gitLocationEnv(cmd, 'GIT_CONFIG', line);
+        if (file !== undefined) {
+            const target = file === null ? null : path(dir, file);
+            return target === null || !isDirectory(dirname(target)) ? null : { files: [target], dir };
+        }
+    }
+    if (gitDir === null) return null;
+    let dirs: ReturnType<typeof gitDirsOf>;
+    try {
+        const named = gitDir === undefined ? undefined : path(dir, gitDir);
+        dirs = named === undefined ? gitDirsOf(dir) : named === null ? null : gitDirsAt(named);
+    } catch {
+        dirs = null;
+    }
+    return dirs && { files: [dirs.gitDir, dirs.commonDir], dir };
+}
+
+/** The directory `git clone` makes from its source when none is named, as builtin/clone.c's git_url_basename picks it. */
+function cloneDirectoryName(source: string, bare: boolean): string | undefined {
+    const trimmed = source.replace(/\/+$/, '').replace(/\/?\.git$/, '').replace(/\/+$/, '');
+    const name = trimmed.slice(Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf(':')) + 1).replace(/\.bundle$/, '');
+    return name === '' ? undefined : bare ? `${name}.git` : name;
+}
+
+function isDirectory(path: string): boolean {
+    try {
+        return statSync(path).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
+// Commands that create, move, link, unpack or remove files, so one of them on the line can put a repository, a `.git`
+// file or a link where git looks for config. sed writes only with -i.
+const PATH_WRITERS = new Set(['mkdir', 'ln', 'mv', 'cp', 'rsync', 'tar', 'unzip', 'install', 'touch', 'truncate', 'tee', 'dd', 'sed', 'trash', 'rm', 'rmdir', 'unlink']);
+const GIT_PATH_WRITERS = new Set(['worktree', 'init', 'clone', 'submodule']);
+
+/**
+ * The paths the steps of `line` may write, as written: what its redirects open, and the words of its path writers,
+ * the steps that xargs and find run included. Null when one of them may write somewhere the line doesn't name as an
+ * absolute path: a relative path, a word the shell fills in, `git worktree`, `init`, `clone` or `submodule`, or patch.
+ */
+function lineWrites(line: string, depth = 0, self?: ResolvedCommand): string[] | null {
+    const written: string[] = [];
+    let steps: ResolvedCommand[];
+    try {
+        steps = extractCommands(line);
+        written.push(...lineRedirectWrites(line, steps[0]?.script?.ast).map(w => w.target).filter(t => !DISCARD_TARGETS.has(t)));
+    } catch {
+        return null;
+    }
+    for (const step of steps) {
+        if (self && step.pos !== undefined && step.pos === self.pos && step.name === self.name) continue;
+        const more = stepWrites(step, depth);
+        if (more === null) return null;
+        written.push(...more);
+    }
+    return written.every(t => t.startsWith('/') && !unresolvedWord(t)) ? written : null;
+}
+
+function stepWrites(step: ResolvedCommand, depth: number): string[] | null {
+    if (step.name === 'patch' || (step.name === 'git' && GIT_PATH_WRITERS.has(step.args[gitSubcommandIndex(step.args)] ?? ''))) return null;
+    const writes = PATH_WRITERS.has(step.name) && (step.name !== 'sed' || step.args.some(a => /^(?:-[a-zA-Z]*i|--in-place)/.test(a)));
+    // A path can sit in an option's own word: `--target-directory=DIR`, `-tDIR`, `-CDIR`, `-dDIR`, `-fFILE`, dd's `of=FILE`.
+    const written = !writes ? [] : step.args.flatMap(a => a.startsWith('-')
+        ? (/^--[^=]+=(.+)$/.exec(a) ?? /^-[a-zA-Z]*?[tCdf](.+)$/.exec(a))?.slice(1) ?? []
+        : [a.replace(/^(?:if|of)=/, '')]);
+    for (const { inner } of execRuns(step)) {
+        if (!inner) continue;
+        if (depth >= EXEC_NESTING_MAX) return null;
+        const script = SHELLS.has(inner.name) ? shellScript(inner.name, inner.args) : null;
+        const more = script ? lineWrites(script.text, depth + 1) : SHELLS.has(inner.name) ? null : stepWrites(inner, depth + 1);
+        if (more === null) return null;
+        written.push(...more);
+    }
+    return written;
+}
+
+/**
+ * A write at `t` can move a config write found from `p`: it is `p` or a directory above it, a path under it, or the
+ * `.git` that git looks for in a directory above it.
+ */
+function movesConfigWrite(t: string, p: string): boolean {
+    if (t.split('/').includes('..')) return true;
+    const within = (a: string, b: string) => a === b || a.startsWith(b.endsWith('/') ? b : `${b}/`);
+    return [pathResolve(t), physicalPath(t)].some(w => {
+        if (within(p, w) || within(w, p)) return true;
+        for (let a = p; ; a = dirname(a)) {
+            if (within(w, join(a, '.git'))) return true;
+            if (a === dirname(a)) return false;
+        }
+    });
+}
+
+/** The command moves git's exec path, where git finds its own script commands and `git-<name>` programs. */
+function gitMovesExecPath(cmd: ResolvedCommand): boolean {
+    return gitGlobalOptions(cmd.args).some(a => a.startsWith('--exec-path=')) || !!cmd.env?.some(e => e.startsWith('GIT_EXEC_PATH='));
+}
+
+/**
+ * The alias git may run, or null. git runs its own commands ahead of an alias of the same name; any other word is an
+ * alias, whatever config defined it, or a `git-<name>` program the guard doesn't look for.
+ */
+function gitAlias(cmd: ResolvedCommand): string | null {
+    const sub = cmd.args[gitSubcommandIndex(cmd.args)];
+    return sub === undefined || /[$`]/.test(sub) || GIT_COMMANDS.has(sub) || gitOnlyPrints(cmd.args) ? null : sub;
+}
+
+// Config that makes a later, ordinary-looking git command do something else: an alias, a push that mirrors or follows
+// configured refspecs, or a program git runs for ssh or paging. core.hooksPath is refused outright (gitHookBypassReason).
+const GIT_RISKY_CONFIG_KEY_RE = /^(?:alias\..+|remote\..+\.(?:mirror|push)|core\.(?:sshcommand|pager))$/i;
+// `-c core.pager=cat`, or an empty pager, runs nothing but cat.
+const GIT_PAGER_RUNS_NOTHING = /^core\.pager=(?:cat)?$/i;
+const GIT_RISKY_CONFIG_SECTION_RE = /^(?:alias|remote(?:\..+)?|core)$/i;
+const GIT_EXEC_PATH_MOVED = 'git with its exec path moved runs whatever that directory holds in place of its own commands, or an alias where one is missing. Run git with its installed exec path.';
+const GIT_NOT_OWN_COMMAND = "is not one of git's own commands, so git runs it as an alias";
+const GIT_RISKY_CONFIG = 'This sets git config (an alias, a remote\'s mirror or push refspecs, core.sshCommand or core.pager) that makes a later, ordinary-looking git command run something else: any command, a mirror push or a force-push. Get approval, or run the command it stands for directly.';
+
+/** The command sets risky git config: with `-c`, `git config`, `git remote add --mirror`, `git clone` or its env. */
+function gitSetsRiskyConfig(cmd: ResolvedCommand): boolean {
+    if (cmd.name === 'git' && gitOnlyPrints(cmd.args)) return false;
+    if (envSetsGitConfig(cmd.env ?? [], GIT_RISKY_CONFIG_KEY_RE)) return true;
+    if (cmd.name !== 'git') return false;
+    const risky = configKeyIs(GIT_RISKY_CONFIG_KEY_RE);
+    const sets = (a: string, fromEnv: boolean) => risky(a) && (fromEnv || !GIT_PAGER_RUNS_NOTHING.test(a));
+    if (gitOptionsSetConfig(cmd.args, sets)) return true;
+    const i = gitSubcommandIndex(cmd.args);
+    const rest = cmd.args.slice(i + 1);
+    switch (cmd.args[i]) {
+        case 'config': return gitConfigWrites(rest, GIT_RISKY_CONFIG_KEY_RE, GIT_RISKY_CONFIG_SECTION_RE, false);
+        case 'remote': {
+            // `git remote [-v] add …`: git remote's own options come before its subcommand.
+            const verb = rest.findIndex(a => !a.startsWith('-'));
+            return rest[verb] === 'add' && parseGitOptions(rest.slice(verb + 1), GIT_REMOTE_ADD_OPTIONS).options.some(([n]) => n === 'mirror');
+        }
+        case 'clone': return parseGitOptions(rest, GIT_CLONE_OPTIONS).options.some(([n]) => n === 'mirror')
+            || gitCloneConfig(rest).some(value => sets(value, false));
+        default: return false;
+    }
+}
+
+// Runners the guard doesn't read the command of, which fill in its words from their input or their `:::` lists.
+const UNREAD_RUNNERS = new Set(['parallel', 'sem']);
+
+/**
+ * git config whose words a runner fills in where the guard can't see them: under parallel, or with a variable that a
+ * `read`, `mapfile` or `readarray` on the line sets from its input (`… | while read k v; do git config "$k" "$v"; done`).
+ * xargs and find are read through RUNTIME_PROBES instead.
+ */
+function runsGitConfigUnseen(cmd: ResolvedCommand): boolean {
+    if (UNREAD_RUNNERS.has(cmd.name)) {
+        // Its command, given as words or one string, runs through a shell up to the first `:::` or `::::` list.
+        const at = cmd.args.findIndex(a => commandName(a) === 'git' || /(?:^|[\s;&|(`])git\s/.test(a));
+        if (at < 0) return false;
+        const end = cmd.args.findIndex((a, i) => i > at && /^::::?\+?$/.test(a));
+        const text = cmd.args.slice(at, end < 0 ? undefined : end).join(' ');
+        // A replacement string is quoted into one word, and -n 1 or -N 1 passes one argument a run. -m, -X, -L, a
+        // larger -n or -N, or a `{= … =}` expression can put several in one.
+        let several = text.includes('{=');
+        const options = cmd.args.slice(0, at);
+        for (let i = 0; i < options.length; i++) {
+            const count = /^(?:-[nN]|--max-(?:replace-)?args)(?:=?(.*))?$/.exec(options[i]);
+            if (count) several ||= (count[1] || options[++i]) !== '1';
+            else if (/^-(?:-(?:xargs|max-)|[A-Za-z]*[mXnNLl])/.test(options[i])) several = true;
+        }
+        const placeholder = /\{[^{}\s]*\}/g;
+        let steps: ResolvedCommand[];
+        try {
+            steps = extractCommands(placeholder.test(text) ? text.replace(placeholder, FILLED) : `${text} ${FILLED}`);
+        } catch {
+            return true;
+        }
+        return steps.some(step => gitConfigFillRisky(step, several));
+    }
+    if (cmd.name !== 'git' || cmd.args[gitSubcommandIndex(cmd.args)] !== 'config' || !cmd.args.some(a => a.includes('$'))) return false;
+    const names = [...inputVariables(cmd.script?.command ?? cmd.raw)].filter(n => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n));
+    if (!names.length) return false;
+    const read = new RegExp(`\\$(?:\\{(?:${names.join('|')})(?![A-Za-z0-9_])[^}]*\\}|(?:${names.join('|')})(?![A-Za-z0-9_]))`, 'g');
+    const args = cmd.args.map(a => a.replace(read, FILLED));
+    // A variable held in quotes stays one argument; unquoted, or as "${a[@]}", it splits into words.
+    const words = argumentWords(cmd);
+    const several = args.some((a, i) => a !== cmd.args[i] && !(words.length === args.length && staysOneWord(words[i].word)));
+    return args.some((a, i) => a !== cmd.args[i]) && gitConfigFillRisky({ ...cmd, args }, several);
+}
+
+/**
+ * git config with FILLED where a runner puts words it reads, judged as xargs's are: risky when some fill from
+ * RUNTIME_PROBES makes it a risky write, with `several` when one FILLED may stand for several words. Reads (`--get`,
+ * `--list`, `get`, `list`) stay reads.
+ */
+function gitConfigFillRisky(step: ResolvedCommand, several: boolean): boolean {
+    if (step.name !== 'git' || step.args[gitSubcommandIndex(step.args)] !== 'config') return false;
+    return gitSetsRiskyConfig(step) || runtimeReach(step, several) !== null;
+}
+/** The variables that `read`, `mapfile` or `readarray` on `line` set from their input. */
+function inputVariables(line: string): Set<string> {
+    const names = new Set<string>();
+    let steps: ResolvedCommand[];
+    try {
+        steps = extractCommands(line);
+    } catch {
+        return names;
+    }
+    for (const step of steps) {
+        const valued = step.name === 'read' ? 'adinNptu' : step.name === 'mapfile' || step.name === 'readarray' ? 'dnOsuCc' : null;
+        if (valued === null) continue;
+        const operands: string[] = [];
+        for (let i = 0; i < step.args.length; i++) {
+            const a = step.args[i];
+            if (!a.startsWith('-') || a.length < 2) {
+                operands.push(a);
+                continue;
+            }
+            const k = [...a.slice(1)].findIndex(c => valued.includes(c));
+            if (k < 0) continue;
+            const value = a.slice(k + 2) || step.args[++i];
+            // `read -a NAME` reads into the array it names.
+            if (a[k + 1] === 'a' && value) names.add(value);
+        }
+        if (step.name === 'read') for (const name of operands.length ? operands : ['REPLY']) names.add(name);
+        else names.add(operands.at(-1) ?? 'MAPFILE');
+    }
+    return names;
+}
+
+/** What `git clone <rest>` writes into the new repository's config: its -c and --config values. */
+function gitCloneConfig(rest: string[]): string[] {
+    return parseGitOptions(rest, GIT_CLONE_OPTIONS).options.flatMap(([name, value]) => (name === 'config' && value !== undefined ? [value] : []));
+}
+
+/** A git command's options as its parse-options table declares them: each short letter's long name, and whether each long one takes a value. */
+type GitOptionTable = { short: Record<string, string>; long: Record<string, boolean> };
+
+const flags = (...names: string[]): Record<string, boolean> => Object.fromEntries(names.map(n => [n, false]));
+const valued = (...names: string[]): Record<string, boolean> => Object.fromEntries(names.map(n => [n, true]));
+
+// The option tables of builtin/config.c, builtin/clone.c and builtin/remote.c's `add` at git v2.51.0.
+const GIT_CONFIG_OPTIONS: GitOptionTable = {
+    short: { f: 'file', t: 'type', z: 'null', l: 'list', e: 'edit' },
+    long: {
+        ...valued('file', 'blob', 'type', 'value', 'url', 'default', 'comment'),
+        ...flags('global', 'system', 'local', 'worktree', 'bool', 'int', 'bool-or-int', 'bool-or-str', 'path', 'expiry-date',
+            'null', 'name-only', 'show-origin', 'show-scope', 'show-names', 'includes', 'all', 'regexp', 'fixed-value', 'append',
+            'get', 'get-all', 'get-regexp', 'get-urlmatch', 'replace-all', 'add', 'unset', 'unset-all', 'rename-section',
+            'remove-section', 'list', 'edit', 'get-color', 'get-colorbool'),
+    },
+};
+const GIT_CLONE_OPTIONS: GitOptionTable = {
+    short: { v: 'verbose', q: 'quiet', n: 'no-checkout', l: 'local', s: 'shared', j: 'jobs', o: 'origin', b: 'branch', u: 'upload-pack', c: 'config', 4: 'ipv4', 6: 'ipv6' },
+    long: {
+        ...valued('jobs', 'template', 'reference', 'reference-if-able', 'origin', 'branch', 'revision', 'upload-pack', 'depth',
+            'shallow-since', 'shallow-exclude', 'separate-git-dir', 'ref-format', 'config', 'server-option', 'bundle-uri', 'filter'),
+        ...flags('verbose', 'quiet', 'progress', 'reject-shallow', 'no-checkout', 'bare', 'naked', 'mirror', 'local', 'no-hardlinks',
+            'shared', 'recurse-submodules', 'recursive', 'dissociate', 'single-branch', 'tags', 'shallow-submodules',
+            'also-filter-submodules', 'remote-submodules', 'sparse', 'ipv4', 'ipv6'),
+    },
+};
+const GIT_REMOTE_ADD_OPTIONS: GitOptionTable = {
+    short: { f: 'fetch', t: 'track', m: 'master' },
+    long: { ...valued('track', 'master'), ...flags('fetch', 'tags', 'mirror') },
+};
+
+/**
+ * `args` read the way git's parse-options reads them, with options under their long names. A short option may sit in a
+ * cluster (`-qc`) and takes the rest of its word (`-fFILE`) or else the next word as its value; a long one may be
+ * abbreviated to a unique prefix and takes `=VALUE` or the next word. An unknown option is skipped; `--` or
+ * `--end-of-options` ends them, and so does the first operand when `stopAtOperand` (PARSE_OPT_STOP_AT_NON_OPTION).
+ */
+function parseGitOptions(args: string[], table: GitOptionTable, stopAtOperand = false): ParsedGitOptions {
+    const options: Array<[string, string | undefined]> = [];
+    const optionNames: string[] = [];
+    const operands: string[] = [];
+    const names = Object.keys(table.long);
+    const lookup = (written: string): string | undefined => {
+        if (Object.prototype.hasOwnProperty.call(table.long, written)) return written;
+        const prefixed = names.filter(n => n.startsWith(written));
+        return prefixed.length === 1 ? prefixed[0] : undefined;
+    };
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--' || a === '--end-of-options' || (stopAtOperand && !(a.length > 1 && a.startsWith('-')))) {
+            operands.push(...args.slice(a.startsWith('--') ? i + 1 : i));
+            break;
+        }
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const written = a.slice(2, eq < 0 ? undefined : eq);
+            optionNames.push(`--${written}`);
+            const name = lookup(written);
+            if (name !== undefined) options.push([name, eq >= 0 ? a.slice(eq + 1) : table.long[name] ? args[++i] : undefined]);
+            else if (written.startsWith('no-') && lookup(written.slice(3)) !== undefined) options.push([`no-${lookup(written.slice(3))}`, undefined]);
+        } else if (a.length > 1 && a.startsWith('-')) {
+            let k = 1;
+            for (; k < a.length; k++) {
+                const name = table.short[a[k]];
+                if (name === undefined) continue;
+                if (!table.long[name]) {
+                    options.push([name, undefined]);
+                    continue;
+                }
+                options.push([name, k + 1 < a.length ? a.slice(k + 1) : args[++i]]);
+                break;
+            }
+            optionNames.push(a.slice(0, k + 1));
+        } else operands.push(a);
+    }
+    return { options, optionNames, operands };
+}
+
+/** `options` under their long names with their values; `optionNames` each option as written, without its value. */
+type ParsedGitOptions = { options: Array<[string, string | undefined]>; optionNames: string[]; operands: string[] };
+
+// git config's subcommands at v2.51.0 (builtin/config.c), named only as the first word after `config`: `list` and `edit`
+// parse options anywhere, the rest only before their first operand. Without one, the legacy form also stops there.
+const GIT_CONFIG_SUBCOMMANDS: Record<string, boolean> = { list: false, edit: false, get: true, set: true, unset: true, 'rename-section': true, 'remove-section': true };
+
+/** `git config <args>` read as git v2.51.0 reads it: its subcommand, if the first word names one, then its options. */
+function parseGitConfig(args: string[]): { subcommand?: string } & ReturnType<typeof parseGitOptions> {
+    const subcommand = Object.prototype.hasOwnProperty.call(GIT_CONFIG_SUBCOMMANDS, args[0]) ? args[0] : undefined;
+    const parsed = parseGitOptions(subcommand ? args.slice(1) : args, GIT_CONFIG_OPTIONS, subcommand ? GIT_CONFIG_SUBCOMMANDS[subcommand] : true);
+    return { subcommand, ...parsed };
 }
 
 /** Value of `git -C <path>` / `--work-tree <path>`, which relocates the
@@ -4203,9 +4676,22 @@ function gitRemoteArg(args: string[]): string | null {
     return null;
 }
 
-function labGitTarget(cmd: ResolvedCommand, cwd: string): string | null {
+function labGitTarget(cmd: ResolvedCommand, cwd: string, line: string): string | null {
+    // An alias, or a program from a moved exec path, can act on any checkout or remote, whichever one it is run in.
+    if (gitAlias(cmd) !== null || gitMovesExecPath(cmd)) return null;
+    const sub = cmd.args[gitSubcommandIndex(cmd.args)];
+    // A write to git config is a lab repository's own only when every file it can land in is in a lab checkout, and no
+    // other step on the line can move it there from elsewhere. Every step counts, since a pipeline or `&` runs them at
+    // once. A clone writes into the checkout it makes, whatever its source.
+    if (sub === 'config' || sub === 'remote' || sub === 'clone') {
+        const into = gitConfigDestinations(cmd, cwd, line);
+        if (!into?.files.every(isLabWorktreePath)) return null;
+        const written = lineWrites(line, 0, cmd);
+        if (written === null || written.some(t => [into.dir, ...into.files].some(p => movesConfigWrite(t, p)))) return null;
+        if (sub === 'config') return into.files[0];
+    }
     // git clean touches only its work tree; its words (an `-e` pattern, a pathspec) name no repository.
-    if (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean') {
+    if (sub === 'clean') {
         // An exported GIT_WORK_TREE or GIT_DIR elsewhere on the line can move the work tree; only the command's own
         // prefix (which overrides an export) is known.
         const own = (cmd.env ?? []).some(e => e.startsWith('GIT_WORK_TREE='));
@@ -4435,10 +4921,10 @@ function labGhTarget(cmd: ResolvedCommand): string | null {
  * Fails CLOSED: every family it does not recognize, and every target it cannot
  * read literally out of the resolved command, returns null and stays gated.
  */
-export function labTargetOf(cmd: ResolvedCommand, cwd: string = currentWorkingDir()): string | null {
+export function labTargetOf(cmd: ResolvedCommand, cwd: string = currentWorkingDir(), line = cmd.script?.command ?? cmd.raw): string | null {
     switch (cmd.name) {
         case 'git':
-            return labGitTarget(cmd, cwd);
+            return labGitTarget(cmd, cwd, line);
         case 'render':
             return labRenderTarget(cmd);
         case 'gh':
@@ -5087,7 +5573,7 @@ function withoutSingleQuoted(text: string): string {
 
 /**
  * True when a word stays one argument: nothing outside quotes word-splits or globs, so a value can't smuggle in an
- * option of its own. `"$@"` splits even inside double quotes.
+ * option of its own. `"$@"` and `"${a[@]}"` split even inside double quotes.
  */
 function staysOneWord(word: string): boolean {
     let quote: string | null = null;
@@ -5099,7 +5585,7 @@ function staysOneWord(word: string): boolean {
             i++;
         } else if (quote === '"') {
             if (c === '"') quote = null;
-            else if (c === '$' && word[i + 1] === '@') return false;
+            else if (c === '$' && /^(?:@|\{@|\{[A-Za-z_][A-Za-z0-9_]*\[@\])/.test(word.slice(i + 1))) return false;
         } else if (c === "'" || c === '"') {
             quote = c;
         } else if ('$`*?['.includes(c)) {
@@ -6099,20 +6585,62 @@ const GIT_COMMIT_VALUE_LONG = new Set([
     '--message', '--file', '--author', '--date', '--reuse-message', '--reedit-message',
     '--template', '--fixup', '--squash', '--cleanup', '--trailer', '--pathspec-from-file',
 ]);
-const GIT_CONFIG_VALUE_OPTS = new Set(['-f', '--file', '--blob', '--type', '--default', '--comment', '--value']);
-const GIT_CONFIG_WRITE_OPTS = new Set(['--unset', '--unset-all', '--replace-all', '--add']);
-const GIT_CONFIG_SECTION_OPTS = new Set(['--rename-section', '--remove-section']);
-const GIT_CONFIG_READ_OPTS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l']);
-const GIT_CONFIG_ACTION_OPTS = new Set([...GIT_CONFIG_WRITE_OPTS, ...GIT_CONFIG_SECTION_OPTS, ...GIT_CONFIG_READ_OPTS]);
+type GitConfigMode = 'read' | 'write' | 'unset' | 'remove' | 'rename';
+// What each of git config's action options does with the names after it.
+const GIT_CONFIG_MODES: Record<string, GitConfigMode> = {
+    'replace-all': 'write', add: 'write', unset: 'unset', 'unset-all': 'unset', 'remove-section': 'remove', 'rename-section': 'rename',
+    get: 'read', 'get-all': 'read', 'get-regexp': 'read', 'get-urlmatch': 'read', list: 'read', 'get-color': 'read', 'get-colorbool': 'read',
+};
 
 function envDisablesHooks(env: string[]): boolean {
-    return env.some((entry) =>
-        /^HUSKY=0$/.test(entry) ||
-        /^HUSKY_SKIP_HOOKS=/.test(entry) ||
-        /^GIT_CONFIG_PARAMETERS=.*(?:core\.hookspath|bootstrap\.boundarychecker)/i.test(entry) ||
-        /^GIT_CONFIG_KEY_\d+=(?:core\.hookspath|bootstrap\.boundarychecker)$/i.test(entry),
-    );
+    return env.some((entry) => /^HUSKY=0$/.test(entry) || /^HUSKY_SKIP_HOOKS=/.test(entry))
+        || envSetsGitConfig(env, GIT_HOOK_CONFIG_KEY_RE);
 }
+
+/** An assignment in `env` that hands git config (GIT_CONFIG_PARAMETERS or GIT_CONFIG_KEY_<n>) whose key `key` matches. */
+function envSetsGitConfig(env: string[], key: RegExp): boolean {
+    return env.some((entry) => {
+        const m = /^GIT_CONFIG_(KEY_\d+|PARAMETERS)=([\s\S]*)$/i.exec(entry);
+        if (!m) return false;
+        if (m[1].toUpperCase() !== 'PARAMETERS') return key.test(m[2]);
+        // GIT_CONFIG_PARAMETERS holds quoted `'key'='value'` or `'key=value'` pairs.
+        return m[2].split(/['"\s=]+/).some((word) => key.test(word));
+    });
+}
+
+const EXPORTERS = new Set(['export', 'declare', 'typeset']);
+
+/** An export, declare or typeset that hands git risky config, or names a config key whose value the line doesn't show. */
+function exportsRiskyConfig(cmd: ResolvedCommand): boolean {
+    return cmd.args.some((arg) => {
+        const m = /^(GIT_CONFIG_(?:KEY_\d+|PARAMETERS))(?:=([\s\S]*))?$/.exec(arg);
+        if (!m) return false;
+        const value = m[2] ?? provableWord(`$${m[1]}`, cmd, cmd.pos ?? -1);
+        return value === null || /[$`]/.test(value) || envSetsGitConfig([`${m[1]}=${value}`], GIT_RISKY_CONFIG_KEY_RE);
+    });
+}
+
+/**
+ * A `-c key=value` or `--config-env key=ENVVAR` before git's subcommand that `sets` picks; `fromEnv` when the value is
+ * the named variable's.
+ */
+function gitOptionsSetConfig(args: string[], sets: (assignment: string, fromEnv: boolean) => boolean): boolean {
+    for (let i = 0; i < gitSubcommandIndex(args); i++) {
+        const arg = args[i];
+        if ((arg === '-c' || arg === '--config-env') && sets(args[i + 1] ?? '', arg !== '-c')) return true;
+        if (arg.startsWith('-c') && arg.length > 2 && sets(arg.slice(2), false)) return true;
+        if (arg.startsWith('--config-env=') && sets(arg.slice('--config-env='.length), true)) return true;
+    }
+    return false;
+}
+
+const configKeyIs = (key: RegExp) => (assignment: string): boolean =>
+    (COMMAND_SUBSTITUTION_RE.test(assignment) ? substitutionWords(assignment) : [assignment]).some(a => key.test(a.split('=')[0] ?? ''));
+
+// A command substitution's output can split into any number of words, so in an option's value the words it shows stand in
+// for what it may add: `--type $(printf 'path alias.x')` may hand git the key alias.x. Quotes are dropped from them.
+const COMMAND_SUBSTITUTION_RE = /\$\(|`/;
+const substitutionWords = (value: string): string[] => value.replace(/['"\\]/g, '').split(/[\s$()`;|&<>]+/).filter(Boolean);
 
 function gitCommitSkipsHooks(args: string[]): boolean {
     for (let i = 0; i < args.length; i++) {
@@ -6139,38 +6667,65 @@ function gitCommitSkipsHooks(args: string[]): boolean {
     return false;
 }
 
-function gitConfigWritesHookConfig(args: string[]): boolean {
-    const positionals: string[] = [];
+/**
+ * `git config <args>` writes config whose key `key`, or section `section`, matches: sets it, renames a section to it,
+ * or, with `removals`, unsets, removes or renames it away.
+ */
+function gitConfigWrites(args: string[], key: RegExp, section: RegExp, removals = true): boolean {
+    const { subcommand, options, optionNames, operands } = parseGitConfig(args);
     // git config takes ONE action option; a later one replaces an earlier one and
     // `--no-<action>` clears it, leaving the positional form to decide.
-    let mode: 'read' | 'write' | 'section' | null = null;
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (GIT_CONFIG_VALUE_OPTS.has(arg)) { i += 1; continue; }
+    let mode: GitConfigMode | null = null;
+    for (const [name] of options) {
         // An editor session can rewrite any key unseen.
-        if (arg === '-e' || arg === '--edit') return true;
-        if (GIT_CONFIG_WRITE_OPTS.has(arg)) { mode = 'write'; continue; }
-        if (GIT_CONFIG_SECTION_OPTS.has(arg)) { mode = 'section'; continue; }
-        if (GIT_CONFIG_READ_OPTS.has(arg)) { mode = 'read'; continue; }
-        if (arg.startsWith('--no-') && GIT_CONFIG_ACTION_OPTS.has(`--${arg.slice('--no-'.length)}`)) { mode = null; continue; }
-        if (arg.startsWith('-')) continue;
-        positionals.push(arg);
+        if (name === 'edit') return true;
+        if (Object.prototype.hasOwnProperty.call(GIT_CONFIG_MODES, name)) mode = GIT_CONFIG_MODES[name];
+        else if (name.startsWith('no-') && Object.prototype.hasOwnProperty.call(GIT_CONFIG_MODES, name.slice(3))) mode = null;
     }
-    const [verb, ...rest] = positionals;
-    if (verb === 'edit') return true;
-    // Removing or renaming the whole section drops the key with it.
-    if (verb === 'remove-section' || verb === 'rename-section') {
-        return GIT_HOOK_CONFIG_SECTION_RE.test(rest[0] ?? '');
+    // A command substitution in an option's value may add options and names, so its words join the operands.
+    const substituted = options.flatMap(([, value]) => (value !== undefined && COMMAND_SUBSTITUTION_RE.test(value) ? [substitutionWords(value)] : []));
+    // A word the guard can't resolve in an option slot leaves the operands' positions unknown, so every operand is read
+    // as if it might be the key.
+    const shifted = substituted.length > 0 || gitConfigOptionUnknown({ optionNames, operands });
+    // An option whose name the line doesn't show may be any of them, --unset or --add among them.
+    const optionUnknown = substituted.length > 0 || optionNames.some(unresolvedWord);
+    const candidates = [...operands, ...substituted.flat()];
+    const matches = (s: string | undefined) => section.test(s ?? '');
+    // Every form names the key first; what follows is a value or a value-pattern.
+    const isKey = () => (shifted ? candidates.some((p) => key.test(p)) : key.test(operands[0] ?? ''));
+    // A rename to the section adds its keys; removing it, or renaming it away, drops them.
+    const renames = () => (shifted ? candidates.some(matches) : matches(operands[1]) || (removals && matches(operands[0])));
+    const removes = () => removals && (shifted ? candidates.some(matches) : matches(operands[0]));
+    switch (subcommand) {
+        case 'edit': return true;
+        case 'rename-section': return renames();
+        case 'remove-section': return removes();
+        case 'unset': return removals && isKey();
+        case 'set': return (operands.length > 1 || optionUnknown) && isKey();
+        case 'get':
+        case 'list': return false;
     }
-    if (mode === 'section') return GIT_HOOK_CONFIG_SECTION_RE.test(verb ?? '');
-    if (verb === 'set' || verb === 'unset') return rest.some((p) => GIT_HOOK_CONFIG_KEY_RE.test(p));
-    if (verb === 'get' || verb === 'list') return false;
-    const keyIndex = positionals.findIndex((p) => GIT_HOOK_CONFIG_KEY_RE.test(p));
-    if (keyIndex === -1) return false;
-    if (mode === 'write') return true;
+    if (mode === 'rename') return renames();
+    if (mode === 'remove') return removes();
+    if (!isKey()) return false;
+    if (mode === 'unset') return removals;
+    // Every write takes a value after the key: one name alone is read, unless an option the line doesn't show may change that.
+    if (operands.length < 2 && !optionUnknown) return false;
     // `git config --get <key> <value-pattern>` is a read with a filter.
-    if (mode === 'read') return false;
-    return positionals.length > keyIndex + 1;
+    return mode !== 'read';
+}
+
+/** A shell word the guard keeps unexpanded: a variable, a command substitution, a glob, a brace or a leading tilde. */
+const unresolvedWord = (word: string): boolean => /[$`*?[{]/.test(word) || word.startsWith('~');
+
+/**
+ * A word the guard can't resolve to a literal stands where `git config` may read an option: an option written with an
+ * expansion, or such a word before the first literal operand, which may expand to nothing or to an option. An option's
+ * value is never such a word.
+ */
+function gitConfigOptionUnknown({ optionNames, operands }: Pick<ParsedGitOptions, 'optionNames' | 'operands'>): boolean {
+    const firstLiteral = operands.findIndex((o) => !unresolvedWord(o));
+    return optionNames.some(unresolvedWord) || operands.slice(0, firstLiteral < 0 ? undefined : firstLiteral).some(unresolvedWord);
 }
 
 /** Reason to refuse `cmd` because it skips or disables git hooks, or null. */
@@ -6179,20 +6734,9 @@ export function gitHookBypassReason(cmd: ResolvedCommand): string | null {
     if (cmd.name !== 'git') return null;
     if (envDisablesHooks(cmd.env ?? [])) return GIT_HOOK_BYPASS_REASON;
 
-    const sub = gitSubcommandIndex(cmd.args);
-    const overridesHookConfig = (assignment: string) =>
-        GIT_HOOK_CONFIG_KEY_RE.test(assignment.split('=')[0] ?? '');
-    for (let i = 0; i < sub; i++) {
-        const arg = cmd.args[i];
-        if ((arg === '-c' || arg === '--config-env') && overridesHookConfig(cmd.args[i + 1] ?? '')) {
-            return GIT_HOOK_BYPASS_REASON;
-        }
-        if (arg.startsWith('-c') && arg.length > 2 && overridesHookConfig(arg.slice(2))) return GIT_HOOK_BYPASS_REASON;
-        if (arg.startsWith('--config-env=') && overridesHookConfig(arg.slice('--config-env='.length))) {
-            return GIT_HOOK_BYPASS_REASON;
-        }
-    }
+    if (gitOptionsSetConfig(cmd.args, configKeyIs(GIT_HOOK_CONFIG_KEY_RE))) return GIT_HOOK_BYPASS_REASON;
 
+    const sub = gitSubcommandIndex(cmd.args);
     const subcommand = cmd.args[sub];
     const rest = cmd.args.slice(sub + 1);
     // `commit` is parsed with its argument roles (`-m --no-verify` is a message).
@@ -6200,7 +6744,10 @@ export function gitHookBypassReason(cmd: ResolvedCommand): string | null {
     if (subcommand && GIT_NO_VERIFY_SUBCOMMANDS.has(subcommand) && rest.some((a) => GIT_NO_VERIFY_LONG_RE.test(a))) {
         return GIT_HOOK_BYPASS_REASON;
     }
-    if (subcommand === 'config' && gitConfigWritesHookConfig(rest)) return GIT_HOOK_BYPASS_REASON;
+    if (subcommand === 'config' && gitConfigWrites(rest, GIT_HOOK_CONFIG_KEY_RE, GIT_HOOK_CONFIG_SECTION_RE)) {
+        return GIT_HOOK_BYPASS_REASON;
+    }
+    if (subcommand === 'clone' && gitCloneConfig(rest).some(configKeyIs(GIT_HOOK_CONFIG_KEY_RE))) return GIT_HOOK_BYPASS_REASON;
     return null;
 }
 
@@ -7043,7 +7590,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (name === 'git') {
         // Skip git's global options so `git -C /x push -f` classifies like `git push -f`.
         const i = gitSubcommandIndex(args);
-        if (args[i] === 'push') {
+        if (args[i] === 'push' && !gitOnlyPrints(args)) {
             const pushArgs = pushArgsWithoutValues(args.slice(i + 1));
             const end = pushArgs.indexOf('--');
             const options = end === -1 ? pushArgs : pushArgs.slice(0, end);
@@ -7074,8 +7621,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         // `--no-dry-run` (an untracked file of that name matches `*`).
         const end = cleanArgs.indexOf('--');
         const literal = cleanArgs.slice(0, end < 0 ? undefined : end).every(a => /^[\w@%+=:,./ -]*$/.test(a));
-        const globalHelp = name === 'git' && args.slice(0, gitSubcommandIndex(args)).some(a => a === '--help' || a === '-h');
-        if (!globalHelp && ((!clean.dryRun && !clean.help) || !literal)) {
+        const onlyPrints = name === 'git' && gitOnlyPrints(args);
+        if (!onlyPrints && ((!clean.dryRun && !clean.help) || !literal)) {
             return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
         }
     }
@@ -7138,6 +7685,18 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     }
     if (override) {
         return `${OPERATOR_OVERRIDE_LEAD} (${override}): the tool put that check there to stop a run like this, and only a person may decide to go past it.`;
+    }
+
+    if (EXPORTERS.has(name) && exportsRiskyConfig(cmd)) return GIT_RISKY_CONFIG;
+    if (gitSetsRiskyConfig(cmd) || runsGitConfigUnseen(cmd)) return GIT_RISKY_CONFIG;
+    if (name === 'git') {
+        if (gitMovesExecPath(cmd)) {
+            return GIT_EXEC_PATH_MOVED;
+        }
+        const alias = gitAlias(cmd);
+        if (alias) {
+            return `git ${alias} ${GIT_NOT_OWN_COMMAND} or a git-${alias} program, either of which can stand for any command (push --force, clean -fdx). Write out the command it stands for.`;
+        }
     }
 
     return null;
@@ -9736,7 +10295,7 @@ function* gatedSteps(
                 // it is exempt only if every directory it may be in is.
                 let from: string[] | null = dirs && cmd.chdir ? dirs.map(d => pathResolve(d, cmd.chdir!)) : dirs;
                 for (const move of moves ?? []) from = directoriesAfter(from, move);
-                const target = from && from.every(d => labTargetOf(cmd, d) !== null) ? labTargetOf(cmd, from[0]) : null;
+                const target = from && from.every(d => labTargetOf(cmd, d, command) !== null) ? labTargetOf(cmd, from[0], command) : null;
                 if (target !== null) {
                     if (log) logLabScope(`allowed ${cmd.name} against lab target ${target}`);
                     continue;
@@ -9878,6 +10437,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
                 : sqlDialect ? sqlStep(sqlDialect, cmd)
                 : dbtCommandOf(cmd) && dbtSubcommand(dbtCommandOf(cmd)!.args) !== 'run-operation' ? dbtStep(dbtCommandOf(cmd)!, dirBefore)
                 : cmd.name === 'git-clean' ? gitCleanStep({ ...cmd, args: ['clean', ...cmd.args] })
+                : cmd.name === 'git' && [GIT_EXEC_PATH_MOVED, GIT_NOT_OWN_COMMAND, GIT_RISKY_CONFIG].some(r => why.includes(r)) ? genericStep(cmd, why)
                 : cmd.name === 'git' ? (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean' ? gitCleanStep(cmd) : gitPushStep(cmd))
                 : cmd.name === 'aws' ? awsStep(cmd)
                 : genericStep(cmd, why);
@@ -10966,7 +11526,6 @@ function githubRepoOf(value: string): string | null {
     return ORG_REPO_RE.test(value) && !REPO_URL_RE.test(value) ? value.replace(/\.git$/, '').toLowerCase() : null;
 }
 
-/** The git directory and common directory of the checkout containing `dir`, or null. */
 /** `dir` with symlinks resolved as far as it exists, so a link into a checkout is read as that checkout. */
 function physicalPath(dir: string): string {
     let existing = pathResolve(dir);
@@ -10983,31 +11542,36 @@ function physicalPath(dir: string): string {
     }
 }
 
+/** The git directory and common directory of the checkout containing `dir`, or null. */
 function gitDirsOf(dir: string): { gitDir: string; commonDir: string } | null {
     let current = physicalPath(dir);
     for (;;) {
-        const dotGit = join(current, '.git');
         try {
-            const stat = statSync(dotGit);
-            let gitDir = dotGit;
-            if (stat.isFile()) {
-                const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf-8'));
-                if (!pointer) return null;
-                gitDir = pathResolve(current, pointer[1].trim());
-            }
-            let commonDir = gitDir;
-            try {
-                commonDir = pathResolve(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf-8').trim());
-            } catch {
-                commonDir = gitDir;
-            }
-            return { gitDir, commonDir };
+            return gitDirsAt(join(current, '.git'));
         } catch {
             const parent = dirname(current);
             if (parent === current) return null;
             current = parent;
         }
     }
+}
+
+/** The git directory and common directory that a `.git` directory, or a file pointing at one, leads to. Throws when it can't be read. */
+function gitDirsAt(dotGit: string): { gitDir: string; commonDir: string } | null {
+    const stat = statSync(dotGit);
+    let gitDir = dotGit;
+    if (stat.isFile()) {
+        const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf-8'));
+        if (!pointer) return null;
+        gitDir = pathResolve(dirname(dotGit), pointer[1].trim());
+    }
+    let commonDir = gitDir;
+    try {
+        commonDir = pathResolve(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf-8').trim());
+    } catch {
+        commonDir = gitDir;
+    }
+    return { gitDir, commonDir };
 }
 
 /** The repository a checkout's remote points at, read from its git config. */
