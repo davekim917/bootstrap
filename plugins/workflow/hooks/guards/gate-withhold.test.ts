@@ -62,6 +62,11 @@ describe('no surface carries a credential the command passes', () => {
         ['a comment between PASSWORD and its value', `${H} -c "ALTER ROLE app PASSWORD /* new */ '${SECRET}'; DROP TABLE orders"`],
         ['a curl OAuth2 bearer token', `curl --oauth2-bearer ${SECRET} -X DELETE ${PROD}`],
         ['a curl proxy OAuth2 bearer token', `curl --proxy-oauth2-bearer ${SECRET} -X DELETE ${PROD}`],
+        ['a role password given to format() through %L', `${H} -c "DO \\$\\$ BEGIN EXECUTE format('ALTER ROLE app PASSWORD %L', '${SECRET}'); END \\$\\$; DROP TABLE orders"`],
+        ['a role password given as a $1 parameter', `${H} -c "PREPARE p AS ALTER ROLE app PASSWORD $1; EXECUTE p('${SECRET}'); DROP TABLE orders"`],
+        ['redis-cli -a', `redis-cli -h cache.example.com -a ${SECRET} FLUSHALL`],
+        ['redis-cli --user and --pass', `redis-cli -h cache.example.com --user app --pass ${SECRET} FLUSHALL`],
+        ['REDISCLI_AUTH', `REDISCLI_AUTH=${SECRET} redis-cli -h cache.example.com FLUSHALL`],
         ['a MySQL password attached to -p', `mysql -h db.example.com -p${SECRET} -e "drop table orders"`],
         ['a token as the only HTTPS user info', `git push --force https://${SECRET}@github.com/org/repo main`],
         ['a URI with user info and query given to -d', `PGPASSWORD=x psql -d "postgresql://app:${SECRET}@192.0.2.20/app?sslmode=require&password=${SECRET}" -c "drop table orders"`],
@@ -163,6 +168,14 @@ describe('refusals and gate reasons withhold the same way', () => {
         } finally {
             rmSync(work, { recursive: true, force: true });
         }
+    });
+
+    test('dropdb keeps its own program and database in the scratch line, with nothing else copied', () => {
+        const verdict = evaluateBashCommand(`PGPASSWORD=${SECRET} dropdb app_test`, { cwd: '/tmp' });
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).toContain('/app/skills/scratch-postgres/scratch-pg dropdb app_test');
+        expect(verdict.reason).not.toContain("<your SQL>");
+        expect(verdict.reason).not.toContain(SECRET);
     });
 
     test('a relative SQL file is read from the directory the evaluator was given', () => {

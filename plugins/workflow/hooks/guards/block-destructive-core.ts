@@ -7864,6 +7864,7 @@ function evaluateBashLine(
     const lab = isLabSession();
     const cwd = opts.cwd ?? currentWorkingDir();
     if (commands[0]?.script) commands[0].script.cwd = cwd;
+    lastEvaluated = { command, cwd, commands };
 
     // --- Hard block checks (no bypass, ever — lab included) ---
     for (const cmd of commands) {
@@ -8220,20 +8221,23 @@ const CREDENTIAL_SHAPES: RegExp[] = [
     /\b(?:proxy-)?authorization\s*:/i,
     /\b(?:x-)?(?:api|auth)[-_]?(?:key|token)\s*:/i,
     // A password given a value: `password=`, `PGPASSWORD+=`, or SQL's PASSWORD before a literal, past any comment.
-    /passw(?:or)?d(?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*(?:\+?=\S|\+?=\s*['"$]|['"$]|[EeUu]&?')/i,
+    /passw(?:or)?d(?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*(?:\+?=\S|\+?=\s*['"$]|['"$]|[EeUu]&?'|%[A-Za-z])/i,
     /\bidentified\s+by\b/i,
+    /\bREDISCLI_AUTH\+?=\S/,
     // Any URL with user info: `user:password@`, or a token alone before the @.
     /[a-z][a-z0-9+.-]*:\/\/[^/@\s]{1,400}@/i,
     /\b[A-Za-z_][A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD)\+?=\S/i,
 ];
 const CURL_USER_FLAG = /(?:^|[\s'"])(?:-[A-Za-z]*[uU]|--(?:proxy-)?(?:user|oauth2-bearer)\b)/;
 const MYSQL_ATTACHED_PASSWORD = /(?:^|\s)-p[^\s]/;
+const REDIS_PASSWORD_FLAG = /(?:^|\s)(?:-a(?:\s|\S)|--pass\b)/;
 
 /** True when the text holds anything that looks like a credential (CREDENTIAL_SHAPES, a curl user flag, mysql -p…). */
 export function containsCredential(text: string): boolean {
     return CREDENTIAL_SHAPES.some(rx => rx.test(text))
         || (/\bcurl\b/.test(text) && CURL_USER_FLAG.test(text))
-        || (/\b(?:mysql|mariadb|mysqldump|mysqladmin)\b/.test(text) && MYSQL_ATTACHED_PASSWORD.test(text));
+        || (/\b(?:mysql|mariadb|mysqldump|mysqladmin)\b/.test(text) && MYSQL_ATTACHED_PASSWORD.test(text))
+        || (/\bredis-cli\b/.test(text) && REDIS_PASSWORD_FLAG.test(text));
 }
 
 /**
@@ -8254,14 +8258,18 @@ function withheldVerdict(command: string, verdict: GateEvaluation, cwd: string):
     return { ...verdict, reason: withheldReason(verdict.reason, command, cwd) };
 }
 
+let lastEvaluated: { command: string; cwd: string; commands: ResolvedCommand[] } | null = null;
+
 /** The command, or SQL its clients read from files (relative ones from `cwd`, as the evaluator reads them), looks like it holds a credential. */
 function carriesCredential(command: string, cwd: string): boolean {
     if (containsCredential(command)) return true;
     try {
-        const commands = extractCommands(command);
-        if (commands[0]?.script) commands[0].script.cwd = cwd;
+        // The line evaluateBashCommand just read, whose SQL inputs it has already traced (sqlInputFor caches them).
+        const reuse = lastEvaluated?.command === command && lastEvaluated.cwd === cwd ? lastEvaluated.commands : null;
+        const commands = reuse ?? extractCommands(command);
+        if (!reuse && commands[0]?.script) commands[0].script.cwd = cwd;
         return commands.some(cmd => (SQL_CLIS[cmd.name] || (cmd.name === 'snow' && cmd.args[0] === 'sql'))
-            && sqlInputOf(cmd).texts.some(sqlCarriesCredential));
+            && sqlInputFor(cmd).texts.some(sqlCarriesCredential));
     } catch {
         return false;
     }
@@ -8276,11 +8284,28 @@ function ruleName(why: string): string {
 // What a refusal tells the agent to run instead, as templates that copy nothing from the command.
 const RETRY_TEMPLATES: Array<[RegExp, string]> = [
     [/This runs without approval:/, "It reaches a scratch Postgres the guard can name only from a written-out host: psql <db> -h <host> -p <port> -U <user> -X -c '<your SQL>', with the password in ~/.pgpass."],
-    [/scratch-postgres helper/, `If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval: ${SCRATCH_PG} psql <db> -c '<your SQL>'.`],
+
     [/runs without approval only with -X/, 'Run the same command again with -X added.'],
     [/write its host out/, 'If it is a real database, write its host out in the command and keep the password in ~/.pgpass or a variable. That goes to a person for approval.'],
     [/Write the file in one call/, 'Write the file in one call, then run it in the next with its path written out.'],
 ];
+
+/**
+ * The scratch-pg line a refusal suggests, per program: psql's SQL is the agent's to fill in, and dropdb or createdb
+ * keep their own database name when it is a plain word with no credential.
+ */
+function scratchRetry(command: string): string {
+    let commands: ResolvedCommand[] = [];
+    try {
+        commands = extractCommands(command);
+    } catch {
+        commands = [];
+    }
+    const db = commands.find(c => c.name === 'dropdb' || c.name === 'createdb');
+    if (!db) return `${SCRATCH_PG} psql <db> -c '<your SQL>'`;
+    const name = db.args.filter(a => !a.startsWith('-')).pop();
+    return `${SCRATCH_PG} ${db.name} ${name && /^[A-Za-z_][\w-]*$/.test(name) && !containsCredential(name) ? name : '<db>'}`;
+}
 
 /**
  * The reason shown for a command that carries a credential. Nothing from the reason's text is kept but its rule's name:
@@ -8289,6 +8314,7 @@ const RETRY_TEMPLATES: Array<[RegExp, string]> = [
  */
 function withheldReason(reason: string, command: string, cwd: string): string {
     const advice = RETRY_TEMPLATES.filter(([rx]) => rx.test(reason)).map(([, text]) => text);
+    if (/scratch-postgres helper/.test(reason)) advice.unshift(`If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval: ${scratchRetry(command)}.`);
     return [ruleName(reason), ...withheldSteps(command, reason, cwd).described, ...advice, '', WITHHELD_NOTE].join('\n');
 }
 
