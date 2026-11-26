@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { collectGrants, SnowTimeout, verifyAll, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { collectGrants, publishEntry, SnowTimeout, verifyAll, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
 
 const g = (privilege, granted_on, name) => ({ privilege, granted_on, name });
 // Every role has no future grants unless a fixture lists some.
@@ -246,10 +250,10 @@ function run(entries, rowsByConnection) {
   const scope = { snowflake: entries };
   const events = [];
   const failed = verifyAll(scope, {
-    rowsFor: e => rowsByConnection[e.connection],
+    rowsFor: e => (events.push(['check', e.connection]), rowsByConnection[e.connection]),
     hours: 24,
     now: () => NOW,
-    publish: () => events.push(['publish', structuredClone(scope.snowflake.map(e => [e.connection, e.login.verifiedUntil ?? null]))]),
+    publish: e => events.push(['publish', e.connection, e.login.verifiedUntil ?? null]),
     sleep: ms => events.push(['sleep', ms]),
   });
   return { failed, events, scope };
@@ -258,13 +262,13 @@ const RENEWED = '2027-03-02T00:05:00.000Z';
 
 test('a timeout withdraws trust at once, and a later clean retry restores it', () => {
   const { failed, events } = run([entryFor('a')], { a: timingOut(devOnly, 1) });
-  assert.deepEqual(events, [['publish', [['a', null]]], ['sleep', 60_000], ['publish', [['a', RENEWED]]]]);
+  assert.deepEqual(events, [['check', 'a'], ['publish', 'a', null], ['sleep', 60_000], ['check', 'a'], ['publish', 'a', RENEWED]]);
   assert.equal(failed, 0);
 });
 
 test('when every retry times out, trust stays withdrawn', () => {
   const { failed, events, scope } = run([entryFor('a')], { a: timingOut(devOnly, 3) });
-  assert.deepEqual(events, [['publish', [['a', null]]], ['sleep', 60_000], ['publish', [['a', null]]], ['sleep', 180_000], ['publish', [['a', null]]]]);
+  assert.deepEqual(events, [['check', 'a'], ['publish', 'a', null], ['sleep', 60_000], ['check', 'a'], ['publish', 'a', null], ['sleep', 180_000], ['check', 'a'], ['publish', 'a', null]]);
   assert.equal(failed, 1);
   assert.match(scope.snowflake[0].login.lastProblem, /^check failed: snow timed out/);
 });
@@ -285,16 +289,47 @@ test('a finding or an error other than a timeout withdraws without a retry', () 
   for (const rows of [prodWrite, broken]) {
     const { failed, events } = run([entryFor('a')], { a: rows });
     assert.equal(failed, 1);
-    assert.deepEqual(events, [['publish', [['a', null]]]]);
+    assert.deepEqual(events, [['check', 'a'], ['publish', 'a', null]]);
   }
 });
 
-test('with several entries, each is published as it finishes, before the next is checked', () => {
-  const { events } = run([entryFor('a'), entryFor('b')], { a: timingOut(devOnly, 1), b: devOnly });
+test('every entry gets its first check before any retry, and each is published as it finishes', () => {
+  const { events } = run([entryFor('a'), entryFor('b'), entryFor('c')], { a: timingOut(devOnly, 1), b: timingOut(devOnly, 1), c: devOnly });
   assert.deepEqual(events, [
-    ['publish', [['a', null], ['b', '2027-03-01T12:00:00.000Z']]],
+    ['check', 'a'], ['publish', 'a', null],
+    ['check', 'b'], ['publish', 'b', null],
+    ['check', 'c'], ['publish', 'c', RENEWED],
     ['sleep', 60_000],
-    ['publish', [['a', RENEWED], ['b', '2027-03-01T12:00:00.000Z']]],
-    ['publish', [['a', RENEWED], ['b', RENEWED]]],
+    ['check', 'a'], ['publish', 'a', RENEWED],
+    ['check', 'b'], ['publish', 'b', RENEWED],
   ]);
+});
+
+test('publishing one entry rewrites only its login, keeps what another writer put in the file since, and never replaces a newer result', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-entry-'));
+  try {
+    const file = path.join(dir, 'dev-scope.local.json');
+    const scope = { snowflake: [entryFor('a'), entryFor('b'), { connection: 'n', databases: ['DEV_DB'] }], render: { resources: ['srv-x'] } };
+    fs.writeFileSync(file, JSON.stringify(scope));
+    const stale = structuredClone(scope.snowflake[0]);
+    stale.login.verifiedUntil = RENEWED;
+    const changed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    changed.snowflake[1].login.verifiedUntil = '2027-03-01T20:00:00.000Z';
+    fs.writeFileSync(file, JSON.stringify(changed));
+    publishEntry(file, stale);
+    const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    assert.equal(after.snowflake[0].login.verifiedUntil, RENEWED);
+    assert.equal(after.snowflake[1].login.verifiedUntil, '2027-03-01T20:00:00.000Z');
+    assert.deepEqual(after.render, { resources: ['srv-x'] });
+    assert.deepEqual(fs.readdirSync(dir), ['dev-scope.local.json']);
+    publishEntry(file, { connection: 'gone', login: { user: 'X', account: 'Y' } });
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf-8')), after);
+    const newer = structuredClone(after);
+    newer.snowflake[0].login = { ...newer.snowflake[0].login, lastCheckedAt: '2027-03-01T00:10:00.000Z', verifiedUntil: undefined, lastProblem: 'can write outside DEV_DB' };
+    fs.writeFileSync(file, JSON.stringify(newer));
+    publishEntry(file, { ...stale, login: { ...stale.login, lastCheckedAt: '2027-03-01T00:06:00.000Z' } });
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf-8')).snowflake[0].login.lastProblem, 'can write outside DEV_DB');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

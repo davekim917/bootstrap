@@ -2,8 +2,9 @@
 // Vouch for each dev-scope login: walk every role its user holds (and PUBLIC) and confirm none can run SQL the
 // destructive guard would gate against anything outside the entry's dev databases. A pass sets `login.verifiedUntil`, which the destructive guard requires before it lets
 // that connection's SQL run without a card; a failure or an error removes it, so a lapsed check brings cards back.
-// A check that times out withdraws trust at once like any other error, and is retried in the same run: a retry that
-// finishes clean restores it, so a passing timeout costs minutes rather than the 12 hours until the next run.
+// A check that times out withdraws trust at once like any other error, and is retried in the same run once every entry
+// has had its first check: a retry that finishes clean restores it, so a passing timeout costs minutes rather than the
+// 12 hours until the next run.
 //
 // Usage: node scripts/verify-dev-logins.mjs [--file <dev-scope.local.json>] [--hours 48]
 import { execFileSync } from 'node:child_process';
@@ -232,27 +233,42 @@ function checkOnce(entry, rows) {
 }
 
 /**
- * Check every entry with a login and publish the file after each outcome, so a withdrawal takes effect at once. An
- * entry whose check timed out is checked again in full after each wait in `waitsMs`; only a retry that finishes clean
- * restores trust. Returns how many entries end the run untrusted.
+ * Check every entry with a login once, publishing each outcome as it lands so a withdrawal takes effect at once; then
+ * check again in full, after each wait in `waitsMs`, the entries whose check timed out. Only a retry that finishes
+ * clean restores trust. Returns how many entries end the run untrusted.
  */
 export function verifyAll(scope, { rowsFor, hours, publish, log = () => {}, now = () => new Date(), waitsMs = RETRY_WAITS_MS, sleep = sleepSync }) {
-  let failed = 0;
-  for (const entry of scope.snowflake ?? []) {
-    if (!entry.login) continue;
-    let result = checkOnce(entry, rowsFor(entry));
+  const outcomes = new Map();
+  const check = entry => {
+    const result = checkOnce(entry, rowsFor(entry));
     log(entry, recordCheck(entry, result?.problem ?? null, { now: now(), hours }), !result);
-    publish();
-    for (const wait of waitsMs) {
-      if (!result?.timedOut) break;
-      sleep(wait);
-      result = checkOnce(entry, rowsFor(entry));
-      log(entry, recordCheck(entry, result?.problem ?? null, { now: now(), hours }), !result);
-      publish();
-    }
-    if (result) failed++;
+    publish(entry);
+    outcomes.set(entry, result);
+  };
+  const entries = (scope.snowflake ?? []).filter(e => e.login);
+  entries.forEach(check);
+  for (const wait of waitsMs) {
+    const pending = entries.filter(e => outcomes.get(e)?.timedOut);
+    if (!pending.length) break;
+    sleep(wait);
+    pending.forEach(check);
   }
-  return failed;
+  return entries.filter(e => outcomes.get(e)).length;
+}
+
+/**
+ * Write one entry's login into the file as it is now, leaving every other entry as the file holds it, through a
+ * temporary file and a rename. An entry no longer in the file is not written back, and neither is a result older than
+ * the one the file holds, which another run published meanwhile.
+ */
+export function publishEntry(file, entry) {
+  const current = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  const target = (current.snowflake ?? []).find(e => e.connection === entry.connection && e.login);
+  if (!target || Date.parse(target.login.lastCheckedAt ?? '') > Date.parse(entry.login.lastCheckedAt ?? '')) return;
+  target.login = structuredClone(entry.login);
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(current, null, 2)}\n`);
+  fs.renameSync(tmp, file);
 }
 
 function sleepSync(ms) {
@@ -270,11 +286,7 @@ function main() {
   const failed = verifyAll(scope, {
     rowsFor: entry => sql => snowRows(entry.connection, sql),
     hours,
-    publish: () => {
-      const tmp = `${file}.tmp-${process.pid}`;
-      fs.writeFileSync(tmp, `${JSON.stringify(scope, null, 2)}\n`);
-      fs.renameSync(tmp, file);
-    },
+    publish: entry => publishEntry(file, entry),
     log: (entry, line, ok) => (ok ? console.log : console.error)(`${entry.connection}: ${line}`),
   });
   process.exit(failed ? 1 : 0);
