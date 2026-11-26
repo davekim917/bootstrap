@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // Vouch for each dev-scope login: walk every role its user holds (and PUBLIC) and confirm none can run SQL the
 // destructive guard would gate against anything outside the entry's dev databases. A pass sets `login.verifiedUntil`, which the destructive guard requires before it lets
-// that connection's SQL run without a card; a finding removes it, so a lapsed check brings cards back. A snow call that
-// times out is no finding: the verification it would have renewed keeps its own end, and a later run decides.
+// that connection's SQL run without a card; a failure or an error removes it, so a lapsed check brings cards back.
+// A snow call that times out is retried a few times first, since a timeout says nothing about the grants; a check
+// that still can't finish withdraws trust like any other error. Run it often with --renew-within: an entry is checked
+// only once its verification is that close to ending, or after it was withdrawn, so a lapse costs one run interval.
 //
 // Usage: node scripts/verify-dev-logins.mjs [--file <dev-scope.local.json>] [--hours 48]
 import { execFileSync } from 'node:child_process';
@@ -88,14 +90,14 @@ function quoteDatabaseRole(name) {
   return String(name).split('.').map(p => (p.startsWith('"') ? p : quoteIdent(p))).join('.');
 }
 
-/** A snow call that ran out of time: it says nothing about the login's grants. */
+/** A snow call that ran out of time. */
 export class SnowTimeout extends Error {}
 
 function snowRows(connection, sql) {
   let out;
   try {
     out = execFileSync('snow', ['sql', '-c', connection, '--format', 'json', '--enable-templating', 'NONE', '-q', sql], {
-      encoding: 'utf-8', timeout: 120_000, maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf-8', timeout: 180_000, maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (err) {
     if (err?.code === 'ETIMEDOUT') throw new SnowTimeout(`snow timed out on: ${sql.slice(0, 80)}`);
@@ -119,8 +121,9 @@ function describableSignature(name) {
  * grants. SHOW GRANTS lists only objects the session's role can see, so a role outside `sessionRole`'s hierarchy is
  * reported as a grant that can't be vouched for rather than read.
  */
-export function collectGrants(user, rows, sessionRole, grants = []) {
+export function collectGrants(user, rows, sessionRole) {
   const seen = new Set();
+  const grants = [];
   const queue = [{ kind: 'ROLE', name: 'PUBLIC' }];
   // A user holds roles and may also hold privileges granted to it directly, which carry no role.
   const userGrants = name => {
@@ -199,34 +202,51 @@ export function verifyEntry(entry, rows) {
   if (String(me.A).toUpperCase() !== entry.login.account.toUpperCase()) return `connection signs in to ${me.A}, not ${entry.login.account}`;
   // The grants walked are the signed-in user's, as Snowflake names it, never the configured spelling.
   if (!me.R) return 'connection has no current role';
-  const read = [];
-  try {
-    collectGrants(String(me.U), rows, String(me.R), read);
-  } catch (err) {
-    // A grant already read still counts when a later call times out.
-    if (!(err instanceof SnowTimeout) || !writeGrantsOutside(read, entry.databases).length) throw err;
-  }
-  const problems = writeGrantsOutside(read, entry.databases);
+  const problems = writeGrantsOutside(collectGrants(String(me.U), rows, String(me.R)), entry.databases);
   if (process.env.VERIFY_DEV_LOGINS_VERBOSE) for (const p of problems) console.error(`  ${entry.connection}: ${p}`);
   return problems.length ? `can write outside ${entry.databases.join('/')}: ${problems.slice(0, 5).join('; ')}${problems.length > 5 ? ` (+${problems.length - 5} more)` : ''}` : null;
 }
 
-/**
- * Record one check's outcome on `entry.login` and return how it reads in the log. `problem` is null for a pass; a timeout
- * keeps an unexpired verification as it is, never extending it, and every other problem withdraws it.
- */
-export function recordCheck(entry, problem, { now, hours, timedOut = false }) {
+const RETRY_WAITS_MS = [60_000, 180_000];
+
+/** Record one check's outcome on `entry.login` and return how it reads in the log: any problem withdraws trust. */
+export function recordCheck(entry, problem, { now, hours }) {
   entry.login.lastCheckedAt = now.toISOString();
-  if (!problem) {
-    entry.login.verifiedUntil = new Date(now.getTime() + hours * 3600_000).toISOString();
-    delete entry.login.lastProblem;
-    return `dev-only login ${entry.login.user} verified until ${entry.login.verifiedUntil}`;
+  if (problem) {
+    delete entry.login.verifiedUntil;
+    entry.login.lastProblem = problem;
+    return `NOT trusted — ${problem}`;
   }
-  entry.login.lastProblem = problem;
-  const until = Date.parse(entry.login.verifiedUntil ?? '');
-  if (timedOut && until > now.getTime()) return `check did not finish (${problem}); the verification still ends ${entry.login.verifiedUntil}`;
-  delete entry.login.verifiedUntil;
-  return `NOT trusted — ${problem}`;
+  entry.login.verifiedUntil = new Date(now.getTime() + hours * 3600_000).toISOString();
+  delete entry.login.lastProblem;
+  return `dev-only login ${entry.login.user} verified until ${entry.login.verifiedUntil}`;
+}
+
+/**
+ * Check one entry, starting the whole check again after a timed-out snow call, once per wait in `waitsMs`. Returns null
+ * when the login is dev-only, else the reason it is not trusted. Only a check that finished can vouch for the login.
+ */
+export function checkEntry(entry, rows, { waitsMs = RETRY_WAITS_MS, sleep = sleepSync } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return verifyEntry(entry, rows);
+    } catch (err) {
+      const reason = `check failed: ${String(err?.message ?? err).split('\n')[0]}`;
+      if (!(err instanceof SnowTimeout) || attempt >= waitsMs.length) return attempt ? `${reason} (after ${attempt + 1} tries)` : reason;
+      sleep(waitsMs[attempt]);
+    }
+  }
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Whether an entry is due: never verified, withdrawn, or ending within `renewWithinHours` of `now`. */
+export function checkDue(entry, now, renewWithinHours) {
+  if (renewWithinHours === undefined) return true;
+  const until = Date.parse(entry.login?.verifiedUntil ?? '');
+  return !(until - now.getTime() > renewWithinHours * 3600_000);
 }
 
 function main() {
@@ -236,19 +256,35 @@ function main() {
   const file = arg('--file', process.env.BOOTSTRAP_DEV_SCOPE_FILE || path.join(repoRoot, 'dev-scope.local.json'));
   const hours = Number(arg('--hours', '48'));
   if (!Number.isFinite(hours) || hours <= 0 || hours > 72) throw new Error(`--hours must be between 0 and 72, not ${arg('--hours')}`);
+  const renewArg = arg('--renew-within', undefined);
+  const renewWithin = renewArg === undefined ? undefined : Number(renewArg);
+  if (renewWithin !== undefined && !(renewWithin >= 0 && renewWithin < hours)) throw new Error(`--renew-within must be at least 0 and below --hours, not ${renewArg}`);
+  // Retries can make a run outlast the interval between runs; a second run would write the file from a stale read.
+  const lock = `${file}.verify-lock`;
+  try {
+    fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
+  } catch (err) {
+    if (err?.code !== 'EEXIST') throw err;
+    if (Date.now() - fs.statSync(lock).mtimeMs < 60 * 60_000) {
+      console.log('another verification run holds the lock; skipping');
+      return;
+    }
+    fs.writeFileSync(lock, String(process.pid));
+  }
+  try {
+    run(file, hours, renewWithin);
+  } finally {
+    fs.rmSync(lock, { force: true });
+  }
+}
+
+function run(file, hours, renewWithin) {
   const scope = JSON.parse(fs.readFileSync(file, 'utf-8'));
   let failed = 0;
   for (const entry of scope.snowflake ?? []) {
-    if (!entry.login) continue;
-    let problem;
-    let timedOut = false;
-    try {
-      problem = verifyEntry(entry, sql => snowRows(entry.connection, sql));
-    } catch (err) {
-      timedOut = err instanceof SnowTimeout;
-      problem = `check failed: ${String(err?.message ?? err).split('\n')[0]}`;
-    }
-    const line = `${entry.connection}: ${recordCheck(entry, problem, { now: new Date(), hours, timedOut })}`;
+    if (!entry.login || !checkDue(entry, new Date(), renewWithin)) continue;
+    const problem = checkEntry(entry, sql => snowRows(entry.connection, sql));
+    const line = `${entry.connection}: ${recordCheck(entry, problem, { now: new Date(), hours })}`;
     if (problem) {
       failed++;
       console.error(line);
@@ -259,7 +295,7 @@ function main() {
   const tmp = `${file}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, `${JSON.stringify(scope, null, 2)}\n`);
   fs.renameSync(tmp, file);
-  process.exit(failed ? 1 : 0);
+  process.exitCode = failed ? 1 : 0;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) main();

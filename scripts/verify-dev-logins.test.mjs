@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { collectGrants, recordCheck, SnowTimeout, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
+import { checkDue, checkEntry, collectGrants, recordCheck, SnowTimeout, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
 
 const g = (privilege, granted_on, name) => ({ privilege, granted_on, name });
 // Every role has no future grants unless a fixture lists some.
@@ -219,52 +219,72 @@ test('a SQL function passes; a function in any other language, or one whose name
   ]);
 });
 
+const LOGIN = { connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A', verifiedUntil: '2027-03-01T12:00:00.000Z' } };
 const NOW = new Date('2027-03-01T00:05:00.000Z');
-const leased = until => ({ connection: 'acme_dev', databases: ['DEV_DB'], login: { user: 'AGENT_DEV_USER', account: 'ACME-DEV1', verifiedUntil: until } });
+const devOnly = sql => {
+  if (sql.startsWith('select current_user()')) return [{ U: 'AGENT', A: 'ORG-A', R: 'DEV_ROLE' }];
+  if (sql.startsWith('show future grants')) return [];
+  if (sql === 'show grants to user "AGENT"') return [{ role: 'DEV_ROLE' }];
+  if (sql === 'show grants to role "DEV_ROLE"') return [g('OWNERSHIP', 'SCHEMA', 'DEV_DB.S')];
+  if (sql === 'show grants to role "PUBLIC"') return [];
+  throw new Error(`unexpected ${sql}`);
+};
+// The given rows, except that the call matching `at` times out on each of the first `times` checks.
+const timingOut = (rows, at, times) => {
+  let left = times;
+  return sql => {
+    if (sql === at && left > 0) {
+      left--;
+      throw new SnowTimeout(`snow timed out on: ${sql}`);
+    }
+    return rows(sql);
+  };
+};
 
-test('a pass sets the verification to the requested hours from now', () => {
-  const entry = leased(undefined);
-  recordCheck(entry, null, { now: NOW, hours: 24 });
+test('a timeout followed by a check that finishes keeps the login trusted, and the verification is renewed', () => {
+  const waits = [];
+  const entry = structuredClone(LOGIN);
+  const problem = checkEntry(entry, timingOut(devOnly, 'show grants to role "DEV_ROLE"', 1), { sleep: ms => waits.push(ms) });
+  assert.equal(problem, null);
+  assert.deepEqual(waits, [60_000]);
+  recordCheck(entry, problem, { now: NOW, hours: 24 });
   assert.equal(entry.login.verifiedUntil, '2027-03-02T00:05:00.000Z');
 });
 
-test('a timed-out check keeps an unexpired verification as it was, without extending it', () => {
-  const entry = leased('2027-03-01T12:06:00.000Z');
-  const line = recordCheck(entry, 'check failed: snow timed out on: show grants', { now: NOW, hours: 24, timedOut: true });
-  assert.equal(entry.login.verifiedUntil, '2027-03-01T12:06:00.000Z');
-  assert.equal(entry.login.lastProblem, 'check failed: snow timed out on: show grants');
-  assert.match(line, /still ends 2027-03-01T12:06:00.000Z/);
-});
-
-test('a timed-out check leaves no verification once the old one has ended', () => {
-  const entry = leased('2027-03-01T00:00:00.000Z');
-  recordCheck(entry, 'check failed: snow timed out on: show grants', { now: NOW, hours: 24, timedOut: true });
+test('a check that times out on every try withdraws trust, and the next run checks the login again', () => {
+  const waits = [];
+  const entry = structuredClone(LOGIN);
+  const problem = checkEntry(entry, timingOut(devOnly, 'show grants to role "DEV_ROLE"', 3), { sleep: ms => waits.push(ms) });
+  assert.match(problem, /^check failed: snow timed out .* \(after 3 tries\)$/);
+  assert.deepEqual(waits, [60_000, 180_000]);
+  recordCheck(entry, problem, { now: NOW, hours: 24 });
   assert.equal(entry.login.verifiedUntil, undefined);
+  assert.equal(checkDue(entry, new Date(NOW.getTime() + 10 * 60_000), 12), true);
 });
 
-test('a finding, or any error other than a timeout, withdraws an unexpired verification', () => {
-  for (const [problem, timedOut] of [['can write outside DEV_DB: INSERT on TABLE PROD_DB.S.T', false], ['check failed: procedure "P"() has a quoted name', false]]) {
-    const entry = leased('2027-03-01T12:06:00.000Z');
-    const line = recordCheck(entry, problem, { now: NOW, hours: 24, timedOut });
+test('a write grant returned before a timeout withdraws trust, whether the retry finishes or not', () => {
+  const prodWrite = sql => (sql === 'show grants to user "AGENT"' ? [g('DELETE', 'TABLE', 'PROD_DB.S.T'), { role: 'DEV_ROLE' }] : devOnly(sql));
+  for (const times of [1, 3]) {
+    const entry = structuredClone(LOGIN);
+    const problem = checkEntry(entry, timingOut(prodWrite, 'show grants to role "DEV_ROLE"', times), { sleep: () => {} });
+    assert.notEqual(problem, null);
+    recordCheck(entry, problem, { now: NOW, hours: 24 });
     assert.equal(entry.login.verifiedUntil, undefined);
-    assert.match(line, /^NOT trusted/);
   }
 });
 
-test('a write grant read before a later call timed out is a finding, not a timeout', () => {
-  const rows = sql => {
-    if (sql.startsWith('select current_user()')) return [{ U: 'AGENT', A: 'ORG-A', R: 'DEV_ROLE' }];
-    if (sql === 'show grants to user "AGENT"') return [g('INSERT', 'TABLE', 'PROD_DB.S.T')];
-    throw new SnowTimeout(`snow timed out on: ${sql}`);
-  };
-  assert.match(verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A' } }, rows), /^can write outside DEV_DB: INSERT on TABLE PROD_DB\.S\.T/);
+test('an error other than a timeout withdraws trust at once, without a retry', () => {
+  const waits = [];
+  const rows = sql => (sql === 'show grants to role "DEV_ROLE"' ? (() => { throw new Error('insufficient privileges'); })() : devOnly(sql));
+  const problem = checkEntry(structuredClone(LOGIN), rows, { sleep: ms => waits.push(ms) });
+  assert.equal(problem, 'check failed: insufficient privileges');
+  assert.deepEqual(waits, []);
 });
 
-test('a timeout before any write grant is read stays a timeout', () => {
-  const rows = sql => {
-    if (sql.startsWith('select current_user()')) return [{ U: 'AGENT', A: 'ORG-A', R: 'DEV_ROLE' }];
-    if (sql === 'show grants to user "AGENT"') return [g('SELECT', 'TABLE', 'PROD_DB.S.T')];
-    throw new SnowTimeout(`snow timed out on: ${sql}`);
-  };
-  assert.throws(() => verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A' } }, rows), SnowTimeout);
+test('with --renew-within, a verification far from its end is not checked; one near it, or none, is', () => {
+  const at = new Date('2027-03-01T00:00:00.000Z');
+  assert.equal(checkDue(LOGIN, at, 6), false);
+  assert.equal(checkDue(LOGIN, at, 12), true);
+  assert.equal(checkDue({ login: {} }, at, 12), true);
+  assert.equal(checkDue(LOGIN, at, undefined), true);
 });
