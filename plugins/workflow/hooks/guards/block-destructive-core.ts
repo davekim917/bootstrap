@@ -4351,7 +4351,7 @@ function programCanDiffer(cmd: ResolvedCommand): boolean {
 
 function renderDevTarget(cmd: ResolvedCommand): string | null {
     // An assignment, `env`, `sudo`, a package runner or a path can run another render, or this one against another host.
-    if (!RENDER_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw) || programCanDiffer(cmd)) return null;
+    if (!RENDER_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw) || cmd.env?.length) return null;
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
@@ -4791,11 +4791,15 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
             || (/^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || NEUTRAL_BUILTINS.has(name)));
         return neutralName && words(n).every(assignsNothing);
     };
+    // A compound's redirects sit on its statement, and this shell expands them before the step runs.
+    const expandsSafely = (n: Node) => ((n as { redirects?: Redirect[] }).redirects ?? []).every(r =>
+        assignsNothing(withoutSingleQuoted(String(r.target?.text ?? ''))) && assignsNothing(String(r.content ?? '')));
     // A list of statements: those before the one holding the step change nothing, and that one reaches it.
     const sequence = (list: Node[]): boolean => {
         const statements = list.map(st => st.command ?? st);
         const at = statements.findIndex(holds);
-        return at >= 0 && list.slice(0, at).every((st, i) => loop(st) || neutral(statements[i])) && reaches(statements[at]);
+        return at >= 0 && list.slice(0, at).every((st, i) => loop(st) || neutral(statements[i]))
+            && expandsSafely(list[at]) && expandsSafely(statements[at]) && reaches(statements[at]);
     };
     const holds = (n: Node) => typeof n.pos === 'number' && typeof n.end === 'number' && n.pos <= step.pos! && step.pos! < n.end;
     // The step itself, or a stage of a pipeline, reached through `&&`/`||` lists whose earlier members are neutral.
@@ -4804,7 +4808,12 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
             return n.pos === step.pos && words(n).every(assignsNothing)
                 && (n.suffix ?? []).every(w => staysOneWord(String(w?.text ?? '')));
         }
-        if (n.type === 'Pipeline') return (n.commands ?? []).some(c => c.type === 'Command' && holds(c) && reaches(c));
+        if (n.type === 'Pipeline') {
+            return (n.commands ?? []).some(st => {
+                const c = st.command ?? st;
+                return (c.type === 'Command' || compounds) && holds(c) && expandsSafely(st) && expandsSafely(c) && reaches(c);
+            });
+        }
         if (!quiet(n)) return false;
         // A subshell or group runs its list in turn, as the line does; an `if` first runs its condition.
         const body = (n as { body?: Node }).body;
@@ -8276,7 +8285,7 @@ export function redactCredentials(text: string): string {
         .replace(/\b((?:X-)?(?:Api|Auth)[-_]?(?:Key|Token)\s*:\s*)("[^"]*"|'[^']*'|[^\s'"\\]+)/gi, (_, head) => head + R)
         .replace(/((?:^|\s)(?:-u|--user|--proxy-user)(?:\s+|=)['"]?[^\s:'"]*:)[^\s'"]+/g, (_, head) => head + R)
         .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"]*:)[^\s@/'"]+@/gi, (_, head) => head + R + '@')
-        .replace(/(\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY)=)("[^"]*"|'[^']*'|\S+)/g, (_, head) => head + R)
+        .replace(/(\b[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY)=)("[^"]*"|'[^']*'|\S+)/g, (_, head) => head + R)
         .replace(/(\b(?:PASSWORD|IDENTIFIED\s+BY)\s*(?:=\s*)?)('(?:[^']|'')*'|"(?:[^"\\]|\\.)*")/gi, (_, head) => head + "'" + R + "'");
 }
 
@@ -8289,17 +8298,19 @@ export function gateRequestContent(
     card: EmailCard = {},
     toolUseId?: string,
 ): string {
+    // An email card shows the message exactly as it will send, and the in-tree email hook joins it only field for field.
+    const shown = action === 'request_bash_gate' ? (text: string) => text : redactCredentials;
     return JSON.stringify({
         action,
         requestId,
-        label: redactCredentials(label),
-        summary: redactCredentials(summary),
+        label: shown(label),
+        summary: shown(summary),
         // The host renders a bounded head+tail preview and retains the full
         // command in its approval record. Truncating here would discard final
         // arguments before the approver or audit trail could inspect them.
-        command: redactCredentials(command),
+        command: shown(command),
         ...(card.pureSend ? { pureSend: true } : {}),
-        ...(card.fullSummary !== undefined ? { fullSummary: redactCredentials(card.fullSummary) } : {}),
+        ...(card.fullSummary !== undefined ? { fullSummary: shown(card.fullSummary) } : {}),
         ...(card.wholeEmail !== undefined ? { wholeEmail: card.wholeEmail } : {}),
         ...(toolUseId ? { toolUseId } : {}),
     });

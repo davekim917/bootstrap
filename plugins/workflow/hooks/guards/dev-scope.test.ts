@@ -227,6 +227,7 @@ describe('a snow step inside a plain if, subshell or group, or after a literal s
         ['a subshell that changes directory first', `(cd /tmp/w && ${DROP})`],
         ['a group that changes directory first', `{ cd /tmp/w; ${DROP}; }`],
         ['a literal printf status line', `printf 'starting\\n'; ${DROP}`],
+        ['a subshell piped to tail', `(cd /tmp/w && ${DROP}) 2>&1 | tail -3`],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -237,6 +238,10 @@ describe('a snow step inside a plain if, subshell or group, or after a literal s
         ['a value set earlier turning test into test -v', `X=-v; test $X 'a[HOME=1]'; ${DROP}`],
         ['PATH set inside the subshell', `(PATH=/tmp/x; ${DROP})`],
         ['PATH set in the condition', `if PATH=/tmp/x; then ${DROP}; fi`],
+        ['a group whose redirect assigns PATH', `{ ${DROP}; } >/tmp/o$[PATH=10]`],
+        ['an if whose redirect assigns PATH', `if true; then ${DROP}; fi >/tmp/o$[PATH=10]`],
+        ['a subshell whose redirect assigns PATH', `(${DROP}) >/tmp/o$[PATH=10]`],
+        ['a piped subshell whose redirect assigns PATH', `(${DROP}) >/tmp/o$[PATH=10] | tail -3`],
     ])('%s still gates', (_name, command) => {
         expect(verdict(command)).toBe('gate');
     });

@@ -1027,6 +1027,8 @@ describe('a listed dev resource keeps its card when the line can change which re
         ['an API delete', `curl -X DELETE ${URL_DEV}`],
         ['a restart in a subshell that changes directory first', `(cd /tmp && render restart ${DEV})`],
         ['a restart inside an if', `if true; then render restart ${DEV}; fi`],
+        ['a restart after set -euo pipefail', `set -euo pipefail; render restart ${DEV}`],
+        ['a restart in a subshell piped to tail', `(cd /tmp && render restart ${DEV}) 2>&1 | tail -3`],
         ['job text bash passes as it stands, inside single quotes', `render jobs create ${DEV} --start-command 'npm start -- --port ${'$'}{PORT:-3000}'`],
     ])('%s runs without a card', (_name, command) => {
         expect(verdict(command)).toBe('allow');
@@ -1050,6 +1052,7 @@ describe('a listed dev resource keeps its card when the line can change which re
         ['command, which skips no lookup the guard sees', `command render restart ${DEV}`],
         ['sudo, which runs render as another user', `sudo render restart ${DEV}`],
         ['PATH set inside the subshell', `(PATH=/tmp/x; render restart ${DEV})`],
+        ['a group whose redirect assigns PATH', `{ render restart ${DEV}; } >/tmp/o$[PATH=10]`],
     ])('%s takes the production gate', (_name, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
