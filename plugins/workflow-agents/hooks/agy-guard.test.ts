@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { AGY_APPROVAL_HANDOFF, BUILT_IN_SUBAGENTS, decideAgyCall } from './agy-guard';
@@ -37,7 +37,6 @@ describe('agy tool calls reach the shared policy under the names the cores read'
         ['a question with no /team-auto run active', call('ask_question', { Question: 'Which branch?' }, tmpdir())],
         ['a subagent with no workspace of its own', call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: 'self' })],
         ['an image saved under a plain name', call('generate_image', { Prompt: 'a red circle', ImageName: 'red_circle', AspectRatio: '1:1' })],
-        ['an image edited from reference images', call('generate_image', { Prompt: 'make it blue', ImageName: 'blue_circle', ImagePaths: ['art/red_circle.png', '/workspace/agent/ref.jpg'] })],
     ])('%s is allowed', (_name, payload) => {
         expect(decideAgyCall(payload)).toEqual({ action: 'allow' });
     });
@@ -414,6 +413,54 @@ describe('a subagent that does not inherit customizations would run without thes
         const reply = JSON.parse(await new Response(proc.stdout).text());
         expect(reply.decision).toBe('deny');
         expect(reply.reason).toMatch(/agent 'writer' .* sets inheritCustomizations/);
+    });
+});
+
+describe('generate_image uploads its reference images, so each must be an image file reached through no link', () => {
+    const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
+    function edit(root: string, paths: string[]): unknown {
+        return { ...(call('generate_image', { Prompt: 'make it blue', ImageName: 'blue_circle', ImagePaths: paths }) as object), workspacePaths: [root] };
+    }
+    function reason(payload: unknown): string {
+        const verdict = decideAgyCall(payload, { home: scratch() });
+        return verdict.action === 'deny' ? verdict.reason : 'allowed';
+    }
+
+    test('real images of each type, relative or absolute, are allowed', () => {
+        const root = scratch();
+        mkdirSync(join(root, 'art'));
+        writeFileSync(join(root, 'art', 'red.png'), PNG);
+        writeFileSync(join(root, 'photo.JPG'), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]));
+        writeFileSync(join(root, 'anim.gif'), 'GIF89a\x01\x00');
+        writeFileSync(join(root, 'pic.webp'), Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBPVP8 ')]));
+        expect(reason(edit(root, ['art/red.png', join(root, 'photo.JPG'), 'anim.gif', 'pic.webp']))).toBe('allowed');
+    });
+
+    test.each([
+        ['a .env file', '.env', 'API_KEY=example\n', /is not a \.png, \.jpg/],
+        ['a .json file', 'service-account.json', '{"type": "service_account"}\n', /is not a \.png, \.jpg/],
+        ['a text file renamed .png', 'notes.png', 'token=example\n', /does not start with the bytes of a \.png image/],
+        ['a png named .jpg', 'swapped.jpg', PNG, /does not start with the bytes of a \.jpg image/],
+    ])('%s is refused', (_name, file, content, expected) => {
+        const root = scratch();
+        writeFileSync(join(root, file), content);
+        expect(reason(edit(root, [file]))).toMatch(expected);
+    });
+
+    test('a link to an image, an image inside a linked directory, a directory, a missing file and an oversize file are refused', () => {
+        const root = scratch();
+        const elsewhere = scratch();
+        writeFileSync(join(elsewhere, 'red.png'), PNG);
+        symlinkSync(join(elsewhere, 'red.png'), join(root, 'linked.png'));
+        symlinkSync(elsewhere, join(root, 'linkdir'));
+        mkdirSync(join(root, 'folder.png'));
+        writeFileSync(join(root, 'huge.png'), PNG);
+        truncateSync(join(root, 'huge.png'), 20 * 1024 * 1024 + 1);
+        expect(reason(edit(root, ['linked.png']))).toMatch(/'linked\.png' is a link/);
+        expect(reason(edit(root, ['linkdir/red.png']))).toMatch(/is reached through a link/);
+        expect(reason(edit(root, ['folder.png']))).toMatch(/is not a regular file/);
+        expect(reason(edit(root, ['missing.png']))).toMatch(/cannot be opened \(ENOENT\)/);
+        expect(reason(edit(root, ['huge.png']))).toMatch(/larger than 20 MiB/);
     });
 });
 

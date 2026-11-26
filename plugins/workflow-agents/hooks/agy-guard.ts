@@ -9,7 +9,7 @@
  * mid-session, so this adapter refuses those writes from any tool. Shell coverage is a best-effort read of the
  * command line; the sandbox the worker runs in is what makes those paths immutable.
  */
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, resolve, sep } from 'path';
 import { decideToolCall, type ToolCall, type Verdict } from './guard-policy';
@@ -410,6 +410,50 @@ export function definedAgentNames(workspaces: string[], globalConfig: string): S
     return names;
 }
 
+const REFERENCE_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+/** Each upload type agy accepts as a reference image, by extension, with the leading bytes its files start with. */
+const REFERENCE_IMAGE_TYPES: Record<string, (head: Buffer) => boolean> = {
+    png: (head) => head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+    jpg: (head) => head.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])),
+    jpeg: (head) => head.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])),
+    gif: (head) => ['GIF87a', 'GIF89a'].includes(head.subarray(0, 6).toString('latin1')),
+    webp: (head) => head.subarray(0, 4).toString('latin1') === 'RIFF' && head.subarray(8, 12).toString('latin1') === 'WEBP',
+};
+
+/**
+ * Why `target` is not an image agy may upload as a reference, or null. agy reads the whole file and sends it, so a
+ * credentials file picked up by mistake would leave the machine: the path must reach, through no link, a regular file
+ * of at most 20 MiB whose extension is an image type and whose first bytes are that type's.
+ */
+function referenceImageRefusal(target: string, cwd: string): string | null {
+    const absolute = resolve(cwd, target);
+    const extension = absolute.slice(absolute.lastIndexOf('.') + 1).toLowerCase();
+    const matches = absolute.includes('.') ? REFERENCE_IMAGE_TYPES[extension] : undefined;
+    if (!matches) return 'is not a .png, .jpg, .jpeg, .webp or .gif file';
+    try {
+        if (realpathSync(dirname(absolute)) !== dirname(absolute)) return 'is reached through a link';
+    } catch (error) {
+        return `cannot be resolved (${errorCode(error)})`;
+    }
+    let fd: number;
+    try {
+        fd = openSync(absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } catch (error) {
+        return errorCode(error) === 'ELOOP' ? 'is a link' : `cannot be opened (${errorCode(error)})`;
+    }
+    try {
+        const info = fstatSync(fd);
+        if (!info.isFile()) return 'is not a regular file';
+        if (info.size > REFERENCE_IMAGE_MAX_BYTES) return 'is larger than 20 MiB';
+        const head = Buffer.alloc(12);
+        readSync(fd, head, 0, head.length, 0);
+        if (!matches(head)) return `does not start with the bytes of a .${extension} image`;
+    } finally {
+        closeSync(fd);
+    }
+    return null;
+}
+
 function stepsOf(command: string) {
     try {
         return extractCommands(command);
@@ -578,6 +622,8 @@ export function decideAgyCall(payload: unknown, { home = process.env.HOME || hom
             return denied("generate_image's ImagePaths is not a list of file paths, so the guard cannot check what it reads.");
         }
         for (const path of imagePaths as string[]) {
+            const notImage = referenceImageRefusal(path, cwd);
+            if (notImage) return denied(`generate_image reference '${path}' ${notImage}; agy would upload it with the request.`);
             const verdict = decideAgyCall({ ...(payload as object), toolCall: { ...call, name: 'read_file', args: { Path: path } } }, { home });
             if (verdict.action === 'deny') return verdict;
         }
