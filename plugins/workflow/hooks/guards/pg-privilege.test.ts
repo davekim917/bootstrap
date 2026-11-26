@@ -193,6 +193,7 @@ describe('psql input the guard reads as psql does', () => {
             'nested.sql': '/* note /* inner */\nGRANT ALL ON t TO public;\n*/\nselect 1;\n',
             'copy-hides.sql': "COPY t FROM stdin;\nO'Brien\n\\.\nGRANT ALL ON t TO public;\n",
             'copy-data.sql': 'COPY t FROM stdin;\nGRANT x\n\\.\nselect 1;\n',
+            'copy-comment.sql': '-- Previous import used COPY staging_orders FROM STDIN;\nDROP TABLE IF EXISTS staging_orders;\nCOPY import_log FROM STDIN;\nimported\n\\.\n',
         };
         for (const [name, text] of Object.entries(files)) writeFileSync(f(name), text);
     });
@@ -211,6 +212,7 @@ describe('psql input the guard reads as psql does', () => {
         ['\\i of a name psql fills in from a variable', () => `${H} -v migration=${f('grant.sql')} -f ${f('include.sql')}`],
         ['a GRANT first in a labelled block', () => `${H} -f ${f('label.sql')}`],
         ['a GRANT after COPY data holding an apostrophe', () => `${H} -f ${f('copy-hides.sql')}`],
+        ['a DROP after a comment that mentions COPY FROM STDIN', () => `${H} -X -f ${f('copy-comment.sql')}`],
         ['an unreadable EXECUTE on a listed dev database', () => `render psql ${DEV_DB} -c "DO \\$\\$ BEGIN EXECUTE format('GRANT ALL ON %I TO public', 't'); END \\$\\$" -o text`],
     ])('%s gates', (_name, command) => {
         expect(run(command()).action).toBe('gate');
@@ -264,10 +266,10 @@ describe('a Lab session waives grants on its database, not changes to roles, whi
         rmSync(labDir, { recursive: true, force: true });
     });
     test('a grant on a lab database runs', () => {
-        expect(run('psql -h db.example.com -d lab_app -c "GRANT SELECT ON t TO app_reader"').action).toBe('allow');
+        expect(run('psql -X -h db.example.com -d lab_app -c "GRANT SELECT ON t TO app_reader"').action).toBe('allow');
     });
     test.each([['CREATE ROLE app LOGIN'], ['ALTER ROLE app SUPERUSER'], ['DROP USER app']])('%s on a lab database gates', (sql) => {
-        expect(run(`psql -h db.example.com -d lab_app -c "${sql}"`).action).toBe('gate');
+        expect(run(`psql -X -h db.example.com -d lab_app -c "${sql}"`).action).toBe('gate');
     });
 });
 
@@ -448,7 +450,7 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         rmSync(labDir, { recursive: true, force: true });
         rmSync(fx, { recursive: true, force: true });
     });
-    const LAB = 'psql -h db.example.com -d lab_app';
+    const LAB = 'psql -X -h db.example.com -d lab_app';
     test.each([
         ['role membership', `${LAB} -c "GRANT app_admin TO app_reader"`],
         ['revoking role membership', `${LAB} -c "REVOKE app_admin FROM app_reader"`],
@@ -460,32 +462,46 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['a \\connect to another database', () => `${LAB} -f ${join(fx, 'connect.sql')}`],
         ['a grant on a tablespace', `${LAB} -c "GRANT CREATE ON TABLESPACE ts TO r"`],
         ['ownership of another database', `${LAB} -c "ALTER DATABASE other_db OWNER TO r"`],
-        ['a Lab-named user selecting another database', `psql -h db.example.com -U lab_app_admin -d prod_app -c "GRANT SELECT ON t TO r"`],
-        ['a Lab-named user with no database named', `psql -h db.example.com -U lab_app_admin -c "GRANT SELECT ON t TO r"`],
-        ['a Lab-named user in a conninfo string', `psql "host=db.example.com user=lab_app_admin dbname=prod_app" -c "GRANT SELECT ON t TO r"`],
-        ['a Lab-named user in a URI', `psql "postgresql://lab_app_admin@db.example.com/prod_app" -c "GRANT SELECT ON t TO r"`],
-        ['a Lab-named host', `psql -h lab-db.example.com -d prod_app -c "GRANT SELECT ON t TO r"`],
-        ['a URI that names no database, only a Lab user', `psql "postgresql://lab_app@192.0.2.30" -c "GRANT SELECT ON t TO r"`],
-        ['a conninfo that names no database, only a Lab user', `psql "host=db.example.com user=lab_app" -c "GRANT SELECT ON t TO r"`],
-        ['a later attached -d that overrides a Lab database', `psql -h db.example.com -d lab_app -dprod_app -c "GRANT SELECT ON t TO r"`],
-        ['a conninfo whose Lab-looking text sits past a non-ASCII space', `psql "host=db.example.com dbname=prod_app\u{a0}dbname=lab_app" -c "GRANT SELECT ON t TO r"`],
-        ['DROP DATABASE beside -P and a positional database name', `psql -P pager=off -h db.example.com lab_app -c "DROP DATABASE prod_app"`],
+        ['a Lab-named user selecting another database', `psql -X -h db.example.com -U lab_app_admin -d prod_app -c "GRANT SELECT ON t TO r"`],
+        ['a Lab-named user with no database named', `psql -X -h db.example.com -U lab_app_admin -c "GRANT SELECT ON t TO r"`],
+        ['a Lab-named user in a conninfo string', `psql -X "host=db.example.com user=lab_app_admin dbname=prod_app" -c "GRANT SELECT ON t TO r"`],
+        ['a Lab-named user in a URI', `psql -X "postgresql://lab_app_admin@db.example.com/prod_app" -c "GRANT SELECT ON t TO r"`],
+        ['a Lab-named host', `psql -X -h lab-db.example.com -d prod_app -c "GRANT SELECT ON t TO r"`],
+        ['a URI that names no database, only a Lab user', `psql -X "postgresql://lab_app@192.0.2.30" -c "GRANT SELECT ON t TO r"`],
+        ['a conninfo that names no database, only a Lab user', `psql -X "host=db.example.com user=lab_app" -c "GRANT SELECT ON t TO r"`],
+        ['a later attached -d that overrides a Lab database', `psql -X -h db.example.com -d lab_app -dprod_app -c "GRANT SELECT ON t TO r"`],
+        ['a conninfo whose Lab-looking text sits past a non-ASCII space', `psql -X "host=db.example.com dbname=prod_app\u{a0}dbname=lab_app" -c "GRANT SELECT ON t TO r"`],
+        ['DROP DATABASE beside -P and a positional database name', `psql -X -P pager=off -h db.example.com lab_app -c "DROP DATABASE prod_app"`],
         ['DROP DATABASE naming another lab_ database', `${LAB} -c "DROP DATABASE IF EXISTS lab_archive"`],
         ['DROP DATABASE after a comment', `${LAB} -c "/* cleanup */ DROP DATABASE prod_app"`],
+        ['a Lab database without -X, where a psqlrc could connect elsewhere', `psql -h db.example.com -d lab_app -c "DROP TABLE staging_orders"`],
+        ['a MySQL table qualified by another database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE app.orders'`],
+        ['a MySQL table qualified by a quoted database', `mysql -h db.example.com -D lab_app -e 'DELETE FROM \`app\`.orders'`],
+        ['a MySQL table qualified by another database in a list', `mysql -h db.example.com -D lab_app -e 'DROP TABLE orders, app.orders'`],
+        ['a MySQL USE of another database', `mysql -h db.example.com -D lab_app -e 'USE app; TRUNCATE TABLE orders'`],
     ])('%s on a lab database gates', (_name, command) => {
         expect(run(typeof command === 'function' ? command() : command).action).toBe('gate');
     });
     test.each([
         ['a grant on an object', `${LAB} -c "GRANT SELECT ON t TO app_reader"`],
         ['CREATE USER MAPPING', `${LAB} -c "CREATE USER MAPPING FOR app SERVER s"`],
-        ['a quoted Lab dbname in a conninfo', `psql "host=db.example.com dbname='lab_app'" -c "GRANT SELECT ON t TO r"`],
-        ['a psql -P setting beside a Lab database', `psql -P pager=off -h db.example.com -d lab_app -c "GRANT SELECT ON t TO r"`],
-        ['a Lab URI with channel_binding', `psql "postgresql://app@192.0.2.30/lab_app?channel_binding=require" -c "GRANT SELECT ON t TO r"`],
-        ['a Lab database in a URI', `psql "postgresql://app@db.example.com/lab_app" -c "GRANT SELECT ON t TO r"`],
-        ['a grant on an object, chosen by the database and not the user', `psql -h db.example.com -U app -d lab_app -c "GRANT SELECT ON t TO r"`],
-        ['DROP TABLE beside -P and a positional database name', `psql -P pager=off -h db.example.com lab_app -c "DROP TABLE t"`],
+        ['a quoted Lab dbname in a conninfo', `psql -X "host=db.example.com dbname='lab_app'" -c "GRANT SELECT ON t TO r"`],
+        ['a psql -P setting beside a Lab database', `psql -X -P pager=off -h db.example.com -d lab_app -c "GRANT SELECT ON t TO r"`],
+        ['a Lab URI with channel_binding', `psql -X "postgresql://app@192.0.2.30/lab_app?channel_binding=require" -c "GRANT SELECT ON t TO r"`],
+        ['a Lab database in a URI', `psql -X "postgresql://app@db.example.com/lab_app" -c "GRANT SELECT ON t TO r"`],
+        ['a grant on an object, chosen by the database and not the user', `psql -X -h db.example.com -U app -d lab_app -c "GRANT SELECT ON t TO r"`],
+        ['DROP TABLE beside -P and a positional database name', `psql -X -P pager=off -h db.example.com lab_app -c "DROP TABLE t"`],
         ['DROP SCHEMA in the connected database', `${LAB} -c "DROP SCHEMA old_area CASCADE"`],
+        ['a MySQL table in the default database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE orders'`],
+        ['a MySQL table qualified by the default database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE lab_app.orders'`],
     ])('%s on a lab database runs', (_name, command) => {
         expect(run(command).action).toBe('allow');
     });
+});
+
+test('the DROP OWNED card says it deletes what the role owns', () => {
+    const card = describeGate('psql -X -h db.example.com -d app -c "DROP OWNED BY retired_app CASCADE"', 'Destructive PostgreSQL SQL detected (DROP OWNED)', '/tmp');
+    expect(card.summary).toContain('Deletes every object the named roles own');
+    expect(card.summary).toContain("can't be recovered without a backup");
+    expect(card.summary).not.toContain('Changes who can sign in');
 });

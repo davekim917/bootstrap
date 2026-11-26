@@ -2099,7 +2099,7 @@ export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: 
         if (writer) return result(`${f}, which \`${writer}\` earlier on the line writes`);
     }
     for (const text of texts) {
-        const sql = text.replace(PSQL_COPY_DATA, '$1');
+        const sql = withoutCopyData(text);
         const skeleton = metaSkeleton(sql);
         if (/\\gexec(?=[\s\\;]|$)/.test(skeleton)) return result('\\gexec, which runs what its query returns as SQL');
         // A -c value reaches the server as written: psql interpolates no :variable in it.
@@ -4531,7 +4531,9 @@ function labSqlTarget(cmd: ResolvedCommand): string | null {
     if (cmd.name === 'psql' || cmd.name === 'pg_restore') {
         // The database decides, read from a conninfo or URI too.
         const target = pgConnectionTarget(cmd.name, args, true, true);
-        return target?.db !== undefined && LAB_DB_NAME_RE.test(target.db) ? target.db : null;
+        // Without -X a psqlrc file runs first, and it can \connect to another database.
+        if (!target?.noPsqlrc) return null;
+        return target.db !== undefined && LAB_DB_NAME_RE.test(target.db) ? target.db : null;
     }
     // The database the step selects decides. A Lab-named user or host can reach any database, so neither proves one.
     let db: string | undefined;
@@ -4559,7 +4561,30 @@ function labSqlTarget(cmd: ResolvedCommand): string | null {
         }
         db = fromConnection(a) ?? db;
     }
-    return db !== undefined && LAB_DB_NAME_RE.test(db) ? db : null;
+    if (db === undefined || !LAB_DB_NAME_RE.test(db)) return null;
+    return cmd.name === 'mysql' && mysqlNamesOtherDatabase(cmd, db) ? null : db;
+}
+
+const MYSQL_NAME = String.raw`(\`[^\`]*\`|[A-Za-z_$][\w$]*)`;
+// A table named after a word that introduces one (or a comma in a list of them), qualified by its database.
+const MYSQL_QUALIFIED_TABLE = new RegExp(String.raw`(?:\b(?:FROM|JOIN|UPDATE|INTO|TABLE|TABLES|EXISTS|USING|TO)\b|,)\s*${MYSQL_NAME}\s*\.`, 'gi');
+const MYSQL_USE = new RegExp(String.raw`(?:^|;)\s*USE\s+${MYSQL_NAME}`, 'gi');
+
+/**
+ * Whether MySQL SQL reaches a database other than the default one the connection selects: a table qualified by another
+ * database's name, or a USE that switches to one. -D sets only the default, so it proves nothing about either. Input
+ * the guard can't read counts as reaching one.
+ */
+function mysqlNamesOtherDatabase(cmd: ResolvedCommand, db: string): boolean {
+    const input = sqlInputFor(cmd);
+    if (input.unreadable) return true;
+    const other = (name: string) => name.replace(/^`|`$/g, '') !== db;
+    return input.texts.some(text => {
+        // Literals and comments blanked; a backtick-quoted name the skeleton blanks still leaves its dot.
+        const skeleton = stripSqlLiteralsAndComments(text);
+        if (/(?:\b(?:FROM|JOIN|UPDATE|INTO|TABLE|TABLES|EXISTS|USING|TO)\b|,)\s+\./i.test(skeleton)) return true;
+        return [...skeleton.matchAll(MYSQL_QUALIFIED_TABLE), ...skeleton.matchAll(MYSQL_USE)].some(m => other(m[1]));
+    });
 }
 
 // ── Platform / service target resolution ─────────────────────────────────────
@@ -5777,7 +5802,7 @@ function psqlScratchInputRead(cmd: ResolvedCommand, target: { commands: number; 
     const input = sqlInputFor(cmd);
     // A dump's COPY data and the \. that ends it are data, and pg_dump's \restrict and \unrestrict markers only
     // fence the dump's own backslash commands; none of them can connect elsewhere.
-    return !input.unreadable && !input.texts.some(t => t.replace(PSQL_COPY_DATA, '$1').split('\n')
+    return !input.unreadable && !input.texts.some(t => withoutCopyData(t).split('\n')
         .some(line => !/^\s*\\(?:\.|(?:un)?restrict\s+\w+)\s*$/.test(line) && PSQL_BACKSLASH_COMMAND.test(line)));
 }
 
@@ -6774,17 +6799,39 @@ const PSQL_BACKSLASH_TO_LINE_END = /\\[^\s\\][^\n]*/g;
  */
 function psqlRoleMeta(input: string): { pattern: string; statement: string } | null {
     // Comments and string literals blanked, so a mention in either reads as nothing.
-    const text = metaSkeleton(input.replace(PSQL_COPY_DATA, '$1'));
+    const text = metaSkeleton(withoutCopyData(input));
     if (/\\gexec(?=[\s\\;]|$)/.test(text)) return { pattern: '\\gexec', statement: 'runs each value the query returns as SQL, which the guard can\'t read' };
     const password = /\\password\b[^\n]*/.exec(text);
     return password ? { pattern: 'ALTER ROLE', statement: `${password[0].trim()} sets a role's password` } : null;
 }
 
 // `COPY … FROM STDIN;` takes the lines after it, up to a line holding only `\.`, as data rather than SQL.
-const PSQL_COPY_DATA = /(\bCOPY\b[^;]*?\bFROM\s+STDIN\b[^;]*;[^\n]*\n)[\s\S]*?^\\\.[ \t]*$/gim;
+const PSQL_COPY_FROM_STDIN = /\bCOPY\b[^;]*?\bFROM\s+STDIN\b[^;]*;[^\n]*\n/gi;
+
+/**
+ * The input without the data of each COPY … FROM STDIN, keeping the statement. A COPY counts only where psql would run
+ * it, outside a comment or literal, so a comment that mentions one hides nothing after it.
+ */
+function withoutCopyData(input: string): string {
+    let out = '';
+    let rest = input;
+    PSQL_COPY_FROM_STDIN.lastIndex = 0;
+    for (let m = PSQL_COPY_FROM_STDIN.exec(rest); m; m = PSQL_COPY_FROM_STDIN.exec(rest)) {
+        const head = m.index + m[0].length;
+        // The skeleton up to the candidate, blanking comments and literals with offsets kept: a COPY inside one is blanked.
+        const skeleton = sqlSkeleton(rest.slice(0, head), false, true).skeleton;
+        if (!/^COPY\b/i.test(skeleton.slice(m.index))) continue;
+        const end = /^\\\.[ \t]*$/m.exec(rest.slice(head));
+        if (!end) break;
+        out += rest.slice(0, head);
+        rest = rest.slice(head + end.index + end[0].length);
+        PSQL_COPY_FROM_STDIN.lastIndex = 0;
+    }
+    return out + rest;
+}
 
 function psqlStatementTexts(input: string): string[] {
-    const text = input.replace(PSQL_COPY_DATA, '$1');
+    const text = withoutCopyData(input);
     if (!text.includes('\\')) return [text];
     // `\\` ends a backslash command's arguments, and SQL may follow it on the same line.
     const separated = text.replace(/\\\\/g, '\n');
@@ -7474,6 +7521,14 @@ function sqlEffect(st: FoundStatement, dialect: string, whereElsewhere: WhereEls
                 plain: `Changes rows in the table ${code(m[1])}`,
                 note: "(the guard couldn't tell which rows)",
             };
+    }
+    if (pattern === 'DROP OWNED') {
+        return {
+            title: `Drop everything a ${dialect} role owns (DROP OWNED)`,
+            effect: `Deletes every object the named roles own in this database, with its data, and revokes their privileges. With CASCADE, objects of other roles that depend on them go too: ${code(clip(s, 160))}.`,
+            plain: 'Deletes the tables and other objects a role owns, with their data, and with CASCADE the objects that depend on them',
+            loss: "the deleted tables and their data can't be recovered without a backup",
+        };
     }
     if (PG_PRIVILEGE_LABELS.has(pattern)) {
         return {
