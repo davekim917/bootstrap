@@ -276,8 +276,52 @@ describe('a listed dev resource', () => {
         expect(changesProduction(command, '/tmp')).toBe(false);
     });
 
+    // An export before a Render CLI step may steer its HTTP client (HTTPS_PROXY); only a Postgres client's PGPASSWORD is exempt.
+    test.each([
+        ['an HTTPS_PROXY export', `export HTTPS_PROXY=http://203.0.113.5:3128; render restart ${DEV}`],
+        ['a PGPASSWORD export, which no Render CLI step reads as a password', `export PGPASSWORD=x; render restart ${DEV}`],
+    ])('a listed render restart after %s keeps its card', (_label, command) => {
+        // The guard's own proxy variables would mark the name as inherited; an agent shell without them is the case here.
+        const saved = ['HTTPS_PROXY', 'https_proxy'].map(k => [k, process.env[k]] as const);
+        for (const [k] of saved) delete process.env[k];
+        try {
+            expect(verdict(command)).not.toBe('allow');
+        } finally {
+            for (const [k, v] of saved) if (v !== undefined) process.env[k] = v;
+        }
+    });
+
+    test('an export after a listed read runs later, so the read stays card-free', () => {
+        expect(verdict(`render deploys list ${DEV} --limit 1; export PGPASSWORD=x`)).toBe('allow');
+        expect(verdict(`export HTTPS_PROXY=http://203.0.113.5:3128; render deploys list ${DEV} --limit 1`)).not.toBe('allow');
+    });
+
+    test.each([
+        ['inside an if', `if true; then render deploys list ${DEV} --limit 1; fi`],
+        ['render psql in a subshell', `(render psql ${DEV_DB} -c 'select 1')`],
+    ])('a listed read %s stays card-free', (_label, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test('a listed render restart alone stays card-free', () => {
+        expect(verdict(`render restart ${DEV}`)).toBe('allow');
+    });
+
+    // PGPASSWORD only authenticates: it can't move psql to another server, so it leaves the listed host held as dev.
+    test.each([
+        ['a literal password', `PGPASSWORD=example-pw psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['a password from a variable', `PGPASSWORD="$PW" psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['an exported password', `export PGPASSWORD="$PW"; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+    ])('psql on a listed host with %s in PGPASSWORD is held as dev', (_label, command) => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(false);
+    });
+
     test.each([
         ['a variable', `psql -h ${DEV_HOST} -X "$DATABASE_URL" -c 'delete from accounts'`],
+        ['a host from the environment beside a password', `PGPASSWORD=x PGHOST=prod.example.com psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['an exported host beside an exported password', `export PGPASSWORD=x PGHOST=prod.example.com; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['a service file beside a password', `PGPASSWORD=x PGSERVICE=prod psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
         ['a URL as the database', `psql -h ${DEV_HOST} -X -d postgresql://prod.example.com/app -c 'delete from accounts'`],
         ['a URL as a word', `psql -h ${DEV_HOST} -X postgresql://prod.example.com/app -c 'delete from accounts'`],
         ['a connection string', `psql -h ${DEV_HOST} -X --dbname='host=prod.example.com' -c 'delete from accounts'`],
@@ -773,7 +817,7 @@ describe('a raw DELETE to the Render API', () => {
         `curl --silent --show-error --fail --max-time 30 -X DELETE ${DEV_VAR}`,
         `curl -X DELETE https://api.render.com/v1/services/${DEV}`,
         `curl -X DELETE https://api.render.com/v1/services/${DEV_CRON}`,
-        `curl -X DELETE api.render.com/v1/services/${DEV}/custom-domains/www.example.net`,
+        `curl -X DELETE https://api.render.com/v1/services/${DEV}/custom-domains/www.example.net`,
     ])('%s is on a listed dev resource, so it runs', command => {
         expect(verdict(command)).toBe('allow');
     });
@@ -1012,6 +1056,93 @@ describe('a held Render change says whether its target is listed as dev', () => 
     ])('%s still says it is not listed', (_shape, command) => {
         const summary = card(command);
         expect(summary).toContain('not listed as dev, so treat it as production');
-        expect(summary).not.toContain('is listed as dev');
+        expect(summary).not.toContain('changes the Render dev resource named in the step below');
+    });
+});
+
+describe('a listed dev resource keeps its card when the line can change which render runs, or what it inherits', () => {
+    const URL_DEV = `https://api.render.com/v1/services/${DEV}/env-vars/FOO`;
+
+    test.each([
+        ['a plain restart', `render restart ${DEV}`],
+        ['a restart under timeout, after cd', `cd /tmp && timeout 60 render restart ${DEV}`],
+        ['help on ssh, which starts no ssh', `render ssh ${DEV} --help`],
+        ['one line of SQL', `render psql ${DEV_DB} -c 'select 1' -o text`],
+        ['an API delete', `curl -X DELETE ${URL_DEV}`],
+        ['a restart in a subshell that changes directory first', `(cd /tmp && render restart ${DEV})`],
+        ['a restart inside an if', `if true; then render restart ${DEV}; fi`],
+        ['a restart after set -euo pipefail', `set -euo pipefail; render restart ${DEV}`],
+        ['a restart in a subshell piped to tail', `(cd /tmp && render restart ${DEV}) 2>&1 | tail -3`],
+        ['job text bash passes as it stands, inside single quotes', `render jobs create ${DEV} --start-command 'npm start -- --port ${'$'}{PORT:-3000}'`],
+    ])('%s runs without a card', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['a redirect storing a descriptor number in PATH', `true {PATH}>/dev/null; render restart ${DEV}`],
+        ['old-style arithmetic assigning PATH', `true >/dev/null$[PATH=10]; render restart ${DEV}`],
+        ['hash repointing render', `hash -p /tmp/evil render; render restart ${DEV}`],
+        ['a coprocess named PATH', `coproc PATH { true; }; render restart ${DEV}`],
+        ['a [[ ]] comparison assigning HOME', `[[ HOME=10 -eq 1 ]]; render restart ${DEV}`],
+        ['an API delete after a redirect storing a number in PATH', `true {PATH}>/dev/null; curl -X DELETE ${URL_DEV}`],
+        ['an assignment pointing render at another API host', `RENDER_HOST=https://api.example.com render restart ${DEV}`],
+        ['env setting the API host', `env RENDER_HOST=https://api.example.com render restart ${DEV}`],
+        ['an assignment giving render another API key', `RENDER_API_KEY=rnd_other render restart ${DEV}`],
+        ['env with no assignment', `env render restart ${DEV}`],
+        ['a package runner, which runs a workspace-local render', `pnpm exec render restart ${DEV}`],
+        ['npx', `npx render restart ${DEV}`],
+        ['a render in the working directory', `./render restart ${DEV}`],
+        ['a render named by path', `node_modules/.bin/render restart ${DEV}`],
+        ['command, which skips no lookup the guard sees', `command render restart ${DEV}`],
+        ['sudo, which runs render as another user', `sudo render restart ${DEV}`],
+        ['PATH set inside the subshell', `(PATH=/tmp/x; render restart ${DEV})`],
+        ['a group whose redirect assigns PATH', `{ render restart ${DEV}; } >/tmp/o$[PATH=10]`],
+    ])('%s takes the production gate', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+        expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+});
+
+describe('a listed dev step needs the forms that run only what the guard read', () => {
+    test.each([
+        ['a quoted file test before a restart', `if [ -f "$manifest" ]; then render restart ${DEV}; fi`],
+        ['a negated quoted file test before a restart', `if [ ! -f "$manifest" ]; then render restart ${DEV}; fi`],
+        ['a negated [[ ]] file test before a restart', `if [[ ! -f "$manifest" ]]; then render restart ${DEV}; fi`],
+        ['a [[ ]] string test and comparison before a restart', `[[ -n "$X" && "$a" == b ]] && render restart ${DEV}`],
+        ['a quoted string test before a restart', `[ -n "$X" ] && render restart ${DEV}`],
+        ['a quoted comparison before a restart', `if [ "$a" = "b" ]; then render restart ${DEV}; fi`],
+        ['an integer comparison before a restart', `if test "$a" -eq "$b"; then render restart ${DEV}; fi`],
+        ['an API delete over HTTPS', `curl -X DELETE https://api.render.com/v1/services/${DEV}/env-vars/FOO`],
+        ['one line of SQL with plain output', `render psql ${DEV_DB} -c 'select 1' -o text`],
+        ['one line of SQL with no output format, as on main', `render psql ${DEV_DB} -c "ALTER ROLE dev_app PASSWORD 'x'"`],
+        ['a printf status line before a restart', `printf 'Restarting %s\\n' "$service"; render restart ${DEV}`],
+        ['a printf with two values before a restart', `printf '%s %s\\n' "$a" "$b" && render restart ${DEV}`],
+        ['an echo of a command substitution before a restart', `echo "$(date)"; render restart ${DEV}`],
+    ])('%s runs without a card', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+    test.each([
+        ['a value that becomes -v before a subscript that assigns', `X=-v; if [ "$X" 'a[HOME=1]' ]; then render restart ${DEV}; fi`],
+        ['-v on a subscript that assigns', `if [ -v "a[HOME=1]" ]; then render restart ${DEV}; fi`],
+        ['an operator from a variable', `if [ $OP "$m" ]; then render restart ${DEV}; fi`],
+        ['a substitution in the operand', `if [ -f "$(touch x)" ]; then render restart ${DEV}; fi`],
+        ['an operand that assigns', `if [ -f "${'$'}{m:=x}" ]; then render restart ${DEV}; fi`],
+        ['[[ -v ]] on a subscript that assigns', `[[ -v a[HOME=1] ]] && render restart ${DEV}`],
+        ['a printf format from a variable', `printf "$F" x; render restart ${DEV}`],
+        ['printf -v assigning PATH', `printf -v PATH x; render restart ${DEV}`],
+        ['an echo whose word assigns', `echo "${'$'}{PATH:=/tmp/x}"; render restart ${DEV}`],
+        ['a [[ ]] substitution in the operand', `[[ -f "$(touch x)" ]] && render restart ${DEV}`],
+        ['a [[ ]] test whose redirect assigns PATH', `[[ -f x ]] >/tmp/o$[PATH=1]; render restart ${DEV}`],
+        ['an API delete with no scheme, which curl sends over HTTP', `curl -X DELETE api.render.com/v1/services/${DEV}/env-vars/FOO`],
+    ])('%s gates', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+});
+
+describe('a status line keeps a held dev change described as dev', () => {
+    test('printf before deleting a listed database', () => {
+        const command = `printf 'Deleting %s\\n' "$db"; render postgres delete ${DEV_DB}`;
+        expect(verdict(command)).toBe('gate');
+        expect(describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason ?? '').summary).toContain('changes the Render dev resource named in the step below');
     });
 });

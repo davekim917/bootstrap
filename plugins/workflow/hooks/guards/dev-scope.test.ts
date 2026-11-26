@@ -50,6 +50,8 @@ describe('destructive SQL inside a listed dev database skips approval', () => {
         'snow sql -c acme_prod -q "drop table scratch_db.a.b; drop table scratch_db.a.c"',
         'snow sql -c acme_prod -q "create or replace table scratch_db.tmp.t as select * from prod_db.core.t"',
         'cd /tmp && timeout 300 snow sql -c acme_prod --warehouse dev_wh -q "drop schema if exists scratch_db.tmp cascade" 2>&1 | tail -3',
+        'cd /tmp/w || exit 1; snow sql -c acme_dev -q "drop table dev_db.a.b"',
+        'pwd; type snow && snow sql -c acme_dev -q "drop table dev_db.a.b"',
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -77,6 +79,15 @@ describe('everything else stays gated', () => {
         ['set -e storing a descriptor number in PATH', 'set -e {PATH}>/dev/null; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['set -e with a redirect that assigns PATH', 'set -e >/tmp/x$[PATH=10]; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['set -e on a connection with no verified login, whose SQL is read instead', 'set -e; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['true storing a descriptor number in PATH', "cd /tmp/w; true {PATH}>/dev/null; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
+        ['old-style arithmetic in a redirect assigning PATH', "true >/dev/null$[PATH=10]; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
+        ['a [[ ]] comparison assigning HOME', "cd /tmp/w; [[ 1 -eq HOME=10 ]] || snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
+        ['a [[ ]] comparison assigning HOME on its left', "[[ HOME=10 -eq 1 ]]; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
+        ['test -v with a subscript assigning HOME', "test -v 'a[HOME=1]'; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
+        ['[ -v ] with a subscript assigning HOME', "[ -v 'a[HOME=1]' ]; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
+        ['[[ -v ]] with a subscript assigning HOME', "[[ -v a[HOME=1] ]]; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
+        ['a coprocess named PATH', "coproc PATH { true; }; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
+        ['hash repointing snow', "hash -p /tmp/evil snow; snow sql -c acme_dev -q \"drop table dev_db.a.b\""],
         ['XDG_CONFIG_HOME redirecting the config', 'XDG_CONFIG_HOME=/tmp/h snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['sudo running snow, which changes HOME', 'sudo -u admin snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['nice running snow', 'nice -n 5 snow sql -c acme_dev -q "drop table dev_db.a.b"'],
@@ -204,5 +215,50 @@ describe('the scope file itself', () => {
 
     test('agents cannot edit it', () => {
         expect(isProtectedEditPath('/workspace/plugins/bootstrap/dev-scope.local.json')).toBe(true);
+    });
+});
+
+describe('a snow step inside a plain if, subshell or group, or after a literal status line, keeps the exemption', () => {
+    const DROP = 'snow sql -c acme_dev -q "drop table dev_db.a.b"';
+    test.each([
+        ['an if whose condition is true', `if true; then ${DROP}; fi`],
+        ['an if testing for a file', `if [ -f /tmp/x ]; then ${DROP}; fi`],
+        ['an if with an else', `if test -d /tmp; then ${DROP}; else echo no; fi`],
+        ['a subshell that changes directory first', `(cd /tmp/w && ${DROP})`],
+        ['a group that changes directory first', `{ cd /tmp/w; ${DROP}; }`],
+        ['a literal printf status line', `printf 'starting\\n'; ${DROP}`],
+        ['a subshell piped to tail', `(cd /tmp/w && ${DROP}) 2>&1 | tail -3`],
+    ])('%s', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+    test.each([
+        ['printf -v assigning HOME', `printf -v HOME x; ${DROP}`],
+        ['a printf format with %n, which assigns', `printf '%n' HOME; ${DROP}`],
+        ['an if testing a subscript that assigns HOME', `if [ -v 'a[HOME=1]' ]; then ${DROP}; fi`],
+        ['a value set earlier turning test into test -v', `X=-v; test $X 'a[HOME=1]'; ${DROP}`],
+        ['PATH set inside the subshell', `(PATH=/tmp/x; ${DROP})`],
+        ['PATH set in the condition', `if PATH=/tmp/x; then ${DROP}; fi`],
+        ['a group whose redirect assigns PATH', `{ ${DROP}; } >/tmp/o$[PATH=10]`],
+        ['an if whose redirect assigns PATH', `if true; then ${DROP}; fi >/tmp/o$[PATH=10]`],
+        ['a subshell whose redirect assigns PATH', `(${DROP}) >/tmp/o$[PATH=10]`],
+        ['a piped subshell whose redirect assigns PATH', `(${DROP}) >/tmp/o$[PATH=10] | tail -3`],
+    ])('%s still gates', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
+    });
+});
+
+describe("with a PATH whose first directory the agent can write, as a container's /tmp/bin is", () => {
+    const savedPath = process.env.PATH;
+    let bin = '';
+    beforeAll(() => {
+        bin = mkdtempSync(join(tmpdir(), 'agent-bin-'));
+        process.env.PATH = `${bin}:/usr/local/bin:/usr/bin:/bin`;
+    });
+    afterAll(() => {
+        process.env.PATH = savedPath;
+        rmSync(bin, { recursive: true, force: true });
+    });
+    test('a listed dev drop still runs without a card', () => {
+        expect(verdict('snow sql -c acme_dev -q "drop table dev_db.a.b"')).toBe('allow');
     });
 });
