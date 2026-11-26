@@ -214,6 +214,8 @@ describe('a connection the guard cannot read exactly as psql will make it is nev
         ['a stdin file read beside -c', "echo x | psql -X -h 127.0.0.1 -p 55432 -Xf- -c 'DROP TABLE orders'"],
     ])('%s', (name, command) => {
         if (REFUSED_WITH_THE_FORM_IT_READS.has(name)) expect(verdict(command)).toBe('block');
+        // Input the guard can't read takes a card, never a refusal.
+        else if (name === 'a stdin file read beside -c') expect(verdict(command)).toBe('gate');
         else if (NAMES_A_REMOTE_HOST.has(name)) expect(verdict(command)).toBe('gate');
         else refusedToScratchPg(command);
     });
@@ -470,7 +472,9 @@ describe('a scratch migration the guard can read keeps the exemption, roles and 
     const dir = mkdtempSync(join(tmpdir(), 'scratch-migration-'));
     const migration = join(dir, 'migration.sql');
     const reconnect = join(dir, 'reconnect.sql');
+    const dump = join(dir, 'dump.sql');
     writeFileSync(migration, 'CREATE ROLE app_reader LOGIN;\nGRANT SELECT ON orders TO app_reader;\nDO $$ BEGIN CREATE TABLE t (a int); END $$;\n');
+    writeFileSync(dump, "CREATE TABLE t (n text);\nCOPY t (n) FROM stdin;\nO'Brien\n\\.\nGRANT SELECT ON t TO app_reader;\n");
     writeFileSync(reconnect, '\\c host=db.example.com\nGRANT ALL ON orders TO public;\n');
     afterAll(() => rmSync(dir, { recursive: true, force: true }));
     const BASE = 'psql -X -h 127.0.0.1 -p 55432 -d foo_test';
@@ -479,6 +483,9 @@ describe('a scratch migration the guard can read keeps the exemption, roles and 
         ['a -f file', `${BASE} -f ${migration}`],
         ['a quoted heredoc', `${BASE} <<'EOF'\nCREATE ROLE app_reader LOGIN;\nGRANT SELECT ON orders TO app_reader;\nEOF`],
         ['a dollar-quoted DO block in single quotes', `${BASE} -c 'DO $$ BEGIN CREATE ROLE app_reader; END $$'`],
+        ['the file through <', `${BASE} < ${migration}`],
+        ['-f - with a quoted heredoc', `${BASE} -f - <<'EOF'\nCREATE ROLE app_reader LOGIN;\nEOF`],
+        ['a plain dump whose COPY data ends at \\.', `${BASE} -f ${dump}`],
     ])('%s', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });

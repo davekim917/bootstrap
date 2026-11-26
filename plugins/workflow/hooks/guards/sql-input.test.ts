@@ -59,9 +59,29 @@ describe('a read-only SQL file is not', () => {
     test.each([
         (d: string) => `snow sql -f ${d}/ok.sql`,
         (d: string) => `psql -h db.example < ${d}/ok.sql`,
-        (d: string) => `cat ${d}/ok.sql | psql -h db.example`,
     ])('%#', (make) => {
         expect(verdict(make(dir))).toBe('allow');
+    });
+});
+
+// psql reads SQL only in its listed forms (psqlReadableInput); a pipe is not one, so even a read-only one gates.
+describe('SQL piped into psql', () => {
+    test.each([
+        (d: string) => `cat ${d}/ok.sql | psql -h db.example`,
+        () => `B='SELECT 1;'; echo "$B" | psql`,
+        () => `B='-- DROP TABLE users;'; echo "$B" | psql`,
+        () => `B='-- DROP TABLE users;'; echo $B | psql`,
+        () => `B='-v x DROP TABLE users;'; printf $B | psql`,
+        () => `O=-v; SQL='DROP TABLE users;'; printf $O x "$SQL" | psql`,
+        () => `B='-e DROP TABLE users;'; echo 'SELECT 1; --' $B | psql`,
+        () => `result=$(printf 'SELECT 1;' | psql)`,
+        () => `B='SELECT 1'; x=$(echo "$B" | psql)`,
+        () => `x=$(B='SELECT 1'; echo "$B" | psql)`,
+        () => `x=$(cd job; cat ok.sql | psql)`,
+        () => `B='DROP TABLE users'; x=$(B='SELECT 1'; echo "$B" | psql)`,
+        () => `B='DROP TABLE users;'; cat <<'EOF' | psql\n$B\nEOF`,
+    ])('%#', (make) => {
+        expect(verdict(make(dir))).toBe('gate');
     });
 });
 
@@ -163,15 +183,8 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
     }
     for (const command of [
         `B='SELECT 1;'; psql -c "$B"`,
-        `B='SELECT 1;'; echo "$B" | psql`,
         `B='DROP TABLE users;'; echo "$B"`,
         `psql -c "$UNKNOWN"`,
-        `B='DROP TABLE users;'; cat <<'EOF' | psql\n$B\nEOF`,
-        `B='-- DROP TABLE users;'; echo "$B" | psql`,
-        `B='-- DROP TABLE users;'; echo $B | psql`,
-        `B='-v x DROP TABLE users;'; printf $B | psql`,
-        `O=-v; SQL='DROP TABLE users;'; printf $O x "$SQL" | psql`,
-        `B='-e DROP TABLE users;'; echo 'SELECT 1; --' $B | psql`,
         `B='SELECT 1'; echo 'DROP TABLE users;' | psql -c "$B"`,
     ]) {
         expect(verdict(command)).toBe('allow');
@@ -371,9 +384,6 @@ describe('a SQL file path held in a variable set on the line gets the verdict of
         ['through a variable', `F=/dev/stdin; echo 'drop table staging_orders;' | snow sql -c example -f "$F"`],
         ['to psql from a heredoc', `psql -h db.example -f /dev/stdin <<'SQL'\ndrop table staging_orders;\nSQL`],
         ['as /proc/self/fd/0', `echo 'drop table staging_orders;' | duckdb -f /proc/self/fd/0`],
-        ['before a second file', `echo 'drop table staging_orders;' | psql -h db.example -f /dev/stdin -f Q/report_a.sql`],
-        ['after a second file, through a variable', `F=/dev/stdin; echo 'drop table staging_orders;' | psql -h db.example -f Q/report_a.sql -f "$F"`],
-        ['as - beside a second file', `echo 'drop table staging_orders;' | psql -h db.example -f Q/report_a.sql -f -`],
         ['spelled unnormalized', `echo 'drop table staging_orders;' | snow sql -c example -f /dev/../dev/./stdin`],
         ['through a symlink in the tree', `echo 'drop table staging_orders;' | snow sql -c example -f Q/stdin_link.sql`],
     ])('SQL piped to a client reading /dev/stdin is scanned, %s', (_label, command) => {
@@ -381,6 +391,18 @@ describe('a SQL file path held in a variable set on the line gets the verdict of
         const verdict = run(command);
         expect(verdict.action).toBe('gate');
         expect(verdict.reason).toContain('drop table staging_orders');
+    });
+
+    test('psql reading /dev/stdin or - from a pipe beside a second file takes a card for input it does not read', () => {
+    for (const command of [
+        `echo 'drop table staging_orders;' | psql -h db.example -f /dev/stdin -f Q/report_a.sql`,
+        `F=/dev/stdin; echo 'drop table staging_orders;' | psql -h db.example -f Q/report_a.sql -f "$F"`,
+        `echo 'drop table staging_orders;' | psql -h db.example -f Q/report_a.sql -f -`,
+    ]) {
+        const v = run(command);
+        expect(v.action).toBe('gate');
+        expect(v.reason).toContain('piped in from another command');
+    }
     });
 
     test('a SELECT piped to a client reading /dev/stdin runs', () => {
@@ -430,7 +452,6 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         expect(verdict(command)).toBe('gate');
     }
     for (const command of [
-        `result=$(printf 'SELECT 1;' | psql)`,
         `printf 'select 1;' | sqlite3 -init ok.sql db.sqlite`,
         `snow sql -f template.sql -D action=SELECT`,
         `psql -Xc'SELECT 1'`,
@@ -438,10 +459,6 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `pushd +1 && psql -c 'select 1'`,
         `printf 'DROP TABLE users' | sqlite3 -init ok.sql db.sqlite 'SELECT 1'`,
         `printf 'DROP TABLE users' | sqlite3 -readonly -json db.sqlite 'SELECT 1'`,
-        `B='SELECT 1'; x=$(echo "$B" | psql)`,
-        `x=$(B='SELECT 1'; echo "$B" | psql)`,
-        `x=$(cd job; cat ok.sql | psql)`,
-        `B='DROP TABLE users'; x=$(B='SELECT 1'; echo "$B" | psql)`,
         `printf 'DROP TABLE users' | psql -Xc'SELECT 1'`,
         `printf 'DROP TABLE users' | duckdb -init ok.sql -c 'SELECT 1'`,
         `snow sql -f include-template.sql -D path=ok.sql`,
@@ -594,3 +611,4 @@ describe('the SQL lexer says where a literal or comment never closes', () => {
         expect(skeleton).toContain('WHERE id = 1');
     });
 });
+

@@ -115,7 +115,6 @@ interface PipedInput {
     textFrom?: PipedInput[];    // inputs whose text (not files) also flows in
     emitters?: ResolvedCommand[]; // emitters whose words hold a variable, expanded only when a SQL client traces them
     unknown?: boolean;          // its text can't be worked out (a substitution past the expansion cap), so a reader gates
-    opaque?: boolean;           // an upstream stage that prints text the guard doesn't model (pg_dump, gunzip)
 }
 
 /**
@@ -757,11 +756,15 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
 // dev table is dropped. Checked only for Postgres clients; Snowflake and the other dialects keep their own rules. A
 // statement matching one of these and a destructive pattern reads as the privilege change.
 export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
-    { rx: /^CREATE\s+(?:ROLE|USER|GROUP)\b/i, label: 'CREATE ROLE' },
+    { rx: /^CREATE\s+(?:ROLE|GROUP|USER(?!\s+MAPPING\b))\b/i, label: 'CREATE ROLE' },
     { rx: /^ALTER\s+DEFAULT\s+PRIVILEGES\b/i, label: 'ALTER DEFAULT PRIVILEGES' },
-    { rx: /^ALTER\s+(?:ROLE|USER|GROUP)\b/i, label: 'ALTER ROLE' },
-    { rx: /^DROP\s+(?:ROLE|USER|GROUP)\b/i, label: 'DROP ROLE' },
+    { rx: /^ALTER\s+(?:ROLE|GROUP|USER(?!\s+MAPPING\b))\b/i, label: 'ALTER ROLE' },
+    { rx: /^DROP\s+(?:ROLE|GROUP|USER(?!\s+MAPPING\b))\b/i, label: 'DROP ROLE' },
+    { rx: /^DROP\s+OWNED\b/i, label: 'DROP OWNED' },
+    // With no ON, GRANT and REVOKE add or remove a role's membership in another role.
+    { rx: /^GRANT\s+(?![\s\S]*\bON\b)/i, label: 'GRANT ROLE' },
     { rx: /^GRANT\s/i, label: 'GRANT' },
+    { rx: /^REVOKE\s+(?![\s\S]*\bON\b)/i, label: 'REVOKE ROLE' },
     { rx: /^REVOKE\s/i, label: 'REVOKE' },
     { rx: /^REASSIGN\s+OWNED\b/i, label: 'REASSIGN OWNED' },
     { rx: /^ALTER\b[\s\S]*(?<!\bRENAME\s+(?:COLUMN\s+)?)\bOWNER\s+TO\b/i, label: 'ALTER ... OWNER TO' },
@@ -771,7 +774,7 @@ export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
 const PG_SQL_PATTERNS = [...PG_PRIVILEGE_SQL_PATTERNS, ...DESTRUCTIVE_SQL_PATTERNS];
 const PG_PRIVILEGE_LABELS = new Set(PG_PRIVILEGE_SQL_PATTERNS.map(p => p.label));
 // Roles belong to the whole cluster, not to the database a connection names.
-const PG_CLUSTER_ROLE_LABELS = new Set(['CREATE ROLE', 'ALTER ROLE', 'DROP ROLE']);
+const PG_CLUSTER_ROLE_LABELS = new Set(['CREATE ROLE', 'ALTER ROLE', 'DROP ROLE', 'GRANT ROLE', 'REVOKE ROLE', 'REASSIGN OWNED', 'DROP OWNED']);
 
 // Control-flow words that can open a statement inside a scripting block
 // (Snowflake Scripting, PL/pgSQL, T-SQL). Stripped before matching, so the
@@ -1403,9 +1406,6 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     }
     // The files the client opens itself, apart from what a piped `cat` reads, which may be read from either side of a cd.
     const ownFiles = new Set(files);
-    // `-c "$(cat migration.sql)"`: psql runs what the substitution prints, which the guard doesn't run to see.
-    const substitutes = (t: string) => /\$\(|`/.test(withoutSingleQuoted(t));
-    const substituted = client === 'psql' && ((writtenArgs(cmd) ?? cmd.args).some(substitutes) || (cmd.stdinExpanded ?? []).some(w => substitutes(w.word)));
     // `/dev/stdin` names the client's own stdin; stat-ing it in the guard would find the guard's.
     const namesStdin = (f: string) => {
         const paths = f === '-' ? null : sqlPathCandidates(f, cmd);
@@ -1415,11 +1415,8 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     if (fileReadsStdin) readsStdin = true;
     // Other files beside the one naming stdin don't stop the client reading it.
     if (readsStdin && (fileReadsStdin || !files.length) && !(cmd.stdinTexts?.length)) {
-        const pipedRoot = cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos));
-        const piped = flattenInput(pipedRoot, cmd.script);
-        // pg_dump, gunzip, curl: psql runs whatever such a program prints, which the guard never sees.
-        if (client === 'psql' && pipedRoot?.opaque) traceOver = true;
-        else if (piped.over || !spendTrace(cmd.script, textSize(piped.texts) + piped.catFiles.length)) traceOver = true;
+        const piped = flattenInput(cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos)), cmd.script);
+        if (piped.over || !spendTrace(cmd.script, textSize(piped.texts) + piped.catFiles.length)) traceOver = true;
         else {
             texts.push(...piped.texts);
             files.push(...piped.catFiles);
@@ -1428,7 +1425,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
 
     // Read each file, plus any text the command writes to it first; follow
     // includes found in what is read, up to a fixed number of files.
-    let unreadable: string | null = traceOver ? 'its piped input' : substituted ? 'a command substitution whose output psql runs' : null;
+    let unreadable: string | null = traceOver ? 'its piped input' : null;
     const commandFiles = new Set(files);
     const pending = [...preludes, ...files];
     for (const t of texts) pending.push(...sqlIncludes(t, null));
@@ -1438,10 +1435,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         if (seen.has(f)) continue;
         seen.add(f);
         if (f === '/dev/null' || (commandFiles.has(f) && namesStdin(f))) continue;
-        if (client === 'psql' && !ownFiles.has(f) && (PSQL_VARIABLE.test(f) || f.includes('`'))) {
-            unreadable ??= `${f}, a file name psql fills in itself`;
-            continue;
-        }
+        if (client === 'psql' && !ownFiles.has(f) && (PSQL_VARIABLE.test(f) || f.includes('`'))) continue;
         const candidates = sqlPathCandidates(f, cmd);
         const writes = writesTo(f, cmd);
         // A file that isn't there may be generated on the line by a writer the guard doesn't model (cp, curl, a script).
@@ -1454,8 +1448,6 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         if (writesOwnOutput(cmd) || texts.some(t => SQL_CLIENT_FILE_WRITE.test(t))) {
             unreadable ??= `${f}, which the client may write itself`;
         }
-        const rewriter = client === 'psql' && ownFiles.has(f) ? earlierWriterOf(cmd, f) : null;
-        if (rewriter) unreadable ??= `${f}, which \`${rewriter}\` earlier on the line may rewrite`;
         if (candidates === null) unreadable ??= `${f}, ${SQL_PATH_UNPROVEN}`;
         if (writes === null) {
             unreadable ??= f;
@@ -1504,6 +1496,10 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         unreadable ??= 'a relative include after the client changed its own directory';
     }
     if (pending.length) unreadable ??= pending[0];
+    if (client === 'psql') {
+        const rule = psqlReadableInput(cmd, [...ownFiles], texts);
+        unreadable = rule.missing ?? rule.unreadable ?? unreadable;
+    }
     return { texts, unreadable, argCounts };
 }
 
@@ -1953,19 +1949,82 @@ const pathIsMissing = (path: string): boolean => {
         return code === 'ENOENT' || code === 'ENOTDIR';
     }
 };
-// Commands that read a file or its metadata and leave its contents alone.
-const FILE_CONTENT_KEEPERS = new Set(['cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'wc', 'less', 'more', 'ls', 'stat', 'test', '[', 'file', 'sha256sum', 'sha1sum', 'md5sum', 'shasum', 'diff', 'cmp', 'echo', 'printf', 'psql', 'chmod', 'touch', 'realpath', 'readlink', 'cd']);
+/**
+ * The one rule for which psql input the guard reads. Readable: literal or provably expanded SQL in -c, -Xc or
+ * --command=; a heredoc or here-string with no command substitution; an -f file or `< file` that nothing earlier on
+ * the line writes. Anything else feeding psql is unreadable: a pipe, a command substitution in the SQL itself,
+ * \gexec, an \i name psql fills in from a variable, \copy … FROM STDIN. Unreadable input cards on any target but the
+ * scratch Postgres; a substitution in -h or another argument that isn't SQL doesn't count. A file that isn't there is
+ * reported apart, ahead of everything else, since its refusal says how to make it readable.
+ */
+export function psqlReadableInput(cmd: ResolvedCommand, files: string[], texts: string[]): { unreadable: string | null; missing: string | null } {
+    const stdinNamed = (f: string) => {
+        const paths = f === '-' ? null : sqlPathCandidates(f, cmd);
+        return f === '-' || (!!paths?.length && paths.every(p => STDIN_PATH.test(fdLinkTarget(p))));
+    };
+    // A file echo, printf, cat or tee writes earlier on the line is there when psql opens it; it is unreadable, below.
+    const missing = files.find(f => {
+        const writes = stdinNamed(f) ? [] : writesTo(f, cmd);
+        if (stdinNamed(f) || writes === null || writes.length) return false;
+        const candidates = sqlPathCandidates(f, cmd);
+        return !!candidates && candidates.length > 0 && candidates.every(pathIsMissing);
+    });
+    const result = (unreadable: string | null) => ({ unreadable, missing: missing ? `${missing}, ${SQL_PATH_MISSING}` : null });
+    const substitutes = (word: string) => /\$\(|`|[<>]\(/.test(withoutSingleQuoted(word));
+    const written = writtenArgs(cmd) ?? cmd.args;
+    for (let i = 0; i < cmd.args.length; i++) {
+        const a = cmd.args[i];
+        const attached = /^--command=/.test(a) || (/^-[A-Za-z]/.test(a) && !a.startsWith('--') && clusterValueOption('psql', a) === 'c' && !a.endsWith('c'));
+        const separate = a === '--command' || (/^-[A-Za-z]*c$/.test(a) && clusterValueOption('psql', a) === 'c');
+        if ((attached && substitutes(written[i] ?? a)) || (separate && substitutes(written[i + 1] ?? cmd.args[i + 1] ?? ''))) {
+            return result('a command substitution in its SQL');
+        }
+    }
+    const sqlInArgs = cmd.args.some(a => /^--command(?:=|$)/.test(a) || clusterValueOption('psql', a) === 'c');
+    const readsStdin = (!sqlInArgs && files.filter(f => !(cmd.stdinFiles ?? []).includes(f)).length === 0) || files.some(stdinNamed);
+    if (readsStdin && !cmd.stdinTexts?.length && !(cmd.stdinFiles ?? []).length) {
+        const piped = cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos));
+        if (piped) return result('SQL piped in from another command');
+    }
+    if ((cmd.stdinExpanded ?? []).some(w => substitutes(w.word))) return result('a command substitution in its SQL');
+    for (const f of files) {
+        const writer = stdinNamed(f) ? null : lineWriterOf(cmd, f);
+        if (writer) return result(`${f}, which \`${writer}\` earlier on the line writes`);
+    }
+    for (const text of texts) {
+        const sql = text.replace(PSQL_COPY_DATA, '$1');
+        const skeleton = sqlSkeleton(sql, false, true).skeleton;
+        if (/\\gexec(?=[\s\\;]|$)/.test(skeleton)) return result('\\gexec, which runs what its query returns as SQL');
+        if (/\\copy\b[^\n]*\bfrom\s+p?stdin\b/i.test(skeleton)) return result('\\copy … FROM STDIN, whose data the line feeds psql');
+        for (const m of sql.matchAll(SQL_INCLUDE)) {
+            if (m[1].startsWith('\\') && (PSQL_VARIABLE.test(m[2]) || m[2].includes('`'))) return result(`${m[2]}, a file name psql fills in itself`);
+        }
+    }
+    return result(null);
+}
+
+// Programs that write a file named by an argument: the argument that names it, by program.
+const FILE_WRITER_OUTPUTS: Record<string, (args: string[]) => string[]> = {
+    cp: args => operands(args).slice(-1), mv: args => operands(args).slice(-1), install: args => operands(args).slice(-1),
+    ln: args => operands(args).slice(-1), rsync: args => operands(args).slice(-1), tee: args => operands(args),
+    curl: args => optionValues(args, ['-o', '--output']), wget: args => optionValues(args, ['-O', '--output-document']),
+    pg_dump: args => optionValues(args, ['-f', '--file']), pg_dumpall: args => optionValues(args, ['-f', '--file']),
+    dd: args => args.filter(a => a.startsWith('of=')).map(a => a.slice(3)),
+    sed: args => (args.some(a => /^(?:-[a-zA-Z]*i|--in-place)/.test(a)) ? operands(args).slice(args.some(a => /^(?:-e|--expression|-f|--file)/.test(a)) ? 0 : 1) : []),
+    perl: args => (args.some(a => /^-[a-zA-Z]*i/.test(a)) ? operands(args) : []),
+};
+const operands = (args: string[]) => args.filter(a => !a.startsWith('-'));
+const optionValues = (args: string[], options: string[]) => args.flatMap((a, i) => options.flatMap(o => (a === o ? [args[i + 1] ?? ''] : a.startsWith(o.startsWith('--') ? `${o}=` : o) && a.length > o.length ? [a.slice(o.length).replace(/^=/, '')] : [])));
 
 /**
- * The name of a command earlier on the line that names `file` and isn't known to leave it alone, or null. A cp, mv,
- * curl -o or sed -i there can replace the file after the guard read it and before the client opens it.
+ * A command earlier on the line that writes `file`, by a `>` or `>>` redirect or as a known writer's output, so psql
+ * would read what it wrote rather than what the guard read; null when none does.
  */
-function earlierWriterOf(cmd: ResolvedCommand, file: string): string | null {
-    const line = cmd.script?.command;
-    if (line === undefined || cmd.pos === undefined) return null;
-    const names = (a: string) => a === file || a.endsWith(`/${file}`) || file.endsWith(`/${a}`) || a.endsWith(`=${file}`)
-        || (a.startsWith('-') && !a.startsWith('--') && a.length > 2 && a.endsWith(file) && a.slice(2) === file);
-    const writer = (cmd.script?.commands ?? []).find(c => c.pos !== undefined && c.pos < cmd.pos! && !FILE_CONTENT_KEEPERS.has(c.name) && c.args.some(names));
+function lineWriterOf(cmd: ResolvedCommand, file: string): string | null {
+    if (cmd.pos === undefined) return null;
+    const names = (a: string) => a === file || a.endsWith(`/${file}`) || file.endsWith(`/${a}`);
+    const writer = (cmd.script?.commands ?? []).find(c => c !== cmd && c.pos !== undefined && c.pos < cmd.pos!
+        && ((c.stdoutFiles ?? []).some(names) || (FILE_WRITER_OUTPUTS[c.name]?.(c.args) ?? []).some(names)));
     return writer?.name ?? null;
 }
 
@@ -3562,8 +3621,6 @@ function commandsOf(ast: any, command: string): ResolvedCommand[] {
 }
 
 const TEXT_EMITTERS = new Set(['echo', 'printf', 'cat', 'tee']);
-// Commands that print nothing into a pipe, so a stage of only these and emitters feeds a reader text the guard can see.
-const SILENT_STAGE_COMMANDS = new Set(['cd', 'pushd', 'popd', 'true', ':', 'set', 'export', 'sleep']);
 
 /** The files cat reads, a relative one resolved against the directory an `env -C` wrapper ran it in. */
 function catOperands(cmd: ResolvedCommand): string[] {
@@ -3660,7 +3717,6 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             if (i === 0) return;
             const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [], emitters: [] };
             for (const up of stageCommands(stages[i - 1])) {
-                if (!TEXT_EMITTERS.has(up.name) && !up.stdoutFiles?.length && !SILENT_STAGE_COMMANDS.has(up.name)) input.opaque = true;
                 if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
                 const fed = up.pos === undefined ? undefined : pipedInto.get(up.pos);
                 input.texts.push(...emittedText(up));
@@ -4226,7 +4282,10 @@ function labSqlSignal(value: string): string | null {
 function changesClusterRoles(cmd: ResolvedCommand): boolean {
     if (cmd.name !== 'psql') return false;
     const input = sqlInputFor(cmd);
-    return input.texts.some(t => psqlStatementTexts(t).some(s => destructiveStatements(s, 0, true, false, true).some(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern))));
+    // Input the guard can't read may hold a role change too.
+    if (input.unreadable) return true;
+    return input.texts.some(t => psqlRoleMeta(t) !== null
+        || psqlStatementTexts(t).some(s => destructiveStatements(s, 0, true, false, true).some(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern))));
 }
 
 function labSqlTarget(cmd: ResolvedCommand): string | null {
@@ -4463,8 +4522,9 @@ function renderPsqlPrivilegeChange(args: string[]): string | null {
     if (args[0] !== 'psql') return null;
     for (const word of args.slice(2)) {
         const sql = word.replace(/^(?:--command=|-c)/, '');
-        // SQL the scanner can't read (EXECUTE format(…), a body in another language) may change roles too.
-        const found = destructiveStatements(sql, 0, true, false, true).find(st => PG_PRIVILEGE_LABELS.has(st.pattern) || PG_UNREADABLE_LABELS.has(st.pattern));
+        // A grant on the dev database's own objects stays waived; a role, which the whole cluster holds, does not, and
+        // nor does SQL the scanner can't read (EXECUTE format(…), a body in another language), which may change one.
+        const found = destructiveStatements(sql, 0, true, false, true).find(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern) || PG_UNREADABLE_LABELS.has(st.pattern));
         if (found) return found.pattern;
     }
     return null;
@@ -4518,7 +4578,7 @@ function renderDevHoldReason(cmd: ResolvedCommand, reason: string): string {
     if (!ids) return reason;
     const privilege = cmd.name === 'render' ? renderPsqlPrivilegeChange(cmd.args) : null;
     const why = renderDeletesDatastore(cmd) ? 'Render keeps no backup of a deleted datastore'
-        : privilege && PG_PRIVILEGE_LABELS.has(privilege) ? `it changes database roles or privileges (${privilege}), which outlive the dev data`
+        : privilege && PG_CLUSTER_ROLE_LABELS.has(privilege) ? `it changes roles (${privilege}), which the whole cluster holds, not only this database`
         : privilege ? `it runs SQL the guard can't read (${privilege}), which could change roles or privileges`
         : "the guard can't confirm what this form does there";
     return `${RENDER_DEV_HOLD} ${ids.join(', ')}: ${why}.`;
@@ -5364,12 +5424,12 @@ function lineExpands(command: string): boolean {
  * here-document is read line by line, where a backslash command such as \c could connect somewhere else.
  */
 function psqlScratchInputRead(cmd: ResolvedCommand, target: { commands: number; files: number }): boolean {
-    if (target.files === 0 && target.commands > 0) return true;
-    if (target.files === 0 && !cmd.stdinTexts?.length) return false;
-    // `-f -` reads psql's stdin, where a pipe can carry what the guard traced only in part.
-    if (cmd.args.some((a, i) => /^(?:-[A-Za-z]*f-|--file=-)$/.test(a) || (/^(?:-[A-Za-z]*f|--file)$/.test(a) && /^(?:-|\/dev\/stdin)$/.test(cmd.args[i + 1] ?? '')))) return false;
+    const stdin = !!cmd.stdinTexts?.length || !!cmd.stdinFiles?.length;
+    if (target.files === 0 && !stdin) return target.commands > 0;
     const input = sqlInputFor(cmd);
-    return !input.unreadable && !input.texts.some(t => PSQL_BACKSLASH_COMMAND.test(t));
+    // A dump's COPY data, and the \. that ends it, are data rather than backslash commands.
+    return !input.unreadable && !input.texts.some(t => t.replace(PSQL_COPY_DATA, '$1').split('\n')
+        .some(line => !/^\s*\\\.\s*$/.test(line) && PSQL_BACKSLASH_COMMAND.test(line)));
 }
 
 /**
@@ -6359,7 +6419,9 @@ const PSQL_BACKSLASH_TO_LINE_END = /\\[^\s\\][^\n]*/g;
  * psql's \gexec runs each value its query returns as a statement, and \password runs ALTER ROLE … PASSWORD; neither
  * leaves SQL the guard can read.
  */
-function psqlRoleMeta(text: string): { pattern: string; statement: string } | null {
+function psqlRoleMeta(input: string): { pattern: string; statement: string } | null {
+    // Comments and string literals blanked, so a mention in either reads as nothing.
+    const text = sqlSkeleton(input.replace(PSQL_COPY_DATA, '$1'), false, true).skeleton;
     if (/\\gexec(?=[\s\\;]|$)/.test(text)) return { pattern: '\\gexec', statement: 'runs each value the query returns as SQL, which the guard can\'t read' };
     const password = /\\password\b[^\n]*/.exec(text);
     return password ? { pattern: 'ALTER ROLE', statement: `${password[0].trim()} sets a role's password` } : null;
@@ -7788,7 +7850,9 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves, fix: devExpansion };
                 continue;
             }
-            const unresolved = cmd === outer ? unresolvedPgTargetFix(cmd) : null;
+            // Input the guard can't read takes a card, not a refusal, whatever the target; only a missing file is refused.
+            const unreadableInput = reason.startsWith('PostgreSQL SQL input (') && !reason.includes(SQL_PATH_MISSING);
+            const unresolved = cmd === outer && !unreadableInput ? unresolvedPgTargetFix(cmd) : null;
             if (cmd.name === 'psql' && reason.includes(SQL_PATH_MISSING)) {
                 const missing = `${reason} Write the file in one call, then run it in the next with its path written out, and the guard reads it first.`;
                 yield { cmd, reason, outer, moves, fix: unresolved === null ? missing : `${missing}\nAlso, ${unresolved}` };
@@ -8410,202 +8474,6 @@ export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'req
  * NanoClaw's in-tree email hook joins a peer's card only when the stored request equals, field for field, the one it
  * would file itself for the same tool call, and that one carries the tool call.
  */
-/** A value as one shell word: plain when it needs no quoting, else single-quoted. */
-const shellWord = (value: string, written = ''): string => (/^[\w@%+=:,./-]+$/.test(value) ? value
-    : written.startsWith('"') && !/["$`\\]/.test(value) ? `"${value}"` : `'${value.replace(/'/g, `'\\''`)}'`);
-
-// A Postgres or Snowflake role password, or MySQL's IDENTIFIED BY, as a quoted SQL literal.
-const SQL_PASSWORD_LITERAL = /(\b(?:PASSWORD|IDENTIFIED\s+BY)\s*(?:=\s*)?)('(?:[^']|'')*'|"(?:[^"\\]|\\.)*")/gi;
-const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"]*:)([^\s@/'"]+)@/gi;
-const CREDENTIAL_NAME = /^[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY)$/i;
-const CURL_CREDENTIAL_LETTERS = new Set(['u', 'U']);
-const CURL_HEADER_LETTERS = new Set(['H']);
-const PG_CLIENTS = new Set(['psql', 'pg_dump', 'pg_dumpall', 'pg_restore', 'pgcli', 'createdb', 'dropdb', 'createuser', 'dropuser', 'vacuumdb', 'reindexdb', 'pg_isready']);
-const SQL_TEXT_FLAGS: Record<string, RegExp> = { psql: /^(?:-c|--command)$/, snow: /^(?:-q|--query)$/, mysql: /^(?:-e|--execute)$/ };
-
-/** What a curl -u/-U value or a header value shows, and the secret it hides; null when it holds none. */
-function curlCredential(kind: 'user' | 'header', value: string): { shown: string; secret: string } | null {
-    if (kind === 'user') {
-        const colon = value.indexOf(':');
-        return colon >= 0 && colon < value.length - 1 ? { shown: `${value.slice(0, colon + 1)}[redacted]`, secret: value.slice(colon + 1) } : null;
-    }
-    const auth = /^((?:Proxy-)?Authorization\s*:\s*(?:(?:Bearer|Basic|Token|Bot|Digest|Negotiate)\s+)?)(\S[\s\S]*)$/i.exec(value)
-        ?? /^((?:X-)?(?:Api|Auth)[-_]?(?:Key|Token)\s*:\s*)(\S[\s\S]*)$/i.exec(value);
-    return auth ? { shown: `${auth[1]}[redacted]`, secret: auth[2] } : null;
-}
-
-/**
- * The command with each credential it passes replaced by `[redacted]`, read from the shell's own words: curl's -u, -U,
- * --user and --proxy-user values and its authorization or API-key headers; libpq's password= in a connection string; a
- * URL's password; an assignment to a password, secret, token or API-key variable; and a quoted SQL role password in a
- * SQL client's text. A quoted value is one word, so a password with spaces goes whole. Also returns each secret, so
- * text quoting the command can be scrubbed of them. Null when the line can't be parsed.
- */
-function redactCommandCredentials(command: string): { text: string; secrets: string[] } | null {
-    let script: any;
-    try {
-        script = parseShell(command);
-    } catch {
-        return null;
-    }
-    const edits: Array<{ pos: number; end: number; text: string }> = [];
-    const secrets: string[] = [];
-    // The word as written, with the secret replaced where it appears verbatim, so quoting and $VARS stay as they were
-    // and the card still resolves them; a secret written with escapes is shown re-quoted instead.
-    const replaceIn = (word: any, secret: string, requoted: string) => {
-        if (typeof word?.pos !== 'number' || typeof word?.end !== 'number') return;
-        const raw = command.slice(word.pos, word.end);
-        edits.push({ pos: word.pos, end: word.end, text: raw.includes(secret) ? raw.split(secret).join('[redacted]') : requoted });
-        secrets.push(secret);
-    };
-    const patterns = (value: string, sql: boolean, libpq: boolean): string[] => {
-        const found: string[] = [];
-        for (const m of value.matchAll(URL_PASSWORD)) found.push(m[2]);
-        if (sql) for (const m of value.matchAll(SQL_PASSWORD_LITERAL)) found.push(m[2].slice(1, -1));
-        if (libpq && /\b(?:host|hostaddr|dbname|user|port|service)\s*=/i.test(value)) {
-            for (const m of value.matchAll(/\bpassword\s*=\s*('(?:\\.|[^'\\])*'|[^\s']+)/gi)) found.push(m[1].replace(/^'|'$/g, ''));
-        }
-        return found.filter(s => s.length > 0);
-    };
-    // Each command at this level of the line; a $(…) or backticks inside a word is redacted as a line of its own.
-    const commands: any[] = [];
-    const collect = (node: any): void => {
-        if (!node || typeof node !== 'object') return;
-        if (Array.isArray(node)) return node.forEach(collect);
-        if (node.type === 'Command') return void commands.push(node);
-        for (const key of ['commands', 'command', 'clause', 'then', 'else', 'body']) collect(node[key]);
-        for (const item of node.items ?? []) collect(item?.body);
-    };
-    collect(script);
-    const substitutions = (word: any): void => {
-        if (typeof word?.pos !== 'number' || typeof word?.text !== 'string') return;
-        const visit = (part: any): void => {
-            if (!part || typeof part !== 'object') return;
-            if (['CommandExpansion', 'CommandSubstitution', 'ProcessSubstitution', 'Backtick'].includes(part.type) && typeof part.text === 'string') {
-                const tick = part.text.startsWith('`');
-                const inner = tick ? part.text.slice(1, -1) : part.text.slice(2, -1);
-                const at = word.text.indexOf(part.text);
-                const read = at < 0 ? null : redactCommandCredentials(inner);
-                if (read && read.text !== inner) {
-                    const start = word.pos + at + (tick ? 1 : 2);
-                    edits.push({ pos: start, end: start + inner.length, text: read.text });
-                    secrets.push(...read.secrets);
-                }
-                return;
-            }
-            for (const p of part.parts ?? []) visit(p);
-        };
-        for (const p of word.parts ?? []) visit(p);
-    };
-    for (const node of commands) {
-        for (const p of node.prefix ?? []) {
-            if (p?.type !== 'Assignment' || typeof p.name !== 'string') continue;
-            const value = String(p.value?.value ?? p.value?.text ?? '');
-            if (CREDENTIAL_NAME.test(p.name) && value) replaceIn(p.value?.pos !== undefined ? p.value : p, value, `${p.name}=[redacted]`);
-            else substitutions(p.value);
-        }
-        const words: any[] = [node.name, ...(node.suffix ?? [])].filter(Boolean);
-        const at = words.findIndex(w => ['curl', ...PG_CLIENTS, 'snow', 'mysql'].includes(basename(wordValue(w))));
-        const name = at >= 0 ? basename(wordValue(words[at])) : '';
-        const edited = new Set<any>();
-        if (at >= 0) {
-            const args = words.slice(at + 1);
-            for (let i = 0; i < args.length; i++) {
-                const word = args[i];
-                const value = wordValue(word);
-                if (name === 'curl') {
-                    let kind: 'user' | 'header' | null = null;
-                    let head = '';
-                    let target = word;
-                    let given: string | undefined;
-                    const long = /^(--user|--proxy-user|--header|--proxy-header)(?:=([\s\S]*))?$/.exec(value);
-                    if (long) {
-                        kind = /user/.test(long[1]) ? 'user' : 'header';
-                        if (long[2] !== undefined) [head, given] = [`${long[1]}=`, long[2]];
-                    } else if (/^-[^-]/.test(value)) {
-                        for (let c = 1; c < value.length; c++) {
-                            if (!CURL_VALUE_LETTERS.includes(value[c])) continue;
-                            kind = CURL_CREDENTIAL_LETTERS.has(value[c]) ? 'user' : CURL_HEADER_LETTERS.has(value[c]) ? 'header' : null;
-                            if (kind && c + 1 < value.length) [head, given] = [value.slice(0, c + 1), value.slice(c + 1)];
-                            break;
-                        }
-                    }
-                    if (kind) {
-                        if (given === undefined) {
-                            target = args[++i];
-                            given = target === undefined ? undefined : wordValue(target);
-                        }
-                        const found = given === undefined ? null : curlCredential(kind, given);
-                        if (found) {
-                            replaceIn(target, found.secret, head + shellWord(found.shown, String(target?.text ?? '')));
-                            edited.add(target);
-                        }
-                        continue;
-                    }
-                }
-                // A URL with a password in it: an operand, or the value of --proxy, -x, --url and the like.
-                const sql = !!SQL_TEXT_FLAGS[name]?.test(wordValue(args[i - 1] ?? {}));
-                const found = patterns(value, sql, PG_CLIENTS.has(name));
-                for (const secret of found) replaceIn(word, secret, shellWord(found.reduce((v, s) => v.split(s).join('[redacted]'), value), String(word.text ?? '')));
-                if (found.length) edited.add(word);
-            }
-            if (SQL_TEXT_FLAGS[name] || name === 'psql') {
-                for (const r of node.redirects ?? []) {
-                    if (typeof r?.content !== 'string' || !r.content) continue;
-                    const start = command.indexOf(r.content, typeof r.end === 'number' ? r.end : 0);
-                    const found = patterns(r.content, true, false);
-                    if (start >= 0 && found.length) {
-                        edits.push({ pos: start, end: start + r.content.length, text: found.reduce((v, s) => v.split(s).join('[redacted]'), r.content) });
-                        secrets.push(...found);
-                    }
-                }
-            }
-        } else {
-            for (const word of words) for (const secret of patterns(wordValue(word), false, false)) replaceIn(word, secret, shellWord(wordValue(word).split(secret).join('[redacted]'), String(word.text ?? '')));
-        }
-        for (const word of words) if (!edited.has(word)) substitutions(word);
-    }
-    // Overlapping edits (a word redacted whole, and a substitution inside it) keep the outer one.
-    const kept: typeof edits = [];
-    for (const e of edits.sort((a, b) => a.pos - b.pos || b.end - a.end)) {
-        const last = kept.at(-1);
-        if (last && e.pos < last.end) {
-            if (e.pos === last.pos && e.end === last.end && e.text !== last.text) last.text = e.text.length < last.text.length ? e.text : last.text;
-            continue;
-        }
-        kept.push(e);
-    }
-    let text = command;
-    for (const e of kept.reverse()) text = text.slice(0, e.pos) + e.text + text.slice(e.end);
-    return { text, secrets: [...new Set(secrets)].filter(s => s.length >= 3) };
-}
-
-/** `text` with every one of `secrets` replaced by `[redacted]`. */
-function scrubSecrets(text: string, secrets: string[]): string {
-    return [...secrets].sort((a, b) => b.length - a.length).reduce((t, s) => t.split(s).join('[redacted]'), text);
-}
-
-/**
- * A command and the text that quotes it, as the staged request shows them: each credential the command passes is
- * `[redacted]` (redactCommandCredentials), and so is every copy of it in `quoting`. The staged request is persisted and
- * shown on the card, so neither may hold it. A line the shell parser can't read falls back to matching credential
- * shapes in the raw text.
- */
-export function redactCredentials(command: string, ...quoting: string[]): string[] {
-    const read = redactCommandCredentials(command);
-    // Text quoting SQL the client reads from a file shows a role password the command line never held.
-    const sqlScrubbed = (t: string) => t.replace(SQL_PASSWORD_LITERAL, (_m, head) => `${head}'[redacted]'`);
-    if (read) return [read.text, ...quoting.map(t => sqlScrubbed(scrubSecrets(t, read.secrets)))];
-    return [command, ...quoting].map(redactCredentialShapes);
-}
-
-function redactCredentialShapes(text: string): string {
-    return text
-        .replace(/\b((?:Proxy-)?Authorization\s*:\s*(?:(?:Bearer|Basic|Token|Bot|Digest)\s+)?)("[^"]*"|'[^']*'|[^\s'"\\]+)/gi, (_, head) => head + '[redacted]')
-        .replace(URL_PASSWORD, (_m, head) => `${head}[redacted]@`)
-        .replace(SQL_PASSWORD_LITERAL, (_m, head) => `${head}'[redacted]'`);
-}
-
 export function gateRequestContent(
     requestId: string,
     label: string,
@@ -8615,21 +8483,17 @@ export function gateRequestContent(
     card: EmailCard = {},
     toolUseId?: string,
 ): string {
-    // An email card shows the message exactly as it will send, and the in-tree email hook joins it only field for field.
-    const [shownCommand, shownLabel, shownSummary, shownFull] = action === 'request_bash_gate'
-        ? [command, label, summary, card.fullSummary ?? '']
-        : redactCredentials(command, label, summary, card.fullSummary ?? '');
     return JSON.stringify({
         action,
         requestId,
-        label: shownLabel,
-        summary: shownSummary,
+        label,
+        summary,
         // The host renders a bounded head+tail preview and retains the full
         // command in its approval record. Truncating here would discard final
         // arguments before the approver or audit trail could inspect them.
-        command: shownCommand,
+        command,
         ...(card.pureSend ? { pureSend: true } : {}),
-        ...(card.fullSummary !== undefined ? { fullSummary: shownFull } : {}),
+        ...(card.fullSummary !== undefined ? { fullSummary: card.fullSummary } : {}),
         ...(card.wholeEmail !== undefined ? { wholeEmail: card.wholeEmail } : {}),
         ...(toolUseId ? { toolUseId } : {}),
     });
@@ -8811,17 +8675,8 @@ export function runNanoclawGate(
     toolUseId?: string,
     cwd?: string,
 ): GateDecision {
-    return runGateRequest(command, reason, { onStageError, toolUseId, ...nanoclawGateParts(command, reason, cwd) });
-}
-
-/**
- * The gate action and card for a command, as runNanoclawGate stages them. The card is built from the command with its
- * credentials already redacted, so no cut or reformatting of the card can leave part of one behind.
- */
-export function nanoclawGateParts(command: string, reason: string, cwd?: string): { action: GateAction; label: string; summary: string } {
     const action = changesProduction(command, cwd) ? 'request_prod_gate' : 'request_destructive_gate';
-    const [shownCommand, shownReason] = redactCredentials(command, reason);
-    return { action, ...describeGate(shownCommand, shownReason, cwd) };
+    return runGateRequest(command, reason, { action, onStageError, toolUseId, ...describeGate(command, reason, cwd) });
 }
 
 const heldOnDev = (step: GatedStep): boolean => step.cmd === step.outer && renderDevHeld(step.cmd) !== null;

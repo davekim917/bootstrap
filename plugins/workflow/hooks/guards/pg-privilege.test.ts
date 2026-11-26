@@ -64,6 +64,9 @@ const PRIVILEGE_SQL = [
     '/* setup */ grant usage on schema public to app_reader',
 ];
 
+// Statements on roles, which the whole cluster holds: role DDL, role membership, and moving or dropping what a role owns.
+const CLUSTER_SQL = new Set(PRIVILEGE_SQL.filter(sql => /^(?:create|alter|drop)\s+(?:role|user|group)\b|^grant\s+app_admin\b|^reassign\s+owned\b/i.test(sql)));
+
 describe('a role or privilege change on a reachable Postgres is never run without approval', () => {
     for (const sql of PRIVILEGE_SQL) {
         test.each([
@@ -71,7 +74,8 @@ describe('a role or privilege change on a reachable Postgres is never run withou
             ['prod, through its connection string', viaUri(PROD_DB, sql), 'block'],
             ['dev, its host written out', viaHost(DEV_DB, sql), 'gate'],
             ['prod, its host written out', viaHost(PROD_DB, sql), 'gate'],
-            ['dev, through render psql', viaRender(DEV_DB, sql), 'gate'],
+            // A listed dev database waives changes to its own objects; a role, which the whole cluster holds, keeps its card.
+            ['dev, through render psql', viaRender(DEV_DB, sql), CLUSTER_SQL.has(sql) ? 'gate' : 'allow'],
             ['prod, through render psql', viaRender(PROD_DB, sql), 'gate'],
         ])(sql + ': %s', (_where, command, action) => {
             expect(run(command).action).toBe(action as 'block' | 'gate');
@@ -80,7 +84,8 @@ describe('a role or privilege change on a reachable Postgres is never run withou
 
     test('inside a DO block', () => {
         expect(run("psql -X -h " + host(PROD_DB) + " -U app -d app -c 'DO $$BEGIN GRANT SELECT ON public.orders TO app_reader; END$$'").action).toBe('gate');
-        expect(run("render psql " + DEV_DB + " -c 'DO $$BEGIN GRANT SELECT ON public.orders TO app_reader; END$$'").action).toBe('gate');
+        expect(run("render psql " + DEV_DB + " -c 'DO $$BEGIN CREATE ROLE app_reader; END$$'").action).toBe('gate');
+        expect(run("render psql " + DEV_DB + " -c 'DO $$BEGIN GRANT SELECT ON public.orders TO app_reader; END$$'").action).toBe('allow');
     });
 
     test.each([
@@ -93,11 +98,11 @@ describe('a role or privilege change on a reachable Postgres is never run withou
     });
 
     test('a listed dev database holds it as dev and says why', () => {
-        const command = viaRender(DEV_DB, 'GRANT SELECT ON public.orders TO app_reader');
+        const command = viaRender(DEV_DB, 'GRANT app_admin TO app_reader');
         const { reason } = run(command);
         expect(changesProduction(command, '/tmp')).toBe(false);
         expect(reason).toContain(DEV_DB);
-        expect(reason).toContain('roles or privileges');
+        expect(reason).toContain('whole cluster holds');
     });
 
     test('the card names the privilege change', () => {
@@ -193,6 +198,7 @@ describe('psql input the guard reads as psql does', () => {
     test.each([
         ['-f clustered after -X', () => `${H} -Xf ${f('grant.sql')}`],
         ['pg_dump piped in', () => `pg_dump -h src.example.com db | ${H}`],
+        ['a read-only cat piped in, since a pipe is not a form psql input is read in', () => `cat ${f('ok.sql')} | ${H}`],
         ['gunzip piped in', () => `gzip -dc ${f('dump.sql.gz')} | ${H}`],
         ['SQL from a command substitution', () => `${H} -c "$(cat ${f('grant.sql')})"`],
         ['a file cp replaces earlier on the line', () => `cp ${f('grant.sql')} ${f('ok.sql')} && ${H} -f ${f('ok.sql')}`],
@@ -224,7 +230,6 @@ describe('psql input the guard reads as psql does', () => {
     });
 
     test.each([
-        ['a cat piped in', () => `cat ${f('ok.sql')} | ${H}`],
         ['a cat earlier on the line, which leaves the file alone', () => `cat ${f('ok.sql')} && ${H} -f ${f('ok.sql')}`],
         ['a GRANT inside a nested comment', () => `${H} -f ${f('nested.sql')}`],
         ['COPY data whose row starts with GRANT', () => `${H} -f ${f('copy-data.sql')}`],
@@ -257,5 +262,88 @@ describe('a Lab session waives grants on its database, not changes to roles, whi
     });
     test.each([['CREATE ROLE app LOGIN'], ['ALTER ROLE app SUPERUSER'], ['DROP USER app']])('%s on a lab database gates', (sql) => {
         expect(run(`psql -h db.example.com -d lab_app -c "${sql}"`).action).toBe('gate');
+    });
+});
+
+describe('psql input outside the listed forms takes a card, and only a missing file is refused', () => {
+    let fx = '';
+    const f = (name: string) => join(fx, name);
+    beforeAll(() => {
+        fx = mkdtempSync(join(tmpdir(), 'pg-forms-'));
+        writeFileSync(f('m.sql'), 'select 1;\n');
+        writeFileSync(f('mention.sql'), '-- \\gexec and \\password are covered in the runbook\nselect 1;\n');
+        writeFileSync(f('client-copy.sql'), "\\copy t from stdin\nO'Brien\n\\.\nGRANT ALL ON t TO public;\n");
+    });
+    afterAll(() => rmSync(fx, { recursive: true, force: true }));
+    const H = 'psql -h db.example.com';
+
+    test.each([
+        ['a dump through tee', () => `pg_dump -h src.example.com db | tee ${f('copy.sql')} | ${H}`],
+        ['a pipe inside a command substitution', () => `x=$(pg_dump -h src.example.com db | ${H})`],
+        ['a file a redirect wrote earlier on the line', () => `pg_dump -h src.example.com db > ${f('m.sql')}; ${H} -f ${f('m.sql')}`],
+        ['\\copy FROM STDIN with no semicolon', () => `${H} -f ${f('client-copy.sql')}`],
+    ])('%s gates', (_name, command) => {
+        expect(run(command()).action).toBe('gate');
+    });
+
+    test.each([
+        ['a comment that mentions \\gexec and \\password', () => `${H} -f ${f('mention.sql')}`],
+        ['a substitution only in -h, with literal SQL', () => `psql -h "$(cat ${f('m.sql')})" -c 'SELECT 1'`],
+        ['a read-only sed preview before -f', () => `sed -n 1,5p ${f('m.sql')} && ${H} -f ${f('m.sql')}`],
+        ['CREATE USER MAPPING, which is not a role', () => `${H} -c "CREATE USER MAPPING FOR app SERVER s"`],
+    ])('%s runs', (_name, command) => {
+        expect(run(command()).action).toBe('allow');
+    });
+
+    test('a missing file is refused even after a readable one beside -o', () => {
+        const verdict = run(`${H} -o ${f('out.txt')} -f ${f('m.sql')} -f ${f('missing.sql')}`);
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).toContain("isn't there yet");
+    });
+
+    test('DROP OWNED on a listed dev database keeps its card', () => {
+        expect(run(`render psql ${DEV_DB} -c "DROP OWNED BY app_a"`).action).toBe('gate');
+    });
+});
+
+describe('a Lab database waives database objects, not roles the whole cluster holds', () => {
+    let labDir = '';
+    let savedLab: string | undefined;
+    let savedProfile: string | undefined;
+    let fx = '';
+    beforeAll(() => {
+        labDir = mkdtempSync(join(tmpdir(), 'pg-lab-2-'));
+        fx = mkdtempSync(join(tmpdir(), 'pg-lab-files-'));
+        writeFileSync(join(fx, 'password.sql'), '\\password app\n');
+        writeFileSync(join(fx, 'gexec.sql'), "select 'GRANT app_admin TO app' \\gexec\n");
+        writeFileSync(join(labDir, 'lab-scope.local.json'), JSON.stringify({ org: 'lab-org', extraRepos: [] }));
+        [savedLab, savedProfile] = [process.env[LAB_SCOPE_FILE_ENV], process.env.NANOCLAW_INSTRUCTIONS_PROFILE];
+        process.env[LAB_SCOPE_FILE_ENV] = join(labDir, 'lab-scope.local.json');
+        process.env.NANOCLAW_INSTRUCTIONS_PROFILE = 'lab';
+    });
+    afterAll(() => {
+        if (savedLab === undefined) delete process.env[LAB_SCOPE_FILE_ENV];
+        else process.env[LAB_SCOPE_FILE_ENV] = savedLab;
+        if (savedProfile === undefined) delete process.env.NANOCLAW_INSTRUCTIONS_PROFILE;
+        else process.env.NANOCLAW_INSTRUCTIONS_PROFILE = savedProfile;
+        rmSync(labDir, { recursive: true, force: true });
+        rmSync(fx, { recursive: true, force: true });
+    });
+    const LAB = 'psql -h db.example.com -d lab_app';
+    test.each([
+        ['role membership', `${LAB} -c "GRANT app_admin TO app_reader"`],
+        ['revoking role membership', `${LAB} -c "REVOKE app_admin FROM app_reader"`],
+        ['REASSIGN OWNED', `${LAB} -c "REASSIGN OWNED BY app_a TO app_b"`],
+        ['DROP OWNED', `${LAB} -c "DROP OWNED BY app_a"`],
+        ['\\password', () => `${LAB} -f ${join(fx, 'password.sql')}`],
+        ['\\gexec', () => `${LAB} -f ${join(fx, 'gexec.sql')}`],
+    ])('%s on a lab database gates', (_name, command) => {
+        expect(run(typeof command === 'function' ? command() : command).action).toBe('gate');
+    });
+    test.each([
+        ['a grant on an object', `${LAB} -c "GRANT SELECT ON t TO app_reader"`],
+        ['CREATE USER MAPPING', `${LAB} -c "CREATE USER MAPPING FOR app SERVER s"`],
+    ])('%s on a lab database runs', (_name, command) => {
+        expect(run(command).action).toBe('allow');
     });
 });
