@@ -42,13 +42,14 @@ beforeAll(() => {
     writeFileSync(join(dir, 'project', 'macros', 'ops.sql'), [
         "{% macro unload_orders() %}{% do run_query(\"copy into @dev_db.raw.out from dev_db.core.orders\") %}{% endmacro %}",
         "{% macro load_orders() %}{% do run_query(\"insert into prod_db.core.orders values (1)\") %}{% endmacro %}",
+        "{% macro fill_dev() %}{% do run_query(\"insert into dev_db.core.t select 1\") %}{% endmacro %}",
         "{% macro count_orders() %}{% do run_query(\"select count(*) from dev_db.core.orders\") %}{% endmacro %}", '',
     ].join('\n'));
     mkdirSync(join(dir, 'farproject'));
     writeFileSync(join(dir, 'farproject', 'dbt_project.yml'), "name: far\nprofile: 'acme_far'\n");
-    for (const [name, target] of [['retrydev', 'dev'], ['retryprod', 'prod'], ['retrynone', null]] as const) {
+    for (const [name, target] of [['retrydev', 'dev'], ['retryprod', 'prod'], ['retrynone', null], ['retrypath', 'dev']] as const) {
         mkdirSync(join(dir, name, 'target'), { recursive: true });
-        writeFileSync(join(dir, name, 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
+        writeFileSync(join(dir, name, 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n" + (name === 'retrypath' ? 'target-path: elsewhere\n' : ''));
         if (target) writeFileSync(join(dir, name, 'target', 'run_results.json'), JSON.stringify({ args: { which: 'build', target } }));
     }
     writeFileSync(join(dir, 'project', 'load.py'), "import psycopg2\nc = psycopg2.connect('dbname=app')\nc.cursor().execute('insert into orders values (1)')\n");
@@ -369,7 +370,7 @@ describe('the card says what the step does', () => {
     });
 });
 
-describe('review round: SQL that writes or sends out, read the way the server reads it', () => {
+describe('SQL that writes or sends out, read the way the server reads it', () => {
     test.each([
         ['a MATERIALIZED CTE that inserts', PG + ' -c "with n as materialized (insert into orders values (1) returning id) select * from n"'],
         ['EXPLAIN ANALYZE of a writing CTE', PG + ' -c "explain analyze with n as (insert into orders values (1) returning id) select * from n"'],
@@ -398,6 +399,13 @@ describe('review round: SQL that writes or sends out, read the way the server re
         expect(verdict.reason).toStartWith(SQL_EGRESS);
     });
 
+    test.each([
+        ['a stage path that holds the word', 'snow sql -c acme_dev -q "copy into @dev_db.raw.s/validation_mode/ from dev_db.core.orders"'],
+        ['a column named for it in the query', 'snow sql -c acme_dev -q "copy into @dev_db.raw.s from (select 1 as validation_mode from dev_db.core.orders)"'],
+    ])('an unload with VALIDATION_MODE only in %s takes the egress card', (_name, command) => {
+        expect(evaluate(command).reason).toStartWith(SQL_EGRESS);
+    });
+
     test('snow stage copy with an option the reference does not list keeps a card', () => {
         expect(evaluate('snow stage copy --made-up-option ./a @dev_db.raw.s/').action).toBe('gate');
     });
@@ -411,7 +419,7 @@ describe('review round: SQL that writes or sends out, read the way the server re
     });
 });
 
-describe('review round: dbt targets read the way dbt reads them', () => {
+describe('dbt targets read the way dbt reads them', () => {
     test.each([
         ['a target before the subcommand', 'cd PROJECT && dbt --target prod build'],
         ['an attached -t', 'cd PROJECT && dbt build -tprod'],
@@ -424,12 +432,27 @@ describe('review round: dbt targets read the way dbt reads them', () => {
         ['dbt retry of a prod run', 'cd __DIR__/retryprod && dbt retry'],
         ['dbt retry with no saved run to read', 'cd __DIR__/retrynone && dbt retry'],
         ['a macro that writes outside the dev target', 'cd PROJECT && dbt run-operation load_orders'],
+        ['a macro that writes outside the dev target, from a project subdirectory', 'cd PROJECT/models && dbt run-operation load_orders'],
+        ['a runner option before run', 'cd PROJECT && uv --directory PROJECT run dbt build'],
+        ['a runner directory option', 'cd PROJECT && poetry -C PROJECT run dbt build'],
+        ['a runner env file', 'cd PROJECT && uv run --env-file prod.env dbt build'],
+        ['a runner directory after run', 'cd PROJECT && uv run --directory PROJECT dbt build'],
+        ['dbt retry where the project moves its target path', 'cd __DIR__/retrypath && dbt retry'],
     ])('%s keeps its card', (_name, command) => {
         expect(evaluate(command.replaceAll('__DIR__', dir)).action).toBe('gate');
     });
 
-    test('a macro that unloads takes the egress card on the dev target', () => {
-        const verdict = evaluate('cd PROJECT && dbt run-operation unload_orders');
+    test('dbt retry with DBT_STATE set keeps its card', () => {
+        process.env.DBT_STATE = join(dir, 'retrydev', 'target');
+        try {
+            expect(evaluate('cd ' + join(dir, 'retrydev') + ' && dbt retry').action).toBe('gate');
+        } finally {
+            delete process.env.DBT_STATE;
+        }
+    });
+
+    test.each([['PROJECT'], ['PROJECT/models']])('a macro that unloads takes the egress card on the dev target, from %s', (at) => {
+        const verdict = evaluate('cd ' + at + ' && dbt run-operation unload_orders');
         expect(verdict.action).toBe('gate');
         expect(verdict.reason).toStartWith(SQL_EGRESS);
     });
@@ -440,6 +463,8 @@ describe('review round: dbt targets read the way dbt reads them', () => {
         ['dbt test that stores failures in the dev target', 'cd PROJECT && dbt test --store-failures'],
         ['dbt retry of a dev run', 'cd __DIR__/retrydev && dbt retry'],
         ['a macro that only reads', 'cd PROJECT && dbt run-operation count_orders'],
+        ['a macro that writes into the dev database', 'cd PROJECT && dbt run-operation fill_dev'],
+        ['dbt seed --full-refresh on the dev target, as on main', 'cd PROJECT && dbt seed --full-refresh'],
     ])('%s runs without a card', (_name, command) => {
         expect(evaluate(command.replaceAll('__DIR__', dir)).action).toBe('allow');
     });
@@ -457,11 +482,12 @@ describe('review round: dbt targets read the way dbt reads them', () => {
     });
 });
 
-describe('review round: interpreter code reaches the scanner', () => {
+describe('interpreter code reaches the scanner', () => {
     test.each([
         ['a driver imported beside another module', "python3 -c \"import os, psycopg2; psycopg2.connect('dbname=app').cursor().execute('insert into orders values (1)')\""],
         ['a script handed on stdin', 'python3 < PROJECT/load.py'],
         ['a script after a preloaded module', 'node -r dotenv/config PROJECT/load.js'],
+        ['a deno script after its bare -r', 'deno run -r PROJECT/load.js'],
         ['a literal EXPLAIN ANALYZE that writes', "python3 -c \"import psycopg2; psycopg2.connect('dbname=app').cursor().execute('explain analyze insert into orders values (1)')\""],
         ['a literal REFRESH MATERIALIZED VIEW', "python3 -c \"import psycopg2; psycopg2.connect('dbname=app').cursor().execute('refresh materialized view order_totals')\""],
         ['a literal INSERT ALL', "python3 -c \"import snowflake.connector as s; s.connect().cursor().execute('insert all into a values (1) into b values (2) select 1')\""],
@@ -470,9 +496,10 @@ describe('review round: interpreter code reaches the scanner', () => {
     });
 });
 
-describe('review round: what main ran without a card still does', () => {
+describe('what main ran without a card still does', () => {
     test.each([
         ['a fully qualified task whose body reads, on a listed connection with no login', "snow sql -c acme_shared -q \"create or replace task dev_db.core.ping warehouse = wh schedule = '60 minute' as select 1\""],
+        ['suspending a task in the dev database', 'snow sql -c acme_shared -q "alter task dev_db.core.fill suspend"'],
         ['a task whose body writes into the dev database', "snow sql -c acme_shared -q \"create or replace task dev_db.core.fill warehouse = wh schedule = '60 minute' as insert into dev_db.core.t select 1\""],
         ['a literal \\copy FROM a file on Render dev', DEV_PG + " -c \"\\\\copy orders from 'orders.csv' csv\""],
         ['a literal dev write after a PGPASSWORD prefix', 'PGPASSWORD=example ' + DEV_PG + ' -c "insert into orders values (1)"'],
@@ -481,6 +508,8 @@ describe('review round: what main ran without a card still does', () => {
     });
 
     test.each([
+        ['an alert, whose action follows THEN', "snow sql -c acme_shared -q \"create or replace alert dev_db.core.a warehouse = wh schedule = '1 minute' if (exists (select 1)) then insert into prod_db.core.t select 1\""],
+        ['a task changed with SET, which main also carded', 'snow sql -c acme_shared -q "alter task dev_db.core.fill set warehouse = wh2"'],
         ['a task whose body writes outside the dev database', "snow sql -c acme_shared -q \"create or replace task dev_db.core.fill warehouse = wh schedule = '60 minute' as insert into prod_db.core.t select 1\""],
         ['\\copy FROM a program on Render dev', DEV_PG + " -c \"\\\\copy orders from program 'cat orders.csv' csv\""],
         ['\\copy beside a shell escape on Render dev', DEV_PG + " -c \"\\\\copy orders from 'orders.csv' csv\" -c '\\\\! ls'"],
@@ -506,7 +535,7 @@ describe('review round: what main ran without a card still does', () => {
     });
 });
 
-describe('review round: a target that cannot be named is refused with the fix', () => {
+describe('egress through a target that cannot be named is refused with the fix', () => {
     test('an unload on the default snow connection', () => {
         const verdict = evaluate("snow sql -q \"copy into 's3://example-bucket/x/' from prod_db.core.orders\"");
         expect(verdict.action).toBe('block');
@@ -520,7 +549,7 @@ describe('review round: a target that cannot be named is refused with the fix', 
     });
 });
 
-describe('review round: the card names what the step does', () => {
+describe('the card names every change the step makes', () => {
     // The card body, before the command it quotes, so a fragment of the command can't pass for a description.
     const cardOf = (command: string) => {
         const card = describeGate(command, evaluate(command).reason ?? '', dir);
@@ -555,18 +584,18 @@ describe('review round: the card names what the step does', () => {
     });
 });
 
-describe('psql input forms, pending #239 psqlReadableInput', () => {
+describe('psql input the guard cannot read takes a card', () => {
     test.todo('-Xc "$SQL" with the SQL wholly in an unresolved variable takes a card');
     test.todo('--file=- or -f /dev/stdin fed by a pipe the guard cannot read takes a card');
     test.todo('-v name="$X" interpolated as :name with an unresolved value takes a card');
 });
 
-describe('credentials in a SQL file, pending #246 withholding', () => {
+describe('credentials in a SQL file stay off the card', () => {
     test.todo('a CREATE MANAGED ACCOUNT read from a -f file withholds ADMIN_PASSWORD from the card preview and summary');
     test.todo('an unload that carries a storage credential withholds it from the card');
 });
 
-describe('review round: account-admin holds administration, never data that moves', () => {
+describe('account-admin holds administration, never data that moves', () => {
     let previous: string | undefined;
     beforeAll(() => {
         previous = process.env[DEV_SCOPE_FILE_ENV];
