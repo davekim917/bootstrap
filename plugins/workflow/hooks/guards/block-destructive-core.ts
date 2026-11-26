@@ -7942,6 +7942,8 @@ function literalValue(value: string, sqlParameter = false): boolean {
     const v = value.replace(/^['"]+/, '');
     if (v === '' || /^['"\s;&|)]/.test(v)) return false;
     if (sqlParameter && /^\$\d/.test(v)) return true;
+    // A path names where a credential is kept (a helper, a key file), not the credential itself.
+    if (/^(?:\/|~\/|\.{1,2}\/)/.test(v)) return false;
     // $tag$ opens a dollar-quoted string only where the same $tag$ closes it; otherwise $A$B is two variables.
     const tag = /^\$([A-Za-z_]\w*)?\$/.exec(v);
     if (tag && v.indexOf(tag[0], tag[0].length) > 0) return true;
@@ -7964,7 +7966,17 @@ function literalUserinfo(value: string): boolean {
 
 const HEADER_VALUE = /\b(?:(?:proxy-)?authorization|(?:x-)?(?:api|auth)[-_]?(?:key|token))\s*:\s*([^'"\n]*)/gi;
 const PASSWORD_WORD = /passw(?:or)?d(?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*/gi;
-const SECRET_NAME = String.raw`(?:TOKEN|SECRET|PASSWORD|PASSWD|PASS|PWD|AUTH|API_?KEY|ACCESS_?KEY|SECRET_?KEY|PRIVATE_?KEY)`;
+/**
+ * Whether a name says it holds a credential: its last _ or - segment is one (AWS_SESSION_TOKEN, client_secret,
+ * refresh_token, PGPASSWORD, new_pw), or it ends in an API, access, secret or private KEY, or is KEY alone. A word
+ * inside a segment never counts, so GIT_ASKPASS, token_type and SORT_KEY don't.
+ */
+function credentialName(name: string): boolean {
+    const segments = name.toUpperCase().split(/[_-]+/).filter(Boolean);
+    const last = segments[segments.length - 1] ?? '';
+    if (['TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PASS', 'PWD', 'PW', 'AUTH', 'APIKEY', 'PGPASSWORD'].includes(last)) return true;
+    return last === 'KEY' && (segments.length === 1 || ['API', 'ACCESS', 'SECRET', 'PRIVATE'].includes(segments[segments.length - 2]));
+}
 
 /**
  * True when the text writes out a credential: a value, not a reference to one. Each shape names where a credential
@@ -7983,21 +7995,28 @@ export function containsCredential(text: string): boolean {
         if (assigned ? literalValue(after.slice(assigned[0].length)) : /^(?:['"$]|[EeUu]&?'|%[A-Za-z])/.test(after) && literalValue(after, true)) return true;
     }
     for (const v of valuesAfter(text, /\bidentified\s+by\s+(?:password\s+)?(\S+)/gi)) if (literalValue(v)) return true;
-    for (const v of valuesAfter(text, new RegExp(String.raw`\b[A-Za-z_]\w*${SECRET_NAME}\+?=(\S*)`, 'gi'))) if (literalValue(v)) return true;
+    // An assignment to a credential-named variable, bare (TOKEN=) or not.
+    for (const m of text.matchAll(/(?<![\w-])([A-Za-z_][\w-]*)\+?=(\S*)/g)) if (credentialName(m[1]) && literalValue(m[2])) return true;
     for (const v of valuesAfter(text, /\bREDISCLI_AUTH\+?=(\S*)/g)) if (literalValue(v)) return true;
     // A URL's user info: user:password, or a token as the user of an https URL.
     for (const m of text.matchAll(/\b([a-z][a-z0-9+.-]*):\/\/([^/@\s]{1,400})@/gi)) {
         if (literalUserinfo(m[2])) return true;
         if (/^(?:git\+)?https?$/i.test(m[1]) && !m[2].includes(':') && literalValue(m[2]) && (m[2].length >= 16 || /^(?:gh[opusr]_|github_pat_|glpat-)/.test(m[2]))) return true;
     }
-    // An option named for a token, secret or key, given a value; --password only with =, since psql's takes none.
-    for (const v of valuesAfter(text, /(?:^|[\s'"])--(?!no-)[a-z0-9-]*(?:token|secret|api-?key)(?:=|\s+)(\S+)/gi)) if (!v.startsWith('-') && literalValue(v)) return true;
+    // An option named for a credential, given a value; a password option only with =, since psql's takes none.
+    for (const m of text.matchAll(/(?:^|[\s'"])--(?!no-)([a-z0-9-]+)(=|\s+)(\S+)/gi)) {
+        if (!credentialName(m[1]) || m[3].startsWith('-')) continue;
+        if (m[2] !== '=' && /^(?:password|passwd|pass)$/i.test(m[1])) continue;
+        if (literalValue(m[3])) return true;
+    }
     // psql -v with a name that suggests a credential.
     for (const m of text.matchAll(/(?:^|\s)(?:-v|--set|--variable)(?:=|\s+|(?=[A-Za-z_]))['"]?([A-Za-z_]\w*)=(\S*)/g)) {
-        if (/pw|pass|secret|token|key|cred|auth/i.test(m[1]) && literalValue(m[2])) return true;
+        if (credentialName(m[1]) && literalValue(m[2])) return true;
     }
-    // SQL comparing or assigning a literal to a column named for a key, secret or token: `WHERE api_key = '…'`.
-    for (const v of valuesAfter(text, /\b\w*(?:api_?key|secret|token)\w*\s*(?:=|<>|!=|\bLIKE\b)\s*((?:[EeUu]&?)?['$]\S*)/gi)) if (literalValue(v.replace(/^[EeUu]&?/, ''), true)) return true;
+    // SQL comparing or assigning a literal to a credential-named column, quoted or not: `WHERE "api_key" = '…'`.
+    for (const m of text.matchAll(/["`]?(\w+)["`]?\s*(?:=|<>|!=|\bLIKE\b)\s*((?:[EeUu]&?)?['$]\S*)/gi)) {
+        if (credentialName(m[1]) && literalValue(m[2].replace(/^[EeUu]&?/, ''), true)) return true;
+    }
     if (/\bcurl\b/.test(text)) {
         for (const v of valuesAfter(text, /(?:^|[\s'"])(?:-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:=|\s+))(\S+)/g)) if (literalUserinfo(v)) return true;
         for (const v of valuesAfter(text, /--(?:proxy-)?oauth2-bearer(?:=|\s+)(\S+)/g)) if (literalValue(v)) return true;
@@ -8032,8 +8051,10 @@ function carriesCredential(command: string, cwd: string): boolean {
             commands = extractCommands(command);
             if (commands[0]?.script) commands[0].script.cwd = cwd;
         }
+        // A SQL client find -exec or xargs runs reads its files too, and its card can quote them.
+        const steps = commands.flatMap(c => [c, ...innerGatedSteps(c).map(g => g.step)]);
         // Many steps can read one text, as in a loop over one file: each is scanned once.
-        return [...new Set(commands.filter(sqlClient).flatMap(cmd => sqlInputFor(cmd).texts))].some(sqlCarriesCredential);
+        return [...new Set(steps.filter(sqlClient).flatMap(cmd => sqlInputFor(cmd).texts))].some(sqlCarriesCredential);
     } catch {
         return false;
     }

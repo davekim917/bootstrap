@@ -14,6 +14,7 @@ beforeAll(() => {
     writeFileSync(join(dir, 'scram.sql'), "create role app login password '" + 'SCRAM-SHA-256$4096:' + SECRET + 'Zk9x'.repeat(60) + "';\ndrop table orders;\n");
     writeFileSync(join(dir, 'dynamic.sql'), "DO $$ BEGIN EXECUTE 'DROP TABLE orders; ALTER ROLE app PASSWORD ''" + SECRET + 'x'.repeat(300) + "'''; END $$;\n");
     writeFileSync(join(dir, 'quoted.sql'), "delete from accounts where password = 'short-" + SECRET + "';\n");
+    writeFileSync(join(dir, 'quoted-column.sql'), 'DELETE FROM integrations WHERE "api_key" = \'' + SECRET + "';\n");
     writeFileSync(join(dir, 'format.sql'), "DO $$ BEGIN EXECUTE format('ALTER ROLE app PASSWORD\n%L', '" + SECRET + "'); END $$;\nDROP TABLE orders;\n");
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -76,6 +77,8 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['a password beside -1 and ON_ERROR_STOP', `PGPASSWORD=${SECRET} psql -d app_test -1 -v ON_ERROR_STOP=1 -c 'DROP TABLE stage_a' -c 'DROP TABLE stage_b'`],
         ['a chained dropdb refused toward scratch-pg', `dropdb -h db.example.com --maintenance-db postgres old_archive && PGPASSWORD=${SECRET} dropdb app_test`],
         ['a second curl transfer with a bearer header', `curl -X GET https://api.render.com/v1/services --next -H 'Authorization: Bearer ${SECRET}' -X DELETE ${PROD}`],
+        ['a bare TOKEN assignment a later header uses', `TOKEN=${SECRET}; curl -H "Authorization: Bearer $TOKEN" -X DELETE ${PROD}`],
+        ['a bare PASSWORD assignment', `PASSWORD=${SECRET} ${H} -c "drop table orders"`],
         ['a kubectl step beside a credentialed psql', `kubectl scale deployment archive-worker -n staging --replicas=0 && PGPASSWORD=${SECRET} ${H} -d billing -c 'DROP TABLE old_invoices'`],
     ])('%s', (_name, command) => {
         expect(evaluate(command)).toEqual({ action: 'block', reason: LITERAL_CREDENTIAL_REASON });
@@ -86,8 +89,17 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['a long password in opaque dynamic SQL', 'dynamic.sql'],
         ['a password the statement compares', 'quoted.sql'],
         ['a password format() supplies on the next line', 'format.sql'],
+        ['a quoted api_key column', 'quoted-column.sql'],
     ])('%s in a SQL file the command reads', (_name, name) => {
         expect(evaluate(`${H} -f ${join(dir, name)}`)).toEqual({ action: 'block', reason: LITERAL_CREDENTIAL_REASON });
+    });
+
+    test.each([
+        ['find -exec', (f: string) => `find ${dir} -maxdepth 0 -exec ${H} -f ${f} \\;`],
+        ['xargs', (f: string) => `xargs ${H} -f ${f} < /dev/null`],
+    ])('a SQL file a psql under %s reads', (_name, made) => {
+        const command = made(join(dir, 'quoted.sql'));
+        expect(evaluate(command)).toEqual({ action: 'block', reason: LITERAL_CREDENTIAL_REASON });
     });
 
     test('the refusal names no part of the command', () => {
@@ -104,6 +116,8 @@ describe('the same command with the credential in a variable takes the ordinary 
         ['curl -u with the password in a variable', `curl -u "deploy:$DEPLOY_PASS" https://staging.example.com/health && git push --force origin release`, 'release'],
         ['a git token from a variable', 'git push --force https://$GH_TOKEN@192.0.2.40/example/release main', 'main'],
         ['an HTTPie token from a variable', 'http -A bearer -a "$RENDER_TOKEN" DELETE https://api.render.com/v1/services/srv-prodservice000000001', 'srv-prodservice000000001'],
+        ['a helper path in GIT_ASKPASS', 'GIT_ASKPASS=/usr/local/bin/git-askpass git push origin --delete stale-topic', 'stale-topic'],
+        ['a token_type category in SQL', `${H} -d app -c "DELETE FROM sessions WHERE token_type = 'refresh'"`, 'token_type'],
         ['a MySQL password from a variable', 'mysql -h db.example.com -p"$MYSQL_PW" -e "drop table orders"', 'drop table orders'],
         ['a URI password from a variable', 'psql "postgresql://app:$PGPW@192.0.2.20/app" -c "drop table orders"', 'drop table orders'],
     ])('%s', (_name, command, shown) => {
@@ -130,6 +144,10 @@ describe('the detector fires on literal values only', () => {
         ['a column compared with a number', 'SELECT * FROM t WHERE token_count = 5'],
         ['a table named for passwords', 'DELETE FROM password_reset_tokens'],
         ['psql --password, which takes no value', 'psql --password -h db.example.com app'],
+        ['an askpass helper', 'SSH_ASKPASS=/usr/bin/ssh-askpass'],
+        ['a sort key', 'SORT_KEY=name'],
+        ['a key file path', 'API_KEY=/run/secrets/api_key'],
+        ['a token count column', "SELECT 1 WHERE token_type = 'refresh'"],
         ['a header from a command substitution', 'curl -H "Authorization: Bearer $(cat /run/token)" https://example.com'],
         ['a braced variable', 'PGPASSWORD=${PGPW} psql'],
         ['curl -u with only a user', 'curl -u admin https://example.com'],
@@ -142,6 +160,10 @@ describe('the detector fires on literal values only', () => {
         ['a secret column given a literal', `UPDATE integrations SET client_secret = '${SECRET}'`],
         ['a token column matched with LIKE', `DELETE FROM sessions WHERE refresh_token LIKE '${SECRET}%'`],
         ['an option named for a secret', `vault write x --client-secret ${SECRET}`],
+        ['bare SECRET', `SECRET=${SECRET}`],
+        ['bare KEY', `KEY=${SECRET}`],
+        ['bare API_KEY', `API_KEY=${SECRET}`],
+        ['a backtick-quoted secret column', `UPDATE t SET \`client_secret\` = '${SECRET}'`],
         ['a token as an https user', `https://${SECRET}abcdefgh@192.0.2.40/x`],
     ])('%s fires', (_name, text) => {
         expect(containsCredential(text)).toBe(true);
