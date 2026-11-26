@@ -9,12 +9,13 @@
  * mid-session, so this adapter refuses those writes from any tool. Shell coverage is a best-effort read of the
  * command line; the sandbox the worker runs in is what makes those paths immutable.
  */
-import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, isAbsolute, join, resolve, sep } from 'path';
 import { decideToolCall, type ToolCall, type Verdict } from './guard-policy';
 import { extractCommands, lineRedirectWrites } from './guards/block-destructive-core';
 import { evaluateEmailToolCall } from './guards/email-gate-core';
+import builtIns from './agy-builtins.json' with { type: 'json' };
 
 export const AGY_APPROVAL_HANDOFF =
     'This needs human approval, and this agy session cannot ask for it. Do not retry or work around it: give the user the exact command to run themselves.';
@@ -182,8 +183,12 @@ function inheritanceOff(value: unknown): string | null {
     return null;
 }
 
-/** Subagent types agy ships with no definition file. */
-const BUILT_IN_SUBAGENTS = new Set(['self', 'research', 'browser']);
+/**
+ * Subagent types agy ships with no definition file, as `agy-builtins-capture.ts` read them from the system prompts
+ * agy stored. agy refuses a name it does not know, so a name kept from an older capture costs nothing.
+ */
+export const BUILT_IN_SUBAGENTS: ReadonlySet<string> = new Set(Object.keys(builtIns.subagents));
+const BUILT_INS_CAPTURED_AT = builtIns.capturedAgyVersion;
 
 function errorCode(error: unknown): string {
     return (error as NodeJS.ErrnoException)?.code ?? (error instanceof Error ? error.message : String(error));
@@ -332,10 +337,7 @@ function agentsDirsUnder(customizationRoot: string): string[] {
  * run.
  */
 function subagentRefusal(typeName: string, roots: string[], home: string): string | null {
-    const scopes = [
-        roots.flatMap((root) => WORKSPACE_CUSTOMIZATION_DIRS.map((name) => join(root, name))),
-        [join(home, '.gemini', 'config')],
-    ];
+    const scopes = agentScopes(roots, home);
     const skipped: string[] = [];
     let selected: Candidate[] = [];
     try {
@@ -360,7 +362,7 @@ function subagentRefusal(typeName: string, roots: string[], home: string): strin
     if (!selected.length) {
         if (BUILT_IN_SUBAGENTS.has(typeName)) return null;
         const searched = scopes.flat().join(', ');
-        return `no agent definition named '${typeName}' that agy would load (searched agents/ and plugins/*/agents/ under ${searched}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}), so the guard cannot check it. Invoke a built-in subagent (${[...BUILT_IN_SUBAGENTS].join(', ')}) or a markdown agent defined there.`;
+        return `no agent definition named '${typeName}' that agy would load (searched agents/ and plugins/*/agents/ under ${searched}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}), and it is not one of agy's built-in subagents (${[...BUILT_IN_SUBAGENTS].join(', ')}; captured from agy ${BUILT_INS_CAPTURED_AT}), so the guard cannot check it. Invoke one of those or a markdown agent defined there. If this agy offers a built-in missing from that list, refresh agy-builtins.json with agy-builtins-capture.ts.`;
     }
     for (const { file, dir, frontmatter, error } of selected) {
         if (error !== undefined || !frontmatter) {
@@ -379,6 +381,76 @@ function subagentRefusal(typeName: string, roots: string[], home: string): strin
         if (off) {
             return `agent '${typeName}' (${file}) sets ${off}, so it would run without the user's hooks, this guard among them. Agents may only invoke subagents that inherit customizations.`;
         }
+    }
+    return null;
+}
+
+/** The customization roots agy loads markdown agents from, in its order: every workspace's, then the global one. */
+function agentScopes(roots: string[], home: string): string[][] {
+    return [
+        roots.flatMap((root) => WORKSPACE_CUSTOMIZATION_DIRS.map((name) => join(root, name))),
+        [join(home, '.gemini', 'config')],
+    ];
+}
+
+/**
+ * Every agent name a markdown definition provides under the given workspaces and global config dir (the dir agy
+ * reads as `~/.gemini/config`), parsed or only declared. A lookup error throws.
+ */
+export function definedAgentNames(workspaces: string[], globalConfig: string): Set<string> {
+    const names = new Set<string>();
+    const roots = [...workspaces.flatMap((root) => WORKSPACE_CUSTOMIZATION_DIRS.map((name) => join(root, name))), globalConfig];
+    for (const dir of roots.flatMap(agentsDirsUnder)) {
+        for (const file of agentFilesIn(dir)) {
+            const read = readAgentFile(file);
+            const name = 'frontmatter' in read ? read.frontmatter.name : read.declaredName;
+            if (typeof name === 'string' && name) names.add(name);
+        }
+    }
+    return names;
+}
+
+const REFERENCE_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
+/** Each upload type agy accepts as a reference image, by extension, with the leading bytes its files start with. */
+const REFERENCE_IMAGE_TYPES = new Map<string, (head: Buffer) => boolean>([
+    ['png', (head) => head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))],
+    ['jpg', (head) => head.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))],
+    ['jpeg', (head) => head.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))],
+    ['gif', (head) => ['GIF87a', 'GIF89a'].includes(head.subarray(0, 6).toString('latin1'))],
+    ['webp', (head) => head.subarray(0, 4).toString('latin1') === 'RIFF' && head.subarray(8, 12).toString('latin1') === 'WEBP'],
+]);
+
+/**
+ * Why `target` is not an image agy may upload as a reference, or null. agy reads the whole file and sends it, so a
+ * credentials file picked up by mistake would leave the machine: the path must reach, through no link, a regular file
+ * of at most 20 MiB whose extension is an image type and whose first bytes are that type's.
+ */
+function referenceImageRefusal(target: string, cwd: string): string | null {
+    const absolute = resolve(cwd, target);
+    const extension = absolute.slice(absolute.lastIndexOf('.') + 1).toLowerCase();
+    const matches = absolute.includes('.') ? REFERENCE_IMAGE_TYPES.get(extension) : undefined;
+    if (!matches) return 'is not a .png, .jpg, .jpeg, .webp or .gif file';
+    try {
+        if (realpathSync(dirname(absolute)) !== dirname(absolute)) return 'is reached through a link';
+    } catch (error) {
+        return `cannot be resolved (${errorCode(error)})`;
+    }
+    let fd: number;
+    try {
+        // Non-blocking, so a named pipe is refused by the regular-file check instead of stalling the open.
+        fd = openSync(absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    } catch (error) {
+        return errorCode(error) === 'ELOOP' ? 'is a link' : `cannot be opened (${errorCode(error)})`;
+    }
+    try {
+        const info = fstatSync(fd);
+        if (!info.isFile()) return 'is not a regular file';
+        if (info.size > REFERENCE_IMAGE_MAX_BYTES) return 'is larger than 20 MiB';
+        const head = Buffer.alloc(12);
+        readSync(fd, head, 0, head.length, 0);
+        if (!matches(head)) return `does not start with the bytes of a .${extension} image`;
+    } finally {
+        closeSync(fd);
     }
     return null;
 }
@@ -537,6 +609,26 @@ export function decideAgyCall(payload: unknown, { home = process.env.HOME || hom
         names.push(`mcp__${nameTokens(server).join('_')}__${nameTokens(tool).join('_')}`);
         const toolName = names.find((n) => evaluateEmailToolCall(n, input, { isScheduledTask: false }).action === 'gate') ?? names[0];
         return decideToolCall({ ...base, tool_name: toolName, tool_input: input }, AGY_APPROVAL_HANDOFF);
+    }
+
+    if (name === 'generate_image') {
+        // agy picks the directory (its own artifacts dir for the conversation); only the file name comes from the model.
+        const imageName = args.ImageName;
+        if (imageName !== undefined && (typeof imageName !== 'string' || /[\\/]/.test(imageName) || imageName.includes('..'))) {
+            return denied("generate_image's ImageName must be a plain file name: agy saves the image in its own artifacts directory, and a path in the name could land it elsewhere.");
+        }
+        // Reference images are read and sent with the request, so each path gets whatever a direct read of it gets.
+        const imagePaths = args.ImagePaths ?? [];
+        if (!Array.isArray(imagePaths) || imagePaths.some((path) => typeof path !== 'string' || path === '')) {
+            return denied("generate_image's ImagePaths is not a list of file paths, so the guard cannot check what it reads.");
+        }
+        for (const path of imagePaths as string[]) {
+            const notImage = referenceImageRefusal(path, cwd);
+            if (notImage) return denied(`generate_image reference '${path}' ${notImage}; agy would upload it with the request.`);
+            const verdict = decideAgyCall({ ...(payload as object), toolCall: { ...call, name: 'read_file', args: { Path: path } } }, { home });
+            if (verdict.action === 'deny') return verdict;
+        }
+        return { action: 'allow' };
     }
 
     if (SUBAGENT_TOOLS.has(name)) {

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { AGY_APPROVAL_HANDOFF, decideAgyCall } from './agy-guard';
+import { AGY_APPROVAL_HANDOFF, BUILT_IN_SUBAGENTS, decideAgyCall } from './agy-guard';
 
 const GUARD = join(import.meta.dir, 'agy-guard.ts');
 const roots: string[] = [];
@@ -36,6 +36,7 @@ describe('agy tool calls reach the shared policy under the names the cores read'
         ['a read-only tool', call('read_file', { Path: 'README.md' })],
         ['a question with no /team-auto run active', call('ask_question', { Question: 'Which branch?' }, tmpdir())],
         ['a subagent with no workspace of its own', call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: 'self' })],
+        ['an image saved under a plain name', call('generate_image', { Prompt: 'a red circle', ImageName: 'red_circle', AspectRatio: '1:1' })],
     ])('%s is allowed', (_name, payload) => {
         expect(decideAgyCall(payload)).toEqual({ action: 'allow' });
     });
@@ -153,6 +154,11 @@ describe('calls agy could otherwise use to step around the guard are denied', ()
         ['a write naming no file', call('write_file', { Content: 'x' }), /names no file/],
         ['a command with no command line', call('run_command', {}), /no command line/],
         ['an MCP call with no server', call('call_mcp_tool', { ToolName: 'search' }), /names no server or tool/],
+        ['an image name that is a path', call('generate_image', { Prompt: 'p', ImageName: '../../config/hooks.json' }), /plain file name/],
+        ['reference images that are not a list of paths', call('generate_image', { Prompt: 'p', ImagePaths: 'ref.png' }), /not a list of file paths/],
+        ['a reference image path that is not a string', call('generate_image', { Prompt: 'p', ImagePaths: ['ref.png', 7] }), /not a list of file paths/],
+        ['a workflow script, whose Python effects reach no hook', call('run_workflow', { Description: 'd', Script: 'print(1)' }), /'run_workflow' is not on this guard's allowlist/],
+        ['killing a swarm worker, which deletes its checkout', call('swarm', { action: 'kill', name: 'probe' }), /'swarm' is not on this guard's allowlist/],
     ])('%s', (_name, payload, reason) => {
         expect(reasonOf(payload)).toMatch(reason);
     });
@@ -410,6 +416,62 @@ describe('a subagent that does not inherit customizations would run without thes
     });
 });
 
+describe('generate_image uploads its reference images, so each must be an image file reached through no link', () => {
+    const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
+    function edit(root: string, paths: string[]): unknown {
+        return { ...(call('generate_image', { Prompt: 'make it blue', ImageName: 'blue_circle', ImagePaths: paths }) as object), workspacePaths: [root] };
+    }
+    function reason(payload: unknown): string {
+        const verdict = decideAgyCall(payload, { home: scratch() });
+        return verdict.action === 'deny' ? verdict.reason : 'allowed';
+    }
+
+    test('real images of each type, relative or absolute, are allowed', () => {
+        const root = scratch();
+        mkdirSync(join(root, 'art'));
+        writeFileSync(join(root, 'art', 'red.png'), PNG);
+        writeFileSync(join(root, 'photo.JPG'), Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]));
+        writeFileSync(join(root, 'anim.gif'), 'GIF89a\x01\x00');
+        writeFileSync(join(root, 'pic.webp'), Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBPVP8 ')]));
+        expect(reason(edit(root, ['art/red.png', join(root, 'photo.JPG'), 'anim.gif', 'pic.webp']))).toBe('allowed');
+    });
+
+    test.each([
+        ['a .env file', '.env', 'API_KEY=example\n', /is not a \.png, \.jpg/],
+        ['a .json file', 'service-account.json', '{"type": "service_account"}\n', /is not a \.png, \.jpg/],
+        ['a text file renamed .png', 'notes.png', 'token=example\n', /does not start with the bytes of a \.png image/],
+        ['a png named .jpg', 'swapped.jpg', PNG, /does not start with the bytes of a \.jpg image/],
+        ['a file whose extension names an inherited object key', 'creds.constructor', 'token=example\n', /is not a \.png, \.jpg/],
+        ['another inherited-key extension', 'creds.__proto__', 'token=example\n', /is not a \.png, \.jpg/],
+    ])('%s is refused', (_name, file, content, expected) => {
+        const root = scratch();
+        writeFileSync(join(root, file), content);
+        expect(reason(edit(root, [file]))).toMatch(expected);
+    });
+
+    test('a link to an image, an image inside a linked directory, a directory, a missing file and an oversize file are refused', () => {
+        const root = scratch();
+        const elsewhere = scratch();
+        writeFileSync(join(elsewhere, 'red.png'), PNG);
+        symlinkSync(join(elsewhere, 'red.png'), join(root, 'linked.png'));
+        symlinkSync(elsewhere, join(root, 'linkdir'));
+        mkdirSync(join(root, 'folder.png'));
+        writeFileSync(join(root, 'huge.png'), PNG);
+        truncateSync(join(root, 'huge.png'), 20 * 1024 * 1024 + 1);
+        expect(reason(edit(root, ['linked.png']))).toMatch(/'linked\.png' is a link/);
+        expect(reason(edit(root, ['linkdir/red.png']))).toMatch(/is reached through a link/);
+        expect(reason(edit(root, ['folder.png']))).toMatch(/is not a regular file/);
+        expect(reason(edit(root, ['missing.png']))).toMatch(/cannot be opened \(ENOENT\)/);
+        expect(reason(edit(root, ['huge.png']))).toMatch(/larger than 20 MiB/);
+    });
+
+    test('a named pipe with an image name is refused without waiting for a writer', () => {
+        const root = scratch();
+        expect(Bun.spawnSync(['mkfifo', join(root, 'pipe.png')]).exitCode).toBe(0);
+        expect(reason(edit(root, ['pipe.png']))).toMatch(/'pipe\.png' is not a regular file/);
+    }, 5000);
+});
+
 describe('invoke_subagent resolves a TypeName to the one definition agy would load', () => {
     function agentDef(dir: string, file: string, frontmatter: string): string {
         mkdirSync(join(dir, file, '..'), { recursive: true });
@@ -429,7 +491,7 @@ describe('invoke_subagent resolves a TypeName to the one definition agy would lo
         return verdict.action === 'deny' ? verdict.reason : 'allowed';
     }
 
-    test.each([['self'], ['research'], ['browser']])('the built-in %s is allowed beside an unrelated README and a broken agent file', (builtIn) => {
+    test.each([['self'], ['research'], ['image-generator']])('the built-in %s is allowed beside an unrelated README and a broken agent file', (builtIn) => {
         const { home, root, workspaceAgents } = setup();
         mkdirSync(workspaceAgents, { recursive: true });
         writeFileSync(join(workspaceAgents, 'README.md'), 'Agents for this repository.\n');
@@ -449,6 +511,26 @@ describe('invoke_subagent resolves a TypeName to the one definition agy would lo
         const { home, root, workspaceAgents } = setup();
         agentDef(workspaceAgents, 'writer.md', 'name: writer');
         expect(reason(invoke(root, 'reviewer'), home)).toMatch(/no agent definition named 'reviewer'/);
+    });
+
+    test('every built-in the capture recorded is allowed with no definition anywhere', () => {
+        const { home, root } = setup();
+        expect(BUILT_IN_SUBAGENTS.size).toBeGreaterThan(0);
+        for (const builtIn of BUILT_IN_SUBAGENTS) expect(decideAgyCall(invoke(root, builtIn), { home })).toEqual({ action: 'allow' });
+    });
+
+    test('browser, which agy 1.5.16 does not offer in the container and whose children were never seen reach this hook, is denied without a definition', () => {
+        const { home, root } = setup();
+        expect(reason(invoke(root, 'browser'), home)).toMatch(/no agent definition named 'browser'/);
+    });
+
+    test('a made-up name with no definition anywhere is denied, naming the built-ins and where they came from', () => {
+        const { home, root } = setup();
+        const text = reason(invoke(root, 'zz-nonexistent-agent'), home);
+        expect(text).toMatch(/no agent definition named 'zz-nonexistent-agent'/);
+        expect(text).toContain('image-generator');
+        expect(text).toMatch(/captured from agy \d+\.\d+\.\d+/);
+        expect(text).toContain('agy-builtins-capture.ts');
     });
 
     test.each([

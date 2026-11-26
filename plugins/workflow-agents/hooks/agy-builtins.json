@@ -1,0 +1,14 @@
+{
+    "capturedAgyVersion": "1.5.16",
+    "subagents": {
+        "image-generator": [
+            "agy 1.5.16: listed under 'Available subagents' in a stored system prompt"
+        ],
+        "research": [
+            "agy 1.5.16: listed under 'Available subagents' in a stored system prompt"
+        ],
+        "self": [
+            "agy 1.5.16: listed under 'Available subagents' in a stored system prompt"
+        ]
+    }
+}
