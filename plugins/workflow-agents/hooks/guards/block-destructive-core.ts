@@ -4254,13 +4254,17 @@ export interface DevScope {
     snowflake: Array<{ connection: string; databases: string[]; login?: DevLogin }>;
     render?: { resources: string[] };
     standingGrants?: Record<string, string[]>;
+    ownRoles?: Record<string, string[]>;
 }
 
 /**
  * Statement classes an operator can grant a connection's role standing permission for, card-free, in the dev-scope
- * file as `"standingGrants": { "<connection>": ["CREATE DATABASE", …] }`.
+ * file as `"standingGrants": { "<connection>": ["CREATE DATABASE", …] }`. `account-admin` is the whole recoverable
+ * administration class: databases, schemas, warehouses, roles, tasks and notification integrations created or altered,
+ * grants and revokes between roles and to shares, shares and reader accounts. `"ownRoles": { "<connection>": [role] }`
+ * names the roles a connection may switch to with USE ROLE without leaving its grant.
  */
-export const STANDING_GRANT_CLASSES = new Set(['CREATE DATABASE', 'CREATE WAREHOUSE', 'ALTER WAREHOUSE', 'CREATE SHARE',
+export const STANDING_GRANT_CLASSES = new Set(['account-admin', 'CREATE DATABASE', 'CREATE WAREHOUSE', 'ALTER WAREHOUSE', 'CREATE SHARE',
     'ALTER SHARE ADD ACCOUNTS', 'CREATE MANAGED ACCOUNT', 'GRANT USAGE TO SHARE', 'GRANT SELECT TO SHARE', 'GRANT REFERENCE_USAGE TO SHARE']);
 
 /** The standing-grant classes one statement (as a skeleton) needs; null when it is none of them. */
@@ -4275,6 +4279,15 @@ function standingGrantClasses(skeleton: string): string[] | null {
     const grant = /^GRANT ([A-Z_][A-Z_ ,]*?) ON .+ TO SHARE \S+$/i.exec(s);
     if (grant) return grant[1].split(',').map(p => `GRANT ${p.trim().toUpperCase()} TO SHARE`);
     return null;
+}
+
+/** Whether a statement (as a skeleton) is in the account-admin standing-grant class. */
+function accountAdminStatement(skeleton: string): boolean {
+    const s = skeleton.trim().replace(/\s+/g, ' ');
+    return /^(?:CREATE|ALTER) (?:TRANSIENT )?(?:DATABASE|SCHEMA|WAREHOUSE|ROLE|TASK|SHARE|NOTIFICATION INTEGRATION|DATABASE ROLE)\b/i.test(s)
+        || /^CREATE MANAGED ACCOUNT\b/i.test(s)
+        || /^GRANT .+ TO (?:DATABASE )?(?:ROLE|SHARE) \S+(?: WITH GRANT OPTION)?$/i.test(s)
+        || /^REVOKE .+ FROM (?:DATABASE )?(?:ROLE|SHARE) \S+(?: (?:CASCADE|RESTRICT))?$/i.test(s);
 }
 
 /** Parse a dev-scope file's text. Null when anything about it is unusable. */
@@ -4315,6 +4328,17 @@ export function parseDevScope(text: string): DevScope | null {
             }
         }
         scope.standingGrants = grants as Record<string, string[]>;
+    }
+    const own = (raw as { ownRoles?: unknown }).ownRoles;
+    if (own !== undefined) {
+        if (!own || typeof own !== 'object' || Array.isArray(own)) return null;
+        for (const [connection, roles] of Object.entries(own)) {
+            if (!SNOWFLAKE_NAME_RE.test(connection) || !Array.isArray(roles)
+                || !roles.every((r: unknown) => typeof r === 'string' && /^[A-Za-z_][A-Za-z0-9_$]{0,254}$/.test(r))) {
+                return null;
+            }
+        }
+        scope.ownRoles = own as Record<string, string[]>;
     }
     const render = (raw as { render?: unknown }).render;
     if (render === undefined) return scope;
@@ -4873,22 +4897,41 @@ function plainSnowSql(cmd: ResolvedCommand, commands: ResolvedCommand[], command
  * class the dev-scope file grants its connection's role. A role switch or a destructive statement voids it.
  */
 function standingGrantOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string): string | null {
-    const grants = currentDevScope()?.standingGrants;
+    const scope = currentDevScope();
+    const grants = scope?.standingGrants;
     if (!grants) return null;
     const plain = plainSnowSql(cmd, commands, command);
     const held = new Set(plain ? grants[plain.connection] ?? [] : []);
     if (!plain || !held.size) return null;
+    const own = new Set((scope?.ownRoles?.[plain.connection] ?? []).map(r => r.toUpperCase()));
     const used = new Set<string>();
+    // Whether a grant covers the statement, or it only reads. A task's body is a statement of its own.
+    const covers = (text: string, skeleton: string, depth: number): boolean => {
+        if (findDestructiveSqlStatement(text)) return false;
+        const egress = egressIn(text);
+        if (egress === 'unreadable') return false;
+        if (!egress && !writeStatements(text).length) return true;
+        const classes = standingGrantClasses(skeleton);
+        if (classes?.every(c => held.has(c))) {
+            for (const c of classes) used.add(c);
+            return true;
+        }
+        if (!held.has('account-admin') || !accountAdminStatement(skeleton)) return false;
+        if (/^\s*(?:CREATE|ALTER)\s+TASK\b/i.test(skeleton)) {
+            const at = skeleton.search(/\bAS\b/i);
+            if (at < 0 || depth > 0) return false;
+            if (!covers(text.slice(at + 2), skeleton.slice(at + 2), depth + 1)) return false;
+        }
+        used.add('account-admin');
+        return true;
+    };
     for (const arg of plain.texts) {
         for (const { text, skeleton } of sqlStatements(arg)) {
             if (!skeleton.trim()) continue;
-            if (/^\s*USE\s+(?:SECONDARY\s+)?ROLES?\b/i.test(skeleton) || findDestructiveSqlStatement(text)) return null;
-            const egress = egressIn(text);
-            if (egress === 'unreadable') return null;
-            if (!egress && !writeStatements(text).length) continue;
-            const classes = standingGrantClasses(skeleton);
-            if (!classes || !classes.every(c => held.has(c))) return null;
-            for (const c of classes) used.add(c);
+            const role = /^\s*USE\s+ROLE\s+"?([A-Za-z_][A-Za-z0-9_$]*)"?\s*$/i.exec(skeleton);
+            if (role && own.has(role[1].toUpperCase())) continue;
+            if (/^\s*USE\s+(?:SECONDARY\s+)?ROLES?\b/i.test(skeleton)) return null;
+            if (!covers(text, skeleton, 0)) return null;
         }
     }
     return used.size ? `standing grant ${[...used].join(', ')} on snowflake connection ${plain.connection}` : null;

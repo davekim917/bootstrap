@@ -276,6 +276,58 @@ describe('a standing grant keeps its statement classes card-free on its connecti
     });
 });
 
+describe('the account-admin standing grant, with the roles a connection may switch to', () => {
+    let previous: string | undefined;
+    beforeAll(() => {
+        previous = process.env[DEV_SCOPE_FILE_ENV];
+        const scope = join(dir, 'dev-scope-admin.local.json');
+        writeFileSync(scope, JSON.stringify({
+            snowflake: [{ connection: 'acme_dev', databases: ['dev_db'], login: { user: 'AGENT_DEV_USER', account: 'ACME-DEV1', verifiedUntil: hours(24) } }],
+            standingGrants: { acme_ops: ['account-admin'] },
+            ownRoles: { acme_ops: ['OPS_ROLE'] },
+        }));
+        process.env[DEV_SCOPE_FILE_ENV] = scope;
+    });
+    afterAll(() => { process.env[DEV_SCOPE_FILE_ENV] = previous; });
+
+    test.each([
+        ['a setup script under its own role', 'snow sql -c acme_ops -q "use role ops_role; create database if not exists loads; create schema if not exists loads.raw; create role if not exists loads_reader; grant usage on database loads to role loads_reader; grant role loads_reader to role ops_role"'],
+        ['a warehouse and a notification integration', "snow sql -c acme_ops -q \"create warehouse if not exists loads_wh warehouse_size = xsmall; create notification integration if not exists loads_events enabled = true type = queue\""],
+        ['a task whose body reads', 'snow sql -c acme_ops -q "create task loads.raw.ping warehouse = loads_wh schedule = \'60 minute\' as select 1"'],
+        ['a share with its grants and a reader account', "snow sql -c acme_ops -q \"create share loads_share; grant usage on database loads to share loads_share; grant select on table loads.raw.t to share loads_share; create managed account loads_reader admin_name = 'r1', admin_password = 'Example-pass-1', type = reader\""],
+        ['a revoke from a role', 'snow sql -c acme_ops -q "revoke usage on warehouse loads_wh from role loads_reader"'],
+    ])('%s runs without a card', (_name, command) => {
+        expect(evaluate(command).action).toBe('allow');
+    });
+
+    test.each([
+        ['DML into an existing table', 'snow sql -c acme_ops -q "insert into loads.raw.t values (1)"'],
+        ['COPY INTO a table', "snow sql -c acme_ops -q \"copy into loads.raw.t from @loads.raw.stage\""],
+        ['an unload', 'snow sql -c acme_ops -q "copy into @loads.raw.stage from loads.raw.t"'],
+        ['a task whose body writes', 'snow sql -c acme_ops -q "create task loads.raw.fill warehouse = loads_wh schedule = \'60 minute\' as insert into loads.raw.t values (1)"'],
+        ['a switch to a role it is not given', 'snow sql -c acme_ops -q "use role accountadmin; create database loads"'],
+        ['a grant to a user', 'snow sql -c acme_ops -q "grant role loads_reader to user someone"'],
+        ['a new table, which the class leaves out', 'snow sql -c acme_ops -q "create table loads.raw.t2 (id int)"'],
+        ['a storage integration, which the class leaves out', "snow sql -c acme_ops -q \"create storage integration ext type = external_stage storage_provider = 's3' enabled = true storage_allowed_locations = ('s3://example-bucket/')\""],
+        ['a destructive statement', 'snow sql -c acme_ops -q "drop role loads_reader"'],
+        ['the class on a connection without it', 'snow sql -c acme_prod -q "create database loads"'],
+    ])('%s keeps its card', (_name, command) => {
+        expect(evaluate(command).action).toBe('gate');
+    });
+
+    test('an own role outside the list voids the file', () => {
+        const scope = join(dir, 'dev-scope-badrole.local.json');
+        writeFileSync(scope, JSON.stringify({ snowflake: [{ connection: 'acme_dev', databases: ['dev_db'] }], standingGrants: { acme_ops: ['account-admin'] }, ownRoles: { acme_ops: ['ops role'] } }));
+        const saved = process.env[DEV_SCOPE_FILE_ENV];
+        process.env[DEV_SCOPE_FILE_ENV] = scope;
+        try {
+            expect(evaluate('snow sql -c acme_ops -q "create database loads"').action).toBe('gate');
+        } finally {
+            process.env[DEV_SCOPE_FILE_ENV] = saved;
+        }
+    });
+});
+
 describe('the card says what the step does', () => {
     test('a write names its statement and that the target is not proven dev', () => {
         const command = 'snow sql -c acme_prod -q "insert into prod_db.core.orders values (1)"';
