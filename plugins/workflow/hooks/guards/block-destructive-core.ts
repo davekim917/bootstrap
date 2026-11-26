@@ -115,7 +115,11 @@ interface PipedInput {
     textFrom?: PipedInput[];    // inputs whose text (not files) also flows in
     emitters?: ResolvedCommand[]; // emitters whose words hold a variable, expanded only when a SQL client traces them
     unknown?: boolean;          // its text can't be worked out (a substitution past the expansion cap), so a reader gates
+    single?: ResolvedCommand;   // the stage before, when it is one simple command
 }
+
+/** A pipeline stage that is one command, not a group, subshell or compound. */
+const simpleStage = (stage: any): boolean => (stage?.type === 'Statement' ? stage.command : stage)?.type === 'Command';
 
 /**
  * Everything an input carries, following its `from` links. Inputs link to each other instead of copying, because a
@@ -197,18 +201,20 @@ function argumentWords(cmd: ResolvedCommand, joinSplit = false): ExpandableWord[
 
 /**
  * The value of each word whose provable variables change it (a word without one, or whose variables stay unknown, is
- * left out); null once the line's word or trace budget runs out.
+ * left out, and reported to `unresolved` when one stays unknown); null once the line's word or trace budget runs out.
  */
-function expandWords(words: ExpandableWord[], cmd: ResolvedCommand): string[] | null {
+function expandWords(words: ExpandableWord[], cmd: ResolvedCommand, unresolved?: (word: ExpandableWord) => void): string[] | null {
     const out: string[] = [];
     const script = cmd.script;
     if (cmd.pos === undefined || !script) return out;
-    for (const { word, plain, joinSplit } of words) {
+    for (const w of words) {
+        const { word, plain, joinSplit } = w;
         if (!/[$`]/.test(word)) continue;
         script.wordBudget ??= SQL_WORD_BUDGET;
         if (script.wordBudget-- <= 0) return null;
         script.view ??= viewShell(script.command);
         const r = evalWord(word, script.view, cmd.pos, false, joinSplit);
+        if (r.unresolved.length) unresolved?.(w);
         if (r.value === plain) continue;
         if (!spendTrace(script, r.value.length)) return null;
         out.push(r.value);
@@ -761,6 +767,12 @@ export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^ALTER\s+(?:ROLE|GROUP|USER(?!\s+MAPPING\b))\b/i, label: 'ALTER ROLE' },
     { rx: /^DROP\s+(?:ROLE|GROUP|USER(?!\s+MAPPING\b))\b/i, label: 'DROP ROLE' },
     { rx: /^DROP\s+OWNED\b/i, label: 'DROP OWNED' },
+    // A database, tablespace, foreign server or parameter is shared by the whole cluster, not held by one database.
+    { rx: /^GRANT\b[\s\S]*?\bON\s+(?:DATABASE|TABLESPACE|FOREIGN\s+(?:SERVER|DATA\s+WRAPPER)|PARAMETER)\b/i, label: 'GRANT ON SHARED OBJECT' },
+    { rx: /^REVOKE\b[\s\S]*?\bON\s+(?:DATABASE|TABLESPACE|FOREIGN\s+(?:SERVER|DATA\s+WRAPPER)|PARAMETER)\b/i, label: 'GRANT ON SHARED OBJECT' },
+    { rx: /^ALTER\s+(?:DATABASE|TABLESPACE)\b[\s\S]*\bOWNER\s+TO\b/i, label: 'ALTER DATABASE OWNER' },
+    { rx: /^ALTER\s+POLICY\b/i, label: 'ALTER POLICY' },
+    { rx: /^ALTER\s+TABLE\b[\s\S]*\b(?:DISABLE|NO\s+FORCE)\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'DISABLE ROW LEVEL SECURITY' },
     // With no ON, GRANT and REVOKE add or remove a role's membership in another role.
     { rx: /^GRANT\s+(?![\s\S]*\bON\b)/i, label: 'GRANT ROLE' },
     { rx: /^GRANT\s/i, label: 'GRANT' },
@@ -774,7 +786,7 @@ export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
 const PG_SQL_PATTERNS = [...PG_PRIVILEGE_SQL_PATTERNS, ...DESTRUCTIVE_SQL_PATTERNS];
 const PG_PRIVILEGE_LABELS = new Set(PG_PRIVILEGE_SQL_PATTERNS.map(p => p.label));
 // Roles belong to the whole cluster, not to the database a connection names.
-const PG_CLUSTER_ROLE_LABELS = new Set(['CREATE ROLE', 'ALTER ROLE', 'DROP ROLE', 'GRANT ROLE', 'REVOKE ROLE', 'REASSIGN OWNED', 'DROP OWNED']);
+const PG_CLUSTER_ROLE_LABELS = new Set(['CREATE ROLE', 'ALTER ROLE', 'DROP ROLE', 'GRANT ROLE', 'REVOKE ROLE', 'REASSIGN OWNED', 'DROP OWNED', 'GRANT ON SHARED OBJECT', 'ALTER DATABASE OWNER']);
 
 // Control-flow words that can open a statement inside a scripting block
 // (Snowflake Scripting, PL/pgSQL, T-SQL). Stripped before matching, so the
@@ -1341,9 +1353,22 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     let expanded: string[] | null = [];
     const argCounts = new Map<string, number>();
     const asArgument = (t: string) => argCounts.set(t, (argCounts.get(t) ?? 0) + 1);
-    for (const view of cmd.expandAs === undefined ? [cmd] : cmd.expandAs ?? []) {
-        const stdin = expandWords(view.stdinExpanded ?? [], view);
-        const words = expandWords(argumentWords(view).filter((_, i) => !fileValue(i)), view);
+    // psql's SQL words (a -c value, stdin text): readable only when some view of the line resolves every variable in them.
+    let sqlResolvedSomewhere = false;
+    // psql sends a -c value to the server as it is, with no :variable interpolation.
+    const commandSql = new Set<string>();
+    let sqlVariableWords = false;
+    const views = cmd.expandAs === undefined ? [cmd] : cmd.expandAs ?? [];
+    for (const view of views) {
+        const argWords = argumentWords(view);
+        const sqlWords = new Set<ExpandableWord>(client === 'psql' ? argWords.filter((_, i) => psqlSqlArgument(view.args, i)) : []);
+        if (client === 'psql') for (const w of [...sqlWords, ...(view.stdinExpanded ?? [])]) if (/[$`]/.test(w.word)) sqlVariableWords = true;
+        let viewUnresolved = false;
+        const stdin = expandWords(view.stdinExpanded ?? [], view, () => { viewUnresolved = true; });
+        const words = expandWords(argWords.filter((_, i) => !fileValue(i)), view, w => { if (sqlWords.has(w)) viewUnresolved = true; });
+        if (!viewUnresolved) sqlResolvedSomewhere = true;
+        for (const w of argWords.filter((_, i) => client === 'psql' && psqlSqlArgument(view.args, i))) commandSql.add(w.plain);
+        for (const v of (client === 'psql' ? expandWords([...sqlWords], view) : []) ?? []) commandSql.add(v);
         if (stdin === null || words === null) {
             expanded = null;
             break;
@@ -1501,7 +1526,12 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     }
     if (pending.length) unreadable ??= pending[0];
     if (client === 'psql') {
-        const rule = psqlReadableInput(cmd, [...ownFiles], texts);
+        cmd.args.forEach((a, i) => {
+            if (!psqlSqlArgument(cmd.args, i)) return;
+            commandSql.add(a);
+            for (const t of withOptionValue(a)) commandSql.add(t);
+        });
+        const rule = psqlReadableInput(cmd, [...ownFiles], texts, [...seen].filter(f => !ownFiles.has(f)), sqlVariableWords && !sqlResolvedSomewhere, commandSql);
         unreadable = missingFile ?? rule.missing ?? rule.unreadable ?? unreadable;
     }
     return { texts, unreadable, argCounts };
@@ -1961,6 +1991,50 @@ const pathIsMissing = (path: string): boolean => {
  * scratch Postgres; a substitution in -h or another argument that isn't SQL doesn't count. A file that isn't there is
  * reported apart, ahead of everything else, since its refusal says how to make it readable.
  */
+// psql's own variables, which it sets itself from the connection.
+const PSQL_BUILTIN_VARIABLES = new Set(['DBNAME', 'HOST', 'PORT', 'USER', 'ENCODING', 'VERSION', 'VERSION_NAME', 'VERSION_NUM', 'SERVER_VERSION_NAME', 'SERVER_VERSION_NUM', 'LASTOID', 'ROW_COUNT', 'ERROR', 'SQLSTATE', 'LAST_ERROR_MESSAGE', 'LAST_ERROR_SQLSTATE']);
+
+/** The -v/--set/--variable values psql gets on this line, by name; null for a value that isn't a literal word. */
+function psqlVariables(cmd: ResolvedCommand): Map<string, string | null> {
+    const vars = new Map<string, string | null>();
+    const written = writtenArgs(cmd);
+    for (let i = 0; i < cmd.args.length; i++) {
+        const a = cmd.args[i];
+        const attached = /^(?:-v|--set=|--variable=)(.+)$/.exec(a);
+        const at = attached ? i : (a === '-v' || a === '--set' || a === '--variable') ? i + 1 : -1;
+        if (at < 0 || at >= cmd.args.length) continue;
+        const spec = attached ? attached[1] : cmd.args[at];
+        const m = /^([A-Za-z_]\w*)=([\s\S]*)$/.exec(spec);
+        if (!m) continue;
+        const word = written?.[at];
+        vars.set(m[1], word === undefined || isLiteralShellWord(word) ? m[2] : null);
+        if (at > i) i = at;
+    }
+    return vars;
+}
+
+/**
+ * The first psql interpolation in `sql` (outside its literals and comments) whose value the guard can't read: `:name`
+ * splices the value in as SQL, so only a plain word is readable there; `:'name'` and `:"name"` quote it, so any
+ * literal the line sets is. A variable the line doesn't set (it may come from a psqlrc or \set) is unreadable.
+ */
+function unreadInterpolation(sql: string, skeleton: string, vars: Map<string, string | null>): string | null {
+    for (const m of sql.matchAll(/(?<![:\w]):(['"]?)([A-Za-z_]\w*)\1/g)) {
+        if (skeleton[m.index!] !== ':' || PSQL_BUILTIN_VARIABLES.has(m[2])) continue;
+        const value = vars.get(m[2]);
+        if (value === undefined || value === null || (!m[1] && !/^[\w.]+$/.test(value))) return m[1] ? `${m[1]}${m[2]}${m[1]}` : m[2];
+    }
+    return null;
+}
+
+/** Whether args[i] is SQL psql runs: the value of -c or --command, attached or separate. */
+function psqlSqlArgument(args: string[], i: number): boolean {
+    const a = args[i];
+    const p = args[i - 1];
+    if (/^--command=/.test(a) || (/^-[A-Za-z]/.test(a) && !a.startsWith('--') && clusterValueOption('psql', a) === 'c' && !a.endsWith('c'))) return true;
+    return p !== undefined && (p === '--command' || (/^-[A-Za-z]*c$/.test(p) && !p.startsWith('--') && clusterValueOption('psql', p) === 'c'));
+}
+
 // The same SQL is often read by every psql on a long line; its skeleton is computed once.
 const metaSkeletons = new Map<string, string>();
 function metaSkeleton(sql: string): string {
@@ -1972,40 +2046,49 @@ function metaSkeleton(sql: string): string {
     return skeleton;
 }
 
-export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: string[]): { unreadable: string | null; missing: string | null } {
-    let files = given;
+export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: string[], included: string[] = [], unresolvedSql = false, commandSql: ReadonlySet<string> = new Set()): { unreadable: string | null; missing: string | null } {
+    const files = given;
     const stdinNamed = (f: string) => {
         const paths = f === '-' ? null : sqlPathCandidates(f, cmd);
         return f === '-' || (!!paths?.length && paths.every(p => STDIN_PATH.test(fdLinkTarget(p))));
     };
     const result = (unreadable: string | null) => ({ unreadable, missing: null as string | null });
-    const substitutes = (word: string) => /\$\(|`|[<>]\(/.test(withoutSingleQuoted(word));
+    // A substitution in the SQL itself is never readable; a variable is, when sqlInputOf resolved it (unresolvedSql).
+    if (unresolvedSql) return result('an expansion in its SQL that the line does not resolve');
+    const resolved = (word: string): boolean => !/\$\(|`|[<>]\(/.test(withoutSingleQuoted(word));
     let writtenCache: string[] | undefined;
     const written = () => (writtenCache ??= writtenArgs(cmd) ?? cmd.args);
     for (let i = 0; i < cmd.args.length; i++) {
         const a = cmd.args[i];
         const attached = /^--command=/.test(a) || (/^-[A-Za-z]/.test(a) && !a.startsWith('--') && clusterValueOption('psql', a) === 'c' && !a.endsWith('c'));
         const separate = a === '--command' || (/^-[A-Za-z]*c$/.test(a) && clusterValueOption('psql', a) === 'c');
-        if ((attached && substitutes(written()[i] ?? a)) || (separate && substitutes(written()[i + 1] ?? cmd.args[i + 1] ?? ''))) {
-            return result('a command substitution in its SQL');
+        if ((attached && !resolved(written()[i] ?? a)) || (separate && !resolved(written()[i + 1] ?? cmd.args[i + 1] ?? ''))) {
+            return result('an expansion in its SQL that the line does not resolve');
         }
     }
     const sqlInArgs = cmd.args.some(a => /^--command(?:=|$)/.test(a) || clusterValueOption('psql', a) === 'c');
     const readsStdin = (!sqlInArgs && files.filter(f => !(cmd.stdinFiles ?? []).includes(f)).length === 0) || files.some(stdinNamed);
-    if (readsStdin && !cmd.stdinTexts?.length && !(cmd.stdinFiles ?? []).length) {
+    // -l, -V and --help print and exit without reading stdin.
+    const exitsAtOnce = cmd.args.some(a => /^(?:-[A-Za-z]*[lV?]|--list|--version|--help)$/.test(a));
+    if (readsStdin && !cmd.stdinTexts?.length && !(cmd.stdinFiles ?? []).length && !exitsAtOnce) {
         const piped = cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos));
-        if (piped) {
+        if (!piped) return result('the stdin it inherits, which the line does not show');
+        {
             const fed = readablePipeSource(cmd);
             if (fed === null) return result('SQL piped in from another command');
             // A cat's file is found from the cat's own directory, which env -C or a cd can move.
             const gone = fed.files.find(f => !writesTo(f, fed.from)?.length && !lineWriterOf(fed.from, f) && (sqlPathCandidates(f, fed.from) ?? []).every(pathIsMissing));
+            // Inside a $(…) a cd can move cat's directory past what the path check sees, so there it is only unread.
+            if (gone && cmd.pipedInput) return result(`${gone}, which cat reads from a directory the guard does not follow`);
             if (gone) return { unreadable: null, missing: `${gone}, ${SQL_PATH_MISSING}` };
             const catWriter = fed.files.map(f => lineWriterOf(fed.from, f, true)).find(Boolean);
             if (catWriter) return result(`a file cat reads, which \`${catWriter}\` earlier on the line writes`);
+            // The guard reads cat's files from psql's directory, so the two must be the same.
+            if (fed.files.length && fed.from.chdir !== cmd.chdir) return result('a file cat reads from another directory than psql runs in');
         }
     }
-    if ((cmd.stdinExpanded ?? []).some(w => substitutes(w.word))) return result('a command substitution in its SQL');
-    for (const f of files) {
+    if ((cmd.stdinExpanded ?? []).some(w => !resolved(w.word))) return result('an expansion in its SQL that the line does not resolve');
+    for (const f of [...files, ...included]) {
         const writer = stdinNamed(f) ? null : lineWriterOf(cmd, f, true);
         if (writer) return result(`${f}, which \`${writer}\` earlier on the line writes`);
     }
@@ -2013,6 +2096,11 @@ export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: 
         const sql = text.replace(PSQL_COPY_DATA, '$1');
         const skeleton = metaSkeleton(sql);
         if (/\\gexec(?=[\s\\;]|$)/.test(skeleton)) return result('\\gexec, which runs what its query returns as SQL');
+        // A -c value reaches the server as written: psql interpolates no :variable in it.
+        const interpolates = !commandSql.has(text) && !commandSql.has(text.trim());
+        if (interpolates && /(?:^|;)\s*:['"]?[A-Za-z_]\w*['"]?\s*(?:;|$)/m.test(skeleton)) return result('a psql variable run as SQL');
+        const variable = interpolates ? unreadInterpolation(sql, skeleton, psqlVariables(cmd)) : null;
+        if (variable) return result(`:${variable}, a psql variable the line does not set to a literal`);
         if (/\\copy\b[^\n]*\bfrom\s+p?stdin\b/i.test(skeleton)) return result('\\copy … FROM STDIN, whose data the line feeds psql');
         for (const m of sql.matchAll(SQL_INCLUDE)) {
             if (m[1].startsWith('\\') && (PSQL_VARIABLE.test(m[2]) || m[2].includes('`'))) return result(`${m[2]}, a file name psql fills in itself`);
@@ -2026,43 +2114,14 @@ export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: 
  * echo or printf of literal words (no -e, no escapes or %b that build text), or a lone cat of files (returned with the
  * cat, so they are checked under the -f rule from its directory). Null is any other upstream.
  */
-let lastPipeParse: { line: string; script: any } | null = null;
 function readablePipeSource(cmd: ResolvedCommand): { files: string[]; from: ResolvedCommand } | null {
-    const line = cmd.script?.command;
-    if (line === undefined || cmd.pos === undefined) return null;
-    let script: any;
-    try {
-        script = lastPipeParse?.line === line ? lastPipeParse.script : parseShell(line);
-    } catch {
-        return null;
-    }
-    lastPipeParse = { line, script };
-    let upstream: any = undefined;
-    const find = (node: any): void => {
-        if (!node || typeof node !== 'object' || upstream !== undefined) return;
-        if (Array.isArray(node)) return node.forEach(find);
-        if (node.type === 'Pipeline' && Array.isArray(node.commands)) {
-            const stages = node.commands.map((s: any) => s?.command ?? s);
-            const at = stages.findIndex((s: any) => s?.type === 'Command' && s.pos === cmd.pos);
-            if (at > 0) return void (upstream = stages[at - 1]);
-        }
-        Object.values(node).forEach(find);
-    };
-    find(script);
-    if (!upstream || upstream.type !== 'Command' || typeof upstream.pos !== 'number') return null;
-    const source = (cmd.script?.commands ?? []).find(c => c.pos === upstream.pos);
-    const written = source ? writtenArgs(source) : null;
-    if (!source || !written || source.env?.length || (upstream.redirects ?? []).length) return null;
-    const literal = written.every(w => isLiteralShellWord(w));
-    if ((source.name === 'echo' || source.name === 'printf') && literal) {
-        const escapes = source.name === 'echo' ? source.args.some(a => /^-[neE]*e[neE]*$/.test(a)) : source.args.some(a => /\\(?![nt])|%[^%]*b/.test(a));
-        return escapes || (source.name === 'printf' && source.args[0]?.startsWith('-')) ? null : { files: [], from: source };
-    }
-    if (source.name === 'cat' && literal) {
-        const files = source.args.filter(a => a !== '--');
-        return files.length && files.every(f => !f.startsWith('-')) ? { files, from: source } : null;
-    }
-    return null;
+    const input = cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos));
+    const source = input?.single;
+    if (!source || source.pipedInput || source.env?.length || source.stdoutFiles?.length) return null;
+    if ((source.name === 'echo' || source.name === 'printf') && writesTracedText(source)) return { files: [], from: source };
+    if (source.name !== 'cat' || !literalArgs(source) || source.stdinTexts?.length || source.stdinFiles?.length) return null;
+    const files = source.args.filter(a => a !== '--');
+    return files.length && files.every(f => !f.startsWith('-')) ? { files, from: source } : null;
 }
 
 // Programs that write a file named by an argument: the argument that names it, by program.
@@ -2070,6 +2129,7 @@ const FILE_WRITER_OUTPUTS: Record<string, (args: string[]) => string[]> = {
     cp: args => operands(args).slice(-1), mv: args => operands(args).slice(-1), install: args => operands(args).slice(-1),
     ln: args => operands(args).slice(-1), rsync: args => operands(args).slice(-1), tee: args => operands(args),
     curl: args => optionValues(args, ['-o', '--output']), wget: args => optionValues(args, ['-O', '--output-document']),
+    psql: args => optionValues(args, ['-o', '--output', '-L', '--log-file']),
     pg_dump: args => optionValues(args, ['-f', '--file']), pg_dumpall: args => optionValues(args, ['-f', '--file']),
     dd: args => args.filter(a => a.startsWith('of=')).map(a => a.slice(3)),
     sed: args => (args.some(a => /^(?:-[a-zA-Z]*i|--in-place)/.test(a)) ? operands(args).slice(args.some(a => /^(?:-e|--expression|-f|--file)/.test(a)) ? 0 : 1) : []),
@@ -2086,22 +2146,37 @@ const optionValues = (args: string[], options: string[]) => args.flatMap((a, i) 
 function lineWriterOf(cmd: ResolvedCommand, file: string, tracedReadable = false): string | null {
     if (cmd.pos === undefined || !cmd.script) return null;
     const names = (a: string) => a === file || a.endsWith(`/${file}`) || file.endsWith(`/${a}`);
-    const all = (lineWriters.get(cmd.script) ?? indexLineWriters(cmd.script)).get(basename(file)) ?? [];
+    const index = lineWriters.get(cmd.script) ?? indexLineWriters(cmd.script);
+    // A copy into a directory replaces the file of that name in it.
+    const dirOf = (p: string) => dirname(p).replace(/^\.\//, '');
+    const intoDir = (index.get(DIRECTORY_TARGET) ?? []).filter(w => (w.target.replace(/\/+$/, '').replace(/^\.\//, '') || '/') === dirOf(file));
+    const named = index.get(basename(file)) ?? [];
+    const all = intoDir.length ? [...named, ...intoDir].sort((a, b) => a.pos - b.pos) : named;
     let writers = all;
     if (tracedReadable) {
-        writers = untracedWriters.get(all) ?? all.filter(w => !tracedWriter(w.c));
-        untracedWriters.set(all, writers);
+        writers = (intoDir.length ? undefined : untracedNamed.get(named)) ?? all.filter(w => !tracedWriter(w.c));
+        if (!intoDir.length) untracedNamed.set(named, writers);
     }
-    return writers.find(w => w.pos < cmd.pos! && w.c !== cmd && names(w.target))?.c.name ?? null;
+    const into = new Set(intoDir);
+    return writers.find(w => w.pos < cmd.pos! && w.c !== cmd && (into.has(w) || names(w.target)))?.c.name ?? null;
 }
 
-const untracedWriters = new WeakMap<object, Array<{ pos: number; target: string; c: ResolvedCommand }>>();
+const untracedNamed = new WeakMap<object, Array<{ pos: number; target: string; c: ResolvedCommand }>>();
 const tracedWriters = new WeakMap<ResolvedCommand, boolean>();
 const tracedWriter = (c: ResolvedCommand): boolean => {
     let traced = tracedWriters.get(c);
     if (traced === undefined) tracedWriters.set(c, (traced = writesTracedText(c)));
     return traced;
 };
+
+/**
+ * Whether every argument is written as a literal. Inside a $(…) the line's words can't be matched to the command, so
+ * its parsed values must hold nothing the shell would still expand.
+ */
+function literalArgs(c: ResolvedCommand): boolean {
+    const written = writtenArgs(c);
+    return written ? written.every(w => isLiteralShellWord(w)) : !c.args.some(a => /[$`*?[\]{}~]/.test(a));
+}
 
 /**
  * Whether the guard knows exactly what a writer puts in a file: cat or tee fed only a quoted heredoc or literal
@@ -2114,19 +2189,29 @@ function writesTracedText(c: ResolvedCommand): boolean {
         return !reads.length && !!c.stdinTexts?.length && !c.stdinExpanded?.length && !c.stdinFiles?.length;
     }
     if (c.name !== 'echo' && c.name !== 'printf') return false;
-    const written = writtenArgs(c);
-    if (!written || !written.every(w => isLiteralShellWord(w))) return false;
-    return c.name === 'echo' ? !c.args.some(a => /^-[neE]*e[neE]*$/.test(a)) : !c.args[0]?.startsWith('-') && !c.args.some(a => /\\(?![nt])|%[^%]*b/.test(a));
+    if (!literalArgs(c)) return false;
+    // printf interprets escapes and %b in its format only; each argument a %s prints is printed as it is.
+    return c.name === 'echo' ? !c.args.some(a => /^-[neE]*e[neE]*$/.test(a)) : !c.args[0]?.startsWith('-') && !/\\(?![nt])|%[^%]*b/.test(c.args[0] ?? '');
 }
 
-// Each command on a line that writes a file, keyed by the written file's base name, in line order.
+// Each command on a line that writes a file, keyed by the written file's base name (or DIRECTORY_TARGET for a copy into
+// a directory), in line order.
+const DIRECTORY_TARGET = '\0dir';
+const COPY_WRITERS = new Set(['cp', 'mv', 'install', 'ln', 'rsync']);
+
+/** A copy's destination is a directory: written as one, given several sources, or one on disk already. */
+function copiesIntoDirectory(c: ResolvedCommand, target: string): boolean {
+    if (target === '.' || target === '..' || target.endsWith('/') || operands(c.args).length > 2) return true;
+    const at = sqlPathCandidates(target, c);
+    return !!at?.some(p => { try { return statSync(p).isDirectory(); } catch { return false; } });
+}
 const lineWriters = new WeakMap<ScriptContext, Map<string, Array<{ pos: number; target: string; c: ResolvedCommand }>>>();
 function indexLineWriters(script: ScriptContext): Map<string, Array<{ pos: number; target: string; c: ResolvedCommand }>> {
     const index = new Map<string, Array<{ pos: number; target: string; c: ResolvedCommand }>>();
     for (const c of script.commands ?? []) {
         if (c.pos === undefined) continue;
         for (const target of [...(c.stdoutFiles ?? []), ...(FILE_WRITER_OUTPUTS[c.name]?.(c.args) ?? [])]) {
-            const key = basename(target);
+            const key = COPY_WRITERS.has(c.name) && copiesIntoDirectory(c, target) ? DIRECTORY_TARGET : basename(target);
             if (!index.has(key)) index.set(key, []);
             index.get(key)!.push({ pos: c.pos, target, c });
         }
@@ -2826,7 +2911,9 @@ function traceSubstitutionPipes(nested: Array<[any, ResolvedCommand]>, command: 
             const stages = pipeline.commands || [];
             for (let i = 1; i < stages.length; i++) {
                 const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [], emitters: [] };
-                for (const up of commandsIn(stages[i - 1], 0).map(n => byNode.get(n)).filter((c): c is ResolvedCommand => !!c)) {
+                const ups = commandsIn(stages[i - 1], 0).map(n => byNode.get(n)).filter((c): c is ResolvedCommand => !!c);
+                if (ups.length === 1 && simpleStage(stages[i - 1])) input.single = ups[0];
+                for (const up of ups) {
                     if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
                     input.texts.push(...emittedText(up));
                     if (up.name === 'cat') input.catFiles.push(...catFilesOf(up));
@@ -3747,7 +3834,7 @@ function holdsVariable(cmd: ResolvedCommand): boolean {
 
 /** The text an emitter writes to stdout or its files (not counting what a pipe feeds it). */
 function emittedText(cmd: ResolvedCommand): string[] {
-    const operands = cmd.args.filter(a => !a.startsWith('-'));
+    const operands = emitterOperands(cmd);
     if (cmd.name === 'cat' || cmd.name === 'tee') return [...(cmd.stdinTexts ?? [])];
     if (cmd.name === 'echo') {
         const text = operands.join(' ');
@@ -3755,6 +3842,21 @@ function emittedText(cmd: ResolvedCommand): string[] {
     }
     if (cmd.name !== 'printf') return [...(cmd.stdinTexts ?? []), operands.join(' ')];
     return [...(cmd.stdinTexts ?? []), operands.join(' '), ...operands, renderPrintf(operands)];
+}
+
+/**
+ * What echo or printf prints: every word after the options end. echo takes only leading -n/-e/-E words as options, and
+ * printf only a leading -v NAME or --; a later word that starts with `-` (a `-- header` line) is printed like any other.
+ */
+function emitterOperands(cmd: ResolvedCommand): string[] {
+    const a = cmd.args;
+    if (cmd.name === 'echo') {
+        let i = 0;
+        while (i < a.length && /^-[neE]+$/.test(a[i])) i++;
+        return a.slice(i);
+    }
+    if (cmd.name === 'printf') return a[0] === '--' ? a.slice(1) : a[0] === '-v' ? a.slice(2) : /^-v./.test(a[0] ?? '') ? a.slice(1) : a;
+    return a.filter(x => !x.startsWith('-'));
 }
 
 const PRINTF_DIRECTIVE = /%(?:%|[-+ #0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[sbqdiouxXcfFeEgGaA])/g;
@@ -3824,7 +3926,9 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             }
             if (i === 0) return;
             const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [], emitters: [] };
-            for (const up of stageCommands(stages[i - 1])) {
+            const ups = stageCommands(stages[i - 1]);
+            if (ups.length === 1 && simpleStage(stages[i - 1])) input.single = ups[0];
+            for (const up of ups) {
                 if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
                 const fed = up.pos === undefined ? undefined : pipedInto.get(up.pos);
                 input.texts.push(...emittedText(up));
@@ -4386,15 +4490,22 @@ function labSqlSignal(value: string): string | null {
     return null;
 }
 
-/** Whether a psql step's SQL creates, alters or drops a role, which the cluster holds for every database on it. */
+/**
+ * Whether a step may change something outside the one database it names, which no database-scoped waiver covers: a
+ * role or other object the whole cluster holds, a \connect to another database, or SQL the scanner can't read (an
+ * EXECUTE it can't follow, an archive pg_restore applies), which may hold either.
+ */
 function changesClusterRoles(cmd: ResolvedCommand): boolean {
+    if (cmd.name === 'pg_restore') return true;
     if (cmd.name !== 'psql') return false;
     const input = sqlInputFor(cmd);
-    // Input the guard can't read may hold a role change too.
     if (input.unreadable) return true;
-    return input.texts.some(t => psqlRoleMeta(t) !== null
-        || psqlStatementTexts(t).some(s => destructiveStatements(s, 0, true, false, true).some(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern))));
+    return input.texts.some(t => psqlRoleMeta(t) !== null || PSQL_CONNECT.test(metaSkeleton(t))
+        || psqlStatementTexts(t).some(s => destructiveStatements(s, 0, true, false, true).some(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern) || PG_UNREADABLE_LABELS.has(st.pattern))));
 }
+
+// psql's \c or \connect, which moves the rest of the script to another database.
+const PSQL_CONNECT = /(?:^|\n)[ \t]*\\c(?:onnect)?\b/;
 
 function labSqlTarget(cmd: ResolvedCommand): string | null {
     const { args } = cmd;
@@ -4634,6 +4745,7 @@ function renderPsqlPrivilegeChange(args: string[]): string | null {
         // nor does SQL the scanner can't read (EXECUTE format(…), a body in another language), which may change one.
         const found = destructiveStatements(sql, 0, true, false, true).find(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern) || PG_UNREADABLE_LABELS.has(st.pattern));
         if (found) return found.pattern;
+        if (PSQL_CONNECT.test(sql)) return '\\connect';
     }
     return null;
 }
@@ -4686,7 +4798,8 @@ function renderDevHoldReason(cmd: ResolvedCommand, reason: string): string {
     if (!ids) return reason;
     const privilege = cmd.name === 'render' ? renderPsqlPrivilegeChange(cmd.args) : null;
     const why = renderDeletesDatastore(cmd) ? 'Render keeps no backup of a deleted datastore'
-        : privilege && PG_CLUSTER_ROLE_LABELS.has(privilege) ? `it changes roles (${privilege}), which the whole cluster holds, not only this database`
+        : privilege && PG_CLUSTER_ROLE_LABELS.has(privilege) ? `it changes roles or objects the whole cluster holds (${privilege}), not only this database`
+        : privilege === '\\connect' ? 'its SQL connects to another database (\\connect), which the listing does not cover'
         : privilege ? `it runs SQL the guard can't read (${privilege}), which could change roles or privileges`
         : "the guard can't confirm what this form does there";
     return `${RENDER_DEV_HOLD} ${ids.join(', ')}: ${why}.`;
@@ -5532,12 +5645,13 @@ function lineExpands(command: string): boolean {
  * here-document is read line by line, where a backslash command such as \c could connect somewhere else.
  */
 function psqlScratchInputRead(cmd: ResolvedCommand, target: { commands: number; files: number }): boolean {
-    const stdin = !!cmd.stdinTexts?.length || !!cmd.stdinFiles?.length;
+    const stdin = !!cmd.stdinTexts?.length || !!cmd.stdinFiles?.length || readablePipeSource(cmd) !== null;
     if (target.files === 0 && !stdin) return target.commands > 0;
     const input = sqlInputFor(cmd);
-    // A dump's COPY data, and the \. that ends it, are data rather than backslash commands.
+    // A dump's COPY data and the \. that ends it are data, and pg_dump's \restrict and \unrestrict markers only
+    // fence the dump's own backslash commands; none of them can connect elsewhere.
     return !input.unreadable && !input.texts.some(t => t.replace(PSQL_COPY_DATA, '$1').split('\n')
-        .some(line => !/^\s*\\\.\s*$/.test(line) && PSQL_BACKSLASH_COMMAND.test(line)));
+        .some(line => !/^\s*\\(?:\.|(?:un)?restrict\s+\w+)\s*$/.test(line) && PSQL_BACKSLASH_COMMAND.test(line)));
 }
 
 /**
@@ -5739,7 +5853,12 @@ function isRemotePgHost(host: string): boolean {
  * libpq's defaults or a loopback address it couldn't prove is scratch, and the returned text refuses it with both ways
  * forward: the scratch-pg helper for a scratch database, a written-out host for a real one.
  */
-export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
+export // A suggested command never repeats the SQL it was given, which can hold a password: the agent fills its SQL back in.
+const SQL_PLACEHOLDER = "-c '<your SQL>'";
+const withSqlPlaceholder = (line: string): string =>
+    line.replace(/(\s)(?:-[A-Za-z]*c|--command)(?:=|\s+)(?:'(?:[^']|'\\'')*'|"(?:[^"\\]|\\[\s\S])*"|\$'(?:[^'\\]|\\[\s\S])*'|[^\s'"]+)/g, `$1${SQL_PLACEHOLDER}`);
+
+function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
     if (cmd.name !== 'psql' && cmd.name !== 'dropdb') return null;
     const written = writtenArgs(cmd);
     // Without the words as written (a brace expansion moved them), the parsed value decides, which keeps the approver.
@@ -5750,7 +5869,6 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
     }
     let explicitDb: string | undefined;
     let positionalDb: string | undefined;
-    const sql: string[] = [];
     const otherValue = cmd.name === 'psql'
         ? new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*[UpvfoLPTFR]|--(?:username|port|set|variable|file|output|log-file|pset|table-attr|field-separator|record-separator)=?)(.*)$`)
         : new RegExp(`^(?:-[${DROPDB_SHORT_FLAGS}]*[pU]|--(?:username|port)=?)(.*)$`);
@@ -5778,9 +5896,6 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
         }
         const command = cmd.name === 'psql' ? value(new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*c|--command=?)(.*)$`)) : null;
         if (command) {
-            // The SQL as the shell spelled it, so a $VAR in it still expands when the suggested line runs.
-            const spelled = written && (command.at === i + 1 ? written[command.at] : written[i].replace(new RegExp(`^(?:-[${PSQL_SHORT_FLAGS}]*c|--command=)`), ''));
-            sql.push(spelled || `'${command.text.replace(/'/g, `'\\''`)}'`);
             i = command.at;
             continue;
         }
@@ -5816,7 +5931,7 @@ export function unresolvedPgTargetFix(cmd: ResolvedCommand): string | null {
     const target = explicitDb ?? positionalDb ?? '<db>';
     const line = cmd.name === 'dropdb'
         ? `${SCRATCH_PG} dropdb ${target}`
-        : [`${SCRATCH_PG} psql ${target}`, ...kept, sql.length ? sql.map(s => `-c ${s}`).join(' ') : "-c '<sql>'"].join(' ');
+        : [`${SCRATCH_PG} psql ${target}`, ...kept, SQL_PLACEHOLDER].join(' ');
     return [
         `this ${cmd.name} reaches a database the guard can't name, through a variable, libpq's defaults or a local address it couldn't prove is a scratch Postgres, so it is refused instead of sent for approval.`,
         `If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval (it starts one under /tmp first if none is running: ${SCRATCH_PG} start):`,
@@ -6621,6 +6736,12 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         return 'Destructive Redis command detected (FLUSHDB/FLUSHALL).';
     }
 
+    if ((name === 'createuser' || name === 'dropuser') && !['--help', '-?', '--version', '-V'].includes(args[0])) {
+        return `${name} ${name === 'createuser' ? 'creates' : 'drops'} a PostgreSQL role, which the whole cluster holds`;
+    }
+    if (name === 'pg_restore' && args.some(a => a === '-d' || /^-d./.test(a) || /^--dbname(?:=|$)/.test(a))) {
+        return 'pg_restore -d applies an archive to a database: its tables and data, and the grants and ownership it holds, which the guard can\'t read';
+    }
     // dropdb reads help and version only as its first argument; anywhere else they are options or the database.
     if (name === 'dropdb' && !['--help', '-?', '--version', '-V'].includes(args[0])) {
         return 'dropdb drops a whole PostgreSQL database';
@@ -7917,7 +8038,8 @@ function* gatedSteps(
                 }
             }
             const withoutPsqlrc = cmd === outer ? localPgTargetOf(cmd, commands, command, localPg, true) : null;
-            if (withoutPsqlrc !== null) {
+            // A missing file's refusal says how to make the input readable at all, so it comes before the -X advice.
+            if (withoutPsqlrc !== null && !reason.includes(SQL_PATH_MISSING)) {
                 yield {
                     cmd, reason, outer, moves,
                     fix: `${reason}: psql against the scratch Postgres at ${withoutPsqlrc} runs without approval only with -X (--no-psqlrc), since a psqlrc file can connect somewhere other than the -h shown. Run the same command again with -X added.`,
@@ -7929,14 +8051,14 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves, fix: psqlFix };
                 continue;
             }
-            const rewrite = cmd === outer ? localPgRewriteOf(cmd, command, localPg) : null;
+            const rewrite = cmd === outer && !reason.includes(SQL_PATH_MISSING) ? localPgRewriteOf(cmd, command, localPg) : null;
             if (rewrite !== null) {
                 const password = rewrite.pgpass
                     ? `\nThe password is left out: add the line ${rewrite.pgpass} to ~/.pgpass (mode 0600), since an environment prefix such as PGPASSWORD= also needs approval.`
                     : '';
                 yield {
                     cmd, reason, outer, moves,
-                    fix: `${reason}: psql reaches the scratch Postgres at ${rewrite.endpoint} through ${rewrite.via}, which the guard does not resolve, so as written it needs approval. This runs without approval:\n${rewrite.line}${password}`,
+                    fix: `${reason}: psql reaches the scratch Postgres at ${rewrite.endpoint} through ${rewrite.via}, which the guard does not resolve, so as written it needs approval. This runs without approval:\n${withSqlPlaceholder(rewrite.line)}${password}`,
                 };
                 continue;
             }
@@ -7958,9 +8080,7 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves, fix: devExpansion };
                 continue;
             }
-            // Input the guard can't read takes a card, not a refusal, whatever the target; only a missing file is refused.
-            const unreadableInput = reason.startsWith('PostgreSQL SQL input (') && !reason.includes(SQL_PATH_MISSING);
-            const unresolved = cmd === outer && !unreadableInput ? unresolvedPgTargetFix(cmd) : null;
+            const unresolved = cmd === outer ? unresolvedPgTargetFix(cmd) : null;
             if (cmd.name === 'psql' && reason.includes(SQL_PATH_MISSING)) {
                 const missing = `${reason} Write the file in one call, then run it in the next with its path written out, and the guard reads it first.`;
                 yield { cmd, reason, outer, moves, fix: unresolved === null ? missing : `${missing}\nAlso, ${unresolved}` };

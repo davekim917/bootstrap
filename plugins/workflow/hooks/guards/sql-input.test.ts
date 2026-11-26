@@ -74,14 +74,23 @@ describe('SQL piped into psql from anything else', () => {
         () => `B='-v x DROP TABLE users;'; printf $B | psql`,
         () => `O=-v; SQL='DROP TABLE users;'; printf $O x "$SQL" | psql`,
         () => `B='-e DROP TABLE users;'; echo 'SELECT 1; --' $B | psql`,
-        () => `result=$(printf 'SELECT 1;' | psql)`,
         () => `B='SELECT 1'; x=$(echo "$B" | psql)`,
         () => `x=$(B='SELECT 1'; echo "$B" | psql)`,
-        () => `x=$(cd job; cat ok.sql | psql)`,
         () => `B='DROP TABLE users'; x=$(B='SELECT 1'; echo "$B" | psql)`,
         () => `B='DROP TABLE users;'; cat <<'EOF' | psql\n$B\nEOF`,
     ])('%#', (make: (d: string) => string) => {
-        expect(verdict(make(dir))).toBe('gate');
+        // With no host the target refusal comes first; either way the input is not run unread.
+        expect(verdict(make(dir))).not.toBe('allow');
+    });
+});
+
+// A literal printf or a cat of a readable file stays readable inside a $(…) too.
+describe('a readable pipe inside a command substitution', () => {
+    test.each([
+        `result=$(printf 'SELECT 1;' | psql)`,
+        `x=$(cd job; cat ok.sql | psql)`,
+    ])('%s', (command) => {
+        expect(verdict(command)).toBe('allow');
     });
 });
 
@@ -184,7 +193,6 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
     for (const command of [
         `B='SELECT 1;'; psql -c "$B"`,
         `B='DROP TABLE users;'; echo "$B"`,
-        `psql -c "$UNKNOWN"`,
         `B='SELECT 1'; echo 'DROP TABLE users;' | psql -c "$B"`,
     ]) {
         expect(verdict(command)).toBe('allow');
@@ -522,7 +530,10 @@ test('a relative write after a cd matches the absolute path the client reads', (
 });
 
 test('text echoed to the terminal is not fed to a client that is not in its pipeline', () => {
-    expect(verdict(`echo 'DROP TABLE users'; psql`)).toBe('allow');
+    // psql alone reads the stdin it inherits, which the line does not show, so it is not run unread; the echo is not it.
+    const alone = evaluateBashCommand(`echo 'DROP TABLE users'; psql -h db.example`, { cwd: dir });
+    expect(alone.action).toBe('gate');
+    expect(alone.reason).toContain('stdin it inherits');
     expect(verdict(`echo 'DROP TABLE users' | psql -h db.example`)).toBe('gate');
 });
 
@@ -530,6 +541,13 @@ test('after a cd the command implies, a relative file is not read from the start
     const moved = evaluateBashCommand(`cd /elsewhere && psql -h db.example -f bad.sql`, { cwd: dir });
     expect(moved.action).toBe('block');
     expect(moved.reason).toContain("isn't there yet");
+});
+
+test('SQL in a variable the line does not resolve is not run unread', () => {
+    for (const command of [`psql -c "$UNKNOWN"`, `psql -h db.example -c "$UNKNOWN"`, `SQL=$(cat bad.sql); psql -h db.example -c "$SQL"`, `SQL=$(cat bad.sql); psql -h db.example <<< "$SQL"`]) {
+        expect(verdict(command)).not.toBe('allow');
+    }
+    expect(evaluateBashCommand(`SQL=$(cat ok.sql); psql -h db.example -c "$SQL"`, { cwd: dir }).reason).toContain('does not resolve');
 });
 
 test('a SQL client inside a substitution expands its own variables', () => {

@@ -316,7 +316,7 @@ describe('a connection string or localhost the guard does not resolve is answere
     ])('%s: refused with the rewrite, and the rewrite runs', (_name, command, rewrite, f) => {
         const v = evaluate(command, f);
         expect(v.action).toBe('block');
-        expect(rewriteIn(v.reason)).toBe(rewrite);
+        expect(rewriteIn(v.reason)).toBe(rewrite.replace(/ -c ('[^']*'|"[^"]*")/g, " -c '<your SQL>'"));
         expect(evaluate(rewrite, f).action).toBe('allow');
     });
 
@@ -377,7 +377,8 @@ describe('a psql or dropdb whose database the line does not name is refused towa
     ])('%s: refused with the scratch-pg line', (_name, command, line) => {
         const v = evaluate(command);
         expect(v.action).toBe('block');
-        expect(v.reason?.split('\n')).toContain(line);
+        // The suggested line keeps its options and leaves the SQL to the agent: it never repeats SQL, which can hold a password.
+        expect(v.reason?.split('\n')).toContain(line.replace(/ -c [\s\S]*$/, " -c '<your SQL>'"));
     });
 
     test('the refusal for a URL in a variable never shows a password in a URL, and says where the password goes', () => {
@@ -473,7 +474,9 @@ describe('a scratch migration the guard can read keeps the exemption, roles and 
     const migration = join(dir, 'migration.sql');
     const reconnect = join(dir, 'reconnect.sql');
     const dump = join(dir, 'dump.sql');
+    const restricted = join(dir, 'restricted.sql');
     writeFileSync(migration, 'CREATE ROLE app_reader LOGIN;\nGRANT SELECT ON orders TO app_reader;\nDO $$ BEGIN CREATE TABLE t (a int); END $$;\n');
+    writeFileSync(restricted, '\\restrict k3yExample\nCREATE TABLE t (n text);\nGRANT SELECT ON t TO app_reader;\n\\unrestrict k3yExample\n');
     writeFileSync(dump, "CREATE TABLE t (n text);\nCOPY t (n) FROM stdin;\nO'Brien\n\\.\nGRANT SELECT ON t TO app_reader;\n");
     writeFileSync(reconnect, '\\c host=db.example.com\nGRANT ALL ON orders TO public;\n');
     afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -484,6 +487,9 @@ describe('a scratch migration the guard can read keeps the exemption, roles and 
         ['a quoted heredoc', `${BASE} <<'EOF'\nCREATE ROLE app_reader LOGIN;\nGRANT SELECT ON orders TO app_reader;\nEOF`],
         ['a dollar-quoted DO block in single quotes', `${BASE} -c 'DO $$ BEGIN CREATE ROLE app_reader; END $$'`],
         ['the file through <', `${BASE} < ${migration}`],
+        ['a literal echo piped in', `echo "CREATE ROLE app_reader LOGIN;" | ${BASE}`],
+        ['a cat of the file piped in', `cat ${migration} | ${BASE}`],
+        ['a plain dump fenced by \\restrict markers', `${BASE} -f ${restricted}`],
         ['-f - with a quoted heredoc', `${BASE} -f - <<'EOF'\nCREATE ROLE app_reader LOGIN;\nEOF`],
         ['a plain dump whose COPY data ends at \\.', `${BASE} -f ${dump}`],
     ])('%s', (_name, command) => {

@@ -65,7 +65,7 @@ const PRIVILEGE_SQL = [
 ];
 
 // Statements on roles, which the whole cluster holds: role DDL, role membership, and moving or dropping what a role owns.
-const CLUSTER_SQL = new Set(PRIVILEGE_SQL.filter(sql => /^(?:create|alter|drop)\s+(?:role|user|group)\b|^grant\s+app_admin\b|^reassign\s+owned\b/i.test(sql)));
+const CLUSTER_SQL = new Set(PRIVILEGE_SQL.filter(sql => /^(?:create|alter|drop)\s+(?:role|user|group)\b|^grant\s+app_admin\b|^reassign\s+owned\b|^alter\s+database\b[\s\S]*\bowner\s+to\b/i.test(sql)));
 
 describe('a role or privilege change on a reachable Postgres is never run without approval', () => {
     for (const sql of PRIVILEGE_SQL) {
@@ -327,6 +327,82 @@ describe('psql input outside the listed forms takes a card, and only a missing f
     });
 });
 
+describe('psql input, writers and coverage after review', () => {
+    let fx = '';
+    const f = (name: string) => join(fx, name);
+    beforeAll(() => {
+        fx = mkdtempSync(join(tmpdir(), 'pg-review-'));
+        mkdirSync(f('staging'));
+        mkdirSync(f('other'));
+        writeFileSync(f('migration.sql'), 'select 1;\n');
+        writeFileSync(f('staging/migration.sql'), 'GRANT ALL ON t TO public;\n');
+        writeFileSync(f('grant.sql'), 'GRANT ALL ON t TO public;\n');
+        writeFileSync(f('ok.sql'), 'GRANT ALL ON t TO public;\n');
+        writeFileSync(f('other/ok.sql'), 'select 1;\n');
+        writeFileSync(f('inc.sql'), 'select 1;\n');
+        writeFileSync(f('outer.sql'), `\\i ${f('inc.sql')}\n`);
+        writeFileSync(f('vars.sql'), ':sql\n');
+    });
+    afterAll(() => rmSync(fx, { recursive: true, force: true }));
+    const H = 'psql -h db.example.com';
+
+    test.each([
+        ['SQL a variable holds from a substitution, in -c', () => `SQL=$(cat ${f('grant.sql')}); ${H} -c "$SQL"`],
+        ['SQL a variable holds from a substitution, in a here-string', () => `SQL=$(cat ${f('grant.sql')}); ${H} <<< "$SQL"`],
+        ['a variable the line never sets, in -c', () => `${H} -c "$UNKNOWN"`],
+        ['bare psql on the stdin it inherits', () => H],
+        ['a psql variable run as SQL from a file', () => `${H} -v sql='GRANT ALL ON t TO public' -f ${f('vars.sql')}`],
+        ['a grant below a -- header, through printf', () => `printf '%s\\n' '-- header\nGRANT ALL ON t TO public;' | ${H}`],
+        ['a grant below a -- header, through echo', () => `echo '-- header\nGRANT ALL ON t TO public;' | ${H}`],
+        ['a copy into the directory that replaces the file', () => `cp ${f('staging/migration.sql')} ${fx} && ${H} -f ${f('migration.sql')}`],
+        ['a file an earlier psql -o writes', () => `${H} -o ${f('migration.sql')} -c 'select 1'; ${H} -f ${f('migration.sql')}`],
+        ['an \\i file an untraced writer replaces', () => `cp ${f('grant.sql')} ${f('inc.sql')}; ${H} -f ${f('outer.sql')}`],
+        ['a cat read from another directory than psql runs in', () => `cat ${'ok.sql'} | env -C ${f('other')} ${H}`],
+        ['createuser', () => 'createuser -h db.example.com app_reader'],
+        ['dropuser', () => 'dropuser -h db.example.com app_reader'],
+        ['pg_restore -d to another server', () => 'pg_restore -d "postgresql://app@db.example.com/app" dump.custom'],
+        ['ALTER POLICY', () => `${H} -c "ALTER POLICY p ON t USING (true)"`],
+        ['DISABLE ROW LEVEL SECURITY', () => `${H} -c "ALTER TABLE t DISABLE ROW LEVEL SECURITY"`],
+        ['NO FORCE ROW LEVEL SECURITY', () => `${H} -c "ALTER TABLE t NO FORCE ROW LEVEL SECURITY"`],
+        ['a :name the line sets from a variable', () => `${H} -v t="$X" <<'SQL'\nselect * from :t;\nSQL`],
+        ["a :'name' the line sets from a variable", () => `${H} -v t="$X" <<'SQL'\nselect :'t';\nSQL`],
+        ['a :name the line never sets', () => `${H} <<'SQL'\nselect * from :t;\nSQL`],
+        ['a :name whose literal value is more than a word', () => `${H} -v s='DROP TABLE x' <<'SQL'\nselect * from :s;\nSQL`],
+    ])('%s takes a card', (_name, command) => {
+        expect(evaluateBashCommand(command(), { cwd: fx }).action).toBe('gate');
+    });
+
+    test.each([
+        ['psql -l, which reads no SQL', () => `${H} -l`],
+        ['a variable the line sets to a literal', () => `B='SELECT 1;'; ${H} -c "$B"`],
+        ['LIKE with a percent sign in a printf argument', () => `printf '%s\\n' "SELECT * FROM t WHERE n LIKE '%bob%'" | ${H}`],
+        ['a literal printf piped in inside a substitution', () => `result=$(printf 'SELECT 1;' | ${H})`],
+        ['a substitution only in -h', () => `${H.replace('db.example.com', '"$(cat h)"')} -c 'SELECT 1'`],
+        ['pg_restore -l, which lists the archive', () => 'pg_restore -l dump.custom'],
+        ['a :name set to a plain word', () => `${H} -v t=orders <<'SQL'\nselect * from :t;\nSQL`],
+        ["a :'name' set to a literal", () => `${H} -v n='bob' <<'SQL'\nselect :'n';\nSQL`],
+        ['a time literal and a cast, which interpolate nothing', () => `${H} <<'SQL'\nselect '12:30', x::int from t;\nSQL`],
+        ['a -c value, which psql sends to the server with no interpolation', () => `${H} -v t="$X" -c 'select * from :t'`],
+    ])('%s runs', (_name, command) => {
+        expect(evaluateBashCommand(command(), { cwd: fx }).action).toBe('allow');
+    });
+
+    test('a file cp creates on the line, named through a variable, is unread rather than missing', () => {
+        expect(evaluateBashCommand(`F=${f('new.sql')}; cp ${f('grant.sql')} "$F"; ${H} -f "$F"`, { cwd: fx }).action).toBe('gate');
+    });
+
+    test('a suggested command never repeats the SQL it was given', () => {
+        const v = evaluateBashCommand(`psql "$DATABASE_URL" -c "ALTER ROLE app PASSWORD 'zz9-example'; DROP TABLE orders"`, { cwd: fx });
+        expect(v.action).toBe('block');
+        expect(v.reason).toContain("-c '<your SQL>'");
+        expect(v.reason).not.toContain('zz9-example');
+    });
+
+    test('a \\connect on a listed dev database keeps its card', () => {
+        expect(run(`render psql ${DEV_DB} -c "\\connect other" -c "GRANT SELECT ON t TO r"`).action).toBe('gate');
+    });
+});
+
 describe('a Lab database waives database objects, not roles the whole cluster holds', () => {
     let labDir = '';
     let savedLab: string | undefined;
@@ -337,6 +413,7 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         fx = mkdtempSync(join(tmpdir(), 'pg-lab-files-'));
         writeFileSync(join(fx, 'password.sql'), '\\password app\n');
         writeFileSync(join(fx, 'gexec.sql'), "select 'GRANT app_admin TO app' \\gexec\n");
+        writeFileSync(join(fx, 'connect.sql'), '\\connect other_db\nGRANT SELECT ON t TO r;\n');
         writeFileSync(join(labDir, 'lab-scope.local.json'), JSON.stringify({ org: 'lab-org', extraRepos: [] }));
         [savedLab, savedProfile] = [process.env[LAB_SCOPE_FILE_ENV], process.env.NANOCLAW_INSTRUCTIONS_PROFILE];
         process.env[LAB_SCOPE_FILE_ENV] = join(labDir, 'lab-scope.local.json');
@@ -358,6 +435,10 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['DROP OWNED', `${LAB} -c "DROP OWNED BY app_a"`],
         ['\\password', () => `${LAB} -f ${join(fx, 'password.sql')}`],
         ['\\gexec', () => `${LAB} -f ${join(fx, 'gexec.sql')}`],
+        ['an EXECUTE the scanner cannot read', `${LAB} -c "DO \\$\\$ BEGIN EXECUTE format('CREATE ROLE %I', 'x'); END \\$\\$"`],
+        ['a \\connect to another database', () => `${LAB} -f ${join(fx, 'connect.sql')}`],
+        ['a grant on a tablespace', `${LAB} -c "GRANT CREATE ON TABLESPACE ts TO r"`],
+        ['ownership of another database', `${LAB} -c "ALTER DATABASE other_db OWNER TO r"`],
     ])('%s on a lab database gates', (_name, command) => {
         expect(run(typeof command === 'function' ? command() : command).action).toBe('gate');
     });
