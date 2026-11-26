@@ -454,6 +454,10 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['a grant on a tablespace', `${LAB} -c "GRANT CREATE ON TABLESPACE ts TO r"`],
         ['ownership of another database', `${LAB} -c "ALTER DATABASE other_db OWNER TO r"`],
         ['a Lab-named user selecting another database', `psql -h db.example.com -U lab_app_admin -d prod_app -c "GRANT SELECT ON t TO r"`],
+        ['a Lab-named user with no database named', `psql -h db.example.com -U lab_app_admin -c "GRANT SELECT ON t TO r"`],
+        ['a Lab-named user in a conninfo string', `psql "host=db.example.com user=lab_app_admin dbname=prod_app" -c "GRANT SELECT ON t TO r"`],
+        ['a Lab-named user in a URI', `psql "postgresql://lab_app_admin@db.example.com/prod_app" -c "GRANT SELECT ON t TO r"`],
+        ['a Lab-named host', `psql -h lab-db.example.com -d prod_app -c "GRANT SELECT ON t TO r"`],
     ])('%s on a lab database gates', (_name, command) => {
         expect(run(typeof command === 'function' ? command() : command).action).toBe('gate');
     });
