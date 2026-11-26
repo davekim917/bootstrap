@@ -469,6 +469,9 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['a conninfo that names no database, only a Lab user', `psql "host=db.example.com user=lab_app" -c "GRANT SELECT ON t TO r"`],
         ['a later attached -d that overrides a Lab database', `psql -h db.example.com -d lab_app -dprod_app -c "GRANT SELECT ON t TO r"`],
         ['a conninfo whose Lab-looking text sits past a non-ASCII space', `psql "host=db.example.com dbname=prod_app\u{a0}dbname=lab_app" -c "GRANT SELECT ON t TO r"`],
+        ['DROP DATABASE beside -P and a positional database name', `psql -P pager=off -h db.example.com lab_app -c "DROP DATABASE prod_app"`],
+        ['DROP DATABASE naming another lab_ database', `${LAB} -c "DROP DATABASE IF EXISTS lab_archive"`],
+        ['DROP DATABASE after a comment', `${LAB} -c "/* cleanup */ DROP DATABASE prod_app"`],
     ])('%s on a lab database gates', (_name, command) => {
         expect(run(typeof command === 'function' ? command() : command).action).toBe('gate');
     });
@@ -480,6 +483,8 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['a Lab URI with channel_binding', `psql "postgresql://app@192.0.2.30/lab_app?channel_binding=require" -c "GRANT SELECT ON t TO r"`],
         ['a Lab database in a URI', `psql "postgresql://app@db.example.com/lab_app" -c "GRANT SELECT ON t TO r"`],
         ['a grant on an object, chosen by the database and not the user', `psql -h db.example.com -U app -d lab_app -c "GRANT SELECT ON t TO r"`],
+        ['DROP TABLE beside -P and a positional database name', `psql -P pager=off -h db.example.com lab_app -c "DROP TABLE t"`],
+        ['DROP SCHEMA in the connected database', `${LAB} -c "DROP SCHEMA old_area CASCADE"`],
     ])('%s on a lab database runs', (_name, command) => {
         expect(run(command).action).toBe('allow');
     });
