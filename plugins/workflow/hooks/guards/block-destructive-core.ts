@@ -6142,6 +6142,12 @@ function pushArgsWithoutValues(args: string[]): string[] {
     for (let i = 0; i < args.length; i++) {
         if (args[i] === '--') return [...out, ...args.slice(i)];
         if (GIT_PUSH_VALUE_OPTS.has(args[i])) { i++; continue; }
+        // A short cluster such as -fo ends in an option that takes the next word as its value, as git parses it.
+        const cluster = /^-([A-Za-z]+)$/.exec(args[i]);
+        if (cluster) {
+            const at = [...cluster[1]].findIndex(ch => GIT_PUSH_SHORT_VALUE_FLAGS.includes(ch));
+            if (at === cluster[1].length - 1) { out.push(args[i]); i++; continue; }
+        }
         out.push(args[i]);
     }
     return out;
@@ -8235,9 +8241,17 @@ export function containsCredential(text: string): boolean {
  * the reason keeps only each rule's name, without quoted arguments, SQL or a suggested command, and says the text is
  * withheld. Every adapter prints this reason when it refuses, asks, or reports a rejected gate.
  */
+/**
+ * SQL text that may hold a password: anything the detector finds, or a PASSWORD whose value follows on a later line or
+ * past a comment, as in a format() call that supplies it there.
+ */
+const sqlCarriesCredential = (sql: string): boolean => containsCredential(sql) || /passw(?:or)?d\b[ \t]*(?:\n|\/\*)[\s\S]{0,40}?['"$]/i.test(sql);
+
 function withheldVerdict(command: string, verdict: GateEvaluation, cwd: string): GateEvaluation {
-    if (verdict.action === 'allow' || !verdict.reason || !carriesCredential(command, cwd)) return verdict;
-    return { ...verdict, reason: withheldReason(verdict.reason) };
+    // The guard's own advice names where a password goes without holding one.
+    const quoted = (verdict.reason ?? '').replace(/PGPASSWORD="\$VAR"|<password>/g, '');
+    if (verdict.action === 'allow' || !verdict.reason || !(carriesCredential(command, cwd) || sqlCarriesCredential(quoted))) return verdict;
+    return { ...verdict, reason: withheldReason(verdict.reason, command, cwd) };
 }
 
 /** The command, or SQL its clients read from files (relative ones from `cwd`, as the evaluator reads them), looks like it holds a credential. */
@@ -8247,28 +8261,35 @@ function carriesCredential(command: string, cwd: string): boolean {
         const commands = extractCommands(command);
         if (commands[0]?.script) commands[0].script.cwd = cwd;
         return commands.some(cmd => (SQL_CLIS[cmd.name] || (cmd.name === 'snow' && cmd.args[0] === 'sql'))
-            && sqlInputOf(cmd).texts.some(containsCredential));
+            && sqlInputOf(cmd).texts.some(sqlCarriesCredential));
     } catch {
         return false;
     }
 }
 
+/** A rule's name from a guard reason: its first line, before the SQL or argument it quotes. */
+function ruleName(why: string): string {
+    const rule = why.split('\n')[0].split(' — ')[0].split(': ')[0].replace(/`[^`]*`/g, '…').replace(/\s+/g, ' ').trim();
+    return rule && !containsCredential(rule) ? clip(rule, 160) : 'A guarded change';
+}
+
+// What a refusal tells the agent to run instead, as templates that copy nothing from the command.
+const RETRY_TEMPLATES: Array<[RegExp, string]> = [
+    [/This runs without approval:/, "It reaches a scratch Postgres the guard can name only from a written-out host: psql <db> -h <host> -p <port> -U <user> -X -c '<your SQL>', with the password in ~/.pgpass."],
+    [/scratch-postgres helper/, `If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval: ${SCRATCH_PG} psql <db> -c '<your SQL>'.`],
+    [/runs without approval only with -X/, 'Run the same command again with -X added.'],
+    [/write its host out/, 'If it is a real database, write its host out in the command and keep the password in ~/.pgpass or a variable. That goes to a person for approval.'],
+    [/Write the file in one call/, 'Write the file in one call, then run it in the next with its path written out.'],
+];
+
 /**
- * A reason as it may be shown for a command that carries a credential. The whole text is treated alike: the SQL or
- * argument each rule quotes after its `—` goes, every -c or --command value in a suggested command becomes a
- * placeholder, and every quoted span that still looks like a credential goes. A suggested command the guard wrote,
- * with its SQL replaced, stays, so a refusal still says what to run instead. If anything still trips the detector, only
- * the rule names are kept.
+ * The reason shown for a command that carries a credential. Nothing from the reason's text is kept but its rule's name:
+ * the rest is the structured summary of each step (withheldSteps), the fixed advice its refusal gave, as templates with
+ * '<your SQL>', and the note that the text is withheld.
  */
-function withheldReason(reason: string): string {
-    // The guard's own advice names where a password goes without holding one.
-    const unsafe = (text: string) => containsCredential(text.replace(/PGPASSWORD="\$VAR"|<password>/g, ''));
-    let text = reason
-        .replace(/ — [^\n]*?(?:: |$)/gm, m => (m.endsWith(': ') ? ' — …: ' : ''))
-        .replace(/(\s(?:-[A-Za-z]*c|--command)(?:=|\s+))('(?:[^']|'\\'')*'|"(?:[^"\\]|\\[\s\S])*"|\$'(?:[^'\\]|\\[\s\S])*'|[^\s'"]+)/g, "$1'<your SQL>'")
-        .replace(/`[^`]*`/g, span => (unsafe(span) ? '…' : span));
-    if (unsafe(text)) text = [...new Set(reason.split('\n').map(l => l.split(' — ')[0].trim()).filter(l => l && !unsafe(l) && l.length <= 200))].join('\n');
-    return `${text.trim()}\n\n${WITHHELD_NOTE}`.trim();
+function withheldReason(reason: string, command: string, cwd: string): string {
+    const advice = RETRY_TEMPLATES.filter(([rx]) => rx.test(reason)).map(([, text]) => text);
+    return [ruleName(reason), ...withheldSteps(command, reason, cwd).described, ...advice, '', WITHHELD_NOTE].join('\n');
 }
 
 const WITHHELD_NOTE = 'Command text withheld: it contains a credential.';
@@ -8319,9 +8340,14 @@ function withheldTarget(cmd: ResolvedCommand): string[] {
         add('connection', value('-c', '--connection'));
     } else if (cmd.name === 'git') {
         const { positional } = gitPushOperands(cmd);
-        add('remote', positional[0]);
+        // A URL or user@host remote can carry a token, and so can a refspec that names one: neither is shown.
+        const shownRef = (v: string | undefined) => (v && /:\/\/|@/.test(v) ? '<url withheld>' : v);
+        if (positional[0]) out.push(`remote ${code(shownRef(positional[0])!)}`);
         // Each refspec's target: the branch or tag the push overwrites.
-        for (const spec of positional.slice(1)) add('branch', spec.replace(/^\+/, '').split(':').pop());
+        for (const spec of positional.slice(1)) {
+            const target = shownRef(spec) === '<url withheld>' ? '<url withheld>' : spec.replace(/^\+/, '').split(':').pop();
+            if (target) out.push(`branch ${code(target)}`);
+        }
     } else if (cmd.name === 'curl' || cmd.name === 'wget' || cmd.name === 'http' || cmd.name === 'https') {
         add('method', value('-X', '--request'));
         add('URL', value('--url'));
@@ -8360,6 +8386,12 @@ export type ApprovalCard = GateCard & { withheld?: true };
 export function approvalCard(command: string, reason: string, cwd: string = currentWorkingDir()): ApprovalCard {
     const card = describeGate(command, reason, cwd);
     if (!carriesCredential(command, cwd) && !containsCredential(`${card.label}\n${card.summary}`)) return card;
+    const { programs, described } = withheldSteps(command, reason, cwd);
+    return { label: `Run ${programs.join(', ') || 'a command'} (command text withheld)`, summary: [WITHHELD_NOTE, '', ...described].join('\n'), withheld: true };
+}
+
+/** Each gated step as a withheld card lists it: its rule, program, targets and SQL statement kinds, from the parse. */
+function withheldSteps(command: string, reason: string, cwd: string): { programs: string[]; described: string[] } {
     let steps: Array<{ cmd: ResolvedCommand; reason: string }> = [];
     try {
         const commands = extractCommands(command);
@@ -8371,8 +8403,7 @@ export function approvalCard(command: string, reason: string, cwd: string = curr
         steps = [];
     }
     const described = (steps.length ? steps : [{ cmd: undefined, reason }]).map(({ cmd, reason: why }) => {
-        const rule = why.split('\n')[0].split(' — ')[0].replace(/`[^`]*`/g, '…').replace(/\s+/g, ' ').trim();
-        const facts = [rule && !containsCredential(rule) ? clip(rule, 160) : 'A guarded change'];
+        const facts = [ruleName(why)];
         if (cmd) {
             facts.push(`Program: ${code(cmd.name)}`, ...withheldTarget(cmd));
             const kinds = statementKinds(cmd, why);
@@ -8380,8 +8411,7 @@ export function approvalCard(command: string, reason: string, cwd: string = curr
         }
         return `- ${facts.join('. ').replace(/\.\./g, '.')}.`;
     });
-    const programs = [...new Set(steps.map(s => s.cmd.name))].join(', ') || 'a command';
-    return { label: `Run ${programs} (command text withheld)`, summary: [WITHHELD_NOTE, '', ...described].join('\n'), withheld: true };
+    return { programs: [...new Set(steps.map(s => s.cmd.name))], described };
 }
 
 export function gateRequestContent(

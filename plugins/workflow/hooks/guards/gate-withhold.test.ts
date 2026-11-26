@@ -105,12 +105,14 @@ describe('a withheld card keeps the destination, from the unaltered parse', () =
         ['a password equal to the database name', `psql "postgresql://app:app@192.0.2.20/app" -c "drop table orders"`, ['192.0.2.20', '/app', 'SQL: DROP']],
         ['the default postgres password', `psql postgresql://postgres:postgres@192.0.2.20/postgres -c "drop table orders"`, ['192.0.2.20', '/postgres']],
         ['host and dbname after password= in a URI query', `psql "postgresql:///?password=${SECRET}&host=192.0.2.20&dbname=app" -c "drop table orders"`, ['host `192.0.2.20`', 'database `app`']],
-        ['a force-push to a branch named curl', 'git push -fu git@github.com:org/repo curl', ['git@github.com:org/repo']],
+        // A user@host remote can carry a token as its user, so it is withheld like a URL; the branch stays.
+        ['a force-push to a branch named curl', 'git push -fu git@github.com:org/repo curl', ['remote `<url withheld>`', 'branch `curl`']],
         ['curl data that reads like -u', `curl -X DELETE -H "Authorization: Bearer ${SECRET}" -d '-u' ${PROD}`, ['https://api.render.com/v1/services/srv-prodservice000000001/env-vars/FOO', 'DELETE']],
         ['a PASSWORD word inside a dollar-quoted DELETE', `${H} -d app -c "DELETE FROM accounts WHERE note = $$PASSWORD 'expired'$$"`, ['db.example.com', 'database `app`', 'SQL: DELETE']],
         ['a variable the card resolves', `DB=app; PGPASSWORD=x ${H} -d "$DB" -c "drop table orders"`, ['database `app`']],
         ['a curl --url= destination', `curl -X DELETE -H "Authorization: Bearer ${SECRET}" --url=${PROD}`, [PROD]],
-        ['a git push option value before the remote', `git push -o ci.skip --force https://${SECRET}@github.com/org/repo main`, ['remote `https://github.com/org/repo`', 'branch `main`']],
+        ['a git push option value before the remote', `git push -o ci.skip --force https://${SECRET}@github.com/org/repo main`, ['remote `<url withheld>`', 'branch `main`']],
+        ['a token URL after a clustered -fo option', `git push -fo ci.skip https://${SECRET}@github.com/org/repo main`, ['remote `<url withheld>`', 'branch `main`']],
         ['the branch a refspec overwrites', `git push https://${SECRET}@github.com/org/repo +HEAD:release`, ['branch `release`']],
         ['every statement kind, not only the first', `PGPASSWORD=x ${H} -c "drop table a; truncate b"`, ['SQL: DROP, TRUNCATE']],
         ['a URI given to -d, without its user info or query', `PGPASSWORD=x psql -d "postgresql://app:${SECRET}@192.0.2.20/app?sslmode=require" -c "drop table orders"`, ['database `postgresql://192.0.2.20/app`']],
@@ -142,6 +144,25 @@ describe('refusals and gate reasons withhold the same way', () => {
         expect(verdict.action).toBe('block');
         expect(verdict.reason).toContain("-c '<your SQL>'");
         expect(verdict.reason).not.toContain(SECRET);
+    });
+
+    test('a retry that would copy a -v assignment holding a password copies nothing', () => {
+        const verdict = evaluateBashCommand(`psql "$DATABASE_URL" -v password=${SECRET}-v -c "ALTER ROLE app PASSWORD\n'${SECRET}-sql'; DROP TABLE orders"`, { cwd: '/tmp' });
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).not.toContain(SECRET);
+        expect(verdict.reason).toContain("-c '<your SQL>'");
+    });
+
+    test('a multiline EXECUTE in a relative file leaves no password on a rejection', () => {
+        const work = mkdtempSync(join(tmpdir(), 'withhold-exec-'));
+        try {
+            writeFileSync(join(work, 'rotate.sql'), "DO $$ BEGIN EXECUTE format('DROP TABLE orders; ALTER ROLE app PASSWORD\n%L', '" + SECRET + "'); END $$;\n");
+            const verdict = evaluateBashCommand(`${H} -f rotate.sql`, { cwd: work });
+            expect(verdict.action).toBe('gate');
+            expect(verdict.reason).not.toContain(SECRET);
+        } finally {
+            rmSync(work, { recursive: true, force: true });
+        }
     });
 
     test('a relative SQL file is read from the directory the evaluator was given', () => {

@@ -309,15 +309,18 @@ describe('a connection string or localhost the guard does not resolve is answere
     ])('%s: refused with the rewrite, and the rewrite runs', (_name, command, rewrite, f) => {
         const v = evaluate(command, f);
         expect(v.action).toBe('block');
-        // A command that carries a credential gets its retry with the SQL left as a placeholder (withheldReason).
-        expect(rewriteIn(v.reason)).toBe(containsCredential(command) ? rewrite.replace(/-c '[^']*'$/, "-c '<your SQL>'") : rewrite);
+        // A command that carries a credential gets its advice as a template that copies nothing from it (withheldReason).
+        if (containsCredential(command)) expect(v.reason).toContain("psql <db> -h <host> -p <port> -U <user> -X -c '<your SQL>'");
+        else expect(rewriteIn(v.reason)).toBe(rewrite);
         expect(evaluate(rewrite, f).action).toBe('allow');
     });
 
     test('the password never appears in the refusal; the ~/.pgpass line names the rewritten host', () => {
         const v = evaluate("psql 'postgresql://tester:s3cret-example@localhost:55432/foo_test' -X -c 'DROP TABLE orders'");
         expect(v.reason).not.toContain('s3cret-example');
-        expect(v.reason).toContain('add the line 127.0.0.1:55432:foo_test:tester:<password> to ~/.pgpass (mode 0600)');
+        // The URI carries a password, so the advice is a template naming ~/.pgpass, with nothing copied from the command.
+        expect(v.reason).toContain('with the password in ~/.pgpass');
+        expect(v.reason).toContain('Command text withheld');
     });
 
     // A URI to a host outside this container goes to an approver; the others are refused toward scratch-pg.
