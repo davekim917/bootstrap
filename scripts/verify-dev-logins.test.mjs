@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { collectGrants, recordCheck, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
+import { collectGrants, recordCheck, SnowTimeout, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
 
 const g = (privilege, granted_on, name) => ({ privilege, granted_on, name });
 // Every role has no future grants unless a fixture lists some.
@@ -249,4 +249,22 @@ test('a finding, or any error other than a timeout, withdraws an unexpired verif
     assert.equal(entry.login.verifiedUntil, undefined);
     assert.match(line, /^NOT trusted/);
   }
+});
+
+test('a write grant read before a later call timed out is a finding, not a timeout', () => {
+  const rows = sql => {
+    if (sql.startsWith('select current_user()')) return [{ U: 'AGENT', A: 'ORG-A', R: 'DEV_ROLE' }];
+    if (sql === 'show grants to user "AGENT"') return [g('INSERT', 'TABLE', 'PROD_DB.S.T')];
+    throw new SnowTimeout(`snow timed out on: ${sql}`);
+  };
+  assert.match(verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A' } }, rows), /^can write outside DEV_DB: INSERT on TABLE PROD_DB\.S\.T/);
+});
+
+test('a timeout before any write grant is read stays a timeout', () => {
+  const rows = sql => {
+    if (sql.startsWith('select current_user()')) return [{ U: 'AGENT', A: 'ORG-A', R: 'DEV_ROLE' }];
+    if (sql === 'show grants to user "AGENT"') return [g('SELECT', 'TABLE', 'PROD_DB.S.T')];
+    throw new SnowTimeout(`snow timed out on: ${sql}`);
+  };
+  assert.throws(() => verifyEntry({ connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A' } }, rows), SnowTimeout);
 });

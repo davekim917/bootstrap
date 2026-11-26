@@ -119,9 +119,8 @@ function describableSignature(name) {
  * grants. SHOW GRANTS lists only objects the session's role can see, so a role outside `sessionRole`'s hierarchy is
  * reported as a grant that can't be vouched for rather than read.
  */
-export function collectGrants(user, rows, sessionRole) {
+export function collectGrants(user, rows, sessionRole, grants = []) {
   const seen = new Set();
-  const grants = [];
   const queue = [{ kind: 'ROLE', name: 'PUBLIC' }];
   // A user holds roles and may also hold privileges granted to it directly, which carry no role.
   const userGrants = name => {
@@ -200,7 +199,16 @@ export function verifyEntry(entry, rows) {
   if (String(me.A).toUpperCase() !== entry.login.account.toUpperCase()) return `connection signs in to ${me.A}, not ${entry.login.account}`;
   // The grants walked are the signed-in user's, as Snowflake names it, never the configured spelling.
   if (!me.R) return 'connection has no current role';
-  const problems = writeGrantsOutside(collectGrants(String(me.U), rows, String(me.R)), entry.databases);
+  const read = [];
+  try {
+    collectGrants(String(me.U), rows, String(me.R), read);
+  } catch (err) {
+    // A grant already read still counts when a later call times out.
+    const early = err instanceof SnowTimeout ? writeGrantsOutside(read, entry.databases) : [];
+    if (early.length) return `can write outside ${entry.databases.join('/')}: ${early.slice(0, 5).join('; ')}${early.length > 5 ? ` (+${early.length - 5} more)` : ''}`;
+    throw err;
+  }
+  const problems = writeGrantsOutside(read, entry.databases);
   if (process.env.VERIFY_DEV_LOGINS_VERBOSE) for (const p of problems) console.error(`  ${entry.connection}: ${p}`);
   return problems.length ? `can write outside ${entry.databases.join('/')}: ${problems.slice(0, 5).join('; ')}${problems.length > 5 ? ` (+${problems.length - 5} more)` : ''}` : null;
 }
