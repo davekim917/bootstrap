@@ -19,7 +19,7 @@ import {
     IS_NANOCLAW,
     approvalText,
     commandLineOf,
-    describeGateForApproval,
+    approvalCard,
     evaluateBashCommand,
     evaluateGitCloneDestination,
     evaluateSelfApproval,
@@ -167,7 +167,7 @@ function main(): void {
                 // Include a second email reason when one command crosses both
                 // policy gates so the user sees the complete effect once.
                 const email = emailReason(command, cwd);
-                const described = approvalText(describeGateForApproval(command, reason, cwd));
+                const described = approvalText(approvalCard(command, reason, cwd));
                 const combined = email.action === 'gate'
                     ? `${described}\n\nAlso requires outbound-email approval: ${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`
                     : described;

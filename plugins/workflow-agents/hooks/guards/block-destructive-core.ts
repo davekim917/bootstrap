@@ -6933,7 +6933,7 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
         const lexed = snowLexed(t);
         return lexed.exact ? lexed.text : t;
     };
-    const readings = sqlInputOf(cmd).texts.map(redactSqlPasswords).flatMap(t => (cmd.name === 'psql' ? psqlStatementTexts(t) : [cmd.name === 'snow' ? snowRead(t) : t]).map((text, i) => ({ text, guessed: i > 0 })));
+    const readings = sqlInputOf(cmd).texts.flatMap(t => (cmd.name === 'psql' ? psqlStatementTexts(t) : [cmd.name === 'snow' ? snowRead(t) : t]).map((text, i) => ({ text, guessed: i > 0 })));
     const segments = readings.map(r => (SQL_PREFILTER.test(r.text) ? sqlStatements(r.text) : []));
     // Per reading and target: the statements on that target, and how many of them come before each segment.
     const onTarget = new Map<string, { list: ReturnType<typeof sqlStatements>; before: number[] }>();
@@ -8203,188 +8203,111 @@ export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'req
  */
 // ── Credentials in approval text ─────────────────────────────────────────────
 
-/** A value as one shell word: plain when it needs no quoting, else in the quotes the word was written with. */
-const shellWord = (value: string, written = ''): string => (/^[\w@%+=:,./-]+$/.test(value) ? value
-    : written.startsWith('"') && !/["$`\\]/.test(value) ? `"${value}"` : `'${value.replace(/'/g, `'\\''`)}'`);
+// Material that looks like a credential. Coarse on purpose: a false positive costs the card its detail, never safety.
+const CREDENTIAL_SHAPES: RegExp[] = [
+    /\b(?:proxy-)?authorization\s*:/i,
+    /\b(?:x-)?(?:api|auth)[-_]?(?:key|token)\s*:/i,
+    /passw(?:or)?d/i,
+    /\bidentified\s+by\b/i,
+    /:\/\/[^/@\n]{0,200}:[^/@\n]{0,200}@/,
+    /\b[A-Za-z_][A-Za-z0-9_]*(?:TOKEN|KEY|SECRET)\+?=/i,
+];
+const CURL_USER_FLAG = /(?:^|[\s'"])(?:-[A-Za-z]*[uU]|--(?:proxy-)?user\b)/;
 
-// A Postgres or Snowflake role password (a SCRAM or md5 verifier included), or MySQL's IDENTIFIED BY, as a quoted literal.
-const SQL_PASSWORD_LITERAL = /(\b(?:PASSWORD|IDENTIFIED\s+BY)\s*(?:=\s*)?)('(?:[^']|'')*'|"(?:[^"\\]|\\.)*")/gi;
-const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"]*:)([^\s@/'"]+)(?=@)/gi;
-const LIBPQ_PASSWORD = /(\bpassword\s*=\s*)('(?:\\.|[^'\\])*'|[^\s'"]+)/gi;
-const LIBPQ_CONNINFO = /\b(?:host|hostaddr|dbname|user|port|service)\s*=/i;
-const AUTH_HEADER = /^((?:Proxy-)?Authorization\s*:\s*(?:(?:Bearer|Basic|Token|Bot|Digest|Negotiate)\s+)?)(\S[\s\S]*)$/i;
-const KEY_HEADER = /^((?:X-)?(?:Api|Auth)[-_]?(?:Key|Token)\s*:\s*)(\S[\s\S]*)$/i;
-const CREDENTIAL_NAME = /^[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY)$/i;
-const ASSIGNING_BUILTINS = new Set(['export', 'declare', 'typeset', 'local', 'readonly', 'env']);
-const PG_CLIENTS = new Set(['psql', 'pg_dump', 'pg_dumpall', 'pg_restore', 'pgcli', 'createdb', 'dropdb', 'createuser', 'dropuser', 'vacuumdb', 'reindexdb', 'pg_isready']);
-const R = '[redacted]';
-
-/** Text with each password a pattern finds replaced in place: the span the credential occupies, and nothing else. */
-function redactSpans(text: string, libpq: boolean): string {
-    let out = text.replace(URL_PASSWORD, (_m, head) => head + R);
-    out = out.replace(SQL_PASSWORD_LITERAL, (_m, head) => `${head}'${R}'`);
-    if (libpq && LIBPQ_CONNINFO.test(out)) out = out.replace(LIBPQ_PASSWORD, (_m, head) => head + R);
-    return out;
+/** True when the text holds anything that looks like a credential (CREDENTIAL_SHAPES, or a curl user flag). */
+export function containsCredential(text: string): boolean {
+    return CREDENTIAL_SHAPES.some(rx => rx.test(text)) || (/\bcurl\b/.test(text) && CURL_USER_FLAG.test(text));
 }
 
-/** SQL text with every role password literal redacted, before any card clips or quotes it. */
-export function redactSqlPasswords(sql: string): string {
-    return sql.replace(SQL_PASSWORD_LITERAL, (_m, head) => `${head}'${R}'`);
-}
+const WITHHELD_NOTE = 'Command text withheld: it contains a credential.';
 
-/** What a curl -u/-U value or a header value shows; null when it holds no credential. */
-function curlCredentialShown(kind: 'user' | 'header', value: string): string | null {
-    if (kind === 'user') {
-        const colon = value.indexOf(':');
-        return colon >= 0 && colon < value.length - 1 ? `${value.slice(0, colon + 1)}${R}` : null;
-    }
-    const header = AUTH_HEADER.exec(value) ?? KEY_HEADER.exec(value);
-    return header ? header[1] + R : null;
-}
-
-/** A word's new text when only its value changes: inside the quotes it was written with, or re-quoted. */
-function rewordValue(raw: string, head: string, value: string, shown: string): string {
-    const body = raw.slice(head.length);
-    if (raw.startsWith(head) && (body === value || (body === `'${value}'` && !shown.includes("'")) || (body === `"${value}"` && !/["$`\\]/.test(shown)))) {
-        return head + (body === value ? shellWord(shown) : body[0] + shown + body[0]);
-    }
-    return head + shellWord(shown, body);
-}
-
-/**
- * The command with each credential it passes replaced by `[redacted]`, read from the shell's own words: curl's -u, -U,
- * --user and --proxy-user values and authorization or API-key headers, a URL's password in any word or assignment,
- * libpq's password= in a Postgres client's connection string, an assignment to a password, secret, token or API-key
- * variable (as a prefix, or through export, declare, local, readonly or env), and a quoted SQL role password anywhere,
- * here-documents included. Only the span the credential occupies changes, so quoting, $VARS and the destination stay
- * as written. A $(…) is read as a line of its own. Null when the line can't be parsed.
- */
-function redactCommandCredentials(command: string): string | null {
-    let script: any;
+/** A URL's scheme, host and path, without its user info or query, which can carry a credential. */
+function urlShown(value: string): string | null {
     try {
-        script = parseShell(command);
+        const url = new URL(value);
+        return url.host ? `${url.protocol}//${url.host}${url.pathname}` : null;
     } catch {
         return null;
     }
-    const edits: Array<{ pos: number; end: number; text: string }> = [];
-    const at = (node: any): [number, number] | null => (typeof node?.pos === 'number' && typeof node?.end === 'number' ? [node.pos, node.end] : null);
-    // A word's text as written, with each $(…) in it redacted as its own line.
-    const withSubstitutions = (word: any): string => {
-        const span = at(word);
-        if (!span) return '';
-        let raw = command.slice(span[0], span[1]);
-        const parts: string[] = [];
-        const visit = (part: any): void => {
-            if (!part || typeof part !== 'object') return;
-            if (['CommandExpansion', 'CommandSubstitution', 'ProcessSubstitution', 'Backtick'].includes(part.type) && typeof part.text === 'string') return void parts.push(part.text);
-            for (const p of part.parts ?? []) visit(p);
-        };
-        for (const p of word.parts ?? word.value?.parts ?? []) visit(p);
-        for (const text of parts) {
-            const tick = text.startsWith('`');
-            const inner = tick ? text.slice(1, -1) : text.slice(2, -1);
-            const shown = redactCommandCredentials(inner);
-            if (shown !== null && shown !== inner) raw = raw.replace(text, () => (tick ? `\`${shown}\`` : `${text.slice(0, 2)}${shown})`));
-        }
-        return raw;
-    };
-    const edit = (node: any, text: string) => {
-        const span = at(node);
-        if (span && text !== command.slice(span[0], span[1])) edits.push({ pos: span[0], end: span[1], text });
-    };
-    const assignment = (node: any, name: string, raw: string) => {
-        const eq = raw.indexOf('=');
-        if (eq < 0) return;
-        edit(node, CREDENTIAL_NAME.test(name) && eq < raw.length - 1 ? `${raw.slice(0, eq + 1)}${R}` : redactSpans(raw, true));
-    };
-    const commands: any[] = [];
-    const collect = (node: any): void => {
-        if (!node || typeof node !== 'object') return;
-        if (Array.isArray(node)) return node.forEach(collect);
-        if (node.type === 'Command') return void commands.push(node);
-        for (const key of ['commands', 'command', 'clause', 'then', 'else', 'body']) collect(node[key]);
-        for (const item of node.items ?? []) collect(item?.body);
-        for (const r of node.redirects ?? []) heredoc(r);
-    };
-    const heredoc = (r: any) => {
-        if (r?.operator === '<<<') return void edit(r.target, redactSpans(withSubstitutions(r.target), false));
-        if (typeof r?.content !== 'string' || !r.content) return;
-        const start = command.indexOf(r.content, typeof r.end === 'number' ? r.end : 0);
-        const shown = redactSpans(r.content, false);
-        if (start >= 0 && shown !== r.content) edits.push({ pos: start, end: start + r.content.length, text: shown });
-    };
-    collect(script);
-    for (const node of commands) {
-        for (const p of node.prefix ?? []) {
-            if (p?.type === 'Assignment' && typeof p.name === 'string') assignment(p, p.name, withSubstitutions(p));
-        }
-        for (const r of node.redirects ?? []) heredoc(r);
-        const words: any[] = [node.name, ...(node.suffix ?? [])].filter(Boolean);
-        const name = words.length ? basename(wordValue(words[0])) : '';
-        const client = words.map(w => basename(wordValue(w))).find(n => n === 'curl' || PG_CLIENTS.has(n)) ?? '';
-        for (let i = 1; i < words.length; i++) {
-            const word = words[i];
-            const raw = withSubstitutions(word);
-            const value = wordValue(word);
-            if (ASSIGNING_BUILTINS.has(name)) {
-                const m = /^([A-Za-z_]\w*)=/.exec(value);
-                if (m) {
-                    assignment(word, m[1], raw);
-                    continue;
-                }
+}
+
+/** What a gated step acts on, read from its parsed arguments: a host, database, connection, remote or URL. */
+function withheldTarget(cmd: ResolvedCommand): string[] {
+    const args = cmd.args;
+    const value = (...names: string[]): string | undefined => {
+        for (let i = 0; i < args.length; i++) {
+            for (const n of names) {
+                if (args[i] === n && args[i + 1] !== undefined) return args[i + 1];
+                if (n.startsWith('--') && args[i].startsWith(`${n}=`)) return args[i].slice(n.length + 1);
+                if (!n.startsWith('--') && args[i].startsWith(n) && args[i].length > n.length) return args[i].slice(n.length);
             }
-            if (client === 'curl') {
-                let kind: 'user' | 'header' | null = null;
-                let head = '';
-                let given: string | undefined;
-                const long = /^(--user|--proxy-user|--header|--proxy-header)(?:=([\s\S]*))?$/.exec(value);
-                if (long) {
-                    kind = /user/.test(long[1]) ? 'user' : 'header';
-                    if (long[2] !== undefined) [head, given] = [`${long[1]}=`, long[2]];
-                } else if (/^-[^-]/.test(value)) {
-                    for (let c = 1; c < value.length; c++) {
-                        if (!CURL_VALUE_LETTERS.includes(value[c])) continue;
-                        kind = value[c] === 'u' || value[c] === 'U' ? 'user' : value[c] === 'H' ? 'header' : null;
-                        if (kind && c + 1 < value.length) [head, given] = [value.slice(0, c + 1), value.slice(c + 1)];
-                        break;
-                    }
-                }
-                if (kind) {
-                    const target = given === undefined ? words[++i] : word;
-                    const shown = curlCredentialShown(kind, given ?? (target ? wordValue(target) : ''));
-                    if (target && shown !== null) {
-                        edit(target, given === undefined ? rewordValue(withSubstitutions(target), '', wordValue(target), shown) : rewordValue(raw, head, given, shown));
-                    }
-                    continue;
-                }
-            }
-            edit(word, redactSpans(raw, PG_CLIENTS.has(client)));
         }
+        return undefined;
+    };
+    const out: string[] = [];
+    const add = (what: string, v: string | null | undefined) => {
+        if (v && !containsCredential(v) && !/[\s`]/.test(v)) out.push(`${what} ${code(v)}`);
+    };
+    if (cmd.name === 'psql' || cmd.name.startsWith('pg_') || cmd.name === 'render') {
+        if (cmd.name === 'render') add('Render database', args[0] === 'psql' ? args[1] : undefined);
+        add('host', value('-h', '--host'));
+        add('database', value('-d', '--dbname'));
+        for (const a of args) {
+            if (/^postgres(?:ql)?:\/\//.test(a)) add('server', urlShown(a));
+            // A conninfo string, or a URI's query, can name the host and database too.
+            add('host', /(?:^|[\s?&])host\s*=\s*([^\s'&]+)/.exec(a)?.[1]);
+            add('database', /(?:^|[\s?&])dbname\s*=\s*([^\s'&]+)/.exec(a)?.[1]);
+        }
+    } else if (cmd.name === 'snow') {
+        add('connection', value('-c', '--connection'));
+    } else if (cmd.name === 'git') {
+        const at = gitSubcommandIndex(args);
+        const rest = args.slice(at + 1).filter(a => !a.startsWith('-'));
+        if (args[at] === 'push' && rest[0]) add('remote', urlShown(rest[0]) ?? rest[0]);
+    } else if (cmd.name === 'curl' || cmd.name === 'wget' || cmd.name === 'http' || cmd.name === 'https') {
+        add('method', value('-X', '--request'));
+        for (const a of args) if (/^https?:\/\//.test(a)) add('URL', urlShown(a));
+    } else if (cmd.name === 'aws') {
+        add('operation', args.filter(a => !a.startsWith('-')).slice(0, 2).join(' ') || undefined);
     }
-    let text = command;
-    let last = Infinity;
-    for (const e of edits.sort((a, b) => b.pos - a.pos)) {
-        if (e.end > last) continue;
-        text = text.slice(0, e.pos) + e.text + text.slice(e.end);
-        last = e.pos;
-    }
-    return text;
+    return out;
 }
 
 /**
- * A command and text that describes it, as an approval shows them: credentials the command passes are redacted from
- * its words (redactCommandCredentials), and the describing text loses any password shape it quotes. A line the
- * shell can't parse is matched for those shapes too.
+ * The card an approval shows for a gated command. When the command, or any text its card would quote, looks like it
+ * holds a credential (containsCredential), the card shows no command text and no SQL: only what each gated step is,
+ * computed from the unaltered parse (the rule, the program, its host, database, connection, remote or URL, and the
+ * SQL statement kind), and says the text is withheld. The command itself is never edited.
  */
-export function redactCredentials(command: string, ...describing: string[]): string[] {
-    const shapes = (t: string) => redactSpans(t, true).replace(/\b((?:Proxy-)?Authorization\s*:\s*(?:(?:Bearer|Basic|Token|Bot|Digest)\s+)?)("[^"]*"|'[^']*'|[^\s'"\\]+)/gi, (_, head) => head + R);
-    return [redactCommandCredentials(command) ?? shapes(command), ...describing.map(shapes)];
-}
-
-/** The card for a gated command, built from the command with its credentials redacted, for every approval surface. */
-export function describeGateForApproval(command: string, reason: string, cwd?: string): GateCard {
-    const [shownCommand, shownReason] = redactCredentials(command, reason);
-    return describeGate(shownCommand, shownReason, cwd);
+export function approvalCard(command: string, reason: string, cwd: string = currentWorkingDir()): GateCard {
+    const card = describeGate(command, reason, cwd);
+    if (!containsCredential(command) && !containsCredential(`${card.label}\n${card.summary}`)) return card;
+    let steps: Array<{ cmd: ResolvedCommand; reason: string }> = [];
+    try {
+        const commands = extractCommands(command);
+        if (commands[0]?.script) commands[0].script.cwd = cwd;
+        steps = [...gatedSteps(commands, command, cwd, isLabSession(), false)];
+    } catch {
+        steps = [];
+    }
+    const ruleOf = (why: string) => {
+        const rule = why.split(' — ')[0].replace(/\s+/g, ' ').trim();
+        return containsCredential(rule) ? 'a guarded change' : clip(rule, 160);
+    };
+    const kindOf = (why: string) => /\bSQL detected \(([^)]+)\)/.exec(why)?.[1];
+    const described = (steps.length ? steps : [{ cmd: undefined, reason }]).slice(0, 3).map(({ cmd, reason: why }) => {
+        const facts = [ruleOf(why)];
+        if (cmd) facts.push(`Program: ${code(cmd.name)}`, ...withheldTarget(cmd));
+        const kind = kindOf(why);
+        if (kind && !containsCredential(kind)) facts.push(`SQL: ${kind}`);
+        return `- ${facts.join('. ')}.`;
+    });
+    const programs = [...new Set(steps.map(s => s.cmd.name))].slice(0, 3).join(', ') || 'a command';
+    const count = steps.length > 3 ? [`…and ${steps.length - 3} more gated steps.`] : [];
+    return {
+        label: `Run ${programs} (${WITHHELD_NOTE.split(':')[0].toLowerCase()})`,
+        summary: [WITHHELD_NOTE, '', ...described, ...count].join('\n'),
+    };
 }
 
 export function gateRequestContent(
@@ -8396,21 +8319,22 @@ export function gateRequestContent(
     card: EmailCard = {},
     toolUseId?: string,
 ): string {
-    // An email card shows the message exactly as it will send, and the in-tree email hook joins it only field for field.
-    const [shownCommand, shownLabel, shownSummary, shownFull] = action === 'request_bash_gate'
-        ? [command, label, summary, card.fullSummary ?? '']
-        : redactCredentials(command, label, summary, card.fullSummary ?? '');
+    // An email card shows the message exactly as it will send: the person approves that text, credential or not.
+    const withheld = action !== 'request_bash_gate' && [command, label, summary, card.fullSummary ?? ''].some(containsCredential);
     return JSON.stringify({
         action,
         requestId,
-        label: shownLabel,
-        summary: shownSummary,
+        label: withheld && containsCredential(label) ? 'Run a command (command text withheld)' : label,
+        summary: withheld && containsCredential(summary) ? WITHHELD_NOTE : summary,
         // The host renders a bounded head+tail preview and retains the full
         // command in its approval record. Truncating here would discard final
-        // arguments before the approver or audit trail could inspect them.
-        command: shownCommand,
+        // arguments before the approver or audit trail could inspect them. A
+        // withheld command is stored as its hash: the hook runs the command it
+        // holds itself, and the receipt binds the approval to this request.
+        command: withheld ? '' : command,
+        ...(withheld ? { commandSha256: createHash('sha256').update(command, 'utf8').digest('hex') } : {}),
         ...(card.pureSend ? { pureSend: true } : {}),
-        ...(card.fullSummary !== undefined ? { fullSummary: shownFull } : {}),
+        ...(card.fullSummary !== undefined ? { fullSummary: card.fullSummary } : {}),
         ...(card.wholeEmail !== undefined ? { wholeEmail: card.wholeEmail } : {}),
         ...(toolUseId ? { toolUseId } : {}),
     });
@@ -8593,7 +8517,7 @@ export function runNanoclawGate(
     cwd?: string,
 ): GateDecision {
     const action = changesProduction(command, cwd) ? 'request_prod_gate' : 'request_destructive_gate';
-    return runGateRequest(command, reason, { action, onStageError, toolUseId, ...describeGateForApproval(command, reason, cwd) });
+    return runGateRequest(command, reason, { action, onStageError, toolUseId, ...approvalCard(command, reason, cwd) });
 }
 
 const heldOnDev = (step: GatedStep): boolean => step.cmd === step.outer && renderDevHeld(step.cmd) !== null;

@@ -10,7 +10,7 @@ import {
     IS_NANOCLAW,
     approvalText,
     commandLineOf,
-    describeGateForApproval,
+    approvalCard,
     evaluateBashCommand,
     evaluateGitCloneDestination,
     evaluateSelfApproval,
@@ -250,7 +250,7 @@ function decide(input: ToolCall, handoff: string): Verdict {
             }
 
             if (!IS_NANOCLAW) {
-                const described = approvalText(describeGateForApproval(command, reason, cwd));
+                const described = approvalText(approvalCard(command, reason, cwd));
                 const combined = email.action === 'gate'
                     ? `${described}\n\nAlso requires outbound-email approval: ${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`
                     : described;
