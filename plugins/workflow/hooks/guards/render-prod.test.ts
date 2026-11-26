@@ -276,6 +276,25 @@ describe('a listed dev resource', () => {
         expect(changesProduction(command, '/tmp')).toBe(false);
     });
 
+    // An export before a Render CLI step may steer its HTTP client (HTTPS_PROXY); only a Postgres client's PGPASSWORD is exempt.
+    test.each([
+        ['an HTTPS_PROXY export', `export HTTPS_PROXY=http://203.0.113.5:3128; render restart ${DEV}`],
+        ['a PGPASSWORD export, which no Render CLI step reads as a password', `export PGPASSWORD=x; render restart ${DEV}`],
+    ])('a listed render restart after %s keeps its card', (_label, command) => {
+        // The guard's own proxy variables would mark the name as inherited; an agent shell without them is the case here.
+        const saved = ['HTTPS_PROXY', 'https_proxy'].map(k => [k, process.env[k]] as const);
+        for (const [k] of saved) delete process.env[k];
+        try {
+            expect(verdict(command)).not.toBe('allow');
+        } finally {
+            for (const [k, v] of saved) if (v !== undefined) process.env[k] = v;
+        }
+    });
+
+    test('a listed render restart alone stays card-free', () => {
+        expect(verdict(`render restart ${DEV}`)).toBe('allow');
+    });
+
     // PGPASSWORD only authenticates: it can't move psql to another server, so it leaves the listed host held as dev.
     test.each([
         ['a literal password', `PGPASSWORD=example-pw psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],

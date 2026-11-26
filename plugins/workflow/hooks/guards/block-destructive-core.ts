@@ -4344,12 +4344,16 @@ function runsAlone(cmd: ResolvedCommand): boolean {
 }
 
 /** Whether what runs can differ from what the line shows: a path or prefix, an earlier change on the line, or SQL that runs a program. */
+// Clients that read PGPASSWORD only as libpq's password.
+const PG_DIRECT_CLIENTS = new Set(['psql', 'dropdb', 'createdb', 'pg_dump', 'pg_dumpall', 'pg_restore']);
+
 function programCanDiffer(cmd: ResolvedCommand): boolean {
     const line = cmd.script?.command;
-    // PGPASSWORD only authenticates, so setting it, as a prefix or by export, leaves the program where it is.
-    const authOnly = (assignments: string[]) => assignments.every(a => /^PGPASSWORD=/.test(a));
+    // For a direct Postgres client PGPASSWORD only authenticates, so setting it, as a prefix or by export, leaves the
+    // program where it is. Any other client may read it, or a name beside it, differently.
+    const authOnly = (assignments: string[]) => PG_DIRECT_CLIENTS.has(cmd.name) ? assignments.every(a => /^PGPASSWORD=/.test(a)) : !assignments.length;
     return line === undefined || !authOnly(cmd.env ?? []) || new RegExp(`(?:^|\\s)\\S*/${cmd.name}\\s`).test(cmd.raw)
-        || changesShellState(line, name => name === 'PGPASSWORD') || extractCommands(line).some(c => ENVIRONMENT_CHANGERS.has(c.name) && !(c.name === 'export' && c.args.length > 0 && authOnly(c.args)))
+        || changesShellState(line, name => name === 'PGPASSWORD' && PG_DIRECT_CLIENTS.has(cmd.name)) || extractCommands(line).some(c => ENVIRONMENT_CHANGERS.has(c.name) && !(c.name === 'export' && c.args.length > 0 && authOnly(c.args)))
         || cmd.args.some(a => a.search(COPY_PROGRAM) >= 0);
 }
 
@@ -4809,12 +4813,10 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
             if (words.length === 2) return literal(words[0]) && /^-[bcdefghknprstuwxzGLNOS]$/.test(shellUnquote(words[0])) && operand(words[1]);
             return words.length === 3 && literal(words[1]) && /^(?:=|==|!=|<|>|-(?:eq|ne|lt|le|gt|ge|nt|ot|ef))$/.test(shellUnquote(words[1])) && operand(words[0]) && operand(words[2]);
         }
-        // export of names that steer nothing (PGPASSWORD under the Render list) only sets them for later commands.
+        // Before a direct Postgres client, an export of PGPASSWORD only supplies its password.
         if (name === 'export') {
-            return !(n.prefix ?? []).length && quiet(n) && args.length > 0 && args.every(a => {
-                const m = /^([A-Za-z_]\w*)=/.exec(a);
-                return !!m && variableSafe(m[1]) && assignsNothing(withoutSingleQuoted(a));
-            });
+            return PG_DIRECT_CLIENTS.has(step.name) && !(n.prefix ?? []).length && quiet(n) && args.length > 0
+                && args.every(a => /^PGPASSWORD=/.test(a) && assignsNothing(withoutSingleQuoted(a)));
         }
         if (name === 'set') {
             return !(n.prefix ?? []).length && !((n as { redirects?: unknown[] }).redirects ?? []).length
