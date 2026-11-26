@@ -15,6 +15,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'path';
 import { decideToolCall, type ToolCall, type Verdict } from './guard-policy';
 import { extractCommands, lineRedirectWrites } from './guards/block-destructive-core';
 import { evaluateEmailToolCall } from './guards/email-gate-core';
+import builtIns from './agy-builtins.json' with { type: 'json' };
 
 export const AGY_APPROVAL_HANDOFF =
     'This needs human approval, and this agy session cannot ask for it. Do not retry or work around it: give the user the exact command to run themselves.';
@@ -24,6 +25,10 @@ export const READ_ONLY_TOOLS = new Set([
     'read_file', 'view_file', 'list_dir', 'grep_search', 'find_by_name', 'command_status',
     'read_url_content', 'search_web', 'list_resources', 'read_resource', 'list_permissions',
     'wait', 'wait_5_seconds', 'finish', 'ask_permission', 'ask_custom_permission', 'send_message',
+    // A step checklist, the subagent list (and kill), a timer whose fire is a new turn whose calls come through here,
+    // and the swarm board, under both the declared and the hook-time names.
+    'update_steps', 'manage_subagents', 'schedule',
+    'post_message', 'swarm_post_message', 'read_board', 'swarm_read_board', 'swarm_wait',
 ]);
 
 /** agy's own names, runtime and documented, for tools that write a file. */
@@ -31,6 +36,9 @@ const WRITE_TOOLS = new Set(['write_file', 'write_to_file']);
 const EDIT_TOOLS = new Set(['edit_file', 'replace_file_content', 'multi_replace_file_content', 'sed_file', 'notebook_edit']);
 const PATH_KEYS = ['Path', 'TargetFile', 'File', 'FilePath', 'AbsolutePath'];
 const SUBAGENT_TOOLS = new Set(['invoke_subagent', 'define_subagent']);
+const SWARM_TOOLS = new Set(['swarm', 'swarm_manage']);
+/** Swarm actions that start no worker. */
+const SWARM_NON_SPAWNING_ACTIONS = new Set(['status', 'models', 'model', 'kill', 'title']);
 /** `manage_task` actions that send nothing to a running task. */
 const TASK_READ_ACTIONS = new Set(['list', 'status', 'kill']);
 
@@ -182,8 +190,12 @@ function inheritanceOff(value: unknown): string | null {
     return null;
 }
 
-/** Subagent types agy ships with no definition file. */
-const BUILT_IN_SUBAGENTS = new Set(['self', 'research', 'browser']);
+/**
+ * Subagent types agy ships with no definition file, as `agy-builtins-capture.ts` read them from the system prompts
+ * agy stored. agy refuses a name it does not know, so a name kept from an older capture costs nothing.
+ */
+export const BUILT_IN_SUBAGENTS: ReadonlySet<string> = new Set(Object.keys(builtIns.subagents));
+const BUILT_INS_CAPTURED_AT = builtIns.capturedAgyVersion;
 
 function errorCode(error: unknown): string {
     return (error as NodeJS.ErrnoException)?.code ?? (error instanceof Error ? error.message : String(error));
@@ -332,10 +344,7 @@ function agentsDirsUnder(customizationRoot: string): string[] {
  * run.
  */
 function subagentRefusal(typeName: string, roots: string[], home: string): string | null {
-    const scopes = [
-        roots.flatMap((root) => WORKSPACE_CUSTOMIZATION_DIRS.map((name) => join(root, name))),
-        [join(home, '.gemini', 'config')],
-    ];
+    const scopes = agentScopes(roots, home);
     const skipped: string[] = [];
     let selected: Candidate[] = [];
     try {
@@ -360,7 +369,7 @@ function subagentRefusal(typeName: string, roots: string[], home: string): strin
     if (!selected.length) {
         if (BUILT_IN_SUBAGENTS.has(typeName)) return null;
         const searched = scopes.flat().join(', ');
-        return `no agent definition named '${typeName}' that agy would load (searched agents/ and plugins/*/agents/ under ${searched}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}), so the guard cannot check it. Invoke a built-in subagent (${[...BUILT_IN_SUBAGENTS].join(', ')}) or a markdown agent defined there.`;
+        return `no agent definition named '${typeName}' that agy would load (searched agents/ and plugins/*/agents/ under ${searched}${skipped.length ? `; skipped: ${skipped.join('; ')}` : ''}), and it is not one of agy's built-in subagents (${[...BUILT_IN_SUBAGENTS].join(', ')}; captured from agy ${BUILT_INS_CAPTURED_AT}), so the guard cannot check it. Invoke one of those or a markdown agent defined there. If this agy offers a built-in missing from that list, refresh agy-builtins.json with agy-builtins-capture.ts.`;
     }
     for (const { file, dir, frontmatter, error } of selected) {
         if (error !== undefined || !frontmatter) {
@@ -379,6 +388,56 @@ function subagentRefusal(typeName: string, roots: string[], home: string): strin
         if (off) {
             return `agent '${typeName}' (${file}) sets ${off}, so it would run without the user's hooks, this guard among them. Agents may only invoke subagents that inherit customizations.`;
         }
+    }
+    return null;
+}
+
+/** `word` as one single-quoted shell word. */
+function shellWord(word: string): string {
+    return `'${word.replace(/'/g, `'\\''`)}'`;
+}
+
+/** The customization roots agy loads markdown agents from, in its order: every workspace's, then the global one. */
+function agentScopes(roots: string[], home: string): string[][] {
+    return [
+        roots.flatMap((root) => WORKSPACE_CUSTOMIZATION_DIRS.map((name) => join(root, name))),
+        [join(home, '.gemini', 'config')],
+    ];
+}
+
+/**
+ * Why a workflow script could start an agent that runs without this guard, or null. A script picks its agents' types
+ * in Python the guard cannot read, and agy runs a workflow agent of a type that turns inheritance off without the
+ * user's hooks, so a script passes only while no definition agy could load, in any scope, does that. A file with no
+ * readable name defines no agent agy can start; one with a name the guard cannot parse, or that resolves outside its
+ * directory, is refused, as for invoke_subagent.
+ */
+function workflowAgentRefusal(roots: string[], home: string): string | null {
+    try {
+        for (const dir of agentScopes(roots, home).flat().flatMap(agentsDirsUnder)) {
+            for (const file of agentFilesIn(dir)) {
+                const read = readAgentFile(file);
+                if (!('frontmatter' in read)) {
+                    if (read.declaredName === undefined) continue;
+                    return `${file} defines agent '${read.declaredName}' but cannot be read as an agent definition (${read.error}), so the guard cannot tell whether a workflow agent of that type keeps this guard's hooks. Fix or remove that file.`;
+                }
+                let real: string;
+                try {
+                    real = realpathSync(file);
+                } catch (lookup) {
+                    return `${file} cannot be resolved (${errorCode(lookup)}), so the guard cannot tell which agent definition a workflow could start.`;
+                }
+                if (!real.startsWith(dir + sep)) {
+                    return `${file} resolves outside its agents directory (${real}), so the guard cannot tell which agent definition a workflow could start.`;
+                }
+                const off = inheritanceOff(read.frontmatter);
+                if (off) {
+                    return `agent '${String(read.frontmatter.name)}' (${file}) sets ${off}, and a workflow script can start an agent of any type without the guard seeing which, so run_workflow is refused while that definition exists. Use invoke_subagent, which is checked per type.`;
+                }
+            }
+        }
+    } catch (error) {
+        return `${error instanceof Error ? error.message : String(error)}, so the guard cannot tell whether a workflow agent would keep this guard's hooks.`;
     }
     return null;
 }
@@ -537,6 +596,42 @@ export function decideAgyCall(payload: unknown, { home = process.env.HOME || hom
         names.push(`mcp__${nameTokens(server).join('_')}__${nameTokens(tool).join('_')}`);
         const toolName = names.find((n) => evaluateEmailToolCall(n, input, { isScheduledTask: false }).action === 'gate') ?? names[0];
         return decideToolCall({ ...base, tool_name: toolName, tool_input: input }, AGY_APPROVAL_HANDOFF);
+    }
+
+    if (name === 'generate_image') {
+        // agy picks the directory (its own artifacts dir for the conversation); only the file name comes from the model.
+        const imageName = args.ImageName;
+        if (imageName !== undefined && (typeof imageName !== 'string' || /[\\/]/.test(imageName) || imageName.includes('..'))) {
+            return denied("generate_image's ImageName must be a plain file name: agy saves the image in its own artifacts directory, and a path in the name could land it elsewhere.");
+        }
+        return { action: 'allow' };
+    }
+
+    if (name === 'run_workflow') {
+        const script = args.Script;
+        const scriptPath = args.ScriptPath;
+        const inline = typeof script === 'string' && script.trim() !== '';
+        const onDisk = typeof scriptPath === 'string' && scriptPath !== '';
+        if (inline === onDisk) return denied('run_workflow must set exactly one of Script and ScriptPath, so the guard can check what it runs.');
+        const agents = workflowAgentRefusal(roots, home);
+        if (agents) return denied(agents);
+        // agy runs the script as its own python3 process, whose writes, commands and network calls reach no hook, so
+        // it is judged as the command line that would run it, as run_command judges `python3 -c`.
+        const words = ['python3', ...(inline ? ['-c', script as string] : [scriptPath as string])];
+        if (args.Args !== undefined) words.push(JSON.stringify(args.Args) ?? '');
+        const runsIn = typeof args.Cwd === 'string' && args.Cwd ? args.Cwd : undefined;
+        return decideShell(words.map(shellWord).join(' '), runsIn, roots, rootOnlyDirs, base);
+    }
+
+    if (SWARM_TOOLS.has(name)) {
+        const action = typeof args.action === 'string' ? args.action : '';
+        if (SWARM_NON_SPAWNING_ACTIONS.has(action)) return { action: 'allow' };
+        if (action === 'add') {
+            const workspace = args.workspace;
+            if (workspace === undefined || workspace === '' || workspace === 'inherit') return { action: 'allow' };
+            return denied(`a swarm worker may only work in this session's workspace (workspace "inherit"); '${String(workspace)}' is a new checkout, which loads its own hook config.`);
+        }
+        return denied(`swarm action '${action || '(none)'}' is not one this guard can check.`);
     }
 
     if (SUBAGENT_TOOLS.has(name)) {
