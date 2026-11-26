@@ -7723,6 +7723,12 @@ function dbtCommandOf(cmd: ResolvedCommand): (ResolvedCommand & { bare: boolean 
     return run >= 0 && at > run ? { ...cmd, name: 'dbt', args: cmd.args.slice(at + 1), bare: run === 0 && at === 1 && cmd.args[1] === 'dbt' } : null;
 }
 
+/** The project a dbt step run from `dir` uses: --project-dir (the last given) or DBT_PROJECT_DIR from there, else the nearest one up. */
+function dbtProjectDir(cmd: ResolvedCommand, dir: string): string {
+    const named = lastFlag(cmd.args, ['--project-dir']) ?? process.env.DBT_PROJECT_DIR;
+    return named ? pathResolve(dir, expandPath(named)) : dbtProjectRoot(dir) ?? dir;
+}
+
 /** The nearest directory from `dir` up that holds a dbt_project.yml, as dbt finds its project; null when none does. */
 function dbtProjectRoot(dir: string): string | null {
     for (let d = dir; ; d = dirname(d)) {
@@ -7770,7 +7776,7 @@ function dbtTargetDatabase(cmd: ResolvedCommand, dir: string): { target: string;
     let targetFlag = dbtTargetFlag(cmd.args) ?? process.env.DBT_TARGET;
     let profileFlag = lastFlag(cmd.args, ['--profile']) ?? process.env.DBT_PROFILE;
     if (![projectFlag, targetFlag, profileFlag].every(literal)) return null;
-    const project = projectFlag ? pathResolve(dir, expandPath(projectFlag)) : dbtProjectRoot(dir) ?? dir;
+    const project = dbtProjectDir(cmd, dir);
     // dbt retry reruns the saved invocation: its target, profile and full refresh come from run_results.json.
     if (dbtSubcommand(cmd.args) === 'retry') {
         const saved = dbtSavedRun(cmd, project);
@@ -8254,16 +8260,23 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     const meta = cmd.name === 'psql' ? sqlInputOf(cmd).texts.map(psqlMetaWrite).find(m => m !== null) : null;
     if (meta) writes.push(writeEffect({ pattern: meta.pattern, text: meta.statement }, dialect));
     const sentOut = new Set<string>();
-    // One statement read several ways is one write: keyed by its verb and the object it names.
-    const writeKey = (text: string) => {
+    // Within the first reading that finds writes, each statement is its own change, keyed by its normalised text (literals
+    // and comments blanked), so two statements on one object that change different things stay two. The other readings
+    // are the same input read another way, so they add only a write on an object the first didn't name.
+    const textKey = (text: string) => stripSqlLiteralsAndComments(text).replace(/\s+/g, ' ').trim().toUpperCase() || null;
+    const objectKey = (text: string) => {
         const target = writeTarget(text);
         const verb = /^\s*([A-Za-z]+)/.exec(text)?.[1]?.toUpperCase() ?? '';
         return target ? `${verb} ${target.kind} ${target.parts.join('.')}` : null;
     };
-    const writeKeys = new Set(statements.map(st => writeKey(st.text)).filter((k): k is string => k !== null));
+    const textKeys = new Set<string>();
+    // A statement already described as deleting or overwriting is not named again as a write, however it reads.
+    const described0 = new Set(statements.map(st => objectKey(st.text)).filter((k): k is string => k !== null));
+    const objectKeys = new Set(described0);
+    const primary = readings.findIndex(({ text }) => writeStatements(text).length > 0);
     // A file option's value can reach the readings as text when an expansion shifts the words; it names a file, not SQL.
     const fileArgs = new Set(cmd.args.filter((_, i) => /^(?:-f|--file|--filename)$/.test(cmd.args[i - 1] ?? '')));
-    for (const { text } of readings) {
+    readings.forEach(({ text }, reading) => {
         // Every statement that sends data out is named, not only the first.
         for (const seg of [{ text }, ...sqlStatements(text)]) {
             const hit = egressIn(seg.text);
@@ -8274,12 +8287,15 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
         for (const st of writeStatements(text)) {
             if (described.has(oneLine(st.text)) || egressIn(st.text) || fileArgs.has(st.text.trim())) continue;
             described.add(oneLine(st.text));
-            const key = writeKey(st.text);
-            if (key !== null && writeKeys.has(key)) continue;
-            if (key !== null) writeKeys.add(key);
+            const byText = textKey(st.text);
+            const byObject = objectKey(st.text);
+            if (byText !== null && textKeys.has(byText)) continue;
+            if (byObject !== null && (described0.has(byObject) || (reading !== primary && objectKeys.has(byObject)))) continue;
+            if (byText !== null) textKeys.add(byText);
+            if (byObject !== null) objectKeys.add(byObject);
             writes.push(writeEffect(st, dialect));
         }
-    }
+    });
     const effects = [...egress, ...statements.map(st => st.effect), ...writes];
     const lines = effects.slice(0, 3).map((effect, i) => `${i === 0 ? 'If you approve:' : 'And:'} ${effect.effect}`);
     // Past the first three, each further kind is still named, so no category of change goes unmentioned.
@@ -8467,7 +8483,7 @@ function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
     if (!cmd.args.some(a => a === '--full-refresh' || a === '-f')) {
         const sub = dbtSubcommand(cmd.args) ?? 'run';
         // A retry reruns the saved invocation, so its target and any full refresh are the saved ones when they can be read.
-        const saved = sub === 'retry' && dir ? dbtSavedRun(cmd, lastFlag(cmd.args, ['--project-dir']) ?? dbtProjectRoot(dir) ?? dir) : null;
+        const saved = sub === 'retry' && dir ? dbtSavedRun(cmd, dbtProjectDir(cmd, dir)) : null;
         const savedTarget = typeof saved?.target === 'string' ? saved.target : undefined;
         const target = sub === 'retry'
             ? savedTarget ?? (saved ? defaultDbtTarget(dir, cmd) ?? undefined : undefined)

@@ -846,3 +846,16 @@ describe('review 245d', () => {
         expect(describeGate('dbt retry', verdict.reason ?? '', at).label).toContain('--full-refresh');
     });
 });
+
+describe('review 245e', () => {
+    test('the retry card resolves --project-dir from the directory the step runs in, as the gate does', () => {
+        const command = 'cd project && dbt retry --project-dir ../retryprod';
+        const verdict = evaluateBashCommand(command, { cwd: dir });
+        expect(verdict.action).toBe('gate');
+        expect(describeGate(command, verdict.reason ?? '', dir).label).toBe('Run dbt retry on target prod');
+    });
+    test('two ALTER TABLEs on one table that add different columns are two changes', () => {
+        const command = 'snow sql -c acme_prod -q "alter table prod_db.core.t add column a int; alter table prod_db.core.t add column b int"';
+        expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toContain('(+1 more)');
+    });
+});
