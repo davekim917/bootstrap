@@ -44,8 +44,8 @@ describe('the capture reads built-in names from the prompt agy stored', () => {
     });
 });
 
-describe('the capture run keeps custom agents, which agy lists the same way, out of the built-ins', () => {
-    test('a name a workspace definition provides is dropped; a list quoted in conversation text is not read', () => {
+describe('the capture only proposes, and keeps custom agents, which agy lists the same way, out of the built-ins', () => {
+    test('a name a workspace definition provides is dropped, a list quoted in conversation text is not read, and the manifest is untouched', () => {
         const dir = mkdtempSync(join(tmpdir(), 'agy-capture-'));
         try {
             const state = join(dir, 'state');
@@ -61,6 +61,7 @@ describe('the capture run keeps custom agents, which agy lists the same way, out
             db.query('INSERT INTO gen_metadata (idx, data) VALUES (1, ?)').run(enc('Available subagents:\n- self: Inherits.\n- image-generator: Draws.\n- writer: Writes.\n'));
             db.query('INSERT INTO steps (idx, step_payload) VALUES (1, ?)').run(enc('Available subagents:\n- quoted: From a tool output.\n'));
             db.close();
+            const manifestBefore = readFileSync(MANIFEST_PATH, 'utf-8');
             const run = Bun.spawnSync(['bun', join(import.meta.dir, 'agy-builtins-capture.ts'), '--agy-version', '9.9.9', '--state', state, '--config', config, '--workspace', workspace]);
             expect(run.exitCode).toBe(0);
             const printed = JSON.parse(run.stdout.toString()) as Manifest;
@@ -69,6 +70,7 @@ describe('the capture run keeps custom agents, which agy lists the same way, out
             expect(printed.subagents.writer).toBeUndefined();
             expect(printed.subagents.quoted).toBeUndefined();
             expect(run.stderr.toString()).toContain('custom, dropped: writer');
+            expect(readFileSync(MANIFEST_PATH, 'utf-8')).toBe(manifestBefore);
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }

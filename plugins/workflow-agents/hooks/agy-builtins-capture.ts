@@ -1,20 +1,20 @@
 #!/usr/bin/env bun
 /**
- * Refreshes agy-builtins.json from what agy itself told its model. agy has no command that lists its built-in
+ * Proposes changes to agy-builtins.json, the guard's checked-in list, from what agy itself told its model. agy has no command that lists its built-in
  * subagents, and the set depends on server-side feature flags as well as the version, so the record of truth is the
  * system prompt agy stored for a real conversation: its "Available subagents:" list, in each conversation database's
  * generation records. That list also names the custom agents the session could load, in the same form, so every name
- * a markdown definition provides in the session's workspaces or global config is dropped. A name found is added with
- * this version as its evidence; a name already recorded is never dropped, since a capture sees only the subagents
- * its own environment offered.
+ * a markdown definition provides in the session's workspaces or global config is dropped. It prints the proposed
+ * manifest and the names it would add; it never writes the file, which changes only through a reviewed PR. A name
+ * already recorded is never dropped, since a capture sees only the subagents its own environment offered.
  *
- *   bun agy-builtins-capture.ts --agy-version <x.y.z> --state <dir> --config <dir> --workspace <dir>... [--write]
+ *   bun agy-builtins-capture.ts --agy-version <x.y.z> --state <dir> --config <dir> --workspace <dir>...
  *
  * `--state` is the session's `antigravity-cli` dir (under its `.gemini`), `--config` the dir agy read as
  * `~/.gemini/config`, and each `--workspace` one of the session's workspace roots.
  */
 import { Database } from 'bun:sqlite';
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { readdirSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { definedAgentNames } from './agy-guard';
 
@@ -84,9 +84,8 @@ function main(argv: string[]): number {
     const [state] = values('--state');
     const [config] = values('--config');
     const workspaces = values('--workspace');
-    const write = argv.includes('--write');
     if (!version || !/^\d+\.\d+\.\d+$/.test(version) || !state || !config || workspaces.length === 0) {
-        console.error('usage: bun agy-builtins-capture.ts --agy-version <x.y.z> --state <dir> --config <dir> --workspace <dir>... [--write]');
+        console.error('usage: bun agy-builtins-capture.ts --agy-version <x.y.z> --state <dir> --config <dir> --workspace <dir>...');
         return 2;
     }
     const dbs = conversationDbs(state);
@@ -99,10 +98,9 @@ function main(argv: string[]): number {
     const found = listed.filter((name) => !custom.has(name));
     const dropped = listed.filter((name) => custom.has(name));
     const current = JSON.parse(readFileSync(MANIFEST_PATH, 'utf-8')) as Manifest;
-    const text = JSON.stringify(merge(current, found, version), null, 4) + '\n';
-    if (write) writeFileSync(MANIFEST_PATH, text);
-    else process.stdout.write(text);
-    console.error(`built-in: ${found.join(', ') || '(none)'}; custom, dropped: ${dropped.join(', ') || '(none)'}; from ${dbs.length} conversation database(s)${write ? `; wrote ${MANIFEST_PATH}` : ''}`);
+    const added = found.filter((name) => !(name in current.subagents));
+    process.stdout.write(JSON.stringify(merge(current, found, version), null, 4) + '\n');
+    console.error(`built-in: ${found.join(', ') || '(none)'}; new: ${added.join(', ') || '(none)'}; custom, dropped: ${dropped.join(', ') || '(none)'}; from ${dbs.length} conversation database(s). Proposed manifest on stdout; review it in a PR.`);
     return 0;
 }
 

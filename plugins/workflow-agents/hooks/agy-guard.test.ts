@@ -36,17 +36,8 @@ describe('agy tool calls reach the shared policy under the names the cores read'
         ['a read-only tool', call('read_file', { Path: 'README.md' })],
         ['a question with no /team-auto run active', call('ask_question', { Question: 'Which branch?' }, tmpdir())],
         ['a subagent with no workspace of its own', call('invoke_subagent', { Prompt: 'p', Role: 'r', TypeName: 'self' })],
-        ['a step checklist', call('update_steps', { steps: [{ title: 'Build it', status: 'in_progress' }] })],
-        ['listing subagents', call('manage_subagents', { Action: 'list' })],
-        ['killing a subagent', call('manage_subagents', { Action: 'kill', ConversationIds: ['c-1'] })],
-        ['a timer, whose fire is a new turn', call('schedule', { DurationSeconds: 5, Prompt: 'check the build' })],
-        ['a post to the swarm board', call('post_message', { text: '@coordinator done' })],
-        ['waiting on the swarm board', call('swarm_wait', { mentions_only: true, since: 1 })],
-        ['reading the swarm board', call('read_board', {})],
-        ['swarm status', call('swarm', { action: 'status' })],
-        ['a swarm worker in this workspace', call('swarm', { action: 'add', name: 'probe', brief: 'b' })],
-        ['a swarm worker that names the inherited workspace', call('swarm_manage', { action: 'add', name: 'probe', brief: 'b', workspace: 'inherit' })],
         ['an image saved under a plain name', call('generate_image', { Prompt: 'a red circle', ImageName: 'red_circle', AspectRatio: '1:1' })],
+        ['an image edited from reference images', call('generate_image', { Prompt: 'make it blue', ImageName: 'blue_circle', ImagePaths: ['art/red_circle.png', '/workspace/agent/ref.jpg'] })],
     ])('%s is allowed', (_name, payload) => {
         expect(decideAgyCall(payload)).toEqual({ action: 'allow' });
     });
@@ -165,9 +156,10 @@ describe('calls agy could otherwise use to step around the guard are denied', ()
         ['a command with no command line', call('run_command', {}), /no command line/],
         ['an MCP call with no server', call('call_mcp_tool', { ToolName: 'search' }), /names no server or tool/],
         ['an image name that is a path', call('generate_image', { Prompt: 'p', ImageName: '../../config/hooks.json' }), /plain file name/],
-        ['a swarm worker in a branched checkout', call('swarm', { action: 'add', name: 'probe', brief: 'b', workspace: 'branch' }), /only work in this session's workspace/],
-        ['a swarm worker in a shared checkout', call('swarm', { action: 'add', name: 'probe', brief: 'b', workspace: 'share' }), /only work in this session's workspace/],
-        ['a swarm action the guard does not know', call('swarm', { action: 'adopt' }), /swarm action 'adopt'/],
+        ['reference images that are not a list of paths', call('generate_image', { Prompt: 'p', ImagePaths: 'ref.png' }), /not a list of file paths/],
+        ['a reference image path that is not a string', call('generate_image', { Prompt: 'p', ImagePaths: ['ref.png', 7] }), /not a list of file paths/],
+        ['a workflow script, whose Python effects reach no hook', call('run_workflow', { Description: 'd', Script: 'print(1)' }), /'run_workflow' is not on this guard's allowlist/],
+        ['killing a swarm worker, which deletes its checkout', call('swarm', { action: 'kill', name: 'probe' }), /'swarm' is not on this guard's allowlist/],
     ])('%s', (_name, payload, reason) => {
         expect(reasonOf(payload)).toMatch(reason);
     });
@@ -422,68 +414,6 @@ describe('a subagent that does not inherit customizations would run without thes
         const reply = JSON.parse(await new Response(proc.stdout).text());
         expect(reply.decision).toBe('deny');
         expect(reply.reason).toMatch(/agent 'writer' .* sets inheritCustomizations/);
-    });
-});
-
-describe('run_workflow is judged as the python3 command that runs it, while no agent it could start skips these hooks', () => {
-    function setup(): { home: string; root: string; workspaceAgents: string; globalAgents: string } {
-        const home = scratch();
-        const root = scratch();
-        return { home, root, workspaceAgents: join(root, '.agents', 'agents'), globalAgents: join(home, '.gemini', 'config', 'agents') };
-    }
-    function workflow(root: string, args: Record<string, unknown>): unknown {
-        return { ...(call('run_workflow', { Description: 'd', ...args }) as object), workspacePaths: [root] };
-    }
-    function agentDef(dir: string, file: string, text: string): void {
-        mkdirSync(join(dir, file, '..'), { recursive: true });
-        writeFileSync(join(dir, file), text);
-    }
-    function reason(payload: unknown, home: string): string {
-        const verdict = decideAgyCall(payload, { home });
-        return verdict.action === 'deny' ? verdict.reason : 'allowed';
-    }
-
-    test.each([
-        ['a script that only fans out agents', { Script: 'r = await agent("say hi", schema={"type": "string"})\nprint(r)' }],
-        ['a script on disk, with arguments', { ScriptPath: '/workspace/agent/flow.py', Args: { n: 2 } }],
-    ])('%s is allowed', (_name, args) => {
-        const { home, root } = setup();
-        expect(decideAgyCall(workflow(root, args), { home })).toEqual({ action: 'allow' });
-    });
-
-    test.each([
-        ['a script that writes a hook config', { Script: 'open("/home/node/.gemini/config/hooks.json", "w").write("{}")' }, /hook configs live/],
-        ['a script stored in a hook-config location', { ScriptPath: '/workspace/agent/.agents/flow.py' }, /hook configs live/],
-        ['arguments that name a hook-config location', { Script: 'print(args)', Args: { target: '~/.gemini/config/hooks.json' } }, /hook configs live/],
-        ['a run from a hook-config location', { Script: 'print(1)', Cwd: '/workspace/agent/.agents' }, /hook configs live/],
-        ['both a script and a script file', { Script: 'print(1)', ScriptPath: '/tmp/flow.py' }, /exactly one of Script and ScriptPath/],
-        ['no script', {}, /exactly one of Script and ScriptPath/],
-    ])('%s is denied', (_name, args, expected) => {
-        const { home, root } = setup();
-        expect(reason(workflow(root, args), home)).toMatch(expected);
-    });
-
-    test('a workspace or global agent that turns inheritance off denies every workflow, since the script picks the type', () => {
-        const { home, root, workspaceAgents } = setup();
-        agentDef(workspaceAgents, 'writer.md', '---\nname: writer\ninheritCustomizations: false\n---\nWrite.\n');
-        expect(reason(workflow(root, { Script: 'print(1)' }), home)).toMatch(/agent 'writer' .* sets inheritCustomizations: false.*run_workflow is refused/);
-        const other = setup();
-        agentDef(other.globalAgents, 'scout/agent.md', '---\nname: scout\ninheritScopes: none\n---\nLook.\n');
-        expect(reason(workflow(other.root, { Script: 'print(1)' }), other.home)).toMatch(/agent 'scout' .* sets inheritScopes/);
-    });
-
-    test('agents that keep inheritance, a README and a file with no name leave a workflow allowed', () => {
-        const { home, root, workspaceAgents } = setup();
-        agentDef(workspaceAgents, 'writer.md', '---\nname: writer\ninheritCustomizations: true\n---\nWrite.\n');
-        agentDef(workspaceAgents, 'README.md', 'Agents for this repository.\n');
-        agentDef(workspaceAgents, 'notes.md', '---\ndescription: [unclosed\n---\n');
-        expect(decideAgyCall(workflow(root, { Script: 'print(1)' }), { home })).toEqual({ action: 'allow' });
-    });
-
-    test('a named definition the guard cannot parse denies a workflow', () => {
-        const { home, root, workspaceAgents } = setup();
-        agentDef(workspaceAgents, 'writer.md', '---\nname: writer\ninheritCustomizations: [false\n---\n');
-        expect(reason(workflow(root, { Script: 'print(1)' }), home)).toMatch(/defines agent 'writer' but cannot be read/);
     });
 });
 
