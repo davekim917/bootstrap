@@ -772,6 +772,7 @@ export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^REVOKE\b[\s\S]*?\bON\s+(?:DATABASE|TABLESPACE|FOREIGN\s+(?:SERVER|DATA\s+WRAPPER)|PARAMETER)\b/i, label: 'GRANT ON SHARED OBJECT' },
     { rx: /^ALTER\s+(?:DATABASE|TABLESPACE)\b[\s\S]*\bOWNER\s+TO\b/i, label: 'ALTER DATABASE OWNER' },
     { rx: /^ALTER\s+POLICY\b/i, label: 'ALTER POLICY' },
+    { rx: /^CREATE\s+POLICY\b/i, label: 'CREATE POLICY' },
     { rx: /^ALTER\s+TABLE\b[\s\S]*\b(?:DISABLE|NO\s+FORCE)\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'DISABLE ROW LEVEL SECURITY' },
     // With no ON, GRANT and REVOKE add or remove a role's membership in another role.
     { rx: /^GRANT\s+(?![\s\S]*\bON\b)/i, label: 'GRANT ROLE' },
@@ -1349,7 +1350,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     const textOptions = SQL_TEXT_OPTIONS[client] ?? [];
     const texts: string[] = [...(cmd.stdinTexts ?? [])];
     // A file option's value names a file (read below), not SQL.
-    const fileValue = (i: number) => fileOptions.includes(cmd.args[i - 1] ?? '') || fileOptions.some(o => cmd.args[i].startsWith(o) && cmd.args[i] !== o);
+    const fileValue = (i: number, args: string[] = cmd.args) => fileOptions.includes(args[i - 1] ?? '') || fileOptions.some(o => args[i]?.startsWith(o) && args[i] !== o);
     let expanded: string[] | null = [];
     const argCounts = new Map<string, number>();
     const asArgument = (t: string) => argCounts.set(t, (argCounts.get(t) ?? 0) + 1);
@@ -1365,7 +1366,8 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         if (client === 'psql') for (const w of [...sqlWords, ...(view.stdinExpanded ?? [])]) if (/[$`]/.test(w.word)) sqlVariableWords = true;
         let viewUnresolved = false;
         const stdin = expandWords(view.stdinExpanded ?? [], view, () => { viewUnresolved = true; });
-        const words = expandWords(argWords.filter((_, i) => !fileValue(i)), view, w => { if (sqlWords.has(w)) viewUnresolved = true; });
+        // Each view's words line up with its own args: an expansion can split one word into several.
+        const words = expandWords(argWords.filter((_, i) => !fileValue(i, view.args)), view, w => { if (sqlWords.has(w)) viewUnresolved = true; });
         if (!viewUnresolved) sqlResolvedSomewhere = true;
         for (const w of argWords.filter((_, i) => client === 'psql' && psqlSqlArgument(view.args, i))) commandSql.add(w.plain);
         for (const v of (client === 'psql' ? expandWords([...sqlWords], view) : []) ?? []) commandSql.add(v);
@@ -2084,7 +2086,7 @@ export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: 
             const catWriter = fed.files.map(f => lineWriterOf(fed.from, f, true)).find(Boolean);
             if (catWriter) return result(`a file cat reads, which \`${catWriter}\` earlier on the line writes`);
             // The guard reads cat's files from psql's directory, so the two must be the same.
-            if (fed.files.length && fed.from.chdir !== cmd.chdir) return result('a file cat reads from another directory than psql runs in');
+            if (fed.files.some(f => !f.startsWith('/')) && fed.from.chdir !== cmd.chdir) return result('a file cat reads from another directory than psql runs in');
         }
     }
     if ((cmd.stdinExpanded ?? []).some(w => !resolved(w.word))) return result('an expansion in its SQL that the line does not resolve');
@@ -2130,7 +2132,8 @@ const FILE_WRITER_OUTPUTS: Record<string, (args: string[]) => string[]> = {
     ln: args => operands(args).slice(-1), rsync: args => operands(args).slice(-1), tee: args => operands(args),
     curl: args => optionValues(args, ['-o', '--output']), wget: args => optionValues(args, ['-O', '--output-document']),
     psql: args => optionValues(args, ['-o', '--output', '-L', '--log-file']),
-    pg_dump: args => optionValues(args, ['-f', '--file']), pg_dumpall: args => optionValues(args, ['-f', '--file']),
+    pg_dump: args => optionValues(args, ['-f', '--file']),
+    pg_restore: args => optionValues(args, ['-f', '--file']), pg_dumpall: args => optionValues(args, ['-f', '--file']),
     dd: args => args.filter(a => a.startsWith('of=')).map(a => a.slice(3)),
     sed: args => (args.some(a => /^(?:-[a-zA-Z]*i|--in-place)/.test(a)) ? operands(args).slice(args.some(a => /^(?:-e|--expression|-f|--file)/.test(a)) ? 0 : 1) : []),
     perl: args => (args.some(a => /^-[a-zA-Z]*i/.test(a)) ? operands(args) : []),
@@ -2140,28 +2143,33 @@ const optionValues = (args: string[], options: string[]) => args.flatMap((a, i) 
 
 /**
  * A command earlier on the line that writes `file`, by a `>` or `>>` redirect or as a known writer's output, so psql
- * would read what it wrote rather than what the guard read; null when none does. With tracedReadable, a writer whose
- * text the guard traces into the file it reads (writesTracedText) doesn't count.
+ * would read what it wrote rather than what the guard read; null when none does. Paths compare as the reader and each
+ * writer resolve them (variables, cds, env -C), and as written when either can't be resolved. With tracedReadable, a
+ * writer whose text the guard traces into the file it reads (writesTracedText) doesn't count.
  */
 function lineWriterOf(cmd: ResolvedCommand, file: string, tracedReadable = false): string | null {
     if (cmd.pos === undefined || !cmd.script) return null;
     const names = (a: string) => a === file || a.endsWith(`/${file}`) || file.endsWith(`/${a}`);
     const index = lineWriters.get(cmd.script) ?? indexLineWriters(cmd.script);
-    // A copy into a directory replaces the file of that name in it.
+    const reader = sqlPathCandidates(file, cmd);
+    // Every psql on a long line may ask about the same file: the writers of each resolved path are found once.
+    const cacheKey = `${tracedReadable ? 1 : 0}\0${file}\0${(reader ?? []).join('\0')}`;
+    const cache = writerLookups.get(cmd.script) ?? new Map<string, LineWriter[]>();
+    writerLookups.set(cmd.script, cache);
+    const cached = cache.get(cacheKey);
+    if (cached) return cached.find(w => w.pos < cmd.pos! && w.c !== cmd)?.c.name ?? null;
+    const keys = new Set([basename(file), ...(reader ?? []).map(p => basename(p))]);
     const dirOf = (p: string) => dirname(p).replace(/^\.\//, '');
-    const intoDir = (index.get(DIRECTORY_TARGET) ?? []).filter(w => (w.target.replace(/\/+$/, '').replace(/^\.\//, '') || '/') === dirOf(file));
-    const named = index.get(basename(file)) ?? [];
-    const all = intoDir.length ? [...named, ...intoDir].sort((a, b) => a.pos - b.pos) : named;
-    let writers = all;
-    if (tracedReadable) {
-        writers = (intoDir.length ? undefined : untracedNamed.get(named)) ?? all.filter(w => !tracedWriter(w.c));
-        if (!intoDir.length) untracedNamed.set(named, writers);
-    }
-    const into = new Set(intoDir);
-    return writers.find(w => w.pos < cmd.pos! && w.c !== cmd && (into.has(w) || names(w.target)))?.c.name ?? null;
+    // A copy into a directory replaces the file of that name in it.
+    const intoDir = (index.get(DIRECTORY_TARGET) ?? []).filter(w => (reader && w.resolved ? reader.some(p => w.resolved!.includes(dirname(p)))
+        : (w.target.replace(/\/+$/, '').replace(/^\.\//, '') || '/') === dirOf(file)));
+    const named = [...keys].flatMap(key => index.get(key) ?? []).filter(w => (reader && w.resolved ? reader.some(p => w.resolved!.includes(p)) : false) || names(w.target));
+    const all = [...new Set([...named, ...intoDir])].sort((a, b) => a.pos - b.pos);
+    const writers = tracedReadable ? all.filter(w => !tracedWriter(w.c)) : all;
+    cache.set(cacheKey, writers);
+    return writers.find(w => w.pos < cmd.pos! && w.c !== cmd)?.c.name ?? null;
 }
 
-const untracedNamed = new WeakMap<object, Array<{ pos: number; target: string; c: ResolvedCommand }>>();
 const tracedWriters = new WeakMap<ResolvedCommand, boolean>();
 const tracedWriter = (c: ResolvedCommand): boolean => {
     let traced = tracedWriters.get(c);
@@ -2205,21 +2213,33 @@ function copiesIntoDirectory(c: ResolvedCommand, target: string): boolean {
     const at = sqlPathCandidates(target, c);
     return !!at?.some(p => { try { return statSync(p).isDirectory(); } catch { return false; } });
 }
-const lineWriters = new WeakMap<ScriptContext, Map<string, Array<{ pos: number; target: string; c: ResolvedCommand }>>>();
-function indexLineWriters(script: ScriptContext): Map<string, Array<{ pos: number; target: string; c: ResolvedCommand }>> {
-    const index = new Map<string, Array<{ pos: number; target: string; c: ResolvedCommand }>>();
+const lineWriters = new WeakMap<ScriptContext, Map<string, LineWriter[]>>();
+function indexLineWriters(script: ScriptContext): Map<string, LineWriter[]> {
+    const index = new Map<string, LineWriter[]>();
+    const add = (key: string, w: LineWriter) => {
+        if (!index.has(key)) index.set(key, []);
+        if (!index.get(key)!.includes(w)) index.get(key)!.push(w);
+    };
     for (const c of script.commands ?? []) {
         if (c.pos === undefined) continue;
         for (const target of [...(c.stdoutFiles ?? []), ...(FILE_WRITER_OUTPUTS[c.name]?.(c.args) ?? [])]) {
-            const key = COPY_WRITERS.has(c.name) && copiesIntoDirectory(c, target) ? DIRECTORY_TARGET : basename(target);
-            if (!index.has(key)) index.set(key, []);
-            index.get(key)!.push({ pos: c.pos, target, c });
+            const resolved = sqlPathCandidates(target, c);
+            const w: LineWriter = { pos: c.pos, target, c, resolved: resolved?.length ? resolved : null };
+            if (COPY_WRITERS.has(c.name) && copiesIntoDirectory(c, target)) {
+                add(DIRECTORY_TARGET, w);
+                continue;
+            }
+            add(basename(target), w);
+            for (const p of w.resolved ?? []) add(basename(p), w);
         }
     }
     for (const list of index.values()) list.sort((a, b) => a.pos - b.pos);
     lineWriters.set(script, index);
     return index;
 }
+
+type LineWriter = { pos: number; target: string; c: ResolvedCommand; resolved: string[] | null };
+const writerLookups = new WeakMap<ScriptContext, Map<string, LineWriter[]>>();
 
 const SQL_PATH_UNPROVEN = "a path the command line doesn't prove";
 const SQL_PATH_MISSING = "a file that isn't there yet";
@@ -4465,30 +4485,9 @@ const LAB_DB_NAME_RE = /^lab[-_]/i;
 // so the reliable lab signals are the DATABASE and USER names, not the host.
 const CONNECTION_URI_RE =
     /\b(?:postgres(?:ql)?|mysql|mysqlx|mariadb):\/\/(?:([^:@/\s]*)(?::[^@/\s]*)?@)?([^/?#:\s]*)(?::\d+)?(?:\/([^?#\s]*))?/i;
-// libpq keyword/value form: `psql "host=... dbname=lab_app user=lab_app_admin"`.
-const CONNECTION_KV_RE = /\b(?:host|user|dbname|database)=([^\s'"]+)/gi;
 const SQL_HOST_FLAGS = new Set(['-h', '--host']);
 const SQL_USER_FLAGS = new Set(['-U', '--username']);
 const SQL_DB_FLAGS = new Set(['-d', '--dbname']);
-
-function labSqlSignal(value: string): string | null {
-    if (!value) return null;
-
-    const uri = CONNECTION_URI_RE.exec(value);
-    if (uri) {
-        for (const part of [uri[1], uri[2], uri[3]]) {
-            if (part && LAB_DB_NAME_RE.test(part)) return part;
-        }
-    }
-
-    CONNECTION_KV_RE.lastIndex = 0;
-    let kv: RegExpExecArray | null;
-    while ((kv = CONNECTION_KV_RE.exec(value)) !== null) {
-        if (LAB_DB_NAME_RE.test(kv[1])) return kv[1];
-    }
-
-    return null;
-}
 
 /**
  * Whether a step may change something outside the one database it names, which no database-scoped waiver covers: a
@@ -4504,30 +4503,93 @@ function changesClusterRoles(cmd: ResolvedCommand): boolean {
         || psqlStatementTexts(t).some(s => destructiveStatements(s, 0, true, false, true).some(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern) || PG_UNREADABLE_LABELS.has(st.pattern))));
 }
 
+// pg_restore's short options that take a value, as its getopt string declares them.
+const PG_RESTORE_SHORT_VALUES = 'dfFhIjLnNpPStTU';
+
+/**
+ * The server pg_restore -d restores into, as getopt reads its options (the last -h or -p wins); null for a restore
+ * with no -d, which only writes a script, or an option the guard doesn't know. pg_restore reads no psqlrc.
+ */
+function pgRestoreTarget(args: string[]): { host?: string; port?: string; noPsqlrc: boolean } | null {
+    if (!pgRestoreDatabase(args)) return null;
+    let host: string | undefined;
+    let port: string | undefined;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') break;
+        const long = /^--(host|port)(?:=(.*))?$/.exec(a);
+        if (long) {
+            const value = long[2] ?? args[++i];
+            if (long[1] === 'host') host = value;
+            else port = value;
+            continue;
+        }
+        if (!/^-[^-]/.test(a)) continue;
+        for (let j = 1; j < a.length; j++) {
+            if (!PG_RESTORE_SHORT_VALUES.includes(a[j])) continue;
+            const value = j + 1 < a.length ? a.slice(j + 1) : args[++i];
+            if (a[j] === 'h') host = value;
+            if (a[j] === 'p') port = value;
+            break;
+        }
+    }
+    return { host, port, noPsqlrc: true };
+}
+
+/** The database pg_restore -d restores into, read the way getopt reads short-option clusters; null when there is none. */
+function pgRestoreDatabase(args: string[]): string | null {
+    let db: string | null = null;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') break;
+        const long = /^--dbname(?:=(.*))?$/.exec(a);
+        if (long) {
+            db = long[1] ?? args[++i] ?? '';
+            continue;
+        }
+        if (!/^-[^-]/.test(a)) continue;
+        for (let j = 1; j < a.length; j++) {
+            if (!PG_RESTORE_SHORT_VALUES.includes(a[j])) continue;
+            const value = j + 1 < a.length ? a.slice(j + 1) : args[++i] ?? '';
+            if (a[j] === 'd') db = value;
+            break;
+        }
+    }
+    return db;
+}
+
 // psql's \c or \connect, which moves the rest of the script to another database.
 const PSQL_CONNECT = /(?:^|\n)[ \t]*\\c(?:onnect)?\b/;
 
 function labSqlTarget(cmd: ResolvedCommand): string | null {
     const { args } = cmd;
+    // The database the step selects decides. A Lab-named user or host can reach any database, so neither proves one.
+    let db: string | undefined;
+    const fromConnection = (value: string): string | undefined => {
+        const uri = CONNECTION_URI_RE.exec(value);
+        if (uri) return uri[3] || undefined;
+        return /\b(?:dbname|database)=([^\s'"]+)/i.exec(value)?.[1];
+    };
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-
-        // --host=lab-x / --username=lab_x / --dbname=lab_app
-        const eq = a.match(/^(?:--host|--username|--dbname)=(.+)$/);
-        if (eq && LAB_DB_NAME_RE.test(eq[1])) return eq[1];
-
-        // -h lab-x / -U lab_app_admin / -d lab_app
-        if (SQL_HOST_FLAGS.has(a) || SQL_USER_FLAGS.has(a) || SQL_DB_FLAGS.has(a)) {
-            const v = args[i + 1];
-            if (v && !v.startsWith('-') && LAB_DB_NAME_RE.test(v)) return v;
+        const eq = a.match(/^(?:--dbname|--database)=(.+)$/);
+        if (eq) {
+            db = fromConnection(eq[1]) ?? eq[1];
             continue;
         }
-
-        // A connection string, given bare or as some other flag's value.
-        const signal = labSqlSignal(a);
-        if (signal) return signal;
+        if (SQL_DB_FLAGS.has(a) || a === '-D' || a === '--database') {
+            const v = args[i + 1];
+            if (v !== undefined && !v.startsWith('-')) db = fromConnection(v) ?? v;
+            i++;
+            continue;
+        }
+        if (SQL_HOST_FLAGS.has(a) || SQL_USER_FLAGS.has(a)) {
+            i++;
+            continue;
+        }
+        db = fromConnection(a) ?? db;
     }
-    return null;
+    return db !== undefined && LAB_DB_NAME_RE.test(db) ? db : null;
 }
 
 // ── Platform / service target resolution ─────────────────────────────────────
@@ -5315,7 +5377,7 @@ const LIVE_LOCAL_PG_HOST: LocalPgHost = {
 };
 
 const PG_CLIENT_UNDER_SAFE_WRAPPERS_RE: Record<string, RegExp> = Object.fromEntries(
-    ['psql', 'dropdb'].map(name => [name, new RegExp(`${SAFE_WRAPPERS_PREFIX}(?:/[^\\s'"$\`\\\\]*/)?${name}\\s`)]),
+    ['psql', 'dropdb', 'pg_restore'].map(name => [name, new RegExp(`${SAFE_WRAPPERS_PREFIX}(?:/[^\\s'"$\`\\\\]*/)?${name}\\s`)]),
 );
 // What else the line may run. Not printf (`-v` assigns), sort (`-o`) or tee, which write; and not a second psql, whose
 // `\!` could stop the checked postgres and start a forwarder before this one connects.
@@ -5678,7 +5740,7 @@ export function localPgTargetOf(
     if (!written || !written.every(isLiteralShellWord) || cmd.args.some(a => a.includes('\\'))) return null;
 
     const psql = cmd.name === 'psql' ? psqlTarget(cmd.args, true) : null;
-    const target = psql ?? (cmd.name === 'psql' ? null : dropdbTarget(cmd.args));
+    const target = psql ?? (cmd.name === 'psql' ? null : cmd.name === 'pg_restore' ? pgRestoreTarget(cmd.args) : dropdbTarget(cmd.args));
     if (!target || (!target.noPsqlrc && !assumeNoPsqlrc)) return null;
     if (psql && !psqlScratchInputRead(cmd, psql)) return null;
     if (!target.host || !target.port || !/^\d{1,5}$/.test(target.port)) return null;
@@ -6739,7 +6801,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if ((name === 'createuser' || name === 'dropuser') && !['--help', '-?', '--version', '-V'].includes(args[0])) {
         return `${name} ${name === 'createuser' ? 'creates' : 'drops'} a PostgreSQL role, which the whole cluster holds`;
     }
-    if (name === 'pg_restore' && args.some(a => a === '-d' || /^-d./.test(a) || /^--dbname(?:=|$)/.test(a))) {
+    if (name === 'pg_restore' && pgRestoreDatabase(args) !== null) {
         return 'pg_restore -d applies an archive to a database: its tables and data, and the grants and ownership it holds, which the guard can\'t read';
     }
     // dropdb reads help and version only as its first argument; anywhere else they are options or the database.
@@ -8046,7 +8108,7 @@ function* gatedSteps(
                 };
                 continue;
             }
-            const psqlFix = cmd === outer ? renderDevPsqlFix(cmd) : null;
+            const psqlFix = cmd === outer && !reason.includes(SQL_PATH_MISSING) ? renderDevPsqlFix(cmd) : null;
             if (psqlFix !== null) {
                 yield { cmd, reason, outer, moves, fix: psqlFix };
                 continue;

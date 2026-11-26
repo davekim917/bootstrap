@@ -97,6 +97,19 @@ const refusedToScratchPg = (command: string, f: Fixture = scratch) => {
 const TCP = "psql -X -h 127.0.0.1 -p 55432 -d foo_test -c 'DROP DATABASE scratch_db'";
 const SOCKET = "psql -X -h /tmp/embedded-pg -p 55432 -d foo_test -c 'DROP TABLE orders'";
 
+describe('a custom-format restore into the scratch postgres skips approval', () => {
+    test.each([
+        ['-d with host and port', 'pg_restore -h 127.0.0.1 -p 55432 -d foo_test /tmp/embedded-pg/dump.custom'],
+        ['a clustered -d', 'pg_restore -c -h 127.0.0.1 -p 55432 -Od foo_test /tmp/embedded-pg/dump.custom'],
+    ])('%s', (_name, command) => {
+        expect(evaluateBashCommand(command, { cwd: '/tmp', localPg: fixtureHost(scratch) }).action).toBe('allow');
+    });
+
+    test('a restore to another server keeps its card', () => {
+        expect(evaluateBashCommand('pg_restore -h db.example.com -d app /tmp/embedded-pg/dump.custom', { cwd: '/tmp', localPg: fixtureHost(scratch) }).action).toBe('gate');
+    });
+});
+
 describe('destructive psql against a scratch postgres in this container skips approval', () => {
     test.each([
         ['TCP on 127.0.0.1', TCP],

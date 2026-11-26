@@ -373,10 +373,11 @@ describe('a SQL file path held in a variable set on the line gets the verdict of
         expect(verdict.reason).toContain("a file that isn't there yet");
     });
 
-    test('a psql file a cp makes on the line is refused with the next-call fix', () => {
-        const refused = run(`cd Q; cp cleanup.sql fresh.sql; F=fresh.sql; psql -h db.example -f "$F"`);
-        expect(refused.action).toBe('block');
-        expect(refused.reason).toContain('run it in the next');
+    // The file is there when psql opens it, only unread: cp writes text the guard doesn't trace.
+    test('a psql file a cp makes on the line, named through a variable, takes a card', () => {
+        const unread = run(`cd Q; cp cleanup.sql fresh.sql; F=fresh.sql; psql -h db.example -f "$F"`);
+        expect(unread.action).toBe('gate');
+        expect(unread.reason).toContain('which `cp` earlier on the line writes');
     });
 
     test('an include naming a shell variable is held when the variable names nothing there', () => {

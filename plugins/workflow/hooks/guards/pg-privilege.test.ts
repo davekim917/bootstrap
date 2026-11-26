@@ -364,6 +364,11 @@ describe('psql input, writers and coverage after review', () => {
         ['ALTER POLICY', () => `${H} -c "ALTER POLICY p ON t USING (true)"`],
         ['DISABLE ROW LEVEL SECURITY', () => `${H} -c "ALTER TABLE t DISABLE ROW LEVEL SECURITY"`],
         ['NO FORCE ROW LEVEL SECURITY', () => `${H} -c "ALTER TABLE t NO FORCE ROW LEVEL SECURITY"`],
+        ['a copy to a variable path the file is read under', () => `F=${f('migration.sql')}; cp ${f('staging/migration.sql')} "$F" && ${H} -f ${f('migration.sql')}`],
+        ['a copy made after a cd into the file\'s directory', () => `cd ${f('staging')} && cp ${f('grant.sql')} migration.sql && cd ${fx} && ${H} -f staging/migration.sql`],
+        ['a script pg_restore -f writes', () => `pg_restore -f ${f('migration.sql')} dump.custom; ${H} -f ${f('migration.sql')}`],
+        ['pg_restore with -d clustered after another flag', () => 'pg_restore -cd app -h db.example.com dump.custom'],
+        ['CREATE POLICY', () => `${H} -c "CREATE POLICY p ON t USING (true)"`],
         ['a :name the line sets from a variable', () => `${H} -v t="$X" <<'SQL'\nselect * from :t;\nSQL`],
         ["a :'name' the line sets from a variable", () => `${H} -v t="$X" <<'SQL'\nselect :'t';\nSQL`],
         ['a :name the line never sets', () => `${H} <<'SQL'\nselect * from :t;\nSQL`],
@@ -382,6 +387,8 @@ describe('psql input, writers and coverage after review', () => {
         ['a :name set to a plain word', () => `${H} -v t=orders <<'SQL'\nselect * from :t;\nSQL`],
         ["a :'name' set to a literal", () => `${H} -v n='bob' <<'SQL'\nselect :'n';\nSQL`],
         ['a time literal and a cast, which interpolate nothing', () => `${H} <<'SQL'\nselect '12:30', x::int from t;\nSQL`],
+        ['a cat of an absolute path, which env -C does not move', () => `cat ${f('other/ok.sql')} | env -C ${f('staging')} ${H}`],
+        ['pg_restore -Fcd, whose -F takes "cd" as its format, so nothing restores to a database', () => 'pg_restore -Fcd dump.custom'],
         ['a -c value, which psql sends to the server with no interpolation', () => `${H} -v t="$X" -c 'select * from :t'`],
     ])('%s runs', (_name, command) => {
         expect(evaluateBashCommand(command(), { cwd: fx }).action).toBe('allow');
@@ -396,6 +403,13 @@ describe('psql input, writers and coverage after review', () => {
         expect(v.action).toBe('block');
         expect(v.reason).toContain("-c '<your SQL>'");
         expect(v.reason).not.toContain('zz9-example');
+    });
+
+    test('a missing file on a listed dev host is refused with its own hint before the -X advice', () => {
+        const v = run(`psql -h ${host(DEV_DB)} -U app -d app -f ${f('missing.sql')}`);
+        expect(v.action).toBe('block');
+        expect(v.reason).toContain("isn't there yet");
+        expect(v.reason).not.toContain('with -X added');
     });
 
     test('a \\connect on a listed dev database keeps its card', () => {
@@ -439,12 +453,14 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['a \\connect to another database', () => `${LAB} -f ${join(fx, 'connect.sql')}`],
         ['a grant on a tablespace', `${LAB} -c "GRANT CREATE ON TABLESPACE ts TO r"`],
         ['ownership of another database', `${LAB} -c "ALTER DATABASE other_db OWNER TO r"`],
+        ['a Lab-named user selecting another database', `psql -h db.example.com -U lab_app_admin -d prod_app -c "GRANT SELECT ON t TO r"`],
     ])('%s on a lab database gates', (_name, command) => {
         expect(run(typeof command === 'function' ? command() : command).action).toBe('gate');
     });
     test.each([
         ['a grant on an object', `${LAB} -c "GRANT SELECT ON t TO app_reader"`],
         ['CREATE USER MAPPING', `${LAB} -c "CREATE USER MAPPING FOR app SERVER s"`],
+        ['a grant on an object, chosen by the database and not the user', `psql -h db.example.com -U app -d lab_app -c "GRANT SELECT ON t TO r"`],
     ])('%s on a lab database runs', (_name, command) => {
         expect(run(command).action).toBe('allow');
     });
