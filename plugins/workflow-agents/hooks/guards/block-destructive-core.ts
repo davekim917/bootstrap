@@ -6781,8 +6781,9 @@ const INTERPRETERS = /^(?:python(?:\d+(?:\.\d+)?)?|pypy3?|node(?:js)?|bun|deno|t
 const INTERPRETER_RUNNERS = new Set(['uv', 'poetry', 'pipenv', 'pdm', 'rye', 'hatch']);
 const PY_DRIVER = /^[ \t]*(?:import|from)[ \t]+(?:snowflake(?:\.connector|\.snowpark)?|psycopg2?|asyncpg|pg8000|sqlalchemy|databricks\.sql)\b/m;
 const JS_DRIVERS = /^(?:pg|postgres|snowflake-sdk|knex|kysely|@neondatabase\/serverless|@vercel\/postgres|slonik|pg-promise|duckdb)$/;
-// Launching a client whose first word is written in the call, or a command list that starts with one.
-const DB_CLIENT_LAUNCH = /\b(?:subprocess\.\w+|os\.(?:system|popen)|check_output|check_call|Popen|exec(?:Sync|File(?:Sync)?)?|spawn(?:Sync)?|Bun\.spawn|Deno\.Command|system)\s*\(\s*(?:\[\s*)?[fr]?['"`](?:psql|snow|pg_restore|dropdb)\b|Bun\.\$`\s*(?:psql|snow)\b|\[\s*['"](?:psql|snow|pg_restore|dropdb)['"]\s*,/;
+// Launching a client whose first word is written in the call, or a command list that starts with one and passes it
+// flags: a list of program names is not a command.
+const DB_CLIENT_LAUNCH = /\b(?:subprocess\.\w+|os\.(?:system|popen)|check_output|check_call|Popen|exec(?:Sync|File(?:Sync)?)?|spawn(?:Sync)?|Bun\.spawn|Deno\.Command|system)\s*\(\s*(?:\[\s*)?[fr]?['"`](?:psql|snow|pg_restore|dropdb)\b|Bun\.\$`\s*(?:psql|snow)\b|\[\s*['"](?:psql|snow|pg_restore|dropdb)['"]\s*,[^\]]*['"]-/;
 const SQL_CALL = /\.(?:execute|executemany|executescript|exec_driver_sql|query|sql|run_query|copy_expert|unsafe|raw)\s*\(/;
 const CODE_LITERAL = /[rRbBfFuU]{0,2}(?:"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\[\s\S])*`)/g;
 // A literal that reads as a SQL statement, not prose: its verb is followed by what the statement needs.

@@ -178,6 +178,7 @@ describe('database code run by an interpreter goes through the same readers', ()
         ['a read through psycopg2', 'python3 -c "import psycopg2; psycopg2.connect(\'host=db.example\').cursor().execute(\'select 1\')"'],
         ['code that names a driver only in a string', 'python3 -c "print(\'import psycopg2\')"'],
         ['code with no database', 'python3 -c "print(\'Update complete\')"'],
+        ['a list of program names that starts with snow', 'python3 -c "tools = [\'snow\', \'dbt\', \'render\']; print(len(tools))"'],
     ])('%s stays card-free', (_name, command) => {
         expect(evaluate(command).action).toBe('allow');
     });
