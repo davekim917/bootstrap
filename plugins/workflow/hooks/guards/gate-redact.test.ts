@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { gateRequestContent } from './block-destructive-core';
+import { evaluateBashCommand, gateRequestContent, nanoclawGateParts } from './block-destructive-core';
 
 /**
  * The staged approval request is persisted by the host and rendered on the card, so a credential the gated command
@@ -16,6 +16,10 @@ describe('a credential in a gated command never reaches the staged request', () 
         ['curl -u', 'curl -u admin:s3cretvalue -X DELETE https://api.example.com/v1/x', 's3cretvalue', 'admin:[redacted]'],
         ['a password in a connection URL', 'psql "postgresql://app:s3cretvalue@127.0.0.1:5432/app" -c "drop table t"', 's3cretvalue', 'app:[redacted]@'],
         ['a PGPASSWORD assignment', 'PGPASSWORD=s3cretvalue psql -h db.example.com -c "drop table t"', 's3cretvalue', 'PGPASSWORD=[redacted]'],
+        ['curl -u glued to its value', 'curl -uadmin:s3cretvalue -X DELETE https://api.example.com/v1/x', 's3cretvalue', 'admin:[redacted]'],
+        ['curl -u ending a cluster of flags', 'curl -sSu admin:s3cretvalue -X DELETE https://api.example.com/v1/x', 's3cretvalue', 'admin:[redacted]'],
+        ['a bearer header written with escaped spaces', 'curl -H Authorization:\\ Bearer\\ s3cretvalue -X DELETE https://api.example.com/v1/x', 's3cretvalue', 'Bearer\\ [redacted]'],
+        ['a libpq password in a connection string', 'psql "host=db.example.com password=s3cretvalue dbname=app" -c "drop table t"', 's3cretvalue', 'password=[redacted]'],
         ['a bare TOKEN assignment', 'TOKEN=s3cretvalue ./deploy.sh --force', 's3cretvalue', 'TOKEN=[redacted]'],
         ['a Postgres role password', `psql -h db.example.com -c "CREATE ROLE app LOGIN PASSWORD 's3cretvalue'"`, 's3cretvalue', "PASSWORD '[redacted]'"],
         ['an encrypted password holding a quote', `psql -h db.example.com -c "ALTER USER app WITH ENCRYPTED PASSWORD 's3cret''value'"`, 'value', "PASSWORD '[redacted]'"],
@@ -38,5 +42,25 @@ describe('a credential in a gated command never reaches the staged request', () 
         for (const command of ['rm -rf /tmp/build', 'git push --force origin main', `psql -h db.example.com -c "select password_changed_at from users"`]) {
             expect(staged(command).command).toBe(command);
         }
+    });
+});
+
+describe('the full staged request, built as the gate builds it, holds no credential', () => {
+    const PROD_URL = 'https://api.render.com/v1/services/srv-prodservice000000001/env-vars/FOO';
+    test.each([
+        ['a quoted bearer header', `curl -H 'Authorization: Bearer rnd_s3cretvalue' -X DELETE ${PROD_URL}`],
+        ['a bearer header written with escaped spaces', `curl -H Authorization:\\ Bearer\\ rnd_s3cretvalue -X DELETE ${PROD_URL}`],
+        ['curl -u glued to its value', `curl -uadmin:rnd_s3cretvalue -X DELETE ${PROD_URL}`],
+        ['curl -u ending a cluster of flags', `curl -sSu admin:rnd_s3cretvalue -X DELETE ${PROD_URL}`],
+        ['a libpq password', 'psql "host=db.example.com password=rnd_s3cretvalue dbname=app" -c "drop table orders"'],
+        ['a URL password', 'psql "postgresql://app:rnd_s3cretvalue@127.0.0.1:5432/app" -c "drop table orders"'],
+        ['a role password', `psql -h db.example.com -c "CREATE ROLE app LOGIN PASSWORD 'rnd_s3cretvalue'; DROP TABLE orders"`],
+    ])('%s', (_name, command) => {
+        const verdict = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(verdict.action).not.toBe('allow');
+        const parts = nanoclawGateParts(command, verdict.reason ?? '', '/tmp');
+        const staged = gateRequestContent('gate-3', parts.label, parts.summary, command, parts.action);
+        expect(staged).not.toContain('rnd_s3cretvalue');
+        expect(staged).toContain('[redacted]');
     });
 });

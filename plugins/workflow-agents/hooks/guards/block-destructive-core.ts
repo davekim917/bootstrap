@@ -2370,6 +2370,8 @@ function renderApiDevTarget(cmd: ResolvedCommand, commands: ResolvedCommand[], c
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = renderApiDeleteUrls(cmd).map(url => RENDER_API_RESOURCE.exec(url)?.[1]);
     if (!ids.length || !renderResourceIds(cmd.args).every(id => listed.has(id))) return null;
+    // curl sends a scheme-less URL over plain HTTP, bearer header included, before any redirect to HTTPS.
+    if (!renderApiDeleteUrls(cmd).every(url => /^https:\/\//i.test(url))) return null;
     return `render resource ${[...new Set(ids)].join(', ')}`;
 }
 
@@ -4330,13 +4332,16 @@ function renderDevRead(args: string[], listed: Set<string>): string | null {
     if (command !== 'psql' || !listed.has(second)) return null;
     const flags = args.slice(2);
     let sql = 0;
+    let plain = false;
     for (let i = 0; i < flags.length; i += 2) {
         const value = flags[i + 1];
         // psql runs a backslash command as its own program, so only plain SQL counts.
         if (/^(?:-c|--command)$/.test(flags[i]) && value !== undefined && !value.includes('\\')) sql++;
-        else if (!output(flags[i], value)) return null;
+        else if (output(flags[i], value)) plain = true;
+        else return null;
     }
-    return sql === 1 ? second : null;
+    // Without plain output, render opens psql interactively on a terminal and drops the -c it was given.
+    return sql === 1 && plain ? second : null;
 }
 
 /** Whether this is the line's only command: anything else there can change what it reads, or take what it prints and act on it. */
@@ -4784,7 +4789,17 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
         }
         // `-v` reads a subscript as arithmetic, which can assign; the other tests only compare.
         if (name === '[' || name === 'test') {
-            return !(n.prefix ?? []).length && quiet(n) && args.every(a => literal(a) && shellUnquote(a) !== '-v');
+            if ((n.prefix ?? []).length || !quiet(n)) return false;
+            if (args.every(a => literal(a) && shellUnquote(a) !== '-v')) return true;
+            // A value in double quotes stays one operand. With a literal unary operator first, or a literal binary one
+            // between two operands (bash then compares, whatever the first holds; `[` reads -eq operands as plain integers),
+            // it can't become -v.
+            const words = name === '[' ? (shellUnquote(args.at(-1) ?? '') === ']' ? args.slice(0, -1) : null) : args;
+            const quoted = (a: string) => /^"[^"]*"$/.test(a) && runsNothing(a);
+            const operand = (a: string) => quoted(a) || (literal(a) && shellUnquote(a) !== '-v');
+            if (!words) return false;
+            if (words.length === 2) return literal(words[0]) && /^-[bcdefghknprstuwxzGLNOS]$/.test(shellUnquote(words[0])) && operand(words[1]);
+            return words.length === 3 && literal(words[1]) && /^(?:=|==|!=|<|>|-(?:eq|ne|lt|le|gt|ge|nt|ot|ef))$/.test(shellUnquote(words[1])) && operand(words[0]) && operand(words[2]);
         }
         if (name === 'set') {
             return !(n.prefix ?? []).length && !((n as { redirects?: unknown[] }).redirects ?? []).length
@@ -8284,13 +8299,19 @@ export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'req
  */
 export function redactCredentials(text: string): string {
     const R = '[redacted]';
+    // A shell-escaped space (`Authorization:\ Bearer\ tok`) separates words in the header as a plain one does.
+    const gap = String.raw`(?:\\?[ \t])*`;
+    const value = String.raw`("[^"]*"|'[^']*'|[^\s'"\\]+)`;
     return text
-        .replace(/\b((?:Proxy-)?Authorization\s*:\s*(?:(?:Bearer|Basic|Token|Bot|Digest)\s+)?)("[^"]*"|'[^']*'|[^\s'"\\]+)/gi, (_, head) => head + R)
-        .replace(/\b((?:X-)?(?:Api|Auth)[-_]?(?:Key|Token)\s*:\s*)("[^"]*"|'[^']*'|[^\s'"\\]+)/gi, (_, head) => head + R)
-        .replace(/((?:^|\s)(?:-u|--user|--proxy-user)(?:\s+|=)['"]?[^\s:'"]*:)[^\s'"]+/g, (_, head) => head + R)
+        .replace(new RegExp(String.raw`\b((?:Proxy-)?Authorization${gap}:${gap}(?:(?:Bearer|Basic|Token|Bot|Digest)\\?[ \t]${gap})?)${value}`, 'gi'), (_, head) => head + R)
+        .replace(new RegExp(String.raw`\b((?:X-)?(?:Api|Auth)[-_]?(?:Key|Token)${gap}:${gap})${value}`, 'gi'), (_, head) => head + R)
+        // curl's -u, alone, glued to its value or ending a cluster of flags (`-u a:b`, `-ua:b`, `-sSu a:b`).
+        .replace(/((?:^|\s)(?:-[A-Za-z]*u|--user|--proxy-user)(?:\s+|=)?['"]?[^\s:'"]*:)[^\s'"]+/g, (_, head) => head + R)
         .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"]*:)[^\s@/'"]+@/gi, (_, head) => head + R + '@')
         .replace(/(\b[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY)=)("[^"]*"|'[^']*'|\S+)/g, (_, head) => head + R)
-        .replace(/(\b(?:PASSWORD|IDENTIFIED\s+BY)\s*(?:=\s*)?)('(?:[^']|'')*'|"(?:[^"\\]|\\.)*")/gi, (_, head) => head + "'" + R + "'");
+        .replace(/(\b(?:PASSWORD|IDENTIFIED\s+BY)\s*(?:=\s*)?)('(?:[^']|'')*'|"(?:[^"\\]|\\.)*")/gi, (_, head) => head + "'" + R + "'")
+        // libpq's `password=value` in a connection string, unquoted.
+        .replace(/(\bpassword\s*=\s*)(?!['"]|\[redacted\])[^\s'"]+/gi, (_, head) => head + R);
 }
 
 export function gateRequestContent(
@@ -8496,8 +8517,16 @@ export function runNanoclawGate(
     toolUseId?: string,
     cwd?: string,
 ): GateDecision {
+    return runGateRequest(command, reason, { onStageError, toolUseId, ...nanoclawGateParts(command, reason, cwd) });
+}
+
+/**
+ * The gate action and card for a command, as runNanoclawGate stages them. The card is built from the command with its
+ * credentials already redacted, so no cut or reformatting of the card can leave part of one behind.
+ */
+export function nanoclawGateParts(command: string, reason: string, cwd?: string): { action: GateAction; label: string; summary: string } {
     const action = changesProduction(command, cwd) ? 'request_prod_gate' : 'request_destructive_gate';
-    return runGateRequest(command, reason, { action, onStageError, toolUseId, ...describeGate(command, reason, cwd) });
+    return { action, ...describeGate(redactCredentials(command), redactCredentials(reason), cwd) };
 }
 
 const heldOnDev = (step: GatedStep): boolean => step.cmd === step.outer && renderDevHeld(step.cmd) !== null;

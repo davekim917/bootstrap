@@ -202,9 +202,9 @@ describe('a listed dev resource', () => {
         `render deploys list ${DEV} --limit 1`,
         `render deploys list ${DEV} --limit 1 -o json`,
         `render jobs list ${DEV} -o text`,
-        `render psql ${DEV_DB} -c 'select 1'`,
+        `render psql ${DEV_DB} -c 'select 1' -o text`,
         `render psql ${DEV_DB} --command 'select 1' -o text`,
-        `render psql ${DEV_DB} -c 'delete from scratch where id = 1'`,
+        `render psql ${DEV_DB} -c 'delete from scratch where id = 1' -o text`,
         `render ssh ${DEV} --help`,
         `render pgcli ${DEV_DB} -h`,
         `render jobs create ${DEV} --start-command "echo \\$VAR"`,
@@ -773,7 +773,7 @@ describe('a raw DELETE to the Render API', () => {
         `curl --silent --show-error --fail --max-time 30 -X DELETE ${DEV_VAR}`,
         `curl -X DELETE https://api.render.com/v1/services/${DEV}`,
         `curl -X DELETE https://api.render.com/v1/services/${DEV_CRON}`,
-        `curl -X DELETE api.render.com/v1/services/${DEV}/custom-domains/www.example.net`,
+        `curl -X DELETE https://api.render.com/v1/services/${DEV}/custom-domains/www.example.net`,
     ])('%s is on a listed dev resource, so it runs', command => {
         expect(verdict(command)).toBe('allow');
     });
@@ -1056,5 +1056,29 @@ describe('a listed dev resource keeps its card when the line can change which re
     ])('%s takes the production gate', (_name, command) => {
         expect(verdict(command)).toBe('gate');
         expect(changesProduction(command, '/tmp')).toBe(true);
+    });
+});
+
+describe('a listed dev step needs the forms that run only what the guard read', () => {
+    test.each([
+        ['a quoted file test before a restart', `if [ -f "$manifest" ]; then render restart ${DEV}; fi`],
+        ['a quoted string test before a restart', `[ -n "$X" ] && render restart ${DEV}`],
+        ['a quoted comparison before a restart', `if [ "$a" = "b" ]; then render restart ${DEV}; fi`],
+        ['an integer comparison before a restart', `if test "$a" -eq "$b"; then render restart ${DEV}; fi`],
+        ['an API delete over HTTPS', `curl -X DELETE https://api.render.com/v1/services/${DEV}/env-vars/FOO`],
+        ['one line of SQL with plain output', `render psql ${DEV_DB} -c 'select 1' -o text`],
+    ])('%s runs without a card', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+    test.each([
+        ['a value that becomes -v before a subscript that assigns', `X=-v; if [ "$X" 'a[HOME=1]' ]; then render restart ${DEV}; fi`],
+        ['-v on a subscript that assigns', `if [ -v "a[HOME=1]" ]; then render restart ${DEV}; fi`],
+        ['an operator from a variable', `if [ $OP "$m" ]; then render restart ${DEV}; fi`],
+        ['a substitution in the operand', `if [ -f "$(touch x)" ]; then render restart ${DEV}; fi`],
+        ['an operand that assigns', `if [ -f "${'$'}{m:=x}" ]; then render restart ${DEV}; fi`],
+        ['an API delete with no scheme, which curl sends over HTTP', `curl -X DELETE api.render.com/v1/services/${DEV}/env-vars/FOO`],
+        ['render psql with no output format, which opens psql interactively on a terminal', `render psql ${DEV_DB} -c 'select 1'`],
+    ])('%s gates', (_name, command) => {
+        expect(verdict(command)).toBe('gate');
     });
 });
