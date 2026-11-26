@@ -7360,12 +7360,24 @@ function dbtTargetDatabase(cmd: ResolvedCommand, dir: string): { target: string;
  * The listed dev database a dbt step builds in, when every directory it may run from resolves its target to one.
  * dbt writes each model into the target's database unless the project sends it elsewhere, which this doesn't read.
  */
-function dbtDevTarget(cmd: ResolvedCommand, dirs: string[] | null): string | null {
+function dbtDevTarget(cmd: ResolvedCommand, dirs: string[] | null, steps: ResolvedCommand[] = []): string | null {
     const scope = currentDevScope();
     if (!scope || !dirs?.length) return null;
     const dev = new Set(scope.snowflake.flatMap(e => e.databases.map(d => d.toUpperCase())));
+    // dbt refuses to run outside a project, so a directory the step may run in that holds none writes nothing, unless
+    // the line could put a project there first.
+    const projectFile = /(?:^|\/)(?:dbt_project|profiles)\.yml$/;
+    const mayPlaceProject = steps.some(s => (/^(?:mv|ln|rsync|tar|bsdtar|unzip|7z)$/.test(s.name))
+        || (/^(?:cp|install)$/.test(s.name) && s.args.some(a => /^-[A-Za-z]*[rRa]|^--(?:recursive|archive)$/.test(a)))
+        || (s.name === 'git' && s.args.some(a => /^(?:clone|worktree|checkout|switch|restore|reset|pull|merge|stash|rebase|cherry-pick|am|apply)$/.test(a)))
+        || (s.name === 'dbt' && s.args[0] === 'init')
+        || s.args.some(a => projectFile.test(a)))
+        || (cmd.script?.writes ?? []).some(w => projectFile.test(w.target));
+    const projectFlag = flagValue(cmd.args, ['--project-dir']) ?? process.env.DBT_PROJECT_DIR;
+    const live = projectFlag || mayPlaceProject ? dirs : dirs.filter(d => existsSync(join(d, 'dbt_project.yml')));
+    if (!live.length) return null;
     let found: string | null = null;
-    for (const dir of dirs) {
+    for (const dir of live) {
         const t = dbtTargetDatabase(cmd, dir);
         const here = t && `dbt target ${t.target}, database ${t.database}`;
         if (!t || !dev.has(t.database) || (found !== null && found !== here)) return null;
@@ -8310,7 +8322,7 @@ function* gatedSteps(
             const dev = egress ? null
                 : devScopeTargetOf(cmd, commands, command, cmd === outer)
                 ?? (listedDb ? `dev database ${listedDb.join(', ')}` : null)
-                ?? (cmd.name === 'dbt' && reason === `dbt ${dbtSubcommand(cmd.args)} ${DBT_WRITE}.` ? dbtDevTarget(cmd, cmd === outer ? sqlPathCandidates('.', cmd) : stepDirs) : null);
+                ?? (cmd.name === 'dbt' && reason === `dbt ${dbtSubcommand(cmd.args)} ${DBT_WRITE}.` ? dbtDevTarget(cmd, cmd === outer ? sqlPathCandidates('.', cmd) : stepDirs, commands) : null);
             if (dev !== null) {
                 if (log) console.error(`dev-scope: allowed ${cmd.name} against ${dev}`);
                 continue;
