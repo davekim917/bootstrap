@@ -2,9 +2,8 @@
 // Vouch for each dev-scope login: walk every role its user holds (and PUBLIC) and confirm none can run SQL the
 // destructive guard would gate against anything outside the entry's dev databases. A pass sets `login.verifiedUntil`, which the destructive guard requires before it lets
 // that connection's SQL run without a card; a failure or an error removes it, so a lapsed check brings cards back.
-// A snow call that times out is retried a few times first, since a timeout says nothing about the grants; a check
-// that still can't finish withdraws trust like any other error. Run it often with --renew-within: an entry is checked
-// only once its verification is that close to ending, or after it was withdrawn, so a lapse costs one run interval.
+// A check that times out withdraws trust at once like any other error, and is retried in the same run: a retry that
+// finishes clean restores it, so a passing timeout costs minutes rather than the 12 hours until the next run.
 //
 // Usage: node scripts/verify-dev-logins.mjs [--file <dev-scope.local.json>] [--hours 48]
 import { execFileSync } from 'node:child_process';
@@ -222,31 +221,42 @@ export function recordCheck(entry, problem, { now, hours }) {
   return `dev-only login ${entry.login.user} verified until ${entry.login.verifiedUntil}`;
 }
 
-/**
- * Check one entry, starting the whole check again after a timed-out snow call, once per wait in `waitsMs`. Returns null
- * when the login is dev-only, else the reason it is not trusted. Only a check that finished can vouch for the login.
- */
-export function checkEntry(entry, rows, { waitsMs = RETRY_WAITS_MS, sleep = sleepSync } = {}) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return verifyEntry(entry, rows);
-    } catch (err) {
-      const reason = `check failed: ${String(err?.message ?? err).split('\n')[0]}`;
-      if (!(err instanceof SnowTimeout) || attempt >= waitsMs.length) return attempt ? `${reason} (after ${attempt + 1} tries)` : reason;
-      sleep(waitsMs[attempt]);
-    }
+/** One full check: null when the login is dev-only, else the problem and whether a snow call timed out. */
+function checkOnce(entry, rows) {
+  try {
+    const problem = verifyEntry(entry, rows);
+    return problem ? { problem, timedOut: false } : null;
+  } catch (err) {
+    return { problem: `check failed: ${String(err?.message ?? err).split('\n')[0]}`, timedOut: err instanceof SnowTimeout };
   }
+}
+
+/**
+ * Check every entry with a login and publish the file after each outcome, so a withdrawal takes effect at once. An
+ * entry whose check timed out is checked again in full after each wait in `waitsMs`; only a retry that finishes clean
+ * restores trust. Returns how many entries end the run untrusted.
+ */
+export function verifyAll(scope, { rowsFor, hours, publish, log = () => {}, now = () => new Date(), waitsMs = RETRY_WAITS_MS, sleep = sleepSync }) {
+  let failed = 0;
+  for (const entry of scope.snowflake ?? []) {
+    if (!entry.login) continue;
+    let result = checkOnce(entry, rowsFor(entry));
+    log(entry, recordCheck(entry, result?.problem ?? null, { now: now(), hours }), !result);
+    publish();
+    for (const wait of waitsMs) {
+      if (!result?.timedOut) break;
+      sleep(wait);
+      result = checkOnce(entry, rowsFor(entry));
+      log(entry, recordCheck(entry, result?.problem ?? null, { now: now(), hours }), !result);
+      publish();
+    }
+    if (result) failed++;
+  }
+  return failed;
 }
 
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/** Whether an entry is due: never verified, withdrawn, or ending within `renewWithinHours` of `now`. */
-export function checkDue(entry, now, renewWithinHours) {
-  if (renewWithinHours === undefined) return true;
-  const until = Date.parse(entry.login?.verifiedUntil ?? '');
-  return !(until - now.getTime() > renewWithinHours * 3600_000);
 }
 
 function main() {
@@ -256,46 +266,18 @@ function main() {
   const file = arg('--file', process.env.BOOTSTRAP_DEV_SCOPE_FILE || path.join(repoRoot, 'dev-scope.local.json'));
   const hours = Number(arg('--hours', '48'));
   if (!Number.isFinite(hours) || hours <= 0 || hours > 72) throw new Error(`--hours must be between 0 and 72, not ${arg('--hours')}`);
-  const renewArg = arg('--renew-within', undefined);
-  const renewWithin = renewArg === undefined ? undefined : Number(renewArg);
-  if (renewWithin !== undefined && !(renewWithin >= 0 && renewWithin < hours)) throw new Error(`--renew-within must be at least 0 and below --hours, not ${renewArg}`);
-  // Retries can make a run outlast the interval between runs; a second run would write the file from a stale read.
-  const lock = `${file}.verify-lock`;
-  try {
-    fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
-  } catch (err) {
-    if (err?.code !== 'EEXIST') throw err;
-    if (Date.now() - fs.statSync(lock).mtimeMs < 60 * 60_000) {
-      console.log('another verification run holds the lock; skipping');
-      return;
-    }
-    fs.writeFileSync(lock, String(process.pid));
-  }
-  try {
-    run(file, hours, renewWithin);
-  } finally {
-    fs.rmSync(lock, { force: true });
-  }
-}
-
-function run(file, hours, renewWithin) {
   const scope = JSON.parse(fs.readFileSync(file, 'utf-8'));
-  let failed = 0;
-  for (const entry of scope.snowflake ?? []) {
-    if (!entry.login || !checkDue(entry, new Date(), renewWithin)) continue;
-    const problem = checkEntry(entry, sql => snowRows(entry.connection, sql));
-    const line = `${entry.connection}: ${recordCheck(entry, problem, { now: new Date(), hours })}`;
-    if (problem) {
-      failed++;
-      console.error(line);
-    } else {
-      console.log(line);
-    }
-  }
-  const tmp = `${file}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(scope, null, 2)}\n`);
-  fs.renameSync(tmp, file);
-  process.exitCode = failed ? 1 : 0;
+  const failed = verifyAll(scope, {
+    rowsFor: entry => sql => snowRows(entry.connection, sql),
+    hours,
+    publish: () => {
+      const tmp = `${file}.tmp-${process.pid}`;
+      fs.writeFileSync(tmp, `${JSON.stringify(scope, null, 2)}\n`);
+      fs.renameSync(tmp, file);
+    },
+    log: (entry, line, ok) => (ok ? console.log : console.error)(`${entry.connection}: ${line}`),
+  });
+  process.exit(failed ? 1 : 0);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) main();

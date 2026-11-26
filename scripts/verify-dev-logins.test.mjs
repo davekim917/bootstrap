@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { checkDue, checkEntry, collectGrants, recordCheck, SnowTimeout, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
+import { collectGrants, SnowTimeout, verifyAll, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
 
 const g = (privilege, granted_on, name) => ({ privilege, granted_on, name });
 // Every role has no future grants unless a fixture lists some.
@@ -219,8 +219,8 @@ test('a SQL function passes; a function in any other language, or one whose name
   ]);
 });
 
-const LOGIN = { connection: 'c', databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A', verifiedUntil: '2027-03-01T12:00:00.000Z' } };
 const NOW = new Date('2027-03-01T00:05:00.000Z');
+const entryFor = connection => ({ connection, databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A', verifiedUntil: '2027-03-01T12:00:00.000Z' } });
 const devOnly = sql => {
   if (sql.startsWith('select current_user()')) return [{ U: 'AGENT', A: 'ORG-A', R: 'DEV_ROLE' }];
   if (sql.startsWith('show future grants')) return [];
@@ -229,62 +229,72 @@ const devOnly = sql => {
   if (sql === 'show grants to role "PUBLIC"') return [];
   throw new Error(`unexpected ${sql}`);
 };
-// The given rows, except that the call matching `at` times out on each of the first `times` checks.
-const timingOut = (rows, at, times) => {
+const prodWrite = sql => (sql === 'show grants to user "AGENT"' ? [g('DELETE', 'TABLE', 'PROD_DB.S.T'), { role: 'DEV_ROLE' }] : devOnly(sql));
+// `rows`, except that the role walk times out on the first `times` checks.
+const timingOut = (rows, times) => {
   let left = times;
   return sql => {
-    if (sql === at && left > 0) {
+    if (sql === 'show grants to role "DEV_ROLE"' && left > 0) {
       left--;
       throw new SnowTimeout(`snow timed out on: ${sql}`);
     }
     return rows(sql);
   };
 };
+// Runs verifyAll over `entries` with `rowsByConnection`, recording the published file after every publish and every sleep.
+function run(entries, rowsByConnection) {
+  const scope = { snowflake: entries };
+  const events = [];
+  const failed = verifyAll(scope, {
+    rowsFor: e => rowsByConnection[e.connection],
+    hours: 24,
+    now: () => NOW,
+    publish: () => events.push(['publish', structuredClone(scope.snowflake.map(e => [e.connection, e.login.verifiedUntil ?? null]))]),
+    sleep: ms => events.push(['sleep', ms]),
+  });
+  return { failed, events, scope };
+}
+const RENEWED = '2027-03-02T00:05:00.000Z';
 
-test('a timeout followed by a check that finishes keeps the login trusted, and the verification is renewed', () => {
-  const waits = [];
-  const entry = structuredClone(LOGIN);
-  const problem = checkEntry(entry, timingOut(devOnly, 'show grants to role "DEV_ROLE"', 1), { sleep: ms => waits.push(ms) });
-  assert.equal(problem, null);
-  assert.deepEqual(waits, [60_000]);
-  recordCheck(entry, problem, { now: NOW, hours: 24 });
-  assert.equal(entry.login.verifiedUntil, '2027-03-02T00:05:00.000Z');
+test('a timeout withdraws trust at once, and a later clean retry restores it', () => {
+  const { failed, events } = run([entryFor('a')], { a: timingOut(devOnly, 1) });
+  assert.deepEqual(events, [['publish', [['a', null]]], ['sleep', 60_000], ['publish', [['a', RENEWED]]]]);
+  assert.equal(failed, 0);
 });
 
-test('a check that times out on every try withdraws trust, and the next run checks the login again', () => {
-  const waits = [];
-  const entry = structuredClone(LOGIN);
-  const problem = checkEntry(entry, timingOut(devOnly, 'show grants to role "DEV_ROLE"', 3), { sleep: ms => waits.push(ms) });
-  assert.match(problem, /^check failed: snow timed out .* \(after 3 tries\)$/);
-  assert.deepEqual(waits, [60_000, 180_000]);
-  recordCheck(entry, problem, { now: NOW, hours: 24 });
-  assert.equal(entry.login.verifiedUntil, undefined);
-  assert.equal(checkDue(entry, new Date(NOW.getTime() + 10 * 60_000), 12), true);
+test('when every retry times out, trust stays withdrawn', () => {
+  const { failed, events, scope } = run([entryFor('a')], { a: timingOut(devOnly, 3) });
+  assert.deepEqual(events, [['publish', [['a', null]]], ['sleep', 60_000], ['publish', [['a', null]]], ['sleep', 180_000], ['publish', [['a', null]]]]);
+  assert.equal(failed, 1);
+  assert.match(scope.snowflake[0].login.lastProblem, /^check failed: snow timed out/);
 });
 
-test('a write grant returned before a timeout withdraws trust, whether the retry finishes or not', () => {
-  const prodWrite = sql => (sql === 'show grants to user "AGENT"' ? [g('DELETE', 'TABLE', 'PROD_DB.S.T'), { role: 'DEV_ROLE' }] : devOnly(sql));
+test('a write grant seen around a timeout keeps trust withdrawn, whether the retry finishes or not', () => {
   for (const times of [1, 3]) {
-    const entry = structuredClone(LOGIN);
-    const problem = checkEntry(entry, timingOut(prodWrite, 'show grants to role "DEV_ROLE"', times), { sleep: () => {} });
-    assert.notEqual(problem, null);
-    recordCheck(entry, problem, { now: NOW, hours: 24 });
-    assert.equal(entry.login.verifiedUntil, undefined);
+    const { failed, scope } = run([entryFor('a')], { a: timingOut(prodWrite, times) });
+    assert.equal(failed, 1);
+    assert.equal(scope.snowflake[0].login.verifiedUntil, undefined);
+  }
+  const { events, scope } = run([entryFor('a')], { a: timingOut(prodWrite, 1) });
+  assert.match(scope.snowflake[0].login.lastProblem, /^can write outside DEV_DB: DELETE on TABLE PROD_DB\.S\.T/);
+  assert.equal(events.filter(e => e[0] === 'sleep').length, 1);
+});
+
+test('a finding or an error other than a timeout withdraws without a retry', () => {
+  const broken = sql => (sql === 'show grants to role "DEV_ROLE"' ? (() => { throw new Error('insufficient privileges'); })() : devOnly(sql));
+  for (const rows of [prodWrite, broken]) {
+    const { failed, events } = run([entryFor('a')], { a: rows });
+    assert.equal(failed, 1);
+    assert.deepEqual(events, [['publish', [['a', null]]]]);
   }
 });
 
-test('an error other than a timeout withdraws trust at once, without a retry', () => {
-  const waits = [];
-  const rows = sql => (sql === 'show grants to role "DEV_ROLE"' ? (() => { throw new Error('insufficient privileges'); })() : devOnly(sql));
-  const problem = checkEntry(structuredClone(LOGIN), rows, { sleep: ms => waits.push(ms) });
-  assert.equal(problem, 'check failed: insufficient privileges');
-  assert.deepEqual(waits, []);
-});
-
-test('with --renew-within, a verification far from its end is not checked; one near it, or none, is', () => {
-  const at = new Date('2027-03-01T00:00:00.000Z');
-  assert.equal(checkDue(LOGIN, at, 6), false);
-  assert.equal(checkDue(LOGIN, at, 12), true);
-  assert.equal(checkDue({ login: {} }, at, 12), true);
-  assert.equal(checkDue(LOGIN, at, undefined), true);
+test('with several entries, each is published as it finishes, before the next is checked', () => {
+  const { events } = run([entryFor('a'), entryFor('b')], { a: timingOut(devOnly, 1), b: devOnly });
+  assert.deepEqual(events, [
+    ['publish', [['a', null], ['b', '2027-03-01T12:00:00.000Z']]],
+    ['sleep', 60_000],
+    ['publish', [['a', RENEWED], ['b', '2027-03-01T12:00:00.000Z']]],
+    ['publish', [['a', RENEWED], ['b', RENEWED]]],
+  ]);
 });
