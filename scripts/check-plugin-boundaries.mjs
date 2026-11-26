@@ -761,11 +761,11 @@ for (const retiredScript of [
 if (claudeManifest?.name !== 'bootstrap-workflow') {
   fail('plugins/workflow/.claude-plugin/plugin.json name must be bootstrap-workflow');
 }
-if (claudeManifest?.version !== '5.49.6') {
-  fail(`bootstrap-workflow release must be version 5.49.6 (found ${claudeManifest?.version})`);
+if (claudeManifest?.version !== '5.49.9') {
+  fail(`bootstrap-workflow release must be version 5.49.9 (found ${claudeManifest?.version})`);
 }
-if (codexManifest?.version !== '2.51.1') {
-  fail(`bootstrap-workflow-agents release must be version 2.51.1 (found ${codexManifest?.version})`);
+if (codexManifest?.version !== '2.51.4') {
+  fail(`bootstrap-workflow-agents release must be version 2.51.4 (found ${codexManifest?.version})`);
 }
 // One directory, two manifests: the version is pinned on both and they must agree.
 if (orchestrateClaudeManifest?.version !== '3.8.3') {

@@ -27,7 +27,7 @@ import * as core from './block-destructive-core';
 import {
   approvalText,
   commandLineOf,
-  describeGate,
+  describeGateForApproval,
   evaluateBashCommand,
   evaluateGitCloneDestination,
   evaluateSelfApproval,
@@ -221,7 +221,7 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
     } else {
       // Non-NanoClaw fallback (no session-DB surface): fail closed.
       throw new Error(
-        `BLOCKED: ${approvalText(describeGate(command, reason, cwd))}\n\nThis requires explicit user approval, which is unavailable in this environment.`,
+        `BLOCKED: ${approvalText(describeGateForApproval(command, reason, cwd))}\n\nThis requires explicit user approval, which is unavailable in this environment.`,
       );
     }
   }
