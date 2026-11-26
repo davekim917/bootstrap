@@ -8268,6 +8268,22 @@ export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'req
  * NanoClaw's in-tree email hook joins a peer's card only when the stored request equals, field for field, the one it
  * would file itself for the same tool call, and that one carries the tool call.
  */
+/**
+ * The text with each credential it carries replaced by `[redacted]`: an HTTP authorization or API-key header's value,
+ * curl's `-u user:password`, a URL's password, a `PGPASSWORD`-style assignment, and a SQL role password. The staged
+ * request is persisted and shown on the card, so neither may hold the secret the command passes.
+ */
+export function redactCredentials(text: string): string {
+    const R = '[redacted]';
+    return text
+        .replace(/\b((?:Proxy-)?Authorization\s*:\s*(?:(?:Bearer|Basic|Token|Bot|Digest)\s+)?)("[^"]*"|'[^']*'|[^\s'"\\]+)/gi, (_, head) => head + R)
+        .replace(/\b((?:X-)?(?:Api|Auth)[-_]?(?:Key|Token)\s*:\s*)("[^"]*"|'[^']*'|[^\s'"\\]+)/gi, (_, head) => head + R)
+        .replace(/((?:^|\s)(?:-u|--user|--proxy-user)(?:\s+|=)['"]?[^\s:'"]*:)[^\s'"]+/g, (_, head) => head + R)
+        .replace(/(\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@'"]*:)[^\s@/'"]+@/gi, (_, head) => head + R + '@')
+        .replace(/(\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY)=)("[^"]*"|'[^']*'|\S+)/g, (_, head) => head + R)
+        .replace(/(\b(?:PASSWORD|IDENTIFIED\s+BY)\s*(?:=\s*)?)('(?:[^']|'')*'|"(?:[^"\\]|\\.)*")/gi, (_, head) => head + "'" + R + "'");
+}
+
 export function gateRequestContent(
     requestId: string,
     label: string,
@@ -8280,14 +8296,14 @@ export function gateRequestContent(
     return JSON.stringify({
         action,
         requestId,
-        label,
-        summary,
+        label: redactCredentials(label),
+        summary: redactCredentials(summary),
         // The host renders a bounded head+tail preview and retains the full
         // command in its approval record. Truncating here would discard final
         // arguments before the approver or audit trail could inspect them.
-        command,
+        command: redactCredentials(command),
         ...(card.pureSend ? { pureSend: true } : {}),
-        ...(card.fullSummary !== undefined ? { fullSummary: card.fullSummary } : {}),
+        ...(card.fullSummary !== undefined ? { fullSummary: redactCredentials(card.fullSummary) } : {}),
         ...(card.wholeEmail !== undefined ? { wholeEmail: card.wholeEmail } : {}),
         ...(toolUseId ? { toolUseId } : {}),
     });
