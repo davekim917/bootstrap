@@ -777,6 +777,8 @@ export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^ALTER\s+(?:DATABASE|TABLESPACE)\b[\s\S]*\bOWNER\s+TO\b/i, label: 'ALTER DATABASE OWNER' },
     { rx: /^ALTER\s+POLICY\b/i, label: 'ALTER POLICY' },
     { rx: /^CREATE\s+POLICY\b/i, label: 'CREATE POLICY' },
+    // PostgreSQL's DROP POLICY names no kind; removing a restrictive policy can widen who reads which rows.
+    { rx: /^DROP\s+POLICY\b/i, label: 'DROP ROW SECURITY POLICY' },
     { rx: /^ALTER\s+TABLE\b[\s\S]*\b(?:DISABLE|NO\s+FORCE)\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'DISABLE ROW LEVEL SECURITY' },
     // With no ON, GRANT and REVOKE add or remove a role's membership in another role.
     { rx: /^GRANT\s+(?![\s\S]*\bON\b)/i, label: 'GRANT ROLE' },
@@ -2052,6 +2054,31 @@ function metaSkeleton(sql: string): string {
     return skeleton;
 }
 
+/**
+ * Whether psql prints and exits without reading stdin: -l, -V or -? anywhere in a short-option cluster before an option
+ * that takes a value (-lq, -Xl), or --list, --version or --help. Options' values are skipped as psql's getopt reads them.
+ */
+function psqlExitsAtOnce(args: string[]): boolean {
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') return false;
+        if (a.startsWith('--')) {
+            if (/^--(?:list|version|help)(?:=|$)/.test(a)) return true;
+            if (!a.includes('=') && PSQL_ALL_LONG_VALUES.has(a)) i++;
+            continue;
+        }
+        if (!/^-./.test(a)) continue;
+        for (let j = 1; j < a.length; j++) {
+            if ('lV?'.includes(a[j])) return true;
+            if (a[j] in PSQL_ALL_SHORT_VALUES) {
+                if (j === a.length - 1) i++;
+                break;
+            }
+        }
+    }
+    return false;
+}
+
 export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: string[], included: string[] = [], unresolvedSql = false, commandSql: ReadonlySet<string> = new Set()): { unreadable: string | null; missing: string | null } {
     const files = given;
     const stdinNamed = (f: string) => {
@@ -2074,8 +2101,7 @@ export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: 
     }
     const sqlInArgs = cmd.args.some(a => /^--command(?:=|$)/.test(a) || clusterValueOption('psql', a) === 'c');
     const readsStdin = (!sqlInArgs && files.filter(f => !(cmd.stdinFiles ?? []).includes(f)).length === 0) || files.some(stdinNamed);
-    // -l, -V and --help print and exit without reading stdin.
-    const exitsAtOnce = cmd.args.some(a => /^(?:-[A-Za-z]*[lV?]|--list|--version|--help)$/.test(a));
+    const exitsAtOnce = psqlExitsAtOnce(cmd.args);
     if (readsStdin && !cmd.stdinTexts?.length && !(cmd.stdinFiles ?? []).length && !exitsAtOnce) {
         const piped = cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos));
         if (!piped) return result('the stdin it inherits, which the line does not show');
@@ -2207,7 +2233,10 @@ function writesTracedText(c: ResolvedCommand): boolean {
     if (c.name !== 'echo' && c.name !== 'printf') return false;
     if (!literalArgs(c)) return false;
     // printf interprets escapes and %b in its format only; each argument a %s prints is printed as it is.
-    return c.name === 'echo' ? !c.args.some(a => /^-[neE]*e[neE]*$/.test(a)) : !c.args[0]?.startsWith('-') && !/\\(?![nt])|%[^%]*b/.test(c.args[0] ?? '');
+    if (c.name === 'echo') return !c.args.some(a => /^-[neE]*e[neE]*$/.test(a));
+    // After `--` the next word is the format.
+    const format = c.args[0] === '--' ? c.args[1] : c.args[0];
+    return (c.args[0] === '--' || !format?.startsWith('-')) && !/\\(?![nt])|%[^%]*b/.test(format ?? '');
 }
 
 // Each command on a line that writes a file, keyed by the written file's base name (or DIRECTORY_TARGET for a copy into
@@ -4499,32 +4528,29 @@ const SQL_USER_FLAGS = new Set(['-U', '--username']);
 const SQL_DB_FLAGS = new Set(['-d', '--dbname']);
 
 /**
- * Whether a step may change something outside the one database it names, which no database-scoped waiver covers: a
- * role or other object the whole cluster holds, a \connect to another database, or SQL the scanner can't read (an
- * EXECUTE it can't follow, an archive pg_restore applies), which may hold either.
+ * Whether psql SQL may act outside the one database the connection names, which no database-scoped waiver covers: a
+ * backslash meta-command anywhere outside a literal (\connect, \gexec, \! and \i among them, at a line's start or
+ * after SQL), a statement on a whole database (CREATE, ALTER or DROP DATABASE, a rename included), a role or other
+ * object the whole cluster holds, or SQL the scanner can't read (an EXECUTE it can't follow). A waiver is an allowlist:
+ * anything else keeps its card.
  */
+function psqlLeavesDatabase(text: string): string | null {
+    for (const s of psqlStatementTexts(text)) {
+        const found = destructiveStatements(s, 0, true, false, true).find(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern) || PG_UNREADABLE_LABELS.has(st.pattern));
+        if (found) return found.pattern;
+    }
+    const skeleton = metaSkeleton(withoutCopyData(text));
+    if (skeleton.includes('\\')) return 'a psql meta-command';
+    return /\b(?:CREATE|ALTER|DROP)\s+DATABASE\b/i.test(skeleton) ? 'a statement on a whole database' : null;
+}
+
+/** psqlLeavesDatabase for a step's whole input; an archive pg_restore applies, or input the guard can't read, counts. */
 function changesClusterRoles(cmd: ResolvedCommand): boolean {
     if (cmd.name === 'pg_restore') return true;
     if (cmd.name !== 'psql') return false;
     const input = sqlInputFor(cmd);
-    if (input.unreadable) return true;
-    return input.texts.some(t => psqlRoleMeta(t) !== null || PSQL_CONNECT.test(metaSkeleton(t))
-        || psqlStatementTexts(t).some(s => destructiveStatements(s, 0, true, false, true).some(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern) || PG_UNREADABLE_LABELS.has(st.pattern))));
+    return input.unreadable !== null || input.texts.some(t => psqlLeavesDatabase(t) !== null);
 }
-
-/**
- * Whether a step drops a whole database. That is never inside the database the connection names, whichever one the
- * statement names, so no connection-based waiver covers it.
- */
-function dropsDatabase(cmd: ResolvedCommand): boolean {
-    if (!SQL_CLIS[cmd.name]) return false;
-    const postgres = cmd.name === 'psql';
-    const texts = sqlInputFor(cmd).texts.flatMap(t => (postgres ? psqlStatementTexts(t) : [t]));
-    return texts.some(t => destructiveStatements(t, 0, true, false, postgres).some(st => st.pattern === 'DROP' && /^\s*DROP\s+DATABASE\b/i.test(st.skeleton)));
-}
-
-// psql's \c or \connect, which moves the rest of the script to another database.
-const PSQL_CONNECT = /(?:^|\n)[ \t]*\\c(?:onnect)?\b/;
 
 function labSqlTarget(cmd: ResolvedCommand): string | null {
     const { args } = cmd;
@@ -4562,28 +4588,24 @@ function labSqlTarget(cmd: ResolvedCommand): string | null {
         db = fromConnection(a) ?? db;
     }
     if (db === undefined || !LAB_DB_NAME_RE.test(db)) return null;
-    return cmd.name === 'mysql' && mysqlNamesOtherDatabase(cmd, db) ? null : db;
+    return cmd.name === 'mysql' && mysqlLeavesDatabase(cmd) ? null : db;
 }
 
-const MYSQL_NAME = String.raw`(\`[^\`]*\`|[A-Za-z_$][\w$]*)`;
-// A table named after a word that introduces one (or a comma in a list of them), qualified by its database.
-const MYSQL_QUALIFIED_TABLE = new RegExp(String.raw`(?:\b(?:FROM|JOIN|UPDATE|INTO|TABLE|TABLES|EXISTS|USING|TO)\b|,)\s*${MYSQL_NAME}\s*\.`, 'gi');
-const MYSQL_USE = new RegExp(String.raw`(?:^|;)\s*USE\s+${MYSQL_NAME}`, 'gi');
-
 /**
- * Whether MySQL SQL reaches a database other than the default one the connection selects: a table qualified by another
- * database's name, or a USE that switches to one. -D sets only the default, so it proves nothing about either. Input
- * the guard can't read counts as reaching one.
+ * Whether MySQL SQL may act outside the default database -D selects, which sets only the default: any qualified name
+ * (db.table, or a quoted name the skeleton blanks, whose dot stays), a USE, CONNECT or SOURCE, a client command
+ * (\u and the rest), or a statement on a whole database or schema. An allowlist, like the psql one: anything else, or
+ * input the guard can't read, keeps its card.
  */
-function mysqlNamesOtherDatabase(cmd: ResolvedCommand, db: string): boolean {
+function mysqlLeavesDatabase(cmd: ResolvedCommand): boolean {
     const input = sqlInputFor(cmd);
     if (input.unreadable) return true;
-    const other = (name: string) => name.replace(/^`|`$/g, '') !== db;
-    return input.texts.some(text => {
-        // Literals and comments blanked; a backtick-quoted name the skeleton blanks still leaves its dot.
+    // The texts include every argument; only -e's value is SQL, so the others (a dotted host among them) are left out.
+    const notSql = new Set(cmd.args.filter((a, i) => !/^(?:-e|--execute)$/.test(cmd.args[i - 1] ?? '') && !/^(?:-e.|--execute=)/.test(a)));
+    return input.texts.filter(t => !notSql.has(t)).some(text => {
         const skeleton = stripSqlLiteralsAndComments(text);
-        if (/(?:\b(?:FROM|JOIN|UPDATE|INTO|TABLE|TABLES|EXISTS|USING|TO)\b|,)\s+\./i.test(skeleton)) return true;
-        return [...skeleton.matchAll(MYSQL_QUALIFIED_TABLE), ...skeleton.matchAll(MYSQL_USE)].some(m => other(m[1]));
+        return /(?<!\d)\.\s*[A-Za-z_$`]/.test(skeleton) || skeleton.includes('\\')
+            || /(?:^|;)\s*(?:USE|CONNECT|SOURCE)\b/i.test(skeleton) || /\b(?:CREATE|ALTER|DROP|RENAME)\s+(?:DATABASE|SCHEMA)\b/i.test(skeleton);
     });
 }
 
@@ -4634,7 +4656,7 @@ export function labTargetOf(cmd: ResolvedCommand, cwd: string = currentWorkingDi
         case 'gh':
             return cmd.args[0] === 'repo' && cmd.args[1] === 'delete' ? labGhTarget(cmd) : null;
         default:
-            return LAB_SQL_CLIS.has(cmd.name) && !changesClusterRoles(cmd) && !dropsDatabase(cmd) ? labSqlTarget(cmd) : null;
+            return LAB_SQL_CLIS.has(cmd.name) && !changesClusterRoles(cmd) ? labSqlTarget(cmd) : null;
     }
 }
 
@@ -4800,9 +4822,8 @@ function renderPsqlPrivilegeChange(args: string[]): string | null {
         const sql = word.replace(/^(?:--command=|-c)/, '');
         // A grant on the dev database's own objects stays waived; a role, which the whole cluster holds, does not, and
         // nor does SQL the scanner can't read (EXECUTE format(…), a body in another language), which may change one.
-        const found = destructiveStatements(sql, 0, true, false, true).find(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern) || PG_UNREADABLE_LABELS.has(st.pattern));
-        if (found) return found.pattern;
-        if (PSQL_CONNECT.test(sql)) return '\\connect';
+        const leaves = psqlLeavesDatabase(sql);
+        if (leaves) return leaves;
     }
     return null;
 }

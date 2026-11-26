@@ -623,4 +623,3 @@ describe('the SQL lexer says where a literal or comment never closes', () => {
         expect(skeleton).toContain('WHERE id = 1');
     });
 });
-

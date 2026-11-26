@@ -327,6 +327,14 @@ describe('psql input outside the listed forms takes a card, and only a missing f
     test('DROP OWNED on a listed dev database keeps its card', () => {
         expect(run(`render psql ${DEV_DB} -c "DROP OWNED BY app_a"`).action).toBe('gate');
     });
+
+    test.each([
+        ['DROP DATABASE', `render psql ${DEV_DB} -c "DROP DATABASE other_db"`],
+        ['a database rename', `render psql ${DEV_DB} -c "ALTER DATABASE other_db RENAME TO old_db"`],
+        ['a meta-command after SQL on the line', `render psql ${DEV_DB} -c "SELECT 1; \\\\connect other_db"`],
+    ])('%s on a listed dev database keeps its card', (_name, command) => {
+        expect(run(command).action).toBe('gate');
+    });
 });
 
 describe('psql input, writers and coverage after review', () => {
@@ -373,6 +381,8 @@ describe('psql input, writers and coverage after review', () => {
         ['a script pg_restore -f writes', () => `pg_restore -f ${f('migration.sql')} dump.custom; ${H} -f ${f('migration.sql')}`],
         ['pg_restore with -d clustered after another flag', () => 'pg_restore -cd app -h db.example.com dump.custom'],
         ['CREATE POLICY', () => `${H} -c "CREATE POLICY p ON t USING (true)"`],
+        ['PostgreSQL DROP POLICY', () => `${H} -c "DROP POLICY tenant_isolation ON orders"`],
+        ['-d taking -l as its value, so psql reads the stdin it inherits', () => `${H} -d -l`],
         ['a :name the line sets from a variable', () => `${H} -v t="$X" <<'SQL'\nselect * from :t;\nSQL`],
         ["a :'name' the line sets from a variable", () => `${H} -v t="$X" <<'SQL'\nselect :'t';\nSQL`],
         ['a :name the line never sets', () => `${H} <<'SQL'\nselect * from :t;\nSQL`],
@@ -383,6 +393,9 @@ describe('psql input, writers and coverage after review', () => {
 
     test.each([
         ['psql -l, which reads no SQL', () => `${H} -l`],
+        ['-l first in a cluster', () => `${H} -lq`],
+        ['-l after another flag in a cluster', () => `${H} -Xl`],
+        ['printf -- with the format after it', () => `printf -- '%s\\n' 'SELECT 1;' | ${H}`],
         ['a variable the line sets to a literal', () => `B='SELECT 1;'; ${H} -c "$B"`],
         ['LIKE with a percent sign in a printf argument', () => `printf '%s\\n' "SELECT * FROM t WHERE n LIKE '%bob%'" | ${H}`],
         ['a literal printf piped in inside a substitution', () => `result=$(printf 'SELECT 1;' | ${H})`],
@@ -436,6 +449,7 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         fx = mkdtempSync(join(tmpdir(), 'pg-lab-files-'));
         writeFileSync(join(fx, 'password.sql'), '\\password app\n');
         writeFileSync(join(fx, 'gexec.sql'), "select 'GRANT app_admin TO app' \\gexec\n");
+        writeFileSync(join(fx, 'connect-inline.sql'), 'SELECT 1; \\connect app\nDROP TABLE orders;\n');
         writeFileSync(join(fx, 'connect.sql'), '\\connect other_db\nGRANT SELECT ON t TO r;\n');
         writeFileSync(join(labDir, 'lab-scope.local.json'), JSON.stringify({ org: 'lab-org', extraRepos: [] }));
         [savedLab, savedProfile] = [process.env[LAB_SCOPE_FILE_ENV], process.env.NANOCLAW_INSTRUCTIONS_PROFILE];
@@ -479,6 +493,13 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['a MySQL table qualified by a quoted database', `mysql -h db.example.com -D lab_app -e 'DELETE FROM \`app\`.orders'`],
         ['a MySQL table qualified by another database in a list', `mysql -h db.example.com -D lab_app -e 'DROP TABLE orders, app.orders'`],
         ['a MySQL USE of another database', `mysql -h db.example.com -D lab_app -e 'USE app; TRUNCATE TABLE orders'`],
+        ['a MySQL TRUNCATE short form qualified by another database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE app.orders'`],
+        ['a MySQL column qualified by its table', `mysql -h db.example.com -D lab_app -e 'DELETE FROM orders WHERE orders.id = 1'`],
+        ['a MySQL table qualified by the default database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE lab_app.orders'`],
+        ['a MySQL client command', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE orders; \\u app'`],
+        ['a psql \\connect after SQL on the same line', () => `${LAB} -f ${join(fx, 'connect-inline.sql')}`],
+        ['a database rename', `${LAB} -c "ALTER DATABASE prod_app RENAME TO old_app"`],
+        ['an ALTER DATABASE beside a grant', `${LAB} -c "GRANT SELECT ON t TO r; ALTER DATABASE prod_app SET search_path = x"`],
     ])('%s on a lab database gates', (_name, command) => {
         expect(run(typeof command === 'function' ? command() : command).action).toBe('gate');
     });
@@ -493,7 +514,6 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['DROP TABLE beside -P and a positional database name', `psql -X -P pager=off -h db.example.com lab_app -c "DROP TABLE t"`],
         ['DROP SCHEMA in the connected database', `${LAB} -c "DROP SCHEMA old_area CASCADE"`],
         ['a MySQL table in the default database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE orders'`],
-        ['a MySQL table qualified by the default database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE lab_app.orders'`],
     ])('%s on a lab database runs', (_name, command) => {
         expect(run(command).action).toBe('allow');
     });
