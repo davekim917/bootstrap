@@ -32,6 +32,7 @@ const INDIRECT_READS: Record<string, (sources: Map<string, string>) => string[]>
     'env: process.env,': libpqRedirects,
     'LIBPQ_REDIRECT_ENV.some(k => LIVE_LOCAL_PG_HOST.env[k]': libpqRedirects,
     'LIBPQ_REDIRECT_ENV.some(k => host.env[k]': libpqRedirects,
+    'LIBPQ_REDIRECT_ENV.some(k => process.env[k]': libpqRedirects,
     // Any SNOWFLAKE_ name, in any case.
     "Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))": () => ['SNOWFLAKE_ACCOUNT', 'snowflake_account'],
     // Any name at all: whether a variable a command assigns is already set. One stands for every name.
