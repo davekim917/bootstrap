@@ -309,7 +309,7 @@ describe('a listed dev resource', () => {
 
     // PGPASSWORD only authenticates: it can't move psql to another server, so it leaves the listed host held as dev.
     test.each([
-        ['a literal password', `PGPASSWORD=example-pw psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
+        ['an unquoted variable', `PGPASSWORD=$PW psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
         ['a password from a variable', `PGPASSWORD="$PW" psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
         ['an exported password', `export PGPASSWORD="$PW"; psql -h ${DEV_HOST} -X -d app -c 'delete from accounts'`],
     ])('psql on a listed host with %s in PGPASSWORD is held as dev', (_label, command) => {
@@ -715,7 +715,7 @@ describe('a raw DELETE to the Render API', () => {
         `http DELETE ${URL}`,
         'https DELETE api.render.com/v1/services/x',
         `http --timeout=3 DELETE ${URL}`,
-        `http -A bearer -a key DELETE ${URL}`,
+        `http -A bearer -a "$KEY" DELETE ${URL}`,
         `M=DELETE; http "$M" ${URL}`,
         `xh DELETE --timeout 3 ${URL}`,
         `xh delete ${URL}`,
@@ -846,12 +846,12 @@ describe('a raw DELETE to the Render API', () => {
         ['an unquoted header variable', `curl -H $X -X DELETE ${DEV_VAR}`],
         ['an attached header variable', `curl -H"$X" -X DELETE ${DEV_VAR}`],
         ['a header outside the list', `curl -H "X-Note: yes" -X DELETE ${DEV_VAR}`],
-        ['a bearer header with no spaces', `curl -H Authorization:Bearertoken -X DELETE ${DEV_VAR}`],
+        ['a bearer header with no spaces', `curl -H Authorization:Bearer"$T" -X DELETE ${DEV_VAR}`],
         ['a bearer value that can split', `curl -H Authorization:Bearer$X -X DELETE ${DEV_VAR}`],
         ['a bearer variable outside the quotes', `curl -H "Authorization: Bearer "$X -X DELETE ${DEV_VAR}`],
         ['a bearer variable in single-quoted parts', `curl -H 'Authorization: Bearer '$X -X DELETE ${DEV_VAR}`],
         ['a bearer variable after escaped spaces', `curl -H Authorization:\\ Bearer\\ $X -X DELETE ${DEV_VAR}`],
-        ['a bearer value joined to a split word', `curl -H "Authorization: Bearer x"$IFS"${PROD_VAR}" -X DELETE ${DEV_VAR}`],
+        ['a bearer value joined to a split word', `curl -H "Authorization: Bearer $Y"$IFS"${PROD_VAR}" -X DELETE ${DEV_VAR}`],
         ['a bearer value from a file', `curl -H "Authorization: Bearer "$(<split.txt) -X DELETE ${DEV_VAR}`],
         ['two variables in the header', `curl -H "Authorization: Bearer $A$B" -X DELETE ${DEV_VAR}`],
         ['a header naming a production id', `curl -H "X-Target: ${PROD}" -X DELETE ${DEV_VAR}`],
@@ -1087,7 +1087,7 @@ describe('a listed dev resource keeps its card when the line can change which re
         ['an API delete after a redirect storing a number in PATH', `true {PATH}>/dev/null; curl -X DELETE ${URL_DEV}`],
         ['an assignment pointing render at another API host', `RENDER_HOST=https://api.example.com render restart ${DEV}`],
         ['env setting the API host', `env RENDER_HOST=https://api.example.com render restart ${DEV}`],
-        ['an assignment giving render another API key', `RENDER_API_KEY=rnd_other render restart ${DEV}`],
+        ['an assignment giving render another API key', `RENDER_API_KEY="$OTHER_RENDER_KEY" render restart ${DEV}`],
         ['env with no assignment', `env render restart ${DEV}`],
         ['a package runner, which runs a workspace-local render', `pnpm exec render restart ${DEV}`],
         ['npx', `npx render restart ${DEV}`],
