@@ -21,13 +21,13 @@ beforeAll(() => {
     project = mkdtempSync(join(tmpdir(), 'dbt-macro-test-'));
     writeFileSync(join(project, 'dbt_project.yml'), 'name: example\nprofile: example\n');
     // Every dbt write needs a target proven dev: here the profile's targets build in a listed dev database, or in prod.
-    const output = (database: string) => `      type: snowflake\n      database: ${database}\n`;
+    const output = (database: string) => `      type: snowflake\n      account: example-acct1\n      database: ${database}\n`;
     // The staged ~/.dbt profiles file: one in the project directory isn't trusted.
     savedHome = process.env.HOME;
     process.env.HOME = join(project, 'home');
     mkdirSync(join(project, 'home', '.dbt'), { recursive: true });
     writeFileSync(join(project, 'home', '.dbt', 'profiles.yml'), `example:\n  target: dev\n  outputs:\n    dev:\n${output('dev_db')}    drops:\n${output('dev_db')}    prod:\n${output('prod_db')}`);
-    writeFileSync(join(project, 'dev-scope.local.json'), JSON.stringify({ snowflake: [{ connection: 'example_dev', databases: ['dev_db'] }] }));
+    writeFileSync(join(project, 'dev-scope.local.json'), JSON.stringify({ snowflake: [{ connection: 'example_dev', databases: ['dev_db'], dbtAccounts: ['example-acct1'] }] }));
     savedScope = process.env[DEV_SCOPE_FILE_ENV];
     process.env[DEV_SCOPE_FILE_ENV] = join(project, 'dev-scope.local.json');
     mkdirSync(join(project, 'macros', 'ops'), { recursive: true });

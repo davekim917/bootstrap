@@ -87,7 +87,7 @@ describe('a verified dev login runs any SQL without a card', () => {
         }
         writeFileSync(join(home, 'q.sql'), 'select 1;\n');
         mkdirSync(join(home, '.dbt'), { recursive: true });
-        writeFileSync(join(home, '.dbt', 'profiles.yml'), 'acme:\n  target: dev\n  outputs:\n    dev:\n      type: snowflake\n      database: dev_db\n');
+        writeFileSync(join(home, '.dbt', 'profiles.yml'), 'acme:\n  target: dev\n  outputs:\n    dev:\n      type: snowflake\n      account: ACME-DEV1\n      database: dev_db\n');
         writeFileSync(join(dir, 'tmp', 'w', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
     });
     test.each([

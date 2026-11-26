@@ -31,10 +31,28 @@ beforeAll(() => {
     mkdirSync(join(home, '.dbt'), { recursive: true });
     writeFileSync(join(home, '.dbt', 'profiles.yml'), [
         'acme:', '  target: dev', '  outputs:',
-        '    dev:', '      type: snowflake', '      database: dev_db',
-        '    prod:', '      type: snowflake', '      database: prod_db', '',
+        '    dev:', '      type: snowflake', '      account: acme-dev1', '      database: dev_db',
+        '    prod:', '      type: snowflake', '      account: acme-dev1', '      database: prod_db',
+        'acme_far:', '  target: dev', '  outputs:',
+        '    dev:', '      type: snowflake', '      account: far-acct1', '      database: dev_db', '',
     ].join('\n'));
     mkdirSync(join(dir, 'project'));
+    mkdirSync(join(dir, 'project', 'models'));
+    mkdirSync(join(dir, 'project', 'macros'));
+    writeFileSync(join(dir, 'project', 'macros', 'ops.sql'), [
+        "{% macro unload_orders() %}{% do run_query(\"copy into @dev_db.raw.out from dev_db.core.orders\") %}{% endmacro %}",
+        "{% macro load_orders() %}{% do run_query(\"insert into prod_db.core.orders values (1)\") %}{% endmacro %}",
+        "{% macro count_orders() %}{% do run_query(\"select count(*) from dev_db.core.orders\") %}{% endmacro %}", '',
+    ].join('\n'));
+    mkdirSync(join(dir, 'farproject'));
+    writeFileSync(join(dir, 'farproject', 'dbt_project.yml'), "name: far\nprofile: 'acme_far'\n");
+    for (const [name, target] of [['retrydev', 'dev'], ['retryprod', 'prod'], ['retrynone', null]] as const) {
+        mkdirSync(join(dir, name, 'target'), { recursive: true });
+        writeFileSync(join(dir, name, 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
+        if (target) writeFileSync(join(dir, name, 'target', 'run_results.json'), JSON.stringify({ args: { which: 'build', target } }));
+    }
+    writeFileSync(join(dir, 'project', 'load.py'), "import psycopg2\nc = psycopg2.connect('dbname=app')\nc.cursor().execute('insert into orders values (1)')\n");
+    writeFileSync(join(dir, 'project', 'load.js'), "const { Client } = require('pg');\nconst c = new Client();\nc.query('insert into orders values (1)');\n");
     writeFileSync(join(dir, 'project', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
     writeFileSync(join(dir, 'project', 'load.sql'), 'insert into orders values (1);\n');
     writeFileSync(join(dir, 'project', 'setup.sql'), '-- setup\nuse role ops_role;\ncreate database if not exists loads;\ncreate schema if not exists loads.raw;\ngrant usage on database loads to role loads_reader;\n');
@@ -348,5 +366,237 @@ describe('the card says what the step does', () => {
         const card = describeGate(command, evaluate(command).reason ?? '', dir);
         expect(card.label).toBe('Send Snowflake data out of the account (COPY INTO a stage or external location)');
         expect(card.summary).toContain("can't be called back");
+    });
+});
+
+describe('review round: SQL that writes or sends out, read the way the server reads it', () => {
+    test.each([
+        ['a MATERIALIZED CTE that inserts', PG + ' -c "with n as materialized (insert into orders values (1) returning id) select * from n"'],
+        ['EXPLAIN ANALYZE of a writing CTE', PG + ' -c "explain analyze with n as (insert into orders values (1) returning id) select * from n"'],
+        ['COMMIT PREPARED', PG + " -c \"commit prepared 'tx1'\""],
+        ['\\lo_import', PG + " -c \"\\\\lo_import '/srv/x.bin'\""],
+        ['\\copy into a quoted table name with a space', PG + " -c \"\\\\copy \\\"my orders\\\" from 'orders.csv' csv\""],
+        ['enabling a Snowflake task graph', "snow sql -c acme_prod -q \"select system\$task_dependents_enable('prod_db.core.root')\""],
+    ])('%s takes the write card', (_name, command) => {
+        const verdict = evaluate(command);
+        expect(verdict.action).toBe('gate');
+        expect(verdict.reason).toContain(SQL_WRITE);
+    });
+
+    test('\\lo_unlink keeps a card', () => {
+        expect(evaluate(PG + ' -c "\\\\lo_unlink 1234"').action).toBe('gate');
+    });
+
+    test.each([
+        ['adding a table to a publication', DEV_PG + ' -c "alter publication pub add table orders"'],
+        ['a literal unload under --enable-templating on the dev login', "snow sql -c acme_dev --enable-templating JINJA -q \"copy into 's3://example-bucket/x/' from dev_db.core.orders\""],
+        ['snow stage copy down to this machine, with its connection option first', 'snow stage copy -c acme_dev @dev_db.raw.s/x ./out'],
+        ['snow git copy down to this machine', 'snow git copy --connection acme_dev @dev_db.raw.repo/branches/main/ ./out'],
+    ])('%s takes the egress card', (_name, command) => {
+        const verdict = evaluate(command);
+        expect(verdict.action).toBe('gate');
+        expect(verdict.reason).toStartWith(SQL_EGRESS);
+    });
+
+    test('snow stage copy with an option the reference does not list keeps a card', () => {
+        expect(evaluate('snow stage copy --made-up-option ./a @dev_db.raw.s/').action).toBe('gate');
+    });
+
+    test.each([
+        ['EXPLAIN (ANALYZE FALSE) of an INSERT', PG + ' -c "explain (analyze false) insert into orders values (1)"'],
+        ['a Snowflake load checked with VALIDATION_MODE', 'snow sql -c acme_prod -q "copy into prod_db.core.orders from @prod_db.core.s validation_mode = return_errors"'],
+        ['a Snowflake unload checked with VALIDATION_MODE', 'snow sql -c acme_prod -q "copy into @prod_db.core.s from prod_db.core.orders validation_mode = return_rows"'],
+    ])('%s only reads', (_name, command) => {
+        expect(evaluate(command).action).toBe('allow');
+    });
+});
+
+describe('review round: dbt targets read the way dbt reads them', () => {
+    test.each([
+        ['a target before the subcommand', 'cd PROJECT && dbt --target prod build'],
+        ['an attached -t', 'cd PROJECT && dbt build -tprod'],
+        ['a later --target', 'cd PROJECT && dbt build --target dev --target prod'],
+        ['an exported DBT_TARGET earlier on the line', 'cd PROJECT && export DBT_TARGET=prod; dbt build'],
+        ['a runner that starts dbt', 'cd PROJECT && uv run dbt build --target prod'],
+        ['a subdirectory of the project on another target', 'cd PROJECT/models && dbt build --target prod'],
+        ['dbt test that stores failures on another target', 'cd PROJECT && dbt test --store-failures --target prod'],
+        ['a dev database name on another account', 'cd __DIR__/farproject && dbt build'],
+        ['dbt retry of a prod run', 'cd __DIR__/retryprod && dbt retry'],
+        ['dbt retry with no saved run to read', 'cd __DIR__/retrynone && dbt retry'],
+        ['a macro that writes outside the dev target', 'cd PROJECT && dbt run-operation load_orders'],
+    ])('%s keeps its card', (_name, command) => {
+        expect(evaluate(command.replaceAll('__DIR__', dir)).action).toBe('gate');
+    });
+
+    test('a macro that unloads takes the egress card on the dev target', () => {
+        const verdict = evaluate('cd PROJECT && dbt run-operation unload_orders');
+        expect(verdict.action).toBe('gate');
+        expect(verdict.reason).toStartWith(SQL_EGRESS);
+    });
+
+    test.each([
+        ['a runner that starts dbt on the dev target', 'cd PROJECT && uv run dbt build'],
+        ['a subdirectory of the project, whose project dbt finds above it', 'cd PROJECT/models && dbt build'],
+        ['dbt test that stores failures in the dev target', 'cd PROJECT && dbt test --store-failures'],
+        ['dbt retry of a dev run', 'cd __DIR__/retrydev && dbt retry'],
+        ['a macro that only reads', 'cd PROJECT && dbt run-operation count_orders'],
+    ])('%s runs without a card', (_name, command) => {
+        expect(evaluate(command.replaceAll('__DIR__', dir)).action).toBe('allow');
+    });
+
+    test('an account the dev-scope entry names for dbt counts as dev', () => {
+        const previous = process.env[DEV_SCOPE_FILE_ENV];
+        const scope = join(dir, 'dev-scope-dbt-accounts.local.json');
+        writeFileSync(scope, JSON.stringify({ snowflake: [{ connection: 'acme_dev', databases: ['dev_db'], dbtAccounts: ['FAR-ACCT1'] }] }));
+        process.env[DEV_SCOPE_FILE_ENV] = scope;
+        try {
+            expect(evaluate('cd ' + join(dir, 'farproject') + ' && dbt build').action).toBe('allow');
+        } finally {
+            process.env[DEV_SCOPE_FILE_ENV] = previous;
+        }
+    });
+});
+
+describe('review round: interpreter code reaches the scanner', () => {
+    test.each([
+        ['a driver imported beside another module', "python3 -c \"import os, psycopg2; psycopg2.connect('dbname=app').cursor().execute('insert into orders values (1)')\""],
+        ['a script handed on stdin', 'python3 < PROJECT/load.py'],
+        ['a script after a preloaded module', 'node -r dotenv/config PROJECT/load.js'],
+        ['a literal EXPLAIN ANALYZE that writes', "python3 -c \"import psycopg2; psycopg2.connect('dbname=app').cursor().execute('explain analyze insert into orders values (1)')\""],
+        ['a literal REFRESH MATERIALIZED VIEW', "python3 -c \"import psycopg2; psycopg2.connect('dbname=app').cursor().execute('refresh materialized view order_totals')\""],
+        ['a literal INSERT ALL', "python3 -c \"import snowflake.connector as s; s.connect().cursor().execute('insert all into a values (1) into b values (2) select 1')\""],
+    ])('%s takes a card', (_name, command) => {
+        expect(evaluate(command).action).toBe('gate');
+    });
+});
+
+describe('review round: what main ran without a card still does', () => {
+    test.each([
+        ['a fully qualified task whose body reads, on a listed connection with no login', "snow sql -c acme_shared -q \"create or replace task dev_db.core.ping warehouse = wh schedule = '60 minute' as select 1\""],
+        ['a task whose body writes into the dev database', "snow sql -c acme_shared -q \"create or replace task dev_db.core.fill warehouse = wh schedule = '60 minute' as insert into dev_db.core.t select 1\""],
+        ['a literal \\copy FROM a file on Render dev', DEV_PG + " -c \"\\\\copy orders from 'orders.csv' csv\""],
+        ['a literal dev write after a PGPASSWORD prefix', 'PGPASSWORD=example ' + DEV_PG + ' -c "insert into orders values (1)"'],
+    ])('%s runs without a card', (_name, command) => {
+        expect(evaluate(command).action).toBe('allow');
+    });
+
+    test.each([
+        ['a task whose body writes outside the dev database', "snow sql -c acme_shared -q \"create or replace task dev_db.core.fill warehouse = wh schedule = '60 minute' as insert into prod_db.core.t select 1\""],
+        ['\\copy FROM a program on Render dev', DEV_PG + " -c \"\\\\copy orders from program 'cat orders.csv' csv\""],
+        ['\\copy beside a shell escape on Render dev', DEV_PG + " -c \"\\\\copy orders from 'orders.csv' csv\" -c '\\\\! ls'"],
+        ['PGHOST beside PGPASSWORD', 'PGPASSWORD=example PGHOST=db.example ' + DEV_PG + ' -c "insert into orders values (1)"'],
+        ['PGSERVICE', 'PGSERVICE=prod ' + DEV_PG + ' -c "insert into orders values (1)"'],
+    ])('%s keeps its card', (_name, command) => {
+        expect(evaluate(command).action).not.toBe('allow');
+    });
+
+    describe('in a lab session', () => {
+        let profile: string | undefined;
+        beforeAll(() => { profile = process.env.NANOCLAW_INSTRUCTIONS_PROFILE; process.env.NANOCLAW_INSTRUCTIONS_PROFILE = 'lab'; });
+        afterAll(() => {
+            if (profile === undefined) delete process.env.NANOCLAW_INSTRUCTIONS_PROFILE;
+            else process.env.NANOCLAW_INSTRUCTIONS_PROFILE = profile;
+        });
+        test('unreadable SQL on a lab database runs as on main', () => {
+            expect(evaluate('psql -d lab_app -f "$F"').action).toBe('allow');
+        });
+        test('a literal unload from a lab database keeps its card', () => {
+            expect(evaluate('psql -d lab_app -c "select lo_export(1, \'/srv/out.bin\')"').action).not.toBe('allow');
+        });
+    });
+});
+
+describe('review round: a target that cannot be named is refused with the fix', () => {
+    test('an unload on the default snow connection', () => {
+        const verdict = evaluate("snow sql -q \"copy into 's3://example-bucket/x/' from prod_db.core.orders\"");
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).toContain('snow sql -c <connection>');
+    });
+    test('an unload through libpq defaults', () => {
+        expect(evaluate('psql -c "select lo_export(1, \'/srv/out.bin\')"').action).toBe('block');
+    });
+    test('a written-out server with a variable archive is resolvable', () => {
+        expect(evaluate('pg_restore -h db.example -U app -d app "$DUMP"').action).toBe('gate');
+    });
+});
+
+describe('review round: the card names what the step does', () => {
+    // The card body, before the command it quotes, so a fragment of the command can't pass for a description.
+    const cardOf = (command: string) => {
+        const card = describeGate(command, evaluate(command).reason ?? '', dir);
+        return { label: card.label, summary: card.summary.split('\nStep needing approval')[0] };
+    };
+    test('every unload is named', () => {
+        const card = cardOf('snow sql -c acme_prod -q "copy into @prod_db.core.a from prod_db.core.t1; copy into @prod_db.core.b from prod_db.core.t2"');
+        expect(card.label).toContain('(+1 more)');
+        expect(card.summary).toMatch(/\nAnd: .*prod_db\.core\.t2/i);
+    });
+    test('a write is named beside a destructive statement', () => {
+        const card = cardOf('snow sql -c acme_prod -q "delete from prod_db.core.t; insert into prod_db.core.t2 values (1)"');
+        expect(card.summary).toMatch(/\nAnd: Runs INSERT on .PROD_DB\.CORE\.T2./);
+    });
+    test('kinds past the first three are still named', () => {
+        const card = cardOf('snow sql -c acme_prod -q "insert into prod_db.core.a values (1); insert into prod_db.core.b values (1); insert into prod_db.core.c values (1); create view prod_db.core.v as select 1"');
+        expect(card.summary).toMatch(/And 1 more: .*VIEW/i);
+    });
+    test('UPDATE ONLY names the table', () => {
+        expect(cardOf(PG + ' -c "update only orders set status = 1 where id = 1"').label).toMatch(/ORDERS/i);
+    });
+    test('an attached -c names its connection', () => {
+        const card = cardOf('snow sql -cacme_prod -q "insert into prod_db.core.orders values (1)"');
+        expect(card.summary).toContain('connection \x60acme_prod\x60');
+        expect(card.summary).not.toContain('default connection');
+    });
+    test('Postgres egress says the data left the database', () => {
+        expect(cardOf(DEV_PG + ' -c "select lo_export(1, \'/srv/out.bin\')"').summary).toContain('left the database');
+    });
+    test('pg_restore --clean --create says the archive chooses the database it replaces', () => {
+        expect(evaluate('pg_restore -h db.example -U app -d postgres --clean --create dump.pgdump').reason).toContain('the archive chooses which database it replaces');
+    });
+});
+
+describe('psql input forms, pending #239 psqlReadableInput', () => {
+    test.todo('-Xc "$SQL" with the SQL wholly in an unresolved variable takes a card');
+    test.todo('--file=- or -f /dev/stdin fed by a pipe the guard cannot read takes a card');
+    test.todo('-v name="$X" interpolated as :name with an unresolved value takes a card');
+});
+
+describe('credentials in a SQL file, pending #246 withholding', () => {
+    test.todo('a CREATE MANAGED ACCOUNT read from a -f file withholds ADMIN_PASSWORD from the card preview and summary');
+    test.todo('an unload that carries a storage credential withholds it from the card');
+});
+
+describe('review round: account-admin holds administration, never data that moves', () => {
+    let previous: string | undefined;
+    beforeAll(() => {
+        previous = process.env[DEV_SCOPE_FILE_ENV];
+        const scope = join(dir, 'dev-scope-admin-review.local.json');
+        writeFileSync(scope, JSON.stringify({
+            snowflake: [{ connection: 'acme_dev', databases: ['dev_db'] }],
+            standingGrants: { acme_ops: ['account-admin'], acme_narrow: ['CREATE DATABASE'] },
+            ownRoles: { acme_ops: ['OPS_ROLE'] },
+        }));
+        process.env[DEV_SCOPE_FILE_ENV] = scope;
+    });
+    afterAll(() => { process.env[DEV_SCOPE_FILE_ENV] = previous; });
+
+    test.each([
+        ['a quoted own role', 'snow sql -c acme_ops -q \'use role "OPS_ROLE"; create database loads\''],
+        ['suspending a task', 'snow sql -c acme_ops -q "alter task loads.raw.fill suspend"'],
+        ['resuming a task', 'snow sql -c acme_ops -q "alter task loads.raw.fill resume"'],
+    ])('%s runs without a card', (_name, command) => {
+        expect(evaluate(command).action).toBe('allow');
+    });
+
+    test.each([
+        ['a database clone', 'snow sql -c acme_ops -q "create database loads clone prod_db"'],
+        ['a schema clone', 'snow sql -c acme_ops -q "create schema loads.raw clone prod_db.core"'],
+        ['a clone under the narrow CREATE DATABASE class', 'snow sql -c acme_narrow -q "create database loads clone prod_db"'],
+        ['replication enabled to another account', 'snow sql -c acme_ops -q "alter database loads enable replication to accounts partner_org.partner_acct"'],
+        ['a refresh from a primary', 'snow sql -c acme_ops -q "alter database loads refresh"'],
+        ['a quoted role that is not the own one', 'snow sql -c acme_ops -q \'use role "ops_role"; create database loads\''],
+        ['a task changed to run a write', 'snow sql -c acme_ops -q "alter task loads.raw.fill modify as insert into loads.raw.t values (1)"'],
+    ])('%s keeps its card', (_name, command) => {
+        expect(evaluate(command).action).toBe('gate');
     });
 });
