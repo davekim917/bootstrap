@@ -18,6 +18,7 @@ let home = '';
 let scopeFile = '';
 const saved: Record<string, string | undefined> = {};
 const realConfigLocked = devLoginTestHooks.configLocked;
+const realProgramLocked = devLoginTestHooks.programLocked;
 const hours = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
 function writeScope(login: Record<string, unknown> | undefined, connection = 'acme_dev') {
@@ -60,6 +61,7 @@ beforeAll(() => {
     process.env.HOME = home;
     process.env[DEV_SCOPE_FILE_ENV] = scopeFile;
     devLoginTestHooks.configLocked = () => true;
+    devLoginTestHooks.programLocked = () => true;
 });
 
 afterEach(() => {
@@ -69,6 +71,7 @@ afterEach(() => {
 
 afterAll(() => {
     devLoginTestHooks.configLocked = realConfigLocked;
+    devLoginTestHooks.programLocked = realProgramLocked;
     for (const [k, v] of Object.entries(saved)) {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
@@ -391,5 +394,27 @@ describe('the connection as NanoClaw stages it, with a query tag', () => {
     ])('a connection with %s is not trusted', (_name, line) => {
         writeConnections(GOOD_CONNECTIONS.replace('[acme_dev]', `[acme_dev]\n${line}`));
         expect(verdict('snow sql -c acme_dev -q "drop table prod_db.s.t"')).toBe('gate');
+    });
+});
+
+describe('a verified login keeps the card when what runs could have been replaced', () => {
+    beforeAll(() => {
+        writeScope({ user: 'AGENT_DEV_USER', account: 'ACME-DEV1', verifiedUntil: hours(24) });
+        writeConnections(GOOD_CONNECTIONS);
+    });
+    afterEach(() => {
+        devLoginTestHooks.programLocked = () => true;
+        devLoginTestHooks.configLocked = () => true;
+    });
+    test('the step itself runs without a card on the locked host', () => {
+        expect(verdict('snow sql -c acme_dev -q "drop table t"')).toBe('allow');
+    });
+    test('a snow that is not a locked program', () => {
+        devLoginTestHooks.programLocked = (n: string) => n !== 'snow';
+        expect(verdict('snow sql -c acme_dev -q "drop table t"')).toBe('gate');
+    });
+    test('a config.toml an earlier command could rewrite', () => {
+        devLoginTestHooks.configLocked = (p: string) => !p.endsWith('config.toml');
+        expect(verdict('snow sql -c acme_dev -q "drop table t"')).toBe('gate');
     });
 });

@@ -4618,7 +4618,80 @@ function configLocked(file: string): boolean {
     }
 }
 
-export const devLoginTestHooks = { configLocked };
+export const devLoginTestHooks = { configLocked, programLocked: (name: string) => lockedProgram(name) };
+
+const writable = (path: string): boolean => {
+    try {
+        accessSync(path, fsConstants.W_OK);
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+/**
+ * True when the program the shell finds for `name` on PATH can't have been put there by this user: no PATH entry
+ * searched before it, nor the file it runs, nor any directory above that file, is writable. A writable entry ahead of
+ * it would let an earlier command, or one earlier on the line, plant a program of that name first.
+ */
+function lockedProgram(name: string): boolean {
+    for (const dir of (process.env.PATH ?? '').split(':')) {
+        // An empty or relative entry searches the working directory.
+        if (!dir.startsWith('/') || writable(dir)) return false;
+        let real: string;
+        try {
+            const found = join(dir, name);
+            accessSync(found, fsConstants.X_OK);
+            if (!statSync(found).isFile()) continue;
+            real = realpathSync(found);
+        } catch {
+            continue;
+        }
+        for (let p = real; ; p = dirname(p)) {
+            if (writable(p)) return false;
+            if (p === dirname(p)) return true;
+        }
+    }
+    return false;
+}
+
+/** True when every wrapper a step runs under (`timeout`, `nohup`) and the program itself are locked programs. */
+function stepProgramsLocked(cmd: ResolvedCommand): boolean {
+    const wrappers = cmd.raw.slice(0, Math.max(0, cmd.raw.search(new RegExp(`(?:^|\\s)${cmd.name}\\s`)))).match(/\b(?:g?timeout|nohup)\b/g) ?? [];
+    return [...new Set([...wrappers, cmd.name])].every(name => devLoginTestHooks.programLocked(name));
+}
+
+/**
+ * True when the Snowflake CLI's config can't change between this check and snow reading it: `~/.snowflake` is a real
+ * directory and both files snow reads there sit on a read-only mount, as the container stages them.
+ */
+function snowConfigLocked(): boolean {
+    const dir = join(process.env.HOME || homedir(), '.snowflake');
+    try {
+        if (lstatSync(dir).isSymbolicLink()) return false;
+        return ['connections.toml', 'config.toml'].every(f => !lstatSync(join(dir, f)).isSymbolicLink() && devLoginTestHooks.configLocked(join(dir, f)));
+    } catch {
+        return false;
+    }
+}
+
+/** The files curl reads options from before its own arguments; any of them can add a URL, a proxy or a config file. */
+function curlrcAbsent(): boolean {
+    const home = process.env.HOME || homedir();
+    const dirs = [process.env.CURL_HOME, process.env.XDG_CONFIG_HOME, home, join(home, '.config')].filter((d): d is string => !!d);
+    return dirs.every(d => !existsSync(join(d, '.curlrc')) && !existsSync(join(d, 'curlrc')) && !existsSync(join(d, '_curlrc')));
+}
+
+/**
+ * True when nothing can change which render, curl, psql or ssh a Render dev step runs, or what they inherit: the line
+ * proves the environment as a trusted Snowflake step must, and each program it runs is a locked one.
+ */
+function renderStepLocked(cmd: ResolvedCommand, command: string): boolean {
+    if (!stepEnvironmentProven(command, cmd, RENDER_ENVIRONMENT_NAME) || !stepProgramsLocked(cmd)) return false;
+    if (cmd.name === 'curl') return curlrcAbsent();
+    const child = cmd.args[0] === 'psql' ? 'psql' : cmd.args[0] === 'ssh' ? 'ssh' : null;
+    return child === null || devLoginTestHooks.programLocked(child);
+}
 
 /**
  * True when connection `name` in the Snowflake CLI's locked config signs in as `login` with a key pair, and a check
@@ -4630,12 +4703,10 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
     const until = Date.parse(login.verifiedUntil);
     if (!Number.isFinite(until) || until <= Date.now() || until > Date.now() + DEV_LOGIN_MAX_HORIZON_MS) return false;
     // snow finds its config through HOME, as Python's expanduser does.
-    const dir = join(process.env.HOME || homedir(), '.snowflake');
-    const file = join(dir, 'connections.toml');
+    const file = join(process.env.HOME || homedir(), '.snowflake', 'connections.toml');
     const toml = (globalThis as { Bun?: { TOML?: { parse(text: string): unknown } } }).Bun?.TOML;
     try {
-        // A link is checked where it points, but could be repointed before snow follows it.
-        if (!toml || lstatSync(dir).isSymbolicLink() || lstatSync(file).isSymbolicLink() || !devLoginTestHooks.configLocked(file)) return false;
+        if (!toml || !snowConfigLocked()) return false;
         const section = (toml.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>)[name];
         if (!section || typeof section !== 'object' || Array.isArray(section)) return false;
         const entries = Object.entries(section as Record<string, unknown>);
@@ -4653,6 +4724,8 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
 // Environment names that decide which config, binary or code snow runs with.
 // EXECIGNORE is not inherited, but this shell's PATH search for `snow` skips what it names.
 const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|EXECIGNORE|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
+// The same for the render CLI, the psql and ssh it starts, and curl to the Render API.
+const RENDER_ENVIRONMENT_NAME = /^(?:HOME|PATH|EXECIGNORE|RENDER_\w*|CURL_HOME|XDG_\w+|SSL_\w+|SSH_\w+|PG\w+|LD_\w+)$/;
 // bash's own variables: an integer one (RANDOM, SECONDS, OPTIND) evaluates an assigned value as arithmetic, which can
 // assign any name, and BASH_CMDS/BASH_ALIASES repoint a command.
 const BASH_SPECIAL_NAME = /^(?:BASH\w*|RANDOM|SRANDOM|SECONDS|OPTIND|OPTARG|OPTERR|LINENO|HISTCMD|EPOCH\w+|FUNCNAME|FUNCNEST|GROUPS|DIRSTACK|COMP_\w+|IFS|OLDPWD|PWD|SHELLOPTS|PS4|PROMPT_COMMAND|ENV|CDPATH|GLOBIGNORE|HIST\w*|TMOUT|IGNOREEOF|POSIXLY_CORRECT|PPID|UID|EUID|SHLVL)$/;
@@ -4702,7 +4775,7 @@ function staysOneWord(word: string): boolean {
  * assignments to names the environment doesn't hold and a few commands that change no environment; the step's own
  * words expand nothing that assigns. A pipeline's other stages and anything after the step can't reach it.
  */
-function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean {
+function stepEnvironmentProven(command: string, step: ResolvedCommand, steering = SNOW_ENVIRONMENT_NAME): boolean {
     type Node = { type?: string; name?: unknown; prefix?: Node[]; suffix?: Node[]; commands?: Node[]; command?: Node; text?: string; index?: unknown; pos?: number; end?: number };
     let script: Node;
     try {
@@ -4715,7 +4788,7 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
     const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => String(w?.text ?? ''))
         .concat(((n as { redirects?: Redirect[] }).redirects ?? []).flatMap(r => [String(r.target?.text ?? ''), String(r.content ?? '')]));
     const variableSafe = (name: unknown): name is string => typeof name === 'string' && /^[A-Za-z_]\w*$/.test(name)
-        && !(name in process.env) && !SNOW_ENVIRONMENT_NAME.test(name) && !BASH_SPECIAL_NAME.test(name);
+        && !(name in process.env) && !steering.test(name) && !BASH_SPECIAL_NAME.test(name);
     const assignmentSafe = (a: Node) => a.type === 'Assignment' && variableSafe(a.name) && a.index === undefined && (a as { array?: unknown }).array === undefined
         && assignsNothing(String(a.text ?? ''));
     const quiet = (n: Node) => ((n as { redirects?: Array<{ operator?: string; target?: { text?: string } }> }).redirects ?? []).every(r =>
@@ -4797,11 +4870,11 @@ function trustedLoginConnection(cmd: ResolvedCommand): string | null {
  * `command` are the whole command line, so anything set up around the call counts.
  */
 export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
-    if (cmd.name === 'render') return topLevel ? renderDevTarget(cmd) : null;
-    if (RENDER_API_CLIENTS.has(cmd.name)) return topLevel ? renderApiDevTarget(cmd, commands, command) : null;
+    if (cmd.name === 'render') return topLevel && renderStepLocked(cmd, command) ? renderDevTarget(cmd) : null;
+    if (RENDER_API_CLIENTS.has(cmd.name)) return topLevel && renderStepLocked(cmd, command) ? renderApiDevTarget(cmd, commands, command) : null;
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql') return null;
     const scope = currentDevScope();
-    if (!scope) return null;
+    if (!scope || !stepProgramsLocked(cmd)) return null;
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
@@ -4812,10 +4885,10 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     // An xargs or find step's words are not the ones read here.
     const trusted = topLevel ? trustedLoginConnection(cmd) : null;
     const trustedEntry = trusted === null ? undefined : scope.snowflake.find(e => e.connection === trusted);
-    if (trustedEntry && snowEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
+    if (trustedEntry && stepEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
         return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
     }
-    if (changers.length || changesShellState(command) || !snowEnvironmentProven(command, cmd)) return null;
+    if (changers.length || changesShellState(command) || !stepEnvironmentProven(command, cmd) || !snowConfigLocked()) return null;
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {

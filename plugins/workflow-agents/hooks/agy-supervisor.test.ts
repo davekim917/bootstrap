@@ -227,10 +227,12 @@ describe("real settings arrive, the agent's working directory steers nothing", (
         const guard = `process.stdout.write(JSON.stringify({ decision: 'deny', reason: process.env[${JSON.stringify(name)}] ?? 'unset' }));`;
         const wrapper = withStandIn(guard);
         // A real directory, since TMPDIR has to name one.
-        const inherited = await run(wrapper, '{}', { cwd, env: { ...process.env, [name]: cwd } });
-        expect(reasonOf(JSON.parse(inherited.stdout))).toBe(cwd);
+        // PATH must still find the wrapper's own programs, so its rows keep the inherited one beside the value set.
+        const value = name === 'PATH' ? `${cwd}:${process.env.PATH}` : cwd;
+        const inherited = await run(wrapper, '{}', { cwd, env: { ...process.env, [name]: value } });
+        expect(reasonOf(JSON.parse(inherited.stdout))).toBe(value);
         const without: Record<string, string | undefined> = { ...process.env };
-        delete without[name];
+        if (name !== 'PATH') delete without[name];
         const planted = await run(wrapper, '{}', { cwd, env: without });
         expect(reasonOf(JSON.parse(planted.stdout))).not.toBe('planted');
     });
