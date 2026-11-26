@@ -1,4 +1,7 @@
-import { describe, expect, spyOn, test } from 'bun:test';
+import { afterAll, describe, expect, spyOn, test } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 import { evaluateBashCommand, type LocalPgHost } from './block-destructive-core';
 
@@ -206,7 +209,8 @@ describe('a connection the guard cannot read exactly as psql will make it is nev
         ['service= in a connection string', "psql -X 'service=scratch' -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'"],
         ['service= in a URI', "psql -X -h 127.0.0.1 -p 55432 'postgresql://127.0.0.1:55432/foo_test?service=scratch' -c 'DROP TABLE orders'"],
         ['an option the guard does not place', "psql -X -h 127.0.0.1 -p 55432 --log-file=/tmp/l -c 'DROP TABLE orders'"],
-        ['SQL on stdin', "psql -X -h 127.0.0.1 -p 55432 <<'SQL'\nDROP TABLE orders;\nSQL"],
+        ['SQL on stdin from a heredoc that expands', "psql -X -h 127.0.0.1 -p 55432 <<SQL\nDROP TABLE $T;\nSQL"],
+        ['SQL on stdin with a backslash command', "psql -X -h 127.0.0.1 -p 55432 <<'SQL'\n\\c host=db.example.internal\nDROP TABLE orders;\nSQL"],
         ['a stdin file read beside -c', "echo x | psql -X -h 127.0.0.1 -p 55432 -Xf- -c 'DROP TABLE orders'"],
     ])('%s', (name, command) => {
         if (REFUSED_WITH_THE_FORM_IT_READS.has(name)) expect(verdict(command)).toBe('block');
@@ -459,5 +463,31 @@ describe('the exemption applies only to a cluster scratch-pg started', () => {
         const v = evaluateBashCommand(DROP, { cwd: '/tmp', localPg: fixtureHost(f) });
         expect(v.action).toBe('block');
         expect(v.reason).toContain("scratch-pg start --port <port> --role <the harness's user>");
+    });
+});
+
+describe('a scratch migration the guard can read keeps the exemption, roles and grants included', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'scratch-migration-'));
+    const migration = join(dir, 'migration.sql');
+    const reconnect = join(dir, 'reconnect.sql');
+    writeFileSync(migration, 'CREATE ROLE app_reader LOGIN;\nGRANT SELECT ON orders TO app_reader;\nDO $$ BEGIN CREATE TABLE t (a int); END $$;\n');
+    writeFileSync(reconnect, '\\c host=db.example.com\nGRANT ALL ON orders TO public;\n');
+    afterAll(() => rmSync(dir, { recursive: true, force: true }));
+    const BASE = 'psql -X -h 127.0.0.1 -p 55432 -d foo_test';
+
+    test.each([
+        ['a -f file', `${BASE} -f ${migration}`],
+        ['a quoted heredoc', `${BASE} <<'EOF'\nCREATE ROLE app_reader LOGIN;\nGRANT SELECT ON orders TO app_reader;\nEOF`],
+        ['a dollar-quoted DO block in single quotes', `${BASE} -c 'DO $$ BEGIN CREATE ROLE app_reader; END $$'`],
+    ])('%s', (_name, command) => {
+        expect(verdict(command)).toBe('allow');
+    });
+
+    test.each([
+        ['a file with a backslash command, which can connect elsewhere', `${BASE} -f ${reconnect}`],
+        ['an unquoted heredoc, which expands $', `${BASE} <<EOF\nCREATE ROLE $NAME LOGIN;\nEOF`],
+        ['a dollar sign outside quotes', `${BASE} -c "DO $$ BEGIN CREATE ROLE app_reader; END $$"`],
+    ])('%s keeps no exemption', (_name, command) => {
+        expect(verdict(command)).not.toBe('allow');
     });
 });

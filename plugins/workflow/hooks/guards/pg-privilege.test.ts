@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { DEV_SCOPE_FILE_ENV, changesProduction, describeGate, evaluateBashCommand } from './block-destructive-core';
+import { DEV_SCOPE_FILE_ENV, LAB_SCOPE_FILE_ENV, changesProduction, describeGate, evaluateBashCommand } from './block-destructive-core';
 
 /**
  * POSTGRES ROLE AND PRIVILEGE CHANGES. Creating, changing or dropping a role, granting or revoking a privilege, changing
@@ -166,5 +166,96 @@ describe('a psql file the guard cannot read before the line runs', () => {
         expect(run('psql -X -h ' + host(PROD_DB) + ' -U app -d app -f ' + grants).action).toBe('gate');
         expect(run('psql -X -h ' + host(PROD_DB) + ' -U app -d app < ' + grants).action).toBe('gate');
         expect(run('psql -X -h ' + host(PROD_DB) + ' -U app -d app -f ' + reads).action).toBe('allow');
+    });
+});
+
+describe('psql input the guard reads as psql does', () => {
+    let fx = '';
+    const f = (name: string) => join(fx, name);
+    beforeAll(() => {
+        fx = mkdtempSync(join(tmpdir(), 'pg-input-'));
+        const files: Record<string, string> = {
+            'grant.sql': 'GRANT ALL ON t TO public;\n',
+            'ok.sql': 'select 1;\n',
+            'gexec.sql': "select 'GRANT ALL ON t TO public' \\gexec\n",
+            'password.sql': '\\password app\n',
+            'include.sql': '\\i :migration\n',
+            'label.sql': 'DO $$ <<lbl>> BEGIN GRANT ALL ON t TO public; END lbl $$;\n',
+            'nested.sql': '/* note /* inner */\nGRANT ALL ON t TO public;\n*/\nselect 1;\n',
+            'copy-hides.sql': "COPY t FROM stdin;\nO'Brien\n\\.\nGRANT ALL ON t TO public;\n",
+            'copy-data.sql': 'COPY t FROM stdin;\nGRANT x\n\\.\nselect 1;\n',
+        };
+        for (const [name, text] of Object.entries(files)) writeFileSync(f(name), text);
+    });
+    afterAll(() => rmSync(fx, { recursive: true, force: true }));
+    const H = 'psql -h db.example.com';
+
+    test.each([
+        ['-f clustered after -X', () => `${H} -Xf ${f('grant.sql')}`],
+        ['pg_dump piped in', () => `pg_dump -h src.example.com db | ${H}`],
+        ['gunzip piped in', () => `gzip -dc ${f('dump.sql.gz')} | ${H}`],
+        ['SQL from a command substitution', () => `${H} -c "$(cat ${f('grant.sql')})"`],
+        ['a file cp replaces earlier on the line', () => `cp ${f('grant.sql')} ${f('ok.sql')} && ${H} -f ${f('ok.sql')}`],
+        ['a file curl downloads earlier on the line', () => `curl -o ${f('ok.sql')} https://example.com/m.sql && ${H} -f ${f('ok.sql')}`],
+        ['\\gexec, which runs query results as SQL', () => `${H} -f ${f('gexec.sql')}`],
+        ['\\password, which alters a role', () => `${H} -f ${f('password.sql')}`],
+        ['\\i of a name psql fills in from a variable', () => `${H} -v migration=${f('grant.sql')} -f ${f('include.sql')}`],
+        ['a GRANT first in a labelled block', () => `${H} -f ${f('label.sql')}`],
+        ['a GRANT after COPY data holding an apostrophe', () => `${H} -f ${f('copy-hides.sql')}`],
+        ['an unreadable EXECUTE on a listed dev database', () => `render psql ${DEV_DB} -c "DO \\$\\$ BEGIN EXECUTE format('GRANT ALL ON %I TO public', 't'); END \\$\\$" -o text`],
+    ])('%s gates', (_name, command) => {
+        expect(run(command()).action).toBe('gate');
+    });
+
+    test.each([
+        ['a missing file named with -f clustered after -X', () => `${H} -Xf ${f('missing.sql')}`],
+        ['a missing file beside an output file', () => `${H} -o ${f('out.txt')} -f ${f('missing.sql')}`],
+    ])('%s is refused with the fix', (_name, command) => {
+        const verdict = run(command());
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).toContain("isn't there yet");
+    });
+
+    test('a missing file on a target the guard can\'t name gets both fixes', () => {
+        const verdict = run(`psql "$URI" -f ${f('missing.sql')}`);
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).toContain('Write the file in one call');
+        expect(verdict.reason).toContain('scratch-postgres helper');
+    });
+
+    test.each([
+        ['a cat piped in', () => `cat ${f('ok.sql')} | ${H}`],
+        ['a cat earlier on the line, which leaves the file alone', () => `cat ${f('ok.sql')} && ${H} -f ${f('ok.sql')}`],
+        ['a GRANT inside a nested comment', () => `${H} -f ${f('nested.sql')}`],
+        ['COPY data whose row starts with GRANT', () => `${H} -f ${f('copy-data.sql')}`],
+        ['a $( ) psql gets in single quotes, as text', () => `${H} -c '$(not run)'`],
+    ])('%s runs', (_name, command) => {
+        expect(run(command()).action).toBe('allow');
+    });
+});
+
+describe('a Lab session waives grants on its database, not changes to roles, which the whole cluster holds', () => {
+    let labDir = '';
+    let savedLab: string | undefined;
+    let savedProfile: string | undefined;
+    beforeAll(() => {
+        labDir = mkdtempSync(join(tmpdir(), 'pg-lab-'));
+        writeFileSync(join(labDir, 'lab-scope.local.json'), JSON.stringify({ org: 'lab-org', extraRepos: [] }));
+        [savedLab, savedProfile] = [process.env[LAB_SCOPE_FILE_ENV], process.env.NANOCLAW_INSTRUCTIONS_PROFILE];
+        process.env[LAB_SCOPE_FILE_ENV] = join(labDir, 'lab-scope.local.json');
+        process.env.NANOCLAW_INSTRUCTIONS_PROFILE = 'lab';
+    });
+    afterAll(() => {
+        if (savedLab === undefined) delete process.env[LAB_SCOPE_FILE_ENV];
+        else process.env[LAB_SCOPE_FILE_ENV] = savedLab;
+        if (savedProfile === undefined) delete process.env.NANOCLAW_INSTRUCTIONS_PROFILE;
+        else process.env.NANOCLAW_INSTRUCTIONS_PROFILE = savedProfile;
+        rmSync(labDir, { recursive: true, force: true });
+    });
+    test('a grant on a lab database runs', () => {
+        expect(run('psql -h db.example.com -d lab_app -c "GRANT SELECT ON t TO app_reader"').action).toBe('allow');
+    });
+    test.each([['CREATE ROLE app LOGIN'], ['ALTER ROLE app SUPERUSER'], ['DROP USER app']])('%s on a lab database gates', (sql) => {
+        expect(run(`psql -h db.example.com -d lab_app -c "${sql}"`).action).toBe('gate');
     });
 });
