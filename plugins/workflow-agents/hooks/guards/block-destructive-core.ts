@@ -7859,10 +7859,13 @@ export function evaluateBashCommand(
     }
 }
 
+/** A line's verdict, with the step a refusal is about when one is. */
+type LineVerdict = GateEvaluation & { refused?: ResolvedCommand };
+
 function evaluateBashLine(
     command: string,
     opts: { skipGate?: boolean; cwd?: string; localPg?: LocalPgHost },
-): GateEvaluation {
+): LineVerdict {
     const commands = extractCommands(command);
     const ephemeralMktempVariables = findEphemeralMktempVariables(command);
     const lab = isLabSession();
@@ -7922,7 +7925,7 @@ function evaluateBashLine(
         // name) is refused wherever it sits in the line: an earlier gated step must not turn it into an approvable card.
         let first: string | undefined;
         for (const step of gatedSteps(commands, command, cwd, lab, true, opts.localPg)) {
-            if (step.fix) return { action: 'block', reason: step.fix };
+            if (step.fix) return { action: 'block', reason: step.fix, refused: step.cmd };
             first ??= step.reason;
         }
         if (first !== undefined) return { action: 'gate', reason: first };
@@ -8255,30 +8258,34 @@ export function containsCredential(text: string): boolean {
  */
 const sqlCarriesCredential = (sql: string): boolean => containsCredential(sql) || /passw(?:or)?d\b[ \t]*(?:\n|\/\*)[\s\S]{0,40}?['"$]/i.test(sql);
 
-function withheldVerdict(command: string, verdict: GateEvaluation, cwd: string): GateEvaluation {
+function withheldVerdict(command: string, { refused, ...verdict }: LineVerdict, cwd: string): GateEvaluation {
     // The guard's own advice names where a password goes without holding one.
     const quoted = (verdict.reason ?? '').replace(/PGPASSWORD="\$VAR"|<password>/g, '');
     if (verdict.action === 'allow' || !verdict.reason || !(carriesCredential(command, cwd) || sqlCarriesCredential(quoted))) return verdict;
-    return { ...verdict, reason: withheldReason(verdict.reason, command, cwd) };
+    return { ...verdict, reason: withheldReason(verdict.reason, command, cwd, refused) };
 }
 
 let lastEvaluated: { command: string; cwd: string; commands: ResolvedCommand[] } | null = null;
+
+/** The line's parse: the one evaluateBashCommand just made, whose SQL inputs it has already traced (sqlInputFor caches them), or a new one. */
+function evaluatedCommands(command: string, cwd: string): ResolvedCommand[] {
+    if (lastEvaluated?.command === command && lastEvaluated.cwd === cwd) return lastEvaluated.commands;
+    const commands = extractCommands(command);
+    if (commands[0]?.script) commands[0].script.cwd = cwd;
+    return commands;
+}
 
 /** The command, or SQL its clients read from files (relative ones from `cwd`, as the evaluator reads them), looks like it holds a credential. */
 function carriesCredential(command: string, cwd: string): boolean {
     if (containsCredential(command)) return true;
     const sqlClient = (cmd: ResolvedCommand) => SQL_CLIS[cmd.name] || (cmd.name === 'snow' && cmd.args[0] === 'sql');
-    const found = (commands: ResolvedCommand[]) => commands.some(cmd => sqlClient(cmd) && sqlInputFor(cmd).texts.some(sqlCarriesCredential));
     try {
-        // The line evaluateBashCommand just read, whose SQL inputs it has already traced (sqlInputFor caches them).
-        const reuse = lastEvaluated?.command === command && lastEvaluated.cwd === cwd ? lastEvaluated.commands : null;
-        if (reuse && found(reuse)) return true;
-        // The evaluator's trace budget is shared across the line and spent in its own order, so a step it reached late
-        // may be only partly read. Then the line is read again with a budget of its own, and either reading counts.
-        if (reuse && reuse.filter(sqlClient).every(cmd => !sqlInputFor(cmd).unreadable)) return false;
-        const fresh = extractCommands(command);
-        if (fresh[0]?.script) fresh[0].script.cwd = cwd;
-        return found(fresh);
+        const clients = evaluatedCommands(command, cwd).filter(sqlClient);
+        // Many steps can read one text, as in a loop over one file: each text is scanned once.
+        if ([...new Set(clients.flatMap(cmd => sqlInputFor(cmd).texts))].some(sqlCarriesCredential)) return true;
+        // A step read after the line's shared trace budget ran out may be only partly read, and reading it again would
+        // cost what the whole line did. So a line that spent its budget counts as carrying one.
+        return clients.some(cmd => sqlInputFor(cmd).unreadable !== null && (cmd.script?.traceBudget ?? SQL_TRACE_BUDGET) < 0);
     } catch {
         return false;
     }
@@ -8333,16 +8340,7 @@ function databaseOperand(tool: 'dropdb' | 'createdb', args: string[]): string | 
  * The scratch-pg line a refusal suggests, built from the step it refused: psql's SQL is the agent's to fill in, and
  * dropdb or createdb keep their own database name when it is a plain word with no credential.
  */
-function scratchRetry(command: string, cwd: string): string {
-    // The step the refusal is about: the first gated step that carries a fix, as evaluateBashCommand reads it.
-    let refused: ResolvedCommand | undefined;
-    try {
-        const commands = extractCommands(command);
-        if (commands[0]?.script) commands[0].script.cwd = cwd;
-        refused = [...gatedSteps(commands, command, cwd, isLabSession(), false)].find(s => s.fix)?.cmd;
-    } catch {
-        refused = undefined;
-    }
+function scratchRetry(refused: ResolvedCommand | undefined): string {
     if (refused?.name !== 'dropdb' && refused?.name !== 'createdb') return `${SCRATCH_PG} psql <db> -c '<your SQL>'`;
     const name = databaseOperand(refused.name, refused.args);
     return `${SCRATCH_PG} ${refused.name} ${name && /^[A-Za-z_][\w-]*$/.test(name) && !containsCredential(name) ? name : '<db>'}`;
@@ -8353,13 +8351,15 @@ function scratchRetry(command: string, cwd: string): string {
  * the rest is the structured summary of each step (withheldSteps), the fixed advice its refusal gave, as templates with
  * '<your SQL>', and the note that the text is withheld.
  */
-function withheldReason(reason: string, command: string, cwd: string): string {
+function withheldReason(reason: string, command: string, cwd: string, refused: ResolvedCommand | undefined): string {
     const advice = RETRY_TEMPLATES.filter(([rx]) => rx.test(reason)).map(([, text]) => text);
-    if (/scratch-postgres helper/.test(reason)) advice.unshift(`If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval: ${scratchRetry(command, cwd)}.`);
-    return [ruleName(reason), ...withheldSteps(command, reason, cwd).described, ...advice, '', WITHHELD_NOTE].join('\n');
+    if (/scratch-postgres helper/.test(reason)) advice.unshift(`If it is a scratch Postgres in this container, run it through the scratch-postgres helper, which needs no approval: ${scratchRetry(refused)}.`);
+    return [ruleName(reason), ...withheldSteps(command, reason, cwd, REASON_STEP_LIMIT).described, ...advice, '', WITHHELD_NOTE].join('\n');
 }
 
 const WITHHELD_NOTE = 'Command text withheld: it contains a credential.';
+// A refusal names the steps to explain itself; the approval card lists every one.
+const REASON_STEP_LIMIT = 20;
 
 /** A URL's scheme, host and path, without its user info or query, which can carry a credential. */
 function urlShown(value: string): string | null {
@@ -8458,14 +8458,19 @@ export function approvalCard(command: string, reason: string, cwd: string = curr
 }
 
 /** Each gated step as a withheld card lists it: its rule, program, targets and SQL statement kinds, from the parse. */
-function withheldSteps(command: string, reason: string, cwd: string): { programs: string[]; described: string[] } {
+function withheldSteps(command: string, reason: string, cwd: string, limit = Infinity): { programs: string[]; described: string[] } {
     let steps: Array<{ cmd: ResolvedCommand; reason: string }> = [];
+    let more = false;
     try {
-        const commands = extractCommands(command);
-        if (commands[0]?.script) commands[0].script.cwd = cwd;
+        const commands = evaluatedCommands(command, cwd);
         const view = viewShell(command);
-        steps = [...gatedSteps(commands, command, cwd, isLabSession(), false)]
-            .map(s => ({ ...s, cmd: cardArgs(s.cmd, view, new Set()) }));
+        for (const s of gatedSteps(commands, command, cwd, isLabSession(), false)) {
+            if (steps.length === limit) {
+                more = true;
+                break;
+            }
+            steps.push({ ...s, cmd: cardArgs(s.cmd, view, new Set()) });
+        }
     } catch {
         steps = [];
     }
@@ -8478,6 +8483,7 @@ function withheldSteps(command: string, reason: string, cwd: string): { programs
         }
         return `- ${facts.join('. ').replace(/\.\./g, '.')}.`;
     });
+    if (more) described.push('- More gated steps follow.');
     return { programs: [...new Set(steps.map(s => s.cmd.name))], described };
 }
 

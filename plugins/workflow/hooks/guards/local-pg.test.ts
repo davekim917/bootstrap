@@ -323,6 +323,16 @@ describe('a connection string or localhost the guard does not resolve is answere
         expect(v.reason).toContain('Command text withheld');
     });
 
+    test('a withheld refusal retries the step the plain refusal names', () => {
+        // Two databases on one line: the scratch proof refuses the first, so both forms name old_archive.
+        const plain = evaluate('dropdb -h 127.0.0.1 -p 55432 -U scratch old_archive && dropdb app_test');
+        expect(plain.reason).toContain('scratch-pg dropdb old_archive\n');
+        const withheld = evaluate('dropdb -h 127.0.0.1 -p 55432 -U scratch old_archive && PGPASSWORD=s3cret-example dropdb app_test');
+        expect(withheld.reason).toContain('Command text withheld');
+        expect(withheld.reason).toContain('scratch-pg dropdb old_archive.');
+        expect(withheld.reason).not.toContain('app_test');
+    });
+
     // A URI to a host outside this container goes to an approver; the others are refused toward scratch-pg.
     test.each<[string, string, Fixture]>([
         ['a URI with a query string', "psql 'postgresql://localhost:55432/foo_test?sslmode=disable' -X -c 'DROP TABLE orders'", scratch],
