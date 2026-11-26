@@ -16,6 +16,7 @@ const PROD_DB = 'dpg-proddatabase00000001-a';
 const HOST = `${DEV_DB}.virginia-postgres.render.com`;
 const PSQL = '/usr/local/bin/psql';
 const READER = `${PSQL} -X -P pager=off -h ${HOST} -U app_reader -d app_dev`;
+const HINTED = `PGPASSFILE=/run/nanoclaw/pgpass/app_reader ${READER}`;
 
 let dir = '';
 let saved: string | undefined;
@@ -26,7 +27,7 @@ beforeAll(() => {
     const scopeFile = join(dir, 'dev-scope.local.json');
     writeFileSync(scopeFile, JSON.stringify({
         snowflake: [],
-        render: { resources: [DEV_DB], readers: [{ resource: DEV_DB, host: HOST, user: 'app_reader', databases: ['app_dev', 'app_test'] }] },
+        render: { resources: [DEV_DB], readers: [{ resource: DEV_DB, host: HOST, user: 'app_reader', databases: ['app_dev', 'app_test'], scope: 'app_reader' }] },
     }));
     process.env[DEV_SCOPE_FILE_ENV] = scopeFile;
 });
@@ -53,6 +54,7 @@ describe('psql as the read-only login, by absolute path, runs with no card, for 
         [`${READER} -c 'select 1' | /usr/bin/head -5`],
         [`/usr/bin/timeout 60 ${READER} -A -t -c 'select 1' 2>&1 | /usr/bin/tail -n 20`],
         [`${READER} --csv -p 5432 -c 'select 1' -c 'select 2'`],
+        [`PGPASSFILE=/run/nanoclaw/pgpass/app_reader ${READER} -c 'select 1'`],
     ])('%s', command => {
         expect(run(command).action).toBe('allow');
     });
@@ -71,6 +73,9 @@ describe('anything outside the exact shape is not card-free', () => {
         ['another port', `${PSQL} -X -P pager=off -h ${HOST} -p 6432 -U app_reader -d app_dev -c 'drop table a'`],
         ['a trailing &', `${READER} -c 'drop table a' &`],
         ['an environment prefix', `PGOPTIONS=-cx=1 ${READER} -c 'drop table a'`],
+        ['a PGPASSFILE outside the staged logins', `PGPASSFILE=/tmp/pgpass ${READER} -c 'drop table a'`],
+        ['PGPASSFILE beside another assignment', `PGPASSFILE=/run/nanoclaw/pgpass/app_reader PGHOST=x ${READER} -c 'drop table a'`],
+        ["another reader's staged file", `PGPASSFILE=/run/nanoclaw/pgpass/other_reader ${READER} -c 'drop table a'`],
         ['a step chained before it', `true && ${READER} -c 'drop table a'`],
     ])('%s', (_label, command) => {
         expect(run(command).action).not.toBe('allow');
@@ -89,9 +94,9 @@ describe('anything outside the exact shape is not card-free', () => {
 
 describe('a gated step aimed at the read-only database gets a hint instead of a card', () => {
     test.each([
-        [`cd /tmp/rv; timeout 60 render psql ${DEV_DB} --command "select now()" -o json 2>&1 | head -20`, `${READER} -c 'select now()'`],
-        [`timeout 60 render psql ${DEV_DB} --command="select 1" -o json | cat`, `${READER} -c 'select 1'`],
-        [`timeout 60 render psql ${DEV_DB} --command "select 'x'" -o json | cat`, `${READER} -c "select 'x'"`],
+        [`cd /tmp/rv; timeout 60 render psql ${DEV_DB} --command "select now()" -o json 2>&1 | head -20`, `${HINTED} -c 'select now()'`],
+        [`timeout 60 render psql ${DEV_DB} --command="select 1" -o json | cat`, `${HINTED} -c 'select 1'`],
+        [`timeout 60 render psql ${DEV_DB} --command "select 'x'" -o json | cat`, `${HINTED} -c "select 'x'"`],
     ])('a read: %s', (command, retry) => {
         const { action, reason } = run(command);
         expect(action).toBe('block');
@@ -150,6 +155,20 @@ describe('the reader list in dev-scope.local.json', () => {
         snowflake: [{ connection: 'example', databases: ['EXAMPLE_DEV'] }],
         render: { resources: [DEV_DB], readers },
     });
+    test('a reader with a scope names its PGPASSFILE in the hint', () => {
+        const file = join(dir, 'scoped.json');
+        writeFileSync(file, scope([{ resource: DEV_DB, host: HOST, user: 'app_reader', databases: ['app_dev'], scope: 'app_reader' }]));
+        const before = process.env[DEV_SCOPE_FILE_ENV];
+        process.env[DEV_SCOPE_FILE_ENV] = file;
+        try {
+            const { reason } = run(`timeout 60 render psql ${DEV_DB} --command "select 1" -o json | cat`);
+            expect(retryIn(reason!)).toBe(`PGPASSFILE=/run/nanoclaw/pgpass/app_reader ${READER} -c 'select 1'`);
+            expect(run(retryIn(reason!)).action).toBe('allow');
+        } finally {
+            process.env[DEV_SCOPE_FILE_ENV] = before;
+        }
+    });
+
     test('parses a reader on a listed resource and host', () => {
         expect(parseDevScope(scope([{ resource: DEV_DB, host: HOST, user: 'app_reader', databases: ['app_dev'] }]))?.render?.readers).toHaveLength(1);
     });

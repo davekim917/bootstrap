@@ -4260,6 +4260,8 @@ export interface PgReader {
     user: string;
     /** The databases the login reads; the first is the one a hint names. */
     databases: string[];
+    /** The staged login file's scope, so a hint names PGPASSFILE=/run/nanoclaw/pgpass/<scope>. */
+    scope?: string;
 }
 
 const PG_IDENTIFIER_RE = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -4298,11 +4300,12 @@ export function parseDevScope(text: string): DevScope | null {
     }
     const raw_readers = (render as { readers?: unknown }).readers;
     const readers = (Array.isArray(raw_readers) ? raw_readers : []).filter((r: unknown): r is PgReader => {
-        const { resource, host, user, databases } = (r ?? {}) as Record<string, unknown>;
+        const { resource, host, user, databases, scope } = (r ?? {}) as Record<string, unknown>;
         const ok = typeof resource === 'string' && resources.includes(resource) && typeof host === 'string'
             && isListedPgHost(host, [resource]) && typeof user === 'string' && PG_IDENTIFIER_RE.test(user)
             && Array.isArray(databases) && databases.length > 0
-            && databases.every((d: unknown) => typeof d === 'string' && PG_IDENTIFIER_RE.test(d));
+            && databases.every((d: unknown) => typeof d === 'string' && PG_IDENTIFIER_RE.test(d))
+            && (scope === undefined || (typeof scope === 'string' && /^[A-Za-z0-9@._-]+$/.test(scope) && scope !== '.' && scope !== '..'));
         // A bad reader entry drops itself, never the rest of the file's exemptions.
         if (!ok) console.error(`dev-scope: ignored a render.readers entry that is not a listed resource, its host, a user and databases: ${JSON.stringify(r)}`);
         return ok;
@@ -4422,6 +4425,7 @@ const READER_PROGRAMS = { psql: '/usr/local/bin/psql', timeout: '/usr/bin/timeou
 const PSQL_READER_BARE_FLAGS = /^-[AtqxXeb]+$|^--(?:no-align|tuples-only|quiet|csv|expanded|no-psqlrc|echo-queries|echo-errors)$/;
 const PSQL_READER_VALUE_FLAGS = new Set(['-h', '--host', '-U', '--username', '-d', '--dbname', '-p', '--port', '-c', '--command', '-F', '--field-separator', '-R', '--record-separator', '-P', '--pset']);
 const PAGE_COUNT = /^(?:-\d+|-n ?\d+)$/;
+const PGPASS_DIR = '/run/nanoclaw/pgpass';
 const READ_SQL_OPENER = /^\s*(?:select|with|show|table|values|explain)\b/i;
 
 /** A word's text when bash reads it as written: only literal and quoted text, no expansion, glob, brace or tilde. */
@@ -4485,7 +4489,12 @@ export function pgReaderLine(command: string): PgReader | null {
     const node = statement.command;
     const stages: any[] = node?.type === 'Pipeline' && !node.time && !node.negated && node.operators?.every((o: string) => o === '|')
         ? node.commands : [node];
-    if (stages.length > 2 || stages.some(s => s?.type !== 'Command' || s.prefix?.length)) return null;
+    if (stages.length > 2 || stages.some(s => s?.type !== 'Command') || stages[1]?.prefix?.length) return null;
+    // The one assignment allowed: PGPASSFILE naming the matched reader's staged login file, a host-owned read-only mount.
+    const prefix: any[] = stages[0].prefix ?? [];
+    if (prefix.length > 1 || (prefix.length === 1 && !(prefix[0]?.type === 'Assignment' && prefix[0].name === 'PGPASSFILE'))) return null;
+    const passfile = prefix.length ? literalWord(prefix[0].value) : undefined;
+    if (passfile === null) return null;
     const words = (s: any): string[] | null => {
         const out = [s.name, ...(s.suffix ?? [])].map(literalWord);
         return out.every(w => w !== null) ? out as string[] : null;
@@ -4503,7 +4512,9 @@ export function pgReaderLine(command: string): PgReader | null {
         if (!/^\d+(?:\.\d+)?[smhd]?$/.test(w[1] ?? '')) return null;
         w = w.slice(2);
     }
-    return w[0] === READER_PROGRAMS.psql ? readerPsqlArgs(w.slice(1), readers) : null;
+    const reader = w[0] === READER_PROGRAMS.psql ? readerPsqlArgs(w.slice(1), readers) : null;
+    if (!reader || passfile === undefined) return reader;
+    return reader.scope !== undefined && passfile === `${PGPASS_DIR}/${reader.scope}` ? reader : null;
 }
 
 /** pflag's boolean spellings: `--confirm`, or `--confirm=` one of its true values. */
@@ -4557,8 +4568,9 @@ function readerHint(cmd: ResolvedCommand): string | null {
     }
     if (!reader) return null;
     const write = `write → add --confirm: render psql ${reader.resource} --confirm …, which asks for approval as before.`;
+    const passfile = reader.scope ? `PGPASSFILE=${PGPASS_DIR}/${reader.scope} ` : '';
     const shape = (db: string, sqlWords: string) =>
-        `${READER_PROGRAMS.psql} -X -P pager=off -h ${reader!.host} -U ${reader!.user} -d ${db} ${sqlWords}`;
+        `${passfile}${READER_PROGRAMS.psql} -X -P pager=off -h ${reader!.host} -U ${reader!.user} -d ${db} ${sqlWords}`;
     const template = `a read runs with no approval as ${shape(`<${reader.databases.join('|')}>`, "-c '<sql>'")}, on its own line.`;
     if (sql === null) return `${reader.resource} has a read-only login: ${template} ${write}`;
     if (!sql.every(readsOnly)) return `${reader.resource}: this step writes, so it runs as the owner. ${write}`;
