@@ -1449,7 +1449,8 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const named = /[$`]/.test(f);
         if (candidates && writes && !writes.length && (named || (cmd.name === 'psql' && f !== '-' && ownFiles.has(f)) || (cmd.name === 'snow' && commandFiles.has(f))) && candidates.every(pathIsMissing)) {
             unreadable ??= `${f}, ${SQL_PATH_MISSING}`;
-            missingFile ??= `${f}, ${SQL_PATH_MISSING}`;
+            // A file cp, curl or a redirect writes earlier on the line is there when psql opens it, only unread.
+            if (client !== 'psql' || !lineWriterOf(cmd, f)) missingFile ??= `${f}, ${SQL_PATH_MISSING}`;
         }
         // A file something may write before it is read is still read as it stands: what it holds now can block.
         if (writesOwnOutput(cmd) || texts.some(t => SQL_CLIENT_FILE_WRITE.test(t))) {
@@ -1964,6 +1965,17 @@ const pathIsMissing = (path: string): boolean => {
  * scratch Postgres; a substitution in -h or another argument that isn't SQL doesn't count. A file that isn't there is
  * reported apart, ahead of everything else, since its refusal says how to make it readable.
  */
+// The same SQL is often read by every psql on a long line; its skeleton is computed once.
+const metaSkeletons = new Map<string, string>();
+function metaSkeleton(sql: string): string {
+    let skeleton = metaSkeletons.get(sql);
+    if (skeleton === undefined) {
+        if (metaSkeletons.size > 64) metaSkeletons.clear();
+        metaSkeletons.set(sql, (skeleton = sqlSkeleton(sql, false, true).skeleton));
+    }
+    return skeleton;
+}
+
 export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: string[]): { unreadable: string | null; missing: string | null } {
     let files = given;
     const stdinNamed = (f: string) => {
@@ -1990,20 +2002,20 @@ export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: 
             const fed = readablePipeSource(cmd);
             if (fed === null) return result('SQL piped in from another command');
             // A cat's file is found from the cat's own directory, which env -C or a cd can move.
-            const gone = fed.files.find(f => !lineWriterOf(fed.from, f) && (sqlPathCandidates(f, fed.from) ?? []).every(pathIsMissing));
+            const gone = fed.files.find(f => !writesTo(f, fed.from)?.length && !lineWriterOf(fed.from, f) && (sqlPathCandidates(f, fed.from) ?? []).every(pathIsMissing));
             if (gone) return { unreadable: null, missing: `${gone}, ${SQL_PATH_MISSING}` };
-            const catWriter = fed.files.map(f => lineWriterOf(fed.from, f)).find(Boolean);
+            const catWriter = fed.files.map(f => lineWriterOf(fed.from, f, true)).find(Boolean);
             if (catWriter) return result(`a file cat reads, which \`${catWriter}\` earlier on the line writes`);
         }
     }
     if ((cmd.stdinExpanded ?? []).some(w => substitutes(w.word))) return result('a command substitution in its SQL');
     for (const f of files) {
-        const writer = stdinNamed(f) ? null : lineWriterOf(cmd, f);
+        const writer = stdinNamed(f) ? null : lineWriterOf(cmd, f, true);
         if (writer) return result(`${f}, which \`${writer}\` earlier on the line writes`);
     }
     for (const text of texts) {
         const sql = text.replace(PSQL_COPY_DATA, '$1');
-        const skeleton = sqlSkeleton(sql, false, true).skeleton;
+        const skeleton = metaSkeleton(sql);
         if (/\\gexec(?=[\s\\;]|$)/.test(skeleton)) return result('\\gexec, which runs what its query returns as SQL');
         if (/\\copy\b[^\n]*\bfrom\s+p?stdin\b/i.test(skeleton)) return result('\\copy … FROM STDIN, whose data the line feeds psql');
         for (const m of sql.matchAll(SQL_INCLUDE)) {
@@ -2072,13 +2084,43 @@ const optionValues = (args: string[], options: string[]) => args.flatMap((a, i) 
 
 /**
  * A command earlier on the line that writes `file`, by a `>` or `>>` redirect or as a known writer's output, so psql
- * would read what it wrote rather than what the guard read; null when none does.
+ * would read what it wrote rather than what the guard read; null when none does. With tracedReadable, a writer whose
+ * text the guard traces into the file it reads (writesTracedText) doesn't count.
  */
-function lineWriterOf(cmd: ResolvedCommand, file: string): string | null {
+function lineWriterOf(cmd: ResolvedCommand, file: string, tracedReadable = false): string | null {
     if (cmd.pos === undefined || !cmd.script) return null;
     const names = (a: string) => a === file || a.endsWith(`/${file}`) || file.endsWith(`/${a}`);
-    const writers = (lineWriters.get(cmd.script) ?? indexLineWriters(cmd.script)).get(basename(file)) ?? [];
+    const all = (lineWriters.get(cmd.script) ?? indexLineWriters(cmd.script)).get(basename(file)) ?? [];
+    let writers = all;
+    if (tracedReadable) {
+        writers = untracedWriters.get(all) ?? all.filter(w => !tracedWriter(w.c));
+        untracedWriters.set(all, writers);
+    }
     return writers.find(w => w.pos < cmd.pos! && w.c !== cmd && names(w.target))?.c.name ?? null;
+}
+
+const untracedWriters = new WeakMap<object, Array<{ pos: number; target: string; c: ResolvedCommand }>>();
+const tracedWriters = new WeakMap<ResolvedCommand, boolean>();
+const tracedWriter = (c: ResolvedCommand): boolean => {
+    let traced = tracedWriters.get(c);
+    if (traced === undefined) tracedWriters.set(c, (traced = writesTracedText(c)));
+    return traced;
+};
+
+/**
+ * Whether the guard knows exactly what a writer puts in a file: cat or tee fed only a quoted heredoc or literal
+ * here-string, or an echo or printf of literal words with no escape that builds text.
+ */
+function writesTracedText(c: ResolvedCommand): boolean {
+    if (c.env?.length || c.pipedInput || (c.pos !== undefined && c.script?.pipedInto.has(c.pos))) return false;
+    if (c.name === 'cat' || c.name === 'tee') {
+        const reads = c.name === 'cat' ? c.args.filter(a => a !== '-') : [];
+        return !reads.length && !!c.stdinTexts?.length && !c.stdinExpanded?.length && !c.stdinFiles?.length;
+    }
+    if (c.name !== 'echo' && c.name !== 'printf') return false;
+    const written = writtenArgs(c);
+    if (!written || !written.every(w => isLiteralShellWord(w))) return false;
+    return c.name === 'echo' ? !c.args.some(a => /^-[neE]*e[neE]*$/.test(a)) : !c.args[0]?.startsWith('-') && !c.args.some(a => /\\(?![nt])|%[^%]*b/.test(a));
 }
 
 // Each command on a line that writes a file, keyed by the written file's base name, in line order.
@@ -6491,7 +6533,7 @@ const PSQL_BACKSLASH_TO_LINE_END = /\\[^\s\\][^\n]*/g;
  */
 function psqlRoleMeta(input: string): { pattern: string; statement: string } | null {
     // Comments and string literals blanked, so a mention in either reads as nothing.
-    const text = sqlSkeleton(input.replace(PSQL_COPY_DATA, '$1'), false, true).skeleton;
+    const text = metaSkeleton(input.replace(PSQL_COPY_DATA, '$1'));
     if (/\\gexec(?=[\s\\;]|$)/.test(text)) return { pattern: '\\gexec', statement: 'runs each value the query returns as SQL, which the guard can\'t read' };
     const password = /\\password\b[^\n]*/.exec(text);
     return password ? { pattern: 'ALTER ROLE', statement: `${password[0].trim()} sets a role's password` } : null;

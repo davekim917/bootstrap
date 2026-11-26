@@ -129,10 +129,14 @@ describe('a psql file the guard cannot read before the line runs', () => {
     test.each([
         ['a file not there yet, host written out', () => 'psql -X -h ' + host(PROD_DB) + ' -U app -d app -f ' + join(dir, 'missing.sql')],
         ['a file not there yet, through the connection string', () => 'URI=$(curl -s "https://api.render.com/v1/postgres/' + PROD_DB + '/connection-info" | jq -r .externalConnectionString); psql "$URI" -f ' + join(dir, 'missing.sql')],
-        ['a file written by a program the guard does not model', () => 'curl -s -o ' + join(dir, 'fetched.sql') + ' https://example.com/m.sql && psql -X -h ' + host(PROD_DB) + ' -U app -d app -f ' + join(dir, 'fetched.sql')],
         ['--file= on a dev host', () => 'psql -X -h ' + host(DEV_DB) + ' -U app -d app --file=' + join(dir, 'missing.sql')],
     ])('%s is refused', (_what, command) => {
         expect(run(command()).action).toBe('block');
+    });
+
+    // curl writes the file on the line, so it is there when psql opens it: unread, which cards rather than refuses.
+    test('a file a program the guard does not trace writes on the line takes a card', () => {
+        expect(run('curl -s -o ' + join(dir, 'fetched.sql') + ' https://example.com/m.sql && psql -X -h ' + host(PROD_DB) + ' -U app -d app -f ' + join(dir, 'fetched.sql')).action).toBe('gate');
     });
 
     test('the refusal says how to make it readable', () => {
@@ -281,6 +285,11 @@ describe('psql input outside the listed forms takes a card, and only a missing f
 
     test.each([
         ['a dump through tee', () => `pg_dump -h src.example.com db | tee ${f('copy.sql')} | ${H}`],
+        ['a file an unquoted heredoc writes, whose expansions the guard does not trace', () => `cat > ${f('w1.sql')} <<EOF\nselect $X;\nEOF\n${H} -f ${f('w1.sql')}`],
+        ['a file an echo of a variable writes', () => `echo "$SQL" > ${f('w2.sql')}; ${H} -f ${f('w2.sql')}`],
+        ['a file cp writes, rather than a refusal for a file not there yet', () => `cp ${f('m.sql')} ${f('w3.sql')}; ${H} -f ${f('w3.sql')}`],
+        ['a traced write that cp then replaces', () => `cat > ${f('w4.sql')} <<'EOF'\nselect 1;\nEOF\ncp ${f('m.sql')} ${f('w4.sql')}; ${H} -f ${f('w4.sql')}`],
+        ['a GRANT a quoted heredoc writes, which is read and carded for what it is', () => `cat > ${f('w5.sql')} <<'EOF'\nGRANT ALL ON t TO public;\nEOF\n${H} -f ${f('w5.sql')}`],
         ['echo -e, whose escapes can build SQL', () => `echo -e '\\x47RANT ALL ON t TO r' | ${H}`],
         ['printf with a hex escape', () => `printf '\\x47RANT ALL ON t TO r' | ${H}`],
         ['an echo of a variable', () => `echo "$SQL" | ${H}`],
@@ -299,6 +308,10 @@ describe('psql input outside the listed forms takes a card, and only a missing f
         ['a substitution only in -h, with literal SQL', () => `psql -h "$(cat ${f('m.sql')})" -c 'SELECT 1'`],
         ['a read-only sed preview before -f', () => `sed -n 1,5p ${f('m.sql')} && ${H} -f ${f('m.sql')}`],
         ['CREATE USER MAPPING, which is not a role', () => `${H} -c "CREATE USER MAPPING FOR app SERVER s"`],
+        ['a read-only file a quoted heredoc writes earlier on the line', () => `cat > ${f('r1.sql')} <<'EOF'\nBEGIN READ ONLY;\nselect 1;\nEOF\n${H} -f ${f('r1.sql')}`],
+        ['a file a literal echo writes', () => `echo 'select 1;' > ${f('r2.sql')}; ${H} -f ${f('r2.sql')}`],
+        ['a file a literal printf writes', () => `printf 'select 1;\\n' > ${f('r3.sql')} && ${H} -f ${f('r3.sql')}`],
+        ['a file tee writes from a quoted heredoc, read through <', () => `tee ${f('r4.sql')} <<'EOF'\nselect 1;\nEOF\n${H} < ${f('r4.sql')}`],
     ])('%s runs', (_name, command) => {
         expect(run(command()).action).toBe('allow');
     });
