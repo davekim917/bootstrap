@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test';
 
-import { evaluateBashCommand, type LocalPgHost } from './block-destructive-core';
+import { containsCredential, evaluateBashCommand, type LocalPgHost } from './block-destructive-core';
 
 // The host is a fixture: procfs, /etc files and the environment are all supplied, so nothing here reads this machine.
 
@@ -309,7 +309,8 @@ describe('a connection string or localhost the guard does not resolve is answere
     ])('%s: refused with the rewrite, and the rewrite runs', (_name, command, rewrite, f) => {
         const v = evaluate(command, f);
         expect(v.action).toBe('block');
-        expect(rewriteIn(v.reason)).toBe(rewrite);
+        // A command that carries a credential gets its retry with the SQL left as a placeholder (withheldReason).
+        expect(rewriteIn(v.reason)).toBe(containsCredential(command) ? rewrite.replace(/-c '[^']*'$/, "-c '<your SQL>'") : rewrite);
         expect(evaluate(rewrite, f).action).toBe('allow');
     });
 

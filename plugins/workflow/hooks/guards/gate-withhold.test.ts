@@ -60,6 +60,8 @@ describe('no surface carries a credential the command passes', () => {
         ['an escape-string password', `${H} -c "ALTER ROLE app PASSWORD E'${SECRET}'; DROP TABLE orders"`],
         ['a dollar-quoted password', `${H} -c 'ALTER ROLE app PASSWORD $p$${SECRET}$p$; DROP TABLE orders'`],
         ['a comment between PASSWORD and its value', `${H} -c "ALTER ROLE app PASSWORD /* new */ '${SECRET}'; DROP TABLE orders"`],
+        ['a curl OAuth2 bearer token', `curl --oauth2-bearer ${SECRET} -X DELETE ${PROD}`],
+        ['a curl proxy OAuth2 bearer token', `curl --proxy-oauth2-bearer ${SECRET} -X DELETE ${PROD}`],
         ['a MySQL password attached to -p', `mysql -h db.example.com -p${SECRET} -e "drop table orders"`],
         ['a token as the only HTTPS user info', `git push --force https://${SECRET}@github.com/org/repo main`],
         ['a URI with user info and query given to -d', `PGPASSWORD=x psql -d "postgresql://app:${SECRET}@192.0.2.20/app?sslmode=require&password=${SECRET}" -c "drop table orders"`],
@@ -108,7 +110,8 @@ describe('a withheld card keeps the destination, from the unaltered parse', () =
         ['a PASSWORD word inside a dollar-quoted DELETE', `${H} -d app -c "DELETE FROM accounts WHERE note = $$PASSWORD 'expired'$$"`, ['db.example.com', 'database `app`', 'SQL: DELETE']],
         ['a variable the card resolves', `DB=app; PGPASSWORD=x ${H} -d "$DB" -c "drop table orders"`, ['database `app`']],
         ['a curl --url= destination', `curl -X DELETE -H "Authorization: Bearer ${SECRET}" --url=${PROD}`, [PROD]],
-        ['a git push option value before the remote', `git push -o ci.skip --force https://${SECRET}@github.com/org/repo main`, ['remote `https://github.com/org/repo`']],
+        ['a git push option value before the remote', `git push -o ci.skip --force https://${SECRET}@github.com/org/repo main`, ['remote `https://github.com/org/repo`', 'branch `main`']],
+        ['the branch a refspec overwrites', `git push https://${SECRET}@github.com/org/repo +HEAD:release`, ['branch `release`']],
         ['every statement kind, not only the first', `PGPASSWORD=x ${H} -c "drop table a; truncate b"`, ['SQL: DROP, TRUNCATE']],
         ['a URI given to -d, without its user info or query', `PGPASSWORD=x psql -d "postgresql://app:${SECRET}@192.0.2.20/app?sslmode=require" -c "drop table orders"`, ['database `postgresql://192.0.2.20/app`']],
         ['a migration whose comments hold apostrophes', () => `${H} -f ${join(dir, 'comments.sql')}`, ['drop table staging_orders']],
@@ -124,6 +127,7 @@ describe('refusals and gate reasons withhold the same way', () => {
     test.each([
         ['a refusal for a target the guard cannot name', `psql "$DATABASE_URL" -c "ALTER ROLE app PASSWORD '${SECRET}'; DROP TABLE orders"`],
         ['a gate over opaque dynamic SQL from a file', () => `${H} -f ${join(dir, 'dynamic.sql')}`],
+        ['a refusal whose password sits on the next line of -c', `psql "$DATABASE_URL" -c "ALTER ROLE app PASSWORD\n'${SECRET}'; DROP TABLE orders"`],
         ['a gate with a password in -c', `${H} -c "ALTER ROLE app PASSWORD '${SECRET}'; DROP TABLE orders"`],
     ])('%s', (_name, made) => {
         const command = typeof made === 'function' ? made() : made;
@@ -131,6 +135,28 @@ describe('refusals and gate reasons withhold the same way', () => {
         expect(verdict.action).not.toBe('allow');
         expect(verdict.reason).not.toContain(SECRET);
         if (containsCredential(command)) expect(verdict.reason).toContain('Command text withheld');
+    });
+
+    test('a suggested retry keeps its shape with the SQL replaced by a placeholder', () => {
+        const verdict = evaluateBashCommand(`psql "$DATABASE_URL" -c "ALTER ROLE app PASSWORD\n'${SECRET}'; DROP TABLE orders"`, { cwd: '/tmp' });
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).toContain("-c '<your SQL>'");
+        expect(verdict.reason).not.toContain(SECRET);
+    });
+
+    test('a relative SQL file is read from the directory the evaluator was given', () => {
+        const work = mkdtempSync(join(tmpdir(), 'withhold-cwd-'));
+        try {
+            writeFileSync(join(work, 'rotate.sql'), "DO $$ BEGIN EXECUTE 'DROP TABLE orders; ALTER ROLE app PASSWORD ''" + SECRET + 'x'.repeat(300) + "'''; END $$;\n");
+            const command = `${H} -f rotate.sql`;
+            const verdict = evaluateBashCommand(command, { cwd: work });
+            expect(verdict.action).toBe('gate');
+            expect(verdict.reason).not.toContain(SECRET);
+            expect(verdict.reason).toContain('Command text withheld');
+            expect(approvalCard(command, verdict.reason ?? '', work).withheld).toBe(true);
+        } finally {
+            rmSync(work, { recursive: true, force: true });
+        }
     });
 });
 

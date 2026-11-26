@@ -7843,10 +7843,11 @@ export function evaluateBashCommand(
     command: string,
     opts: { skipGate?: boolean; cwd?: string; localPg?: LocalPgHost } = {},
 ): GateEvaluation {
-    if (clientShellVerdicts) return withheldVerdict(command, evaluateBashLine(command, opts));
+    const cwd = opts.cwd ?? currentWorkingDir();
+    if (clientShellVerdicts) return withheldVerdict(command, evaluateBashLine(command, opts), cwd);
     clientShellVerdicts = new Map();
     try {
-        return withheldVerdict(command, evaluateBashLine(command, opts));
+        return withheldVerdict(command, evaluateBashLine(command, opts), cwd);
     } finally {
         clientShellVerdicts = null;
     }
@@ -8223,7 +8224,7 @@ const CREDENTIAL_SHAPES: RegExp[] = [
     /[a-z][a-z0-9+.-]*:\/\/[^/@\s]{1,400}@/i,
     /\b[A-Za-z_][A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD)\+?=\S/i,
 ];
-const CURL_USER_FLAG = /(?:^|[\s'"])(?:-[A-Za-z]*[uU]|--(?:proxy-)?user\b)/;
+const CURL_USER_FLAG = /(?:^|[\s'"])(?:-[A-Za-z]*[uU]|--(?:proxy-)?(?:user|oauth2-bearer)\b)/;
 const MYSQL_ATTACHED_PASSWORD = /(?:^|\s)-p[^\s]/;
 
 /** True when the text holds anything that looks like a credential (CREDENTIAL_SHAPES, a curl user flag, mysql -p…). */
@@ -8238,16 +8239,18 @@ export function containsCredential(text: string): boolean {
  * the reason keeps only each rule's name, without quoted arguments, SQL or a suggested command, and says the text is
  * withheld. Every adapter prints this reason when it refuses, asks, or reports a rejected gate.
  */
-function withheldVerdict(command: string, verdict: GateEvaluation): GateEvaluation {
-    if (verdict.action === 'allow' || !verdict.reason || !carriesCredential(command)) return verdict;
+function withheldVerdict(command: string, verdict: GateEvaluation, cwd: string): GateEvaluation {
+    if (verdict.action === 'allow' || !verdict.reason || !carriesCredential(command, cwd)) return verdict;
     return { ...verdict, reason: withheldReason(verdict.reason) };
 }
 
-/** The command, or SQL its clients read from files, looks like it holds a credential. */
-function carriesCredential(command: string): boolean {
+/** The command, or SQL its clients read from files (relative ones from `cwd`, as the evaluator reads them), looks like it holds a credential. */
+function carriesCredential(command: string, cwd: string): boolean {
     if (containsCredential(command)) return true;
     try {
-        return extractCommands(command).some(cmd => (SQL_CLIS[cmd.name] || (cmd.name === 'snow' && cmd.args[0] === 'sql'))
+        const commands = extractCommands(command);
+        if (commands[0]?.script) commands[0].script.cwd = cwd;
+        return commands.some(cmd => (SQL_CLIS[cmd.name] || (cmd.name === 'snow' && cmd.args[0] === 'sql'))
             && sqlInputOf(cmd).texts.some(containsCredential));
     } catch {
         return false;
@@ -8255,19 +8258,21 @@ function carriesCredential(command: string): boolean {
 }
 
 /**
- * A reason as it may be shown for a command that carries a credential: no SQL or argument it quotes after a rule's
- * `—`, and no quoted span that looks like a credential. A suggested command the guard wrote, holding none, stays, so a
- * refusal still says what to run instead.
+ * A reason as it may be shown for a command that carries a credential. The whole text is treated alike: the SQL or
+ * argument each rule quotes after its `—` goes, every -c or --command value in a suggested command becomes a
+ * placeholder, and every quoted span that still looks like a credential goes. A suggested command the guard wrote,
+ * with its SQL replaced, stays, so a refusal still says what to run instead. If anything still trips the detector, only
+ * the rule names are kept.
  */
 function withheldReason(reason: string): string {
     // The guard's own advice names where a password goes without holding one.
     const unsafe = (text: string) => containsCredential(text.replace(/PGPASSWORD="\$VAR"|<password>/g, ''));
-    const kept = reason.split('\n').map(line => {
-        // The SQL or argument a rule quotes sits between its `—` and the next `: `.
-        const rule = line.replace(/ — [\s\S]*?(: |$)/, (_m, end: string) => (end ? ' — …: ' : ''));
-        return unsafe(rule) ? rule.replace(/`[^`]*`/g, span => (unsafe(span) ? '…' : span)) : rule;
-    }).filter(line => !unsafe(line));
-    return `${kept.join('\n').trim()}\n\n${WITHHELD_NOTE}`.trim();
+    let text = reason
+        .replace(/ — [^\n]*?(?:: |$)/gm, m => (m.endsWith(': ') ? ' — …: ' : ''))
+        .replace(/(\s(?:-[A-Za-z]*c|--command)(?:=|\s+))('(?:[^']|'\\'')*'|"(?:[^"\\]|\\[\s\S])*"|\$'(?:[^'\\]|\\[\s\S])*'|[^\s'"]+)/g, "$1'<your SQL>'")
+        .replace(/`[^`]*`/g, span => (unsafe(span) ? '…' : span));
+    if (unsafe(text)) text = [...new Set(reason.split('\n').map(l => l.split(' — ')[0].trim()).filter(l => l && !unsafe(l) && l.length <= 200))].join('\n');
+    return `${text.trim()}\n\n${WITHHELD_NOTE}`.trim();
 }
 
 const WITHHELD_NOTE = 'Command text withheld: it contains a credential.';
@@ -8319,6 +8324,8 @@ function withheldTarget(cmd: ResolvedCommand): string[] {
     } else if (cmd.name === 'git') {
         const { positional } = gitPushOperands(cmd);
         add('remote', positional[0]);
+        // Each refspec's target: the branch or tag the push overwrites.
+        for (const spec of positional.slice(1)) add('branch', spec.replace(/^\+/, '').split(':').pop());
     } else if (cmd.name === 'curl' || cmd.name === 'wget' || cmd.name === 'http' || cmd.name === 'https') {
         add('method', value('-X', '--request'));
         add('URL', value('--url'));
@@ -8356,7 +8363,7 @@ export type ApprovalCard = GateCard & { withheld?: true };
  */
 export function approvalCard(command: string, reason: string, cwd: string = currentWorkingDir()): ApprovalCard {
     const card = describeGate(command, reason, cwd);
-    if (!carriesCredential(command) && !containsCredential(`${card.label}\n${card.summary}`)) return card;
+    if (!carriesCredential(command, cwd) && !containsCredential(`${card.label}\n${card.summary}`)) return card;
     let steps: Array<{ cmd: ResolvedCommand; reason: string }> = [];
     try {
         const commands = extractCommands(command);
