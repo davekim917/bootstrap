@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { collectGrants, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+import { collectGrants, duplicateConnections, publishEntry, SnowTimeout, verifyAll, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
+
+const MODULE = process.env.VERIFY_DEV_LOGINS_MODULE || fileURLToPath(new URL('./verify-dev-logins.mjs', import.meta.url));
 
 const g = (privilege, granted_on, name) => ({ privilege, granted_on, name });
 // Every role has no future grants unless a fixture lists some.
@@ -217,4 +226,181 @@ test('a SQL function passes; a function in any other language, or one whose name
     'USAGE on FUNCTION DEV_DB.S.CALLS_A_SERVICE(VARCHAR)',
     'USAGE on FUNCTION UTIL_DB.S."Quoted"()',
   ]);
+});
+
+const NOW = new Date('2027-03-01T00:05:00.000Z');
+const entryFor = connection => ({ connection, databases: ['DEV_DB'], login: { user: 'AGENT', account: 'ORG-A', verifiedUntil: '2027-03-01T12:00:00.000Z' } });
+const devOnly = sql => {
+  if (sql.startsWith('select current_user()')) return [{ U: 'AGENT', A: 'ORG-A', R: 'DEV_ROLE' }];
+  if (sql.startsWith('show future grants')) return [];
+  if (sql === 'show grants to user "AGENT"') return [{ role: 'DEV_ROLE' }];
+  if (sql === 'show grants to role "DEV_ROLE"') return [g('OWNERSHIP', 'SCHEMA', 'DEV_DB.S')];
+  if (sql === 'show grants to role "PUBLIC"') return [];
+  throw new Error(`unexpected ${sql}`);
+};
+const prodWrite = sql => (sql === 'show grants to user "AGENT"' ? [g('DELETE', 'TABLE', 'PROD_DB.S.T'), { role: 'DEV_ROLE' }] : devOnly(sql));
+// `rows`, except that the role walk times out on the first `times` checks.
+const timingOut = (rows, times) => {
+  let left = times;
+  return sql => {
+    if (sql === 'show grants to role "DEV_ROLE"' && left > 0) {
+      left--;
+      throw new SnowTimeout(`snow timed out on: ${sql}`);
+    }
+    return rows(sql);
+  };
+};
+// Runs verifyAll over `entries` with `rowsByConnection`, recording the published file after every publish and every sleep.
+function run(entries, rowsByConnection) {
+  const scope = { snowflake: entries };
+  const events = [];
+  const failed = verifyAll(scope, {
+    rowsFor: e => (events.push(['check', e.connection]), rowsByConnection[e.connection]),
+    hours: 24,
+    now: () => NOW,
+    publish: e => events.push(['publish', e.connection, e.login.verifiedUntil ?? null]),
+    sleep: ms => events.push(['sleep', ms]),
+  });
+  return { failed, events, scope };
+}
+const RENEWED = '2027-03-02T00:05:00.000Z';
+
+test('a timeout withdraws trust at once, and a later clean retry restores it', () => {
+  const { failed, events } = run([entryFor('a')], { a: timingOut(devOnly, 1) });
+  assert.deepEqual(events, [['check', 'a'], ['publish', 'a', null], ['sleep', 60_000], ['check', 'a'], ['publish', 'a', RENEWED]]);
+  assert.equal(failed, 0);
+});
+
+test('when every retry times out, trust stays withdrawn', () => {
+  const { failed, events, scope } = run([entryFor('a')], { a: timingOut(devOnly, 3) });
+  assert.deepEqual(events, [['check', 'a'], ['publish', 'a', null], ['sleep', 60_000], ['check', 'a'], ['publish', 'a', null], ['sleep', 180_000], ['check', 'a'], ['publish', 'a', null]]);
+  assert.equal(failed, 1);
+  assert.match(scope.snowflake[0].login.lastProblem, /^check failed: snow timed out/);
+});
+
+test('a write grant seen around a timeout keeps trust withdrawn, whether the retry finishes or not', () => {
+  for (const times of [1, 3]) {
+    const { failed, scope } = run([entryFor('a')], { a: timingOut(prodWrite, times) });
+    assert.equal(failed, 1);
+    assert.equal(scope.snowflake[0].login.verifiedUntil, undefined);
+  }
+  const { events, scope } = run([entryFor('a')], { a: timingOut(prodWrite, 1) });
+  assert.match(scope.snowflake[0].login.lastProblem, /^can write outside DEV_DB: DELETE on TABLE PROD_DB\.S\.T/);
+  assert.equal(events.filter(e => e[0] === 'sleep').length, 1);
+});
+
+test('a finding or an error other than a timeout withdraws without a retry', () => {
+  const broken = sql => (sql === 'show grants to role "DEV_ROLE"' ? (() => { throw new Error('insufficient privileges'); })() : devOnly(sql));
+  for (const rows of [prodWrite, broken]) {
+    const { failed, events } = run([entryFor('a')], { a: rows });
+    assert.equal(failed, 1);
+    assert.deepEqual(events, [['check', 'a'], ['publish', 'a', null]]);
+  }
+});
+
+test('every entry gets its first check before any retry, and each is published as it finishes', () => {
+  const { events } = run([entryFor('a'), entryFor('b'), entryFor('c')], { a: timingOut(devOnly, 1), b: timingOut(devOnly, 1), c: devOnly });
+  assert.deepEqual(events, [
+    ['check', 'a'], ['publish', 'a', null],
+    ['check', 'b'], ['publish', 'b', null],
+    ['check', 'c'], ['publish', 'c', RENEWED],
+    ['sleep', 60_000],
+    ['check', 'a'], ['publish', 'a', RENEWED],
+    ['check', 'b'], ['publish', 'b', RENEWED],
+  ]);
+});
+
+test('publishing one entry rewrites only its login, keeps what another writer put in the file since, and never replaces a newer result', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-entry-'));
+  try {
+    const file = path.join(dir, 'dev-scope.local.json');
+    const scope = { snowflake: [entryFor('a'), entryFor('b'), { connection: 'n', databases: ['DEV_DB'] }], render: { resources: ['srv-x'] } };
+    fs.writeFileSync(file, JSON.stringify(scope));
+    const stale = structuredClone(scope.snowflake[0]);
+    stale.login.verifiedUntil = RENEWED;
+    const changed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    changed.snowflake[1].login.verifiedUntil = '2027-03-01T20:00:00.000Z';
+    fs.writeFileSync(file, JSON.stringify(changed));
+    publishEntry(file, stale);
+    const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    assert.equal(after.snowflake[0].login.verifiedUntil, RENEWED);
+    assert.equal(after.snowflake[1].login.verifiedUntil, '2027-03-01T20:00:00.000Z');
+    assert.deepEqual(after.render, { resources: ['srv-x'] });
+    assert.deepEqual(fs.readdirSync(dir).filter(n => !n.endsWith('.lock')), ['dev-scope.local.json']);
+    publishEntry(file, { connection: 'gone', login: { user: 'X', account: 'Y' } });
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf-8')), after);
+    const newer = structuredClone(after);
+    newer.snowflake[0].login = { ...newer.snowflake[0].login, lastCheckedAt: '2027-03-01T00:10:00.000Z', verifiedUntil: undefined, lastProblem: 'can write outside DEV_DB' };
+    fs.writeFileSync(file, JSON.stringify(newer));
+    publishEntry(file, { ...stale, login: { ...stale.login, lastCheckedAt: '2027-03-01T00:06:00.000Z' } });
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf-8')).snowflake[0].login.lastProblem, 'can write outside DEV_DB');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Publishes `entry` from a separate process group, holding the lock for `holdMs` between the read and the rename.
+function publishFromChild(file, entry, holdMs) {
+  const code = `import { publishEntry } from ${JSON.stringify(MODULE)};
+publishEntry(${JSON.stringify(file)}, ${JSON.stringify(entry)}, { holdMs: ${holdMs} });`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code], { stdio: 'inherit', detached: true });
+  const done = new Promise(resolve => child.on('exit', (code, signal) => resolve(signal ?? code)));
+  return { child, done };
+}
+const pause = ms => new Promise(r => setTimeout(r, ms));
+const stamp = (c, until) => ({ ...entryFor(c), login: { ...entryFor(c).login, lastCheckedAt: '2027-03-01T00:06:00.000Z', verifiedUntil: until } });
+
+test('two writers interleaving, the second reading before the first renames, both land', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-race-'));
+  try {
+    const file = path.join(dir, 'dev-scope.local.json');
+    fs.writeFileSync(file, JSON.stringify({ snowflake: [entryFor('a'), entryFor('b')] }));
+    const first = publishFromChild(file, stamp('a', RENEWED), 800);
+    await pause(250);
+    const second = publishFromChild(file, stamp('b', '2027-03-02T09:00:00.000Z'), 0);
+    assert.deepEqual(await Promise.all([first.done, second.done]), [0, 0]);
+    const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    assert.equal(after.snowflake[0].login.verifiedUntil, RENEWED);
+    assert.equal(after.snowflake[1].login.verifiedUntil, '2027-03-02T09:00:00.000Z');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a writer killed while it holds the lock releases it, and the next writer publishes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-kill-'));
+  try {
+    const file = path.join(dir, 'dev-scope.local.json');
+    fs.writeFileSync(file, JSON.stringify({ snowflake: [entryFor('a'), entryFor('b')] }));
+    const holder = publishFromChild(file, stamp('a', RENEWED), 30_000);
+    await pause(400);
+    process.kill(-holder.child.pid, 'SIGKILL');
+    assert.equal(await holder.done, 'SIGKILL');
+    const started = Date.now();
+    const next = publishFromChild(file, stamp('b', '2027-03-02T09:00:00.000Z'), 0);
+    assert.equal(await next.done, 0);
+    assert.ok(Date.now() - started < 5_000);
+    const after = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    assert.equal(after.snowflake[0].login.verifiedUntil, '2027-03-01T12:00:00.000Z');
+    assert.equal(after.snowflake[1].login.verifiedUntil, '2027-03-02T09:00:00.000Z');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a connection listed twice: nothing is checked or published', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'publish-dup-'));
+  try {
+    const file = path.join(dir, 'dev-scope.local.json');
+    const text = JSON.stringify({ snowflake: [entryFor('a'), { ...entryFor('a'), databases: ['OTHER_DB'] }] });
+    fs.writeFileSync(file, text);
+    assert.deepEqual(duplicateConnections(JSON.parse(text)), ['a']);
+    assert.throws(() => publishEntry(file, { ...entryFor('a'), login: { ...entryFor('a').login, lastCheckedAt: '2027-03-01T00:06:00.000Z' } }), /lists a connection twice/);
+    const run = spawnSync(process.execPath, [MODULE, '--file', file, '--hours', '24'], { encoding: 'utf-8', env: { ...process.env, PATH: '/nonexistent' } });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /lists connection a more than once/);
+    assert.equal(fs.readFileSync(file, 'utf-8'), text);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -48,6 +48,7 @@ describe('destructive SQL inside a listed dev database skips approval', () => {
         'snow sql -c acme_prod -q "drop schema scratch_db.tmp"',
         'snow sql -c acme_prod -q \'create or replace table "SCRATCH_DB"."TMP"."T" clone prod_db.core.t\'',
         'snow sql -c acme_prod -q "drop table scratch_db.a.b; drop table scratch_db.a.c"',
+        'snow sql -c acme_prod -q "create or replace table scratch_db.tmp.t as select * from prod_db.core.t"',
         'cd /tmp && timeout 300 snow sql -c acme_prod --warehouse dev_wh -q "drop schema if exists scratch_db.tmp cascade" 2>&1 | tail -3',
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
@@ -59,6 +60,7 @@ describe('everything else stays gated', () => {
         ['the default connection', 'snow sql -q "drop table scratch_db.tmp.orders"'],
         ['an unlisted connection', 'snow sql -c acme_other -q "drop table a.b.c"'],
         ['a prod table on a database-limited connection', 'snow sql -c acme_prod -q "drop table prod_db.core.orders"'],
+        ['a table built from prod written into a prod schema', 'snow sql -c acme_prod -q "create or replace table prod_db.core.t2 as select * from prod_db.core.t"'],
         ['one prod statement among dev ones', 'snow sql -c acme_prod -q "drop table scratch_db.a.b; drop table prod_db.a.b"'],
         ['a two-part table name', 'snow sql -c acme_prod -q "drop table scratch_db.orders"'],
         ['an unqualified table name', 'snow sql -c acme_prod -q "delete from orders"'],
@@ -72,6 +74,9 @@ describe('everything else stays gated', () => {
         ['a key-file override', 'snow sql -c acme_dev --private-key-path /tmp/k -q "drop table dev_db.a.b"'],
         ['a database override', 'snow sql -c acme_dev --database prod_db -q "drop table dev_db.a.b"'],
         ['HOME redirecting the config', 'HOME=/tmp/h snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['set -e storing a descriptor number in PATH', 'set -e {PATH}>/dev/null; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['set -e with a redirect that assigns PATH', 'set -e >/tmp/x$[PATH=10]; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
+        ['set -e on a connection with no verified login, whose SQL is read instead', 'set -e; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['XDG_CONFIG_HOME redirecting the config', 'XDG_CONFIG_HOME=/tmp/h snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['sudo running snow, which changes HOME', 'sudo -u admin snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['nice running snow', 'nice -n 5 snow sql -c acme_dev -q "drop table dev_db.a.b"'],
@@ -105,6 +110,8 @@ describe('everything else stays gated', () => {
         ['a template in a second -q', `snow sql -c acme_dev -q "drop table dev_db.a.b" -q '<% ctx.env.query %>'`],
         ['a bare template in a second -q', 'snow sql -c acme_dev -q "drop table dev_db.a.b" -q "&query"'],
         ['SQL read from a file', "cat > /tmp/dev-scope-f.sql <<'EOF'\ndrop table dev_db.a.b;\nEOF\nsnow sql -c acme_dev -f /tmp/dev-scope-f.sql"],
+        ['a role switch and dev drops read from a file', "cat > /tmp/dev-scope-ci.sql <<'EOF'\nUSE ROLE CI_ROLE;\nDROP SCHEMA IF EXISTS DEV_DB.CI_1_CORE CASCADE;\nEOF\ntimeout 300 snow sql -c acme_dev -f /tmp/dev-scope-ci.sql 2>&1 | tail -12"],
+        ['a dev UPDATE written by echo and read from a file', 'cd /tmp; echo "UPDATE DEV_DB.A.B SET C = NULL; SELECT COUNT(C) FROM DEV_DB.A.B;" > /tmp/dev-scope-u.sql; snow sql -c acme_dev -f /tmp/dev-scope-u.sql 2>&1 | tail -4'],
         ['a temporary table beside a dev drop, named without its database', 'snow sql -c acme_dev -q "create or replace temporary table t as select 1; drop table dev_db.a.b"'],
         ['a name placed by an earlier USE', 'snow sql -c acme_dev -q "use database dev_db; drop table scratch.orders"'],
         ['a CREATE SCHEMA moving the session', 'snow sql -c acme_dev -q "use database dev_db; create schema prod_db.scratch_x; drop table s.t"'],
@@ -124,6 +131,14 @@ describe('everything else stays gated', () => {
 
     test('with no scope file nothing is exempt', () => {
         process.env[DEV_SCOPE_FILE_ENV] = join(dir, 'missing.json');
+        expect(verdict('snow sql -c acme_dev -q "drop table dev_db.a.b"')).toBe('gate');
+    });
+
+    test('a scope file listing one connection twice exempts nothing', () => {
+        const twice = join(dir, 'twice.json');
+        writeFileSync(twice, JSON.stringify({ snowflake: [{ connection: 'acme_dev', databases: ['dev_db'] }, { connection: 'acme_dev', databases: ['prod_db'] }] }));
+        expect(parseDevScope(readFileSync(twice, 'utf-8'))).toBeNull();
+        process.env[DEV_SCOPE_FILE_ENV] = twice;
         expect(verdict('snow sql -c acme_dev -q "drop table dev_db.a.b"')).toBe('gate');
     });
 

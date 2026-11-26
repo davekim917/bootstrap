@@ -2,6 +2,9 @@
 // Vouch for each dev-scope login: walk every role its user holds (and PUBLIC) and confirm none can run SQL the
 // destructive guard would gate against anything outside the entry's dev databases. A pass sets `login.verifiedUntil`, which the destructive guard requires before it lets
 // that connection's SQL run without a card; a failure or an error removes it, so a lapsed check brings cards back.
+// A check that times out withdraws trust at once like any other error, and is retried in the same run once every entry
+// has had its first check: a retry that finishes clean restores it, so a passing timeout costs minutes rather than the
+// 12 hours until the next run.
 //
 // Usage: node scripts/verify-dev-logins.mjs [--file <dev-scope.local.json>] [--hours 48]
 import { execFileSync } from 'node:child_process';
@@ -87,10 +90,19 @@ function quoteDatabaseRole(name) {
   return String(name).split('.').map(p => (p.startsWith('"') ? p : quoteIdent(p))).join('.');
 }
 
+/** A snow call that ran out of time. */
+export class SnowTimeout extends Error {}
+
 function snowRows(connection, sql) {
-  const out = execFileSync('snow', ['sql', '-c', connection, '--format', 'json', '--enable-templating', 'NONE', '-q', sql], {
-    encoding: 'utf-8', timeout: 120_000, maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  let out;
+  try {
+    out = execFileSync('snow', ['sql', '-c', connection, '--format', 'json', '--enable-templating', 'NONE', '-q', sql], {
+      encoding: 'utf-8', timeout: 180_000, maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    if (err?.code === 'ETIMEDOUT') throw new SnowTimeout(`snow timed out on: ${sql.slice(0, 80)}`);
+    throw err;
+  }
   const data = JSON.parse(out);
   return Array.isArray(data) && data.length && Array.isArray(data[0]) ? data.at(-1) : data;
 }
@@ -195,39 +207,121 @@ export function verifyEntry(entry, rows) {
   return problems.length ? `can write outside ${entry.databases.join('/')}: ${problems.slice(0, 5).join('; ')}${problems.length > 5 ? ` (+${problems.length - 5} more)` : ''}` : null;
 }
 
+const RETRY_WAITS_MS = [60_000, 180_000];
+
+/** Record one check's outcome on `entry.login` and return how it reads in the log: any problem withdraws trust. */
+export function recordCheck(entry, problem, { now, hours }) {
+  entry.login.lastCheckedAt = now.toISOString();
+  if (problem) {
+    delete entry.login.verifiedUntil;
+    entry.login.lastProblem = problem;
+    return `NOT trusted — ${problem}`;
+  }
+  entry.login.verifiedUntil = new Date(now.getTime() + hours * 3600_000).toISOString();
+  delete entry.login.lastProblem;
+  return `dev-only login ${entry.login.user} verified until ${entry.login.verifiedUntil}`;
+}
+
+/** One full check: null when the login is dev-only, else the problem and whether a snow call timed out. */
+function checkOnce(entry, rows) {
+  try {
+    const problem = verifyEntry(entry, rows);
+    return problem ? { problem, timedOut: false } : null;
+  } catch (err) {
+    return { problem: `check failed: ${String(err?.message ?? err).split('\n')[0]}`, timedOut: err instanceof SnowTimeout };
+  }
+}
+
+/**
+ * Check every entry with a login once, publishing each outcome as it lands so a withdrawal takes effect at once; then
+ * check again in full, after each wait in `waitsMs`, the entries whose check timed out. Only a retry that finishes
+ * clean restores trust. Returns how many entries end the run untrusted.
+ */
+export function verifyAll(scope, { rowsFor, hours, publish, log = () => {}, now = () => new Date(), waitsMs = RETRY_WAITS_MS, sleep = sleepSync }) {
+  const outcomes = new Map();
+  const check = entry => {
+    const result = checkOnce(entry, rowsFor(entry));
+    log(entry, recordCheck(entry, result?.problem ?? null, { now: now(), hours }), !result);
+    publish(entry);
+    outcomes.set(entry, result);
+  };
+  const entries = (scope.snowflake ?? []).filter(e => e.login);
+  entries.forEach(check);
+  for (const wait of waitsMs) {
+    const pending = entries.filter(e => outcomes.get(e)?.timedOut);
+    if (!pending.length) break;
+    sleep(wait);
+    pending.forEach(check);
+  }
+  return entries.filter(e => outcomes.get(e)).length;
+}
+
+/** Connection names listed more than once, which the guard refuses and the verifier won't publish. */
+export function duplicateConnections(scope) {
+  const seen = new Set();
+  return (scope.snowflake ?? []).map(e => e.connection).filter(c => (seen.has(c) ? true : (seen.add(c), false)));
+}
+
+const SELF = fileURLToPath(import.meta.url);
+
+/**
+ * Write one entry's login into the file as it is now, leaving every other entry as the file holds it. The re-read,
+ * compare and rename run in a child process under flock(1) on a sibling lock file: the kernel releases the lock when
+ * the last process holding it exits, killed or not, so there is no stale lock to break. A result is not written back
+ * for an entry no longer in the file, when it is older than the one the file holds, or while the file lists a
+ * connection twice. `holdMs` keeps the lock between the read and the rename, for tests of two writers.
+ */
+export function publishEntry(file, entry, { holdMs = 0 } = {}) {
+  try {
+    execFileSync('flock', ['-w', '10', '-E', '75', `${file}.lock`, process.execPath, SELF, '--publish-entry', file, '--hold-ms', String(holdMs)], {
+      input: JSON.stringify(entry), stdio: ['pipe', 'inherit', 'pipe'], encoding: 'utf-8',
+    });
+  } catch (err) {
+    if (err?.status === 75) throw new Error(`${file}.lock stayed held for 10 s; this result was not published`);
+    const reason = String(err?.stderr ?? '').split('\n').find(l => /^Error: /.test(l));
+    throw new Error(reason ? reason.slice(7) : String(err?.message ?? err));
+  }
+}
+
+function publishLocked(file, entry, holdMs) {
+  const current = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  if (duplicateConnections(current).length) throw new Error(`${file} lists a connection twice; not publishing`);
+  const target = (current.snowflake ?? []).find(e => e.connection === entry.connection && e.login);
+  if (!target || Date.parse(target.login.lastCheckedAt ?? '') > Date.parse(entry.login.lastCheckedAt ?? '')) return;
+  target.login = structuredClone(entry.login);
+  if (holdMs > 0) sleepSync(holdMs);
+  const tmp = `${file}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify(current, null, 2)}\n`);
+  fs.renameSync(tmp, file);
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 function main() {
   const args = process.argv.slice(2);
   const arg = (flag, fallback) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : fallback);
+  if (args[0] === '--publish-entry') {
+    publishLocked(args[1], JSON.parse(fs.readFileSync(0, 'utf-8')), Number(arg('--hold-ms', '0')));
+    return;
+  }
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const file = arg('--file', process.env.BOOTSTRAP_DEV_SCOPE_FILE || path.join(repoRoot, 'dev-scope.local.json'));
   const hours = Number(arg('--hours', '48'));
   if (!Number.isFinite(hours) || hours <= 0 || hours > 72) throw new Error(`--hours must be between 0 and 72, not ${arg('--hours')}`);
   const scope = JSON.parse(fs.readFileSync(file, 'utf-8'));
-  let failed = 0;
-  for (const entry of scope.snowflake ?? []) {
-    if (!entry.login) continue;
-    let problem;
-    try {
-      problem = verifyEntry(entry, sql => snowRows(entry.connection, sql));
-    } catch (err) {
-      problem = `check failed: ${String(err?.message ?? err).split('\n')[0]}`;
-    }
-    const now = new Date();
-    entry.login.lastCheckedAt = now.toISOString();
-    if (problem) {
-      failed++;
-      delete entry.login.verifiedUntil;
-      entry.login.lastProblem = problem;
-      console.error(`${entry.connection}: NOT trusted — ${problem}`);
-    } else {
-      entry.login.verifiedUntil = new Date(now.getTime() + hours * 3600_000).toISOString();
-      delete entry.login.lastProblem;
-      console.log(`${entry.connection}: dev-only login ${entry.login.user} verified until ${entry.login.verifiedUntil}`);
-    }
+  const twice = duplicateConnections(scope);
+  if (twice.length) {
+    console.error(`${file} lists connection ${[...new Set(twice)].join(', ')} more than once; fix the file, nothing was checked`);
+    process.exit(1);
   }
-  const tmp = `${file}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(scope, null, 2)}\n`);
-  fs.renameSync(tmp, file);
+  const failed = verifyAll(scope, {
+    rowsFor: entry => sql => snowRows(entry.connection, sql),
+    hours,
+    publish: entry => publishEntry(file, entry),
+    log: (entry, line, ok) => (ok ? console.log : console.error)(`${entry.connection}: ${line}`),
+  });
   process.exit(failed ? 1 : 0);
 }
 

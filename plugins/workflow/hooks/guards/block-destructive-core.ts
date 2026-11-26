@@ -4259,6 +4259,8 @@ export function parseDevScope(text: string): DevScope | null {
     }
     const entries = (raw as { snowflake?: unknown } | null)?.snowflake;
     if (!Array.isArray(entries)) return null;
+    // Two entries of one name would let the guard and the verifier each read a different one.
+    if (new Set(entries.map(e => e?.connection)).size !== entries.length) return null;
     for (const e of entries) {
         if (!e || typeof e !== 'object' || typeof e.connection !== 'string' || !SNOWFLAKE_NAME_RE.test(e.connection)) return null;
         if (!Array.isArray(e.databases) || e.databases.length === 0
@@ -4485,6 +4487,21 @@ const SNOW_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}snow\\s`)
 const RENDER_UNDER_SAFE_WRAPPERS_RE = new RegExp(`${SAFE_WRAPPERS_PREFIX}render\\s`);
 // Commands that change what a later command sees: its environment, or code it sources.
 const ENVIRONMENT_CHANGERS = new Set(['export', 'set', 'source', '.', 'declare', 'typeset', 'env', 'eval', 'readonly', 'local', 'alias', 'unset', 'read', 'mapfile', 'readarray', 'getopts', 'let', 'trap']);
+
+// The `set` options that only make this shell stop on an error or an unset name. Every other one can reach a later
+// command: `-a` exports what is assigned, `-k` hands it assignments written among its arguments, `-x` expands PS4.
+const SET_ERROR_OPTIONS = new Set(['errexit', 'nounset', 'pipefail']);
+
+/** True when `set`'s arguments are only `-e`, `-u` and `-o` with one of SET_ERROR_OPTIONS, each turned on or off. */
+function setsOnlyErrorOptions(args: string[]): boolean {
+    if (!args.length) return false;
+    for (let i = 0; i < args.length; i++) {
+        const m = args[i].match(/^[-+]([eu]*)(o?)$/);
+        if (!m || (!m[1] && !m[2])) return false;
+        if (m[2] && !SET_ERROR_OPTIONS.has(args[++i] ?? '')) return false;
+    }
+    return true;
+}
 
 /** `printf -v NAME` and `wait -p NAME` assign the variable they name. */
 function setsVariableByOption(cmd: ResolvedCommand): boolean {
@@ -4721,6 +4738,10 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
         if (n.type !== 'Command') return false;
         if (printing(n)) return true;
         const name = nameOf(n);
+        if (name === 'set') {
+            return !(n.prefix ?? []).length && !((n as { redirects?: unknown[] }).redirects ?? []).length
+                && setsOnlyErrorOptions((n.suffix ?? []).map(w => String(w?.text ?? '')));
+        }
         if (!(n.prefix ?? []).every(assignmentSafe)) return false;
         const neutralName = name === undefined
             || (/^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || NEUTRAL_BUILTINS.has(name)));
@@ -4780,7 +4801,9 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
-    if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c))) return null;
+    const changers = commands.filter(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c));
+    // snowEnvironmentProven reads every statement before the step itself, so only the trusted path may keep an error-option `set`.
+    if (!changers.every(c => c.name === 'set' && !c.env?.length && setsOnlyErrorOptions(c.args))) return null;
 
     // An xargs or find step's words are not the ones read here.
     const trusted = topLevel ? trustedLoginConnection(cmd) : null;
@@ -4788,7 +4811,7 @@ export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand
     if (trustedEntry && snowEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
         return `snowflake connection ${trustedEntry.connection}, dev-only login ${trustedEntry.login!.user}`;
     }
-    if (changesShellState(command)) return null;
+    if (changers.length || changesShellState(command)) return null;
 
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {
