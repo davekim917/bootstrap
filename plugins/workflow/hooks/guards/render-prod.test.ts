@@ -202,9 +202,9 @@ describe('a listed dev resource', () => {
         `render deploys list ${DEV} --limit 1`,
         `render deploys list ${DEV} --limit 1 -o json`,
         `render jobs list ${DEV} -o text`,
-        `render psql ${DEV_DB} -c 'select 1' -o text`,
+        `render psql ${DEV_DB} -c 'select 1'`,
         `render psql ${DEV_DB} --command 'select 1' -o text`,
-        `render psql ${DEV_DB} -c 'delete from scratch where id = 1' -o text`,
+        `render psql ${DEV_DB} -c 'delete from scratch where id = 1'`,
         `render ssh ${DEV} --help`,
         `render pgcli ${DEV_DB} -h`,
         `render jobs create ${DEV} --start-command "echo \\$VAR"`,
@@ -1012,7 +1012,7 @@ describe('a held Render change says whether its target is listed as dev', () => 
     ])('%s still says it is not listed', (_shape, command) => {
         const summary = card(command);
         expect(summary).toContain('not listed as dev, so treat it as production');
-        expect(summary).not.toContain('is listed as dev');
+        expect(summary).not.toContain('changes the Render dev resource named in the step below');
     });
 });
 
@@ -1070,6 +1070,10 @@ describe('a listed dev step needs the forms that run only what the guard read', 
         ['an integer comparison before a restart', `if test "$a" -eq "$b"; then render restart ${DEV}; fi`],
         ['an API delete over HTTPS', `curl -X DELETE https://api.render.com/v1/services/${DEV}/env-vars/FOO`],
         ['one line of SQL with plain output', `render psql ${DEV_DB} -c 'select 1' -o text`],
+        ['one line of SQL with no output format, as on main', `render psql ${DEV_DB} -c "ALTER ROLE dev_app PASSWORD 'x'"`],
+        ['a printf status line before a restart', `printf 'Restarting %s\\n' "$service"; render restart ${DEV}`],
+        ['a printf with two values before a restart', `printf '%s %s\\n' "$a" "$b" && render restart ${DEV}`],
+        ['an echo of a command substitution before a restart', `echo "$(date)"; render restart ${DEV}`],
     ])('%s runs without a card', (_name, command) => {
         expect(verdict(command)).toBe('allow');
     });
@@ -1080,11 +1084,21 @@ describe('a listed dev step needs the forms that run only what the guard read', 
         ['a substitution in the operand', `if [ -f "$(touch x)" ]; then render restart ${DEV}; fi`],
         ['an operand that assigns', `if [ -f "${'$'}{m:=x}" ]; then render restart ${DEV}; fi`],
         ['[[ -v ]] on a subscript that assigns', `[[ -v a[HOME=1] ]] && render restart ${DEV}`],
+        ['a printf format from a variable', `printf "$F" x; render restart ${DEV}`],
+        ['printf -v assigning PATH', `printf -v PATH x; render restart ${DEV}`],
+        ['an echo whose word assigns', `echo "${'$'}{PATH:=/tmp/x}"; render restart ${DEV}`],
         ['a [[ ]] substitution in the operand', `[[ -f "$(touch x)" ]] && render restart ${DEV}`],
         ['a [[ ]] test whose redirect assigns PATH', `[[ -f x ]] >/tmp/o$[PATH=1]; render restart ${DEV}`],
         ['an API delete with no scheme, which curl sends over HTTP', `curl -X DELETE api.render.com/v1/services/${DEV}/env-vars/FOO`],
-        ['render psql with no output format, which opens psql interactively on a terminal', `render psql ${DEV_DB} -c 'select 1'`],
     ])('%s gates', (_name, command) => {
         expect(verdict(command)).toBe('gate');
+    });
+});
+
+describe('a status line keeps a held dev change described as dev', () => {
+    test('printf before deleting a listed database', () => {
+        const command = `printf 'Deleting %s\\n' "$db"; render postgres delete ${DEV_DB}`;
+        expect(verdict(command)).toBe('gate');
+        expect(describeGate(command, evaluateBashCommand(command, { cwd: '/tmp' }).reason ?? '').summary).toContain('changes the Render dev resource named in the step below');
     });
 });

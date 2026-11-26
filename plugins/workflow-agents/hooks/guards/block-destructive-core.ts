@@ -4332,16 +4332,13 @@ function renderDevRead(args: string[], listed: Set<string>): string | null {
     if (command !== 'psql' || !listed.has(second)) return null;
     const flags = args.slice(2);
     let sql = 0;
-    let plain = false;
     for (let i = 0; i < flags.length; i += 2) {
         const value = flags[i + 1];
         // psql runs a backslash command as its own program, so only plain SQL counts.
         if (/^(?:-c|--command)$/.test(flags[i]) && value !== undefined && !value.includes('\\')) sql++;
-        else if (output(flags[i], value)) plain = true;
-        else return null;
+        else if (!output(flags[i], value)) return null;
     }
-    // Without plain output, render opens psql interactively on a terminal and drops the -c it was given.
-    return sql === 1 && plain ? second : null;
+    return sql === 1 ? second : null;
 }
 
 /** Whether this is the line's only command: anything else there can change what it reads, or take what it prints and act on it. */
@@ -4784,9 +4781,14 @@ function stepEnvironmentProven(command: string, step: ResolvedCommand, steering 
         // printf's `-v NAME` and `%n` assign; a format that is neither prints and does nothing else.
         // Literal words only, so no value set earlier on the line can turn into an option or a format.
         const literal = (a: string) => staysOneWord(a) && !/[$`]/.test(withoutSingleQuoted(a));
+        // A login-less or Render step reads only its own line, as on main, so there an output command's words may hold a
+        // $(…), which runs in a subshell; nothing it prints assigns.
+        const data = (a: string) => (compounds ? assignsNothing(withoutSingleQuoted(a)) : runsNothing(a));
+        if (name === 'echo' && compounds) return !(n.prefix ?? []).length && quiet(n) && args.every(data);
+        // printf takes `-v NAME` only first, and `%n` only from its format; the words after a literal format are data.
         if (name === 'printf') {
-            return !(n.prefix ?? []).length && quiet(n) && args.length > 0 && args.every(literal)
-                && !shellUnquote(args[0]).startsWith('-') && !args.some(a => /%[^a-zA-Z%]*n/.test(shellUnquote(a)));
+            return !(n.prefix ?? []).length && quiet(n) && args.length > 0 && literal(args[0])
+                && !shellUnquote(args[0]).startsWith('-') && !/%[^a-zA-Z%]*n/.test(shellUnquote(args[0])) && args.slice(1).every(data);
         }
         // `-v` reads a subscript as arithmetic, which can assign; the other tests only compare.
         if (name === '[' || name === 'test') {
