@@ -6795,6 +6795,19 @@ function codeLiterals(code: string): string[] {
 }
 
 /** Whether interpreter code opens a database driver, read as code: an import spelled inside a string doesn't count. */
+/**
+ * Code that launches psql or snow itself. A launch written inside a string is text the code holds, such as a test's
+ * sample command, unless the code evaluates strings as code.
+ */
+function launchesDbClient(code: string): boolean {
+    if (!DB_CLIENT_LAUNCH.test(code)) return false;
+    if (/\b(?:exec|eval|compile|Function|runInThisContext|runInNewContext)\s*\(|\brunpy\b/.test(code)) return true;
+    const spans = [...code.matchAll(CODE_LITERAL)].map(m => [m.index!, m.index! + m[0].length] as const);
+    const launch = new RegExp(DB_CLIENT_LAUNCH.source, 'g');
+    for (const m of code.matchAll(launch)) if (!spans.some(([s, e]) => m.index! > s && m.index! < e)) return true;
+    return false;
+}
+
 function importsDbDriver(name: string, code: string): boolean {
     if (/^(?:python|pypy)/.test(name)) return PY_DRIVER.test(code.replace(/"""[\s\S]*?"""|'''[\s\S]*?'''/g, ''));
     // In JavaScript the module is a string, so only one in import or require position names a module.
@@ -6860,7 +6873,7 @@ function interpreterDbReason(cmd: ResolvedCommand): string | null {
     const code = texts.join('\n');
     const how = `${run.name} code that reaches a database`;
     const fix = 'The guard reads SQL only from psql and snow sql: run the SQL through one of them, with the host or connection written out, and a listed dev target runs without approval.';
-    if (!importsDbDriver(run.name, code) && !DB_CLIENT_LAUNCH.test(code)) {
+    if (!importsDbDriver(run.name, code) && !launchesDbClient(code)) {
         // Code the guard can't read is judged by the line, which may name a driver for it.
         const line = cmd.script?.command ?? cmd.raw;
         return unread && importsDbDriver(run.name, line)
@@ -6892,7 +6905,7 @@ function interpreterDbReason(cmd: ResolvedCommand): string | null {
         if (write) return `${how} runs ${SQL_WRITE} (${write.pattern}) — ${oneLine(write.statement).slice(0, STATEMENT_PREVIEW_CHARS)}. ${fix}`;
     }
     if (hidden) return `${how} runs SQL the guard can't read (a script or .sql file it can't open), so whether it writes can't be checked. ${fix}`;
-    if (!statements && (SQL_CALL.test(code) || DB_CLIENT_LAUNCH.test(code))) {
+    if (!statements && (SQL_CALL.test(code) || launchesDbClient(code))) {
         return `${how} runs SQL that no string in it spells out, so whether it writes can't be checked. ${fix}`;
     }
     return null;
@@ -7132,8 +7145,6 @@ function sqlEgressOf(cmd: ResolvedCommand): SqlEgress | null {
     return found;
 }
 
-const SQL_TEXT_OPTION = /^(?:-c|--command|-q|--query)$/;
-
 /**
  * An expansion the guard can't read before the line runs, in the SQL a psql or snow step is handed: a -c/-q value, a
  * here-string or piped text. Its text then isn't the SQL that runs, so neither whether it writes nor whether it sends
@@ -7154,7 +7165,9 @@ function unreadSqlExpansion(cmd: ResolvedCommand): string | null {
         const built = unresolved.find(u => u.startsWith('$(') || u.startsWith('`'));
         return built ?? (whole && unresolved.length ? unresolved[0] : null);
     };
-    const sqlAt = (i: number) => SQL_TEXT_OPTION.test(cmd.args[i - 1] ?? '') || /^--(?:command|query)=/.test(cmd.args[i]);
+    const option = cmd.name === 'psql' ? /^(?:-c|--command)$/ : /^(?:-q|--query)$/;
+    const glued = cmd.name === 'psql' ? /^--command=/ : /^--query=/;
+    const sqlAt = (i: number) => option.test(cmd.args[i - 1] ?? '') || glued.test(cmd.args[i]);
     const words = view.commandAt(cmd.pos)?.argTexts;
     if (words && words.length >= cmd.args.length) {
         const own = words.slice(words.length - cmd.args.length);

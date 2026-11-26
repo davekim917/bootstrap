@@ -168,6 +168,7 @@ describe('database code run by an interpreter goes through the same readers', ()
         ['tsx run through npx, with pg', 'npx tsx -e "import pg from \'pg\'; new pg.Client().query(\'update orders set a = 1 where id = 1\')"'],
         ['node pg UPDATE', 'node -e "const { Client } = require(\'pg\'); new Client().query(\'update orders set a = 1 where id = 2\')"'],
         ['psql launched from python', 'python3 -c "import subprocess; subprocess.run([\'psql\', \'-h\', \'db.example\', \'-c\', \'delete from orders\'])"'],
+        ['a psql launch inside a string the code runs', 'python3 -c "exec(\\"import subprocess; subprocess.run([\'psql\', \'-h\', \'db.example\', \'-c\', \'delete from orders\'])\\")"'],
         ['SQL a script loads from a file the guard cannot open', "python3 - <<'EOF'\nimport psycopg2\npsycopg2.connect().cursor().execute(open('missing.sql').read())\nEOF"],
     ])('%s takes the card', (_name, command) => {
         expect(evaluate(command).action).toBe('gate');
@@ -195,6 +196,19 @@ describe('SQL the guard cannot read is not a silent allow', () => {
     ])('%s', (_name, command) => {
         expect(evaluate(command).action).toBe('gate');
     });
+});
+
+test('a snow connection from a variable is a connection, not SQL: a read runs and a write is refused with the fix', () => {
+    expect(evaluate('snow sql -c "$CONN" -q "select 1"').action).toBe('allow');
+    const write = evaluate('snow sql -c "$CONN" -q "insert into t values (1)"');
+    expect(write.action).toBe('block');
+    expect(write.reason).toContain('Write the connection out');
+});
+
+test('a script that holds a psql launch only as sample text in a string stays card-free', () => {
+    const script = join(dir, 'samples.ts');
+    writeFileSync(script, "const rows = [\n  `python3 -c \"import subprocess; subprocess.run(['psql', '-c', 'drop table t'])\"`,\n];\nconsole.log(rows.length);\n");
+    expect(evaluate(`bun ${script}`).action).toBe('allow');
 });
 
 describe('the card says what the step does', () => {
