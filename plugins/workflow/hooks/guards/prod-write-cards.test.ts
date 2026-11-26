@@ -33,6 +33,8 @@ beforeAll(() => {
         'acme:', '  target: dev', '  outputs:',
         '    dev:', '      type: snowflake', '      account: acme-dev1', '      database: dev_db',
         '    prod:', '      type: snowflake', '      account: acme-dev1', '      database: prod_db',
+        'acme_prodfirst:', '  target: prod', '  outputs:',
+        '    prod:', '      type: snowflake', '      account: acme-dev1', '      database: prod_db',
         'acme_far:', '  target: dev', '  outputs:',
         '    dev:', '      type: snowflake', '      account: far-acct1', '      database: dev_db', '',
     ].join('\n'));
@@ -65,6 +67,9 @@ beforeAll(() => {
         "{% macro unload_helper() %}{% do run_query(\"copy into @dev_db.raw.out from dev_db.core.orders\") %}{% endmacro %}",
         "{% macro block_unload() %}{% do run_query(\"copy into @dev_db.raw.out from dev_db.core.orders\") %}{% endmacro %}", '',
     ].join('\n'));
+    mkdirSync(join(dir, 'retrynotarget', 'target'), { recursive: true });
+    writeFileSync(join(dir, 'retrynotarget', 'dbt_project.yml'), "name: acme\nprofile: 'acme_prodfirst'\n");
+    writeFileSync(join(dir, 'retrynotarget', 'target', 'run_results.json'), JSON.stringify({ args: { which: 'build' } }));
     mkdirSync(join(dir, 'sfproj'));
     writeFileSync(join(dir, 'sfproj', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\ndata_tests:\n  +store_failures: true\n");
     mkdirSync(join(dir, 'farproject', 'macros'), { recursive: true });
@@ -857,5 +862,17 @@ describe('review 245e', () => {
     test('two ALTER TABLEs on one table that add different columns are two changes', () => {
         const command = 'snow sql -c acme_prod -q "alter table prod_db.core.t add column a int; alter table prod_db.core.t add column b int"';
         expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toContain('(+1 more)');
+    });
+});
+
+describe('review 245f', () => {
+    test('two ALTER TABLEs that add differently quoted columns are two changes', () => {
+        const command = 'snow sql -c acme_prod -q \'alter table prod_db.core.t add column "Col A" int; alter table prod_db.core.t add column "Col B" int\'';
+        expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toContain('(+1 more)');
+    });
+    test('the retry card takes the profile default from the project it read the saved run from', () => {
+        const command = 'cd project && dbt retry --project-dir ../retrynotarget';
+        const verdict = evaluateBashCommand(command, { cwd: dir });
+        expect(describeGate(command, verdict.reason ?? '', dir).label).toBe('Run dbt retry on target prod');
     });
 });

@@ -8267,7 +8267,12 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     // Within the first reading that finds writes, each statement is its own change, keyed by its normalised text (literals
     // and comments blanked), so two statements on one object that change different things stay two. The other readings
     // are the same input read another way, so they add only a write on an object the first didn't name.
-    const textKey = (text: string) => stripSqlLiteralsAndComments(text).replace(/\s+/g, ' ').trim().toUpperCase() || null;
+    // String literals and comments are blanked; quoted identifiers are kept, so two columns or tables stay two.
+    const textKey = (text: string) => text
+        .replace(/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'|\$(\w*)\$[\s\S]*?\$\1\$|"(?:[^"]|"")*"/g, m => (m.startsWith('"') ? m : "''"))
+        .replace(/("(?:[^"]|"")*")|\s+/g, (_m, quoted) => quoted ?? ' ')
+        .replace(/("(?:[^"]|"")*")|[^"]+/g, (m, quoted) => quoted ?? m.toUpperCase())
+        .trim() || null;
     const objectKey = (text: string) => {
         const target = writeTarget(text);
         const verb = /^\s*([A-Za-z]+)/.exec(text)?.[1]?.toUpperCase() ?? '';
@@ -8338,7 +8343,8 @@ function defaultDbtTarget(dir: string | undefined, cmd: ResolvedCommand): string
     const profile = lastFlag(cmd.args, ['--profile']) ?? project?.match(/^profile:\s*['"]?([\w.-]+)/m)?.[1];
     if (!profile) return null;
     const envDir = cmd.env?.find(e => e.startsWith('DBT_PROFILES_DIR='))?.slice('DBT_PROFILES_DIR='.length) ?? process.env.DBT_PROFILES_DIR;
-    const candidates = [flagValue(cmd.args, ['--profiles-dir']), envDir, dir, join(HOME, '.dbt')].filter((d): d is string => !!d);
+    // ~/.dbt is found through HOME at the time of the call, as dbt and the gate's own lookup find it.
+    const candidates = [lastFlag(cmd.args, ['--profiles-dir']), envDir, dir, join(process.env.HOME || homedir(), '.dbt')].filter((d): d is string => !!d);
     for (const d of candidates) {
         const profiles = readConfigFile(join(d.startsWith('/') ? d : join(dir, d), 'profiles.yml'));
         if (!profiles) continue;
@@ -8490,7 +8496,7 @@ function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
         const saved = sub === 'retry' && dir ? dbtSavedRun(cmd, dbtProjectDir(cmd, dir)) : null;
         const savedTarget = typeof saved?.target === 'string' ? saved.target : undefined;
         const target = sub === 'retry'
-            ? savedTarget ?? (saved ? defaultDbtTarget(dir, cmd) ?? undefined : undefined)
+            ? savedTarget ?? (saved && dir ? defaultDbtTarget(dbtProjectDir(cmd, dir), cmd) ?? undefined : undefined)
             : dbtTargetFlag(cmd.args) ?? (dir ? dbtTargetDatabase(cmd, dir)?.target : undefined) ?? defaultDbtTarget(dir, cmd) ?? undefined;
         const where = target ? `the dbt target ${code(target)}` : sub === 'retry' ? 'the dbt target of the saved run, which the guard could not read' : "the profile's default dbt target";
         if (saved?.full_refresh) {
