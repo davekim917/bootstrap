@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Vouch for each dev-scope login: walk every role its user holds (and PUBLIC) and confirm none can run SQL the
 // destructive guard would gate against anything outside the entry's dev databases. A pass sets `login.verifiedUntil`, which the destructive guard requires before it lets
-// that connection's SQL run without a card; a failure or an error removes it, so a lapsed check brings cards back.
+// that connection's SQL run without a card; a finding removes it, so a lapsed check brings cards back. A snow call that
+// times out is no finding: the verification it would have renewed keeps its own end, and a later run decides.
 //
 // Usage: node scripts/verify-dev-logins.mjs [--file <dev-scope.local.json>] [--hours 48]
 import { execFileSync } from 'node:child_process';
@@ -87,10 +88,19 @@ function quoteDatabaseRole(name) {
   return String(name).split('.').map(p => (p.startsWith('"') ? p : quoteIdent(p))).join('.');
 }
 
+/** A snow call that ran out of time: it says nothing about the login's grants. */
+export class SnowTimeout extends Error {}
+
 function snowRows(connection, sql) {
-  const out = execFileSync('snow', ['sql', '-c', connection, '--format', 'json', '--enable-templating', 'NONE', '-q', sql], {
-    encoding: 'utf-8', timeout: 120_000, maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  let out;
+  try {
+    out = execFileSync('snow', ['sql', '-c', connection, '--format', 'json', '--enable-templating', 'NONE', '-q', sql], {
+      encoding: 'utf-8', timeout: 120_000, maxBuffer: 512 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    if (err?.code === 'ETIMEDOUT') throw new SnowTimeout(`snow timed out on: ${sql.slice(0, 80)}`);
+    throw err;
+  }
   const data = JSON.parse(out);
   return Array.isArray(data) && data.length && Array.isArray(data[0]) ? data.at(-1) : data;
 }
@@ -195,6 +205,24 @@ export function verifyEntry(entry, rows) {
   return problems.length ? `can write outside ${entry.databases.join('/')}: ${problems.slice(0, 5).join('; ')}${problems.length > 5 ? ` (+${problems.length - 5} more)` : ''}` : null;
 }
 
+/**
+ * Record one check's outcome on `entry.login` and return how it reads in the log. `problem` is null for a pass; a timeout
+ * keeps an unexpired verification as it is, never extending it, and every other problem withdraws it.
+ */
+export function recordCheck(entry, problem, { now, hours, timedOut = false }) {
+  entry.login.lastCheckedAt = now.toISOString();
+  if (!problem) {
+    entry.login.verifiedUntil = new Date(now.getTime() + hours * 3600_000).toISOString();
+    delete entry.login.lastProblem;
+    return `dev-only login ${entry.login.user} verified until ${entry.login.verifiedUntil}`;
+  }
+  entry.login.lastProblem = problem;
+  const until = Date.parse(entry.login.verifiedUntil ?? '');
+  if (timedOut && until > now.getTime()) return `check did not finish (${problem}); the verification still ends ${entry.login.verifiedUntil}`;
+  delete entry.login.verifiedUntil;
+  return `NOT trusted — ${problem}`;
+}
+
 function main() {
   const args = process.argv.slice(2);
   const arg = (flag, fallback) => (args.includes(flag) ? args[args.indexOf(flag) + 1] : fallback);
@@ -207,22 +235,19 @@ function main() {
   for (const entry of scope.snowflake ?? []) {
     if (!entry.login) continue;
     let problem;
+    let timedOut = false;
     try {
       problem = verifyEntry(entry, sql => snowRows(entry.connection, sql));
     } catch (err) {
+      timedOut = err instanceof SnowTimeout;
       problem = `check failed: ${String(err?.message ?? err).split('\n')[0]}`;
     }
-    const now = new Date();
-    entry.login.lastCheckedAt = now.toISOString();
+    const line = `${entry.connection}: ${recordCheck(entry, problem, { now: new Date(), hours, timedOut })}`;
     if (problem) {
       failed++;
-      delete entry.login.verifiedUntil;
-      entry.login.lastProblem = problem;
-      console.error(`${entry.connection}: NOT trusted — ${problem}`);
+      console.error(line);
     } else {
-      entry.login.verifiedUntil = new Date(now.getTime() + hours * 3600_000).toISOString();
-      delete entry.login.lastProblem;
-      console.log(`${entry.connection}: dev-only login ${entry.login.user} verified until ${entry.login.verifiedUntil}`);
+      console.log(line);
     }
   }
   const tmp = `${file}.tmp-${process.pid}`;

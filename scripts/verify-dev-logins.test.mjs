@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { collectGrants, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
+import { collectGrants, recordCheck, verifyEntry, writeGrantsOutside } from './verify-dev-logins.mjs';
 
 const g = (privilege, granted_on, name) => ({ privilege, granted_on, name });
 // Every role has no future grants unless a fixture lists some.
@@ -217,4 +217,36 @@ test('a SQL function passes; a function in any other language, or one whose name
     'USAGE on FUNCTION DEV_DB.S.CALLS_A_SERVICE(VARCHAR)',
     'USAGE on FUNCTION UTIL_DB.S."Quoted"()',
   ]);
+});
+
+const NOW = new Date('2027-03-01T00:05:00.000Z');
+const leased = until => ({ connection: 'acme_dev', databases: ['DEV_DB'], login: { user: 'AGENT_DEV_USER', account: 'ACME-DEV1', verifiedUntil: until } });
+
+test('a pass sets the verification to the requested hours from now', () => {
+  const entry = leased(undefined);
+  recordCheck(entry, null, { now: NOW, hours: 24 });
+  assert.equal(entry.login.verifiedUntil, '2027-03-02T00:05:00.000Z');
+});
+
+test('a timed-out check keeps an unexpired verification as it was, without extending it', () => {
+  const entry = leased('2027-03-01T12:06:00.000Z');
+  const line = recordCheck(entry, 'check failed: snow timed out on: show grants', { now: NOW, hours: 24, timedOut: true });
+  assert.equal(entry.login.verifiedUntil, '2027-03-01T12:06:00.000Z');
+  assert.equal(entry.login.lastProblem, 'check failed: snow timed out on: show grants');
+  assert.match(line, /still ends 2027-03-01T12:06:00.000Z/);
+});
+
+test('a timed-out check leaves no verification once the old one has ended', () => {
+  const entry = leased('2027-03-01T00:00:00.000Z');
+  recordCheck(entry, 'check failed: snow timed out on: show grants', { now: NOW, hours: 24, timedOut: true });
+  assert.equal(entry.login.verifiedUntil, undefined);
+});
+
+test('a finding, or any error other than a timeout, withdraws an unexpired verification', () => {
+  for (const [problem, timedOut] of [['can write outside DEV_DB: INSERT on TABLE PROD_DB.S.T', false], ['check failed: procedure "P"() has a quoted name', false]]) {
+    const entry = leased('2027-03-01T12:06:00.000Z');
+    const line = recordCheck(entry, problem, { now: NOW, hours: 24, timedOut });
+    assert.equal(entry.login.verifiedUntil, undefined);
+    assert.match(line, /^NOT trusted/);
+  }
 });

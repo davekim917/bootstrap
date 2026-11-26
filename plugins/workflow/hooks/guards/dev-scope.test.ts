@@ -105,6 +105,8 @@ describe('everything else stays gated', () => {
         ['a template in a second -q', `snow sql -c acme_dev -q "drop table dev_db.a.b" -q '<% ctx.env.query %>'`],
         ['a bare template in a second -q', 'snow sql -c acme_dev -q "drop table dev_db.a.b" -q "&query"'],
         ['SQL read from a file', "cat > /tmp/dev-scope-f.sql <<'EOF'\ndrop table dev_db.a.b;\nEOF\nsnow sql -c acme_dev -f /tmp/dev-scope-f.sql"],
+        ['a role switch and dev drops read from a file', "cat > /tmp/dev-scope-ci.sql <<'EOF'\nUSE ROLE CI_ROLE;\nDROP SCHEMA IF EXISTS DEV_DB.CI_1_CORE CASCADE;\nEOF\ntimeout 300 snow sql -c acme_dev -f /tmp/dev-scope-ci.sql 2>&1 | tail -12"],
+        ['a dev UPDATE written by echo and read from a file', 'cd /tmp; echo "UPDATE DEV_DB.A.B SET C = NULL; SELECT COUNT(C) FROM DEV_DB.A.B;" > /tmp/dev-scope-u.sql; snow sql -c acme_dev -f /tmp/dev-scope-u.sql 2>&1 | tail -4'],
         ['a temporary table beside a dev drop, named without its database', 'snow sql -c acme_dev -q "create or replace temporary table t as select 1; drop table dev_db.a.b"'],
         ['a name placed by an earlier USE', 'snow sql -c acme_dev -q "use database dev_db; drop table scratch.orders"'],
         ['a CREATE SCHEMA moving the session', 'snow sql -c acme_dev -q "use database dev_db; create schema prod_db.scratch_x; drop table s.t"'],
