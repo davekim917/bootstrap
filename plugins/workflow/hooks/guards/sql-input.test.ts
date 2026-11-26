@@ -59,15 +59,15 @@ describe('a read-only SQL file is not', () => {
     test.each([
         (d: string) => `snow sql -f ${d}/ok.sql`,
         (d: string) => `psql -h db.example < ${d}/ok.sql`,
+        (d: string) => `cat ${d}/ok.sql | psql -h db.example`,
     ])('%#', (make) => {
         expect(verdict(make(dir))).toBe('allow');
     });
 });
 
-// psql reads SQL only in its listed forms (psqlReadableInput); a pipe is not one, so even a read-only one gates.
-describe('SQL piped into psql', () => {
+// A pipe into psql is readable only from a literal echo or printf, or a cat of readable files (psqlReadableInput).
+describe('SQL piped into psql from anything else', () => {
     test.each([
-        (d: string) => `cat ${d}/ok.sql | psql -h db.example`,
         () => `B='SELECT 1;'; echo "$B" | psql`,
         () => `B='-- DROP TABLE users;'; echo "$B" | psql`,
         () => `B='-- DROP TABLE users;'; echo $B | psql`,
@@ -80,7 +80,7 @@ describe('SQL piped into psql', () => {
         () => `x=$(cd job; cat ok.sql | psql)`,
         () => `B='DROP TABLE users'; x=$(B='SELECT 1'; echo "$B" | psql)`,
         () => `B='DROP TABLE users;'; cat <<'EOF' | psql\n$B\nEOF`,
-    ])('%#', (make) => {
+    ])('%#', (make: (d: string) => string) => {
         expect(verdict(make(dir))).toBe('gate');
     });
 });
@@ -386,6 +386,9 @@ describe('a SQL file path held in a variable set on the line gets the verdict of
         ['as /proc/self/fd/0', `echo 'drop table staging_orders;' | duckdb -f /proc/self/fd/0`],
         ['spelled unnormalized', `echo 'drop table staging_orders;' | snow sql -c example -f /dev/../dev/./stdin`],
         ['through a symlink in the tree', `echo 'drop table staging_orders;' | snow sql -c example -f Q/stdin_link.sql`],
+        ['before a second file', `echo 'drop table staging_orders;' | psql -h db.example -f /dev/stdin -f Q/report_a.sql`],
+        ['after a second file, through a variable', `F=/dev/stdin; echo 'drop table staging_orders;' | psql -h db.example -f Q/report_a.sql -f "$F"`],
+        ['as - beside a second file', `echo 'drop table staging_orders;' | psql -h db.example -f Q/report_a.sql -f -`],
     ])('SQL piped to a client reading /dev/stdin is scanned, %s', (_label, command) => {
         if (!existsSync(join(q, 'stdin_link.sql'))) symlinkSync('/dev/stdin', join(q, 'stdin_link.sql'));
         const verdict = run(command);
@@ -393,17 +396,7 @@ describe('a SQL file path held in a variable set on the line gets the verdict of
         expect(verdict.reason).toContain('drop table staging_orders');
     });
 
-    test('psql reading /dev/stdin or - from a pipe beside a second file takes a card for input it does not read', () => {
-    for (const command of [
-        `echo 'drop table staging_orders;' | psql -h db.example -f /dev/stdin -f Q/report_a.sql`,
-        `F=/dev/stdin; echo 'drop table staging_orders;' | psql -h db.example -f Q/report_a.sql -f "$F"`,
-        `echo 'drop table staging_orders;' | psql -h db.example -f Q/report_a.sql -f -`,
-    ]) {
-        const v = run(command);
-        expect(v.action).toBe('gate');
-        expect(v.reason).toContain('piped in from another command');
-    }
-    });
+
 
     test('a SELECT piped to a client reading /dev/stdin runs', () => {
         expect(run(`echo 'select 1;' | snow sql -c example -f /dev/stdin`).action).toBe('allow');

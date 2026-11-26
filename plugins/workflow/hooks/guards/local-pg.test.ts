@@ -214,8 +214,8 @@ describe('a connection the guard cannot read exactly as psql will make it is nev
         ['a stdin file read beside -c', "echo x | psql -X -h 127.0.0.1 -p 55432 -Xf- -c 'DROP TABLE orders'"],
     ])('%s', (name, command) => {
         if (REFUSED_WITH_THE_FORM_IT_READS.has(name)) expect(verdict(command)).toBe('block');
-        // Input the guard can't read takes a card, never a refusal.
-        else if (name === 'a stdin file read beside -c') expect(verdict(command)).toBe('gate');
+        // A literal echo is a readable form, so scratch takes it as it takes a heredoc.
+        else if (name === 'a stdin file read beside -c') expect(verdict(command)).toBe('allow');
         else if (NAMES_A_REMOTE_HOST.has(name)) expect(verdict(command)).toBe('gate');
         else refusedToScratchPg(command);
     });

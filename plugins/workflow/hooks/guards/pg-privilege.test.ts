@@ -198,7 +198,6 @@ describe('psql input the guard reads as psql does', () => {
     test.each([
         ['-f clustered after -X', () => `${H} -Xf ${f('grant.sql')}`],
         ['pg_dump piped in', () => `pg_dump -h src.example.com db | ${H}`],
-        ['a read-only cat piped in, since a pipe is not a form psql input is read in', () => `cat ${f('ok.sql')} | ${H}`],
         ['gunzip piped in', () => `gzip -dc ${f('dump.sql.gz')} | ${H}`],
         ['SQL from a command substitution', () => `${H} -c "$(cat ${f('grant.sql')})"`],
         ['a file cp replaces earlier on the line', () => `cp ${f('grant.sql')} ${f('ok.sql')} && ${H} -f ${f('ok.sql')}`],
@@ -231,6 +230,9 @@ describe('psql input the guard reads as psql does', () => {
 
     test.each([
         ['a cat earlier on the line, which leaves the file alone', () => `cat ${f('ok.sql')} && ${H} -f ${f('ok.sql')}`],
+        ['a cat of a readable file piped in', () => `cat ${f('ok.sql')} | ${H}`],
+        ['a literal echo piped in', () => `echo 'select 1' | ${H}`],
+        ['a literal printf piped in', () => `printf 'select 1;\\n' | ${H}`],
         ['a GRANT inside a nested comment', () => `${H} -f ${f('nested.sql')}`],
         ['COPY data whose row starts with GRANT', () => `${H} -f ${f('copy-data.sql')}`],
         ['a $( ) psql gets in single quotes, as text', () => `${H} -c '$(not run)'`],
@@ -279,6 +281,12 @@ describe('psql input outside the listed forms takes a card, and only a missing f
 
     test.each([
         ['a dump through tee', () => `pg_dump -h src.example.com db | tee ${f('copy.sql')} | ${H}`],
+        ['echo -e, whose escapes can build SQL', () => `echo -e '\\x47RANT ALL ON t TO r' | ${H}`],
+        ['printf with a hex escape', () => `printf '\\x47RANT ALL ON t TO r' | ${H}`],
+        ['an echo of a variable', () => `echo "$SQL" | ${H}`],
+        ['a cat reading its own stdin', () => `cat | ${H}`],
+        ['a cat of a file cp replaced earlier on the line', () => `cp ${f('m.sql')} ${f('n.sql')}; cat ${f('n.sql')} | ${H}`],
+        ['a GRANT piped from a literal echo', () => `echo 'GRANT ALL ON t TO public' | ${H}`],
         ['a pipe inside a command substitution', () => `x=$(pg_dump -h src.example.com db | ${H})`],
         ['a file a redirect wrote earlier on the line', () => `pg_dump -h src.example.com db > ${f('m.sql')}; ${H} -f ${f('m.sql')}`],
         ['\\copy FROM STDIN with no semicolon', () => `${H} -f ${f('client-copy.sql')}`],

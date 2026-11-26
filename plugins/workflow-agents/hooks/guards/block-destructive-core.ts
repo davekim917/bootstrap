@@ -1430,6 +1430,8 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     // Read each file, plus any text the command writes to it first; follow
     // includes found in what is read, up to a fixed number of files.
     let unreadable: string | null = traceOver ? 'its piped input' : null;
+    // A missing file's refusal says how to make it readable, so it is reported ahead of any other unreadable input.
+    let missingFile: string | null = null;
     const commandFiles = new Set(files);
     const pending = [...preludes, ...files];
     for (const t of texts) pending.push(...sqlIncludes(t, null));
@@ -1447,6 +1449,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         const named = /[$`]/.test(f);
         if (candidates && writes && !writes.length && (named || (cmd.name === 'psql' && f !== '-' && ownFiles.has(f)) || (cmd.name === 'snow' && commandFiles.has(f))) && candidates.every(pathIsMissing)) {
             unreadable ??= `${f}, ${SQL_PATH_MISSING}`;
+            missingFile ??= `${f}, ${SQL_PATH_MISSING}`;
         }
         // A file something may write before it is read is still read as it stands: what it holds now can block.
         if (writesOwnOutput(cmd) || texts.some(t => SQL_CLIENT_FILE_WRITE.test(t))) {
@@ -1502,7 +1505,7 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     if (pending.length) unreadable ??= pending[0];
     if (client === 'psql') {
         const rule = psqlReadableInput(cmd, [...ownFiles], texts);
-        unreadable = rule.missing ?? rule.unreadable ?? unreadable;
+        unreadable = missingFile ?? rule.missing ?? rule.unreadable ?? unreadable;
     }
     return { texts, unreadable, argCounts };
 }
@@ -1961,26 +1964,21 @@ const pathIsMissing = (path: string): boolean => {
  * scratch Postgres; a substitution in -h or another argument that isn't SQL doesn't count. A file that isn't there is
  * reported apart, ahead of everything else, since its refusal says how to make it readable.
  */
-export function psqlReadableInput(cmd: ResolvedCommand, files: string[], texts: string[]): { unreadable: string | null; missing: string | null } {
+export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: string[]): { unreadable: string | null; missing: string | null } {
+    let files = given;
     const stdinNamed = (f: string) => {
         const paths = f === '-' ? null : sqlPathCandidates(f, cmd);
         return f === '-' || (!!paths?.length && paths.every(p => STDIN_PATH.test(fdLinkTarget(p))));
     };
-    // A file echo, printf, cat or tee writes earlier on the line is there when psql opens it; it is unreadable, below.
-    const missing = files.find(f => {
-        const writes = stdinNamed(f) ? [] : writesTo(f, cmd);
-        if (stdinNamed(f) || writes === null || writes.length) return false;
-        const candidates = sqlPathCandidates(f, cmd);
-        return !!candidates && candidates.length > 0 && candidates.every(pathIsMissing);
-    });
-    const result = (unreadable: string | null) => ({ unreadable, missing: missing ? `${missing}, ${SQL_PATH_MISSING}` : null });
+    const result = (unreadable: string | null) => ({ unreadable, missing: null as string | null });
     const substitutes = (word: string) => /\$\(|`|[<>]\(/.test(withoutSingleQuoted(word));
-    const written = writtenArgs(cmd) ?? cmd.args;
+    let writtenCache: string[] | undefined;
+    const written = () => (writtenCache ??= writtenArgs(cmd) ?? cmd.args);
     for (let i = 0; i < cmd.args.length; i++) {
         const a = cmd.args[i];
         const attached = /^--command=/.test(a) || (/^-[A-Za-z]/.test(a) && !a.startsWith('--') && clusterValueOption('psql', a) === 'c' && !a.endsWith('c'));
         const separate = a === '--command' || (/^-[A-Za-z]*c$/.test(a) && clusterValueOption('psql', a) === 'c');
-        if ((attached && substitutes(written[i] ?? a)) || (separate && substitutes(written[i + 1] ?? cmd.args[i + 1] ?? ''))) {
+        if ((attached && substitutes(written()[i] ?? a)) || (separate && substitutes(written()[i + 1] ?? cmd.args[i + 1] ?? ''))) {
             return result('a command substitution in its SQL');
         }
     }
@@ -1988,7 +1986,15 @@ export function psqlReadableInput(cmd: ResolvedCommand, files: string[], texts: 
     const readsStdin = (!sqlInArgs && files.filter(f => !(cmd.stdinFiles ?? []).includes(f)).length === 0) || files.some(stdinNamed);
     if (readsStdin && !cmd.stdinTexts?.length && !(cmd.stdinFiles ?? []).length) {
         const piped = cmd.pipedInput ?? (cmd.pos === undefined ? undefined : cmd.script?.pipedInto.get(cmd.pos));
-        if (piped) return result('SQL piped in from another command');
+        if (piped) {
+            const fed = readablePipeSource(cmd);
+            if (fed === null) return result('SQL piped in from another command');
+            // A cat's file is found from the cat's own directory, which env -C or a cd can move.
+            const gone = fed.files.find(f => !lineWriterOf(fed.from, f) && (sqlPathCandidates(f, fed.from) ?? []).every(pathIsMissing));
+            if (gone) return { unreadable: null, missing: `${gone}, ${SQL_PATH_MISSING}` };
+            const catWriter = fed.files.map(f => lineWriterOf(fed.from, f)).find(Boolean);
+            if (catWriter) return result(`a file cat reads, which \`${catWriter}\` earlier on the line writes`);
+        }
     }
     if ((cmd.stdinExpanded ?? []).some(w => substitutes(w.word))) return result('a command substitution in its SQL');
     for (const f of files) {
@@ -2005,6 +2011,50 @@ export function psqlReadableInput(cmd: ResolvedCommand, files: string[], texts: 
         }
     }
     return result(null);
+}
+
+/**
+ * What psql reads from the pipe feeding it, when the stage before it is one of the two readable pipe sources: a lone
+ * echo or printf of literal words (no -e, no escapes or %b that build text), or a lone cat of files (returned with the
+ * cat, so they are checked under the -f rule from its directory). Null is any other upstream.
+ */
+let lastPipeParse: { line: string; script: any } | null = null;
+function readablePipeSource(cmd: ResolvedCommand): { files: string[]; from: ResolvedCommand } | null {
+    const line = cmd.script?.command;
+    if (line === undefined || cmd.pos === undefined) return null;
+    let script: any;
+    try {
+        script = lastPipeParse?.line === line ? lastPipeParse.script : parseShell(line);
+    } catch {
+        return null;
+    }
+    lastPipeParse = { line, script };
+    let upstream: any = undefined;
+    const find = (node: any): void => {
+        if (!node || typeof node !== 'object' || upstream !== undefined) return;
+        if (Array.isArray(node)) return node.forEach(find);
+        if (node.type === 'Pipeline' && Array.isArray(node.commands)) {
+            const stages = node.commands.map((s: any) => s?.command ?? s);
+            const at = stages.findIndex((s: any) => s?.type === 'Command' && s.pos === cmd.pos);
+            if (at > 0) return void (upstream = stages[at - 1]);
+        }
+        Object.values(node).forEach(find);
+    };
+    find(script);
+    if (!upstream || upstream.type !== 'Command' || typeof upstream.pos !== 'number') return null;
+    const source = (cmd.script?.commands ?? []).find(c => c.pos === upstream.pos);
+    const written = source ? writtenArgs(source) : null;
+    if (!source || !written || source.env?.length || (upstream.redirects ?? []).length) return null;
+    const literal = written.every(w => isLiteralShellWord(w));
+    if ((source.name === 'echo' || source.name === 'printf') && literal) {
+        const escapes = source.name === 'echo' ? source.args.some(a => /^-[neE]*e[neE]*$/.test(a)) : source.args.some(a => /\\(?![nt])|%[^%]*b/.test(a));
+        return escapes || (source.name === 'printf' && source.args[0]?.startsWith('-')) ? null : { files: [], from: source };
+    }
+    if (source.name === 'cat' && literal) {
+        const files = source.args.filter(a => a !== '--');
+        return files.length && files.every(f => !f.startsWith('-')) ? { files, from: source } : null;
+    }
+    return null;
 }
 
 // Programs that write a file named by an argument: the argument that names it, by program.
@@ -2025,11 +2075,27 @@ const optionValues = (args: string[], options: string[]) => args.flatMap((a, i) 
  * would read what it wrote rather than what the guard read; null when none does.
  */
 function lineWriterOf(cmd: ResolvedCommand, file: string): string | null {
-    if (cmd.pos === undefined) return null;
+    if (cmd.pos === undefined || !cmd.script) return null;
     const names = (a: string) => a === file || a.endsWith(`/${file}`) || file.endsWith(`/${a}`);
-    const writer = (cmd.script?.commands ?? []).find(c => c !== cmd && c.pos !== undefined && c.pos < cmd.pos!
-        && ((c.stdoutFiles ?? []).some(names) || (FILE_WRITER_OUTPUTS[c.name]?.(c.args) ?? []).some(names)));
-    return writer?.name ?? null;
+    const writers = (lineWriters.get(cmd.script) ?? indexLineWriters(cmd.script)).get(basename(file)) ?? [];
+    return writers.find(w => w.pos < cmd.pos! && w.c !== cmd && names(w.target))?.c.name ?? null;
+}
+
+// Each command on a line that writes a file, keyed by the written file's base name, in line order.
+const lineWriters = new WeakMap<ScriptContext, Map<string, Array<{ pos: number; target: string; c: ResolvedCommand }>>>();
+function indexLineWriters(script: ScriptContext): Map<string, Array<{ pos: number; target: string; c: ResolvedCommand }>> {
+    const index = new Map<string, Array<{ pos: number; target: string; c: ResolvedCommand }>>();
+    for (const c of script.commands ?? []) {
+        if (c.pos === undefined) continue;
+        for (const target of [...(c.stdoutFiles ?? []), ...(FILE_WRITER_OUTPUTS[c.name]?.(c.args) ?? [])]) {
+            const key = basename(target);
+            if (!index.has(key)) index.set(key, []);
+            index.get(key)!.push({ pos: c.pos, target, c });
+        }
+    }
+    for (const list of index.values()) list.sort((a, b) => a.pos - b.pos);
+    lineWriters.set(script, index);
+    return index;
 }
 
 const SQL_PATH_UNPROVEN = "a path the command line doesn't prove";
