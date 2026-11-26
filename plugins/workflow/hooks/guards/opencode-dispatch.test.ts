@@ -56,9 +56,17 @@ function pluginContext(localTools: string[]) {
   return { directory: '/repo', client: { tool: { ids: async () => ({ data: localTools }) } } };
 }
 
-async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'approved', ctx?: unknown) {
+async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'approved', ctx?: unknown, refusal?: string) {
+  // With `refusal`, each gate reports it through the callback OpenCode handed it, as the core does for an approval that
+  // names another request, and answers 'denied'.
+  const refuse = (onRefused?: (refusal: string) => void): 'approved' | 'denied' | 'timeout' => {
+    if (refusal === undefined) return decision;
+    onRefused?.(refusal);
+    return 'denied';
+  };
   const stagedActions: string[] = [];
   const stagedSummaries: Array<string | undefined> = [];
+  const stagedSendParts: Array<string[] | undefined> = [];
   mock.module(CORE, () => ({
     ...REAL_CORE,
     // The destructive gate path is guarded by `else if (IS_NANOCLAW)`; force it
@@ -70,19 +78,42 @@ async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'app
     // No real gate-file under /tmp/.claude-destructive-gate → keep the bypass off
     // so the chain takes the runNanoclawGate branch deterministically.
     consumeGateApproval: (): boolean => false,
-    runNanoclawGate: (): 'approved' | 'denied' | 'timeout' => {
+    runNanoclawGate: (
+      _command: string,
+      _reason: string,
+      _onStagingError?: (error: unknown) => void,
+      _toolUseId?: string,
+      _cwd?: string,
+      onRefused?: (refusal: string) => void,
+    ): 'approved' | 'denied' | 'timeout' => {
       stagedActions.push('request_destructive_gate');
-      return decision;
+      return refuse(onRefused);
     },
     runEmailGate: (
       _command: string,
       _reason: string,
       _onStagingError?: (error: unknown) => void,
       summary?: string,
+      _toolUseId?: string,
+      _card?: unknown,
+      draft?: { onChanged: (refusal: string) => void },
     ): 'approved' | 'denied' | 'timeout' => {
       stagedActions.push('request_bash_gate');
       stagedSummaries.push(summary);
-      return decision;
+      return refuse(draft?.onChanged);
+    },
+    runSendGate: (
+      _command: string,
+      _reason: string,
+      _onStagingError?: (error: unknown) => void,
+      _summary?: string,
+      _toolUseId?: string,
+      send?: { sendParts?: string[] },
+      payload?: { onChanged: (refusal: string) => void },
+    ): 'approved' | 'denied' | 'timeout' => {
+      stagedActions.push('request_send_gate');
+      stagedSendParts.push(send?.sendParts);
+      return refuse(payload?.onChanged);
     },
     // Belt-and-suspenders: never let a real DB poll run.
     pollDeliveredTable: (): 'approved' | 'denied' | 'timeout' => decision,
@@ -96,7 +127,7 @@ async function loadEntrypoint(decision: 'approved' | 'denied' | 'timeout' = 'app
     before({ tool, sessionID: 's', callID: 'c' }, { args: { path } });
   const runTool = (tool: string, args: Record<string, unknown> = {}) =>
     before({ tool, sessionID: 's', callID: 'c' }, { args });
-  return { hooks: hooks as typeof hooks & { config: (cfg: { mcp?: Record<string, unknown> }) => Promise<void> }, before, runBash, runEdit, runTool, stagedActions, stagedSummaries };
+  return { hooks: hooks as typeof hooks & { config: (cfg: { mcp?: Record<string, unknown> }) => Promise<void> }, before, runBash, runEdit, runTool, stagedActions, stagedSummaries, stagedSendParts };
 }
 
 // Representative input per guard class, with its expected outcome at the
@@ -231,6 +262,56 @@ describe('test_oc_dispatch_action_per_gate', () => {
     await runTool('gmail_create_draft_reply', { to: 'a@example.com' });
     await runTool('gmail_search_emails', { query: 'from:a@example.com' });
     expect(stagedActions).toHaveLength(0);
+  });
+
+  const SLACK_POST = `curl https://slack.com/api/chat.postMessage --json '{"channel":"C1","text":"Numbers are in."}'`;
+  async function withSendScope(scope: unknown, workgroup: string, run: () => Promise<void>) {
+    const { mkdtempSync, rmSync, writeFileSync } = await import('fs');
+    const { join } = await import('path');
+    const { tmpdir } = await import('os');
+    const dir = mkdtempSync(join(tmpdir(), 'oc-send-scope-'));
+    const saved = { scope: process.env.BOOTSTRAP_SEND_SCOPE_FILE, workgroup: process.env.NANOCLAW_WORKGROUP_ID };
+    try {
+      writeFileSync(join(dir, 'send-scope.json'), JSON.stringify(scope));
+      process.env.BOOTSTRAP_SEND_SCOPE_FILE = join(dir, 'send-scope.json');
+      process.env.NANOCLAW_WORKGROUP_ID = workgroup;
+      await run();
+    } finally {
+      for (const [key, value] of [['BOOTSTRAP_SEND_SCOPE_FILE', saved.scope], ['NANOCLAW_WORKGROUP_ID', saved.workgroup]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("a Slack post in a listed person's name → request_send_gate with its text", async () => {
+    await withSendScope({ slack: { workgroups: ['acme'] } }, 'acme', async () => {
+      const { runBash, stagedActions, stagedSendParts } = await loadEntrypoint('approved');
+      await runBash(SLACK_POST);
+      expect(stagedActions).toEqual(['request_send_gate']);
+      expect(stagedSendParts).toEqual([['Numbers are in.']]);
+    });
+  });
+
+  test("a Slack post as a listed OneCLI identity mapped to someone other than the workgroup's person is refused before any gate stages", async () => {
+    await withSendScope({ slack: { workgroups: [{ id: 'other', person: 'pat' }], onecliAgents: [{ id: 'ag-acme', person: 'lee' }] } }, 'other', async () => {
+      const { runBash, stagedActions } = await loadEntrypoint('approved');
+      await expect(runBash(`onecli run --agent ag-acme -- ${SLACK_POST}`)).rejects.toThrow(/posts as the OneCLI identity `ag-acme`/);
+      expect(stagedActions).toEqual([]);
+    });
+  });
+
+  const REFUSAL = "Refused: the host's approval does not name the request this hook staged";
+  test.each([
+    ['a destructive command', (run: Awaited<ReturnType<typeof loadEntrypoint>>) => run.runBash('terraform destroy -auto-approve')],
+    ['an email send', (run: Awaited<ReturnType<typeof loadEntrypoint>>) => run.runBash('gws gmail +send --to a@example.com --subject hi')],
+    ['a Slack post', (run: Awaited<ReturnType<typeof loadEntrypoint>>) => run.runBash(SLACK_POST)],
+    ['a native email send', (run: Awaited<ReturnType<typeof loadEntrypoint>>) => run.runTool('send_email', { to: 'a@example.com', subject: 'Status', body: 'numbers' })],
+  ] as const)('%s whose approval names another request reports that refusal, not a cancellation', async (_label, send) => {
+    await withSendScope({ slack: { workgroups: ['acme'] } }, 'acme', async () => {
+      await expect(send(await loadEntrypoint('approved', undefined, REFUSAL))).rejects.toThrow(`BLOCKED: ${REFUSAL}`);
+    });
   });
 
   test('destructive gate → request_destructive_gate (NOT request_bash_gate)', async () => {

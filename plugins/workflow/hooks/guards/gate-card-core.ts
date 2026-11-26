@@ -1301,14 +1301,14 @@ export function inEmptyDir<T>(run: (dir: string) => T): T {
     }
 }
 
-export function readBodyFile(path: string, cwd?: string): string | null {
+export function readBodyFile(path: string, cwd?: string, extensions: ReadonlySet<string> = BODY_EXTENSIONS): string | null {
     let real: string;
     try {
         real = realpathSync(path);
     } catch {
         return null;
     }
-    if (!BODY_EXTENSIONS.has(extname(real).toLowerCase())) return null;
+    if (!extensions.has(extname(real).toLowerCase())) return null;
     const root = bodyRoots(cwd).find(r => real.startsWith(r.endsWith(sep) ? r : r + sep));
     if (!root) return null;
     if (real.slice(root.length).split(sep).some(seg => SECRET_SEGMENT.test(seg))) return null;

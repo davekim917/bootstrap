@@ -204,3 +204,30 @@ describe('the email card this adapter stages is the one the in-tree Codex hook w
         for (const peer of staged) expect('toolUseId' in peer).toBe(false);
     });
 });
+
+describe('a Slack post in NanoClaw', () => {
+    afterEach(() => {
+        mock.restore();
+    });
+
+    test("as a listed OneCLI identity mapped to someone other than the workgroup's person it is refused before any card is staged", async () => {
+        const scopeFile = join(root, 'send-scope.json');
+        writeFileSync(scopeFile, JSON.stringify({ slack: { workgroups: [{ id: 'acme', person: 'pat' }], onecliAgents: [{ id: 'ag-acme', person: 'lee' }] } }));
+        const saved = process.env.BOOTSTRAP_SEND_SCOPE_FILE;
+        const savedWorkgroup = process.env.NANOCLAW_WORKGROUP_ID;
+        process.env.BOOTSTRAP_SEND_SCOPE_FILE = scopeFile;
+        process.env.NANOCLAW_WORKGROUP_ID = 'acme';
+        try {
+            const { staged, guard } = await stagedRequests(true);
+            const command = `onecli run --agent ag-acme -- curl https://slack.com/api/chat.postMessage --json '{"channel":"C1","text":"Numbers are in."}'`;
+            const verdict = guard.decideToolCall({ tool_name: 'Bash', tool_input: { command }, tool_use_id: 'call-1' }, 'hand-off');
+            expect(verdict).toEqual({ action: 'deny', reason: expect.stringContaining('posts as the OneCLI identity `ag-acme`') });
+            expect(staged).toHaveLength(0);
+        } finally {
+            if (saved === undefined) delete process.env.BOOTSTRAP_SEND_SCOPE_FILE;
+            else process.env.BOOTSTRAP_SEND_SCOPE_FILE = saved;
+            if (savedWorkgroup === undefined) delete process.env.NANOCLAW_WORKGROUP_ID;
+            else process.env.NANOCLAW_WORKGROUP_ID = savedWorkgroup;
+        }
+    });
+});

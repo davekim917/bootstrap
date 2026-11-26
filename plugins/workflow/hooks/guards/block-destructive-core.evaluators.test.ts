@@ -1,13 +1,19 @@
 import { describe, test, expect, mock, afterAll, afterEach } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
     commandLineOf,
+    deliveredDecision,
     evaluateBashCommand,
     evaluateSelfApproval,
     evaluateSnapshotGitMutation,
     evaluateSnowflakeConnector,
+    gateReceiptOf,
+    gateRequestContent,
+    peerReceipt,
+    pollDeliveredTable,
 } from './block-destructive-core';
 
 describe('commandLineOf', () => {
@@ -146,6 +152,70 @@ async function loadWithSpies(opts: { stageThrows?: boolean; decision?: 'approved
     return { mod, staged };
 }
 
+// The host's own receipt formula (nanoclaw `gateReceipt`), written out here as the independent oracle.
+const hostReceipt = (request: Record<string, unknown>) => 'gate-v1:' + createHash('sha256').update(JSON.stringify(request), 'utf8').digest('hex');
+
+describe('an approval releases only the request this hook staged', () => {
+    const staged = gateRequestContent('gate-1', 'Slack post in your name (chat.postMessage)', 's', 'curl -s --data @payload.json https://slack.com/api/chat.postMessage', 'request_send_gate', { sendParts: ['• Report is live'], textFlattened: true });
+    const { textFlattened: _flag, ...unflagged } = JSON.parse(staged) as Record<string, unknown>;
+
+    test.each([
+        ['a receipt matching the staged request releases', { status: 'delivered', gate_receipt: hostReceipt(JSON.parse(staged)) }, 'approved'],
+        ['a mismatched hash refuses', { status: 'delivered', gate_receipt: `gate-v1:${'0'.repeat(64)}` }, 'refused'],
+        ['a receipt missing the hash refuses', { status: 'delivered', gate_receipt: null }, 'refused'],
+        ['a receipt for the request without textFlattened refuses', { status: 'delivered', gate_receipt: hostReceipt(unflagged) }, 'refused'],
+        ['a rejection denies', { status: 'failed' }, 'denied'],
+        ['a pending card is undecided', { status: 'pending' }, null],
+    ] as Array<[string, { status: string; gate_receipt?: string | null }, ReturnType<typeof deliveredDecision>]>)('%s', (_label, row, decision) => {
+        expect(deliveredDecision(row, gateReceiptOf(staged))).toBe(decision);
+    });
+
+    test("the receipt matches the host's on its pinned vector", () => {
+        const request = {
+            action: 'request_bash_gate',
+            requestId: 'gate-1700000000000-vector',
+            label: 'Post to #general: "Hi 😀"',
+            summary: '*To:* #general\n> line "two" \\ back \ud800',
+            sendParts: ['Hi 😀\n'],
+            pureSend: true,
+            command: "printf '%s' 'Hi 😀' | tee out.txt",
+        };
+        expect(gateReceiptOf(JSON.stringify(request))).toBe('gate-v1:ab6f1696f669456151c7439d24167dec07a70e4153c9352f4acc9501416985b0');
+    });
+
+    test.each([
+        ["the same request under the peer's id, fields in another order", JSON.stringify({ requestId: 'gate-2', ...unflagged, textFlattened: true }), true],
+        ["the peer's request without textFlattened", JSON.stringify({ ...unflagged, requestId: 'gate-2' }), false],
+        ['a request that cannot be read', null, false],
+    ] as Array<[string, string | null, boolean]>)("a peer's card is waited on for %s", (_label, stored, waits) => {
+        const own = gateRequestContent('gate-2', 'Slack post in your name (chat.postMessage)', 's', 'curl -s --data @payload.json https://slack.com/api/chat.postMessage', 'request_send_gate', { sendParts: ['• Report is live'], textFlattened: true });
+        expect(peerReceipt(stored, own)).toBe(waits ? hostReceipt(JSON.parse(stored!)) : null);
+    });
+
+    test('a refusal the caller throws leaves the poll, rather than reading as a broken table', async () => {
+        const sqlite = await import('bun:sqlite');
+        mock.module('bun:sqlite', () => ({
+            Database: class {
+                exec(): void {}
+                prepare() {
+                    return { get: () => ({ status: 'delivered', gate_receipt: `gate-v1:${'0'.repeat(64)}` }) };
+                }
+                close(): void {}
+            },
+        }));
+        try {
+            const heard: string[] = [];
+            expect(pollDeliveredTable('gate-1', 1000, gateReceiptOf(staged), refusal => heard.push(refusal))).toBe('denied');
+            expect(heard).toEqual([expect.stringContaining("the host's approval does not name the request this hook staged")]);
+            expect(() => pollDeliveredTable('gate-1', 1000, gateReceiptOf(staged), refusal => {
+                throw new Error(`BLOCKED: ${refusal}`);
+            })).toThrow("BLOCKED: Refused: the host's approval does not name the request this hook staged");
+        } finally {
+            mock.module('bun:sqlite', () => sqlite);
+        }
+    });
+});
+
 describe('A2 runGateRequest action parameterization', () => {
     afterEach(() => {
         mock.restore();
@@ -192,6 +262,68 @@ describe('A2 runGateRequest action parameterization', () => {
         expect(staged[0].label).toBe('Email send to a@example.com');
         expect(staged[0].summary).toBe('*From:* me\n*To:* a@example.com\n\n*Body:*\n> hi');
         expect(staged[0].action).toBe('request_bash_gate');
+    });
+
+    test('runSendGate waits for the receipt of the exact request it staged, textFlattened included, and hears a refusal', async () => {
+        const real = await import(MODULE);
+        const waited: Array<{ requestId: string; receipt: string }> = [];
+        mock.module(MODULE, () => ({
+            ...real,
+            writeGateRequest: (): string => 'gate-test-id',
+            pollDeliveredTable: (requestId: string, _ms: number, receipt: string, onRefused?: (refusal: string) => void): 'denied' => {
+                waited.push({ requestId, receipt });
+                onRefused?.('receipt refused');
+                return 'denied';
+            },
+        }));
+        const mod = await import(MODULE);
+        const refusals: string[] = [];
+        const decision = mod.runSendGate('curl -s --data @payload.json https://slack.com/api/chat.postMessage', 'Slack post in your name (chat.postMessage)', undefined, 's', undefined,
+            { sendParts: ['• Report is live'], textFlattened: true }, { onChanged: (refusal: string) => refusals.push(refusal) });
+        expect(decision).toBe('denied');
+        expect(refusals).toEqual(['receipt refused']);
+        expect(waited).toEqual([{
+            requestId: 'gate-test-id',
+            receipt: hostReceipt({
+                action: 'request_send_gate',
+                requestId: 'gate-test-id',
+                label: 'Slack post in your name (chat.postMessage)',
+                summary: 's',
+                command: 'curl -s --data @payload.json https://slack.com/api/chat.postMessage',
+                sendParts: ['• Report is live'],
+                textFlattened: true,
+            }),
+        }]);
+    });
+
+    test('runSendGate stages a send gate, and refuses a post whose payload file changed or was retargeted after its card', async () => {
+        const { mod, staged } = await loadWithSpies();
+        const dir = mkdtempSync(join(tmpdir(), 'send-payload-'));
+        try {
+            const shown = '{"channel":"C1","text":"Numbers are in."}';
+            const file = join(dir, 'payload.json');
+            const other = join(dir, 'other.json');
+            writeFileSync(join(dir, 'shown.json'), shown);
+            writeFileSync(other, shown);
+            symlinkSync(join(dir, 'shown.json'), file);
+            const binding = { path: file, real: realpathSync(file), sha256: createHash('sha256').update(shown).digest('hex') };
+            const refusals: string[] = [];
+            const gate = () => mod.runSendGate('curl --data @payload.json', 'Slack post in your name (chat.postMessage)', undefined, 's', undefined,
+                { sendParts: ['Numbers are in.'] }, { binding, onChanged: (refusal: string) => refusals.push(refusal) });
+            expect(gate()).toBe('approved');
+            // The same text in another file still isn't the file the card showed.
+            rmSync(file);
+            symlinkSync(other, file);
+            expect(gate()).toBe('denied');
+            rmSync(file);
+            symlinkSync(join(dir, 'shown.json'), file);
+            writeFileSync(join(dir, 'shown.json'), '{"channel":"C1","text":"Something else."}');
+            expect(gate()).toBe('denied');
+            expect(refusals).toEqual([expect.stringContaining('changed after the card showed it'), expect.stringContaining('changed after the card showed it')]);
+            expect(staged.map(s => s.action)).toEqual(['request_send_gate', 'request_send_gate', 'request_send_gate']);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 
     test("runEmailGate stages the verdict's pure-send mark and whole summary as given, and none when it has none", async () => {
@@ -593,6 +725,7 @@ describe('a shell write into a protected file', () => {
         ['sed -i with a suffix and -e', 'sed -i.bak -e s/A/B/ .env.production', '.env.production'],
         ['sed --in-place=', "sed --in-place=.orig 's/a/b/' pnpm-lock.yaml", 'pnpm-lock.yaml'],
         ['sed with -i in a cluster', "sed -ni 's/a/b/p' .env", '.env'],
+        ['sed --in-place cut to a prefix', "sed --in-pl 's/a/b/' .env", '.env'],
         ["BSD sed -i ''", "sed -i '' 's/a/b/' .env", '.env'],
         ['cp onto the file', 'cp .env.example .env', '.env'],
         ['cp into .', 'cp /tmp/staged/.env .', '.env'],

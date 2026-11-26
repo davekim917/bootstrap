@@ -276,6 +276,14 @@ const BASH_GATE = [
   'parallel --max-args=2 git config --local ::: alias.st status',
   'parallel --max-lines=1 git config --local ::: alias.st status',
   'parallel --xargs git config --local ::: alias.st status',
+  // -s implies -X, a -- word matches any name in any case or cut short, and -X still counts after an option's value.
+  'parallel -s 100 git config --local ::: alias.st status',
+  'parallel --XARGS git config --local ::: alias.st status',
+  'parallel --n=2 git config --local ::: alias.st status',
+  'parallel --S 100 git config --local ::: alias.st status',
+  'parallel --maxargs=2 git config --local ::: alias.st status',
+  'parallel -e EOF -X git config --local {} ::: alias.st status',
+  'parallel -a keys.txt -X git config --local',
   // An unquoted variable, or an array's elements, can be a key and its value.
   "printf '%s\\n' user.name | while read -r key; do git config --local $key; done",
   'mapfile -t keys < keys.txt; git config --local "${keys[@]}"',
@@ -538,10 +546,17 @@ const BASH_ALLOW = [
   'parallel -n1 git config --local ::: user.name',
   'parallel --max-args=1 git config --local ::: user.name',
   'parallel -N1 git config --local ::: user.name',
-  // Options that set how many runs go at once, or print a limit, leave one argument a run.
+  // -j, -P and --max-procs set how many runs go at once, not how many arguments one takes, --max-line-length-allowed
+  // prints a limit, and -k bundles with -n1.
   'parallel --max-procs=2 git config --local ::: user.name',
   'parallel -j2 git config --local ::: user.name',
   'parallel --max-line-length-allowed git config --local ::: user.name',
+  'parallel -j4 -n1 git config --local ::: user.name',
+  'parallel -P 4 -n 1 git config --local ::: user.name user.email',
+  'parallel --max-procs=4 -n1 git config --local ::: user.name',
+  'parallel -kn1 git config --local ::: user.name',
+  // An attached value ends the cluster, so the letters of keys.txt aren't options.
+  'parallel -akeys.txt git config --local',
   "printf '%s\\n' user.name | while read -r key; do git config --local \"$key\"; done",
   "printf '%s\\n' user.name | while read -r key; do git config --local \"${key}\"; done",
   // An installed contrib command, and -h after one of git's own commands, which prints its usage.

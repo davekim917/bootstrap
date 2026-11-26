@@ -13,8 +13,8 @@ receives security, rollback, and verification depth.
 
 | Runtime | Plugin | Version | What it provides |
 |---|---|---:|---|
-| Claude Code | `bootstrap-workflow` | 5.51.0 | The seven `team-*` skills and the safety gates |
-| Codex / OpenCode | `bootstrap-workflow-agents` | 2.53.0 | The same, runtime-neutral |
+| Claude Code | `bootstrap-workflow` | 5.52.0 | The seven `team-*` skills and the safety gates |
+| Codex / OpenCode | `bootstrap-workflow-agents` | 2.54.0 | The same, runtime-neutral |
 | Claude Code / Codex / OpenCode | `bootstrap-orchestrate` | 3.8.3 | `/orchestrate` and the rules for every sub-agent spawn (effort, helper lifetime, model), plus the five effort shims it dispatches to |
 | Claude Code / Codex | `wwbd` | 1.6.0 | Boris Cherny-inspired engineering-judgment advisory skill, invoked by name or description |
 | Claude Code / Codex | `wwed` | 1.2.0 | Musk's five-step algorithm as a subtraction and cycle-time advisory skill, invoked by name or description; pairs with `wwbd` |
@@ -22,7 +22,7 @@ receives security, rollback, and verification depth.
 | Claude Code / Codex | `test-audit` | 1.1.0 | Authoring gate and evidence-first audit workflow for tests, with an always-on nudge; adapted from OpenClaw (MIT) |
 | Claude Code / Codex / OpenCode | `comment-rule` | 2.0.0 | One comment checker for CI, merge gates and write-time feedback: no `file:line` or PR/issue/ticket history in comments; every new comment line listed for a reviewer to judge |
 | Claude Code / Codex / NanoClaw | `concise` | 1.0.1 | Session-only concise, grammatical chat mode |
-| Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.1 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
+| Claude Code / Codex / NanoClaw | `slack-humanizer` | 1.0.2 | Slack messages drafted in the user's voice and posted as rich text, so lists render as real Slack lists |
 
 ### Delegation is the agent's choice; how it delegates is not
 
