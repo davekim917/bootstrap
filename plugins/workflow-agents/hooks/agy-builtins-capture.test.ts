@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MANIFEST_PATH, merge, subagentNamesIn, subagentNamesInDb, type Manifest } from './agy-builtins-capture';
@@ -41,6 +41,37 @@ describe('the capture reads built-in names from the prompt agy stored', () => {
 
     test('a database with no such list yields nothing', () => {
         expect(subagentNamesIn(enc('- self: not under the heading\n'))).toEqual([]);
+    });
+});
+
+describe('the capture run keeps custom agents, which agy lists the same way, out of the built-ins', () => {
+    test('a name a workspace definition provides is dropped; a list quoted in conversation text is not read', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'agy-capture-'));
+        try {
+            const state = join(dir, 'state');
+            const workspace = join(dir, 'ws');
+            const config = join(dir, 'config');
+            mkdirSync(join(state, 'conversations'), { recursive: true });
+            mkdirSync(join(workspace, '.agents', 'agents'), { recursive: true });
+            mkdirSync(config);
+            writeFileSync(join(workspace, '.agents', 'agents', 'writer.md'), '---\nname: writer\ndescription: Writes.\n---\nWrite.\n');
+            const db = new Database(join(state, 'conversations', 'c.db'));
+            db.run('CREATE TABLE gen_metadata (idx integer PRIMARY KEY, data blob)');
+            db.run('CREATE TABLE steps (idx integer PRIMARY KEY, step_payload blob)');
+            db.query('INSERT INTO gen_metadata (idx, data) VALUES (1, ?)').run(enc('Available subagents:\n- self: Inherits.\n- image-generator: Draws.\n- writer: Writes.\n'));
+            db.query('INSERT INTO steps (idx, step_payload) VALUES (1, ?)').run(enc('Available subagents:\n- quoted: From a tool output.\n'));
+            db.close();
+            const run = Bun.spawnSync(['bun', join(import.meta.dir, 'agy-builtins-capture.ts'), '--agy-version', '9.9.9', '--state', state, '--config', config, '--workspace', workspace]);
+            expect(run.exitCode).toBe(0);
+            const printed = JSON.parse(run.stdout.toString()) as Manifest;
+            expect(printed.capturedAgyVersion).toBe('9.9.9');
+            expect(printed.subagents['image-generator'][0]).toBe("agy 9.9.9: listed under 'Available subagents' in a stored system prompt");
+            expect(printed.subagents.writer).toBeUndefined();
+            expect(printed.subagents.quoted).toBeUndefined();
+            expect(run.stderr.toString()).toContain('custom, dropped: writer');
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 });
 

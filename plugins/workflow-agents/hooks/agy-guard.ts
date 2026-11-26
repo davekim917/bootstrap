@@ -406,6 +406,23 @@ function agentScopes(roots: string[], home: string): string[][] {
 }
 
 /**
+ * Every agent name a markdown definition provides under the given workspaces and global config dir (the dir agy
+ * reads as `~/.gemini/config`), parsed or only declared. A lookup error throws.
+ */
+export function definedAgentNames(workspaces: string[], globalConfig: string): Set<string> {
+    const names = new Set<string>();
+    const roots = [...workspaces.flatMap((root) => WORKSPACE_CUSTOMIZATION_DIRS.map((name) => join(root, name))), globalConfig];
+    for (const dir of roots.flatMap(agentsDirsUnder)) {
+        for (const file of agentFilesIn(dir)) {
+            const read = readAgentFile(file);
+            const name = 'frontmatter' in read ? read.frontmatter.name : read.declaredName;
+            if (typeof name === 'string' && name) names.add(name);
+        }
+    }
+    return names;
+}
+
+/**
  * Why a workflow script could start an agent that runs without this guard, or null. A script picks its agents' types
  * in Python the guard cannot read, and agy runs a workflow agent of a type that turns inheritance off without the
  * user's hooks, so a script passes only while no definition agy could load, in any scope, does that. A file with no

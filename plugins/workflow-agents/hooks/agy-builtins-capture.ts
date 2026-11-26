@@ -2,17 +2,21 @@
 /**
  * Refreshes agy-builtins.json from what agy itself told its model. agy has no command that lists its built-in
  * subagents, and the set depends on server-side feature flags as well as the version, so the record of truth is the
- * system prompt agy stored for a real conversation: its "Available subagents:" list, kept in each conversation
- * database under the agy home. A name found is added with this version as its evidence; a name already recorded is
- * never dropped, since a capture sees only the subagents its own environment offered.
+ * system prompt agy stored for a real conversation: its "Available subagents:" list, in each conversation database's
+ * generation records. That list also names the custom agents the session could load, in the same form, so every name
+ * a markdown definition provides in the session's workspaces or global config is dropped. A name found is added with
+ * this version as its evidence; a name already recorded is never dropped, since a capture sees only the subagents
+ * its own environment offered.
  *
- *   bun agy-builtins-capture.ts --agy-version <version> [--write] <agy state dir>...
+ *   bun agy-builtins-capture.ts --agy-version <x.y.z> --state <dir> --config <dir> --workspace <dir>... [--write]
  *
- * An agy state dir is the `antigravity-cli` dir under a session's `.gemini`, or any dir above it.
+ * `--state` is the session's `antigravity-cli` dir (under its `.gemini`), `--config` the dir agy read as
+ * `~/.gemini/config`, and each `--workspace` one of the session's workspace roots.
  */
 import { Database } from 'bun:sqlite';
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { definedAgentNames } from './agy-guard';
 
 export const MANIFEST_PATH = join(import.meta.dir, 'agy-builtins.json');
 
@@ -39,14 +43,9 @@ export function subagentNamesInDb(path: string): string[] {
     const db = new Database(path, { readonly: true });
     try {
         const names = new Set<string>();
-        const tables = db.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[];
-        for (const { name } of tables) {
-            for (const row of db.query(`SELECT * FROM "${name.replace(/"/g, '""')}"`).all() as Record<string, unknown>[]) {
-                for (const value of Object.values(row)) {
-                    const bytes = value instanceof Uint8Array ? value : typeof value === 'string' ? new TextEncoder().encode(value) : null;
-                    if (bytes) for (const found of subagentNamesIn(bytes)) names.add(found);
-                }
-            }
+        // Generation records hold the prompts agy sent; other tables hold conversation text, where a list can be quoted.
+        for (const { data } of db.query('SELECT data FROM gen_metadata').all() as { data: unknown }[]) {
+            if (data instanceof Uint8Array) for (const found of subagentNamesIn(data)) names.add(found);
         }
         return [...names].sort();
     } finally {
@@ -80,26 +79,30 @@ export function merge(manifest: Manifest, found: string[], version: string): Man
 }
 
 function main(argv: string[]): number {
-    const at = argv.indexOf('--agy-version');
-    const version = at >= 0 ? argv[at + 1] : undefined;
+    const values = (flag: string) => argv.flatMap((arg, i) => (argv[i - 1] === flag ? [arg] : []));
+    const [version] = values('--agy-version');
+    const [state] = values('--state');
+    const [config] = values('--config');
+    const workspaces = values('--workspace');
     const write = argv.includes('--write');
-    const dirs = argv.filter((arg, i) => !arg.startsWith('--') && argv[i - 1] !== '--agy-version');
-    if (!version || !/^\d+\.\d+\.\d+$/.test(version) || dirs.length === 0) {
-        console.error('usage: bun agy-builtins-capture.ts --agy-version <x.y.z> [--write] <agy state dir>...');
+    if (!version || !/^\d+\.\d+\.\d+$/.test(version) || !state || !config || workspaces.length === 0) {
+        console.error('usage: bun agy-builtins-capture.ts --agy-version <x.y.z> --state <dir> --config <dir> --workspace <dir>... [--write]');
         return 2;
     }
-    const dbs = dirs.flatMap((dir) => conversationDbs(dir));
-    const found = [...new Set(dbs.flatMap(subagentNamesInDb))].sort();
-    if (found.length === 0) {
-        console.error(`no "Available subagents:" list in ${dbs.length} conversation database(s); run one agy turn under that home first`);
+    const dbs = conversationDbs(state);
+    const listed = [...new Set(dbs.flatMap(subagentNamesInDb))].sort();
+    if (listed.length === 0) {
+        console.error(`no "Available subagents:" list in ${dbs.length} conversation database(s); run one agy turn in that session first`);
         return 1;
     }
+    const custom = definedAgentNames(workspaces, config);
+    const found = listed.filter((name) => !custom.has(name));
+    const dropped = listed.filter((name) => custom.has(name));
     const current = JSON.parse(readFileSync(MANIFEST_PATH, 'utf-8')) as Manifest;
-    const next = merge(current, found, version);
-    const text = JSON.stringify(next, null, 4) + '\n';
+    const text = JSON.stringify(merge(current, found, version), null, 4) + '\n';
     if (write) writeFileSync(MANIFEST_PATH, text);
     else process.stdout.write(text);
-    console.error(`found ${found.join(', ')} in ${dbs.length} conversation database(s)${write ? `; wrote ${MANIFEST_PATH}` : ''}`);
+    console.error(`built-in: ${found.join(', ') || '(none)'}; custom, dropped: ${dropped.join(', ') || '(none)'}; from ${dbs.length} conversation database(s)${write ? `; wrote ${MANIFEST_PATH}` : ''}`);
     return 0;
 }
 

@@ -81,6 +81,7 @@ Hand-maintained, because the Claude plugin has no counterpart to generate them f
 - `hooks/agy-builtins.json` — agy's built-in subagents, which the agy adapter admits with no definition
   file. `hooks/agy-builtins-capture.ts` refreshes it from the "Available subagents" list agy stored in
   a real conversation's system prompt, stamped with the agy version; agy has no command that lists them.
+  That list also names the session's custom agents, so the capture drops every name a definition provides.
   A capture only adds names, since each sees just the subagents its own environment offered.
 - `hooks/codex-guard.sh` is unchanged by the agy adapter; its hardening (cwd `.env` and `bunfig.toml`,
   reply validation, a whole-wrapper deadline) is tracked separately, because it changes every Codex
