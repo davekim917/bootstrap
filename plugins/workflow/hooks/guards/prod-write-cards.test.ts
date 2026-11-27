@@ -1019,3 +1019,21 @@ describe('libpq options as psql reads them', () => {
         expect(summary).not.toContain('\x60staging_app\x60');
     });
 });
+
+describe('the Connects using line', () => {
+    const summaryOf = (command: string, reason = evaluateBashCommand(command, { cwd: dir }).reason ?? '') =>
+        describeGate(command, reason, dir).summary.split('\nStep needing approval')[0];
+    test('withholds every value the literal-credential check knows as a credential, sslpassword included', () => {
+        // A literal is refused before any card; the card is built here directly to check the redactor behind that.
+        const command = "psql -X 'host=a.example,b.example sslpassword=Example-ssl-1 password=Example-pw-1 dbname=app' -c 'insert into t values (1)'";
+        const summary = summaryOf(command, 'PostgreSQL SQL that writes, on a target not proven dev (INSERT) — insert into t values (1)');
+        expect(summary).toContain('sslpassword=<withheld>');
+        expect(summary).toContain('password=<withheld>');
+        expect(summary).not.toMatch(/Example-(?:ssl|pw)-1/);
+    });
+    test('reads the options as psql does, so -o -debug names an output file, not a database', () => {
+        const summary = summaryOf('psql -X -h a.example,b.example -o -debug -d app -c "insert into t values (1)"');
+        expect(summary).toContain('Connects using: \x60-h a.example,b.example\x60 · \x60-d app\x60');
+        expect(summary).not.toContain('-debug');
+    });
+});

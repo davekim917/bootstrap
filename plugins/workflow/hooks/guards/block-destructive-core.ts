@@ -8336,17 +8336,25 @@ function databaseParts(cmd: ResolvedCommand): Array<[string, string]> {
 function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hostaddrs: string[]; database?: string; hidden?: string; verbatim?: string[] } {
     const valueOptions = new Set(['-c', '--command', '-f', '--file', '-v', '--set', '--variable', '-o', '--output', '-L', '--log-file', '-F', '-R', '-P', '-T']);
     const operands: string[] = [];
-    // -h and -d as psql's getopt reads them, separate (-d NAME, --dbname NAME), glued (--dbname=NAME) or attached
-    // (-dNAME); the last one given wins.
+    // -h, -d and -p as psql's getopt reads them, separate (-d NAME, --dbname NAME), glued (--dbname=NAME) or attached
+    // (-dNAME); the last one given wins. The words are kept as written for a card that shows them.
     const last: { host?: string; dbname?: string } = {};
+    const written: string[] = [];
+    const key = (flag: string) => ({ h: 'host', host: 'host', d: 'dbname', dbname: 'dbname' } as const)[flag as 'h'];
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        const m = /^(?:-([hd])(.+)|--(host|dbname)=(.*))$/.exec(a);
-        if (m) last[(m[1] ?? m[3]) === 'h' || m[3] === 'host' ? 'host' : 'dbname'] = m[2] ?? m[4];
-        else if (/^-[hd]$|^--(?:host|dbname)$/.test(a)) {
-            if (args[i + 1] !== undefined) last[a === '-h' || a === '--host' ? 'host' : 'dbname'] = args[i + 1];
-            i++;
-        } else if (/^-[pU]$|^--(?:port|username)$/.test(a) || valueOptions.has(a)) i++;
+        const m = /^(?:-([hdp])(.+)|--(host|dbname|port)=(.*))$/.exec(a);
+        if (m) {
+            const k = key(m[1] ?? m[3]);
+            if (k) last[k] = m[2] ?? m[4];
+            written.push(a);
+        } else if (/^-[hdp]$|^--(?:host|dbname|port)$/.test(a)) {
+            const value = args[++i];
+            if (value === undefined) continue;
+            const k = key(a.replace(/^-+/, ''));
+            if (k) last[k] = value;
+            written.push(`${a} ${value}`);
+        } else if (/^-U$|^--username$/.test(a) || valueOptions.has(a)) i++;
         else if (!a.startsWith('-')) operands.push(a);
     }
     const decode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
@@ -8386,22 +8394,22 @@ function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hos
         hostaddrs: list(conn?.hostaddr),
         database: conn ? conn.dbname : dbname,
         hidden,
-        verbatim: paired ? connectionWords(args, env, operands[0]) : undefined,
+        verbatim: paired ? connectionWords(written, env, last.dbname === undefined ? operands[0] : undefined) : undefined,
     };
 }
 
-/** The connection parameters a psql step gives, as written, with any password withheld. */
-function connectionWords(args: string[], env: string[], operand: string | undefined): string[] {
+/**
+ * The connection parameters a psql step gives, from libpqTarget's own reading of its options, with the value of every
+ * key the literal-credential check knows withheld.
+ */
+function connectionWords(written: string[], env: string[], operand: string | undefined): string[] {
+    const secretKey = (k: string) => LIBPQ_CREDENTIAL_KEYS.includes(k.toLowerCase()) || credentialName(k);
     const withhold = (s: string) => s
         .replace(/^(postgres(?:ql)?:\/\/[^:@/?#]*:)[^@/?#]*@/, '$1<withheld>@')
-        .replace(/((?:^|[ \t\n\v\f\r?&])password[ \t\n\v\f\r]*=[ \t\n\v\f\r]*)(?:'(?:\\.|[^'\\])*'|[^ \t\n\v\f\r&]*)/g, '$1<withheld>');
-    const words: string[] = env.filter(a => /^PG(?:HOST|HOSTADDR|PORT|DATABASE)=/.test(a));
-    for (let i = 0; i < args.length; i++) {
-        const m = /^(-[hpd]|--(?:host|port|dbname))(=(.*))?$/.exec(args[i]);
-        if (/^-[hpd]./.test(args[i]) || (m && m[2] !== undefined)) words.push(args[i]);
-        else if (m && args[i + 1] !== undefined) words.push(`${args[i]} ${args[++i]}`);
-    }
-    if (operand !== undefined && !args.some(a => /^-d|^--dbname(?:=|$)/.test(a))) words.push(operand);
+        .replace(/((?:^|[ \t\n\v\f\r?&])(\w+)[ \t\n\v\f\r]*=[ \t\n\v\f\r]*)('(?:\\.|[^'\\])*'|[^ \t\n\v\f\r&]*)/g,
+            (all, keyPart: string, k: string) => (secretKey(k) ? `${keyPart}<withheld>` : all));
+    const words = [...env.filter(a => /^PG(?:HOST|HOSTADDR|PORT|DATABASE)=/.test(a)), ...written];
+    if (operand !== undefined) words.push(operand);
     return words.map(withhold);
 }
 
@@ -9541,6 +9549,10 @@ const PASSWORD_WORD = /passw(?:or)?d(?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*/gi;
 // Options whose value names a file (curl's client key and certificates): the file holds the secret, the option doesn't.
 const FILE_VALUED_OPTIONS = new Set(['key', 'cert', 'cacert', 'capath', 'pubkey', 'proxy-key', 'proxy-cert', 'proxy-cacert', 'proxy-capath', 'key-type', 'crlfile']);
 const CREDENTIAL_WORDS = ['TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PASS', 'APIKEY', 'PGPASSWORD'];
+// The libpq connection keys whose value is a credential: the literal-credential check and the card's redactor read both.
+const LIBPQ_CREDENTIAL_KEYS = ['password', 'sslpassword'];
+// What comes before "password" in the others (ssl), so the password=value check below reads them as its own word too.
+const LIBPQ_PASSWORD_PREFIX_RE = new RegExp(`(?:${LIBPQ_CREDENTIAL_KEYS.filter(k => k !== 'password' && k.endsWith('password')).map(k => k.slice(0, -'password'.length)).join('|')})$`, 'i');
 
 /**
  * Whether a name says it holds a credential: its last _ or - segment is one (AWS_SESSION_TOKEN, client_secret,
@@ -9613,7 +9625,7 @@ export function containsCredential(text: string, kind: 'command' | 'any' = 'any'
         const after = text.slice(at);
         // A connection string's or option's password=value, written with nothing around the =.
         // Only as its own word (a conninfo key, a URL query, --password=): PGPASSWORD= and the like are assignments.
-        const own = /(?:^|[\s'"?&;]|--)$/.test(text.slice(0, m.index ?? 0));
+        const own = /(?:^|[\s'"?&;]|--)$/.test(text.slice(0, m.index ?? 0).replace(LIBPQ_PASSWORD_PREFIX_RE, ''));
         // After a SQL keyword it is a column: WHERE password=archived_password compares two columns.
         const sqlColumn = /\b(?:WHERE|AND|OR|NOT|SET|ON|WHEN|HAVING|SELECT)\s+$/i.test(text.slice(0, m.index ?? 0));
         if (own && !sqlColumn && m[0].length === (/passw(?:or)?d/i.exec(m[0])?.[0].length ?? 0) && after.startsWith('=') && literalWord(after.slice(1), true)) return true;
