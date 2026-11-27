@@ -10142,7 +10142,8 @@ export function containsCredential(text: string, kind: 'command' | 'any' = 'any'
     for (const m of text.matchAll(/\b([a-z][a-z0-9+.-]*):\/\/([^/@\s]{1,400})@/gi)) {
         if (SHELL_EXPANSION.test(m[2])) continue;
         if (literalUserinfo(m[2])) return true;
-        if (!m[2].includes(':') && /^['"]?(?:gh[opusr]_|github_pat_|glpat-|xox[a-z]-)/.test(m[2])) return true;
+        // A user name that starts the way a token does is one, whatever follows it (a masked or placeholder password).
+        if (/^['"]?(?:gh[opusr]_|github_pat_|glpat-|xox[a-z]-)/.test(m[2])) return true;
     }
     for (const m of text.matchAll(PASSWORD_WORD)) {
         const at = (m.index ?? 0) + m[0].length;

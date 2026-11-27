@@ -89,6 +89,7 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['redis-cli --user and --pass', `redis-cli -h cache.example.com --user app --pass ${SECRET} FLUSHALL`],
         ['REDISCLI_AUTH', `REDISCLI_AUTH=${SECRET} redis-cli -h cache.example.com FLUSHALL`],
         ['a token as the only HTTPS user info', `git push --force https://ghp_${SECRET}@github.com/org/repo main`],
+        ['a token as the HTTPS user beside a masked password', `git push --force https://ghp_${SECRET}:********@github.com/org/repo main`],
         ['a userinfo password on a git remote', `git push --force https://alice:${SECRET}@github.com/example/release main`],
         ['an AWS session token', `AWS_SESSION_TOKEN=${SECRET} aws s3 rm s3://example-prod/backups/ --recursive`],
         ['kubectl --token=', `kubectl delete deployment old-api -n staging --token=${SECRET}`],
