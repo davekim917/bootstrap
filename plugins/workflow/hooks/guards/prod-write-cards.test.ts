@@ -76,6 +76,11 @@ beforeAll(() => {
     writeFileSync(join(dir, 'warehouse', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
     writeFileSync(join(dir, 'warehouse', 'profiles.yml'), 'acme:\n  target: dev\n  outputs:\n    dev:\n      type: snowflake\n      database: dev_db\n');
     writeFileSync(join(dir, 'warehouse', 'target', 'run_results.json'), JSON.stringify({ args: { which: 'build', full_refresh: true } }));
+    writeFileSync(join(dir, 'project', 'dev-load.sql'), 'insert into dev_db.core.orders values (1);\n');
+    writeFileSync(join(dir, 'project', 'prod-load.sql'), 'insert into prod_db.core.orders values (1);\n');
+    mkdirSync(join(dir, 'retryprofile', 'target'), { recursive: true });
+    writeFileSync(join(dir, 'retryprofile', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
+    writeFileSync(join(dir, 'retryprofile', 'target', 'run_results.json'), JSON.stringify({ args: { which: 'build', profile: 'acme_prodfirst' } }));
     mkdirSync(join(dir, 'sfproj'));
     writeFileSync(join(dir, 'sfproj', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\ndata_tests:\n  +store_failures: true\n");
     mkdirSync(join(dir, 'farproject', 'macros'), { recursive: true });
@@ -892,5 +897,34 @@ describe('review 245g', () => {
     });
     test('a profiles.yml in the working directory leaves a dev build unproven, wherever the project is', () => {
         expect(evaluate('cd analytics && dbt build --project-dir PROJECT').action).toBe('gate');
+    });
+});
+
+describe('fresh review', () => {
+    test('a readable -f file into a listed dev database on a connection with no login runs as on main', () => {
+        expect(evaluate('snow sql -c acme_shared -f PROJECT/dev-load.sql').action).toBe('allow');
+    });
+    test('a readable -f file into a database not listed as dev keeps its card', () => {
+        expect(evaluate('snow sql -c acme_shared -f PROJECT/prod-load.sql').action).toBe('gate');
+    });
+    const body = (command: string) => describeGate(command, evaluate(command).reason ?? '', dir).summary.split('\nStep needing approval')[0];
+    test('a connection string as the dbname names the server the card shows, over -h', () => {
+        const summary = body("psql -X -h dev.example -d 'postgresql://prod.example/app' -c 'insert into orders values (1)'");
+        expect(summary).toContain('prod.example');
+        expect(summary).not.toContain('dev.example');
+    });
+    test('pg_restore --create says it restores into the database the archive names', () => {
+        expect(body('pg_restore -h db.example -U app -d postgres --create app.dump')).toContain('the archive chooses the database it writes');
+    });
+    test('the retry card uses the saved profile override', () => {
+        const at = join(dir, 'retryprofile');
+        const verdict = evaluateBashCommand('dbt retry', { cwd: at });
+        expect(describeGate('dbt retry', verdict.reason ?? '', at).label).toBe('Run dbt retry on target prod');
+    });
+    test.each([
+        ['two inserts that differ only in a literal', "snow sql -c acme_prod -q \"insert into prod_db.core.t values ('red'); insert into prod_db.core.t values ('blue')\""],
+        ['the same insert twice', 'snow sql -c acme_prod -q "insert into prod_db.core.t values (1); insert into prod_db.core.t values (1)"'],
+    ])('%s are two changes on the card', (_name, command) => {
+        expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toContain('(+1 more)');
     });
 });

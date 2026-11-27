@@ -65,8 +65,12 @@ describe('a macro in the project', () => {
         expect(inProject(command).action).toBe('allow');
     });
 
-    test('a read-only macro on a target whose database is not listed as dev takes the card', () => {
-        const verdict = inProject(`dbt -q run-operation reads --target prod --args '{a: 1}' 2>&1 | tail -3`);
+    test('a read-only macro on a target whose database is not listed as dev runs as on main', () => {
+        expect(inProject(`dbt -q run-operation reads --target prod --args '{a: 1}' 2>&1 | tail -3`).action).toBe('allow');
+    });
+
+    test('a macro the guard cannot read, on a target not listed as dev, takes the card', () => {
+        const verdict = inProject('dbt run-operation a_dbt_builtin --target prod');
         expect(verdict.action).toBe('gate');
         expect(verdict.reason).toContain('not proven dev');
     });

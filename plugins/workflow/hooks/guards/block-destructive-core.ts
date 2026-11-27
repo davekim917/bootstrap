@@ -5045,9 +5045,12 @@ function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], com
     if (trustedEntry && snowEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
         return `snowflake connection ${trustedEntry.connection}, ${DEV_ONLY_LOGIN} ${trustedEntry.login!.user}`;
     }
-    const plain = plainSnowSql(cmd, commands, command);
+    const plain = plainSnowSql(cmd, commands, command, true);
     const entry = plain && scope.snowflake.find(e => e.connection === plain.connection);
     if (!plain || !entry) return null;
+    // A file read with -f proves a dev write, as inline SQL does; destructive SQL from a file keeps its card, as on main.
+    const fromFile = cmd.args.some(a => /^(?:-f|--filename)(?:=|$)/.test(a));
+    if (fromFile && plain.texts.some(t => findDestructiveSqlStatement(t))) return null;
 
     const allowed = new Set(entry.databases.map(d => d.toUpperCase()));
     let matched = false;
@@ -6511,6 +6514,9 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         if (opts.some(([o]) => o === '--clean') && opts.some(([o]) => o === '--create' || o === '-C')) {
             return 'pg_restore --clean --create drops and recreates the whole PostgreSQL database the archive names, which is not the -d one it connects to first; the archive chooses which database it replaces.';
         }
+        if (opts.some(([o]) => o === '--create' || o === '-C')) {
+            return `pg_restore --create creates the PostgreSQL database the archive names and restores into it; the -d database is only where it connects first: ${SQL_WRITE}.`;
+        }
         return opts.some(([o]) => o === '--clean')
             ? 'pg_restore --clean drops each object it restores into a PostgreSQL database before recreating it.'
             : `pg_restore writes into a PostgreSQL database: ${SQL_WRITE}.`;
@@ -6705,7 +6711,10 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         const snowStep = snowCommandReason(args);
         if (snowStep) return snowStep;
     }
-    if (dbt && dbtCommand && DBT_WRITE_SUBCOMMANDS.has(dbtCommand) && !dbt.args.some(a => a === '--help' || a === '-h')) {
+    // A run-operation whose macros are all read, and found to write nothing the checks above card, runs as on main; only
+    // a macro the guard can't read keeps the card.
+    if (dbt && dbtCommand && DBT_WRITE_SUBCOMMANDS.has(dbtCommand) && !dbt.args.some(a => a === '--help' || a === '-h')
+        && !(dbtCommand === 'run-operation' && dbtMacrosRead(dbt))) {
         return `dbt ${dbtCommand} ${DBT_WRITE}.`;
     }
 
@@ -8162,17 +8171,37 @@ function databaseParts(cmd: ResolvedCommand): Array<[string, string]> {
         if (role) parts.push(['role', role]);
         if (db) parts.push(['database', db]);
     } else if (cmd.name === 'psql') {
-        const conninfo = cmd.args.find(a => /^postgres(?:ql)?:\/\/|\bhost=/.test(a)) ?? '';
-        const host = flagValue(cmd.args, ['-h', '--host'])
-            ?? conninfo.match(/\bhost=(\S+)/)?.[1]
-            ?? conninfo.match(/^postgres(?:ql)?:\/\/(?:[^@/]*@)?([^/:?]+)/)?.[1];
-        const db = flagValue(cmd.args, ['-d', '--dbname'])
-            ?? conninfo.match(/\bdbname=(\S+)/)?.[1]
-            ?? conninfo.match(/^postgres(?:ql)?:\/\/[^/]*\/([^?]+)/)?.[1];
+        const { host, database } = libpqTarget(cmd.args);
         if (host) parts.push(['host', host]);
-        if (db) parts.push(['database', db]);
+        if (database) parts.push(['database', database]);
     }
     return parts;
+}
+
+/**
+ * The host and database a psql step connects to, as libpq reads them: a connection string (a URI or key=value pairs)
+ * given as the dbname, with -d or as the first operand, overrides -h and -p; otherwise the options, the last of a
+ * repeated one winning.
+ */
+function libpqTarget(args: string[]): { host?: string; database?: string } {
+    const valueOptions = new Set(['-c', '--command', '-f', '--file', '-v', '--set', '--variable', '-o', '--output', '-L', '--log-file', '-F', '-R', '-P', '-T']);
+    const operands: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        if (/^-[hpUd]$|^--(?:host|port|username|dbname)$/.test(args[i]) || valueOptions.has(args[i])) i++;
+        else if (!args[i].startsWith('-')) operands.push(args[i]);
+    }
+    // A dbname still holding an unresolved expansion names nothing the card can show.
+    const given = lastFlag(args, ['-d', '--dbname']) ?? operands[0];
+    const dbname = given !== undefined && /[$`]/.test(given) ? undefined : given;
+    const conn = dbname !== undefined && (/^postgres(?:ql)?:\/\//.test(dbname) || dbname.includes('=')) ? dbname : '';
+    const fromConn = {
+        host: conn.match(/(?:^|\s)host\s*=\s*'?([^\s']+)/)?.[1] ?? conn.match(/^postgres(?:ql)?:\/\/(?:[^@/]*@)?([^/:?,]+)/)?.[1],
+        database: conn.match(/(?:^|\s)dbname\s*=\s*'?([^\s']+)/)?.[1] ?? conn.match(/^postgres(?:ql)?:\/\/[^/]*\/([^?]+)/)?.[1],
+    };
+    return {
+        host: fromConn.host ?? lastFlag(args, ['-h', '--host']),
+        database: fromConn.database ?? (conn ? undefined : dbname),
+    };
 }
 
 function databaseLine(cmd: ResolvedCommand): string | null {
@@ -8238,7 +8267,7 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     // One statement read several ways is described once, but one that runs twice in a reading is listed twice. The text
     // of one the guard couldn't parse is unreliable past its verb and object, so it repeats any other unparsed statement
     // with the same title.
-    const statements: Array<FoundStatement & { effect: SqlEffect }> = [];
+    const statements: Array<FoundStatement & { effect: SqlEffect; reading: number }> = [];
     const listed = new Map<string, number>();
     readings.forEach(({ text, guessed }, r) => {
         const inReading = new Map<string, number>();
@@ -8263,34 +8292,29 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
             inReading.set(key, n);
             if (n <= (listed.get(key) ?? 0)) continue;
             listed.set(key, n);
-            statements.push({ ...found, effect });
+            statements.push({ ...found, effect, reading: r });
         }
     });
     // Data sent out leads, then what deletes or overwrites, then the other writes.
     const egress: SqlEffect[] = [];
     const writes: SqlEffect[] = [];
-    const described = new Set(statements.map(st => oneLine(st.text)));
     const meta = cmd.name === 'psql' ? sqlInputOf(cmd).texts.map(psqlMetaWrite).find(m => m !== null) : null;
     if (meta) writes.push(writeEffect({ pattern: meta.pattern, text: meta.statement }, dialect));
     const sentOut = new Set<string>();
-    // Within the first reading that finds writes, each statement is its own change, keyed by its normalised text (literals
-    // and comments blanked), so two statements on one object that change different things stay two. The other readings
-    // are the same input read another way, so they add only a write on an object the first didn't name.
-    // String literals and comments are blanked; quoted identifiers are kept, so two columns or tables stay two.
+    // Every write in the first reading that finds writes is listed, so no two statements of one input collapse. The other
+    // readings are the same input read another way: they add a write only when its text, with comments and whitespace
+    // normalised and literals kept, is new, and it is not on an object the listed statements already change.
     const textKey = (text: string) => text
-        .replace(/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'|\$(\w*)\$[\s\S]*?\$\1\$|"(?:[^"]|"")*"/g, m => (m.startsWith('"') ? m : "''"))
-        .replace(/("(?:[^"]|"")*")|\s+/g, (_m, quoted) => quoted ?? ' ')
-        .replace(/("(?:[^"]|"")*")|[^"]+/g, (m, quoted) => quoted ?? m.toUpperCase())
-        .trim() || null;
+        .replace(/('(?:[^']|'')*'|"(?:[^"]|"")*"|\$(\w*)\$[\s\S]*?\$\2\$)|--[^\n]*|\/\*[\s\S]*?\*\//g, (_m, quoted) => quoted ?? ' ')
+        .replace(/('(?:[^']|'')*'|"(?:[^"]|"")*"|\$(\w*)\$[\s\S]*?\$\2\$)|\s+/g, (_m, quoted) => quoted ?? ' ')
+        .trim();
     const objectKey = (text: string) => {
         const target = writeTarget(text);
         const verb = /^\s*([A-Za-z]+)/.exec(text)?.[1]?.toUpperCase() ?? '';
         return target ? `${verb} ${target.kind} ${target.parts.join('.')}` : null;
     };
     const textKeys = new Set<string>();
-    // A statement already described as deleting or overwriting is not named again as a write, however it reads.
-    const described0 = new Set(statements.map(st => objectKey(st.text)).filter((k): k is string => k !== null));
-    const objectKeys = new Set(described0);
+    const objectKeys = new Set(statements.map(st => objectKey(st.text)).filter((k): k is string => k !== null));
     const primary = readings.findIndex(({ text }) => writeStatements(text).length > 0);
     // A file option's value can reach the readings as text when an expansion shifts the words; it names a file, not SQL.
     const fileArgs = new Set(cmd.args.filter((_, i) => /^(?:-f|--file|--filename)$/.test(cmd.args[i - 1] ?? '')));
@@ -8302,14 +8326,25 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
             sentOut.add(oneLine(hit.statement));
             egress.push(egressEffect({ pattern: hit.pattern, text: hit.statement }, dialect));
         }
+        if (primary >= 0 && reading > primary) {
+            for (const st of writeStatements(text)) {
+                const byObject = objectKey(st.text);
+                if (egressIn(st.text) || fileArgs.has(st.text.trim()) || textKeys.has(textKey(st.text)) || (byObject !== null && objectKeys.has(byObject))) continue;
+                textKeys.add(textKey(st.text));
+                if (byObject !== null) objectKeys.add(byObject);
+                writes.push(writeEffect(st, dialect));
+            }
+            return;
+        }
+        // In the first reading, a statement this card already names as deleting or overwriting is that statement.
+        const destructiveHere = new Set(statements.filter(st => st.reading === reading).map(st => oneLine(st.text)));
+        const destructiveElsewhere = new Set(statements.filter(st => st.reading !== reading).map(st => objectKey(st.text)).filter((k): k is string => k !== null));
         for (const st of writeStatements(text)) {
-            if (described.has(oneLine(st.text)) || egressIn(st.text) || fileArgs.has(st.text.trim())) continue;
-            described.add(oneLine(st.text));
-            const byText = textKey(st.text);
+            if (destructiveHere.has(oneLine(st.text)) || egressIn(st.text) || fileArgs.has(st.text.trim())) continue;
             const byObject = objectKey(st.text);
-            if (byText !== null && textKeys.has(byText)) continue;
-            if (byObject !== null && (described0.has(byObject) || (reading !== primary && objectKeys.has(byObject)))) continue;
-            if (byText !== null) textKeys.add(byText);
+            // A destructive statement another reading found, on the same object, is this one read another way.
+            if (byObject !== null && destructiveElsewhere.has(byObject) && !statements.some(s => s.reading === reading && objectKey(s.text) === byObject)) continue;
+            textKeys.add(textKey(st.text));
             if (byObject !== null) objectKeys.add(byObject);
             writes.push(writeEffect(st, dialect));
         }
@@ -8346,11 +8381,14 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     };
 }
 
-/** The profile's default target for a dbt step run from `cwd`: its project names the profile, its profiles file the target. */
-function defaultDbtTarget(cwd: string | undefined, cmd: ResolvedCommand): string | null {
+/**
+ * The profile's default target for a dbt step run from `cwd`: its project names the profile (unless `profileOverride`,
+ * a retry's saved --profile, does), its profiles file the target.
+ */
+function defaultDbtTarget(cwd: string | undefined, cmd: ResolvedCommand, profileOverride?: string): string | null {
     if (!cwd) return null;
     const project = readConfigFile(join(dbtProjectDir(cmd, cwd), 'dbt_project.yml'));
-    const profile = lastFlag(cmd.args, ['--profile']) ?? project?.match(/^profile:\s*['"]?([\w.-]+)/m)?.[1];
+    const profile = profileOverride ?? lastFlag(cmd.args, ['--profile']) ?? project?.match(/^profile:\s*['"]?([\w.-]+)/m)?.[1];
     const profiles = readConfigFile(dbtProfilesFile(cmd, cwd));
     if (!profile || !profiles) return null;
     const block = profiles.split(new RegExp(`^${profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*$`, 'm'))[1];
@@ -8439,6 +8477,16 @@ function macroDevDatabases(cmd: ResolvedCommand): Set<string> {
         .flatMap(e => e.databases.map(d => d.toUpperCase())));
 }
 
+/** Whether every macro a run-operation names is defined on the line or in the project, so its SQL was read. */
+function dbtMacrosRead(cmd: ResolvedCommand): boolean {
+    const names = dbtMacroNames(cmd.args);
+    if (!names.length) return false;
+    const line = cmd.script?.command ?? cmd.raw;
+    const defined = new Set([...line.match(JINJA_MACRO) ?? [], ...dbtProjectMacros(cmd) ?? []]
+        .map(macro => /^\{%-?\s*macro\s+(\w+)/.exec(macro)?.[1]).filter((n): n is string => !!n));
+    return names.every(n => defined.has(n));
+}
+
 function dbtMacroReason(cmd: ResolvedCommand): string | null {
     const names = dbtMacroNames(cmd.args);
     if (!names.length) return null;
@@ -8498,7 +8546,7 @@ function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
         const saved = sub === 'retry' && dir ? dbtSavedRun(cmd, dbtProjectDir(cmd, dir)) : null;
         const savedTarget = typeof saved?.target === 'string' ? saved.target : undefined;
         const target = sub === 'retry'
-            ? savedTarget ?? (saved && dir ? defaultDbtTarget(dir, cmd) ?? undefined : undefined)
+            ? savedTarget ?? (saved && dir ? defaultDbtTarget(dir, cmd, typeof saved.profile === 'string' ? saved.profile : undefined) ?? undefined : undefined)
             : dbtTargetFlag(cmd.args) ?? (dir ? dbtTargetDatabase(cmd, dir)?.target : undefined) ?? defaultDbtTarget(dir, cmd) ?? undefined;
         const where = target ? `the dbt target ${code(target)}` : sub === 'retry' ? 'the dbt target of the saved run, which the guard could not read' : "the profile's default dbt target";
         if (saved?.full_refresh) {
@@ -8849,6 +8897,8 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
         ? [`Sends data out of the Render database named in the step below: ${clip(reason.slice(SQL_EGRESS.length + 2), 400)}`, "data that has left the database can't be called back"]
         : cmd.name === 'render'
         ? renderChangeEffect(cmd)
+        : cmd.name === 'pg_restore' && reason.startsWith('pg_restore --create')
+        ? ['Creates the PostgreSQL database the archive names and restores the dump into it; the -d database in the step below is only where it connects first, so the archive chooses the database it writes.', 'only a backup can undo it']
         : cmd.name === 'pg_restore' && reason.startsWith('pg_restore --clean --create')
         ? ['Drops and recreates the whole PostgreSQL database the archive names; the -d database in the step below is only where it connects first, and the archive chooses which database it replaces.', 'everything in the replaced database is lost unless a backup has it']
         : /code that reaches a database|names a database driver/.test(reason)
