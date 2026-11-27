@@ -3505,6 +3505,16 @@ function commandsOf(ast: any, command: string): ResolvedCommand[] {
 }
 
 const TEXT_EMITTERS = new Set(['echo', 'printf', 'cat', 'tee']);
+const SILENT_PROGRAMS = new Set(['sleep', 'true', 'false', ':']);
+
+/** A program that writes nothing to stdout, so a pipeline stage holding it adds no text the client reads. */
+function printsNothing(cmd: ResolvedCommand, line: string): boolean {
+    if (!SILENT_PROGRAMS.has(cmd.name) || cmd.args.some(a => a.startsWith('--'))) return false;
+    // A function, alias or hashed path of the same name, or a moved PATH for the one that isn't a builtin, can print.
+    const name = cmd.name.replace(/[.*+?^${}()|[\]\\:]/g, '\\$&');
+    if (new RegExp(`(?:^|[\\s;&|(){}])(?:function\\s+)?${name}\\s*\\(\\s*\\)|\\bfunction\\s+${name}(?:\\s|$)|\\b(?:alias|enable|hash)\\b`).test(line)) return false;
+    return cmd.name !== 'sleep' || !/\bPATH\b/.test(line);
+}
 
 /** The files cat reads, a relative one resolved against the directory an `env -C` wrapper ran it in. */
 function catOperands(cmd: ResolvedCommand): string[] {
@@ -3601,7 +3611,7 @@ function scriptContextOf(ast: any, commands: ResolvedCommand[], command: string)
             if (i === 0) return;
             const input: PipedInput = { texts: [], catFiles: [], from: [], textFrom: [], emitters: [] };
             for (const up of stageCommands(stages[i - 1])) {
-                if (!TEXT_EMITTERS.has(up.name) && !up.stdoutFiles?.length) (input.opaque ??= []).push(up.name);
+                if (!TEXT_EMITTERS.has(up.name) && !up.stdoutFiles?.length && !printsNothing(up, command)) (input.opaque ??= []).push(up.name);
                 if (!TEXT_EMITTERS.has(up.name) || up.stdoutFiles?.length) continue;
                 const fed = up.pos === undefined ? undefined : pipedInto.get(up.pos);
                 input.texts.push(...emittedText(up));
@@ -6491,7 +6501,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
             const write = firstSqlWrite(cmd, input.texts);
             if (write) return `${sqlDialect} ${SQL_WRITE} (${write.pattern}) — ${write.statement}`;
             const unread = unreadSqlExpansion(cmd);
-            if (unread) return `${sqlDialect} ${SQL_WRITE}: its SQL comes from ${unread}, which the guard can't read before the line runs, so it can't rule out a write.`;
+            if (unread) return unreadSqlReason(sqlDialect, unread);
         }
     }
 
@@ -7493,6 +7503,10 @@ function sqlEgressOf(cmd: ResolvedCommand): SqlEgress | null {
  * here-string or piped text. Its text then isn't the SQL that runs, so neither whether it writes nor whether it sends
  * data out is known.
  */
+function unreadSqlReason(dialect: string, unread: string): string {
+    return `${dialect} ${SQL_WRITE}: its SQL comes from ${unread}, which the guard can't read before the line runs, so it can't rule out a write.`;
+}
+
 function unreadSqlExpansion(cmd: ResolvedCommand): string | null {
     if (cmd.name !== 'psql' && !(cmd.name === 'snow' && cmd.args[0] === 'sql')) return null;
     const script = cmd.script;
@@ -7944,14 +7958,17 @@ function pgRestoreTarget(args: string[]): { host?: string; port?: string; noPsql
     return { host: last('--host'), port: last('--port'), noPsqlrc: true };
 }
 
+// scratch-pg url prints the scratch server's address from its state file without checking what listens there now, so
+// restoring through it names nothing proven.
+const PG_RESTORE_UNNAMED = "this pg_restore writes into a database the guard can't name, through a variable or libpq's defaults, so it is refused instead of sent for approval. Write the server out in the command and keep the password out of it: -h <host> -p <port> -U <user> -d <db>, with the password in ~/.pgpass or PGPASSWORD=\"$VAR\". That goes to a person for approval, unless it is a listed dev database. For a scratch Postgres, write out the host, port, user and database that `scratch-pg url <db>` prints; that also goes to a person for approval.";
+
 /** For a pg_restore that writes: a refusal when the line doesn't write out the server it reaches, as unresolvedPgTargetFix does for psql. */
 function unresolvedPgRestoreTargetFix(cmd: ResolvedCommand): string | null {
     if (cmd.name !== 'pg_restore' || !pgRestoreWrites(cmd.args)) return null;
     // Only the connection's own words need be literal: a variable archive file names no server, but a variable -d can
     // hold a connection string that overrides -h.
     const literal = (v: string) => !/[$`\\]/.test(v);
-    const refusal = "this pg_restore writes into a database the guard can't name, through a variable or libpq's defaults, so it is refused instead of sent for approval. Write the server out in the command and keep the password out of it: -h <host> -p <port> -U <user> -d <db>, with the password in ~/.pgpass or PGPASSWORD=\"$VAR\". That goes to a person for approval, unless it is a listed dev database.";
-    if ((pgRestoreOptions(cmd.args) ?? []).some(([o, v]) => o === '--dbname' && v !== undefined && !literal(v))) return refusal;
+    if ((pgRestoreOptions(cmd.args) ?? []).some(([o, v]) => o === '--dbname' && v !== undefined && !literal(v))) return PG_RESTORE_UNNAMED;
     for (const assignment of cmd.env ?? []) {
         const m = assignment.match(/^PGHOST(?:ADDR)?=(.+)$/);
         if (m && literal(m[1])) return null;
@@ -7961,7 +7978,7 @@ function unresolvedPgRestoreTargetFix(cmd: ResolvedCommand): string | null {
         if (option === '--host' && value) return null;
         if (option === '--dbname' && (value.match(PG_URI_HOSTS_RE)?.[1] || [...value.matchAll(PG_CONNINFO_HOST_RE)].length)) return null;
     }
-    return "this pg_restore writes into a database the guard can't name, through a variable or libpq's defaults, so it is refused instead of sent for approval. Write the server out in the command and keep the password out of it: -h <host> -p <port> -U <user> -d <db>, with the password in ~/.pgpass or PGPASSWORD=\"$VAR\". That goes to a person for approval, unless it is a listed dev database.";
+    return PG_RESTORE_UNNAMED;
 }
 
 /**
@@ -8171,36 +8188,58 @@ function databaseParts(cmd: ResolvedCommand): Array<[string, string]> {
         if (role) parts.push(['role', role]);
         if (db) parts.push(['database', db]);
     } else if (cmd.name === 'psql') {
-        const { host, database } = libpqTarget(cmd.args);
-        if (host) parts.push(['host', host]);
-        if (database) parts.push(['database', database]);
+        const target = libpqTarget(cmd.args, cmd.env ?? []);
+        for (const host of target.hosts) parts.push(['host', host]);
+        for (const address of target.hostaddrs) parts.push(['address', address]);
+        if (target.database) parts.push(['database', target.database]);
+        if (target.hidden) parts.push(['or a server named in', target.hidden]);
     }
     return parts;
 }
 
 /**
- * The host and database a psql step connects to, as libpq reads them: a connection string (a URI or key=value pairs)
- * given as the dbname, with -d or as the first operand, overrides -h and -p; otherwise the options, the last of a
- * repeated one winning.
+ * Every server a psql step can connect to, as libpq reads them: a connection string (a URI or key=value pairs) given
+ * as the dbname, with -d or as the first operand, overrides -h; in a URI, host, hostaddr and dbname in the query
+ * override the authority and path. A host list (primary,failover) is tried in turn, so each is a target. A dbname
+ * holding an unresolved expansion can be a connection string naming any server, which hidden carries.
  */
-function libpqTarget(args: string[]): { host?: string; database?: string } {
+function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hostaddrs: string[]; database?: string; hidden?: string } {
     const valueOptions = new Set(['-c', '--command', '-f', '--file', '-v', '--set', '--variable', '-o', '--output', '-L', '--log-file', '-F', '-R', '-P', '-T']);
     const operands: string[] = [];
     for (let i = 0; i < args.length; i++) {
         if (/^-[hpUd]$|^--(?:host|port|username|dbname)$/.test(args[i]) || valueOptions.has(args[i])) i++;
         else if (!args[i].startsWith('-')) operands.push(args[i]);
     }
-    // A dbname still holding an unresolved expansion names nothing the card can show.
+    const decode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
+    const list = (v: string | undefined) => (v ?? '').split(',').map(s => s.trim()).filter(Boolean);
     const given = lastFlag(args, ['-d', '--dbname']) ?? operands[0];
-    const dbname = given !== undefined && /[$`]/.test(given) ? undefined : given;
-    const conn = dbname !== undefined && (/^postgres(?:ql)?:\/\//.test(dbname) || dbname.includes('=')) ? dbname : '';
-    const fromConn = {
-        host: conn.match(/(?:^|\s)host\s*=\s*'?([^\s']+)/)?.[1] ?? conn.match(/^postgres(?:ql)?:\/\/(?:[^@/]*@)?([^/:?,]+)/)?.[1],
-        database: conn.match(/(?:^|\s)dbname\s*=\s*'?([^\s']+)/)?.[1] ?? conn.match(/^postgres(?:ql)?:\/\/[^/]*\/([^?]+)/)?.[1],
-    };
+    const hidden = given !== undefined && /[$\x60]/.test(given) ? given : undefined;
+    const dbname = hidden ? undefined : given;
+    let conn: { host?: string; hostaddr?: string; dbname?: string } | null = null;
+    const uri = dbname === undefined ? null : /^postgres(?:ql)?:\/\/([^/?#]*)(?:\/([^?#]*))?(?:\?([^#]*))?/.exec(dbname);
+    if (uri) {
+        const authority = uri[1].slice(uri[1].lastIndexOf('@') + 1);
+        const hosts = authority.split(',').map(spec => spec.startsWith('[') ? spec.slice(1, spec.indexOf(']')) : spec.replace(/:\d*$/, ''))
+            .map(decode).filter(Boolean);
+        const query = new URLSearchParams(uri[3] ?? '');
+        conn = {
+            host: query.get('host') ?? (hosts.length ? hosts.join(',') : undefined),
+            hostaddr: query.get('hostaddr') ?? undefined,
+            dbname: query.get('dbname') ?? (uri[2] ? decode(uri[2]) : undefined),
+        };
+    } else if (dbname?.includes('=')) {
+        conn = {};
+        for (const m of dbname.matchAll(/(\w+)\s*=\s*(?:'((?:\\.|[^'\\])*)'|(\S+))/g)) {
+            const value = (m[2] ?? m[3]).replace(/\\(.)/g, '$1');
+            if (m[1] === 'host' || m[1] === 'hostaddr' || m[1] === 'dbname') conn[m[1]] = value;
+        }
+    }
+    const envHost = env.map(a => /^PGHOST=([^$\x60]*)$/.exec(a)?.[1]).filter((v): v is string => v !== undefined).at(-1);
     return {
-        host: fromConn.host ?? lastFlag(args, ['-h', '--host']),
-        database: fromConn.database ?? (conn ? undefined : dbname),
+        hosts: list(conn?.host ?? lastFlag(args, ['-h', '--host']) ?? envHost),
+        hostaddrs: list(conn?.hostaddr),
+        database: conn ? conn.dbname : dbname,
+        hidden,
     };
 }
 
@@ -8212,11 +8251,15 @@ function databaseLine(cmd: ResolvedCommand): string | null {
 
 /** Where a SQL client step runs, in words: "in the PostgreSQL database `app` on `db.example.test`". */
 function databasePlace(cmd: ResolvedCommand, dialect: string): string {
-    const parts = new Map(databaseParts(cmd));
+    const all = databaseParts(cmd);
+    const parts = new Map(all);
     if (cmd.name === 'snow') return `in Snowflake (${parts.has('connection') ? `connection ${code(parts.get('connection')!)}` : 'the default connection'})`;
     const db = parts.get('database');
-    const host = parts.get('host');
-    return db || host ? `in the ${dialect} database${db ? ` ${code(db)}` : ''}${host ? ` on ${code(host)}` : ''}` : `in a ${dialect} database`;
+    const servers = all.filter(([k]) => k === 'host' || k === 'address').map(([, v]) => code(v));
+    const hidden = parts.get('or a server named in');
+    const on = servers.length ? ` on ${servers.join(' or ')}${servers.length > 1 ? ' (libpq tries each in turn)' : ''}` : '';
+    const named = hidden ? (servers.length ? `, or on a server ${code(hidden)} names` : ` on a server ${code(hidden)} names`) : '';
+    return db || servers.length || hidden ? `in the ${dialect} database${db ? ` ${code(db)}` : ''}${on}${named}` : `in a ${dialect} database`;
 }
 
 function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
@@ -9045,7 +9088,10 @@ function* gatedSteps(
                 yield { cmd, reason, outer, moves, fix: devExpansion };
                 continue;
             }
-            const unresolved = cmd === outer ? unresolvedPgTargetFix(cmd) : null;
+            // SQL the guard can't read, with no write it can see, goes to an approver whatever the server: only a write it
+            // found is refused for a server it can't name.
+            const unreadOnly = cmd.name === 'psql' && ((u) => u !== null && reason === unreadSqlReason('PostgreSQL', u))(unreadSqlExpansion(cmd));
+            const unresolved = cmd === outer && !unreadOnly ? unresolvedPgTargetFix(cmd) : null;
             if (unresolved !== null) {
                 yield { cmd, reason, outer, moves, fix: `${reason}: ${unresolved}` };
                 continue;

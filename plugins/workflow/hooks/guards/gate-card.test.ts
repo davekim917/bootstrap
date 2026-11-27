@@ -278,7 +278,7 @@ psql -h db.example "$DB_URL" -f grant.sql`;
         expect(c.summary).toContain("The guard couldn't fully parse this statement");
         expect(c.summary).toContain(`Read another way, it is limited to rows where ${where}.`);
         expect(c.summary.split('\n')[0]).toBe(
-            "Changes rows in the table `app.users` in the PostgreSQL database on `db.example` (the guard couldn't tell which rows); only a backup can bring back what it deletes or overwrites.",
+            "Changes rows in the table `app.users` in the PostgreSQL database on `db.example`, or on a server `$DB_URL` names (the guard couldn't tell which rows); only a backup can bring back what it deletes or overwrites.",
         );
     });
 

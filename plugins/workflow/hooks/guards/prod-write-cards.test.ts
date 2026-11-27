@@ -928,3 +928,48 @@ describe('fresh review', () => {
         expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toContain('(+1 more)');
     });
 });
+
+describe('replay round', () => {
+    const run = (command: string) => evaluateBashCommand(command, { cwd: dir });
+    const body = (command: string) => describeGate(command, run(command).reason ?? '', dir).summary.split('\nStep needing approval')[0];
+    test('SQL the guard cannot read, with no write it can see, on a server it cannot name takes a card naming that server as unknown', () => {
+        const command = 'psql -X "$APP_URL" -c "$(cat q.sql)"';
+        expect(run(command).action).toBe('gate');
+        expect(body(command)).toContain('on a server \x60$APP_URL\x60 names');
+    });
+    test('a variable set to a read, then a command named through a variable, takes a card, not a refusal, on a loopback server', () => {
+        expect(run('R=$(pwd); Q="select 1"; $R/run.sh; psql -X -h 127.0.0.1 -p 5999 -U app -d app -c "$Q"').action).toBe('gate');
+    });
+    test('reads echoed around a sleep into psql on a loopback server run as on main', () => {
+        expect(run('(echo "select 1"; sleep 1; echo "select 2") | psql -X -h 127.0.0.1 -p 5999 -U app -d app').action).toBe('allow');
+    });
+    test.each([
+        ['a write it found on a server it cannot name', 'psql -X "$APP_URL" -c "update t set a = 1 where id = 2"', 'block'],
+        ['a write echoed beside a sleep', '(echo "insert into t values (1)"; sleep 1) | psql -X "$APP_URL"', 'block'],
+        ['a write held in a variable set on the line', 'Q="update t set a = 1 where id = 2"; psql -X -h 127.0.0.1 -p 5999 -U app -d app -c "$Q"', 'block'],
+        ['a sleep the line defines as a function', 'sleep() { echo "drop table t"; }; (echo "select 1"; sleep 1) | psql -X -h db.example -d app', 'gate'],
+        ['a sleep found through a moved PATH', 'PATH=/tmp/bin:$PATH; (echo "select 1"; sleep 1) | psql -X -h db.example -d app', 'gate'],
+        ['a restore through a written-out loopback address', 'pg_restore -h 127.0.0.1 -p 5999 -U scratch -d app -L toc.list app.dump', 'gate'],
+    ])('control: %s keeps its verdict', (_name, command, action) => {
+        expect(run(command).action).toBe(action as 'allow' | 'gate' | 'block');
+    });
+    test('a restore into a server it cannot name says how to restore into a scratch Postgres', () => {
+        const verdict = run('pg_restore -d "$APP_URL" app.dump');
+        expect(verdict.action).toBe('block');
+        expect(verdict.reason).toContain('scratch-pg url <db>');
+    });
+    test('a multi-host URI shows every host libpq can connect to', () => {
+        const summary = body("psql -X 'postgresql://primary.example:5432,failover.example:5433/app' -c 'insert into t values (1)'");
+        expect(summary).toContain('\x60primary.example\x60');
+        expect(summary).toContain('\x60failover.example\x60');
+    });
+    test('host and dbname in a URI query override the authority and path', () => {
+        const summary = body("psql -X 'postgresql://ignored.example/app?host=query.example&dbname=other' -c 'insert into t values (1)'");
+        expect(summary).toContain('\x60other\x60 on \x60query.example\x60');
+        expect(summary).not.toContain('ignored.example');
+    });
+    test('a written host beside a dbname held in a variable shows both', () => {
+        const summary = body('psql -X -h db.example "$APP_URL" -c "insert into t values (1)"');
+        expect(summary).toContain('on \x60db.example\x60, or on a server \x60$APP_URL\x60 names');
+    });
+});
