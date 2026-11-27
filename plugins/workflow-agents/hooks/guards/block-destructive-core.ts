@@ -10988,6 +10988,19 @@ function literalHeaderValue(text: string): boolean {
     return false;
 }
 
+// The prefixes only an issued token starts with: GitHub's, GitLab's and Slack's.
+const TOKEN_PREFIX = String.raw`(?:gh[opusr]_|github_pat_|glpat-|xox[a-z]-)`;
+const KNOWN_PREFIX_TOKEN = new RegExp(String.raw`(?<![A-Za-z0-9_])${TOKEN_PREFIX}([A-Za-z0-9_-]{16,})`, 'g');
+
+/**
+ * A token with a known prefix written out anywhere, in any field: the prefix, then at least 16 token characters that mix
+ * two of lower case, upper case and digits. Prose that names the prefix (`xoxp-`, `xoxp-…`), a lower-case placeholder
+ * (`xoxb-your-bot-token`) and a redacted value (`xoxp-XXXX-XXXXXXXX`) are no token.
+ */
+function knownPrefixToken(text: string): boolean {
+    return [...text.matchAll(KNOWN_PREFIX_TOKEN)].some(([, body]) => [/[a-z]/, /[A-Z]/, /\d/].filter(re => re.test(body)).length >= 2);
+}
+
 /**
  * True when the text writes out a credential: a value, never a reference to one. Each shape names where a credential
  * goes and fires only on a written-out value (literalWord for shell words, sqlLiteral for SQL), so "$VAR", ${VAR},
@@ -10996,13 +11009,13 @@ function literalHeaderValue(text: string): boolean {
  */
 export function containsCredential(text: string, kind: 'command' | 'any' = 'any'): boolean {
     const dollarQuotes = kind === 'any';
-    if (literalHeaderValue(text)) return true;
+    if (literalHeaderValue(text) || knownPrefixToken(text)) return true;
     // A URL's user info: user:password. With no colon it is a user name, unless it starts the way a token does.
     for (const m of text.matchAll(/\b([a-z][a-z0-9+.-]*):\/\/([^/@\s]{1,400})@/gi)) {
         // A user name that starts the way a token does is one, whatever password follows it (masked, a placeholder or a
         // variable), unless what follows the prefix is itself a placeholder (ghp_<token>).
         const user = m[2].replace(/^['"]+/, '').split(':')[0];
-        const token = /^(?:gh[opusr]_|github_pat_|glpat-|xox[a-z]-)([\s\S]+)$/.exec(user);
+        const token = new RegExp(String.raw`^${TOKEN_PREFIX}([\s\S]+)$`).exec(user);
         if (token && !SHELL_EXPANSION.test(user) && !templatePlaceholder(token[1])) return true;
         if (SHELL_EXPANSION.test(m[2])) continue;
         if (literalUserinfo(m[2])) return true;

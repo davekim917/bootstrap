@@ -230,14 +230,25 @@ describe('which lines wait for the person whose Slack token they use', () => {
     });
 });
 
+// A token of an issued shape, built here so no whole token is written in the source.
+const issued = (prefix: string) => prefix + ['1234567890', '0987654321', 'AbCdEfGhIjKlMnOp'].join('-');
+
 describe('a Slack post that writes out a credential', () => {
     test.each([
+        ['a user token in a form field', 'acme', `curl -s -X POST https://slack.com/api/chat.postMessage -d token=${issued('xoxp-')} -d channel=C1 -d text=hi`],
+        ['a user token in the query', 'acme', `curl -s -X POST "https://slack.com/api/chat.postMessage?token=${issued('xoxp-')}&channel=C1&text=hi"`],
+        ['a bot token in a JSON body', 'acme', `curl -s -X POST https://slack.com/api/chat.postMessage --json '{"token":"${issued('xoxb-')}","channel":"C1","text":"hi"}'`],
         ['a bearer token in a post', 'acme', `curl -s -X POST https://slack.com/api/chat.postMessage -H 'Authorization: Bearer xoxp-0000-0000-EXAMPLE' -d @payload.json`],
         ['a bearer token in a post under a listed identity', undefined, `onecli run --agent ag-acme -- curl -s -X POST https://slack.com/api/chat.postMessage -H "Authorization: Bearer xoxb-0000-EXAMPLE" -d @payload.json`],
         ['an app configuration token, which the credential reader counts like any other header value', 'acme', `curl -s https://slack.com/api/apps.manifest.update -H 'Authorization: Bearer xoxe.xoxp-1-EXAMPLE' -d app_id=A1`],
     ] as Array<[string, string | undefined, string]>)('%s is refused with fixed text and no card', (_label, workgroup, command) => {
         const v = evaluateSlackPost(command, workgroup, { nanoclaw: true });
         expect([v.action, v.deny, v.summary, v.sendParts]).toEqual(['gate', LITERAL_CREDENTIAL_REASON, undefined, undefined]);
+    });
+
+    test('message text that names the token prefix still gets a card', () => {
+        const v = evaluateSlackPost(`curl -s -X POST https://slack.com/api/chat.postMessage -d channel=C1 -d 'text=Paste your xoxp- token, the one that looks like xoxp-…'`, 'acme', { nanoclaw: true });
+        expect([v.action, v.deny]).toEqual(['gate', undefined]);
     });
 
     test('a token held in a variable still gets a card', () => {

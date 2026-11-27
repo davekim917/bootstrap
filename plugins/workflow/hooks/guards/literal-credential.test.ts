@@ -23,6 +23,8 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const evaluate = (command: string) => evaluateBashCommand(command, { cwd: dir });
 const PROD = 'https://api.render.com/v1/services/srv-prodservice000000001/env-vars/FOO';
 const H = 'psql -h db.example.com';
+// A token of an issued shape, built here so no whole token is written in the source.
+const issued = (prefix: string) => prefix + ['1234567890', '0987654321', 'AbCdEfGhIjKlMnOp'].join('-');
 
 describe('a gated or refused command that writes out a credential is refused with the fixed text', () => {
     test.each([
@@ -109,6 +111,7 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['a slash-leading curl password', `curl -u 'deploy:/${SECRET}' https://staging.example.com/health && git push --force origin release`],
         ['a PGPASSWORD with a leading space', `PGPASSWORD=' ${SECRET}' ${H} -d app -c 'DROP TABLE expired_sessions'`],
         ['a MySQL authentication-plugin password', `mysql -h db.example.com -e "ALTER USER app IDENTIFIED WITH caching_sha2_password BY '${SECRET}'; DROP TABLE expired_sessions"`],
+        ['a known-prefix token in a form field', `curl -X DELETE ${PROD} -d token=${issued('ghp_')}`],
         ['a kubectl step beside a credentialed psql', `kubectl scale deployment archive-worker -n staging --replicas=0 && PGPASSWORD=${SECRET} ${H} -d billing -c 'DROP TABLE old_invoices'`],
     ])('%s', (_name, command) => {
         expect(evaluate(command)).toEqual({ action: 'block', reason: LITERAL_CREDENTIAL_REASON });
@@ -211,6 +214,10 @@ describe('the detector fires on literal values only', () => {
         ['a braced variable', 'PGPASSWORD=${PGPW} psql'],
         ['curl -u with only a user', 'curl -u admin https://example.com'],
         ['a psql setting', 'psql -v ON_ERROR_STOP=1 -c "select 1"'],
+        ['prose naming a token prefix', 'paste the user token (xoxp-) or xoxp-… here, as in xoxp-EXAMPLE'],
+        ['a lower-case placeholder after a token prefix', 'curl -d token=xoxb-your-bot-token-goes-here https://slack.com/api/auth.test'],
+        ['an abbreviated example after a token prefix', 'Slack bot tokens look like xoxb-123-Abc and GitHub ones like ghp_Ab12'],
+        ['a redacted token', 'curl -d token=xoxp-XXXX-XXXXXXXXXX-XXXXXXXXXXXXXXXX https://slack.com/api/auth.test'],
     ])('%s does not fire', (_name, text) => {
         expect(containsCredential(text)).toBe(false);
     });
@@ -227,6 +234,11 @@ describe('the detector fires on literal values only', () => {
         ['a Slack token as a URL user', `https://xoxb-${SECRET}@192.0.2.40/x`],
         ['an api_key NOT IN list', `DELETE FROM integrations WHERE api_key NOT IN ('${SECRET}')`],
         ['a password that starts with a slash', `PGPASSWORD='/sample-${SECRET}'`],
+        ['a Slack token in a form field', `curl -d token=${issued('xoxp-')} https://slack.com/api/chat.postMessage`],
+        ['a Slack token in a query', `curl "https://slack.com/api/chat.postMessage?token=${issued('xoxp-')}&channel=C1"`],
+        ['a Slack token in a JSON body', `curl --json '{"token":"${issued('xoxb-')}","channel":"C1"}' https://slack.com/api/chat.postMessage`],
+        ['a GitHub token as a bare argument', `release-cli publish ${issued('github_pat_')}`],
+        ['a GitLab token as a bare argument', `release-cli publish ${issued('glpat-')}`],
     ])('%s fires', (_name, text) => {
         expect(containsCredential(text)).toBe(true);
     });
