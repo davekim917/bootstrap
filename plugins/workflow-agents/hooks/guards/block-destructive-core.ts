@@ -8358,10 +8358,11 @@ const PSQL_LONG_OPTIONS: Record<string, { letter?: string; value: 'none' | 'requ
 
 /**
  * psql's options as glibc's getopt_long reads them: clusters (-Xc SQL), a long option by any unambiguous prefix
- * (--dbn=app), options after operands, and -- ending them. Each -h, -d and -p is kept as written, and the last one
- * given wins. An option psql rejects stops it before it connects, so it adds nothing here.
+ * (--dbn=app), options after operands, and -- ending them; with POSIXLY_CORRECT set, the first operand ends them too.
+ * Each -h, -d and -p is kept as written, and the last one given wins. An option psql rejects stops it before it
+ * connects, so it adds nothing here.
  */
-function psqlOptions(args: string[]): {
+function psqlOptions(args: string[], posixlyCorrect = false): {
     last: { host?: string; dbname?: string };
     written: Array<{ text: string; dbname?: string }>;
     operands: string[];
@@ -8379,6 +8380,10 @@ function psqlOptions(args: string[]): {
         const a = args[i];
         if (a === '--') {
             operands.push(...args.slice(i + 1));
+            break;
+        }
+        if (posixlyCorrect && !(a.length > 1 && a.startsWith('-'))) {
+            operands.push(...args.slice(i));
             break;
         }
         if (a.startsWith('--')) {
@@ -8411,6 +8416,14 @@ function psqlOptions(args: string[]): {
 }
 
 // raw is the value as written, before percent-decoding or unescaping; value is what libpq reads.
+/**
+ * Whether psql's getopt runs POSIXLY_CORRECT for a step: set in the environment the guard runs in, which the step inherits
+ * (as the scratch-Postgres proof reads it), or as a prefix on the step itself.
+ */
+function psqlPosixlyCorrect(env: string[], host: LocalPgHost = LIVE_LOCAL_PG_HOST): boolean {
+    return host.env.POSIXLY_CORRECT !== undefined || env.some(e => e.startsWith('POSIXLY_CORRECT='));
+}
+
 type ConnectionParam = { key: string; value: string; raw: string; start: number; end: number };
 
 /**
@@ -8463,7 +8476,7 @@ function libpqCredentialWritten(cmd: ResolvedCommand): boolean {
     if (cmd.name !== 'psql') return false;
     // Written out or not is read from the text as written: %24 decodes to $ only for libpq, after the shell is done.
     const literal = (raw: string, value: string) => value !== '' && !/[$\x60]/.test(raw);
-    const { written, operands } = psqlOptions(cmd.args);
+    const { written, operands } = psqlOptions(cmd.args, psqlPosixlyCorrect(cmd.env ?? []));
     const inputs = [...written.flatMap(w => (w.dbname === undefined ? [] : [w.dbname])), ...operands.slice(0, 1)];
     if (inputs.some(s => (connectionParams(s) ?? []).some(p => isLibpqCredentialKey(p.key) && literal(p.raw, p.value)))) return true;
     return (cmd.env ?? []).some(e => {
@@ -8478,7 +8491,7 @@ function libpqCredentialWritten(cmd: ResolvedCommand): boolean {
  * holding an unresolved expansion can be a connection string naming any server, which hidden carries.
  */
 function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hostaddrs: string[]; database?: string; hidden?: string; verbatim?: string[] } {
-    const { last, written, operands } = psqlOptions(args);
+    const { last, written, operands } = psqlOptions(args, psqlPosixlyCorrect(env));
     const list = (v: string | undefined) => (v ?? '').split(',').map(s => s.trim()).filter(Boolean);
     const given = last.dbname ?? operands[0];
     const hidden = given !== undefined && /[$\x60]/.test(given) ? given : undefined;

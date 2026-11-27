@@ -1053,3 +1053,22 @@ describe('psql options read with its getopt table', () => {
         expect(summaryOf('psql -X --dbn=prod_app -h db.example -c "insert into t values (1)"')).toContain('database \x60prod_app\x60');
     });
 });
+
+describe('POSIXLY_CORRECT, which stops psql reading options at the first operand', () => {
+    const summaryOf = (command: string) => describeGate(command, evaluateBashCommand(command, { cwd: dir }).reason ?? '', dir).summary.split('\nStep needing approval')[0];
+    const command = 'psql -X app -h prod.example -c "insert into t values (1)"';
+    test('without it, an option after the database still names the server', () => {
+        expect(summaryOf(command)).toContain('\x60prod.example\x60');
+    });
+    test('as a prefix on the step, the -h after the database is an extra argument, not the server', () => {
+        expect(summaryOf('POSIXLY_CORRECT=1 ' + command)).not.toContain('prod.example');
+    });
+    test('inherited from the environment the guard runs in, the same', () => {
+        process.env.POSIXLY_CORRECT = '';
+        try {
+            expect(summaryOf(command)).not.toContain('prod.example');
+        } finally {
+            delete process.env.POSIXLY_CORRECT;
+        }
+    });
+});
