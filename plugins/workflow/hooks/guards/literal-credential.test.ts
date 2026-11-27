@@ -67,6 +67,19 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['a role password in a heredoc', `${H} <<'SQL'\nALTER ROLE app PASSWORD '${SECRET}';\nDROP TABLE orders;\nSQL`],
         ['an escape-string password', `${H} -c "ALTER ROLE app PASSWORD E'${SECRET}'; DROP TABLE orders"`],
         ['a dollar-quoted password', `${H} -c 'ALTER ROLE app PASSWORD $p$${SECRET}$p$; DROP TABLE orders'`],
+        ['a dollar-quoted password through render psql', `render psql dpg-proddatabase00000001-a -c 'ALTER ROLE app PASSWORD $p$${SECRET}$p$'`],
+        ['a dollar-quoted password through render psql after -o text', `render -o text psql dpg-proddatabase00000001-a -c 'ALTER ROLE app PASSWORD $p$${SECRET}$p$'`],
+        ['a dollar-quoted password through render psql after --output=text', `render --output=text psql dpg-proddatabase00000001-a -c 'ALTER ROLE app PASSWORD $p$${SECRET}$p$'`],
+        ['an sslpassword in a subscription connection string', `${H} -X -d app -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep sslpassword=${SECRET}' PUBLICATION p"`],
+        ['a password in a subscription connection string through render psql', `render psql dpg-proddatabase00000001-a -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep password=${SECRET}' PUBLICATION p"`],
+        ['a bracketed sslpassword in a subscription batch that also alters a role', `render psql dpg-devdatabase000000001-a -c "ALTER SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep sslpassword=<s3cr3t-Value9>'; ALTER ROLE app_reader NOLOGIN"`],
+        ['a hyphenated bracketed sslpassword in a subscription batch that also alters a role', `render psql dpg-devdatabase000000001-a -c "ALTER SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep sslpassword=<blue-secret-horse>'; ALTER ROLE app_reader NOLOGIN"`],
+        ['a bracketed sslpassword in an escape-string subscription connection', `${H} -X -d app -c "CREATE SUBSCRIPTION s CONNECTION E'host=192.0.2.40 dbname=app user=rep sslpassword=<blue-secret-horse>' PUBLICATION p"`],
+        ['a bracketed sslpassword in a dollar-quoted subscription connection', `${H} -X -d app -c "CREATE SUBSCRIPTION s CONNECTION \\$c\\$host=192.0.2.40 dbname=app user=rep sslpassword=<blue-secret-horse>\\$c\\$ PUBLICATION p"`],
+        ['an sslpassword in a dblink_connect inside a DO block', `${H} -X -d app -c "DO \\$\\$ BEGIN PERFORM dblink_connect('host=192.0.2.40 dbname=app user=rep sslpassword=${SECRET}'); END \\$\\$"`],
+        ['an sslpassword in a dblink_connect inside a function body', `${H} -X -d app -c "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS \\$fn\\$ BEGIN PERFORM dblink_connect('host=192.0.2.40 dbname=app user=rep sslpassword=${SECRET}'); END \\$fn\\$"`],
+        ['a placeholder-looking password in a live subscription connection', `${H} -X -d app -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep password=<password>' PUBLICATION p"`],
+        ['an sslpassword in a subscription connection string through render psql after -o text', `render -o text psql dpg-proddatabase00000001-a -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep sslpassword=${SECRET}' PUBLICATION p"`],
         ['a comment between PASSWORD and its value', `${H} -c "ALTER ROLE app PASSWORD /* new */ '${SECRET}'; DROP TABLE orders"`],
         ['a password on the line after PASSWORD, refused for its target', `psql "$DATABASE_URL" -c "ALTER ROLE app PASSWORD\n'${SECRET}'; DROP TABLE orders"`],
         ['a Snowflake user password', `snow sql -c acme_prod -q "create user u password = '${SECRET}'; drop table orders"`],
@@ -76,6 +89,8 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['redis-cli --user and --pass', `redis-cli -h cache.example.com --user app --pass ${SECRET} FLUSHALL`],
         ['REDISCLI_AUTH', `REDISCLI_AUTH=${SECRET} redis-cli -h cache.example.com FLUSHALL`],
         ['a token as the only HTTPS user info', `git push --force https://ghp_${SECRET}@github.com/org/repo main`],
+        ['a token as the HTTPS user beside a masked password', `git push --force https://ghp_${SECRET}:********@github.com/org/repo main`],
+        ['a token as the HTTPS user beside a password variable', `git push --force https://ghp_${SECRET}:\${PW}@github.com/org/repo main`],
         ['a userinfo password on a git remote', `git push --force https://alice:${SECRET}@github.com/example/release main`],
         ['an AWS session token', `AWS_SESSION_TOKEN=${SECRET} aws s3 rm s3://example-prod/backups/ --recursive`],
         ['kubectl --token=', `kubectl delete deployment old-api -n staging --token=${SECRET}`],
@@ -215,4 +230,28 @@ describe('the detector fires on literal values only', () => {
     ])('%s fires', (_name, text) => {
         expect(containsCredential(text)).toBe(true);
     });
+});
+
+test('a subscription connection string with no credential keeps its card', () => {
+    expect(evaluate(`${H} -X -d app -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep' PUBLICATION p"`).action).toBe('gate');
+});
+
+test.each([
+    `${H} -X -d app -c "UPDATE help_snippets SET body = 'postgresql://app:<password>@db.example.com/app' WHERE id = 1"`,
+    `${H} -X -d app -c "UPDATE help_snippets SET body = 'postgresql://app:<your-password>@db.example.com/app' WHERE id = 1"`,
+    `${H} -X -d app -c "UPDATE help_snippets SET body = 'host=db.example.com dbname=app sslpassword={db_password}' WHERE id = 1"`,
+    "curl -X DELETE 'https://admin:<PASSWORD>@api.render.com/v1/services/srv-prodservice000000001'",
+    "curl -X DELETE 'https://admin:<apiKey>@api.render.com/v1/services/srv-prodservice000000001'",
+    'git push --force https://ghp_<token>:********@github.com/org/repo main',
+    'git push --force https://ghp_{token}@github.com/org/repo main',
+    'git push --force https://ghp_********@github.com/org/repo main',
+    `${H} -X -d app -c "UPDATE help_snippets SET body = \\$\\$host=db.example.com sslpassword=********\\$\\$ WHERE id = 1"`,
+    `${H} -X -d app -c "UPDATE help_snippets SET body = 'host=db.example.com dbname=app user=app sslpassword=xxxxxx' WHERE id = 1"`,
+    `${H} -X -d app -c "UPDATE help_snippets SET body = 'postgresql://app:********@db.example.com/app' WHERE id = 1"`,
+])('a template placeholder keeps its card: %s', command => {
+    expect(evaluate(command).action).toBe('gate');
+});
+
+test('a quoted example inside a comment in OPTIONS keeps its card', () => {
+    expect(evaluate(`${H} -X -d app -c "CREATE SERVER s FOREIGN DATA WRAPPER postgres_fdw OPTIONS (/* Example: 'sslpassword={db_password}' */ host '192.0.2.40', dbname 'app')"`).action).toBe('gate');
 });

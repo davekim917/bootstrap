@@ -400,6 +400,50 @@ describe('the card says what the step does', () => {
         expect(card.summary).toContain("on a target the guard can't prove is dev");
     });
 
+    test.each([
+        ['alter publication pub add table orders', 'a table added to a publication'],
+        ['create publication pub for table orders', 'replication or a foreign server'],
+    ])('%s says what it changes', (sql, label) => {
+        const command = `${PG} -c "${sql}"`;
+        expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toContain(`(${label})`);
+    });
+
+    test('render psql after -o text takes the generic Render card, as on main', () => {
+        const verdict = evaluate(`render -o text psql dpg-proddatabase00000001-a -c "alter publication reporting set (publish = 'insert')"`);
+        expect(verdict.action).toBe('gate');
+        expect(verdict.reason).toStartWith('Production change on Render');
+    });
+
+    test('SET TABLE says it can remove tables, with its own title and undo', () => {
+        const command = `${PG} -c "alter publication pub set table orders"`;
+        const card = describeGate(command, evaluate(command).reason ?? '', dir);
+        expect(card.label).toBe("Replace a PostgreSQL publication's table list");
+        expect(card.summary).toContain('which can add tables or remove them');
+        expect(card.summary).toContain('Undo: set the list back; rows already sent stay sent.');
+    });
+
+    test.each([
+        ['psql', `${PG} -c "alter publication reporting set (publish = 'insert')"`],
+    ])('a publication settings change through %s says what it changes and that setting it back reverses it', (_how, command) => {
+        const verdict = evaluate(command);
+        expect(verdict.action).toBe('gate');
+        const { summary } = describeGate(command, verdict.reason ?? '', dir);
+        expect(summary).toContain('Changes which future operations the publication sends to its subscribers');
+        expect(summary).toContain('setting the publication back reverses it');
+        expect(summary).not.toContain("can't be called back");
+        expect(summary.toLowerCase()).not.toContain('sends data out');
+        expect(verdict.reason).toStartWith(SQL_EGRESS);
+    });
+
+    test.each([
+        ['psql', `${PG} -c "alter publication reporting set (publish = 'insert'); copy orders to '/srv/x.csv'"`],
+    ])('a settings change beside an unload through %s names both and keeps the unload undo', (_how, command) => {
+        const { summary } = describeGate(command, evaluate(command).reason ?? '', dir);
+        expect(summary).toContain('Changes which future operations the publication sends to its subscribers');
+        expect(summary).toContain('Sends data out of the account (COPY … TO a server file or program)');
+        expect(summary).toContain("Undo: none for data that has left the database; it can't be called back.");
+    });
+
     test('data sent out leads the card and says it cannot be called back', () => {
         const command = 'snow sql -c acme_dev -q "copy into \'s3://example-bucket/x/\' from prod_db.core.orders"';
         const card = describeGate(command, evaluate(command).reason ?? '', dir);
@@ -570,7 +614,7 @@ describe('what main ran without a card still does', () => {
             else process.env.NANOCLAW_INSTRUCTIONS_PROFILE = profile;
         });
         test('unreadable SQL on a lab database runs as on main', () => {
-            expect(evaluate('psql -d lab_app -f "$F"').action).toBe('allow');
+            expect(evaluate('psql -X -d lab_app -f "$F"').action).toBe('allow');
         });
         test('a literal unload from a lab database keeps its card', () => {
             expect(evaluate('psql -d lab_app -c "select lo_export(1, \'/srv/out.bin\')"').action).not.toBe('allow');

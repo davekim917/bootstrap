@@ -90,14 +90,14 @@ const LAB_TARGETS: Array<[string, string]> = [
   // git — -C relocates the effective checkout
   [`git -C ${LAB_WORKTREE} push -f origin develop`, '/tmp'],
   // psql — lab database / user / connection string
-  ['psql -d lab_app -c "DROP TABLE users"', '/tmp'],
-  ['psql --dbname=lab_app -c "TRUNCATE events"', '/tmp'],
-  ['psql -U lab_app_admin -d lab_app -c "DELETE FROM sessions"', '/tmp'],
+  ['psql -X -d lab_app -c "DROP TABLE users"', '/tmp'],
+  ['psql -X --dbname=lab_app -c "TRUNCATE events"', '/tmp'],
+  ['psql -X -U lab_app_admin -d lab_app -c "DELETE FROM sessions"', '/tmp'],
   [
-    'psql postgresql://lab_app_admin:$PW@example.com/lab_app -c "DROP SCHEMA public CASCADE"',
+    'psql -X postgresql://lab_app_admin@192.0.2.30/lab_app -c "DROP SCHEMA public CASCADE"',
     '/tmp',
   ],
-  ['psql "host=example.com dbname=lab_app" -c "DROP TABLE t"', '/tmp'],
+  ['psql -X "host=example.com dbname=lab_app" -c "DROP TABLE t"', '/tmp'],
   // render — lab service / database argument
   ['render services delete lab-app-api --confirm', '/tmp'],
   ['render postgres delete lab-app-db', '/tmp'],
@@ -199,19 +199,19 @@ describe('lab session + lab target → allow', () => {
 
   test('a lab gate and a lab rm in one command line both clear', () => {
     inLab();
-    const command = 'psql -d lab_app -c "DROP TABLE users" && rm -rf /workspace/worktrees/LAB-APP/src';
+    const command = 'psql -X -d lab_app -c "DROP TABLE users" && rm -rf /workspace/worktrees/LAB-APP/src';
     expect(evaluateBashCommand(command, { cwd: LAB_WORKTREE }).action).toBe('allow');
   });
 
   test('a shell command a lab psql runs is not exempt with it', () => {
     inLab();
-    const command = `psql -d lab_app -c 'DROP TABLE scratch' -c '\\! psql -h db.example -d app_prod -c "DROP TABLE users"'`;
+    const command = `psql -X -d lab_app -c 'DROP TABLE scratch' -c '\\! psql -h db.example -d app_prod -c "DROP TABLE users"'`;
     expect(evaluateBashCommand(command, { cwd: LAB_WORKTREE }).action).toBe('gate');
   });
 
   test('a non-lab gate alongside a lab gate still holds', () => {
     inLab();
-    const command = 'psql -d lab_app -c "DROP TABLE users" && psql -h db.example -d app_prod -c "DROP TABLE users"';
+    const command = 'psql -X -d lab_app -c "DROP TABLE users" && psql -h db.example -d app_prod -c "DROP TABLE users"';
     expect(evaluateBashCommand(command, { cwd: LAB_WORKTREE }).action).toBe('gate');
   });
 
@@ -264,9 +264,9 @@ describe('lab session + lab target → allow', () => {
 
   test('inside xargs, a lab step does not exempt a later non-lab step', () => {
     inLab();
-    const prod = `xargs sh -c 'psql -d lab_app -c "DROP TABLE scratch"; psql -d app_prod -c "DROP TABLE users"' < list`;
+    const prod = `xargs sh -c 'psql -X -d lab_app -c "DROP TABLE scratch"; psql -d app_prod -c "DROP TABLE users"' < list`;
     expect(evaluateBashCommand(prod, { cwd: LAB_WORKTREE }).action).toBe('gate');
-    const labOnly = `xargs sh -c 'psql -d lab_app -c "DROP TABLE scratch"' < list`;
+    const labOnly = `xargs sh -c 'psql -X -d lab_app -c "DROP TABLE scratch"' < list`;
     expect(evaluateBashCommand(labOnly, { cwd: LAB_WORKTREE }).action).toBe('allow');
   });
 });
@@ -304,7 +304,7 @@ describe('lab session + non-lab target → unchanged', () => {
 describe('tier 1 is never exempted, lab or not', () => {
   for (const command of [
     'eval echo x',
-    'bash -c "psql -d lab_app -c \'DROP TABLE users\'"',
+    'bash -c "psql -X -d lab_app -c \'DROP TABLE users\'"',
     'sh -c "rm -rf /workspace/worktrees/LAB-APP"',
     'find /workspace/worktrees/LAB-APP -delete',
     'xargs rm < list',
@@ -327,7 +327,7 @@ describe('tier 1 is never exempted, lab or not', () => {
 
 describe('non-lab session + lab target → unchanged', () => {
   // Outside a lab room a lab database named without a host is an unnamed local target, refused toward scratch-pg.
-  const NO_HOST = new Set(['psql -d lab_app -c "DROP TABLE users"', 'psql --dbname=lab_app -c "TRUNCATE events"', 'psql -U lab_app_admin -d lab_app -c "DELETE FROM sessions"']);
+  const NO_HOST = new Set(['psql -X -d lab_app -c "DROP TABLE users"', 'psql -X --dbname=lab_app -c "TRUNCATE events"', 'psql -X -U lab_app_admin -d lab_app -c "DELETE FROM sessions"']);
   for (const [command, cwd] of LAB_TARGETS) {
     test(`still not exempt: ${command}`, () => {
       outsideLab();
@@ -343,7 +343,7 @@ describe('non-lab session + lab target → unchanged', () => {
 
   test('a neighbouring profile does not inherit the exemption', () => {
     process.env[PROFILE] = 'labs';
-    expect(evaluateBashCommand('psql -h db.example -d lab_app -c "DROP TABLE users"', { cwd: LAB_WORKTREE }).action).toBe('gate');
+    expect(evaluateBashCommand('psql -X -h db.example -d lab_app -c "DROP TABLE users"', { cwd: LAB_WORKTREE }).action).toBe('gate');
   });
 });
 
