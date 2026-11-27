@@ -1072,3 +1072,13 @@ describe('POSIXLY_CORRECT, which stops psql reading options at the first operand
         }
     });
 });
+
+describe('libpq connection string quoting', () => {
+    const summaryOf = (command: string) => describeGate(command, evaluateBashCommand(command, { cwd: dir }).reason ?? '', dir).summary.split('\nStep needing approval')[0];
+    test('a backslash-escaped space stays inside its value, so the string is three pairs', () => {
+        expect(summaryOf("psql -X 'application_name=nightly\\ cleanup host=db.example dbname=app' -c 'insert into t values (1)'")).toContain('in the PostgreSQL database \x60app\x60 on \x60db.example\x60');
+    });
+    test('a single-quoted value holds its spaces and an escaped quote', () => {
+        expect(summaryOf("psql -X \"application_name='nightly \\' cleanup' host=db.example dbname=app\" -c 'insert into t values (1)'")).toContain('in the PostgreSQL database \x60app\x60 on \x60db.example\x60');
+    });
+});

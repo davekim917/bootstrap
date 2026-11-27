@@ -8459,14 +8459,15 @@ function connectionParams(s: string): ConnectionParam[] | null {
     const out: ConnectionParam[] = [];
     // libpq splits a connection string on ASCII whitespace only (isspace in the C locale), and reads nothing but
     // keyword=value pairs: anything else between them makes it a string libpq refuses, not a connection string.
-    const pair = /[ \t\n\v\f\r]*(\w+)[ \t\n\v\f\r]*=[ \t\n\v\f\r]*(?:'((?:\\.|[^'\\])*)'|([^ \t\n\v\f\r]+))[ \t\n\v\f\r]*/y;
+    // A value is single-quoted or bare; in either, a backslash takes the next character as it is (a space, a quote).
+    const pair = /[ \t\n\v\f\r]*(\w+)[ \t\n\v\f\r]*=[ \t\n\v\f\r]*(?:'((?:\\[\s\S]|[^'\\])*)'|((?:\\[\s\S]|[^ \t\n\v\f\r\\])+))[ \t\n\v\f\r]*/y;
     while (pair.lastIndex < s.length) {
         const at = pair.lastIndex;
         const m = pair.exec(s);
         if (!m) return null;
         const raw = m[2] !== undefined ? `'${m[2]}'` : m[3];
         const start = s.indexOf(raw, at + m[0].indexOf('=') + 1);
-        out.push({ key: m[1], value: (m[2] ?? m[3]).replace(/\\(.)/g, '$1'), raw, start, end: start + raw.length });
+        out.push({ key: m[1], value: (m[2] ?? m[3]).replace(/\\([\s\S])/g, '$1'), raw, start, end: start + raw.length });
     }
     return out;
 }
@@ -8483,9 +8484,11 @@ function libpqCredentialWritten(cmd: ResolvedCommand): boolean {
     if (!PG_DIRECT_CLIENTS.has(cmd.name)) return false;
     // Written out or not is read from the text as written: %24 decodes to $ only for libpq, after the shell is done.
     const literal = (raw: string, value: string) => value !== '' && !/[$\x60]/.test(raw);
-    // Each word whole, and the value an option glues on (--dbname=…, -d…).
+    // Each word whole, the value an option glues on (--dbname=…, -d…), and for psql every dbname its getopt extracts
+    // (a cluster such as -Xd<URI>).
     const words = [...cmd.args, ...(cmd.env ?? []).map(e => e.slice(e.indexOf('=') + 1))];
-    const inputs = words.flatMap(w => [w, /^--[^=]+=([\s\S]*)$/.exec(w)?.[1], /^-[A-Za-z]([\s\S]+)$/.exec(w)?.[1]]).filter((v): v is string => v !== undefined);
+    const extracted = cmd.name === 'psql' ? psqlOptions(cmd.args).written.flatMap(w => (w.dbname === undefined ? [] : [w.dbname])) : [];
+    const inputs = [...words.flatMap(w => [w, /^--[^=]+=([\s\S]*)$/.exec(w)?.[1], /^-[A-Za-z]([\s\S]+)$/.exec(w)?.[1]]), ...extracted].filter((v): v is string => v !== undefined);
     if (inputs.some(s => (connectionParams(s) ?? []).some(p => isLibpqCredentialKey(p.key) && literal(p.raw, p.value)))) return true;
     return (cmd.env ?? []).some(e => {
         const m = /^PG([A-Z]+)=([\s\S]*)$/.exec(e);
