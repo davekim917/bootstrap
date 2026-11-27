@@ -8060,7 +8060,11 @@ export function containsCredential(text: string, kind: 'command' | 'any' = 'any'
         // A connection string's or option's password=value, written with nothing around the =.
         // Only as its own word (a conninfo key, a URL query, --password=): PGPASSWORD= and the like are assignments.
         const own = /(?:^|[\s'"?&;]|--)$/.test(text.slice(0, m.index ?? 0));
-        if (own && m[0].length === (/passw(?:or)?d/i.exec(m[0])?.[0].length ?? 0) && after.startsWith('=') && literalWord(after.slice(1), true)) return true;
+        // After a SQL keyword it is a column: WHERE password=archived_password compares two columns.
+        const sqlColumn = /\b(?:WHERE|AND|OR|NOT|SET|ON|WHEN|HAVING|SELECT)\s+$/i.test(text.slice(0, m.index ?? 0));
+        if (own && !sqlColumn && m[0].length === (/passw(?:or)?d/i.exec(m[0])?.[0].length ?? 0) && after.startsWith('=') && literalWord(after.slice(1), true)) return true;
+        // An option's name (--password, --no-password): psql's take no value, and the option loop below reads the rest.
+        if (/-$/.test(text.slice(0, m.index ?? 0))) continue;
         // SQL's PASSWORD 'x', password = 'x' and the like: the keyword or column as its own word, with space or = before
         // the literal (POSTGRES_PASSWORD',… is a name in some other code).
         if (/[\w$]$/.test(text.slice(0, m.index ?? 0))) continue;
