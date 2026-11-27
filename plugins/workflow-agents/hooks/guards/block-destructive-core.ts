@@ -770,9 +770,9 @@ export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^ALTER\s+(?:ROLE|GROUP|USER(?!\s+MAPPING\b))\b/i, label: 'ALTER ROLE' },
     { rx: /^DROP\s+(?:ROLE|GROUP|USER(?!\s+MAPPING\b))\b/i, label: 'DROP ROLE' },
     { rx: /^DROP\s+OWNED\b/i, label: 'DROP OWNED' },
-    // A database, tablespace, foreign server or parameter is shared by the whole cluster, not held by one database.
-    { rx: /^GRANT\b[\s\S]*?\bON\s+(?:DATABASE|TABLESPACE|FOREIGN\s+(?:SERVER|DATA\s+WRAPPER)|PARAMETER)\b/i, label: 'GRANT ON SHARED OBJECT' },
-    { rx: /^REVOKE\b[\s\S]*?\bON\s+(?:DATABASE|TABLESPACE|FOREIGN\s+(?:SERVER|DATA\s+WRAPPER)|PARAMETER)\b/i, label: 'GRANT ON SHARED OBJECT' },
+    // A database, tablespace or parameter is shared by the whole cluster, not held by one database.
+    { rx: /^GRANT\b[\s\S]*?\bON\s+(?:DATABASE|TABLESPACE|PARAMETER)\b/i, label: 'GRANT ON SHARED OBJECT' },
+    { rx: /^REVOKE\b[\s\S]*?\bON\s+(?:DATABASE|TABLESPACE|PARAMETER)\b/i, label: 'GRANT ON SHARED OBJECT' },
     { rx: /^ALTER\s+(?:DATABASE|TABLESPACE)\b[\s\S]*\bOWNER\s+TO\b/i, label: 'ALTER DATABASE OWNER' },
     { rx: /^ALTER\s+POLICY\b/i, label: 'ALTER POLICY' },
     { rx: /^CREATE\s+POLICY\b/i, label: 'CREATE POLICY' },
@@ -780,7 +780,10 @@ export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^ALTER\s+(?:MATERIALIZED\s+VIEW|VIEW|TABLE)\b[\s\S]*\b(?:SET|RESET)\s*\([\s\S]*\bsecurity_(?:invoker|barrier)\b/i, label: 'ALTER VIEW SECURITY' },
     // PostgreSQL's DROP POLICY names no kind; removing a restrictive policy can widen who reads which rows.
     { rx: /^DROP\s+POLICY\b/i, label: 'DROP ROW SECURITY POLICY' },
-    { rx: /^ALTER\s+TABLE\b[\s\S]*\b(?:DISABLE|ENABLE|(?:NO\s+)?FORCE)\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'DISABLE ROW LEVEL SECURITY' },
+    { rx: /^ALTER\s+TABLE\b[\s\S]*\bDISABLE\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'DISABLE ROW LEVEL SECURITY' },
+    { rx: /^ALTER\s+TABLE\b[\s\S]*\bNO\s+FORCE\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'NO FORCE ROW LEVEL SECURITY' },
+    { rx: /^ALTER\s+TABLE\b[\s\S]*\bFORCE\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'FORCE ROW LEVEL SECURITY' },
+    { rx: /^ALTER\s+TABLE\b[\s\S]*\bENABLE\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'ENABLE ROW LEVEL SECURITY' },
     // With no ON, GRANT and REVOKE add or remove a role's membership in another role.
     { rx: /^GRANT\s+(?![\s\S]*\bON\b)/i, label: 'GRANT ROLE' },
     { rx: /^GRANT\s/i, label: 'GRANT' },
@@ -789,7 +792,8 @@ export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^REASSIGN\s+OWNED\b/i, label: 'REASSIGN OWNED' },
     { rx: /^ALTER\b[\s\S]*(?<!\bRENAME\s+(?:COLUMN\s+)?)\bOWNER\s+TO\b/i, label: 'ALTER ... OWNER TO' },
     { rx: /^CREATE\b[\s\S]*?\b(?:FUNCTION|PROCEDURE)\b[\s\S]*\bSECURITY\s+DEFINER\b/i, label: 'SECURITY DEFINER' },
-    { rx: /^ALTER\s+(?:FUNCTION|PROCEDURE|ROUTINE)\b[\s\S]*\bSECURITY\s+(?:DEFINER|INVOKER)\b/i, label: 'SECURITY DEFINER' },
+    { rx: /^ALTER\s+(?:FUNCTION|PROCEDURE|ROUTINE)\b[\s\S]*\bSECURITY\s+DEFINER\b/i, label: 'SECURITY DEFINER' },
+    { rx: /^ALTER\s+(?:FUNCTION|PROCEDURE|ROUTINE)\b[\s\S]*\bSECURITY\s+INVOKER\b/i, label: 'SECURITY INVOKER' },
 ];
 const PG_SQL_PATTERNS = [...PG_PRIVILEGE_SQL_PATTERNS, ...DESTRUCTIVE_SQL_PATTERNS];
 const PG_PRIVILEGE_LABELS = new Set(PG_PRIVILEGE_SQL_PATTERNS.map(p => p.label));
@@ -1948,31 +1952,18 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] | null {
     return out;
 }
 
-
-
-
-
 // The same SQL is often read by every psql on a long line; its skeleton is computed once.
 const metaSkeletons = new Map<string, string>();
 function metaSkeleton(sql: string): string {
     let skeleton = metaSkeletons.get(sql);
     if (skeleton === undefined) {
         if (metaSkeletons.size > 64) metaSkeletons.clear();
-        metaSkeletons.set(sql, (skeleton = sqlSkeleton(sql, false, true).skeleton));
+        // A blanked comment or literal keeps its line breaks, so the skeleton's lines are the text's lines.
+        const blanked = sqlSkeleton(sql, false, true).skeleton;
+        metaSkeletons.set(sql, (skeleton = [...blanked].map((ch, i) => (sql[i] === '\n' ? '\n' : ch)).join('')));
     }
     return skeleton;
 }
-
-
-
-
-
-
-
-
-
-
-
 
 const SQL_PATH_UNPROVEN = "a path the command line doesn't prove";
 const SQL_PATH_MISSING = "a file that isn't there yet";
@@ -4255,8 +4246,8 @@ function psqlLeavesDatabase(text: string, depth = 0, meta = true): string | null
     }
     const skeleton = metaSkeleton(withoutCopyData(text));
     if (meta && depth === 0 && skeleton.includes('\\')) return 'a psql meta-command';
-    if (/\b(?:CREATE|ALTER|DROP)\s+DATABASE\b/i.test(skeleton)) return 'a statement on a whole database';
-    if (/\b(?:CREATE|ALTER|DROP)\s+TABLESPACE\b/i.test(skeleton)) return 'a tablespace, which the whole cluster holds';
+    const shared = /\b(?:(?:CREATE|ALTER|DROP)\s+(?:DATABASE|TABLESPACE)|(?:COMMENT|SECURITY\s+LABEL(?:\s+FOR\s+\S+)?)\s+ON\s+(?:DATABASE|TABLESPACE|ROLE))\b/i.exec(skeleton);
+    if (shared) return oneLine(withoutCopyData(text).slice(shared.index).split(/[;\n]/)[0]).slice(0, STATEMENT_PREVIEW_CHARS);
     // A DO or function body runs as SQL too, so it is read with the same predicate.
     if (depth >= SQL_RECURSION_LIMIT) return null;
     for (const m of text.matchAll(/\$([A-Za-z_]\w*)?\$([\s\S]*?)\$\1\$/g)) {
@@ -4268,14 +4259,26 @@ function psqlLeavesDatabase(text: string, depth = 0, meta = true): string | null
 
 /** psqlLeavesDatabase over the SQL a psql step's input holds, as far as the guard reads it; `meta` counts meta-commands. */
 function changesClusterRoles(cmd: ResolvedCommand, meta = true): boolean {
-    return cmd.name === 'psql' && sqlInputFor(cmd).texts.some(t => psqlLeavesDatabase(t, 0, meta) !== null);
+    if (cmd.name === 'pg_restore') {
+        // --create restores into the database the archive names, not the one -d connects to.
+        const opts = pgRestoreOptions(cmd.args);
+        return opts === null || opts.some(([o]) => o === '--create' || o === '-C');
+    }
+    return cmd.name === 'psql' && psqlLeavingStatement(cmd, meta) !== null;
+}
+
+/** The first statement in a psql step's SQL, -v values included as the write check reads them, that leaves its database. */
+function psqlLeavingStatement(cmd: ResolvedCommand, meta = true): string | null {
+    const texts = sqlInputFor(cmd).texts;
+    return [...texts, ...psqlVariableValues(cmd, texts)].map(t => psqlLeavesDatabase(t, 0, meta)).find(l => l !== null) ?? null;
 }
 
 function labSqlTarget(cmd: ResolvedCommand): string | null {
     const { args } = cmd;
     if (cmd.name === 'mysql') {
         const db = mysqlDatabase(args);
-        return db !== undefined && LAB_DB_NAME_RE.test(db) && !mysqlLeavesDatabase(cmd, db) ? db : null;
+        if (db === undefined || !args.includes(`--database=${db}`) || args.some(a => a === '-D' || /^-[^-]*D/.test(a) || a === '--database')) return null;
+        return LAB_DB_NAME_RE.test(db) && !mysqlLeavesDatabase(cmd, db) ? db : null;
     }
     if (cmd.name === 'psql' || cmd.name === 'pg_restore') {
         // Without -X a psqlrc file runs first, and it can \connect to another database.
@@ -4762,7 +4765,7 @@ type GatedStep = { cmd: ResolvedCommand; reason: string; outer: ResolvedCommand 
 /** What a step held on listed dev resources says instead of calling itself production. */
 function renderDevHoldReason(cmd: ResolvedCommand, reason: string): string {
     const psqlLeaves = cmd.name === 'psql' && reason.includes(SQL_WRITE)
-        ? sqlInputFor(cmd).texts.map(t => psqlLeavesDatabase(t, 0, false)).find(l => l !== null) ?? null : null;
+        ? psqlLeavingStatement(cmd, false) : null;
     const ids = reason.includes(RENDER_CHANGE_REASON) || psqlLeaves ? renderDevHeld(cmd) : null;
     if (!ids) return reason;
     const privilege = cmd.name === 'render' ? renderPsqlPrivilegeChange(cmd.args) : psqlLeaves;
@@ -5769,8 +5772,6 @@ function postgresListening(host: LocalPgHost, endpoint: string, inodes: string[]
     }
     return `${endpoint} (postgres pid ${[...pids].join(', ')}, data ${[...dataDirs].join(', ')})`;
 }
-
-
 
 /**
  * The local scratch Postgres a top-level psql command is exempt against, or null. `commands` and `command` are the
@@ -9498,8 +9499,10 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
     const run = code([cmd.name, ...verbs].join(' '));
     const targets = flagValues(cmd.args, ['-target']);
     const onDev = cmd.name === 'render' && reason.startsWith(RENDER_DEV_HOLD);
+    // A hold for SQL that reaches past the listed database says what it reaches.
+    const beyond = onDev ? /: ((?:its SQL acts outside|it changes roles or objects)[\s\S]*?)\.?$/.exec(reason)?.[1] : undefined;
     const described: [effect: string, loss: string] | undefined = onDev
-        ? ['Changes the Render dev resource named in the step below.', "some changes, such as a deleted database, can't be undone"]
+        ? [beyond ? `Runs SQL on the Render dev resource named in the step below, and ${beyond}.` : 'Changes the Render dev resource named in the step below.', "some changes, such as a deleted database, can't be undone"]
         : cmd.name === 'render' && reason.includes(RENDER_READ_HOLD)
         ? renderReadEffect(cmd, reason)
         : cmd.name === 'render' && reason.startsWith(SQL_EGRESS)
@@ -10083,7 +10086,7 @@ function carriesCredential(command: string, cwd: string): boolean {
         const steps = commands.flatMap(c => [c, ...innerGatedSteps(c).map(g => g.step)]);
         if (steps.some(libpqCredentialWritten)) return true;
         // Many steps can read one text, as in a loop over one file: each is scanned once.
-        return [...new Set(steps.filter(sqlClient).flatMap(cmd => sqlInputFor(cmd).texts))].some(t => containsCredential(t));
+        return [...new Set(steps.flatMap(cmd => sqlClient(cmd) ? sqlInputFor(cmd).texts : renderPsqlTexts(cmd) ?? []))].some(t => containsCredential(t));
     } catch {
         return false;
     }

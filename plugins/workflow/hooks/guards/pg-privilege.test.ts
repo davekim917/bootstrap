@@ -100,13 +100,30 @@ describe('a role or privilege change on a reachable Postgres is never run withou
     test.each([
         ['through render psql', viaRender(DEV_DB, 'GRANT app_admin TO app_reader'), 'whole cluster holds'],
         ['its host written out', viaHost(DEV_DB, 'GRANT app_admin TO app_reader'), 'whole cluster holds'],
-        ['a statement on another database', viaRender(DEV_DB, 'DROP DATABASE other_db'), 'acts outside this database'],
+        ['a statement on another database', viaRender(DEV_DB, 'DROP DATABASE other_db'), 'DROP DATABASE other_db'],
+        ['a comment on another database', viaRender(DEV_DB, "COMMENT ON DATABASE other_db IS 'x'"), 'COMMENT ON DATABASE other_db'],
     ])('a listed dev database holds it as dev and says why: %s', (_how, command, why) => {
         const { reason } = run(command);
         expect(changesProduction(command, '/tmp')).toBe(false);
         expect(reason).toContain(DEV_DB);
         expect(reason).toContain(why);
         expect(reason).not.toContain('not proven dev');
+    });
+
+    test('the dev hold card names the other database', () => {
+        const command = viaRender(DEV_DB, 'DROP DATABASE other_db');
+        expect(describeGate(command, run(command).reason!, '/tmp').summary).toContain('If you approve: Runs SQL on the Render dev resource named in the step below, and its SQL acts outside this database (DROP DATABASE other_db)');
+    });
+
+    test.each([
+        ['ALTER FUNCTION f() SECURITY INVOKER', 'SECURITY INVOKER'],
+        ['ALTER TABLE t ENABLE ROW LEVEL SECURITY', 'ENABLE ROW LEVEL SECURITY'],
+        ['ALTER TABLE t FORCE ROW LEVEL SECURITY', '(FORCE ROW LEVEL SECURITY'],
+        ['ALTER TABLE t NO FORCE ROW LEVEL SECURITY', 'NO FORCE ROW LEVEL SECURITY'],
+        ['ALTER TABLE t DISABLE ROW LEVEL SECURITY', 'DISABLE ROW LEVEL SECURITY'],
+    ])('the card for %s is titled with its keyword', (sql, title) => {
+        const command = viaHost(PROD_DB, sql);
+        expect(describeGate(command, run(command).reason!, '/tmp').label).toContain(title);
     });
 
     test('the card names the privilege change', () => {
@@ -121,6 +138,8 @@ describe('what ran without a card still does', () => {
         viaRender(DEV_DB, 'select grantee, privilege_type from information_schema.role_table_grants'),
         viaRender(DEV_DB, "select 'grant select on t to r' as note"),
         viaRender(DEV_DB, 'create table public.scratch (id int)'),
+        viaRender(DEV_DB, 'GRANT USAGE ON FOREIGN SERVER reporting TO app_reader'),
+        viaRender(DEV_DB, 'GRANT USAGE ON FOREIGN DATA WRAPPER postgres_fdw TO app_reader'),
         viaRender(DEV_DB, "update public.orders set note = 'owner to' where id = 1"),
         viaHost(PROD_DB, 'select rolname from pg_roles'),
     ])('%s', command => {
@@ -159,6 +178,7 @@ describe('psql input the guard reads as psql does', () => {
             'role.sql': 'CREATE ROLE app_reader;\n',
             'nested-role.sql': '/* note /* inner */\nCREATE ROLE app_reader;\n*/\nselect 1;\n',
             'copy-hides.sql': "COPY t FROM stdin;\nO'Brien\n\\.\nGRANT ALL ON t TO public;\n",
+            'copy-after-comment.sql': "/* load\n   orders */\n\\copy orders FROM 'orders.csv'\n",
             'copy-comment.sql': '-- Previous import used COPY staging_orders FROM STDIN;\nDROP TABLE IF EXISTS staging_orders;\nCOPY import_log FROM STDIN;\nimported\n\\.\n',
         };
         for (const [name, text] of Object.entries(files)) writeFileSync(f(name), text);
@@ -168,6 +188,7 @@ describe('psql input the guard reads as psql does', () => {
 
     test.each([
         ['-f clustered after -X', () => `${H} -Xf ${f('grant.sql')}`],
+        ['a \\copy FROM after a comment that spans lines', () => `${H} -X -d app -f ${f('copy-after-comment.sql')}`],
         ['\\gexec, which runs query results as SQL', () => `${H} -f ${f('gexec.sql')}`],
         ['\\password, which alters a role', () => `${H} -f ${f('password.sql')}`],
         ['a GRANT first in a labelled block', () => `${H} -f ${f('label.sql')}`],
@@ -294,6 +315,7 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         writeFileSync(join(fx, 'gexec.sql'), "select 'GRANT app_admin TO app' \\gexec\n");
         writeFileSync(join(fx, 'connect-inline.sql'), 'SELECT 1; \\connect app\nDROP TABLE orders;\n');
         writeFileSync(join(fx, 'connect.sql'), '\\connect other_db\nGRANT SELECT ON t TO r;\n');
+        writeFileSync(join(fx, 'var-role.sql'), ':role_sql;\n');
         writeFileSync(join(labDir, 'lab-scope.local.json'), JSON.stringify({ org: 'lab-org', extraRepos: [] }));
         [savedLab, savedProfile] = [process.env[LAB_SCOPE_FILE_ENV], process.env.NANOCLAW_INSTRUCTIONS_PROFILE];
         process.env[LAB_SCOPE_FILE_ENV] = join(labDir, 'lab-scope.local.json');
@@ -338,22 +360,26 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['DROP DATABASE naming another lab_ database', `${LAB} -c "DROP DATABASE IF EXISTS lab_archive"`],
         ['DROP DATABASE after a comment', `${LAB} -c "/* cleanup */ DROP DATABASE prod_app"`],
         ['a Lab database without -X, where a psqlrc could connect elsewhere', `psql -h db.example.com -d lab_app -c "DROP TABLE staging_orders"`],
-        ['a MySQL table qualified by another database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE app.orders'`],
-        ['a MySQL table qualified by a quoted database', `mysql -h db.example.com -D lab_app -e 'DELETE FROM \`app\`.orders'`],
-        ['a MySQL table qualified by another database in a list', `mysql -h db.example.com -D lab_app -e 'DROP TABLE orders, app.orders'`],
-        ['a MySQL USE of another database', `mysql -h db.example.com -D lab_app -e 'USE app; TRUNCATE TABLE orders'`],
-        ['a MySQL TRUNCATE short form qualified by another database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE app.orders'`],
-        ['a MySQL column qualified by its table', `mysql -h db.example.com -D lab_app -e 'DELETE FROM orders WHERE orders.id = 1'`],
-        ['a MySQL client command', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE orders; \\u app'`],
+        ['a MySQL table qualified by another database', `mysql -h db.example.com --database=lab_app -e 'TRUNCATE TABLE app.orders'`],
+        ['a MySQL table qualified by a quoted database', `mysql -h db.example.com --database=lab_app -e 'DELETE FROM \`app\`.orders'`],
+        ['a MySQL table qualified by another database in a list', `mysql -h db.example.com --database=lab_app -e 'DROP TABLE orders, app.orders'`],
+        ['a MySQL USE of another database', `mysql -h db.example.com --database=lab_app -e 'USE app; TRUNCATE TABLE orders'`],
+        ['a MySQL TRUNCATE short form qualified by another database', `mysql -h db.example.com --database=lab_app -e 'TRUNCATE app.orders'`],
+        ['a MySQL column qualified by its table', `mysql -h db.example.com --database=lab_app -e 'DELETE FROM orders WHERE orders.id = 1'`],
+        ['a MySQL client command', `mysql -h db.example.com --database=lab_app -e 'TRUNCATE TABLE orders; \\u app'`],
         ['a psql \\connect after SQL on the same line', () => `${LAB} -f ${join(fx, 'connect-inline.sql')}`],
         ['a database rename', `${LAB} -c "ALTER DATABASE prod_app RENAME TO old_app"`],
-        ['a MySQL operand that overrides -D', `mysql -h db.example.com -D lab_app inventory -e 'DELETE FROM orders WHERE FALSE'`],
+        ['a MySQL operand that overrides -D', `mysql -h db.example.com --database=lab_app inventory -e 'DELETE FROM orders WHERE FALSE'`],
         ['a tablespace rename', `${LAB} -c 'BEGIN; ALTER TABLESPACE archive RENAME TO archive_review; ROLLBACK'`],
         ['a tablespace rename inside a DO block', `${LAB} -c "DO \\$\\$ BEGIN ALTER TABLESPACE archive RENAME TO archive_review; END \\$\\$"`],
-        ['a MySQL schema name ending in a digit', `mysql -h db.example.com -D lab_app -e 'DELETE FROM inventory2.orders WHERE id = 1'`],
-        ['a MySQL CREATE TABLESPACE', `mysql -h db.example.com -D lab_app -e "CREATE TABLESPACE ts1 ADD DATAFILE 'ts1.ibd'; TRUNCATE TABLE orders"`],
+        ['a MySQL schema name ending in a digit', `mysql -h db.example.com --database=lab_app -e 'DELETE FROM inventory2.orders WHERE id = 1'`],
+        ['a MySQL CREATE TABLESPACE', `mysql -h db.example.com --database=lab_app -e "CREATE TABLESPACE ts1 ADD DATAFILE 'ts1.ibd'; TRUNCATE TABLE orders"`],
         ['a database statement in a function body', `${LAB} -c "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS \\$fn\\$ BEGIN EXECUTE 'x'; ALTER DATABASE prod_app RENAME TO old_app; END \\$fn\\$; DROP TABLE t"`],
         ['an ALTER DATABASE beside a grant', `${LAB} -c "GRANT SELECT ON t TO r; ALTER DATABASE prod_app SET search_path = x"`],
+        ['a comment on another database', `${LAB} -c "COMMENT ON DATABASE prod_app IS 'retired'"`],
+        ['role DDL in a -v value the script runs', () => `${LAB} -v role_sql='CREATE ROLE app_reader' -f ${join(fx, 'var-role.sql')}`],
+        ['a MySQL Lab database named with -D', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE orders'`],
+        ['a MySQL Lab database named as an operand', `mysql -h db.example.com -D inventory lab_app -e 'TRUNCATE TABLE orders'`],
     ])('%s on a lab database gates', (_name, command) => {
         expect(run(typeof command === 'function' ? command() : command).action).toBe('gate');
     });
@@ -365,12 +391,20 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['a Lab database in a URI', `psql -X "postgresql://app@db.example.com/lab_app" -c "GRANT SELECT ON t TO r"`],
         ['a grant on an object, chosen by the database and not the user', `psql -X -h db.example.com -U app -d lab_app -c "GRANT SELECT ON t TO r"`],
         ['DROP SCHEMA in the connected database', `${LAB} -c "DROP SCHEMA old_area CASCADE"`],
-        ['a MySQL Lab operand that overrides another -D', `mysql -h db.example.com -D inventory lab_app -e 'TRUNCATE TABLE orders'`],
-        ['a MySQL table qualified by the selected database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE lab_app.orders'`],
+        ['a MySQL table qualified by the selected database', `mysql -h db.example.com --database=lab_app -e 'TRUNCATE TABLE lab_app.orders'`],
         ['a column named tablespace', `${LAB} -c 'SELECT 1 AS tablespace; DROP TABLE t'`],
-        ['a MySQL table in the default database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE orders'`],
+        ['a MySQL table in the default database', `mysql -h db.example.com --database=lab_app -e 'TRUNCATE TABLE orders'`],
+        ['pg_restore without --create', 'pg_restore -d lab_app /tmp/app.dump'],
     ])('%s on a lab database runs', (_name, command) => {
         expect(run(command).action).toBe('allow');
+    });
+    // --create restores into the database the archive names, which the line doesn't show.
+    test.each([
+        'pg_restore --create -d lab_app /tmp/app.dump',
+        'pg_restore -Cd lab_app /tmp/app.dump',
+        `pg_restore --create -d "dbname='lab_app'" /tmp/app.dump`,
+    ])('%s takes no Lab waiver', command => {
+        expect(run(command).action).toBe('block');
     });
 });
 
