@@ -72,6 +72,8 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['a dollar-quoted password through render psql after --output=text', `render --output=text psql dpg-proddatabase00000001-a -c 'ALTER ROLE app PASSWORD $p$${SECRET}$p$'`],
         ['an sslpassword in a subscription connection string', `${H} -X -d app -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep sslpassword=${SECRET}' PUBLICATION p"`],
         ['a password in a subscription connection string through render psql', `render psql dpg-proddatabase00000001-a -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep password=${SECRET}' PUBLICATION p"`],
+        ['a bracketed sslpassword in a subscription batch that also alters a role', `render psql dpg-devdatabase000000001-a -c "ALTER SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep sslpassword=<s3cr3t-Value9>'; ALTER ROLE app_reader NOLOGIN"`],
+        ['a bracketed password in a URL', `curl -X DELETE 'https://admin:<s3cr3t-Value9>@api.render.com/v1/services/srv-prodservice000000001'`],
         ['an sslpassword in a subscription connection string through render psql after -o text', `render -o text psql dpg-proddatabase00000001-a -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep sslpassword=${SECRET}' PUBLICATION p"`],
         ['a comment between PASSWORD and its value', `${H} -c "ALTER ROLE app PASSWORD /* new */ '${SECRET}'; DROP TABLE orders"`],
         ['a password on the line after PASSWORD, refused for its target', `psql "$DATABASE_URL" -c "ALTER ROLE app PASSWORD\n'${SECRET}'; DROP TABLE orders"`],
@@ -227,6 +229,11 @@ test('a subscription connection string with no credential keeps its card', () =>
     expect(evaluate(`${H} -X -d app -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep' PUBLICATION p"`).action).toBe('gate');
 });
 
-test('a DSN template stored as SQL data keeps its card', () => {
-    expect(evaluate(`${H} -X -d app -c "UPDATE help_snippets SET body = 'postgresql://app:<password>@db.example.com/app' WHERE id = 1"`).action).toBe('gate');
+test.each([
+    `${H} -X -d app -c "UPDATE help_snippets SET body = 'postgresql://app:<password>@db.example.com/app' WHERE id = 1"`,
+    `${H} -X -d app -c "UPDATE help_snippets SET body = 'postgresql://app:<your-password>@db.example.com/app' WHERE id = 1"`,
+    `${H} -X -d app -c "UPDATE help_snippets SET body = 'host=db.example.com dbname=app sslpassword={db_password}' WHERE id = 1"`,
+    "curl -X DELETE 'https://admin:<PASSWORD>@api.render.com/v1/services/srv-prodservice000000001'",
+])('a template placeholder keeps its card: %s', command => {
+    expect(evaluate(command).action).toBe('gate');
 });

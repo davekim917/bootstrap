@@ -10031,9 +10031,13 @@ function sqlLiteral(text: string, dollarQuotes = true): boolean {
     return !!tag && v.indexOf(tag[0], tag[0].length) > tag[0].length;
 }
 
-/** A template's placeholder (%s, {password}, <password>) stands for a value; it isn't one. */
+// A placeholder's name: words that name the value (password, db_password, your-password), not the value itself.
+const PLACEHOLDER_NAME = String.raw`(?:[a-z]+[-_ ])*(?:password|passwd|pass|pwd|pw|secret|token|key|credentials?|value)(?:[-_ ][a-z]+)*`;
+const TEMPLATE_PLACEHOLDER = new RegExp(String.raw`^(?:%[a-z]|\{\}|<>|\{${PLACEHOLDER_NAME}\}|<${PLACEHOLDER_NAME}>|\$\{\w+\})$`, 'i');
+
+/** A template's placeholder (%s, {password}, <your-password>) stands for a value; a bracketed <s3cr3t-Value9> is one. */
 function templatePlaceholder(value: string): boolean {
-    return /^(?:%[a-z]|\{\w*\}|<[^>]*>)$/i.test(value);
+    return TEMPLATE_PLACEHOLDER.test(value);
 }
 
 /** user:password with a written-out password, or a written-out user with an empty one (a token as the user). */
