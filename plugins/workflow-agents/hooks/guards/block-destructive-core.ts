@@ -903,7 +903,7 @@ function nestedCommentClose(sql: string, start: number): number {
     return -1;
 }
 
-export function sqlSkeleton(sql: string, backslashEscapes = false, nestedComments = false): { skeleton: string; openAt: number } {
+export function sqlSkeleton(sql: string, backslashEscapes = false, nestedComments = false, keepLiterals = false): { skeleton: string; openAt: number } {
     const out: string[] = [];
     let openAt = -1;
     let i = 0;
@@ -952,7 +952,7 @@ export function sqlSkeleton(sql: string, backslashEscapes = false, nestedComment
             }
             if (!closed) openAt = start;
             // Replace whole literal (quotes included) with spaces, length-preserving
-            out.push(quote + ' '.repeat(Math.max(0, i - start - 2)) + quote);
+            out.push(keepLiterals ? sql.slice(start, i) : quote + ' '.repeat(Math.max(0, i - start - 2)) + quote);
             continue;
         }
         if (c === '$') {
@@ -963,7 +963,7 @@ export function sqlSkeleton(sql: string, backslashEscapes = false, nestedComment
                 const close = sql.indexOf(tag, start);
                 if (close >= 0) {
                     const end = close + tag.length;
-                    out.push(tag + ' '.repeat(close - start) + tag);
+                    out.push(keepLiterals ? sql.slice(i, end) : tag + ' '.repeat(close - start) + tag);
                     i = end;
                     continue;
                 }
@@ -4251,7 +4251,9 @@ function psqlLeavesDatabase(text: string, depth = 0, meta = true): string | null
     const shared = /\b(?:(?:CREATE|ALTER|DROP)\s+(?:DATABASE|TABLESPACE)|(?:COMMENT|SECURITY\s+LABEL(?:\s+FOR\s+\S+)?)\s+ON\s+(?:DATABASE|TABLESPACE|ROLE))\b/i.exec(skeleton);
     if (shared) {
         const end = skeleton.indexOf(';', shared.index);
-        return withoutCopyData(text).slice(shared.index, end < 0 ? undefined : end).replace(/\s+/g, ' ').trim().slice(0, STATEMENT_PREVIEW_CHARS);
+        // Comments go, so one can't seem to swallow the statement after it on the card; literals and quoted names stay.
+        const shown = sqlSkeleton(withoutCopyData(text), false, true, true).skeleton;
+        return shown.slice(shared.index, end < 0 ? undefined : end).replace(/\s+/g, ' ').trim().slice(0, STATEMENT_PREVIEW_CHARS);
     }
     // A DO or function body runs as SQL too, so it is read with the same predicate.
     if (depth >= SQL_RECURSION_LIMIT) return null;
@@ -7751,7 +7753,10 @@ const SQL_EGRESS_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /\b(?:lo_export|pg_file_write)\s*\(/i, label: 'a file written on the database server' },
     { rx: /\bdblink\w*\s*\(/i, label: 'dblink to another server' },
     { rx: /\bCREATE\s+(?:SUBSCRIPTION|PUBLICATION|(?:FOREIGN\s+)?SERVER)\b|\b(?:CREATE|ALTER)\s+USER\s+MAPPING\b/i, label: 'replication or a foreign server' },
-    { rx: /\bALTER\s+PUBLICATION\b[\s\S]*\b(?:ADD|SET)\b/i, label: 'a table added to a publication' },
+    { rx: /\bALTER\s+PUBLICATION\b[\s\S]*\b(?:ADD|SET)\s+TABLES?\b/i, label: 'a table added to a publication' },
+    // SET (publish = …) and the like decide which changes a publication sends.
+    { rx: /\bALTER\s+PUBLICATION\b[\s\S]*\bSET\s*\(/i, label: "a change to a publication's settings" },
+    { rx: /\bALTER\s+PUBLICATION\b[\s\S]*\b(?:ADD|SET)\b/i, label: 'a change to a publication' },
     { rx: /\bCREATE\s+(?:OR\s+REPLACE\s+)?ICEBERG\s+TABLE\b[\s\S]*\bEXTERNAL_VOLUME\b/i, label: 'an Iceberg table on an external volume' },
 ];
 // At a statement's start: Snowflake's GET downloads stage files, and a server-side COPY … TO writes a file or feeds a program.

@@ -103,6 +103,8 @@ describe('a role or privilege change on a reachable Postgres is never run withou
         ['a statement on another database', viaRender(DEV_DB, 'DROP DATABASE other_db'), 'DROP DATABASE other_db'],
         ['a comment on another database', viaRender(DEV_DB, "COMMENT ON DATABASE other_db IS 'x'"), 'COMMENT ON DATABASE other_db'],
         ['a database named on the next line', viaRender(DEV_DB, 'DROP DATABASE\n  other_db'), 'DROP DATABASE other_db'],
+        ['a rename after a comment line', viaRender(DEV_DB, 'ALTER DATABASE reporting\n-- Keep it for rollback.\nRENAME TO reporting_old'), 'ALTER DATABASE reporting RENAME TO reporting_old'],
+        ['a quoted database name', viaRender(DEV_DB, 'DROP DATABASE \\"Other DB\\"'), 'DROP DATABASE "Other DB"'],
     ])('a listed dev database holds it as dev and says why: %s', (_how, command, why) => {
         const { reason } = run(command);
         expect(changesProduction(command, '/tmp')).toBe(false);

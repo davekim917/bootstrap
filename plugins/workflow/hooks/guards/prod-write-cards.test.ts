@@ -400,6 +400,16 @@ describe('the card says what the step does', () => {
         expect(card.summary).toContain("on a target the guard can't prove is dev");
     });
 
+    test.each([
+        ['alter publication pub add table orders', 'a table added to a publication'],
+        ['alter publication pub set table orders', 'a table added to a publication'],
+        ["alter publication reporting set (publish = 'insert')", "a change to a publication's settings"],
+        ['create publication pub for table orders', 'replication or a foreign server'],
+    ])('%s says what it changes', (sql, label) => {
+        const command = `${PG} -c "${sql}"`;
+        expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toContain(`(${label})`);
+    });
+
     test('data sent out leads the card and says it cannot be called back', () => {
         const command = 'snow sql -c acme_dev -q "copy into \'s3://example-bucket/x/\' from prod_db.core.orders"';
         const card = describeGate(command, evaluate(command).reason ?? '', dir);
