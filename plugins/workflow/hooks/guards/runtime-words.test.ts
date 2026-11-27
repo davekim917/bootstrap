@@ -5,7 +5,7 @@ import { PLATFORM_DESTRUCTIVE, evaluateBashCommand } from './block-destructive-c
 // RUNTIME_PROBES, lets xargs input or a find match supply those words unseen.
 const GATED_BY_RULE: string[][] = [
     ['psql', '-h', 'db.example', '-c', 'DROP TABLE users'],
-    ['snow', 'sql', '-q', 'DROP TABLE prod.orders'],
+    ['snow', 'sql', '-c', 'prod', '-q', 'DROP TABLE prod.orders'],
     ['mongosh', '--eval', 'db.users.drop()'],
     ['redis-cli', 'FLUSHALL'],
     ['aws', 's3', 'rm', 's3://prod/x'],

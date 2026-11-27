@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { evaluateBashCommand } from './block-destructive-core';
+import { SQL_WRITE, evaluateBashCommand } from './block-destructive-core';
 
 let dir = '';
 let n = 0;
@@ -15,7 +15,8 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 function evaluate(sql: string) {
     const file = join(dir, `q${n++}.sql`);
     writeFileSync(file, sql);
-    return evaluateBashCommand(`snow sql -f ${file}`, { cwd: dir });
+    // A named connection not listed as dev, so what is read here is which rule a statement trips.
+    return evaluateBashCommand(`snow sql -c example_prod -f ${file}`, { cwd: dir });
 }
 
 const DESTRUCTIVE = ['DROP TABLE example_db.core.orders', 'ALTER MASKING POLICY mask_email SET BODY -> val'];
@@ -51,6 +52,7 @@ describe('a destructive statement hidden behind scripting, comments or dynamic S
         (_how, _stmt, sql) => {
             const result = evaluate(sql);
             expect(result.action).toBe('gate');
+            expect(result.reason).toStartWith('Destructive');
             expect(result.reason).toMatch(/^Destructive Snowflake SQL detected/);
         },
     );
@@ -65,6 +67,7 @@ describe('EXECUTE IMMEDIATE of SQL the guard cannot read is held', () => {
     ])('%s', (sql) => {
         const result = evaluate(sql);
         expect(result.action).toBe('gate');
+        expect(result.reason).toStartWith('Destructive');
         expect(result.reason).toMatch(/^Destructive Snowflake SQL detected \(EXECUTE IMMEDIATE/);
     });
 });
@@ -112,10 +115,16 @@ describe('a statement word inside a comment or literal passes, beside a backslas
         ['positional columns and a // comment naming DROP', 'SELECT $1, $2 FROM @example_stage/file.csv // DROP TABLE example_db.core.orders later\n;'],
         ['a /* */ comment naming DROP', '/* DROP TABLE example_db.core.orders */ SELECT 1'],
         ["a \\' that keeps the literal open over a DROP", String.raw`SELECT 'x\'; DROP TABLE example_db.core.orders; --'`],
-        ['an UPDATE with a WHERE on a positional parameter', "UPDATE example_db.core.orders SET status = 'closed' WHERE id = $1 AND note LIKE '%\\\\%'"],
     ])('%s', (_name, sql) => {
         expect(evaluate(sql).action).toBe('allow');
     });
+});
+
+// Not destructive, but off a dev target a write takes the card every write does.
+test('an UPDATE with a WHERE on a positional parameter is a write, not a destructive statement', () => {
+    const result = evaluate("UPDATE example_db.core.orders SET status = 'closed' WHERE id = $1 AND note LIKE '%\\\\%'");
+    expect(result.action).toBe('gate');
+    expect(result.reason).toStartWith(`Snowflake ${SQL_WRITE}`);
 });
 
 describe('a statement after a literal or comment that holds ;, a comment marker, \\ or $$ is held', () => {
@@ -136,6 +145,7 @@ describe('a statement after a literal or comment that holds ;, a comment marker,
     ])('%s', (_name, sql) => {
         const result = evaluate(sql);
         expect(result.action).toBe('gate');
+        expect(result.reason).toStartWith('Destructive');
         expect(result.reason).toMatch(/^Destructive Snowflake SQL detected/);
     });
 });
@@ -151,6 +161,7 @@ describe('a scripting statement too large to scan one start at a time holds, qui
         const result = evaluate(sql);
         expect(performance.now() - started).toBeLessThan(1000);
         expect(result.action).toBe('gate');
+        expect(result.reason).toStartWith('Destructive');
         expect(result.reason).toContain('SQL too complex to scan');
     });
 });

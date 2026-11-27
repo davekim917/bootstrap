@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { evaluateBashCommand } from './block-destructive-core';
+import { SQL_WRITE, evaluateBashCommand } from './block-destructive-core';
 
 let dir = '';
 beforeAll(() => {
@@ -11,7 +11,9 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-const verdict = (sql: string) => evaluateBashCommand(`snow sql -q "${sql}"`, { cwd: dir }).action;
+// A named connection not listed as dev: what is read here is which rule a statement trips, not whether its target is dev.
+const evaluate = (sql: string) => evaluateBashCommand(`snow sql -c example_prod -q "${sql}"`, { cwd: dir });
+const verdict = (sql: string) => evaluate(sql).action;
 
 describe('a statement that weakens a data-protection policy is held', () => {
     test.each([
@@ -55,11 +57,14 @@ describe('a statement that weakens a data-protection policy is held', () => {
         ['SELECT 1; ALTER MASKING POLICY mask_email SET BODY -> val'],
         ["EXECUTE IMMEDIATE 'DROP MASKING POLICY mask_email'"],
     ])('%s', (sql) => {
-        expect(verdict(sql)).toBe('gate');
+        const v = evaluate(sql);
+        expect(v.action).toBe('gate');
+        expect(v.reason).toStartWith('Destructive Snowflake SQL');
     });
 });
 
-describe('attaching protection, or naming a policy only in a literal, passes', () => {
+// Off a dev target every one of these still takes the card any write does, but none trips the policy rule.
+describe('attaching protection is a write, not a weakening', () => {
     test.each([
         ['ALTER TABLE customers ALTER COLUMN email SET MASKING POLICY mask_email'],
         ['ALTER TABLE customers MODIFY COLUMN email SET MASKING POLICY mask_email USING (email, region)'],
@@ -70,8 +75,13 @@ describe('attaching protection, or naming a policy only in a literal, passes', (
         ['ALTER TABLE customers MODIFY COLUMN email SET MASKING POLICY gov.force.mask_email'],
         ['CREATE MASKING POLICY mask_email AS (val STRING) RETURNS STRING -> val'],
         ['GRANT APPLY MASKING POLICY ON ACCOUNT TO ROLE EXAMPLE_ROLE'],
-        ["SELECT 'DROP MASKING POLICY mask_email; ALTER TABLE t UNSET MASKING POLICY' AS note"],
     ])('%s', (sql) => {
-        expect(verdict(sql)).toBe('allow');
+        const v = evaluate(sql);
+        expect(v.action).toBe('gate');
+        expect(v.reason).toStartWith(`Snowflake ${SQL_WRITE}`);
     });
+});
+
+test('a policy named only in a literal passes', () => {
+    expect(verdict("SELECT 'DROP MASKING POLICY mask_email; ALTER TABLE t UNSET MASKING POLICY' AS note")).toBe('allow');
 });

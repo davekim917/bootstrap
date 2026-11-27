@@ -86,7 +86,7 @@ describe('hard blocks', () => {
 describe('gated full-command patterns (local native approval)', () => {
     test.each([
         // Databases
-        ['snow sql -q "DROP TABLE users"', 'Snowflake'],
+        ['snow sql -c prod -q "DROP TABLE users"', 'Snowflake'],
         ['psql -h db.example -c "DROP TABLE users"', 'PostgreSQL'],
         ['mysql -e "DROP DATABASE prod"', 'MySQL'],
         ['duckdb test.db "DELETE FROM users"', 'DuckDB'],
@@ -338,7 +338,7 @@ describe('AST precision: destructive keywords in non-command contexts are allowe
 describe('SQL gate: false positives from string literals and comments are allowed', () => {
     test.each([
         // The original report: querying query_history for past DROP statements.
-        [`snow sql -q "SELECT * FROM snowflake.account_usage.query_history WHERE query_text LIKE '%DROP TABLE foo%'"`, 'snow query_history search'],
+        [`snow sql -c prod -q "SELECT * FROM snowflake.account_usage.query_history WHERE query_text LIKE '%DROP TABLE foo%'"`, 'snow query_history search'],
         [`psql -c "SELECT query FROM pg_stat_statements WHERE query LIKE '%TRUNCATE%'"`, 'psql pg_stat_statements search'],
         [`mysql -e "SELECT event_name FROM audit_log WHERE event_name = 'DROP TABLE'"`, 'mysql audit search'],
         // Comments mentioning destructive keywords
@@ -360,7 +360,7 @@ describe('SQL gate: leading destructive statement is gated even after non-destru
     });
 
     test('gate message includes pattern label and the matched statement', async () => {
-        const cmd = `snow sql -q "DROP TABLE inventory.daily_snapshot"`;
+        const cmd = `snow sql -c prod -q "DROP TABLE inventory.daily_snapshot"`;
         const result = await runHook(cmd);
         expectNativeAsk(result);
         expect(result.permissionDecisionReason).toContain('(DROP)');
@@ -379,25 +379,25 @@ describe('SQL gate: expanded destructive patterns are gated', () => {
         [`psql -h db.example -c "WITH x AS (SELECT 1), d AS (DELETE FROM target USING x WHERE x.id = target.id) SELECT 1"`, 'multi-CTE with destructive second body'],
 
         // CREATE OR REPLACE — Snowflake/Postgres idiomatic drop+recreate.
-        [`snow sql -q "CREATE OR REPLACE TABLE foo (id INT)"`, 'CREATE OR REPLACE TABLE'],
-        [`snow sql -q "CREATE OR REPLACE VIEW v AS SELECT 1"`, 'CREATE OR REPLACE VIEW'],
-        [`snow sql -q "CREATE OR REPLACE MATERIALIZED VIEW mv AS SELECT 1"`, 'CREATE OR REPLACE MATERIALIZED VIEW'],
+        [`snow sql -c prod -q "CREATE OR REPLACE TABLE foo (id INT)"`, 'CREATE OR REPLACE TABLE'],
+        [`snow sql -c prod -q "CREATE OR REPLACE VIEW v AS SELECT 1"`, 'CREATE OR REPLACE VIEW'],
+        [`snow sql -c prod -q "CREATE OR REPLACE MATERIALIZED VIEW mv AS SELECT 1"`, 'CREATE OR REPLACE MATERIALIZED VIEW'],
         // Replacing any other object drops the one there too.
-        [`snow sql -q "create or replace database analytics"`, 'CREATE OR REPLACE DATABASE'],
-        [`snow sql -q "create or replace schema analytics.core"`, 'CREATE OR REPLACE SCHEMA'],
-        [`snow sql -q "create or replace transient table analytics.core.orders as select 1"`, 'CREATE OR REPLACE TRANSIENT TABLE'],
-        [`snow sql -q "create or replace dynamic table a.b.t target_lag='1 minute' warehouse=w as select 1"`, 'CREATE OR REPLACE DYNAMIC TABLE'],
-        [`snow sql -q "create or replace stage a.b.files"`, 'CREATE OR REPLACE STAGE'],
-        [`snow sql -q "create or replace role analyst"`, 'CREATE OR REPLACE ROLE'],
-        [`snow sql -q "create or replace local temporary table t (x int)"`, 'CREATE OR REPLACE LOCAL TEMPORARY TABLE'],
+        [`snow sql -c prod -q "create or replace database analytics"`, 'CREATE OR REPLACE DATABASE'],
+        [`snow sql -c prod -q "create or replace schema analytics.core"`, 'CREATE OR REPLACE SCHEMA'],
+        [`snow sql -c prod -q "create or replace transient table analytics.core.orders as select 1"`, 'CREATE OR REPLACE TRANSIENT TABLE'],
+        [`snow sql -c prod -q "create or replace dynamic table a.b.t target_lag='1 minute' warehouse=w as select 1"`, 'CREATE OR REPLACE DYNAMIC TABLE'],
+        [`snow sql -c prod -q "create or replace stage a.b.files"`, 'CREATE OR REPLACE STAGE'],
+        [`snow sql -c prod -q "create or replace role analyst"`, 'CREATE OR REPLACE ROLE'],
+        [`snow sql -c prod -q "create or replace local temporary table t (x int)"`, 'CREATE OR REPLACE LOCAL TEMPORARY TABLE'],
 
         // INSERT OVERWRITE — Snowflake/Spark/Hive bulk overwrite.
-        [`snow sql -q "INSERT OVERWRITE INTO foo SELECT 1"`, 'INSERT OVERWRITE INTO'],
-        [`snow sql -q "INSERT OVERWRITE foo SELECT 1"`, 'INSERT OVERWRITE bare'],
+        [`snow sql -c prod -q "INSERT OVERWRITE INTO foo SELECT 1"`, 'INSERT OVERWRITE INTO'],
+        [`snow sql -c prod -q "INSERT OVERWRITE foo SELECT 1"`, 'INSERT OVERWRITE bare'],
 
         // MERGE — gate all forms; destructive clauses are too varied to whitelist.
         [`psql -h db.example -c "MERGE INTO foo USING bar ON foo.id = bar.id WHEN MATCHED THEN DELETE"`, 'MERGE with DELETE'],
-        [`snow sql -q "MERGE INTO foo USING bar ON foo.id = bar.id WHEN MATCHED THEN UPDATE SET foo.x = bar.x"`, 'MERGE with UPDATE'],
+        [`snow sql -c prod -q "MERGE INTO foo USING bar ON foo.id = bar.id WHEN MATCHED THEN UPDATE SET foo.x = bar.x"`, 'MERGE with UPDATE'],
 
         // ALTER ... DROP — drops columns, constraints, etc.
         [`psql -h db.example -c "ALTER TABLE foo DROP COLUMN bar"`, 'ALTER TABLE DROP COLUMN'],
@@ -409,11 +409,11 @@ describe('SQL gate: expanded destructive patterns are gated', () => {
         [`mysql -e "UPDATE users SET email = NULL"`, 'UPDATE without WHERE (mysql)'],
 
         // EXECUTE IMMEDIATE — destructive verb is inside the literal.
-        [`snow sql -q "EXECUTE IMMEDIATE 'DROP TABLE foo'"`, 'EXECUTE IMMEDIATE DROP'],
-        [`snow sql -q "EXECUTE IMMEDIATE 'TRUNCATE foo'"`, 'EXECUTE IMMEDIATE TRUNCATE'],
-        [`snow sql -q "EXECUTE IMMEDIATE $$DELETE FROM foo$$"`, 'EXECUTE IMMEDIATE dollar-quoted'],
+        [`snow sql -c prod -q "EXECUTE IMMEDIATE 'DROP TABLE foo'"`, 'EXECUTE IMMEDIATE DROP'],
+        [`snow sql -c prod -q "EXECUTE IMMEDIATE 'TRUNCATE foo'"`, 'EXECUTE IMMEDIATE TRUNCATE'],
+        [`snow sql -c prod -q "EXECUTE IMMEDIATE $$DELETE FROM foo$$"`, 'EXECUTE IMMEDIATE dollar-quoted'],
     ])('%s → GATED (%s)', async (cmd) => {
-        expectNativeAsk(await runHook(cmd));
+        expectNativeAsk(await runHook(cmd), /Destructive \w+ SQL detected/);
     });
 
     test('CTE-wrapped pattern is labeled in gate message', async () => {
@@ -430,7 +430,7 @@ describe('SQL gate: expanded destructive patterns are gated', () => {
     });
 
     test('EXECUTE IMMEDIATE recursion is reflected in gate message', async () => {
-        const cmd = `snow sql -q "EXECUTE IMMEDIATE 'DROP TABLE foo'"`;
+        const cmd = `snow sql -c prod -q "EXECUTE IMMEDIATE 'DROP TABLE foo'"`;
         const result = await runHook(cmd);
         expect(result.permissionDecisionReason).toContain('EXECUTE IMMEDIATE');
         expect(result.permissionDecisionReason).toContain('DROP');
@@ -439,38 +439,39 @@ describe('SQL gate: expanded destructive patterns are gated', () => {
 
 // ── Expanded patterns: false-positive guards ─────────────────────────────────
 
-describe('SQL gate: non-destructive constructs are still allowed after expansion', () => {
+describe('SQL gate: non-destructive reads are still allowed after expansion', () => {
     test.each([
         // CTEs with non-destructive bodies
         [`psql -c "WITH x AS (SELECT 1) SELECT * FROM x"`, 'CTE with SELECT'],
         [`psql -c "WITH RECURSIVE r AS (SELECT 1 UNION SELECT n+1 FROM r WHERE n < 10) SELECT * FROM r"`, 'recursive CTE with SELECT'],
 
-        // Plain CREATE — not OR REPLACE, so allowed.
-        [`psql -c "CREATE TABLE foo (id INT)"`, 'plain CREATE TABLE'],
-        [`psql -c "CREATE VIEW v AS SELECT 1"`, 'plain CREATE VIEW'],
-        [`psql -c "CREATE INDEX idx_foo ON foo(id)"`, 'plain CREATE INDEX'],
-
-        // UPDATE with WHERE — bounded mutation, allowed.
-        [`psql -c "UPDATE foo SET col = 1 WHERE id = 5"`, 'UPDATE with WHERE'],
-        [`psql -c "UPDATE foo SET col = 1 FROM bar WHERE foo.bar_id = bar.id"`, 'UPDATE ... FROM ... WHERE'],
-
-        // Plain INSERT — not OVERWRITE, allowed.
-        [`psql -c "INSERT INTO foo VALUES (1, 2)"`, 'plain INSERT'],
-        [`psql -c "INSERT INTO foo SELECT * FROM staging"`, 'INSERT ... SELECT'],
-
-        // ALTER without DROP — additive, allowed.
-        [`psql -c "ALTER TABLE foo ADD COLUMN bar TEXT"`, 'ALTER TABLE ADD COLUMN'],
-        [`psql -c "ALTER TABLE foo RENAME COLUMN old_name TO new_name"`, 'ALTER TABLE RENAME COLUMN'],
-
-        // Snowflake's UNDROP — restores from time travel, NOT destructive.
-        [`snow sql -q "UNDROP TABLE foo"`, 'UNDROP'],
-
         // Pattern names that appear inside a string literal — the literal-strip
         // covers all expanded patterns the same way, so one case is enough.
         [`psql -c "SELECT 'CREATE OR REPLACE' AS phrase"`, 'expanded pattern label in string literal'],
     ])('%s → allowed (%s)', async (cmd) => {
-        const { exitCode } = await runHook(cmd);
-        expect(exitCode).toBe(0);
+        const result = await runHook(cmd);
+        expect(result.exitCode).toBe(0);
+        expect(result.permissionDecision).toBeUndefined();
+    });
+});
+
+// Not destructive, but a write on a target not proven dev takes the card, labelled as a write.
+describe('SQL gate: non-destructive writes take the write card', () => {
+    test.each([
+        [`psql -h db.example -c "CREATE TABLE foo (id INT)"`, 'plain CREATE TABLE'],
+        [`psql -h db.example -c "CREATE VIEW v AS SELECT 1"`, 'plain CREATE VIEW'],
+        [`psql -h db.example -c "CREATE INDEX idx_foo ON foo(id)"`, 'plain CREATE INDEX'],
+        [`psql -h db.example -c "UPDATE foo SET col = 1 WHERE id = 5"`, 'UPDATE with WHERE'],
+        [`psql -h db.example -c "UPDATE foo SET col = 1 FROM bar WHERE foo.bar_id = bar.id"`, 'UPDATE ... FROM ... WHERE'],
+        [`psql -h db.example -c "INSERT INTO foo VALUES (1, 2)"`, 'plain INSERT'],
+        [`psql -h db.example -c "INSERT INTO foo SELECT * FROM staging"`, 'INSERT ... SELECT'],
+        [`psql -h db.example -c "ALTER TABLE foo ADD COLUMN bar TEXT"`, 'ALTER TABLE ADD COLUMN'],
+        [`psql -h db.example -c "ALTER TABLE foo RENAME COLUMN old_name TO new_name"`, 'ALTER TABLE RENAME COLUMN'],
+        [`snow sql -c prod -q "UNDROP TABLE foo"`, 'UNDROP'],
+    ])('%s → write card (%s)', async (cmd) => {
+        const result = await runHook(cmd);
+        expectNativeAsk(result, /SQL that writes, on a target not proven dev/);
+        expect(result.permissionDecisionReason).not.toMatch(/^Destructive/);
     });
 });
 

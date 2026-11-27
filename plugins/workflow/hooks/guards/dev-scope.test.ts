@@ -59,7 +59,6 @@ describe('destructive SQL inside a listed dev database skips approval', () => {
 
 describe('everything else stays gated', () => {
     test.each([
-        ['the default connection', 'snow sql -q "drop table scratch_db.tmp.orders"'],
         ['an unlisted connection', 'snow sql -c acme_other -q "drop table a.b.c"'],
         ['a prod table on a database-limited connection', 'snow sql -c acme_prod -q "drop table prod_db.core.orders"'],
         ['a table built from prod written into a prod schema', 'snow sql -c acme_prod -q "create or replace table prod_db.core.t2 as select * from prod_db.core.t"'],
@@ -109,7 +108,6 @@ describe('everything else stays gated', () => {
         ['a SNOWFLAKE_ prefix variable', 'SNOWFLAKE_ACCOUNT=prod snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['an exported SNOWFLAKE_ variable', 'export SNOWFLAKE_CONNECTIONS_ACME_DEV_ACCOUNT=prod; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['two connection flags', 'snow sql -c acme_dev -c acme_other -q "drop table dev_db.a.b"'],
-        ['a connection held in a variable', 'C=acme_dev; snow sql -c $C -q "drop table dev_db.a.b"'],
         ['HOME set by a loop', 'for HOME in /tmp/h; do snow sql -c acme_dev -q "drop table dev_db.a.b"; done'],
         ['HOME set by a parameter default', 'echo ${HOME:=/tmp/h}; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
         ['a variable set by read', 'read -r HOME < /tmp/h; snow sql -c acme_dev -q "drop table dev_db.a.b"'],
@@ -260,5 +258,17 @@ describe("with a PATH whose first directory the agent can write, as a container'
     });
     test('a listed dev drop still runs without a card', () => {
         expect(verdict('snow sql -c acme_dev -q "drop table dev_db.a.b"')).toBe('allow');
+    });
+});
+
+// A connection the guard can't map is refused with the fix, rather than sent for approval.
+describe('an unmapped connection is refused with the fix', () => {
+    test.each([
+        ['the default connection', 'snow sql -q "drop table scratch_db.tmp.orders"'],
+        ['a connection held in a variable', 'C=acme_dev; snow sql -c $C -q "drop table dev_db.a.b"'],
+    ])('%s', (_name, command) => {
+        const result = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(result.action).toBe('block');
+        expect(result.reason).toContain('Write the connection out: snow sql -c <connection>');
     });
 });

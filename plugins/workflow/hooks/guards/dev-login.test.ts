@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 
 import { DEV_SCOPE_FILE_ENV, devLoginTestHooks, evaluateBashCommand } from './block-destructive-core';
 
@@ -80,11 +80,21 @@ describe('a verified dev login runs any SQL without a card', () => {
     beforeAll(() => {
         writeScope({ user: 'AGENT_DEV_USER', account: 'ACME-DEV1', verifiedUntil: hours(24) });
         writeConnections(GOOD_CONNECTIONS);
+        // The files these lines read exist before the line runs, as they do when an earlier call wrote them.
+        for (const f of ['dev-login-never-written.sql', 'q.sql', 'w/a.sql', 'w/b.sql', 'w/setup.sql', 'w/test.sql', 'w/teardown.sql', 'w/q/preserve.sql', 'gen/rowcheck.sql']) {
+            mkdirSync(dirname(join(dir, 'tmp', f)), { recursive: true });
+            writeFileSync(join(dir, 'tmp', f), 'select 1;\n');
+        }
+        writeFileSync(join(home, 'q.sql'), 'select 1;\n');
+        mkdirSync(join(home, '.dbt'), { recursive: true });
+        writeFileSync(join(home, '.dbt', 'profiles.yml'), 'acme:\n  target: dev\n  outputs:\n    dev:\n      type: snowflake\n      account: ACME-DEV1\n      database: dev_db\n');
+        writeFileSync(join(dir, 'tmp', 'w', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
     });
     test.each([
         ['a prod drop, which the login cannot do', 'snow sql -c acme_dev -q "drop table prod_db.s.t"'],
         ['a file it reads', 'snow sql -c acme_dev -f /tmp/dev-login-never-written.sql'],
         ['a file written on the line', `python3 gen.py > /tmp/q.sql; snow sql -c acme_dev -f /tmp/q.sql`],
+        ['a file that is not there yet', 'snow sql -c acme_dev -f /tmp/dev-login-not-there.sql'],
         ['a role and database of its own choosing', 'snow sql --connection=acme_dev --role OTHER --database prod_db -q "delete from s.t"'],
         ['templating', `snow sql -c acme_dev -q '<% ctx.env.q %>' --env 'q=drop table t'`],
         ['after a cd', 'cd /tmp && snow sql -c acme_dev -q "truncate table s.t"'],
@@ -116,7 +126,8 @@ describe('a verified dev login runs any SQL without a card', () => {
             'for pass in empty normal; do',
             '    extra=()',
             '    if [ "$pass" = empty ]; then extra=(--empty); fi',
-            '    dbt build --select t "${extra[@]}" > "$a/dbt-$pass.log" 2>&1',
+            // dbt builds in its target's listed dev database; a `cd` without `&&` leaves the start directory possible.
+            '    dbt build --project-dir /tmp/w --select t "${extra[@]}" > "$a/dbt-$pass.log" 2>&1',
             'done',
         ].join('\n')],
         ['set -euo pipefail before the step', 'set -euo pipefail; snow sql -c acme_dev -q "drop table t"'],
@@ -130,7 +141,16 @@ describe('a verified dev login runs any SQL without a card', () => {
         ['a file named by a quoted variable set on the line', 'cd /tmp/w/q; F=/tmp/w/q/preserve.sql; snow sql -c acme_dev --format csv -f "$F" > preserve.out 2> preserve.stderr; tail -4 preserve.out; head -3 preserve.stderr'],
         ['a file written by a heredoc, read through a quoted variable', "A=/tmp/w; cat > $A/freeze.sql <<'EOF'\ncreate or replace table dev_db.s.t as select * from prod_db.s.t;\nEOF\ncd /tmp; timeout 600 snow sql -c acme_dev -f \"$A/freeze.sql\" --format csv > $A/freeze.out 2>&1; tail -16 $A/freeze.out"],
     ])('%s', (_name, command) => {
-        expect(verdict(command)).toBe('allow');
+        expect(verdict(command.replaceAll('/tmp/', `${dir}/tmp/`))).toBe('allow');
+    });
+});
+
+// Data sent out of the account takes a card even on a dev login, when the SQL spells it out.
+describe('a dev login and data leaving the account', () => {
+    test('a COPY INTO an external location takes the card on a dev login', () => {
+        const result = evaluateBashCommand(`snow sql -c acme_dev -q "copy into 's3://example-bucket/x' from dev_db.s.t"`, { cwd: '/tmp' });
+        expect(result.action).toBe('gate');
+        expect(result.reason).toStartWith('Data leaving the account');
     });
 });
 
@@ -148,10 +168,8 @@ describe('anything that could point the command at another login keeps the card'
         ['a host override', 'snow sql -c acme_dev --host evil.example -q "drop table t"'],
         ['a temporary connection', 'snow sql -x --account A --user U -q "drop table t"'],
         ['a config file', 'snow sql --config-file /tmp/c.toml -c acme_dev -q "drop table t"'],
-        ['the --environment alias', 'snow sql --environment acme_dev -q "drop table t"'],
         ['two connections', 'snow sql -c acme_dev -c acme_admin -q "drop table t"'],
         ['two connections, the trusted one last', 'snow sql -c acme_admin -c acme_dev -q "drop table t"'],
-        ['no connection', 'snow sql -q "drop table t"'],
         ['the admin connection', 'snow sql -c acme_admin -q "drop table t"'],
         ['SNOWFLAKE_HOME on the command', 'SNOWFLAKE_HOME=/tmp/sf snow sql -c acme_dev -q "drop table t"'],
         ['HOME set on the line', 'HOME=/tmp/h; snow sql -c acme_dev -q "drop table t"'],
@@ -160,7 +178,6 @@ describe('anything that could point the command at another login keeps the card'
         ['a HOME default', 'echo ${HOME:=/tmp/h}; snow sql -c acme_dev -q "drop table t"'],
         ['arithmetic', '(( HOME = 1 )); snow sql -c acme_dev -q "drop table t"'],
         ['an arithmetic expansion', 'n=$((HOME=1)); snow sql -c acme_dev -q "drop table t"'],
-        ['the admin connection in a shell variable', 'C=acme_admin; snow sql -c $C -q "drop table t"'],
         ['old-style arithmetic', 'echo $[HOME=1]; snow sql -c acme_dev -q "drop table t"'],
         ['arithmetic in an array subscript', 'echo ${a[HOME=1]}; snow sql -c acme_dev -q "drop table t"'],
         ['arithmetic in a substring offset', 'echo ${x:HOME=1}; snow sql -c acme_dev -q "drop table t"'],
@@ -168,7 +185,7 @@ describe('anything that could point the command at another login keeps the card'
         ['an indexed assignment', 'a[HOME=1]=x; snow sql -c acme_dev -q "drop table t"'],
         ['arithmetic in the step itself', 'snow sql -c acme_dev -q "drop table t$((HOME=1))"'],
         ['printf -v', `printf -v X '%s' 1; snow sql -c acme_dev -q "drop table t"`],
-        ['a builtin outside the neutral set before the step', `umask 077; snow sql -c acme_dev -q "drop table t"`],
+        ['a builtin outside the neutral set before the step', `hash -p /tmp/bin/snow snow; snow sql -c acme_dev -q "drop table t"`],
         ['echo writing a file', `echo x > /tmp/h/.snowflake/connections.toml; snow sql -c acme_dev -q "drop table t"`],
         ['echo appending to a file', `echo x >> /tmp/h/.snowflake/config.toml; snow sql -c acme_dev -q "drop table t"`],
         ['echo writing through a duplicated descriptor', `echo x >&3; snow sql -c acme_dev -q "drop table t"`],
@@ -252,7 +269,6 @@ describe('anything that could point the command at another login keeps the card'
         ['a literal step xargs runs', `echo t | xargs -I{} snow sql -c acme_dev -q "drop table t"`],
         ['a literal step find runs', `find /tmp -maxdepth 0 -exec snow sql -c acme_dev -q "drop table t" \\;`],
         ['a step find runs', `find /tmp -name q.sql -exec snow sql -c acme_dev -f {} \\;`],
-        ['even the dev connection in a shell variable', 'C=acme_dev; snow sql -c $C -q "drop table t"'],
         ['an exported variable', 'export SNOWFLAKE_CONNECTIONS_ACME_DEV_USER=ADMIN_USER; snow sql -c acme_dev -q "drop table t"'],
         ['an unquoted variable that splits into more options', `R='DEV_RW --user ADMIN_USER'; snow sql -c acme_dev --role $R -q "drop table t"`],
         ['an unquoted command substitution', 'snow sql -c acme_dev --role $(cat /tmp/r) -q "drop table t"'],
@@ -342,6 +358,9 @@ describe('the connection as NanoClaw stages it, with a query tag', () => {
     beforeEach(() => {
         writeScope({ user: 'AGENT_DEV_USER', account: 'ACME-DEV1', verifiedUntil: hours(24) });
         writeConnections(STAGED_CONNECTIONS);
+        mkdirSync(join(dir, 'workspace/artifacts/demo/build/sql'), { recursive: true });
+        writeFileSync(join(dir, 'workspace/artifacts/demo/build/sql/02_build.sql'), 'select 1 id;\n');
+        writeFileSync(join(dir, 'workspace/artifacts/demo/build/sql/04.sql'), 'select 1;\n');
     });
 
     test.each([
@@ -350,14 +369,14 @@ describe('the connection as NanoClaw stages it, with a query tag', () => {
         ['a cd, output redirected to files, read-only commands after', wrapped],
         ['the same wrapper around a statement outside the dev databases', wrappedProd],
     ])('%s runs without a card', (_name, command) => {
-        expect(verdict(command)).toBe('allow');
+        expect(verdict(command.replaceAll('/workspace/', `${dir}/workspace/`))).toBe('allow');
     });
+
 
     test.each([
         ['an env assignment on the step', 'TZ=UTC snow sql -c acme_dev -q "drop table prod_db.s.t"'],
         ['a SNOWFLAKE_ name on the line', 'SNOWFLAKE_CONNECTIONS_ACME_DEV_USER=ADMIN_USER snow sql -c acme_dev -q "drop table prod_db.s.t"'],
         ['an account override', 'cd /tmp && snow sql -c acme_dev --account OTHER-ACCT -q "drop table prod_db.s.t" > /tmp/o.csv'],
-        ['a connection held in a variable', 'C=acme_dev; snow sql -c "$C" -q "drop table prod_db.s.t"'],
         ['a connection with no trusted login, on a non-dev statement', 'cd /tmp && snow sql -c acme_admin -q "drop table prod_db.s.t" > /tmp/o.csv 2>&1; cat /tmp/o.csv'],
     ])('%s keeps the card', (_name, command) => {
         expect(verdict(command)).toBe('gate');
@@ -392,4 +411,24 @@ describe('the connection as NanoClaw stages it, with a query tag', () => {
         writeConnections(GOOD_CONNECTIONS.replace('[acme_dev]', `[acme_dev]\n${line}`));
         expect(verdict('snow sql -c acme_dev -q "drop table prod_db.s.t"')).toBe('gate');
     });
+});
+
+// A connection the guard can't map is refused with the fix, so the agent writes it out and a listed dev one runs.
+describe('a connection the guard cannot map is refused with the fix', () => {
+    beforeAll(() => {
+        writeScope({ user: 'AGENT_DEV_USER', account: 'ACME-DEV1', verifiedUntil: hours(24) });
+        writeConnections(GOOD_CONNECTIONS);
+    });
+    test.each([
+        ['the --environment alias', 'snow sql --environment acme_dev -q "drop table t"'],
+        ['no connection', 'snow sql -q "drop table t"'],
+        ['the admin connection in a shell variable', 'C=acme_admin; snow sql -c $C -q "drop table t"'],
+        ['even the dev connection in a shell variable', 'C=acme_dev; snow sql -c $C -q "drop table t"'],
+        ['the dev connection in a quoted variable', 'C=acme_dev; snow sql -c "$C" -q "drop table prod_db.s.t"'],
+    ])('%s', (_name, command) => {
+        const result = evaluateBashCommand(command, { cwd: '/tmp' });
+        expect(result.action).toBe('block');
+        expect(result.reason).toContain('Write the connection out: snow sql -c <connection>');
+    });
+
 });

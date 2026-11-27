@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { evaluateBashCommand } from './block-destructive-core';
+import { SQL_WRITE, evaluateBashCommand } from './block-destructive-core';
 
 let dir = '';
 let n = 0;
@@ -13,7 +13,7 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const CLIENTS = {
-    snow: (file: string) => `snow sql -f ${file}`,
+    snow: (file: string) => `snow sql -c example_prod -f ${file}`,
     psql: (file: string) => `psql -h db.example -f ${file}`,
     mysql: (file: string) => `mysql -h db.example < ${file}`,
 };
@@ -81,20 +81,30 @@ describe('the same forms around safe SQL pass', () => {
     test.each<[Client, string]>([
         ['snow', "WITH p AS PROCEDURE() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'ok'; END $$ CALL p();"],
         ['snow', "WITH recent AS (SELECT * FROM example_db.core.orders) SELECT 'AS PROCEDURE' AS phrase FROM recent;"],
-        ['snow', "CREATE PROCEDURE example_db.core.report() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'ok'; END $$;"],
-        ['snow', "CREATE FUNCTION example_db.core.double(x NUMBER) RETURNS NUMBER AS 'x * 2';"],
-        ['snow', "CREATE FUNCTION example_db.core.greet() RETURNS VARCHAR LANGUAGE PYTHON RUNTIME_VERSION = '3.12' HANDLER = 'run' AS $$\ndef run():\n    return 'hi'\n$$;"],
-        ['psql', "CREATE FUNCTION add_one(x int) RETURNS int LANGUAGE sql AS 'SELECT x + 1';"],
         ['psql', "SELECT E'it\\'s' AS phrase;"],
         ['psql', "SELECT 'C:\\temp' AS path;"],
         ['psql', "DO $$ BEGIN RAISE NOTICE 'hello'; END $$;"],
         ['psql', "DO 'BEGIN RAISE NOTICE ''a\\b''; END';"],
         ['psql', "DO $$ BEGIN EXECUTE 'SELECT 1'; END $$;"],
         ['psql', "DO $$ BEGIN IF 'a1' ~ '\\d' THEN RAISE NOTICE 'digit'; END IF; END $$;"],
-        ['psql', 'INSERT INTO orders (id) VALUES (1) ON CONFLICT DO NOTHING;'],
-        ['psql', 'PREPARE recent AS SELECT * FROM orders; EXECUTE recent;'],
         ['mysql', "SELECT 'it\\'s' AS phrase;"],
     ])('%s: %s', (client, sql) => {
         expect(evaluate(client, sql).action).toBe('allow');
+    });
+});
+
+// Not destructive: off a dev target each takes the card any write does.
+describe('the same forms around a safe write are held as writes, not as destructive', () => {
+    test.each<[Client, string]>([
+        ['snow', "CREATE PROCEDURE example_db.core.report() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'ok'; END $$;"],
+        ['snow', "CREATE FUNCTION example_db.core.double(x NUMBER) RETURNS NUMBER AS 'x * 2';"],
+        ['snow', "CREATE FUNCTION example_db.core.greet() RETURNS VARCHAR LANGUAGE PYTHON RUNTIME_VERSION = '3.12' HANDLER = 'run' AS $$\ndef run():\n    return 'hi'\n$$;"],
+        ['psql', "CREATE FUNCTION add_one(x int) RETURNS int LANGUAGE sql AS 'SELECT x + 1';"],
+        ['psql', 'INSERT INTO orders (id) VALUES (1) ON CONFLICT DO NOTHING;'],
+        ['psql', 'PREPARE recent AS SELECT * FROM orders; EXECUTE recent;'],
+    ])('%s: %s', (client, sql) => {
+        const result = evaluate(client, sql);
+        expect(result.action).toBe('gate');
+        expect(result.reason).toContain(SQL_WRITE);
     });
 });

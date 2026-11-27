@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { evaluateBashCommand, extractCommands, sqlInputOf, sqlSkeleton } from './block-destructive-core';
+import { SQL_WRITE, evaluateBashCommand, extractCommands, sqlInputOf, sqlSkeleton } from './block-destructive-core';
 
 /**
  * SQL FROM FILES. A SQL client's file input is read and scanned like an
@@ -32,16 +32,20 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-const verdict = (command: string) => evaluateBashCommand(command, { cwd: dir }).action;
+// A destructive statement held only by the card every write takes would hide a broken destructive rule, so it reads apart.
+const verdict = (command: string) => {
+    const result = evaluateBashCommand(command, { cwd: dir });
+    return result.action === 'gate' && result.reason?.includes(SQL_WRITE) && /\b(?:drop|delete|truncate)\b/i.test(command) ? 'held as a write only' : result.action;
+};
 
 describe('a destructive SQL file is gated however it reaches the client', () => {
     test.each([
-        (d: string) => `snow sql -f ${d}/bad.sql`,
-        (d: string) => `snow sql --filename=${d}/bad.sql`,
+        (d: string) => `snow sql -c example -f ${d}/bad.sql`,
+        (d: string) => `snow sql -c example --filename=${d}/bad.sql`,
         (d: string) => `psql -h db.example -f ${d}/bad.sql`,
         (d: string) => `psql -h db.example < ${d}/bad.sql`,
         (d: string) => `cat ${d}/bad.sql | psql -h db.example`,
-        (d: string) => `snow sql -q "!source ${d}/bad.sql"`,
+        (d: string) => `snow sql -c example -q "!source ${d}/bad.sql"`,
         (d: string) => `psql -h db.example -c "\\i ${d}/bad.sql"`,
         () => 'psql -h db.example -f bad.sql',
         (d: string) => `psql -h db.example -f ${d}/outer.sql`,
@@ -56,7 +60,7 @@ describe('a destructive SQL file is gated however it reaches the client', () => 
 
 describe('a read-only SQL file is not', () => {
     test.each([
-        (d: string) => `snow sql -f ${d}/ok.sql`,
+        (d: string) => `snow sql -c example -f ${d}/ok.sql`,
         (d: string) => `psql -h db.example < ${d}/ok.sql`,
         (d: string) => `cat ${d}/ok.sql | psql -h db.example`,
     ])('%#', (make) => {
@@ -65,15 +69,15 @@ describe('a read-only SQL file is not', () => {
 });
 
 test('a SQL file too large to check gates', () => {
-    expect(verdict(`snow sql -f ${dir}/huge.sql`)).toBe('gate');
+    expect(verdict(`snow sql -c example -f ${dir}/huge.sql`)).toBe('gate');
 });
 
 test('a file path the command proves is read: a variable with a known value, or a plain top-level cd', () => {
     expect(verdict(`f=${dir}/bad.sql; psql -h db.example -f "$f"`)).toBe('gate');
-    expect(verdict(`cd ${dir} && snow sql -f bad.sql`)).toBe('gate');
+    expect(verdict(`cd ${dir} && snow sql -c example -f bad.sql`)).toBe('gate');
     expect(verdict(`D=${dir}; cd $D; psql -h db.example -f bad.sql`)).toBe('gate');
     expect(verdict(`f=${dir}/ok.sql; psql -h db.example -f "$f"`)).toBe('allow');
-    expect(verdict(`cd ${dir}; snow sql -f ok.sql`)).toBe('allow');
+    expect(verdict(`cd ${dir}; snow sql -c example -f ok.sql`)).toBe('allow');
 });
 
 test('a cd the step does not depend on leaves both directories possible, and each is read', () => {
@@ -134,6 +138,15 @@ test('a SQL client inside a command substitution after a cd reads the file there
     expect(evaluateBashCommand(`cd ${dir} && echo "$(psql -h db.example -f bad.sql)"`, { cwd: '/' }).action).toBe('gate');
 });
 
+// SQL that is only an expansion the line doesn't fill, or a command's output, can't be read, so it can't be ruled out as a write.
+test('SQL that is wholly an unfilled expansion is held as a possible write', () => {
+    for (const command of [`psql -h db.example -c "$UNKNOWN"`, `psql -h db.example -c "$(cat q.sql)"`]) {
+        const result = evaluateBashCommand(command, { cwd: dir });
+        expect(result.action).toBe('gate');
+        expect(result.reason).toContain("can't rule out a write");
+    }
+});
+
 test('a quoted heredoc is not variable-expanded', () => {
     expect(verdict(`sql='DROP TABLE users'; psql <<'EOF'\n$sql\nEOF`)).toBe('allow');
     expect(verdict(`sql='DROP TABLE users'; psql -h db.example <<EOF\n$sql\nEOF`)).toBe('gate');
@@ -161,7 +174,6 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
         `B='SELECT 1;'; psql -c "$B"`,
         `B='SELECT 1;'; echo "$B" | psql`,
         `B='DROP TABLE users;'; echo "$B"`,
-        `psql -c "$UNKNOWN"`,
         `B='DROP TABLE users;'; cat <<'EOF' | psql\n$B\nEOF`,
         `B='-- DROP TABLE users;'; echo "$B" | psql`,
         `B='-- DROP TABLE users;'; echo $B | psql`,
@@ -175,7 +187,7 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
     // The guard reads a SQL file before the line runs, so a file whose path the line doesn't prove, or that the client
     // itself may write before reading it, can't be checked.
     for (const command of [
-        `snow sql -f "$SQL_FILE"`,
+        `snow sql -c example -f "$SQL_FILE"`,
         `psql -h db.example <<'SQL'\n\\copy (select 'DROP TABLE users;') to '/tmp/sql-input-generated.sql'\n\\i /tmp/sql-input-generated.sql\nSQL`,
         `psql -h db.example -o /tmp/sql-input-generated.sql -c "select 'DROP TABLE users;'" -c '\\i /tmp/sql-input-generated.sql'`,
         `psql -h db.example <<'SQL'\n\\lo_export 123 /tmp/sql-input-generated.sql\n\\i /tmp/sql-input-generated.sql\nSQL`,
@@ -186,10 +198,10 @@ test('SQL held in a shell variable is expanded where a client reads it', () => {
     const readable = join(dir, 'already-there.sql');
     writeFileSync(readable, 'select 1;');
     for (const command of [
-        `snow sql -f ${readable} | tail -1`,
-        `snow sql -f ${readable}; python3 gen.py`,
-        `snow sql -q "describe table a.b.c" < /dev/null | python3 -c "import json"`,
-        `snow sql -q "select 1"; snow sql -f ${readable}`,
+        `snow sql -c example -f ${readable} | tail -1`,
+        `snow sql -c example -f ${readable}; python3 gen.py`,
+        `snow sql -c example -q "describe table a.b.c" < /dev/null | python3 -c "import json"`,
+        `snow sql -c example -q "select 1"; snow sql -c example -f ${readable}`,
     ]) {
         expect(verdict(command)).toBe('allow');
     }
@@ -394,7 +406,7 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `echo "$(cat bad.sql | psql -h db.example)"`,
         `printf 'DROP TABLE users;' | sqlite3 -init ok.sql db.sqlite`,
         `printf 'DROP TABLE users;' | duckdb -init ok.sql`,
-        `snow sql -f template.sql -D action=DROP`,
+        `snow sql -c example -f template.sql -D action=DROP`,
         `env -C source cat only-here.sql | psql -h db.example`,
         `psql -h db.example -Xc'DROP TABLE users'`,
         `psql -h db.example -Xqc 'DROP TABLE users'`,
@@ -403,7 +415,7 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `x=$(if true; then printf 'DROP TABLE users' | psql -h db.example; fi)`,
         `x=$(for t in a; do cat bad.sql | psql -h db.example; done)`,
         `B='DROP TABLE users'; x=$(echo "$B" | psql -h db.example)`,
-        `snow sql -f include-template.sql -D path=bad.sql`,
+        `snow sql -c example -f include-template.sql -D path=bad.sql`,
         `printf 'DROP TABLE users' | sqlite3 -lookaside 100 50 db.sqlite`,
         `printf 'DROP TABLE users' | sqlite3 -nonce token db.sqlite`,
         `printf 'DROP TABLE users' | sqlite3 -unknown-option x db.sqlite`,
@@ -422,7 +434,7 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
     for (const command of [
         `result=$(printf 'SELECT 1;' | psql)`,
         `printf 'select 1;' | sqlite3 -init ok.sql db.sqlite`,
-        `snow sql -f template.sql -D action=SELECT`,
+        `snow sql -c example -f template.sql -D action=SELECT`,
         `psql -Xc'SELECT 1'`,
         `pushd job && psql -f ok.sql`,
         `pushd +1 && psql -c 'select 1'`,
@@ -434,7 +446,7 @@ test('SQL reaching a client through a substitution pipe, -init, a template file,
         `B='DROP TABLE users'; x=$(B='SELECT 1'; echo "$B" | psql)`,
         `printf 'DROP TABLE users' | psql -Xc'SELECT 1'`,
         `printf 'DROP TABLE users' | duckdb -init ok.sql -c 'SELECT 1'`,
-        `snow sql -f include-template.sql -D path=ok.sql`,
+        `snow sql -c example -f include-template.sql -D path=ok.sql`,
     ]) {
         expect(verdict(command)).toBe('allow');
     }
