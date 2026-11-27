@@ -903,7 +903,10 @@ function nestedCommentClose(sql: string, start: number): number {
     return -1;
 }
 
-export function sqlSkeleton(sql: string, backslashEscapes = false, nestedComments = false, keepLiterals = false): { skeleton: string; openAt: number } {
+/** A string literal sqlSkeleton read: where it sits, and its value with quoting and escapes undone. */
+type SqlLiteral = { start: number; end: number; value: string };
+
+export function sqlSkeleton(sql: string, backslashEscapes = false, nestedComments = false, keepLiterals = false, literals?: SqlLiteral[]): { skeleton: string; openAt: number } {
     const out: string[] = [];
     let openAt = -1;
     let i = 0;
@@ -951,6 +954,13 @@ export function sqlSkeleton(sql: string, backslashEscapes = false, nestedComment
                 i += 1;
             }
             if (!closed) openAt = start;
+            if (literals && closed && quote === "'") {
+                const body = sql.slice(start + 1, i - 1);
+                const value = escapes
+                    ? body.replace(/\\([\s\S])|''/g, (_all, ch: string | undefined) => (ch === undefined ? "'" : ({ n: '\n', t: '\t', r: '\r', b: '\b', f: '\f' } as Record<string, string>)[ch] ?? ch))
+                    : body.replace(/''/g, "'");
+                literals.push({ start, end: i, value });
+            }
             // Replace whole literal (quotes included) with spaces, length-preserving
             out.push(keepLiterals ? sql.slice(start, i) : quote + ' '.repeat(Math.max(0, i - start - 2)) + quote);
             continue;
@@ -963,6 +973,7 @@ export function sqlSkeleton(sql: string, backslashEscapes = false, nestedComment
                 const close = sql.indexOf(tag, start);
                 if (close >= 0) {
                     const end = close + tag.length;
+                    literals?.push({ start: i, end, value: sql.slice(start, close) });
                     out.push(keepLiterals ? sql.slice(i, end) : tag + ' '.repeat(close - start) + tag);
                     i = end;
                     continue;
@@ -8844,22 +8855,24 @@ function conninfoCredential(s: string, templates = false): boolean {
 const libpqLiteral = (raw: string, value: string) => value !== '' && !/[$\x60]/.test(raw);
 
 /**
- * Whether SQL holds a single-quoted literal that is a connection string with a credential. A live one, the CONNECTION
- * of CREATE or ALTER SUBSCRIPTION or a value in a foreign server's or user mapping's OPTIONS, refuses on any written-out
- * password or sslpassword. Any other literal is stored data: it counts only when it names where it connects, and a
- * template's placeholder there is not a credential (a lone 'sslpassword=x' or a DSN help text is a value like any other).
+ * Whether SQL holds a string literal that is a connection string with a credential, each literal read by sqlSkeleton's
+ * tokenizer (comments hold none; E'…' and dollar quotes are read as Postgres reads them). A live one, the CONNECTION
+ * of CREATE or ALTER SUBSCRIPTION or a value in a foreign server's or user mapping's OPTIONS, refuses on any
+ * written-out password or sslpassword. Any other literal is stored data: it counts only when it names where it
+ * connects, and a template's placeholder there is not a credential (a lone 'sslpassword=x' or a DSN help text is a
+ * value like any other).
  */
 function sqlConninfoCredential(sql: string): boolean {
-    const skeleton = stripSqlLiteralsAndComments(sql);
-    return [...sql.matchAll(/'((?:[^']|'')*)'/g)].some(m => {
-        const s = m[1].replace(/''/g, "'");
-        const params = connectionParams(s);
+    const literals: SqlLiteral[] = [];
+    const { skeleton } = sqlSkeleton(sql, false, true, false, literals);
+    return literals.some(lit => {
+        const params = connectionParams(lit.value);
         if (!params) return false;
-        const before = skeleton.slice(skeleton.lastIndexOf(';', m.index) + 1, m.index);
-        const live = /\b(?:CREATE|ALTER)\s+SUBSCRIPTION\b[\s\S]*\bCONNECTION\s*$/i.test(before)
+        const before = skeleton.slice(skeleton.lastIndexOf(';', lit.start) + 1, lit.start);
+        const live = /\b(?:CREATE|ALTER)\s+SUBSCRIPTION\b[\s\S]*\bCONNECTION\s*E?$/i.test(before)
             || /\b(?:CREATE|ALTER)\s+(?:SERVER|USER\s+MAPPING)\b[\s\S]*\bOPTIONS\s*\([^)]*$/i.test(before);
-        if (live) return conninfoCredential(s);
-        return (/^postgres(?:ql)?:\/\//.test(s) || params.some(p => /^(?:host|hostaddr|dbname|user|port|service)$/.test(p.key))) && conninfoCredential(s, true);
+        if (live) return conninfoCredential(lit.value);
+        return (/^postgres(?:ql)?:\/\//.test(lit.value) || params.some(p => /^(?:host|hostaddr|dbname|user|port|service)$/.test(p.key))) && conninfoCredential(lit.value, true);
     });
 }
 

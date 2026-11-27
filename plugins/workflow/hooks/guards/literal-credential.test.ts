@@ -74,6 +74,8 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['a password in a subscription connection string through render psql', `render psql dpg-proddatabase00000001-a -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep password=${SECRET}' PUBLICATION p"`],
         ['a bracketed sslpassword in a subscription batch that also alters a role', `render psql dpg-devdatabase000000001-a -c "ALTER SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep sslpassword=<s3cr3t-Value9>'; ALTER ROLE app_reader NOLOGIN"`],
         ['a hyphenated bracketed sslpassword in a subscription batch that also alters a role', `render psql dpg-devdatabase000000001-a -c "ALTER SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep sslpassword=<blue-secret-horse>'; ALTER ROLE app_reader NOLOGIN"`],
+        ['a bracketed sslpassword in an escape-string subscription connection', `${H} -X -d app -c "CREATE SUBSCRIPTION s CONNECTION E'host=192.0.2.40 dbname=app user=rep sslpassword=<blue-secret-horse>' PUBLICATION p"`],
+        ['a bracketed sslpassword in a dollar-quoted subscription connection', `${H} -X -d app -c "CREATE SUBSCRIPTION s CONNECTION \\$c\\$host=192.0.2.40 dbname=app user=rep sslpassword=<blue-secret-horse>\\$c\\$ PUBLICATION p"`],
         ['a placeholder-looking password in a live subscription connection', `${H} -X -d app -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep password=<password>' PUBLICATION p"`],
         ['an sslpassword in a subscription connection string through render psql after -o text', `render -o text psql dpg-proddatabase00000001-a -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep sslpassword=${SECRET}' PUBLICATION p"`],
         ['a comment between PASSWORD and its value', `${H} -c "ALTER ROLE app PASSWORD /* new */ '${SECRET}'; DROP TABLE orders"`],
@@ -238,4 +240,8 @@ test.each([
     "curl -X DELETE 'https://admin:<apiKey>@api.render.com/v1/services/srv-prodservice000000001'",
 ])('a template placeholder keeps its card: %s', command => {
     expect(evaluate(command).action).toBe('gate');
+});
+
+test('a quoted example inside a comment in OPTIONS keeps its card', () => {
+    expect(evaluate(`${H} -X -d app -c "CREATE SERVER s FOREIGN DATA WRAPPER postgres_fdw OPTIONS (/* Example: 'sslpassword={db_password}' */ host '192.0.2.40', dbname 'app')"`).action).toBe('gate');
 });
