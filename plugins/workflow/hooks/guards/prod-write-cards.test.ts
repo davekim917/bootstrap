@@ -70,6 +70,12 @@ beforeAll(() => {
     mkdirSync(join(dir, 'retrynotarget', 'target'), { recursive: true });
     writeFileSync(join(dir, 'retrynotarget', 'dbt_project.yml'), "name: acme\nprofile: 'acme_prodfirst'\n");
     writeFileSync(join(dir, 'retrynotarget', 'target', 'run_results.json'), JSON.stringify({ args: { which: 'build' } }));
+    mkdirSync(join(dir, 'analytics'));
+    writeFileSync(join(dir, 'analytics', 'profiles.yml'), 'acme:\n  target: prod\n  outputs:\n    prod:\n      type: snowflake\n      database: prod_db\n');
+    mkdirSync(join(dir, 'warehouse', 'target'), { recursive: true });
+    writeFileSync(join(dir, 'warehouse', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\n");
+    writeFileSync(join(dir, 'warehouse', 'profiles.yml'), 'acme:\n  target: dev\n  outputs:\n    dev:\n      type: snowflake\n      database: dev_db\n');
+    writeFileSync(join(dir, 'warehouse', 'target', 'run_results.json'), JSON.stringify({ args: { which: 'build', full_refresh: true } }));
     mkdirSync(join(dir, 'sfproj'));
     writeFileSync(join(dir, 'sfproj', 'dbt_project.yml'), "name: acme\nprofile: 'acme'\ndata_tests:\n  +store_failures: true\n");
     mkdirSync(join(dir, 'farproject', 'macros'), { recursive: true });
@@ -874,5 +880,17 @@ describe('review 245f', () => {
         const command = 'cd project && dbt retry --project-dir ../retrynotarget';
         const verdict = evaluateBashCommand(command, { cwd: dir });
         expect(describeGate(command, verdict.reason ?? '', dir).label).toBe('Run dbt retry on target prod');
+    });
+});
+
+describe('review 245g', () => {
+    test('the card reads profiles.yml from the working directory, apart from --project-dir, as dbt does', () => {
+        const command = 'cd analytics && dbt retry --project-dir ../warehouse';
+        const verdict = evaluateBashCommand(command, { cwd: dir });
+        expect(verdict.action).toBe('gate');
+        expect(describeGate(command, verdict.reason ?? '', dir).label).toBe('Rerun the saved dbt build with --full-refresh on target prod');
+    });
+    test('a profiles.yml in the working directory leaves a dev build unproven, wherever the project is', () => {
+        expect(evaluate('cd analytics && dbt build --project-dir PROJECT').action).toBe('gate');
     });
 });

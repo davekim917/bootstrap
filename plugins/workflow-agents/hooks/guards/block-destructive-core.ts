@@ -7727,6 +7727,18 @@ function dbtCommandOf(cmd: ResolvedCommand): (ResolvedCommand & { bare: boolean 
     return run >= 0 && at > run ? { ...cmd, name: 'dbt', args: cmd.args.slice(at + 1), bare: run === 0 && at === 1 && cmd.args[1] === 'dbt' } : null;
 }
 
+/**
+ * The profiles.yml a dbt step run from `cwd` reads, found apart from its project as dbt finds it: --profiles-dir (the
+ * last given), then DBT_PROFILES_DIR, then a profiles.yml in the working directory, then ~/.dbt through HOME.
+ */
+function dbtProfilesFile(cmd: ResolvedCommand, cwd: string): string {
+    const named = lastFlag(cmd.args, ['--profiles-dir'])
+        ?? cmd.env?.find(e => e.startsWith('DBT_PROFILES_DIR='))?.slice('DBT_PROFILES_DIR='.length) ?? process.env.DBT_PROFILES_DIR;
+    if (named) return join(pathResolve(cwd, expandPath(named)), 'profiles.yml');
+    if (existsSync(join(cwd, 'profiles.yml'))) return join(cwd, 'profiles.yml');
+    return join(process.env.HOME || homedir(), '.dbt', 'profiles.yml');
+}
+
 /** The project a dbt step run from `dir` uses: --project-dir (the last given) or DBT_PROJECT_DIR from there, else the nearest one up. */
 function dbtProjectDir(cmd: ResolvedCommand, dir: string): string {
     const named = lastFlag(cmd.args, ['--project-dir']) ?? process.env.DBT_PROJECT_DIR;
@@ -7769,7 +7781,7 @@ function lastFlag(args: string[], names: string[]): string | undefined {
  */
 function dbtTargetDatabase(cmd: ResolvedCommand, dir: string): { target: string; database: string; account?: string } | null {
     const yaml = (globalThis as { Bun?: { YAML?: { parse(text: string): unknown } } }).Bun?.YAML;
-    if (!yaml || flagValue(cmd.args, ['--profiles-dir']) !== undefined || process.env.DBT_PROFILES_DIR !== undefined) return null;
+    if (!yaml) return null;
     // HOME moves where dbt finds ~/.dbt/profiles.yml, so it is read like a DBT_ setting.
     if ((cmd.env ?? []).some(e => /^(?:DBT_|HOME=)|DATABASE/i.test(e))) return null;
     // An export earlier on the line (or set -a) hands dbt a setting the step's own words don't show.
@@ -7792,9 +7804,10 @@ function dbtTargetDatabase(cmd: ResolvedCommand, dir: string): { target: string;
     }
     const profile = profileFlag ?? readConfigFile(join(project, 'dbt_project.yml'))?.match(/^profile:\s*['"]?([\w.-]+)['"]?\s*(?:#.*)?$/m)?.[1];
     if (!profile) return null;
-    // dbt reads a profiles.yml in the working directory before ~/.dbt; only the staged ~/.dbt one is read here.
-    if (existsSync(join(dir, 'profiles.yml'))) return null;
-    const file = join(process.env.HOME || homedir(), '.dbt', 'profiles.yml');
+    // Only the staged ~/.dbt profiles file is trusted: any other the step would read (a flag, DBT_PROFILES_DIR, one in
+    // the working directory) leaves the target unproven.
+    const file = dbtProfilesFile(cmd, dir);
+    if (file !== join(process.env.HOME || homedir(), '.dbt', 'profiles.yml')) return null;
     const text = readConfigFile(file);
     if (!text || text.includes('{{') || text.includes('{%')) return null;
     let doc: any;
@@ -8337,22 +8350,15 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     };
 }
 
-function defaultDbtTarget(dir: string | undefined, cmd: ResolvedCommand): string | null {
-    if (!dir) return null;
-    const project = readConfigFile(join(dir, 'dbt_project.yml'));
+/** The profile's default target for a dbt step run from `cwd`: its project names the profile, its profiles file the target. */
+function defaultDbtTarget(cwd: string | undefined, cmd: ResolvedCommand): string | null {
+    if (!cwd) return null;
+    const project = readConfigFile(join(dbtProjectDir(cmd, cwd), 'dbt_project.yml'));
     const profile = lastFlag(cmd.args, ['--profile']) ?? project?.match(/^profile:\s*['"]?([\w.-]+)/m)?.[1];
-    if (!profile) return null;
-    const envDir = cmd.env?.find(e => e.startsWith('DBT_PROFILES_DIR='))?.slice('DBT_PROFILES_DIR='.length) ?? process.env.DBT_PROFILES_DIR;
-    // ~/.dbt is found through HOME at the time of the call, as dbt and the gate's own lookup find it.
-    const candidates = [lastFlag(cmd.args, ['--profiles-dir']), envDir, dir, join(process.env.HOME || homedir(), '.dbt')].filter((d): d is string => !!d);
-    for (const d of candidates) {
-        const profiles = readConfigFile(join(d.startsWith('/') ? d : join(dir, d), 'profiles.yml'));
-        if (!profiles) continue;
-        const block = profiles.split(new RegExp(`^${profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*$`, 'm'))[1];
-        const target = block?.split(/^\S/m)[0].match(/^\s+target:\s*['"]?([\w.-]+)/m)?.[1];
-        if (target) return target;
-    }
-    return null;
+    const profiles = readConfigFile(dbtProfilesFile(cmd, cwd));
+    if (!profile || !profiles) return null;
+    const block = profiles.split(new RegExp(`^${profile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\s*$`, 'm'))[1];
+    return block?.split(/^\S/m)[0].match(/^\s+target:\s*['"]?([\w.-]+)/m)?.[1] ?? null;
 }
 
 const DBT_MACRO_MISSING = "a macro that isn't there yet";
@@ -8496,7 +8502,7 @@ function dbtStep(cmd: ResolvedCommand, dir: string | undefined): StepCard {
         const saved = sub === 'retry' && dir ? dbtSavedRun(cmd, dbtProjectDir(cmd, dir)) : null;
         const savedTarget = typeof saved?.target === 'string' ? saved.target : undefined;
         const target = sub === 'retry'
-            ? savedTarget ?? (saved && dir ? defaultDbtTarget(dbtProjectDir(cmd, dir), cmd) ?? undefined : undefined)
+            ? savedTarget ?? (saved && dir ? defaultDbtTarget(dir, cmd) ?? undefined : undefined)
             : dbtTargetFlag(cmd.args) ?? (dir ? dbtTargetDatabase(cmd, dir)?.target : undefined) ?? defaultDbtTarget(dir, cmd) ?? undefined;
         const where = target ? `the dbt target ${code(target)}` : sub === 'retry' ? 'the dbt target of the saved run, which the guard could not read' : "the profile's default dbt target";
         if (saved?.full_refresh) {
