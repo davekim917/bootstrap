@@ -13696,7 +13696,35 @@ function topLevelCommands(ast: any): Map<number, { chain: number; index: number;
 }
 
 /** The text a Slack payload shows: its blocks as text when it has them, else its `text` field; null when it can't tell. */
-function payloadMessage(raw: string): { text: string; notification?: string; exact: boolean; simplified?: boolean } | null {
+/** Where a Slack message goes, as its payload names it: a channel and, for a reply or an edit, the message it belongs to. */
+type SlackDestination = { channel: string; threadTs?: string; ts?: string; broadcast?: boolean } | { notShown: string };
+
+/** The destination a payload's fields name, or why it can't be shown. */
+function payloadDestination(fields: Record<string, unknown>): SlackDestination {
+    const { channel, thread_ts: threadTs, ts, reply_broadcast: broadcast } = fields;
+    if (typeof channel !== 'string') return { notShown: 'the payload names no channel' };
+    if (!/^(?:[CDGUW][A-Z0-9]{8,}|#?[a-z0-9][a-z0-9._-]{0,79})$/.test(channel)) return { notShown: `the payload's channel ${code(clip(channel, 40))} is not a channel id or name` };
+    const stamp = (v: unknown) => v === undefined || (typeof v === 'string' && /^\d+\.\d+$/.test(v));
+    if (!stamp(threadTs) || !stamp(ts)) return { notShown: "the payload's thread_ts or ts is not a message timestamp" };
+    return { channel, ...(typeof threadTs === 'string' ? { threadTs } : {}), ...(typeof ts === 'string' ? { ts } : {}), ...(broadcast === true ? { broadcast: true } : {}) };
+}
+
+/** The destination as the card says it. */
+function destinationLine(d: SlackDestination): string {
+    if ('notShown' in d) return `Destination not shown: ${d.notShown}.`;
+    const kind = /^D/.test(d.channel) ? 'the direct message' : /^[UW]/.test(d.channel) ? 'a direct message to the user'
+        : /^G/.test(d.channel) ? 'the private channel or group message' : 'the channel';
+    const where = /^[CDGUW][A-Z0-9]{8,}$/.test(d.channel) ? `${kind} ${code(d.channel)}` : `the channel ${code(d.channel.startsWith('#') ? d.channel : `#${d.channel}`)}`;
+    return `Destination: ${where}${d.threadTs ? `, in the thread ${code(d.threadTs)}${d.broadcast ? ', also sent to the channel' : ''}` : ''}${d.ts ? `, editing the message ${code(d.ts)}` : ''}.`;
+}
+
+/** The destination as sendParts bind it, after the text. */
+function destinationParts(d: SlackDestination): string[] {
+    if ('notShown' in d) return [];
+    return [`channel=${d.channel}`, ...(d.threadTs ? [`thread_ts=${d.threadTs}`] : []), ...(d.ts ? [`ts=${d.ts}`] : []), ...(d.broadcast ? ['reply_broadcast=true'] : [])];
+}
+
+function payloadMessage(raw: string): { text: string; notification?: string; exact: boolean; simplified?: boolean; destination: SlackDestination } | null {
     let body: unknown;
     try {
         body = JSON.parse(raw);
@@ -13712,10 +13740,10 @@ function payloadMessage(raw: string): { text: string; notification?: string; exa
         const collapse = (t: string) => t.replace(/\s+/g, ' ').trim();
         const notification = typeof fields.text === 'string' && collapse(fields.text) !== collapse(text) ? fields.text : undefined;
         const exact = typeof fields.channel === 'string' && Object.keys(fields).every(k => k === 'blocks' || EXACT_SLACK_FIELDS.has(k));
-        return { text, exact, simplified: true, ...(notification !== undefined ? { notification } : {}) };
+        return { text, exact, simplified: true, destination: payloadDestination(fields), ...(notification !== undefined ? { notification } : {}) };
     }
     if (typeof fields.text !== 'string') return null;
-    return { text: fields.text, exact: typeof fields.channel === 'string' && Object.keys(fields).every(k => EXACT_SLACK_FIELDS.has(k)) };
+    return { text: fields.text, destination: payloadDestination(fields), exact: typeof fields.channel === 'string' && Object.keys(fields).every(k => EXACT_SLACK_FIELDS.has(k)) };
 }
 
 /** Slack blocks as the text a reader sees; null for a block or element this doesn't render. */
@@ -13846,7 +13874,7 @@ function statementPlaces(command: string, commands: ResolvedCommand[]): Map<Reso
 
 /** What a card can show of a post's message, or why it shows none: only text that binds exactly to what is sent. */
 function postMessage(command: string, method: string, opts: { cwd?: string; nanoclaw: boolean }):
-    { text: string; notification?: string; exact: boolean; simplified?: boolean; from?: string; written?: boolean; payload?: PayloadBinding; body: string } | { notShown: string } {
+    { text: string; notification?: string; exact: boolean; simplified?: boolean; from?: string; written?: boolean; payload?: PayloadBinding; body: string; destination: SlackDestination } | { notShown: string } {
     const notShown = (reason: string) => ({ notShown: reason });
     if (!EXACT_SLACK_METHODS.has(method)) return notShown(`the guard shows text only for ${[...EXACT_SLACK_METHODS].join(' and ')}`);
     let commands: ResolvedCommand[];
@@ -14009,11 +14037,13 @@ export function evaluateSlackPost(
     }
     let summary: string;
     if ('notShown' in message) {
-        summary = `The agent wants to post to Slack${as} (${first.why}). Message text not shown: ${message.notShown}. Check the full command before approving.`;
+        summary = `The agent wants to post to Slack${as} (${first.why}). Message text not shown: ${message.notShown}. Destination not shown, for the same reason. Check the full command before approving.`;
     } else {
         const cut = message.text.length > SLACK_TEXT_MAX_CHARS;
         const lines = [
             `The agent wants to post this to Slack${as}${message.from ? message.written ? ` (the line writes it to ${code(message.from)} before posting)` : ` (read from ${code(message.from)}; the post goes ahead only if the file still holds this)` : ''}:`,
+            '',
+            destinationLine(message.destination),
             '',
             ...(message.simplified ? ['Message text (formatting simplified):'] : []),
             quoteBlock(cut ? message.text.slice(0, SLACK_TEXT_MAX_CHARS) : message.text),
@@ -14027,7 +14057,7 @@ export function evaluateSlackPost(
         action: 'gate',
         label,
         summary,
-        ...(exact ? { sendParts: [(message as { text: string }).text] } : {}),
+        ...(exact ? { sendParts: [message.text, ...destinationParts(message.destination)] } : {}),
         ...(exact && (message as { simplified?: boolean }).simplified ? { textFlattened: true } : {}),
         ...(!('notShown' in message) && message.payload ? { payload: message.payload } : {}),
     };

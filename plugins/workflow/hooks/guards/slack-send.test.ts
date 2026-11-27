@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { LITERAL_CREDENTIAL_REASON, SEND_SCOPE_FILE_ENV, evaluateSlackPost, gateRequestContent, parseSendScope, payloadChangedSince } from './block-destructive-core';
+import { LITERAL_CREDENTIAL_REASON, SEND_SCOPE_FILE_ENV, evaluateSlackPost, gateReceiptOf, gateRequestContent, parseSendScope, payloadChangedSince } from './block-destructive-core';
 
 /**
  * SLACK WRITES IN A PERSON'S NAME. In a listed workgroup's session, or on a line naming a listed OneCLI agent, a line
@@ -525,6 +525,55 @@ describe('the message a card shows', () => {
             expect(v.summary).toContain('> Numbers are in.');
             expect(v.sendParts).toEqual(['Numbers are in.']);
             expect(v.payload).toMatchObject({ path: join(cwd, 'payload.json'), real: realpathSync(join(cwd, 'payload.json')) });
+        });
+    });
+
+    describe('the destination', () => {
+        // Conversation ids of Slack's shape, built here so no whole id is written in the source.
+        const DM = 'D' + '0123ABCDE';
+        const CHANNEL = 'C' + '0123ABCDE';
+        const receipt = (v: ReturnType<typeof shown>) => gateReceiptOf(gateRequestContent('gate-1', v.label!, v.summary!, SEND, 'request_send_gate', { sendParts: v.sendParts }));
+        const post = (fields: Record<string, unknown>) => {
+            let v: ReturnType<typeof shown> | undefined;
+            inDir({ 'payload.json': JSON.stringify({ text: 'Numbers are in.', ...fields }) }, cwd => { v = shown(SEND, cwd); });
+            return v!;
+        };
+
+        test('the same text to a direct message and to a channel are different approvals', () => {
+            const dm = post({ channel: DM });
+            const channel = post({ channel: CHANNEL });
+            expect(dm.sendParts).toEqual(['Numbers are in.', `channel=${DM}`]);
+            expect(channel.sendParts).toEqual(['Numbers are in.', `channel=${CHANNEL}`]);
+            expect(dm.summary).toContain(`Destination: the direct message \`${DM}\`.`);
+            expect(channel.summary).toContain(`Destination: the channel \`${CHANNEL}\`.`);
+            expect(receipt(dm)).not.toBe(receipt(channel));
+        });
+
+        test('a reply binds its thread', () => {
+            const reply = post({ channel: CHANNEL, thread_ts: '1700000000.000100' });
+            const top = post({ channel: CHANNEL });
+            expect(reply.sendParts).toEqual(['Numbers are in.', `channel=${CHANNEL}`, 'thread_ts=1700000000.000100']);
+            expect(reply.summary).toContain(`Destination: the channel \`${CHANNEL}\`, in the thread \`1700000000.000100\`.`);
+            expect(receipt(reply)).not.toBe(receipt(top));
+        });
+
+        test('a channel name the payload gives is shown and bound', () => {
+            const v = post({ channel: '#general' });
+            expect(v.sendParts).toEqual(['Numbers are in.', 'channel=#general']);
+            expect(v.summary).toContain('Destination: the channel `#general`.');
+        });
+
+        test('a channel the payload holds as a variable is not shown, and nothing binds it', () => {
+            const v = post({ channel: '$SLACK_CHANNEL' });
+            expect(v.summary).toContain("Destination not shown: the payload's channel `$SLACK_CHANNEL` is not a channel id or name.");
+            expect(v.sendParts).toEqual(['Numbers are in.']);
+        });
+
+        test('a payload the guard cannot read shows no destination either', () => {
+            let v: ReturnType<typeof shown> | undefined;
+            inDir({}, cwd => { v = shown(SEND, cwd); });
+            expect(v!.summary).toContain('Destination not shown, for the same reason.');
+            expect(v!.sendParts).toBeUndefined();
         });
     });
 
