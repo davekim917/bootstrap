@@ -778,10 +778,10 @@ export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^ALTER\s+POLICY\b/i, label: 'ALTER POLICY' },
     { rx: /^CREATE\s+POLICY\b/i, label: 'CREATE POLICY' },
     // A view's security_invoker and security_barrier decide whose privileges and row policies apply through it.
-    { rx: /^ALTER\s+(?:MATERIALIZED\s+)?VIEW\b[\s\S]*\b(?:SET|RESET)\s*\([\s\S]*\bsecurity_(?:invoker|barrier)\b/i, label: 'ALTER VIEW SECURITY' },
+    { rx: /^ALTER\s+(?:MATERIALIZED\s+VIEW|VIEW|TABLE)\b[\s\S]*\b(?:SET|RESET)\s*\([\s\S]*\bsecurity_(?:invoker|barrier)\b/i, label: 'ALTER VIEW SECURITY' },
     // PostgreSQL's DROP POLICY names no kind; removing a restrictive policy can widen who reads which rows.
     { rx: /^DROP\s+POLICY\b/i, label: 'DROP ROW SECURITY POLICY' },
-    { rx: /^ALTER\s+TABLE\b[\s\S]*\b(?:DISABLE|NO\s+FORCE)\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'DISABLE ROW LEVEL SECURITY' },
+    { rx: /^ALTER\s+TABLE\b[\s\S]*\b(?:DISABLE|(?:NO\s+)?FORCE)\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'DISABLE ROW LEVEL SECURITY' },
     // With no ON, GRANT and REVOKE add or remove a role's membership in another role.
     { rx: /^GRANT\s+(?![\s\S]*\bON\b)/i, label: 'GRANT ROLE' },
     { rx: /^GRANT\s/i, label: 'GRANT' },
@@ -790,7 +790,7 @@ export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^REASSIGN\s+OWNED\b/i, label: 'REASSIGN OWNED' },
     { rx: /^ALTER\b[\s\S]*(?<!\bRENAME\s+(?:COLUMN\s+)?)\bOWNER\s+TO\b/i, label: 'ALTER ... OWNER TO' },
     { rx: /^CREATE\b[\s\S]*?\b(?:FUNCTION|PROCEDURE)\b[\s\S]*\bSECURITY\s+DEFINER\b/i, label: 'SECURITY DEFINER' },
-    { rx: /^ALTER\s+(?:FUNCTION|PROCEDURE|ROUTINE)\b[\s\S]*\bSECURITY\s+DEFINER\b/i, label: 'SECURITY DEFINER' },
+    { rx: /^ALTER\s+(?:FUNCTION|PROCEDURE|ROUTINE)\b[\s\S]*\bSECURITY\s+(?:DEFINER|INVOKER)\b/i, label: 'SECURITY DEFINER' },
 ];
 const PG_SQL_PATTERNS = [...PG_PRIVILEGE_SQL_PATTERNS, ...DESTRUCTIVE_SQL_PATTERNS];
 const PG_PRIVILEGE_LABELS = new Set(PG_PRIVILEGE_SQL_PATTERNS.map(p => p.label));
@@ -2126,7 +2126,8 @@ export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: 
         const writer = stdinNamed(f) ? null : lineWriterOf(cmd, f, true);
         if (writer) return result(`${f}, which \`${writer}\` earlier on the line writes`);
     }
-    const optionValues = new Set(cmd.args.filter(a => !commandSql.has(a)));
+    // Each option's value as the texts hold it, alone or attached (--pset=…, -P…).
+    const optionValues = new Set(cmd.args.flatMap(a => (a.startsWith('--') ? [a, a.slice(a.indexOf('=') + 1)] : a.startsWith('-') ? [a, a.slice(2)] : [a])).filter(a => a && !commandSql.has(a)));
     for (const text of texts) {
         // An option's value other than -c's (a -P display setting, a -v value, a host) is never run as SQL.
         if (optionValues.has(text)) continue;
@@ -2220,9 +2221,17 @@ const tracedWriter = (c: ResolvedCommand): boolean => {
  * Whether every argument is written as a literal. Inside a $(…) the line's words can't be matched to the command, so
  * its parsed values must hold nothing the shell would still expand.
  */
-function literalArgs(c: ResolvedCommand): boolean {
+function literalArgs(c: ResolvedCommand, quotedVariables = false): boolean {
     const written = writtenArgs(c);
-    return written ? written.every(w => isLiteralShellWord(w)) : !c.args.some(a => /[$`*?[\]{}~]/.test(a));
+    // "$NAME" in double quotes is one word, never split or globbed: it is known when the line set it to a literal.
+    const words = quotedVariables ? argumentWords(c) : [];
+    const knownVariable = (w: string, i: number) => {
+        if (!quotedVariables || !words[i] || !/^"\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*)"$/.test(w)) return false;
+        let unresolved = false;
+        const value = expandWords([words[i]], c, () => { unresolved = true; });
+        return !unresolved && value?.length === 1 && !/[$`]/.test(value[0]);
+    };
+    return written ? written.every((w, i) => isLiteralShellWord(w) || knownVariable(w, i)) : !c.args.some(a => /[$`*?[\]{}~]/.test(a));
 }
 
 /**
@@ -2236,7 +2245,11 @@ function writesTracedText(c: ResolvedCommand): boolean {
         return !reads.length && !!c.stdinTexts?.length && !c.stdinExpanded?.length && !c.stdinFiles?.length;
     }
     if (c.name !== 'echo' && c.name !== 'printf') return false;
-    if (!literalArgs(c)) return false;
+    if (!literalArgs(c, true)) return false;
+    // printf's format is written out: a variable there decides which escapes and options it reads.
+    const formatAt = c.args[0] === '--' ? 1 : 0;
+    const writtenFormat = c.name === 'printf' ? writtenArgs(c)?.[formatAt] : undefined;
+    if (writtenFormat !== undefined && !isLiteralShellWord(writtenFormat)) return false;
     // printf interprets escapes and %b in its format only; each argument a %s prints is printed as it is.
     if (c.name === 'echo') return !c.args.some(a => /^-[neE]*e[neE]*$/.test(a));
     // After `--` the next word is the format.
@@ -4546,7 +4559,10 @@ function psqlLeavesDatabase(text: string): string | null {
     }
     const skeleton = metaSkeleton(withoutCopyData(text));
     if (skeleton.includes('\\')) return 'a psql meta-command';
-    return /\b(?:CREATE|ALTER|DROP)\s+(?:DATABASE|TABLESPACE)\b/i.test(skeleton) ? 'a statement on a whole database or tablespace' : null;
+    if (/\b(?:CREATE|ALTER|DROP)\s+DATABASE\b/i.test(skeleton)) return 'a statement on a whole database';
+    // A tablespace belongs to the whole cluster, named anywhere outside a literal or inside a DO body.
+    const bodies = [...text.matchAll(/\$([A-Za-z_]\w*)?\$([\s\S]*?)\$\1\$/g)].map(m => metaSkeleton(m[2]));
+    return [skeleton, ...bodies].some(s => /\bTABLESPACE\b/i.test(s)) ? 'a tablespace, which the whole cluster holds' : null;
 }
 
 /** psqlLeavesDatabase for a step's whole input; an archive pg_restore applies, or input the guard can't read, counts. */
@@ -4651,7 +4667,7 @@ function mysqlLeavesDatabase(cmd: ResolvedCommand): boolean {
     const notSql = new Set(cmd.args.filter((a, i) => !/^(?:-e|--execute)$/.test(cmd.args[i - 1] ?? '') && !/^(?:-e.|--execute=)/.test(a)));
     return input.texts.filter(t => !notSql.has(t)).some(text => {
         const skeleton = stripSqlLiteralsAndComments(text);
-        return /(?<!\d)\.\s*[A-Za-z_$`]/.test(skeleton) || skeleton.includes('\\')
+        return /\.\s*[A-Za-z_$`]/.test(skeleton) || /\bTABLESPACE\b/i.test(skeleton) || skeleton.includes('\\')
             || /(?:^|;)\s*(?:USE|CONNECT|SOURCE)\b/i.test(skeleton) || /\b(?:CREATE|ALTER|DROP|RENAME)\s+(?:DATABASE|SCHEMA)\b/i.test(skeleton);
     });
 }

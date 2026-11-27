@@ -68,8 +68,6 @@ describe('a read-only SQL file is not', () => {
 // A pipe into psql is readable only from a literal echo or printf, or a cat of readable files (psqlReadableInput).
 describe('SQL piped into psql from anything else', () => {
     test.each([
-        () => `B='SELECT 1;'; echo "$B" | psql`,
-        () => `B='-- DROP TABLE users;'; echo "$B" | psql`,
         () => `B='-- DROP TABLE users;'; echo $B | psql`,
         () => `B='-v x DROP TABLE users;'; printf $B | psql`,
         () => `O=-v; SQL='DROP TABLE users;'; printf $O x "$SQL" | psql`,
@@ -84,10 +82,13 @@ describe('SQL piped into psql from anything else', () => {
     });
 });
 
-// A literal printf or a cat of a readable file stays readable inside a $(…) too.
+// A literal printf or a cat of a readable file stays readable inside a $(…) too, and so does a quoted variable set to a literal.
 describe('a readable pipe inside a command substitution', () => {
     test.each([
         `result=$(printf 'SELECT 1;' | psql)`,
+        // A quoted variable the line sets to a literal is read as that value, as on main; the comment stays a comment.
+        `B='SELECT 1;'; echo "$B" | psql`,
+        `B='-- DROP TABLE users;'; echo "$B" | psql`,
         `x=$(cd job; cat ok.sql | psql)`,
     ])('%s', (command) => {
         expect(verdict(command)).toBe('allow');
@@ -622,4 +623,8 @@ describe('the SQL lexer says where a literal or comment never closes', () => {
         expect(openAt).toBe(-1);
         expect(skeleton).toContain('WHERE id = 1');
     });
+});
+
+test('a quoted variable set to destructive SQL is read as that SQL', () => {
+    expect(verdict("B='DROP TABLE users;'; echo \"$B\" | psql -h db.example")).toBe('gate');
 });
