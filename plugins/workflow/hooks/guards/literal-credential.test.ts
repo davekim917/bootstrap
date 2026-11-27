@@ -176,6 +176,7 @@ describe('the same command with the credential in a variable takes the ordinary 
         ['a MySQL password from a variable', 'mysql -h db.example.com -p"$MYSQL_PW" -e "drop table orders"', 'drop table orders'],
         ['a URI password from a variable', 'psql "postgresql://app:$PGPW@192.0.2.20/app" -c "drop table orders"', 'drop table orders'],
         ['a branch whose name holds a token prefix', 'git push origin --delete fix/glpat-token-redaction-2026', 'fix/glpat-token-redaction-2026'],
+        ['a branch named like a redacted Slack token', 'git push origin --delete xoxb-123-456-XXXXXX', 'xoxb-123-456-XXXXXX'],
     ])('%s', (_name, command, shown) => {
         const verdict = evaluate(command);
         expect(verdict.action).toBe('gate');
@@ -223,6 +224,7 @@ describe('the detector fires on literal values only', () => {
         ['an abbreviated example after a token prefix', 'Slack bot tokens look like xoxb-123-Abc and GitHub ones like ghp_Ab12'],
         ['a token prefix inside a path', `x fix/${issued('glpat-')}`],
         ['a token prefix after a dash', `x release-${issued('ghp_')}`],
+        ['a Slack token whose secret is a placeholder', `x xoxb-1234567890-0987654321-${'X'.repeat(24)}`],
         ['a redacted GitHub token', `x ghp_${'X'.repeat(36)}`],
         ['a redacted token', 'curl -d token=xoxp-XXXX-XXXXXXXXXX-XXXXXXXXXXXXXXXX https://slack.com/api/auth.test'],
     ])('%s does not fire', (_name, text) => {
@@ -244,6 +246,7 @@ describe('the detector fires on literal values only', () => {
         ['a Slack token in a form field', `curl -d token=${issued('xoxp-')} https://slack.com/api/chat.postMessage`],
         ['a Slack token in a query', `curl "https://slack.com/api/chat.postMessage?token=${issued('xoxp-')}&channel=C1"`],
         ['a Slack token in a JSON body', `curl --json '{"token":"${issued('xoxb-')}","channel":"C1"}' https://slack.com/api/chat.postMessage`],
+        ['a token in a Markdown code span', `release-cli publish --notes 'set \`${issued('xoxb-')}\` here'`],
         ['a rotating Slack token', `release-cli publish ${issued('xoxe.xoxp-')}`],
         ['a Slack refresh token', `release-cli publish ${issued('xoxe-')}`],
         ['a GitHub token as a bare argument', `release-cli publish ${issued('github_pat_')}`],

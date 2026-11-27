@@ -10990,8 +10990,8 @@ function literalHeaderValue(text: string): boolean {
 
 // Each issuer's token by its documented shape: GitHub's (gh?_ and 36 characters, github_pat_ and 82), GitLab's personal
 // access token (glpat- and at least 20) and Slack's (numeric segments, then the secret; rotating ones start xoxe).
-// `upper`: the secret is random letters and digits, so a body without a capital, or one character repeated (a redacted
-// value), is a name.
+// A secret of one repeated character (a redacted value, XXXX) is a name. `upper`: the secret is random letters and digits,
+// so one without a capital is a name too. Slack's secret is its last segment, after the numeric ones.
 const ISSUED_TOKENS: Array<{ prefix: string; body: string; upper?: boolean }> = [
     { prefix: 'gh[pousr]_', body: '[A-Za-z0-9]{36}', upper: true },
     { prefix: 'github_pat_', body: '[A-Za-z0-9]{22}_[A-Za-z0-9]{59}', upper: true },
@@ -11000,13 +11000,34 @@ const ISSUED_TOKENS: Array<{ prefix: string; body: string; upper?: boolean }> = 
     { prefix: String.raw`xoxe(?:\.xox[abp])?-`, body: String.raw`\d+-[A-Za-z0-9]{20,}` },
 ];
 const TOKEN_PREFIX = `(?:${ISSUED_TOKENS.map(t => t.prefix).join('|')})`;
-// A token starts a word, or follows = : a quote or whitespace; after / or - its prefix is part of a name (fix/glpat-…).
-const ISSUED_TOKEN_RES = ISSUED_TOKENS.map(t => ({ re: new RegExp(String.raw`(?<=^|[\s=:"'])${t.prefix}(${t.body})(?![A-Za-z0-9_-])`, 'g'), upper: t.upper }));
+// A token starts a word, or follows = : a quote, a backtick or whitespace; after / or - its prefix is part of a name
+// (fix/glpat-…).
+const ISSUED_TOKEN_RES = ISSUED_TOKENS.map(t => ({ re: new RegExp(String.raw`(?<=^|[\s=:"'\x60])${t.prefix}(${t.body})(?![A-Za-z0-9_-])`, 'g'), upper: t.upper }));
 
 /** A token an issuer hands out, written out anywhere on the line, in any field. */
 function knownPrefixToken(text: string): boolean {
-    return ISSUED_TOKEN_RES.some(({ re, upper }) => [...text.matchAll(re)]
-        .some(([, body]) => !upper || (/[A-Z]/.test(body) && new Set(body.replace(/[-_]/g, '')).size > 1)));
+    return ISSUED_TOKEN_RES.some(({ re, upper }) => [...text.matchAll(re)].some(([, body]) => {
+        const secret = upper ? body.replace(/[-_]/g, '') : body.split('-').pop()!;
+        return new Set(secret).size > 1 && (!upper || /[A-Z]/.test(secret));
+    }));
+}
+
+/** A URL's user info that writes out a credential: user:password, or a user name that starts the way a token does. */
+function literalUrlUserinfo(text: string): boolean {
+    for (const m of text.matchAll(/\b([a-z][a-z0-9+.-]*):\/\/([^/@\s]{1,400})@/gi)) {
+        // A user name that is a token of its issuer's shape is one, whatever password follows it (masked, a placeholder or
+        // a variable).
+        const user = m[2].replace(/^['"]+/, '').split(':')[0];
+        if (!SHELL_EXPANSION.test(user) && knownPrefixToken(user)) return true;
+        if (SHELL_EXPANSION.test(m[2])) continue;
+        if (literalUserinfo(m[2])) return true;
+    }
+    return false;
+}
+
+/** Prose a message carries holds a credential only as a token of its issuer's shape, or in a URL's user info. */
+function proseHoldsCredential(text: string): boolean {
+    return knownPrefixToken(text) || literalUrlUserinfo(text);
 }
 
 /**
@@ -11018,16 +11039,7 @@ function knownPrefixToken(text: string): boolean {
 export function containsCredential(text: string, kind: 'command' | 'any' = 'any'): boolean {
     const dollarQuotes = kind === 'any';
     if (literalHeaderValue(text) || knownPrefixToken(text)) return true;
-    // A URL's user info: user:password. With no colon it is a user name, unless it starts the way a token does.
-    for (const m of text.matchAll(/\b([a-z][a-z0-9+.-]*):\/\/([^/@\s]{1,400})@/gi)) {
-        // A user name that starts the way a token does is one, whatever password follows it (masked, a placeholder or a
-        // variable), unless what follows the prefix is itself a placeholder (ghp_<token>).
-        const user = m[2].replace(/^['"]+/, '').split(':')[0];
-        const token = new RegExp(String.raw`^${TOKEN_PREFIX}([\s\S]+)$`).exec(user);
-        if (token && !SHELL_EXPANSION.test(user) && !templatePlaceholder(token[1])) return true;
-        if (SHELL_EXPANSION.test(m[2])) continue;
-        if (literalUserinfo(m[2])) return true;
-    }
+    if (literalUrlUserinfo(text)) return true;
     for (const m of text.matchAll(PASSWORD_WORD)) {
         const at = (m.index ?? 0) + m[0].length;
         const after = text.slice(at);
@@ -13041,7 +13053,10 @@ export function gatedSlackPosts(command: string, workgroupId: string | undefined
         if (!a || command.slice(baseEnd, a.end).replace(/['"/]/g, '') !== '') return undefined;
         const uses = [...command.matchAll(new RegExp(String.raw`\$\{${a.name}(?:[^}]*)\}|\$${a.name}(?![A-Za-z0-9_])`, 'g'))]
             .filter(u => (u.index! < a.start || u.index! >= a.end) && !inData(u.index!));
-        if (uses.length) return uses.map(u => SLACK_METHOD_AFTER.exec(command.slice(u.index! + u[0].length))?.[1]);
+        // The method is read from the joined path, so a base ending in a slash meets a use with none.
+        const slashed = command.slice(baseEnd, a.end).includes('/');
+        const joined = (rest: string) => (slashed && !rest.startsWith('/') ? `/${rest}` : rest);
+        if (uses.length) return uses.map(u => SLACK_METHOD_AFTER.exec(joined(command.slice(u.index! + u[0].length).replace(/^["']+/, '')))?.[1]);
         // A child process sees only what the line exports: an assignment it doesn't export, and nothing on the line uses,
         // makes no request.
         const statement = command.slice(0, a.start).split(/[;&|(\n]/).pop() ?? '';
@@ -13981,8 +13996,8 @@ export function evaluateSlackPost(
     const as = (agents.length ? ` as you, through ${agents.map(who).join(' and ')}` : ' as you') + token;
     const message = posts.length > 1 ? { notShown: 'the line makes more than one Slack call' }
         : method ? postMessage(command, method, { cwd: opts.cwd, nanoclaw }) : { notShown: 'the shell fills in the method' };
-    // The text the card would show, and the payload it comes from, are read for credentials like the command.
-    if (!('notShown' in message) && [message.text, message.notification, message.body].some(t => t !== undefined && containsCredential(t))) {
+    // The text the card would show, and the payload it comes from, are prose: no shell option or SQL is read in them.
+    if (!('notShown' in message) && [message.text, message.notification, message.body].some(t => t !== undefined && proseHoldsCredential(t))) {
         return { action: 'gate', label, deny: LITERAL_CREDENTIAL_REASON };
     }
     let summary: string;
