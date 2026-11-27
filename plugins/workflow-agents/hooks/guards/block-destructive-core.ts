@@ -10968,12 +10968,14 @@ function prefixAssignment(text: string, at: number): boolean {
 }
 
 /** Each header value with a credential shape, read within its own word: up to its closing quote, or to unescaped space. */
-function literalHeaderValue(text: string): boolean {
+function literalHeaderValue(text: string, prose = false): boolean {
     for (const m of text.matchAll(HEADER_NAME)) {
         const at = (m.index ?? 0) + m[0].length;
         const quote = text[(m.index ?? 0) - 1];
         let value: string;
-        if (quote === "'" || quote === '"') {
+        // In prose a header's value runs to the end of its line, as pasted from a request.
+        if (prose) value = /^[^\n]*/.exec(text.slice(at))![0];
+        else if (quote === "'" || quote === '"') {
             const end = text.indexOf(quote, at);
             value = end < 0 ? text.slice(at) : text.slice(at, end);
             if (quote === '"' && SHELL_EXPANSION.test(value)) continue;
@@ -10983,7 +10985,9 @@ function literalHeaderValue(text: string): boolean {
         }
         // An auth scheme (Bearer, Basic, token) comes before the credential itself.
         const credential = value.replace(/^(?:\\?\s)*(?:(?:Bearer|Basic|Token|Digest|Bot|ApiKey)\b|[A-Za-z]+(?=\\?\s))?(?:\\?\s)*/i, '');
-        if (credential.trim() !== '') return true;
+        // In prose a value counts only when it looks like one: an opaque word mixing letters and digits, or cases.
+        const word = credential.trim().split(/\s+/)[0] ?? '';
+        if (prose ? /^[A-Za-z0-9._~+/=-]{8,}$/.test(word) && [/[a-z]/, /[A-Z]/, /\d/].filter(re => re.test(word)).length >= 2 : credential.trim() !== '') return true;
     }
     return false;
 }
@@ -11025,9 +11029,12 @@ function literalUrlUserinfo(text: string): boolean {
     return false;
 }
 
-/** Prose a message carries holds a credential only as a token of its issuer's shape, or in a URL's user info. */
+/**
+ * Prose a message carries holds a credential only as a credential header's value, a token of its issuer's shape, or a
+ * URL's user info.
+ */
 function proseHoldsCredential(text: string): boolean {
-    return knownPrefixToken(text) || literalUrlUserinfo(text);
+    return literalHeaderValue(text, true) || knownPrefixToken(text) || literalUrlUserinfo(text);
 }
 
 /**
@@ -13048,6 +13055,9 @@ export function gatedSlackPosts(command: string, workgroupId: string | undefined
      * runs: none when nothing uses it and the line doesn't export it, undefined when the match isn't the whole value or a
      * child process may read it.
      */
+    /** Whether an assignment's value is the Slack API base alone, so the method comes from each use of it. */
+    const holdsBase = (a: { start: number; end: number }) => /^https?:\/\/(?:[a-z0-9-]+\.)?slack\.com\.?(?::\d+)?\/+api\/*$/i
+        .test(command.slice(a.start, a.end).replace(/^[A-Za-z_]\w*(?:\[[^\]=]*\])?\+?=/, '').replace(/['"]/g, ''));
     const useSiteMethods = (start: number, baseEnd: number): Array<string | undefined> | undefined => {
         const a = assignments.find(v => v.start <= start && start < v.end);
         if (!a || command.slice(baseEnd, a.end).replace(/['"/]/g, '') !== '') return undefined;
@@ -13102,8 +13112,10 @@ export function gatedSlackPosts(command: string, workgroupId: string | undefined
         }
     }
     // A variable named for Slack that an HTTP client sends to is a Slack target; one followed by a path is read as a base
-    // above.
+    // above, and one the line sets to the API base is decided at its uses, above.
     for (const target of targets) {
+        const name = /^\$\{?([A-Za-z_]\w*)/.exec(target.variable)?.[1];
+        if (name !== undefined && assignments.some(a => a.name === name && holdsBase(a))) continue;
         named = true;
         for (const { agent, literal, userToken: token } of identitiesFor(target.at)) {
             posts.push({ method: 'unknown', onecliAgent: agent, literal, ...(token ? { userToken: true } : {}), why: `the line sends to ${code(clip(target.variable, 40))} in ${code(clip(target.word, 60))}` });

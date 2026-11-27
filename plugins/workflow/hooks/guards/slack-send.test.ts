@@ -221,6 +221,7 @@ describe('which lines wait for the person whose Slack token they use', () => {
         ['a read on a base URL another variable holds', 'acme', `S=https://slack.com/api; curl -G "\${S%/}/conversations.history" --data-urlencode channel=C1`],
         ['a base URL the line sets and never sends to', 'acme', `S=https://slack.com/api; echo "$S"`],
         ['a read on a base URL ending in a slash, joined with no slash', 'acme', `S=https://slack.com/api/; curl "\${S}conversations.list"`],
+        ['a read joined to a base a variable named for Slack holds', 'acme', `SLACK_API=https://slack.com/api/; curl "\${SLACK_API}conversations.list"`],
         // Text nothing runs or sends: a pattern, a printed string, a document or JSON a heredoc writes, another program's argument.
         ['a grep pattern that names the Slack API', 'acme', `grep -n "slack.com/api" notes.sh | head -20`],
         ['an rg pattern for a write URL', 'acme', `rg 'slack\\.com/api/chat\\.postMessage' src/`],
@@ -259,6 +260,8 @@ describe('a Slack post that writes out a credential', () => {
     test.each([
         ['a token in the message text of a payload file', () => JSON.stringify({ channel: 'C1', text: `use ${issued('xoxb-')}` })],
         ['a token in another field of a payload file', () => JSON.stringify({ channel: 'C1', text: 'Numbers are in.', token: issued('xoxp-') })],
+        ['a credential header pasted into a payload file', () => JSON.stringify({ channel: 'C1', text: 'debug output:\nX-API-Key: 7f3a9c2e5b1d4f6a8c0e2b4d' })],
+        ['an Authorization header in the message text of a payload file', () => JSON.stringify({ channel: 'C1', text: 'the call sent Authorization: Bearer 7f3a9c2e5b1d4f6a8c0e2b4d and failed' })],
         ['a token in a Markdown code span in a payload file', () => JSON.stringify({ channel: 'C1', text: `use \`${issued('xoxb-')}\`` })],
     ] as Array<[string, () => string]>)('%s is refused with fixed text and no card', (_label, payload) => {
         const cwd = mkdtempSync(join(dir, 'cred-'));
@@ -271,6 +274,21 @@ describe('a Slack post that writes out a credential', () => {
         const escaped = JSON.stringify({ channel: 'C1', text: `use ${issued('xoxb-')}` }).replace('xoxb-', '\\' + 'u0078oxb-');
         const v = evaluateSlackPost(`curl https://slack.com/api/chat.postMessage --json '${escaped}'`, 'acme', { nanoclaw: true });
         expect([v.action, v.deny, v.summary, v.sendParts]).toEqual(['gate', LITERAL_CREDENTIAL_REASON, undefined, undefined]);
+    });
+
+    test('a write joined to a base a variable named for Slack holds is one call, decided at its use', () => {
+        const v = evaluateSlackPost(`SLACK_API=https://slack.com/api/; curl -X POST "\${SLACK_API}chat.postMessage" -d text=hi`, 'acme', { nanoclaw: true });
+        expect([v.action, v.deny, v.label]).toEqual(['gate', undefined, 'Slack post in your name (chat.postMessage)']);
+        expect(v.summary).not.toContain('more than one Slack call');
+    });
+
+    test('message text that names a credential header without a value still gets its card, with the text', () => {
+        const cwd = mkdtempSync(join(dir, 'prose-'));
+        for (const text of ['Add an X-API-Key header to the request.', 'Set the Authorization: header to your token.']) {
+            writeFileSync(join(cwd, 'payload.json'), JSON.stringify({ channel: 'C1', text }));
+            const v = evaluateSlackPost(`curl -s https://slack.com/api/chat.postMessage -H 'Content-Type: application/json' --data @payload.json`, 'acme', { cwd, nanoclaw: true });
+            expect([v.action, v.deny, v.sendParts]).toEqual(['gate', undefined, [text]]);
+        }
     });
 
     test('message text that names a credential option still gets its card, with the text', () => {
