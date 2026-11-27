@@ -7742,7 +7742,9 @@ function writeStatements(sql: string, depth = 0, outerParsed = true, plpgsql = f
 const COPY_VALIDATION_ONLY = /\bVALIDATION_MODE\s*=\s*(?:RETURN_(?:\d+_ROWS|ERRORS|ALL_ERRORS|ROWS)\b|'[^']*')/i;
 
 // Statements that send data out of the account, matched anywhere in a statement once literals and comments are blanked.
-const SQL_EGRESS_PATTERNS: Array<{ rx: RegExp; label: string }> = [
+/** An egress statement's rule; a rule that names its own effect, title or undo replaces the card's "data sent out" wording. */
+type EgressRule = { rx: RegExp; label: string; title?: string; effect?: string; loss?: string; undo?: string };
+const SQL_EGRESS_PATTERNS: EgressRule[] = [
     { rx: /\bCOPY\s+(?:FILES\s+)?INTO\s+(?:@|')/i, label: 'COPY INTO a stage or external location' },
     { rx: /\b(?:CREATE|ALTER)\s+(?:OR\s+REPLACE\s+)?SHARE\b/i, label: 'a share' },
     { rx: /\bGRANT\b[\s\S]*\bTO\s+SHARE\b/i, label: 'a grant to a share' },
@@ -7753,14 +7755,26 @@ const SQL_EGRESS_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /\b(?:lo_export|pg_file_write)\s*\(/i, label: 'a file written on the database server' },
     { rx: /\bdblink\w*\s*\(/i, label: 'dblink to another server' },
     { rx: /\bCREATE\s+(?:SUBSCRIPTION|PUBLICATION|(?:FOREIGN\s+)?SERVER)\b|\b(?:CREATE|ALTER)\s+USER\s+MAPPING\b/i, label: 'replication or a foreign server' },
-    { rx: /\bALTER\s+PUBLICATION\b[\s\S]*\b(?:ADD|SET)\s+TABLES?\b/i, label: 'a table added to a publication' },
-    // SET (publish = …) and the like decide which changes a publication sends.
-    { rx: /\bALTER\s+PUBLICATION\b[\s\S]*\bSET\s*\(/i, label: "a change to a publication's settings" },
+    { rx: /\bALTER\s+PUBLICATION\b[\s\S]*\bADD\s+TABLES?\b/i, label: 'a table added to a publication' },
+    {
+        rx: /\bALTER\s+PUBLICATION\b[\s\S]*\bSET\s+TABLES?\b/i,
+        label: "a publication's table list replaced",
+        effect: 'Replaces the tables the publication sends to its subscribers, which can add tables or remove them',
+    },
+    // SET (publish = …) and the like decide which changes a publication sends from then on; nothing is sent by the statement itself.
+    {
+        rx: /\bALTER\s+PUBLICATION\b[\s\S]*\bSET\s*\(/i,
+        label: "a change to a publication's settings",
+        title: "Change a {dialect} publication's settings",
+        effect: 'Changes which future operations the publication sends to its subscribers',
+        loss: 'setting the publication back reverses it for operations from then on',
+        undo: 'set the publication back with ALTER PUBLICATION … SET (…); operations sent before then stay sent.',
+    },
     { rx: /\bALTER\s+PUBLICATION\b[\s\S]*\b(?:ADD|SET)\b/i, label: 'a change to a publication' },
     { rx: /\bCREATE\s+(?:OR\s+REPLACE\s+)?ICEBERG\s+TABLE\b[\s\S]*\bEXTERNAL_VOLUME\b/i, label: 'an Iceberg table on an external volume' },
 ];
 // At a statement's start: Snowflake's GET downloads stage files, and a server-side COPY … TO writes a file or feeds a program.
-const SQL_EGRESS_LEADS: Array<{ rx: RegExp; label: string }> = [
+const SQL_EGRESS_LEADS: EgressRule[] = [
     { rx: /^GET\s+(?:@|')/i, label: 'GET from a stage' },
     { rx: /^COPY\b(?![\s\S]*\bTO\s+STDOUT\b)[\s\S]*?\bTO\s+(?:PROGRAM\b|E?')/i, label: 'COPY … TO a server file or program' },
 ];
@@ -7896,7 +7910,7 @@ function sqlEgressOf(cmd: ResolvedCommand): SqlEgress | null {
         for (const { text, exact } of sqlReadings(cmd, texts)) {
             const hit = egressIn(text);
             if (hit === 'unreadable') unreadable = true;
-            else if (hit) return { definite: true, reason: `${SQL_EGRESS}: ${dialect} SQL sends data out (${hit.pattern}) — ${hit.statement}` };
+            else if (hit) return { definite: true, reason: `${SQL_EGRESS}: ${dialect} SQL ${egressRule(hit.pattern)?.effect?.replace(/^\w/, c => c.toLowerCase()) ?? 'sends data out'} (${hit.pattern}) — ${hit.statement}` };
             // Text snow lexes differently from the scanner is also read with its literals and comments in place.
             const loose = exact ? undefined : SQL_EGRESS_PATTERNS.find(p => p.rx.test(text));
             if (loose) return { definite: true, reason: `${SQL_EGRESS}: ${dialect} SQL may send data out (${loose.label}) — ${oneLine(text).slice(0, STATEMENT_PREVIEW_CHARS)}` };
@@ -8432,13 +8446,21 @@ function writeEffect(st: { pattern: string; text: string }, dialect: string): Sq
     };
 }
 
+/** The egress rule whose label a reason or match names. */
+function egressRule(text: string): EgressRule | undefined {
+    return [...SQL_EGRESS_PATTERNS, ...SQL_EGRESS_LEADS].find(r => text === r.label || text.includes(`(${r.label})`));
+}
+
 /** What a statement that sends data out does, for its card. */
 function egressEffect(hit: { pattern: string; text: string }, dialect: string): SqlEffect {
+    const rule = egressRule(hit.pattern);
+    const does = rule?.effect ?? 'Sends data out of the account';
     return {
-        title: `Send ${dialect} data out of the account (${hit.pattern})`,
-        effect: `Sends data out of the account (${hit.pattern}): ${code(clip(oneLine(hit.text), 160))}.`,
-        plain: `Sends data out of the account (${hit.pattern})`,
-        loss: "data that has left the account can't be called back",
+        title: rule?.title?.replace('{dialect}', dialect) ?? `Send ${dialect} data out of the account (${hit.pattern})`,
+        effect: `${does} (${hit.pattern}): ${code(clip(oneLine(hit.text), 160))}.`,
+        plain: `${does} (${hit.pattern})`,
+        loss: rule?.loss ?? "data that has left the account can't be called back",
+        undo: rule?.undo,
     };
 }
 
@@ -8472,6 +8494,8 @@ interface SqlEffect {
     note?: string;
     /** Overrides the dialect's usual answer to what could be lost. */
     loss?: string;
+    /** Overrides the card's Undo line when every statement on it has one. */
+    undo?: string;
 }
 
 function sqlEffect(st: FoundStatement, dialect: string, whereElsewhere: WhereElsewhere): SqlEffect {
@@ -9003,7 +9027,8 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     const plain = first
         ? `${first.plain} ${databasePlace(cmd, dialect)}${first.note ? ` ${first.note}` : ''}${more}`
         : `Runs ${dialect} commands the guard couldn't fully check ${databasePlace(cmd, dialect)}, so it can't say what they change`;
-    lines.push(egress.length ? `Undo: none for data that has left the ${dialect === 'Snowflake' ? 'account' : 'database'}; it can't be called back.` : dialect === 'Snowflake'
+    const ownUndo = effects.length > 0 && effects.every(e => e.undo) ? effects[0].undo : undefined;
+    lines.push(ownUndo ? `Undo: ${ownUndo}` : egress.some(e => !e.undo) ? `Undo: none for data that has left the ${dialect === 'Snowflake' ? 'account' : 'database'}; it can't be called back.` : dialect === 'Snowflake'
         ? 'Undo: only through Snowflake Time Travel or UNDROP, and only within the retention window.'
         : 'Undo: only from a backup.');
     const db = databaseLine(cmd);
@@ -9535,7 +9560,9 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
         : cmd.name === 'render' && reason.includes(RENDER_READ_HOLD)
         ? renderReadEffect(cmd, reason)
         : cmd.name === 'render' && reason.startsWith(SQL_EGRESS)
-        ? [`Sends data out of the Render database named in the step below: ${clip(reason.slice(SQL_EGRESS.length + 2), 400)}`, "data that has left the database can't be called back"]
+        ? ((rule) => rule?.effect
+            ? [`${rule.effect}, in the Render database named in the step below: ${clip(reason.split(' — ').slice(1).join(' — ') || reason, 400)}`, rule.loss ?? "data that has left the database can't be called back"] as [string, string]
+            : [`Sends data out of the Render database named in the step below: ${clip(reason.slice(SQL_EGRESS.length + 2), 400)}`, "data that has left the database can't be called back"] as [string, string])(egressRule(reason))
         : cmd.name === 'render'
         ? renderChangeEffect(cmd)
         : cmd.name === 'pg_restore' && reason.startsWith('pg_restore --create')

@@ -402,12 +402,35 @@ describe('the card says what the step does', () => {
 
     test.each([
         ['alter publication pub add table orders', 'a table added to a publication'],
-        ['alter publication pub set table orders', 'a table added to a publication'],
-        ["alter publication reporting set (publish = 'insert')", "a change to a publication's settings"],
+        ['alter publication pub set table orders', "a publication's table list replaced"],
         ['create publication pub for table orders', 'replication or a foreign server'],
     ])('%s says what it changes', (sql, label) => {
         const command = `${PG} -c "${sql}"`;
         expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toContain(`(${label})`);
+    });
+
+    test('SET TABLE says it can remove tables', () => {
+        const command = `${PG} -c "alter publication pub set table orders"`;
+        expect(describeGate(command, evaluate(command).reason ?? '', dir).summary).toContain('which can add tables or remove them');
+    });
+
+    test.each([
+        ['psql', `${PG} -c "alter publication reporting set (publish = 'insert')"`],
+        ['render psql', `render -o text psql dpg-proddatabase00000001-a -c "alter publication reporting set (publish = 'insert')"`],
+    ])('a publication settings change through %s says what it changes and that setting it back reverses it', (_how, command) => {
+        const verdict = evaluate(command);
+        expect(verdict.action).toBe('gate');
+        const { summary } = describeGate(command, verdict.reason ?? '', dir);
+        expect(summary).toContain('Changes which future operations the publication sends to its subscribers');
+        expect(summary).toContain('setting the publication back reverses it');
+        expect(summary).not.toContain("can't be called back");
+        expect(summary.toLowerCase()).not.toContain('sends data out');
+        expect(verdict.reason).toStartWith(SQL_EGRESS);
+    });
+
+    test('a settings change beside an unload keeps the unload undo', () => {
+        const command = `${PG} -c "alter publication reporting set (publish = 'insert'); copy orders to '/srv/x.csv'"`;
+        expect(describeGate(command, evaluate(command).reason ?? '', dir).summary).toContain("Undo: none for data that has left the database; it can't be called back.");
     });
 
     test('data sent out leads the card and says it cannot be called back', () => {
