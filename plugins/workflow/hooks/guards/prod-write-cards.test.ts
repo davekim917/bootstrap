@@ -304,6 +304,7 @@ describe('a standing grant keeps its statement classes card-free on its connecti
         ['a share, a grant to it and a consumer account', 'snow sql -c acme_ops -q "create share sales_share; grant select on table prod_db.core.orders to share sales_share; alter share sales_share add accounts = partner_org.partner_acct"'],
         ['a reader account', "snow sql -c acme_ops -q \"create managed account reader_one admin_name = 'r1', admin_password = 'Example-pass-1', type = reader\""],
         ['a granted class beside a read', 'snow sql -c acme_ops -q "select 1; create database scratch_tools"'],
+        ['a granted class after a literal umask', 'umask 077; snow sql -c acme_ops -q "create database if not exists analytics_tools"'],
     ])('%s runs without a card', (_name, command) => {
         expect(evaluate(command).action).toBe('allow');
     });
@@ -316,6 +317,7 @@ describe('a standing grant keeps its statement classes card-free on its connecti
         ['a role switch before a granted class', 'snow sql -c acme_ops -q "use role accountadmin; create database scratch_tools"'],
         ['a granted class on a connection without the grant', 'snow sql -c acme_prod -q "create database scratch_tools"'],
         ['a granted class with a role option', 'snow sql -c acme_ops --role accountadmin -q "create database scratch_tools"'],
+        ['a granted class after a hash that repoints snow', 'hash -p /tmp/bin/snow snow; snow sql -c acme_ops -q "create database scratch_tools"'],
     ])('%s keeps its card', (_name, command) => {
         expect(evaluate(command).action).toBe('gate');
     });
@@ -976,5 +978,19 @@ describe('replay round', () => {
     test('a written host beside a dbname held in a variable shows both', () => {
         const summary = body('psql -X -h db.example "$APP_URL" -c "insert into t values (1)"');
         expect(summary).toContain('on \x60db.example\x60, or on a server \x60$APP_URL\x60 names');
+    });
+});
+
+describe('libpq URI query parameters', () => {
+    const body = (command: string) => describeGate(command, evaluateBashCommand(command, { cwd: dir }).reason ?? '', dir).summary.split('\nStep needing approval')[0];
+    test('the last host in the query wins, as libpq stores a repeated parameter over the one before', () => {
+        const summary = body("psql -X 'postgresql://ignored.example/app?host=first.example&host=last.example' -c 'insert into t values (1)'");
+        expect(summary).toContain('on \x60last.example\x60');
+        expect(summary).not.toContain('first.example');
+    });
+    test('with hostaddr, the card says it connects to the address and authenticates as the host', () => {
+        const summary = body("psql -X 'postgresql://named.example/app?hostaddr=192.0.2.10' -c 'insert into t values (1)'");
+        expect(summary).toContain('on \x60192.0.2.10\x60, authenticating as host \x60named.example\x60');
+        expect(summary).not.toContain('tries each');
     });
 });

@@ -185,7 +185,7 @@ describe('anything that could point the command at another login keeps the card'
         ['an indexed assignment', 'a[HOME=1]=x; snow sql -c acme_dev -q "drop table t"'],
         ['arithmetic in the step itself', 'snow sql -c acme_dev -q "drop table t$((HOME=1))"'],
         ['printf -v', `printf -v X '%s' 1; snow sql -c acme_dev -q "drop table t"`],
-        ['a builtin outside the neutral set before the step', `umask 077; snow sql -c acme_dev -q "drop table t"`],
+        ['a builtin outside the neutral set before the step', `hash -p /tmp/bin/snow snow; snow sql -c acme_dev -q "drop table t"`],
         ['echo writing a file', `echo x > /tmp/h/.snowflake/connections.toml; snow sql -c acme_dev -q "drop table t"`],
         ['echo appending to a file', `echo x >> /tmp/h/.snowflake/config.toml; snow sql -c acme_dev -q "drop table t"`],
         ['echo writing through a duplicated descriptor', `echo x >&3; snow sql -c acme_dev -q "drop table t"`],

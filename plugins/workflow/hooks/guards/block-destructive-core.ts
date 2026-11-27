@@ -4828,7 +4828,7 @@ const BASH_SPECIAL_NAME = /^(?:BASH\w*|RANDOM|SRANDOM|SECONDS|OPTIND|OPTARG|OPTE
 // any other command is a child process.
 const BASH_BUILTINS = new Set(['.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait']);
 // The builtins that assign no variable and change no lookup (`hash -p` repoints a command, so it is not here).
-const NEUTRAL_BUILTINS = new Set(['cd', 'true', ':', 'exit', 'pwd', 'type']);
+const NEUTRAL_BUILTINS = new Set(['cd', 'true', ':', 'exit', 'pwd', 'type', 'umask']);
 
 /**
  * True when a word expands nothing that can assign: only `$NAME`, `${NAME}`, command substitutions (a subshell) and
@@ -8317,8 +8317,9 @@ function databaseParts(cmd: ResolvedCommand): Array<[string, string]> {
         if (db) parts.push(['database', db]);
     } else if (cmd.name === 'psql') {
         const target = libpqTarget(cmd.args, cmd.env ?? []);
-        for (const host of target.hosts) parts.push(['host', host]);
+        // With hostaddr, libpq connects to the address and uses host only to authenticate (TLS, Kerberos).
         for (const address of target.hostaddrs) parts.push(['address', address]);
+        for (const host of target.hosts) parts.push([target.hostaddrs.length ? 'host to authenticate as' : 'host', host]);
         if (target.database) parts.push(['database', target.database]);
         if (target.hidden) parts.push(['or a server named in', target.hidden]);
     }
@@ -8349,11 +8350,13 @@ function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hos
         const authority = uri[1].slice(uri[1].lastIndexOf('@') + 1);
         const hosts = authority.split(',').map(spec => spec.startsWith('[') ? spec.slice(1, spec.indexOf(']')) : spec.replace(/:\d*$/, ''))
             .map(decode).filter(Boolean);
+        // libpq stores a repeated parameter over the one before, so the last wins.
         const query = new URLSearchParams(uri[3] ?? '');
+        const param = (key: string) => query.getAll(key).at(-1);
         conn = {
-            host: query.get('host') ?? (hosts.length ? hosts.join(',') : undefined),
-            hostaddr: query.get('hostaddr') ?? undefined,
-            dbname: query.get('dbname') ?? (uri[2] ? decode(uri[2]) : undefined),
+            host: param('host') ?? (hosts.length ? hosts.join(',') : undefined),
+            hostaddr: param('hostaddr'),
+            dbname: param('dbname') ?? (uri[2] ? decode(uri[2]) : undefined),
         };
     } else if (dbname?.includes('=')) {
         conn = {};
@@ -8383,9 +8386,11 @@ function databasePlace(cmd: ResolvedCommand, dialect: string): string {
     const parts = new Map(all);
     if (cmd.name === 'snow') return `in Snowflake (${parts.has('connection') ? `connection ${code(parts.get('connection')!)}` : 'the default connection'})`;
     const db = parts.get('database');
-    const servers = all.filter(([k]) => k === 'host' || k === 'address').map(([, v]) => code(v));
+    const addresses = all.filter(([k]) => k === 'address').map(([, v]) => code(v));
+    const authHosts = all.filter(([k]) => k === 'host to authenticate as').map(([, v]) => code(v));
+    const servers = addresses.length ? addresses : all.filter(([k]) => k === 'host').map(([, v]) => code(v));
     const hidden = parts.get('or a server named in');
-    const on = servers.length ? ` on ${servers.join(' or ')}${servers.length > 1 ? ' (libpq tries each in turn)' : ''}` : '';
+    const on = servers.length ? ` on ${servers.join(' or ')}${servers.length > 1 ? ' (libpq tries each in turn)' : ''}${authHosts.length ? `, authenticating as host ${authHosts.join(' or ')}` : ''}` : '';
     const named = hidden ? (servers.length ? `, or on a server ${code(hidden)} names` : ` on a server ${code(hidden)} names`) : '';
     return db || servers.length || hidden ? `in the ${dialect} database${db ? ` ${code(db)}` : ''}${on}${named}` : `in a ${dialect} database`;
 }
