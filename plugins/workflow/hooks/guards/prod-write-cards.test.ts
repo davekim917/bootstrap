@@ -967,8 +967,7 @@ describe('replay round', () => {
     });
     test('a multi-host URI shows every host libpq can connect to', () => {
         const summary = body("psql -X 'postgresql://primary.example:5432,failover.example:5433/app' -c 'insert into t values (1)'");
-        expect(summary).toContain('\x60primary.example\x60');
-        expect(summary).toContain('\x60failover.example\x60');
+        expect(summary).toContain('Connects using: \x60postgresql://primary.example:5432,failover.example:5433/app\x60');
     });
     test('host and dbname in a URI query override the authority and path', () => {
         const summary = body("psql -X 'postgresql://ignored.example/app?host=query.example&dbname=other' -c 'insert into t values (1)'");
@@ -988,9 +987,35 @@ describe('libpq URI query parameters', () => {
         expect(summary).toContain('on \x60last.example\x60');
         expect(summary).not.toContain('first.example');
     });
-    test('with hostaddr, the card says it connects to the address and authenticates as the host', () => {
-        const summary = body("psql -X 'postgresql://named.example/app?hostaddr=192.0.2.10' -c 'insert into t values (1)'");
-        expect(summary).toContain('on \x60192.0.2.10\x60, authenticating as host \x60named.example\x60');
-        expect(summary).not.toContain('tries each');
+    test.each([
+        ['a URI with a host list and a hostaddr list holding an empty slot', "psql -X 'postgresql://primary.example,failover.example/app?hostaddr=192.0.2.10,' -c 'insert into t values (1)'", 'postgresql://primary.example,failover.example/app?hostaddr=192.0.2.10,'],
+        ['key=value pairs with a host list and a hostaddr list holding an empty slot', "psql -X -d 'host=primary.example,failover.example hostaddr=192.0.2.10, dbname=app' -c 'insert into t values (1)'", '-d host=primary.example,failover.example hostaddr=192.0.2.10, dbname=app'],
+        ['a single host with a hostaddr', "psql -X 'postgresql://named.example/app?hostaddr=192.0.2.10' -c 'insert into t values (1)'", 'postgresql://named.example/app?hostaddr=192.0.2.10'],
+        ['a host list given with -h', "psql -X -h primary.example,failover.example -p 5432,5433 -d app -c 'insert into t values (1)'", '-h primary.example,failover.example'],
+    ])('%s: the card shows the connection parameters as written', (_name, command, written) => {
+        const summary = body(command);
+        expect(summary).toContain('Connects using: ');
+        expect(summary).toContain('\x60' + written + '\x60');
+        expect(summary).toContain('connection parameters choose');
+        expect(summary).not.toMatch(/on \x60192\.0\.2\.10\x60|authenticating as/);
+    });
+    test('a single host with no hostaddr keeps the card that names it', () => {
+        const summary = body("psql -X -h db.example -d app -c 'insert into t values (1)'");
+        expect(summary).toContain('in the PostgreSQL database \x60app\x60 on \x60db.example\x60');
+        expect(summary).not.toContain('Connects using');
+    });
+});
+
+describe('libpq options as psql reads them', () => {
+    const body = (command: string) => describeGate(command, evaluateBashCommand(command, { cwd: dir }).reason ?? '', dir).summary.split('\nStep needing approval')[0];
+    test('an attached -d counts as the last -d', () => {
+        const summary = body('psql -X -h db.example.com -d staging_app -dprod_app -c "insert into orders values (1)"');
+        expect(summary).toContain('prod_app');
+        expect(summary).not.toContain('staging_app');
+    });
+    test('a connection string splits on ASCII whitespace only, so a non-ASCII space stays inside a value', () => {
+        const summary = body('psql -X "host=db.example.com dbname=prod_app dbname=staging_app" -c "insert into orders values (1)"');
+        expect(summary).toContain('\x60prod_app dbname=staging_app\x60');
+        expect(summary).not.toContain('\x60staging_app\x60');
     });
 });

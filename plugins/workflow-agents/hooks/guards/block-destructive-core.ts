@@ -8321,10 +8321,11 @@ function databaseParts(cmd: ResolvedCommand): Array<[string, string]> {
         if (db) parts.push(['database', db]);
     } else if (cmd.name === 'psql') {
         const target = libpqTarget(cmd.args, cmd.env ?? []);
-        // With hostaddr, libpq connects to the address and uses host only to authenticate (TLS, Kerberos).
-        for (const address of target.hostaddrs) parts.push(['address', address]);
-        for (const host of target.hosts) parts.push([target.hostaddrs.length ? 'host to authenticate as' : 'host', host]);
-        if (target.database) parts.push(['database', target.database]);
+        if (target.verbatim) for (const word of target.verbatim) parts.push(['connects using', word]);
+        else {
+            for (const host of target.hosts) parts.push(['host', host]);
+            if (target.database) parts.push(['database', target.database]);
+        }
         if (target.hidden) parts.push(['or a server named in', target.hidden]);
     }
     return parts;
@@ -8336,16 +8337,25 @@ function databaseParts(cmd: ResolvedCommand): Array<[string, string]> {
  * override the authority and path. A host list (primary,failover) is tried in turn, so each is a target. A dbname
  * holding an unresolved expansion can be a connection string naming any server, which hidden carries.
  */
-function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hostaddrs: string[]; database?: string; hidden?: string } {
+function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hostaddrs: string[]; database?: string; hidden?: string; verbatim?: string[] } {
     const valueOptions = new Set(['-c', '--command', '-f', '--file', '-v', '--set', '--variable', '-o', '--output', '-L', '--log-file', '-F', '-R', '-P', '-T']);
     const operands: string[] = [];
+    // -h and -d as psql's getopt reads them, separate (-d NAME, --dbname NAME), glued (--dbname=NAME) or attached
+    // (-dNAME); the last one given wins.
+    const last: { host?: string; dbname?: string } = {};
     for (let i = 0; i < args.length; i++) {
-        if (/^-[hpUd]$|^--(?:host|port|username|dbname)$/.test(args[i]) || valueOptions.has(args[i])) i++;
-        else if (!args[i].startsWith('-')) operands.push(args[i]);
+        const a = args[i];
+        const m = /^(?:-([hd])(.+)|--(host|dbname)=(.*))$/.exec(a);
+        if (m) last[(m[1] ?? m[3]) === 'h' || m[3] === 'host' ? 'host' : 'dbname'] = m[2] ?? m[4];
+        else if (/^-[hd]$|^--(?:host|dbname)$/.test(a)) {
+            if (args[i + 1] !== undefined) last[a === '-h' || a === '--host' ? 'host' : 'dbname'] = args[i + 1];
+            i++;
+        } else if (/^-[pU]$|^--(?:port|username)$/.test(a) || valueOptions.has(a)) i++;
+        else if (!a.startsWith('-')) operands.push(a);
     }
     const decode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
     const list = (v: string | undefined) => (v ?? '').split(',').map(s => s.trim()).filter(Boolean);
-    const given = lastFlag(args, ['-d', '--dbname']) ?? operands[0];
+    const given = last.dbname ?? operands[0];
     const hidden = given !== undefined && /[$\x60]/.test(given) ? given : undefined;
     const dbname = hidden ? undefined : given;
     let conn: { host?: string; hostaddr?: string; dbname?: string } | null = null;
@@ -8364,24 +8374,48 @@ function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hos
         };
     } else if (dbname?.includes('=')) {
         conn = {};
-        for (const m of dbname.matchAll(/(\w+)\s*=\s*(?:'((?:\\.|[^'\\])*)'|(\S+))/g)) {
+        // libpq splits a connection string on ASCII whitespace only (isspace in the C locale).
+        for (const m of dbname.matchAll(/(\w+)[ \t\n\v\f\r]*=[ \t\n\v\f\r]*(?:'((?:\\.|[^'\\])*)'|([^ \t\n\v\f\r]+))/g)) {
             const value = (m[2] ?? m[3]).replace(/\\(.)/g, '$1');
             if (m[1] === 'host' || m[1] === 'hostaddr' || m[1] === 'dbname') conn[m[1]] = value;
         }
     }
     const envHost = env.map(a => /^PGHOST=([^$\x60]*)$/.exec(a)?.[1]).filter((v): v is string => v !== undefined).at(-1);
+    const host = conn?.host ?? last.host ?? envHost;
+    // A hostaddr, or a host list, pairs entries by position with empty slots that mean something: the card shows the
+    // parameters as written rather than read them.
+    const paired = conn?.hostaddr !== undefined || env.some(a => a.startsWith('PGHOSTADDR=')) || (host ?? '').split(',').length > 1;
     return {
-        hosts: list(conn?.host ?? lastFlag(args, ['-h', '--host']) ?? envHost),
+        hosts: list(host),
         hostaddrs: list(conn?.hostaddr),
         database: conn ? conn.dbname : dbname,
         hidden,
+        verbatim: paired ? connectionWords(args, env, operands[0]) : undefined,
     };
 }
 
+/** The connection parameters a psql step gives, as written, with any password withheld. */
+function connectionWords(args: string[], env: string[], operand: string | undefined): string[] {
+    const withhold = (s: string) => s
+        .replace(/^(postgres(?:ql)?:\/\/[^:@/?#]*:)[^@/?#]*@/, '$1<withheld>@')
+        .replace(/((?:^|[ \t\n\v\f\r?&])password[ \t\n\v\f\r]*=[ \t\n\v\f\r]*)(?:'(?:\\.|[^'\\])*'|[^ \t\n\v\f\r&]*)/g, '$1<withheld>');
+    const words: string[] = env.filter(a => /^PG(?:HOST|HOSTADDR|PORT|DATABASE)=/.test(a));
+    for (let i = 0; i < args.length; i++) {
+        const m = /^(-[hpd]|--(?:host|port|dbname))(=(.*))?$/.exec(args[i]);
+        if (/^-[hpd]./.test(args[i]) || (m && m[2] !== undefined)) words.push(args[i]);
+        else if (m && args[i + 1] !== undefined) words.push(`${args[i]} ${args[++i]}`);
+    }
+    if (operand !== undefined && !args.some(a => /^-d|^--dbname(?:=|$)/.test(a))) words.push(operand);
+    return words.map(withhold);
+}
+
 function databaseLine(cmd: ResolvedCommand): string | null {
-    const parts = databaseParts(cmd).map(([k, v]) => `${k} ${code(v)}`);
-    if (cmd.name === 'snow' && !databaseParts(cmd).some(([k]) => k === 'connection')) parts.unshift('default connection');
-    return parts.length ? `Database: ${parts.join(' · ')}` : null;
+    const all = databaseParts(cmd);
+    const using = all.filter(([k]) => k === 'connects using').map(([, v]) => code(v));
+    const parts = all.filter(([k]) => k !== 'connects using').map(([k, v]) => `${k} ${code(v)}`);
+    if (cmd.name === 'snow' && !all.some(([k]) => k === 'connection')) parts.unshift('default connection');
+    const lines = [parts.length ? `Database: ${parts.join(' · ')}` : '', using.length ? `Connects using: ${using.join(' · ')}` : ''].filter(Boolean);
+    return lines.length ? lines.join('\n') : null;
 }
 
 /** Where a SQL client step runs, in words: "in the PostgreSQL database `app` on `db.example.test`". */
@@ -8390,11 +8424,10 @@ function databasePlace(cmd: ResolvedCommand, dialect: string): string {
     const parts = new Map(all);
     if (cmd.name === 'snow') return `in Snowflake (${parts.has('connection') ? `connection ${code(parts.get('connection')!)}` : 'the default connection'})`;
     const db = parts.get('database');
-    const addresses = all.filter(([k]) => k === 'address').map(([, v]) => code(v));
-    const authHosts = all.filter(([k]) => k === 'host to authenticate as').map(([, v]) => code(v));
-    const servers = addresses.length ? addresses : all.filter(([k]) => k === 'host').map(([, v]) => code(v));
+    if (parts.has('connects using')) return `in a ${dialect} database on the server its connection parameters choose (Connects using, below)`;
+    const servers = all.filter(([k]) => k === 'host').map(([, v]) => code(v));
     const hidden = parts.get('or a server named in');
-    const on = servers.length ? ` on ${servers.join(' or ')}${servers.length > 1 ? ' (libpq tries each in turn)' : ''}${authHosts.length ? `, authenticating as host ${authHosts.join(' or ')}` : ''}` : '';
+    const on = servers.length ? ` on ${servers.join(' or ')}` : '';
     const named = hidden ? (servers.length ? `, or on a server ${code(hidden)} names` : ` on a server ${code(hidden)} names`) : '';
     return db || servers.length || hidden ? `in the ${dialect} database${db ? ` ${code(db)}` : ''}${on}${named}` : `in a ${dialect} database`;
 }
