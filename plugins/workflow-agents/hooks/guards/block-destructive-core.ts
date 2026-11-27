@@ -10988,17 +10988,25 @@ function literalHeaderValue(text: string): boolean {
     return false;
 }
 
-// The prefixes only an issued token starts with: GitHub's, GitLab's and Slack's.
-const TOKEN_PREFIX = String.raw`(?:gh[opusr]_|github_pat_|glpat-|xox[a-z]-)`;
-const KNOWN_PREFIX_TOKEN = new RegExp(String.raw`(?<![A-Za-z0-9_])${TOKEN_PREFIX}([A-Za-z0-9_-]{16,})`, 'g');
+// Each issuer's token by its documented shape: GitHub's (gh?_ and 36 characters, github_pat_ and 82), GitLab's personal
+// access token (glpat- and at least 20) and Slack's (numeric segments, then the secret; rotating ones start xoxe).
+// `upper`: the secret is random letters and digits, so a body without a capital, or one character repeated (a redacted
+// value), is a name.
+const ISSUED_TOKENS: Array<{ prefix: string; body: string; upper?: boolean }> = [
+    { prefix: 'gh[pousr]_', body: '[A-Za-z0-9]{36}', upper: true },
+    { prefix: 'github_pat_', body: '[A-Za-z0-9]{22}_[A-Za-z0-9]{59}', upper: true },
+    { prefix: 'glpat-', body: '[A-Za-z0-9_-]{20,}', upper: true },
+    { prefix: 'xox[abp]-', body: String.raw`\d+(?:-\d+){1,2}-[A-Za-z0-9]{6,}` },
+    { prefix: String.raw`xoxe(?:\.xox[abp])?-`, body: String.raw`\d+-[A-Za-z0-9]{20,}` },
+];
+const TOKEN_PREFIX = `(?:${ISSUED_TOKENS.map(t => t.prefix).join('|')})`;
+// A token starts a word, or follows = : a quote or whitespace; after / or - its prefix is part of a name (fix/glpat-…).
+const ISSUED_TOKEN_RES = ISSUED_TOKENS.map(t => ({ re: new RegExp(String.raw`(?<=^|[\s=:"'])${t.prefix}(${t.body})(?![A-Za-z0-9_-])`, 'g'), upper: t.upper }));
 
-/**
- * A token with a known prefix written out anywhere, in any field: the prefix, then at least 16 token characters that mix
- * two of lower case, upper case and digits. Prose that names the prefix (`xoxp-`, `xoxp-…`), a lower-case placeholder
- * (`xoxb-your-bot-token`) and a redacted value (`xoxp-XXXX-XXXXXXXX`) are no token.
- */
+/** A token an issuer hands out, written out anywhere on the line, in any field. */
 function knownPrefixToken(text: string): boolean {
-    return [...text.matchAll(KNOWN_PREFIX_TOKEN)].some(([, body]) => [/[a-z]/, /[A-Z]/, /\d/].filter(re => re.test(body)).length >= 2);
+    return ISSUED_TOKEN_RES.some(({ re, upper }) => [...text.matchAll(re)]
+        .some(([, body]) => !upper || (/[A-Z]/.test(body) && new Set(body.replace(/[-_]/g, '')).size > 1)));
 }
 
 /**
@@ -13023,6 +13031,25 @@ export function gatedSlackPosts(command: string, workgroupId: string | undefined
     const targets = clientSlackTargets(command, undefined, 0, data);
     data.push(...inertSpans(command));
     const inData = (offset: number) => data.some(([s, e]) => s <= offset && offset < e);
+    /**
+     * The methods a base URL an assignment holds goes on to at each place the line uses the variable, outside text nothing
+     * runs: none when nothing uses it and the line doesn't export it, undefined when the match isn't the whole value or a
+     * child process may read it.
+     */
+    const useSiteMethods = (start: number, baseEnd: number): Array<string | undefined> | undefined => {
+        const a = assignments.find(v => v.start <= start && start < v.end);
+        if (!a || command.slice(baseEnd, a.end).replace(/['"/]/g, '') !== '') return undefined;
+        const uses = [...command.matchAll(new RegExp(String.raw`\$\{${a.name}(?:[^}]*)\}|\$${a.name}(?![A-Za-z0-9_])`, 'g'))]
+            .filter(u => (u.index! < a.start || u.index! >= a.end) && !inData(u.index!));
+        if (uses.length) return uses.map(u => SLACK_METHOD_AFTER.exec(command.slice(u.index! + u[0].length))?.[1]);
+        // A child process sees only what the line exports: an assignment it doesn't export, and nothing on the line uses,
+        // makes no request.
+        const statement = command.slice(0, a.start).split(/[;&|(\n]/).pop() ?? '';
+        const prefixesCommand = /^[ \t]*[^\s;&|)]/.test(command.slice(a.end)) && !/^[ \t]*[A-Za-z_]\w*\+?=/.test(command.slice(a.end));
+        const exported = /\b(?:export|env|declare|typeset|readonly|local)\b/.test(statement) || prefixesCommand
+            || /\bset\s+(?:-\w*a|-o\s+allexport)\b/.test(command) || new RegExp(String.raw`\bexport\b[^;&|\n]*\b${a.name}\b`).test(command);
+        return exported ? undefined : [];
+    };
     const posts: SlackPost[] = [];
     let named = false;
     for (const m of line.matchAll(SLACK_API_BASE)) {
@@ -13031,7 +13058,9 @@ export function gatedSlackPosts(command: string, workgroupId: string | undefined
         if (SLACK_PLACEHOLDER_AFTER.test(line.slice(end))) continue;
         named = true;
         const after = SLACK_METHOD_AFTER.exec(line.slice(end));
-        const method = after?.[1];
+        const resolved = after ? undefined : useSiteMethods(at[m.index!], at[end - 1] + 1);
+        if (resolved?.every(r => r !== undefined && SLACK_READ_METHOD.test(r))) continue;
+        const method = after?.[1] ?? resolved?.find(r => r !== undefined && !SLACK_READ_METHOD.test(r));
         if (method !== undefined && SLACK_READ_METHOD.test(method)) continue;
         const identities = identitiesFor(at[m.index!]);
         if (!identities.length) continue;
@@ -13795,7 +13824,7 @@ function statementPlaces(command: string, commands: ResolvedCommand[]): Map<Reso
 
 /** What a card can show of a post's message, or why it shows none: only text that binds exactly to what is sent. */
 function postMessage(command: string, method: string, opts: { cwd?: string; nanoclaw: boolean }):
-    { text: string; notification?: string; exact: boolean; simplified?: boolean; from?: string; written?: boolean; payload?: PayloadBinding } | { notShown: string } {
+    { text: string; notification?: string; exact: boolean; simplified?: boolean; from?: string; written?: boolean; payload?: PayloadBinding; body: string } | { notShown: string } {
     const notShown = (reason: string) => ({ notShown: reason });
     if (!EXACT_SLACK_METHODS.has(method)) return notShown(`the guard shows text only for ${[...EXACT_SLACK_METHODS].join(' and ')}`);
     let commands: ResolvedCommand[];
@@ -13847,7 +13876,7 @@ function postMessage(command: string, method: string, opts: { cwd?: string; nano
         if (ahead.length) return notShown('another command runs before the post and may change what it sends; post it in a command of its own');
         const written = [...cmd.raw.matchAll(/'([^']*)'/g)].map(m => m[1]);
         const message = written.includes(body.value!) ? payloadMessage(body.value!) : null;
-        return message ?? notShown('the body is not one single-quoted Slack message the guard can read');
+        return message ? { ...message, body: body.value! } : notShown('the body is not one single-quoted Slack message the guard can read');
     }
     const named = body.value!.slice(1);
     if (named === '-' || !named) return notShown('the body is read from stdin');
@@ -13871,13 +13900,13 @@ function postMessage(command: string, method: string, opts: { cwd?: string; nano
         }
         const message = payloadMessage(written.text);
         if (message === null) return notShown(`the text the line writes to ${code(named)} has blocks or attachments the guard can't show, or isn't JSON`);
-        return { ...message, from: named, written: true, payload: { path, real: canonical, sha256: createHash('sha256').update(written.text).digest('hex'), written: true } };
+        return { ...message, body: written.text, from: named, written: true, payload: { path, real: canonical, sha256: createHash('sha256').update(written.text).digest('hex'), written: true } };
     }
     const raw = readBodyFile(path, dir, PAYLOAD_EXTENSIONS);
     if (raw === null) return notShown(`${code(named)} is missing, not a .json or .txt file, or outside the working directories`);
     const message = payloadMessage(raw);
     if (message === null) return notShown(`${code(named)} holds blocks or attachments the guard can't show as text`);
-    return { ...message, from: named, payload: { path, real: realpathSync(path), sha256: createHash('sha256').update(raw).digest('hex') } };
+    return { ...message, body: raw, from: named, payload: { path, real: realpathSync(path), sha256: createHash('sha256').update(raw).digest('hex') } };
 }
 
 /**
@@ -13952,6 +13981,10 @@ export function evaluateSlackPost(
     const as = (agents.length ? ` as you, through ${agents.map(who).join(' and ')}` : ' as you') + token;
     const message = posts.length > 1 ? { notShown: 'the line makes more than one Slack call' }
         : method ? postMessage(command, method, { cwd: opts.cwd, nanoclaw }) : { notShown: 'the shell fills in the method' };
+    // The text the card would show, and the payload it comes from, are read for credentials like the command.
+    if (!('notShown' in message) && [message.text, message.notification, message.body].some(t => t !== undefined && containsCredential(t))) {
+        return { action: 'gate', label, deny: LITERAL_CREDENTIAL_REASON };
+    }
     let summary: string;
     if ('notShown' in message) {
         summary = `The agent wants to post to Slack${as} (${first.why}). Message text not shown: ${message.notShown}. Check the full command before approving.`;

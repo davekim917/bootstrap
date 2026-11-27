@@ -142,6 +142,8 @@ describe('which lines wait for the person whose Slack token they use', () => {
         ['a post with a variable that holds a Slack user token', undefined, `curl -H "Authorization: Bearer $SLACK_USER_TOKEN" -d text=hi https://slack.com/api/chat.postMessage`],
         ['a listed identity run by onecli from its path', 'other', `/opt/tools/bin/onecli run --agent ag-acme -- ${POST}`],
         // Text that names the Slack API still counts where something runs or sends it.
+        ['a write on a base URL a variable holds', 'acme', `S=https://slack.com/api; curl -X POST "$S/chat.postMessage" -d text=hi`],
+        ['a base URL the line exports to a script it runs', 'acme', `export S=https://slack.com/api; ./post.sh`],
         ['a write URL in a heredoc fed to a shell', 'acme', `cat <<'EOF' | bash\ncurl -X POST https://slack.com/api/chat.postMessage -d @payload.json\nEOF`],
         ['a write URL in a script a heredoc writes and the line runs', 'acme', `cat > send.sh <<'EOF'\ncurl -X POST https://slack.com/api/chat.postMessage -d @payload.json\nEOF\nbash send.sh`],
         ['a write URL echo hands to xargs', 'acme', `echo https://slack.com/api/chat.postMessage | xargs curl -X POST -d @payload.json`],
@@ -214,6 +216,10 @@ describe('which lines wait for the person whose Slack token they use', () => {
         // A Slack URL is a call only where an HTTP client takes it as its URL, not in the values its options take.
         ['a search whose query holds a Slack API URL', 'acme', `curl -G https://slack.com/api/search.messages --data-urlencode 'query=https://slack.com/api/chat.postMessage'`],
         ['a Slack API URL in a header to another host', 'acme', `curl -H 'Referer: https://slack.com/api/chat.postMessage' https://api.example.com/v1/x`],
+        // A base URL a variable holds is judged where the line uses it.
+        ['a read on a base URL a variable named for Slack holds', 'acme', `SLACK_API=https://slack.com/api; curl "$SLACK_API/conversations.list"`],
+        ['a read on a base URL another variable holds', 'acme', `S=https://slack.com/api; curl -G "\${S%/}/conversations.history" --data-urlencode channel=C1`],
+        ['a base URL the line sets and never sends to', 'acme', `S=https://slack.com/api; echo "$S"`],
         // Text nothing runs or sends: a pattern, a printed string, a document or JSON a heredoc writes, another program's argument.
         ['a grep pattern that names the Slack API', 'acme', `grep -n "slack.com/api" notes.sh | head -20`],
         ['an rg pattern for a write URL', 'acme', `rg 'slack\\.com/api/chat\\.postMessage' src/`],
@@ -230,8 +236,11 @@ describe('which lines wait for the person whose Slack token they use', () => {
     });
 });
 
-// A token of an issued shape, built here so no whole token is written in the source.
-const issued = (prefix: string) => prefix + ['1234567890', '0987654321', 'AbCdEfGhIjKlMnOp'].join('-');
+// A token of its issuer's shape, built here so no whole token is written in the source.
+const random = (n: number) => 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'.repeat(4).slice(0, n);
+const issued = (prefix: string) => prefix.startsWith('xoxe') ? `${prefix}1-${random(40)}`
+    : prefix.startsWith('xox') ? `${prefix}1234567890-0987654321-${random(24)}`
+    : prefix === 'github_pat_' ? `${prefix}${random(22)}_${random(59)}` : prefix === 'glpat-' ? prefix + random(20) : prefix + random(36);
 
 describe('a Slack post that writes out a credential', () => {
     test.each([
@@ -243,6 +252,22 @@ describe('a Slack post that writes out a credential', () => {
         ['an app configuration token, which the credential reader counts like any other header value', 'acme', `curl -s https://slack.com/api/apps.manifest.update -H 'Authorization: Bearer xoxe.xoxp-1-EXAMPLE' -d app_id=A1`],
     ] as Array<[string, string | undefined, string]>)('%s is refused with fixed text and no card', (_label, workgroup, command) => {
         const v = evaluateSlackPost(command, workgroup, { nanoclaw: true });
+        expect([v.action, v.deny, v.summary, v.sendParts]).toEqual(['gate', LITERAL_CREDENTIAL_REASON, undefined, undefined]);
+    });
+
+    test.each([
+        ['a token in the message text of a payload file', () => JSON.stringify({ channel: 'C1', text: `use ${issued('xoxb-')}` })],
+        ['a token in another field of a payload file', () => JSON.stringify({ channel: 'C1', text: 'Numbers are in.', token: issued('xoxp-') })],
+    ] as Array<[string, () => string]>)('%s is refused with fixed text and no card', (_label, payload) => {
+        const cwd = mkdtempSync(join(dir, 'cred-'));
+        writeFileSync(join(cwd, 'payload.json'), payload());
+        const v = evaluateSlackPost(`curl -s https://slack.com/api/chat.postMessage -H 'Content-Type: application/json' --data @payload.json`, 'acme', { cwd, nanoclaw: true });
+        expect([v.action, v.deny, v.summary, v.sendParts]).toEqual(['gate', LITERAL_CREDENTIAL_REASON, undefined, undefined]);
+    });
+
+    test('a token the JSON escapes spell out in the message text is refused with fixed text and no card', () => {
+        const escaped = JSON.stringify({ channel: 'C1', text: `use ${issued('xoxb-')}` }).replace('xoxb-', '\\' + 'u0078oxb-');
+        const v = evaluateSlackPost(`curl https://slack.com/api/chat.postMessage --json '${escaped}'`, 'acme', { nanoclaw: true });
         expect([v.action, v.deny, v.summary, v.sendParts]).toEqual(['gate', LITERAL_CREDENTIAL_REASON, undefined, undefined]);
     });
 

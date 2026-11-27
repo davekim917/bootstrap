@@ -23,8 +23,11 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const evaluate = (command: string) => evaluateBashCommand(command, { cwd: dir });
 const PROD = 'https://api.render.com/v1/services/srv-prodservice000000001/env-vars/FOO';
 const H = 'psql -h db.example.com';
-// A token of an issued shape, built here so no whole token is written in the source.
-const issued = (prefix: string) => prefix + ['1234567890', '0987654321', 'AbCdEfGhIjKlMnOp'].join('-');
+// A token of its issuer's shape, built here so no whole token is written in the source.
+const random = (n: number) => 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'.repeat(4).slice(0, n);
+const issued = (prefix: string) => prefix.startsWith('xoxe') ? `${prefix}1-${random(40)}`
+    : prefix.startsWith('xox') ? `${prefix}1234567890-0987654321-${random(24)}`
+    : prefix === 'github_pat_' ? `${prefix}${random(22)}_${random(59)}` : prefix === 'glpat-' ? prefix + random(20) : prefix + random(36);
 
 describe('a gated or refused command that writes out a credential is refused with the fixed text', () => {
     test.each([
@@ -172,6 +175,7 @@ describe('the same command with the credential in a variable takes the ordinary 
         ['a token_type category in SQL', `${H} -d app -c "DELETE FROM sessions WHERE token_type = 'refresh'"`, 'token_type'],
         ['a MySQL password from a variable', 'mysql -h db.example.com -p"$MYSQL_PW" -e "drop table orders"', 'drop table orders'],
         ['a URI password from a variable', 'psql "postgresql://app:$PGPW@192.0.2.20/app" -c "drop table orders"', 'drop table orders'],
+        ['a branch whose name holds a token prefix', 'git push origin --delete fix/glpat-token-redaction-2026', 'fix/glpat-token-redaction-2026'],
     ])('%s', (_name, command, shown) => {
         const verdict = evaluate(command);
         expect(verdict.action).toBe('gate');
@@ -217,6 +221,9 @@ describe('the detector fires on literal values only', () => {
         ['prose naming a token prefix', 'paste the user token (xoxp-) or xoxp-… here, as in xoxp-EXAMPLE'],
         ['a lower-case placeholder after a token prefix', 'curl -d token=xoxb-your-bot-token-goes-here https://slack.com/api/auth.test'],
         ['an abbreviated example after a token prefix', 'Slack bot tokens look like xoxb-123-Abc and GitHub ones like ghp_Ab12'],
+        ['a token prefix inside a path', `x fix/${issued('glpat-')}`],
+        ['a token prefix after a dash', `x release-${issued('ghp_')}`],
+        ['a redacted GitHub token', `x ghp_${'X'.repeat(36)}`],
         ['a redacted token', 'curl -d token=xoxp-XXXX-XXXXXXXXXX-XXXXXXXXXXXXXXXX https://slack.com/api/auth.test'],
     ])('%s does not fire', (_name, text) => {
         expect(containsCredential(text)).toBe(false);
@@ -237,6 +244,8 @@ describe('the detector fires on literal values only', () => {
         ['a Slack token in a form field', `curl -d token=${issued('xoxp-')} https://slack.com/api/chat.postMessage`],
         ['a Slack token in a query', `curl "https://slack.com/api/chat.postMessage?token=${issued('xoxp-')}&channel=C1"`],
         ['a Slack token in a JSON body', `curl --json '{"token":"${issued('xoxb-')}","channel":"C1"}' https://slack.com/api/chat.postMessage`],
+        ['a rotating Slack token', `release-cli publish ${issued('xoxe.xoxp-')}`],
+        ['a Slack refresh token', `release-cli publish ${issued('xoxe-')}`],
         ['a GitHub token as a bare argument', `release-cli publish ${issued('github_pat_')}`],
         ['a GitLab token as a bare argument', `release-cli publish ${issued('glpat-')}`],
     ])('%s fires', (_name, text) => {
