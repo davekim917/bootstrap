@@ -14,6 +14,7 @@ beforeAll(() => {
     writeFileSync(join(dir, 'scram.sql'), "create role app login password '" + 'SCRAM-SHA-256$4096:' + SECRET + 'Zk9x'.repeat(60) + "';\ndrop table orders;\n");
     writeFileSync(join(dir, 'dynamic.sql'), "DO $$ BEGIN EXECUTE 'DROP TABLE orders; ALTER ROLE app PASSWORD ''" + SECRET + 'x'.repeat(300) + "'''; END $$;\n");
     writeFileSync(join(dir, 'quoted.sql'), "delete from accounts where password = 'short-" + SECRET + "';\n");
+    writeFileSync(join(dir, 'in-list.sql'), "DELETE FROM integrations WHERE api_key IN ('" + SECRET + "');\n");
     writeFileSync(join(dir, 'quoted-column.sql'), 'DELETE FROM integrations WHERE "api_key" = \'' + SECRET + "';\n");
     writeFileSync(join(dir, 'format.sql'), "DO $$ BEGIN EXECUTE format('ALTER ROLE app PASSWORD\n%L', '" + SECRET + "'); END $$;\nDROP TABLE orders;\n");
 });
@@ -89,6 +90,7 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['a long password in opaque dynamic SQL', 'dynamic.sql'],
         ['a password the statement compares', 'quoted.sql'],
         ['a password format() supplies on the next line', 'format.sql'],
+        ['an api_key IN list', 'in-list.sql'],
         ['a quoted api_key column', 'quoted-column.sql'],
     ])('%s in a SQL file the command reads', (_name, name) => {
         expect(evaluate(`${H} -f ${join(dir, name)}`)).toEqual({ action: 'block', reason: LITERAL_CREDENTIAL_REASON });
@@ -117,6 +119,8 @@ describe('the same command with the credential in a variable takes the ordinary 
         ['a git token from a variable', 'git push --force https://$GH_TOKEN@192.0.2.40/example/release main', 'main'],
         ['an HTTPie token from a variable', 'http -A bearer -a "$RENDER_TOKEN" DELETE https://api.render.com/v1/services/srv-prodservice000000001', 'srv-prodservice000000001'],
         ['a helper path in GIT_ASKPASS', 'GIT_ASKPASS=/usr/local/bin/git-askpass git push origin --delete stale-topic', 'stale-topic'],
+        ['psql --password before the database name', `${H} -c 'DROP TABLE orders' --password "app"`, 'DROP TABLE orders'],
+        ['a curl client key file', `curl --key client.pem --cert client.crt -X DELETE ${PROD}`, PROD],
         ['a token_type category in SQL', `${H} -d app -c "DELETE FROM sessions WHERE token_type = 'refresh'"`, 'token_type'],
         ['a MySQL password from a variable', 'mysql -h db.example.com -p"$MYSQL_PW" -e "drop table orders"', 'drop table orders'],
         ['a URI password from a variable', 'psql "postgresql://app:$PGPW@192.0.2.20/app" -c "drop table orders"', 'drop table orders'],
@@ -145,6 +149,10 @@ describe('the detector fires on literal values only', () => {
         ['a table named for passwords', 'DELETE FROM password_reset_tokens'],
         ['psql --password, which takes no value', 'psql --password -h db.example.com app'],
         ['an askpass helper', 'SSH_ASKPASS=/usr/bin/ssh-askpass'],
+        ['psql -W', 'psql -W -h db.example.com app'],
+        ['curl --key and --cacert files', 'curl --key client.pem --cacert ca.pem https://example.com'],
+        ['ssh -i', 'ssh -i deploy_key host.example.com'],
+        ['a --*-file option', 'gcloud auth activate-service-account --key-file sa.json'],
         ['a sort key', 'SORT_KEY=name'],
         ['a key file path', 'API_KEY=/run/secrets/api_key'],
         ['a token count column', "SELECT 1 WHERE token_type = 'refresh'"],
@@ -161,6 +169,8 @@ describe('the detector fires on literal values only', () => {
         ['a token column matched with LIKE', `DELETE FROM sessions WHERE refresh_token LIKE '${SECRET}%'`],
         ['an option named for a secret', `vault write x --client-secret ${SECRET}`],
         ['bare SECRET', `SECRET=${SECRET}`],
+        ['an api_key IN list', `DELETE FROM integrations WHERE api_key IN ('${SECRET}')`],
+        ['a token IN list after a space', `DELETE FROM sessions WHERE refresh_token IN ( '${SECRET}', 'b')`],
         ['bare KEY', `KEY=${SECRET}`],
         ['bare API_KEY', `API_KEY=${SECRET}`],
         ['a backtick-quoted secret column', `UPDATE t SET \`client_secret\` = '${SECRET}'`],

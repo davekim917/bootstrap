@@ -7966,6 +7966,9 @@ function literalUserinfo(value: string): boolean {
 
 const HEADER_VALUE = /\b(?:(?:proxy-)?authorization|(?:x-)?(?:api|auth)[-_]?(?:key|token))\s*:\s*([^'"\n]*)/gi;
 const PASSWORD_WORD = /passw(?:or)?d(?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*/gi;
+// Options whose value names a file (curl's client key and certificates): the file holds the secret, the option doesn't.
+const FILE_VALUED_OPTIONS = new Set(['key', 'cert', 'cacert', 'capath', 'pubkey', 'proxy-key', 'proxy-cert', 'proxy-cacert', 'proxy-capath', 'key-type', 'crlfile']);
+
 /**
  * Whether a name says it holds a credential: its last _ or - segment is one (AWS_SESSION_TOKEN, client_secret,
  * refresh_token, PGPASSWORD, new_pw), or it ends in an API, access, secret or private KEY, or is KEY alone. A word
@@ -7992,6 +7995,8 @@ export function containsCredential(text: string): boolean {
     for (const m of text.matchAll(PASSWORD_WORD)) {
         const after = text.slice((m.index ?? 0) + m[0].length);
         const assigned = /^\+?=\s*/.exec(after);
+        // psql's --password takes no value: the word after it is the next argument (its database, say).
+        if (!assigned && /--(?:[a-z]+-)?$/i.test(text.slice(0, m.index ?? 0))) continue;
         if (assigned ? literalValue(after.slice(assigned[0].length)) : /^(?:['"$]|[EeUu]&?'|%[A-Za-z])/.test(after) && literalValue(after, true)) return true;
     }
     for (const v of valuesAfter(text, /\bidentified\s+by\s+(?:password\s+)?(\S+)/gi)) if (literalValue(v)) return true;
@@ -8005,7 +8010,7 @@ export function containsCredential(text: string): boolean {
     }
     // An option named for a credential, given a value; a password option only with =, since psql's takes none.
     for (const m of text.matchAll(/(?:^|[\s'"])--(?!no-)([a-z0-9-]+)(=|\s+)(\S+)/gi)) {
-        if (!credentialName(m[1]) || m[3].startsWith('-')) continue;
+        if (!credentialName(m[1]) || FILE_VALUED_OPTIONS.has(m[1].toLowerCase()) || m[3].startsWith('-')) continue;
         if (m[2] !== '=' && /^(?:password|passwd|pass)$/i.test(m[1])) continue;
         if (literalValue(m[3])) return true;
     }
@@ -8014,7 +8019,7 @@ export function containsCredential(text: string): boolean {
         if (credentialName(m[1]) && literalValue(m[2])) return true;
     }
     // SQL comparing or assigning a literal to a credential-named column, quoted or not: `WHERE "api_key" = '…'`.
-    for (const m of text.matchAll(/["`]?(\w+)["`]?\s*(?:=|<>|!=|\bLIKE\b)\s*((?:[EeUu]&?)?['$]\S*)/gi)) {
+    for (const m of text.matchAll(/["`]?(\w+)["`]?\s*(?:=|<>|!=|\bLIKE\b|\bIN\s*\()\s*((?:[EeUu]&?)?['$]\S*)/gi)) {
         if (credentialName(m[1]) && literalValue(m[2].replace(/^[EeUu]&?/, ''), true)) return true;
     }
     if (/\bcurl\b/.test(text)) {
