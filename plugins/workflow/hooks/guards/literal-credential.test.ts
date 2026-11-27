@@ -226,3 +226,7 @@ describe('the detector fires on literal values only', () => {
 test('a subscription connection string with no credential keeps its card', () => {
     expect(evaluate(`${H} -X -d app -c "CREATE SUBSCRIPTION s CONNECTION 'host=192.0.2.40 dbname=app user=rep' PUBLICATION p"`).action).toBe('gate');
 });
+
+test('a DSN template stored as SQL data keeps its card', () => {
+    expect(evaluate(`${H} -X -d app -c "UPDATE help_snippets SET body = 'postgresql://app:<password>@db.example.com/app' WHERE id = 1"`).action).toBe('gate');
+});

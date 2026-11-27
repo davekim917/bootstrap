@@ -8832,9 +8832,12 @@ const isLibpqCredentialKey = (key: string) => LIBPQ_CREDENTIAL_KEYS.includes(key
  * since its card prints the whole step; or a PG variable for one. Which of them the client uses is the target's
  * business (libpqTarget), not this check's.
  */
-/** Whether a string is a complete libpq connection string with a password or sslpassword written out in it. */
-function conninfoCredential(s: string): boolean {
-    return (connectionParams(s) ?? []).some(p => isLibpqCredentialKey(p.key) && libpqLiteral(p.raw, p.value));
+/**
+ * Whether a string is a complete libpq connection string with a password or sslpassword written out in it. With
+ * `templates`, as for SQL data, a placeholder such as <password> is a template's, not a credential.
+ */
+function conninfoCredential(s: string, templates = false): boolean {
+    return (connectionParams(s) ?? []).some(p => isLibpqCredentialKey(p.key) && libpqLiteral(p.raw, p.value) && !(templates && templatePlaceholder(p.value)));
 }
 
 // Written out or not is read from the text as written: %24 decodes to $ only for libpq, after the shell is done.
@@ -8848,7 +8851,7 @@ function sqlConninfoCredential(sql: string): boolean {
     return [...sql.matchAll(/'((?:[^']|'')*)'/g)].some(m => {
         const s = m[1].replace(/''/g, "'");
         const params = connectionParams(s);
-        return !!params && (/^postgres(?:ql)?:\/\//.test(s) || params.some(p => /^(?:host|hostaddr|dbname|user|port|service)$/.test(p.key))) && conninfoCredential(s);
+        return !!params && (/^postgres(?:ql)?:\/\//.test(s) || params.some(p => /^(?:host|hostaddr|dbname|user|port|service)$/.test(p.key))) && conninfoCredential(s, true);
     });
 }
 
@@ -8860,7 +8863,7 @@ function libpqCredentialWritten(cmd: ResolvedCommand): boolean {
     const words = [...cmd.args, ...(cmd.env ?? []).map(e => e.slice(e.indexOf('=') + 1))];
     const extracted = cmd.name === 'psql' ? psqlOptions(cmd.args).written.flatMap(w => (w.dbname === undefined ? [] : [w.dbname])) : [];
     const inputs = [...words.flatMap(w => [w, /^--[^=]+=([\s\S]*)$/.exec(w)?.[1], /^-[A-Za-z]([\s\S]+)$/.exec(w)?.[1]]), ...extracted].filter((v): v is string => v !== undefined);
-    if (inputs.some(conninfoCredential)) return true;
+    if (inputs.some(s => conninfoCredential(s))) return true;
     return (cmd.env ?? []).some(e => {
         const m = /^PG([A-Z]+)=([\s\S]*)$/.exec(e);
         return !!m && isLibpqCredentialKey(m[1]) && literal(m[2], m[2]);
@@ -10028,14 +10031,18 @@ function sqlLiteral(text: string, dollarQuotes = true): boolean {
     return !!tag && v.indexOf(tag[0], tag[0].length) > tag[0].length;
 }
 
+/** A template's placeholder (%s, {password}, <password>) stands for a value; it isn't one. */
+function templatePlaceholder(value: string): boolean {
+    return /^(?:%[a-z]|\{\w*\}|<[^>]*>)$/i.test(value);
+}
+
 /** user:password with a written-out password, or a written-out user with an empty one (a token as the user). */
 function literalUserinfo(value: string): boolean {
     const v = value.replace(/^['"]+|['"]+$/g, '');
     const colon = v.indexOf(':');
     if (colon < 0 || SHELL_EXPANSION.test(v)) return false;
     const password = v.slice(colon + 1);
-    // A template's placeholder (%s, {password}, <password>) stands for a value; it isn't one.
-    if (/^(?:%[a-z]|\{\w*\}|<[^>]*>)$/i.test(password || v.slice(0, colon))) return false;
+    if (templatePlaceholder(password || v.slice(0, colon))) return false;
     return password === '' ? v.slice(0, colon) !== '' : true;
 }
 
