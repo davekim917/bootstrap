@@ -9596,16 +9596,6 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
         ? [`Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`, "anything it destroys can't be brought back"]
         : GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
             ?? (PLATFORM_DESTRUCTIVE[cmd.name] ? [`Deletes or shuts down the ${cmd.name} resource named in the step below.`, "this can't be undone"] : undefined);
-    if (cmd.name === 'render' && reason.startsWith(SQL_EGRESS)) {
-        const egress = egressEffectsIn((renderPsqlTexts(cmd) ?? []).flatMap(t => psqlStatementTexts(t)), 'PostgreSQL');
-        const undo = cardUndo(egress, egress, 'database');
-        if (egress.length && undo) {
-            const lines = egress.map((e, i) => `${i === 0 ? 'If you approve:' : 'And:'} ${e.effect}`);
-            lines.push('Database: the Render database named in the step below', `Undo: ${undo.undo}`);
-            const what = `Runs ${run}, which ${egress[0].plain.charAt(0).toLowerCase()}${egress[0].plain.slice(1)} in the Render database named in the step below${egress.length > 1 ? `, plus ${egress.length - 1} more` : ''}`;
-            return { label: `Run ${[cmd.name, ...verbs].join(' ')}`, lines, plain: { what, loss: undo.loss } };
-        }
-    }
     const plain: PlainEffect = described
         ? { what: `Runs ${run}, which ${described[0].charAt(0).toLowerCase()}${described[0].slice(1)}`, loss: described[1] }
         : { what: `Runs ${run}, which the guard flags as able to delete or overwrite something`, loss: 'it may not be possible to undo' };

@@ -418,7 +418,6 @@ describe('the card says what the step does', () => {
 
     test.each([
         ['psql', `${PG} -c "alter publication reporting set (publish = 'insert')"`],
-        ['render psql', `render -o text psql dpg-proddatabase00000001-a -c "alter publication reporting set (publish = 'insert')"`],
     ])('a publication settings change through %s says what it changes and that setting it back reverses it', (_how, command) => {
         const verdict = evaluate(command);
         expect(verdict.action).toBe('gate');
@@ -432,7 +431,6 @@ describe('the card says what the step does', () => {
 
     test.each([
         ['psql', `${PG} -c "alter publication reporting set (publish = 'insert'); copy orders to '/srv/x.csv'"`],
-        ['render psql', `render -o text psql dpg-proddatabase00000001-a -c "alter publication reporting set (publish = 'insert'); copy orders to '/srv/x.csv'"`],
     ])('a settings change beside an unload through %s names both and keeps the unload undo', (_how, command) => {
         const { summary } = describeGate(command, evaluate(command).reason ?? '', dir);
         expect(summary).toContain('Changes which future operations the publication sends to its subscribers');
