@@ -1037,3 +1037,19 @@ describe('the Connects using line', () => {
         expect(summary).not.toContain('-debug');
     });
 });
+
+describe('psql options read with its getopt table', () => {
+    const run = (command: string) => evaluateBashCommand(command, { cwd: dir });
+    const summaryOf = (command: string) => describeGate(command, run(command).reason ?? '', dir).summary.split('\nStep needing approval')[0];
+    test('in a cluster, c ends it and takes the next word, so the SQL is never read as a connection string', () => {
+        expect(run("psql -Xc \"insert into t values ('sslpassword=x')\" -h db.example app").action).toBe('gate');
+    });
+    test('the operand after a clustered -c is the database', () => {
+        const summary = summaryOf('psql -Xc "insert into t values (1)" -h db.example app2');
+        expect(summary).toContain('database \x60app2\x60');
+        expect(summary).not.toContain('database \x60insert');
+    });
+    test('a long option by an unambiguous prefix, as getopt_long accepts it', () => {
+        expect(summaryOf('psql -X --dbn=prod_app -h db.example -c "insert into t values (1)"')).toContain('database \x60prod_app\x60');
+    });
+});

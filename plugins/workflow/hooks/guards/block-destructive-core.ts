@@ -8333,40 +8333,81 @@ function databaseParts(cmd: ResolvedCommand): Array<[string, string]> {
  * override the authority and path. A host list (primary,failover) is tried in turn, so each is a target. A dbname
  * holding an unresolved expansion can be a connection string naming any server, which hidden carries.
  */
-/** psql's options as its getopt reads them, with each -h, -d and -p kept as written, and each value a dbname can be. */
+// psql's option table (startup.c: its getopt string and long options, as psql --help lists them). Letters that take a
+// value end a cluster and take the rest of the word, or the next word; the rest take none.
+const PSQL_VALUE_LETTERS = 'cdfFhLoPpRTUv';
+const PSQL_FLAG_LETTERS = 'aAbeElnqsSHtwWxXz01V?';
+const PSQL_LONG_OPTIONS: Record<string, { letter?: string; value: 'none' | 'required' | 'optional' }> = {
+    'echo-all': { letter: 'a', value: 'none' }, 'no-align': { letter: 'A', value: 'none' }, 'command': { letter: 'c', value: 'required' },
+    'dbname': { letter: 'd', value: 'required' }, 'echo-queries': { letter: 'e', value: 'none' }, 'echo-errors': { letter: 'b', value: 'none' },
+    'echo-hidden': { letter: 'E', value: 'none' }, 'file': { letter: 'f', value: 'required' }, 'field-separator': { letter: 'F', value: 'required' },
+    'field-separator-zero': { letter: 'z', value: 'none' }, 'host': { letter: 'h', value: 'required' }, 'html': { letter: 'H', value: 'none' },
+    'list': { letter: 'l', value: 'none' }, 'log-file': { letter: 'L', value: 'required' }, 'no-readline': { letter: 'n', value: 'none' },
+    'single-transaction': { letter: '1', value: 'none' }, 'output': { letter: 'o', value: 'required' }, 'port': { letter: 'p', value: 'required' },
+    'pset': { letter: 'P', value: 'required' }, 'quiet': { letter: 'q', value: 'none' }, 'record-separator': { letter: 'R', value: 'required' },
+    'record-separator-zero': { letter: '0', value: 'none' }, 'single-step': { letter: 's', value: 'none' }, 'single-line': { letter: 'S', value: 'none' },
+    'tuples-only': { letter: 't', value: 'none' }, 'table-attr': { letter: 'T', value: 'required' }, 'username': { letter: 'U', value: 'required' },
+    'set': { letter: 'v', value: 'required' }, 'variable': { letter: 'v', value: 'required' }, 'version': { letter: 'V', value: 'none' },
+    'no-password': { letter: 'w', value: 'none' }, 'password': { letter: 'W', value: 'none' }, 'expanded': { letter: 'x', value: 'none' },
+    'no-psqlrc': { letter: 'X', value: 'none' }, 'help': { value: 'optional' }, 'csv': { value: 'none' },
+};
+
+/**
+ * psql's options as glibc's getopt_long reads them: clusters (-Xc SQL), a long option by any unambiguous prefix
+ * (--dbn=app), options after operands, and -- ending them. Each -h, -d and -p is kept as written, and the last one
+ * given wins. An option psql rejects stops it before it connects, so it adds nothing here.
+ */
 function psqlOptions(args: string[]): {
     last: { host?: string; dbname?: string };
     written: Array<{ text: string; dbname?: string }>;
     operands: string[];
 } {
-    const valueOptions = new Set(['-c', '--command', '-f', '--file', '-v', '--set', '--variable', '-o', '--output', '-L', '--log-file', '-F', '-R', '-P', '-T']);
     const operands: string[] = [];
-    // Separate (-d NAME, --dbname NAME), glued (--dbname=NAME) or attached (-dNAME); the last one given wins.
     const last: { host?: string; dbname?: string } = {};
     const written: Array<{ text: string; dbname?: string }> = [];
-    const keys: Record<string, 'host' | 'dbname' | undefined> = { h: 'host', host: 'host', d: 'dbname', dbname: 'dbname' };
-    const key = (flag: string) => keys[flag];
+    const take = (letter: string | undefined, value: string, text: string) => {
+        if (letter === 'h') last.host = value;
+        if (letter === 'd') last.dbname = value;
+        if (letter === 'h' || letter === 'p') written.push({ text });
+        if (letter === 'd') written.push({ text, dbname: value });
+    };
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-        const m = /^(?:-([hdp])(.+)|--(host|dbname|port)=(.*))$/.exec(a);
-        if (m) {
-            const k = key(m[1] ?? m[3]);
-            const value = m[2] ?? m[4];
-            if (k) last[k] = value;
-            written.push(k === 'dbname' ? { text: a, dbname: value } : { text: a });
-        } else if (/^-[hdp]$|^--(?:host|dbname|port)$/.test(a)) {
-            const value = args[++i];
-            if (value === undefined) continue;
-            const k = key(a.replace(/^-+/, ''));
-            if (k) last[k] = value;
-            written.push(k === 'dbname' ? { text: `${a} ${value}`, dbname: value } : { text: `${a} ${value}` });
-        } else if (/^-U$|^--username$/.test(a) || valueOptions.has(a)) i++;
-        else if (!a.startsWith('-')) operands.push(a);
+        if (a === '--') {
+            operands.push(...args.slice(i + 1));
+            break;
+        }
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const name = a.slice(2, eq < 0 ? undefined : eq);
+            const matches = name in PSQL_LONG_OPTIONS ? [name] : Object.keys(PSQL_LONG_OPTIONS).filter(n => n.startsWith(name));
+            const option = matches.length === 1 ? PSQL_LONG_OPTIONS[matches[0]] : undefined;
+            if (!option || (option.value === 'none' && eq >= 0)) continue;
+            if (option.value === 'required') {
+                const value = eq >= 0 ? a.slice(eq + 1) : args[++i];
+                if (value !== undefined) take(option.letter, value, eq >= 0 ? a : `${a} ${value}`);
+            }
+            continue;
+        }
+        if (a.length > 1 && a.startsWith('-')) {
+            for (let j = 1; j < a.length; j++) {
+                if (PSQL_VALUE_LETTERS.includes(a[j])) {
+                    const attached = a.slice(j + 1);
+                    const value = attached !== '' ? attached : args[++i];
+                    if (value !== undefined) take(a[j], value, attached !== '' ? a : `${a} ${value}`);
+                    break;
+                }
+                if (!PSQL_FLAG_LETTERS.includes(a[j])) break;
+            }
+            continue;
+        }
+        operands.push(a);
     }
     return { last, written, operands };
 }
 
-type ConnectionParam = { key: string; value: string; start: number; end: number };
+// raw is the value as written, before percent-decoding or unescaping; value is what libpq reads.
+type ConnectionParam = { key: string; value: string; raw: string; start: number; end: number };
 
 /**
  * A libpq connection string's key/value pairs, each with where its value sits in the string, in the order libpq reads
@@ -8381,17 +8422,17 @@ function connectionParams(s: string): ConnectionParam[] | null {
         const authority = s.indexOf('//') + 2;
         const at = uri[1].lastIndexOf('@');
         const colon = at < 0 ? -1 : uri[1].slice(0, at).indexOf(':');
-        if (colon >= 0) out.push({ key: 'password', value: decode(uri[1].slice(colon + 1, at)), start: authority + colon + 1, end: authority + at });
+        if (colon >= 0) out.push({ key: 'password', value: decode(uri[1].slice(colon + 1, at)), raw: uri[1].slice(colon + 1, at), start: authority + colon + 1, end: authority + at });
         const hosts = uri[1].slice(at + 1).split(',').map(spec => spec.startsWith('[') ? spec.slice(1, spec.indexOf(']')) : spec.replace(/:\d*$/, ''))
             .map(decode).filter(Boolean);
-        if (hosts.length) out.push({ key: 'host', value: hosts.join(','), start: authority + at + 1, end: authority + uri[1].length });
+        if (hosts.length) out.push({ key: 'host', value: hosts.join(','), raw: uri[1].slice(at + 1), start: authority + at + 1, end: authority + uri[1].length });
         const path = authority + uri[1].length + 1;
-        if (uri[2]) out.push({ key: 'dbname', value: decode(uri[2]), start: path, end: path + uri[2].length });
+        if (uri[2]) out.push({ key: 'dbname', value: decode(uri[2]), raw: uri[2], start: path, end: path + uri[2].length });
         if (uri[3] !== undefined) {
             let pos = s.indexOf('?', authority + uri[1].length) + 1;
             for (const pair of uri[3].split('&')) {
                 const eq = pair.indexOf('=');
-                if (eq > 0) out.push({ key: decode(pair.slice(0, eq)), value: decode(pair.slice(eq + 1)), start: pos + eq + 1, end: pos + pair.length });
+                if (eq > 0) out.push({ key: decode(pair.slice(0, eq)), value: decode(pair.slice(eq + 1)), raw: pair.slice(eq + 1), start: pos + eq + 1, end: pos + pair.length });
                 pos += pair.length + 1;
             }
         }
@@ -8403,7 +8444,7 @@ function connectionParams(s: string): ConnectionParam[] | null {
     for (const m of s.matchAll(/(\w+)[ \t\n\v\f\r]*=[ \t\n\v\f\r]*(?:'((?:\\.|[^'\\])*)'|([^ \t\n\v\f\r]+))/g)) {
         const raw = m[2] !== undefined ? `'${m[2]}'` : m[3];
         const end = (m.index ?? 0) + m[0].length;
-        out.push({ key: m[1], value: (m[2] ?? m[3]).replace(/\\(.)/g, '$1'), start: end - raw.length, end });
+        out.push({ key: m[1], value: (m[2] ?? m[3]).replace(/\\(.)/g, '$1'), raw, start: end - raw.length, end });
     }
     return out;
 }
@@ -8416,13 +8457,14 @@ const isLibpqCredentialKey = (key: string) => LIBPQ_CREDENTIAL_KEYS.includes(key
  */
 function libpqCredentialWritten(cmd: ResolvedCommand): boolean {
     if (cmd.name !== 'psql') return false;
-    const literal = (v: string) => v !== '' && !/[$\x60]/.test(v);
+    // Written out or not is read from the text as written: %24 decodes to $ only for libpq, after the shell is done.
+    const literal = (raw: string, value: string) => value !== '' && !/[$\x60]/.test(raw);
     const { written, operands } = psqlOptions(cmd.args);
     const inputs = [...written.flatMap(w => (w.dbname === undefined ? [] : [w.dbname])), ...operands.slice(0, 1)];
-    if (inputs.some(s => (connectionParams(s) ?? []).some(p => isLibpqCredentialKey(p.key) && literal(p.value)))) return true;
+    if (inputs.some(s => (connectionParams(s) ?? []).some(p => isLibpqCredentialKey(p.key) && literal(p.raw, p.value)))) return true;
     return (cmd.env ?? []).some(e => {
         const m = /^PG([A-Z]+)=([\s\S]*)$/.exec(e);
-        return !!m && isLibpqCredentialKey(m[1]) && literal(m[2]);
+        return !!m && isLibpqCredentialKey(m[1]) && literal(m[2], m[2]);
     });
 }
 
