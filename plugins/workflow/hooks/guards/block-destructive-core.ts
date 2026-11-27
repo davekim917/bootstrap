@@ -7755,7 +7755,10 @@ const SQL_EGRESS_PATTERNS: EgressRule[] = [
     {
         rx: /\bALTER\s+PUBLICATION\b[\s\S]*\bSET\s+TABLES?\b/i,
         label: "a publication's table list replaced",
+        title: "Replace a {dialect} publication's table list",
         effect: 'Replaces the tables the publication sends to its subscribers, which can add tables or remove them',
+        loss: 'rows already sent to subscribers stay sent',
+        undo: 'set the list back; rows already sent stay sent.',
     },
     // SET (publish = …) and the like decide which changes a publication sends from then on; nothing is sent by the statement itself.
     {
@@ -8447,6 +8450,33 @@ function egressRule(text: string): EgressRule | undefined {
     return [...SQL_EGRESS_PATTERNS, ...SQL_EGRESS_LEADS].find(r => text === r.label || text.includes(`(${r.label})`));
 }
 
+/** Each statement in the texts that sends data out, once, in order: every one is named, not only the first. */
+function egressEffectsIn(texts: string[], dialect: string): SqlEffect[] {
+    const sentOut = new Set<string>();
+    const out: SqlEffect[] = [];
+    for (const text of texts) {
+        for (const seg of [{ text }, ...sqlStatements(text)]) {
+            const hit = egressIn(seg.text);
+            if (!hit || hit === 'unreadable' || sentOut.has(oneLine(hit.statement))) continue;
+            sentOut.add(oneLine(hit.statement));
+            out.push(egressEffect({ pattern: hit.pattern, text: hit.statement }, dialect));
+        }
+    }
+    return out;
+}
+
+/**
+ * The strongest undo a card's statements leave: their own when every one names one, else none for data that has left
+ * when any statement sends it out; null when neither applies and the dialect's usual answer stands.
+ */
+function cardUndo(effects: SqlEffect[], egress: SqlEffect[], place: string): { undo: string; loss: string } | null {
+    if (effects.length > 0 && effects.every(e => e.undo)) {
+        return { undo: [...new Set(effects.map(e => e.undo!))].join(' '), loss: [...new Set(effects.map(e => e.loss).filter(Boolean))].join('; ') };
+    }
+    const sent = egress.find(e => !e.undo);
+    return sent ? { undo: `none for data that has left the ${place}; it can't be called back.`, loss: sent.loss ?? `data that has left the ${place} can't be called back` } : null;
+}
+
 /** What a statement that sends data out does, for its card. */
 function egressEffect(hit: { pattern: string; text: string }, dialect: string): SqlEffect {
     const rule = egressRule(hit.pattern);
@@ -8959,7 +8989,6 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     const writes: SqlEffect[] = [];
     const meta = cmd.name === 'psql' ? sqlInputOf(cmd).texts.map(psqlMetaWrite).find(m => m !== null) : null;
     if (meta) writes.push(writeEffect({ pattern: meta.pattern, text: meta.statement }, dialect));
-    const sentOut = new Set<string>();
     // Every write in the first reading that finds writes is listed, so no two statements of one input collapse. The other
     // readings are the same input read another way: they add a write only when its text, with comments and whitespace
     // normalised and literals kept, is new, and it is not on an object the listed statements already change.
@@ -8977,14 +9006,8 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     const primary = readings.findIndex(({ text }) => writeStatements(text).length > 0);
     // A file option's value can reach the readings as text when an expansion shifts the words; it names a file, not SQL.
     const fileArgs = new Set(cmd.args.filter((_, i) => /^(?:-f|--file|--filename)$/.test(cmd.args[i - 1] ?? '')));
+    egress.push(...egressEffectsIn(readings.map(r => r.text), dialect));
     readings.forEach(({ text }, reading) => {
-        // Every statement that sends data out is named, not only the first.
-        for (const seg of [{ text }, ...sqlStatements(text)]) {
-            const hit = egressIn(seg.text);
-            if (!hit || hit === 'unreadable' || sentOut.has(oneLine(hit.statement))) continue;
-            sentOut.add(oneLine(hit.statement));
-            egress.push(egressEffect({ pattern: hit.pattern, text: hit.statement }, dialect));
-        }
         if (primary >= 0 && reading > primary) {
             for (const st of writeStatements(text)) {
                 const byObject = objectKey(st.text);
@@ -9023,8 +9046,8 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
     const plain = first
         ? `${first.plain} ${databasePlace(cmd, dialect)}${first.note ? ` ${first.note}` : ''}${more}`
         : `Runs ${dialect} commands the guard couldn't fully check ${databasePlace(cmd, dialect)}, so it can't say what they change`;
-    const ownUndo = effects.length > 0 && effects.every(e => e.undo) ? effects[0].undo : undefined;
-    lines.push(ownUndo ? `Undo: ${ownUndo}` : egress.some(e => !e.undo) ? `Undo: none for data that has left the ${dialect === 'Snowflake' ? 'account' : 'database'}; it can't be called back.` : dialect === 'Snowflake'
+    const undo = cardUndo(effects, egress, dialect === 'Snowflake' ? 'account' : 'database');
+    lines.push(undo ? `Undo: ${undo.undo}` : dialect === 'Snowflake'
         ? 'Undo: only through Snowflake Time Travel or UNDROP, and only within the retention window.'
         : 'Undo: only from a backup.');
     const db = databaseLine(cmd);
@@ -9034,7 +9057,7 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
         lines,
         plain: {
             what: plain,
-            loss: first?.loss ?? (dialect === 'Snowflake'
+            loss: undo?.loss ?? first?.loss ?? (dialect === 'Snowflake'
                 ? 'only Snowflake Time Travel can bring back what it deletes or overwrites, and only for a limited time'
                 : 'only a backup can bring back what it deletes or overwrites'),
         },
@@ -9556,9 +9579,7 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
         : cmd.name === 'render' && reason.includes(RENDER_READ_HOLD)
         ? renderReadEffect(cmd, reason)
         : cmd.name === 'render' && reason.startsWith(SQL_EGRESS)
-        ? ((rule) => rule?.effect
-            ? [`${rule.effect}, in the Render database named in the step below: ${clip(reason.split(' — ').slice(1).join(' — ') || reason, 400)}`, rule.loss ?? "data that has left the database can't be called back"] as [string, string]
-            : [`Sends data out of the Render database named in the step below: ${clip(reason.slice(SQL_EGRESS.length + 2), 400)}`, "data that has left the database can't be called back"] as [string, string])(egressRule(reason))
+        ? [`Sends data out of the Render database named in the step below: ${clip(reason.slice(SQL_EGRESS.length + 2), 400)}`, "data that has left the database can't be called back"]
         : cmd.name === 'render'
         ? renderChangeEffect(cmd)
         : cmd.name === 'pg_restore' && reason.startsWith('pg_restore --create')
@@ -9571,6 +9592,16 @@ function genericStep(cmd: ResolvedCommand, reason: string): StepCard {
         ? [`Destroys or changes the targeted resources: ${code(clip(targets.join(', '), 300))}.`, "anything it destroys can't be brought back"]
         : GENERIC_EFFECTS[`${cmd.name} ${cmd.args[0] ?? ''}`] ?? GENERIC_EFFECTS[cmd.name]
             ?? (PLATFORM_DESTRUCTIVE[cmd.name] ? [`Deletes or shuts down the ${cmd.name} resource named in the step below.`, "this can't be undone"] : undefined);
+    if (cmd.name === 'render' && reason.startsWith(SQL_EGRESS)) {
+        const egress = egressEffectsIn((renderPsqlTexts(cmd) ?? []).flatMap(t => psqlStatementTexts(t)), 'PostgreSQL');
+        const undo = cardUndo(egress, egress, 'database');
+        if (egress.length && undo) {
+            const lines = egress.map((e, i) => `${i === 0 ? 'If you approve:' : 'And:'} ${e.effect}`);
+            lines.push('Database: the Render database named in the step below', `Undo: ${undo.undo}`);
+            const what = `Runs ${run}, which ${egress[0].plain.charAt(0).toLowerCase()}${egress[0].plain.slice(1)} in the Render database named in the step below${egress.length > 1 ? `, plus ${egress.length - 1} more` : ''}`;
+            return { label: `Run ${[cmd.name, ...verbs].join(' ')}`, lines, plain: { what, loss: undo.loss } };
+        }
+    }
     const plain: PlainEffect = described
         ? { what: `Runs ${run}, which ${described[0].charAt(0).toLowerCase()}${described[0].slice(1)}`, loss: described[1] }
         : { what: `Runs ${run}, which the guard flags as able to delete or overwrite something`, loss: 'it may not be possible to undo' };

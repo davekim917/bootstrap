@@ -402,16 +402,18 @@ describe('the card says what the step does', () => {
 
     test.each([
         ['alter publication pub add table orders', 'a table added to a publication'],
-        ['alter publication pub set table orders', "a publication's table list replaced"],
         ['create publication pub for table orders', 'replication or a foreign server'],
     ])('%s says what it changes', (sql, label) => {
         const command = `${PG} -c "${sql}"`;
         expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toContain(`(${label})`);
     });
 
-    test('SET TABLE says it can remove tables', () => {
+    test('SET TABLE says it can remove tables, with its own title and undo', () => {
         const command = `${PG} -c "alter publication pub set table orders"`;
-        expect(describeGate(command, evaluate(command).reason ?? '', dir).summary).toContain('which can add tables or remove them');
+        const card = describeGate(command, evaluate(command).reason ?? '', dir);
+        expect(card.label).toBe("Replace a PostgreSQL publication's table list");
+        expect(card.summary).toContain('which can add tables or remove them');
+        expect(card.summary).toContain('Undo: set the list back; rows already sent stay sent.');
     });
 
     test.each([
@@ -428,9 +430,14 @@ describe('the card says what the step does', () => {
         expect(verdict.reason).toStartWith(SQL_EGRESS);
     });
 
-    test('a settings change beside an unload keeps the unload undo', () => {
-        const command = `${PG} -c "alter publication reporting set (publish = 'insert'); copy orders to '/srv/x.csv'"`;
-        expect(describeGate(command, evaluate(command).reason ?? '', dir).summary).toContain("Undo: none for data that has left the database; it can't be called back.");
+    test.each([
+        ['psql', `${PG} -c "alter publication reporting set (publish = 'insert'); copy orders to '/srv/x.csv'"`],
+        ['render psql', `render -o text psql dpg-proddatabase00000001-a -c "alter publication reporting set (publish = 'insert'); copy orders to '/srv/x.csv'"`],
+    ])('a settings change beside an unload through %s names both and keeps the unload undo', (_how, command) => {
+        const { summary } = describeGate(command, evaluate(command).reason ?? '', dir);
+        expect(summary).toContain('Changes which future operations the publication sends to its subscribers');
+        expect(summary).toContain('Sends data out of the account (COPY … TO a server file or program)');
+        expect(summary).toContain("Undo: none for data that has left the database; it can't be called back.");
     });
 
     test('data sent out leads the card and says it cannot be called back', () => {
