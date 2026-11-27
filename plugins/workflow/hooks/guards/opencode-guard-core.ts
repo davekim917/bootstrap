@@ -31,9 +31,11 @@ import {
   evaluateBashCommand,
   evaluateGitCloneDestination,
   evaluateSelfApproval,
+  evaluateSlackPost,
   evaluateSnowflakeConnector,
   runNanoclawGate,
   runEmailGate,
+  runSendGate,
   IS_NANOCLAW,
 } from './block-destructive-core';
 import { evaluateEmailSend, evaluateEmailToolCall } from './email-gate-core';
@@ -110,8 +112,10 @@ const REQUIRED_CORE_FNS = [
   'evaluateSelfApproval',
   'evaluateSnowflakeConnector',
   'evaluateGitCloneDestination',
+  'evaluateSlackPost',
   // gate primitives / wrappers
   'runEmailGate',
+  'runSendGate',
   'runNanoclawGate',
   'runGateRequest',
   'pollDeliveredTable',
@@ -143,6 +147,11 @@ export function assertCoreExports(
 // 1.15.7 Hooks shape: tool.execute.before(input,{args}), .after(input,{...}).
 type ToolBeforeInput = { tool: string; sessionID: string; callID: string };
 type ToolBeforeOutput = { args: Record<string, unknown> };
+
+/** Aborts the tool call with a refusal a gate reports: a changed draft or payload, or an approval of another request. */
+const refuse = (refusal: string): never => {
+  throw new Error(`BLOCKED: ${refusal}`);
+};
 
 /**
  * Evaluate a bash command and throw (aborting the tool call) if it must be
@@ -197,6 +206,8 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
     cwd,
   });
   if (emailVerdict.action === 'gate' && emailVerdict.deny) throw new Error(`BLOCKED: ${emailVerdict.deny}`);
+  const slack = evaluateSlackPost(command, undefined, { cwd });
+  if (slack.action === 'gate' && slack.deny) throw new Error(`BLOCKED: ${slack.deny}`);
 
   if (verdict.action === 'gate') {
     const reason = verdict.reason ?? 'requires approval';
@@ -205,7 +216,7 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
     // wrote it legitimately. The session-DB gate is the only path.
     if (IS_NANOCLAW) {
       // session-DB approval gate: blocks until the host's approver decides (or 60-min timeout).
-      const decision = runNanoclawGate(command, reason, undefined, undefined, cwd);
+      const decision = runNanoclawGate(command, reason, undefined, undefined, cwd, refuse);
       if (decision === 'approved') {
         // Re-check the rm tier that the gate short-circuited (matches the hook).
         const after = evaluateBashCommand(command, { skipGate: true, cwd });
@@ -240,9 +251,20 @@ export function gateBashOrThrow(command: string, cwd?: string): void {
     const binding = emailVerdict.draft;
     const decision = runEmailGate(command, reason, undefined, emailVerdict.summary, undefined,
     { pureSend: emailVerdict.pureSend, fullSummary: emailVerdict.fullSummary, wholeEmail: emailVerdict.wholeEmail },
-      binding || emailVerdict.account
-        ? { binding, account: emailVerdict.account, onChanged: (refusal) => { throw new Error(`BLOCKED: ${refusal}`); } }
-        : undefined);
+      { binding, account: emailVerdict.account, onChanged: refuse });
+    if (decision !== 'approved') {
+      const detail =
+        decision === 'denied'
+          ? 'Cancelled by user. Do not retry — acknowledge briefly.'
+          : 'Timed out waiting for admin approval. Do not retry — ask the user.';
+      throw new Error(`BLOCKED: ${reason} — ${detail}`);
+    }
+  }
+
+  // 6. A Slack post in a listed person's name: request_send_gate, which only an owner or admin answers.
+  if (slack.action === 'gate') {
+    const reason = slack.label ?? 'Slack post in your name';
+    const decision = runSendGate(command, reason, undefined, slack.summary, undefined, slack, { binding: slack.payload, onChanged: refuse });
     if (decision === 'approved') return;
     const detail =
       decision === 'denied'
@@ -263,7 +285,7 @@ export function gateNativeEmailToolOrThrow(
   if (verdict.action === 'allow') return false;
 
   const reason = verdict.label ?? verdict.reason ?? 'Outbound email send requires approval.';
-  const decision = runEmailGate(`tool:${toolName}`, reason, undefined, verdict.summary, undefined, { wholeEmail: verdict.wholeEmail });
+  const decision = runEmailGate(`tool:${toolName}`, reason, undefined, verdict.summary, undefined, { wholeEmail: verdict.wholeEmail }, { onChanged: refuse });
   if (decision === 'approved') return true;
   const detail = decision === 'denied'
     ? 'Cancelled by user. Do not retry — acknowledge briefly.'

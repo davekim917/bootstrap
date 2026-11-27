@@ -23,9 +23,11 @@ import {
     evaluateBashCommand,
     evaluateGitCloneDestination,
     evaluateSelfApproval,
+    evaluateSlackPost,
     evaluateSnowflakeConnector,
     runEmailGate,
     runNanoclawGate,
+    runSendGate,
 } from './block-destructive-core';
 import { evaluateEmailSend, evaluateEmailToolCall, type AccountBinding, type DraftBinding, type EmailCard } from './email-gate-core';
 
@@ -154,6 +156,11 @@ function main(): void {
         if (email.action === 'gate' && email.deny) {
             block(email.deny, email.reason);
         }
+        const slack = evaluateSlackPost(command, undefined, { cwd });
+        if (slack.action === 'gate' && slack.deny) {
+            block(slack.deny, slack.label ?? 'Slack post refused.');
+        }
+        const alsoSlack = slack.action === 'gate' ? `\n\nAlso requires your OK to post to Slack: ${slack.label}\n\n${slack.summary}` : '';
 
         if (destructive.action === 'gate') {
             const reason = destructive.reason ?? 'Destructive command requires approval.';
@@ -171,7 +178,7 @@ function main(): void {
                 const combined = email.action === 'gate'
                     ? `${described}\n\nAlso requires outbound-email approval: ${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`
                     : described;
-                ask(combined);
+                ask(combined + alsoSlack);
             }
 
             const decision = runNanoclawGate(command, reason, (error) => {
@@ -185,7 +192,7 @@ function main(): void {
 
         if (email.action === 'gate') {
             if (!IS_NANOCLAW) {
-                ask(`${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`);
+                ask(`${email.reason}${email.summary ? `\n\n${email.summary}` : ''}${alsoSlack}`);
             }
 
             const binding = email.draft;
@@ -193,6 +200,21 @@ function main(): void {
                 binding || email.account ? { binding, account: email.account, onChanged: (refusal) => block(refusal, email.reason) } : undefined);
             if (decision !== 'approved') {
                 block(`${email.reason} — ${deniedDetail(decision)}`, email.reason);
+            }
+        }
+
+        if (slack.action === 'gate') {
+            const reason = slack.label ?? 'Slack post in your name';
+            if (!IS_NANOCLAW) {
+                ask(`${reason}\n\n${slack.summary ?? ''}`);
+            }
+            const decision = runSendGate(command, reason, (error) => {
+                const message = error instanceof Error ? error.message : String(error);
+                block(message, `${reason} — could not stage the NanoClaw approval request.`);
+            }, slack.summary, undefined, slack,
+            { binding: slack.payload, onChanged: (refusal) => block(refusal, reason) });
+            if (decision !== 'approved') {
+                block(`${reason} — ${deniedDetail(decision)}`, reason);
             }
         }
 

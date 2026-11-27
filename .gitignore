@@ -18,6 +18,7 @@ lab-scope.local.json
 dev-scope.local.json
 dev-scope.local.json.lock
 merge-scope.local.json
+send-scope.local.json
 response-secrets.local.json
 
 # This repository is public: workflow plans and run records (docs/specs/<feature>/) stay local.

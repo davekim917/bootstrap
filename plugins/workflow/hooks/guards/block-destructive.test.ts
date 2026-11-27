@@ -1,4 +1,6 @@
 import { describe, test, expect } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 
 const HOOK_PATH = join(import.meta.dir, 'block-destructive.ts');
@@ -29,15 +31,16 @@ interface HookResult {
     permissionDecisionReason?: string;
 }
 
-async function runHook(command: string): Promise<HookResult> {
-    return runHookInput(makeInput(command));
+async function runHook(command: string, env?: Record<string, string>): Promise<HookResult> {
+    return runHookInput(makeInput(command), env);
 }
 
-async function runHookInput(input: string): Promise<HookResult> {
+async function runHookInput(input: string, env?: Record<string, string>): Promise<HookResult> {
     const proc = Bun.spawn(['bun', 'run', HOOK_PATH], {
         stdin: new Blob([input]),
         stderr: 'pipe',
         stdout: 'pipe',
+        ...(env ? { env: { ...process.env, ...env } } : {}),
     });
     const exitCode = await proc.exited;
     const stderr = await new Response(proc.stderr).text();
@@ -190,6 +193,42 @@ describe('native local approval flow', () => {
     test('an email-only send asks for native approval', async () => {
         const result = await runHook('gws gmail +send --to ops@example.com --subject report');
         expectNativeAsk(result, /email send to ops@example.com/i);
+    });
+
+    test("a Slack post in a listed person's name asks for native approval", async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'send-scope-'));
+        try {
+            writeFileSync(join(dir, 'send-scope.json'), JSON.stringify({ slack: { workgroups: ['acme'] } }));
+            const result = await runHook(`curl https://slack.com/api/chat.postMessage --json '{"channel":"C1","text":"Numbers are in."}'`, {
+                BOOTSTRAP_SEND_SCOPE_FILE: join(dir, 'send-scope.json'),
+                NANOCLAW_WORKGROUP_ID: 'acme',
+            });
+            expectNativeAsk(result, /Slack post in your name \(chat\.postMessage\)[\s\S]*Numbers are in\./);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test.each([
+        ['its operator\'s own, asks', { slack: { onecliAgents: ['ag-acme'] } }, 'ask'],
+        ['another person\'s, is refused', { slack: { onecliAgents: [{ id: 'ag-acme', person: 'lee' }], operator: 'pat' } }, 'refuse'],
+    ])('a Slack post through a listed OneCLI identity that is %s', async (_label, scope, outcome) => {
+        const dir = mkdtempSync(join(tmpdir(), 'send-scope-'));
+        try {
+            writeFileSync(join(dir, 'send-scope.json'), JSON.stringify(scope));
+            const result = await runHook(`onecli run --agent ag-acme -- curl https://slack.com/api/chat.postMessage --json '{"channel":"C1","text":"Numbers are in."}'`, {
+                BOOTSTRAP_SEND_SCOPE_FILE: join(dir, 'send-scope.json'),
+            });
+            if (outcome === 'ask') {
+                expectNativeAsk(result, /through the OneCLI identity `ag-acme`[\s\S]*Numbers are in\./);
+            } else {
+                expect(result.exitCode).toBe(2);
+                expect(result.stderr).toContain("maps to someone other than this terminal's operator");
+                expect(result.permissionDecision).toBeUndefined();
+            }
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 
     test('email dry-runs remain allowed', async () => {

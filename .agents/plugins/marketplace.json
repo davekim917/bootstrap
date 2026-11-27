@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "bootstrap-workflow-agents",
-      "version": "2.53.0",
+      "version": "2.54.0",
       "description": "Seven team delivery skills, proportional independent review, and bounded safe publication.",
       "source": {
         "source": "local",
@@ -132,7 +132,7 @@
     },
     {
       "name": "slack-humanizer",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "Slack messages drafted in the user's voice and posted as rich text, so bullets and numbered lists render as real Slack lists.",
       "source": {
         "source": "local",

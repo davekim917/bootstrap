@@ -14,10 +14,12 @@ import {
     evaluateBashCommand,
     evaluateGitCloneDestination,
     evaluateSelfApproval,
+    evaluateSlackPost,
     evaluateSnapshotGitMutation,
     evaluateSnowflakeConnector,
     runEmailGate,
     runNanoclawGate,
+    runSendGate,
 } from './guards/block-destructive-core';
 import { evaluateEmailSend, evaluateEmailToolCall, type AccountBinding, type DraftBinding, type EmailCard } from './guards/email-gate-core';
 import { checkEditProtection, EDIT_TOOLS } from './guards/file-protection-core';
@@ -241,6 +243,11 @@ function decide(input: ToolCall, handoff: string): Verdict {
         if (email.action === 'gate' && email.deny) {
             return deny(email.deny, email.reason);
         }
+        const slack = evaluateSlackPost(command, undefined, { cwd });
+        if (slack.action === 'gate' && slack.deny) {
+            return deny(slack.deny, slack.label ?? 'Slack post refused.');
+        }
+        const alsoSlack = slack.action === 'gate' ? `\n\nAlso requires your OK to post to Slack: ${slack.label}\n\n${slack.summary}` : '';
 
         if (destructive.action === 'gate') {
             const reason = destructive.reason ?? 'Destructive command requires approval.';
@@ -254,7 +261,7 @@ function decide(input: ToolCall, handoff: string): Verdict {
                 const combined = email.action === 'gate'
                     ? `${described}\n\nAlso requires outbound-email approval: ${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`
                     : described;
-                return needsHumanApproval(combined);
+                return needsHumanApproval(combined + alsoSlack);
             }
 
             let staged = true;
@@ -271,7 +278,7 @@ function decide(input: ToolCall, handoff: string): Verdict {
 
         if (email.action === 'gate') {
             if (!IS_NANOCLAW) {
-                return needsHumanApproval(`${email.reason}${email.summary ? `\n\n${email.summary}` : ''}`);
+                return needsHumanApproval(`${email.reason}${email.summary ? `\n\n${email.summary}` : ''}${alsoSlack}`);
             }
 
             let staged = true;
@@ -289,6 +296,29 @@ function decide(input: ToolCall, handoff: string): Verdict {
             }
             if (decision !== 'approved') {
                 return deny(`${email.reason} — ${deniedDetail(decision)}`, email.reason);
+            }
+        }
+
+        if (slack.action === 'gate') {
+            const reason = slack.label ?? 'Slack post in your name';
+            if (!IS_NANOCLAW) {
+                return needsHumanApproval(`${reason}\n\n${slack.summary ?? ''}`);
+            }
+
+            let staged = true;
+            let changed: string | undefined;
+            const decision = runSendGate(command, reason, () => {
+                staged = false;
+            }, slack.summary, toolUseId, slack,
+            { binding: slack.payload, onChanged: (refusal) => { changed = refusal; } });
+            if (changed !== undefined) {
+                return deny(changed, reason);
+            }
+            if (!staged) {
+                return deny(`${reason} — could not stage the NanoClaw approval request.`, reason);
+            }
+            if (decision !== 'approved') {
+                return deny(`${reason} — ${deniedDetail(decision)}`, reason);
             }
         }
 

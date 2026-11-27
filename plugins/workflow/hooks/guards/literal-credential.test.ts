@@ -23,6 +23,11 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 const evaluate = (command: string) => evaluateBashCommand(command, { cwd: dir });
 const PROD = 'https://api.render.com/v1/services/srv-prodservice000000001/env-vars/FOO';
 const H = 'psql -h db.example.com';
+// A token of its issuer's shape, built here so no whole token is written in the source.
+const random = (n: number) => 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'.repeat(4).slice(0, n);
+const issued = (prefix: string) => prefix.startsWith('xoxe') ? `${prefix}1-${random(40)}`
+    : prefix.startsWith('xox') ? `${prefix}1234567890-0987654321-${random(24)}`
+    : prefix === 'github_pat_' ? `${prefix}${random(22)}_${random(59)}` : prefix === 'glpat-' ? prefix + random(20) : prefix + random(36);
 
 describe('a gated or refused command that writes out a credential is refused with the fixed text', () => {
     test.each([
@@ -88,9 +93,9 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['redis-cli -a', `redis-cli -h cache.example.com -a ${SECRET} FLUSHALL`],
         ['redis-cli --user and --pass', `redis-cli -h cache.example.com --user app --pass ${SECRET} FLUSHALL`],
         ['REDISCLI_AUTH', `REDISCLI_AUTH=${SECRET} redis-cli -h cache.example.com FLUSHALL`],
-        ['a token as the only HTTPS user info', `git push --force https://ghp_${SECRET}@github.com/org/repo main`],
-        ['a token as the HTTPS user beside a masked password', `git push --force https://ghp_${SECRET}:********@github.com/org/repo main`],
-        ['a token as the HTTPS user beside a password variable', `git push --force https://ghp_${SECRET}:\${PW}@github.com/org/repo main`],
+        ['a token as the only HTTPS user info', `git push --force https://${issued('ghp_')}@github.com/org/repo main`],
+        ['a token as the HTTPS user beside a masked password', `git push --force https://${issued('ghp_')}:********@github.com/org/repo main`],
+        ['a token as the HTTPS user beside a password variable', `git push --force https://${issued('ghp_')}:\${PW}@github.com/org/repo main`],
         ['a userinfo password on a git remote', `git push --force https://alice:${SECRET}@github.com/example/release main`],
         ['an AWS session token', `AWS_SESSION_TOKEN=${SECRET} aws s3 rm s3://example-prod/backups/ --recursive`],
         ['kubectl --token=', `kubectl delete deployment old-api -n staging --token=${SECRET}`],
@@ -109,6 +114,7 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['a slash-leading curl password', `curl -u 'deploy:/${SECRET}' https://staging.example.com/health && git push --force origin release`],
         ['a PGPASSWORD with a leading space', `PGPASSWORD=' ${SECRET}' ${H} -d app -c 'DROP TABLE expired_sessions'`],
         ['a MySQL authentication-plugin password', `mysql -h db.example.com -e "ALTER USER app IDENTIFIED WITH caching_sha2_password BY '${SECRET}'; DROP TABLE expired_sessions"`],
+        ['a known-prefix token in a form field', `curl -X DELETE ${PROD} -d token=${issued('ghp_')}`],
         ['a kubectl step beside a credentialed psql', `kubectl scale deployment archive-worker -n staging --replicas=0 && PGPASSWORD=${SECRET} ${H} -d billing -c 'DROP TABLE old_invoices'`],
     ])('%s', (_name, command) => {
         expect(evaluate(command)).toEqual({ action: 'block', reason: LITERAL_CREDENTIAL_REASON });
@@ -169,6 +175,8 @@ describe('the same command with the credential in a variable takes the ordinary 
         ['a token_type category in SQL', `${H} -d app -c "DELETE FROM sessions WHERE token_type = 'refresh'"`, 'token_type'],
         ['a MySQL password from a variable', 'mysql -h db.example.com -p"$MYSQL_PW" -e "drop table orders"', 'drop table orders'],
         ['a URI password from a variable', 'psql "postgresql://app:$PGPW@192.0.2.20/app" -c "drop table orders"', 'drop table orders'],
+        ['a branch whose name holds a token prefix', 'git push origin --delete fix/glpat-token-redaction-2026', 'fix/glpat-token-redaction-2026'],
+        ['a branch named like a redacted Slack token', 'git push origin --delete xoxb-123-456-XXXXXX', 'xoxb-123-456-XXXXXX'],
     ])('%s', (_name, command, shown) => {
         const verdict = evaluate(command);
         expect(verdict.action).toBe('gate');
@@ -211,6 +219,16 @@ describe('the detector fires on literal values only', () => {
         ['a braced variable', 'PGPASSWORD=${PGPW} psql'],
         ['curl -u with only a user', 'curl -u admin https://example.com'],
         ['a psql setting', 'psql -v ON_ERROR_STOP=1 -c "select 1"'],
+        ['prose naming a token prefix', 'paste the user token (xoxp-) or xoxp-… here, as in xoxp-EXAMPLE'],
+        ['a lower-case placeholder after a token prefix', 'curl -d token=xoxb-your-bot-token-goes-here https://slack.com/api/auth.test'],
+        ['an abbreviated example after a token prefix', 'Slack bot tokens look like xoxb-123-Abc and GitHub ones like ghp_Ab12'],
+        ['a token prefix inside a path', `x fix/${issued('glpat-')}`],
+        ['a token prefix after a dash', `x release-${issued('ghp_')}`],
+        ['a Slack token whose secret is a placeholder', `x xoxb-1234567890-0987654321-${'X'.repeat(24)}`],
+        ['a redacted GitHub token', `x ghp_${'X'.repeat(36)}`],
+        ['a URL user that only starts with a token prefix', `https://ghp_${SECRET}@github.com/org/repo`],
+        ['a URL user whose token is a placeholder', `https://ghp_${'X'.repeat(36)}@github.com/org/repo`],
+        ['a redacted token', 'curl -d token=xoxp-XXXX-XXXXXXXXXX-XXXXXXXXXXXXXXXX https://slack.com/api/auth.test'],
     ])('%s does not fire', (_name, text) => {
         expect(containsCredential(text)).toBe(false);
     });
@@ -224,9 +242,17 @@ describe('the detector fires on literal values only', () => {
         ['a token IN list after a space', `DELETE FROM sessions WHERE refresh_token IN ( '${SECRET}', 'b')`],
         ['bare API_KEY', `API_KEY=${SECRET}`],
         ['a backtick-quoted secret column', `UPDATE t SET \`client_secret\` = '${SECRET}'`],
-        ['a Slack token as a URL user', `https://xoxb-${SECRET}@192.0.2.40/x`],
+        ['a Slack token as a URL user', `https://${issued('xoxb-')}@192.0.2.40/x`],
         ['an api_key NOT IN list', `DELETE FROM integrations WHERE api_key NOT IN ('${SECRET}')`],
         ['a password that starts with a slash', `PGPASSWORD='/sample-${SECRET}'`],
+        ['a Slack token in a form field', `curl -d token=${issued('xoxp-')} https://slack.com/api/chat.postMessage`],
+        ['a Slack token in a query', `curl "https://slack.com/api/chat.postMessage?token=${issued('xoxp-')}&channel=C1"`],
+        ['a Slack token in a JSON body', `curl --json '{"token":"${issued('xoxb-')}","channel":"C1"}' https://slack.com/api/chat.postMessage`],
+        ['a token in a Markdown code span', `release-cli publish --notes 'set \`${issued('xoxb-')}\` here'`],
+        ['a rotating Slack token', `release-cli publish ${issued('xoxe.xoxp-')}`],
+        ['a Slack refresh token', `release-cli publish ${issued('xoxe-')}`],
+        ['a GitHub token as a bare argument', `release-cli publish ${issued('github_pat_')}`],
+        ['a GitLab token as a bare argument', `release-cli publish ${issued('glpat-')}`],
     ])('%s fires', (_name, text) => {
         expect(containsCredential(text)).toBe(true);
     });

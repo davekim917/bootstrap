@@ -96,6 +96,8 @@ python3 <this skill's directory>/rich_text.py --channel C0123 [--thread-ts 17900
 curl -s -X POST https://slack.com/api/chat.postMessage -H 'Content-Type: application/json; charset=utf-8' --data @payload.json
 ```
 
+Run the curl in a command of its own, after `payload.json` exists, so the approval card can show the message.
+
 The script emits one `rich_text` block (paragraphs as `rich_text_section`, lists as `rich_text_list` with `style` bullet/ordered and `indent`) plus a plain `text` fallback for notifications. It only builds the payload. Authenticate the way this environment already does for Slack: send no auth header when a credential gateway injects one, otherwise the token header you normally use.
 
 Read the message back with `conversations.replies` (or `conversations.history`) and check the `blocks`. Find user IDs with `search.messages` (`from:handle`) when `users.list` rate-limits.

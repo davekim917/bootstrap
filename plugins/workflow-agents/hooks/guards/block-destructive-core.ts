@@ -44,7 +44,7 @@ import { parse } from 'unbash';
 import { fileURLToPath } from 'url';
 import { accountChangedSince, draftChangedSince, type AccountBinding, type DraftBinding, type EmailCard } from './email-gate-core';
 import { filePathsFromPatch, firstProtectedPath } from './file-protection-core';
-import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, readConfigFile, ShellParseError, shellUnquote, substitutionClose, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
+import { CARD_LABEL_MAX_CHARS, CARD_SUMMARY_MAX_CHARS, clip, code, evalWord, fitLines, oneLine, parseShell, plainSentence, quoteBlock, readBodyFile, readConfigFile, ShellParseError, shellUnquote, substitutionClose, viewShell, type PlainEffect, withoutStoredHeredocs } from './gate-card-core';
 
 // ── NanoClaw detection ──────────────────────────────────────────────────────
 // When running inside a NanoClaw v2 container, gated commands request approval
@@ -77,6 +77,8 @@ export interface ResolvedCommand {
     stdinExpanded?: ExpandableWord[]; // the part of stdinTexts bash expands (not a quoted heredoc or '…' here-string)
     stdinFiles?: string[];      // files redirected into this command with `<`
     stdoutFiles?: string[];     // files this command's output is redirected into
+    stdoutReplaced?: string;    // the file a lone `>` or `>|` replaces with this command's output
+    quotedHeredoc?: string;     // the body of a lone `<<` heredoc whose delimiter is quoted, so nothing in it expands
     stdoutLast?: string;        // where its stdout ends up after all its redirects: a file, or `&N` when duplicated onto fd N
     pipedInput?: PipedInput;    // what its pipeline feeds a command inside `$(…)`, whose offset can't key pipedInto
     argsAreValues?: boolean;    // pos is not this command's own, so its args are expanded from their values, not the view's words
@@ -2352,10 +2354,249 @@ export function renderChangeReason(args: string[]): string | null {
     return `${RENDER_CHANGE_REASON} (render ${words || args.join(' ')}).`;
 }
 
+/**
+ * A command's options as its own option table declares them: each short letter's long name, and how each long option
+ * takes its value. `true`: from `=VALUE`, the rest of a short cluster, or else the next word. `'attached'`: only from
+ * `=VALUE` or the rest of a cluster, as getopt reads an optional argument. `false`: none. `expand`: `--expand-NAME` is
+ * NAME (curl). `getoptLong`: a `--` word is matched in lower case against every name, a one-letter one included, as
+ * Perl's Getopt::Long reads it with bundling.
+ */
+type OptionTable = { short: Record<string, string>; long: Record<string, boolean | 'attached'>; expand?: boolean; getoptLong?: boolean };
+const valued = (...names: string[]): Record<string, boolean> => Object.fromEntries(names.map(n => [n, true]));
+const flags = (...names: string[]): Record<string, boolean> => Object.fromEntries(names.map(n => [n, false]));
+const attached = (...names: string[]): Record<string, 'attached'> => Object.fromEntries(names.map(n => [n, 'attached' as const]));
+
+/**
+ * `options` under their long names, each with its value and the index of the word that holds it; `optionNames` each
+ * option as written, without its value; `operands` with the index of each; `unknown` each option the table doesn't name.
+ */
+type ParsedOptions = { options: Array<[name: string, value: string | undefined, at: number]>; optionNames: string[]; operands: string[]; operandAt: number[]; unknown: string[] };
+
+/**
+ * `args` read the way getopt, git's parse-options, argparse and curl read them. A short option sits alone or in a cluster
+ * (`-sSXPOST`, `-qc`), and one that takes a value takes the rest of its word. A long one may be cut to a unique prefix
+ * (curl 8.5.0 takes one, 8.23.0 only the whole name) and takes `=VALUE`; `--no-NAME` is the negation of NAME and
+ * takes no value. An option the table doesn't name takes nothing, so the word after it is still read as an operand.
+ * `--` or `--end-of-options` ends the options, and so does the first operand when `stopAtOperand` (git's
+ * PARSE_OPT_STOP_AT_NON_OPTION).
+ */
+function parseOptions(args: string[], table: OptionTable, stopAtOperand = false): ParsedOptions {
+    const parsed: ParsedOptions = { options: [], optionNames: [], operands: [], operandAt: [], unknown: [] };
+    const operand = (i: number) => {
+        parsed.operands.push(args[i]);
+        parsed.operandAt.push(i);
+    };
+    const names = table.getoptLong ? [...Object.keys(table.long), ...Object.keys(table.short)] : Object.keys(table.long);
+    const fold = (name: string) => (table.getoptLong && name.length > 1 ? name.toLowerCase() : name);
+    const longName = (name: string) => (Object.prototype.hasOwnProperty.call(table.long, name) ? name : table.short[name]);
+    const lookup = (written: string): string | undefined => {
+        const key = table.getoptLong ? written.toLowerCase() : written;
+        const exact = names.find(n => fold(n) === key);
+        if (exact !== undefined) return longName(exact);
+        const prefixed = names.filter(n => fold(n).startsWith(key));
+        return prefixed.length === 1 ? longName(prefixed[0]) : undefined;
+    };
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--' || a === '--end-of-options' || (stopAtOperand && !(a.length > 1 && a.startsWith('-')))) {
+            for (let k = a.startsWith('--') ? i + 1 : i; k < args.length; k++) operand(k);
+            break;
+        }
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const written = a.slice(2, eq < 0 ? undefined : eq);
+            parsed.optionNames.push(`--${written}`);
+            const name = lookup(written) ?? (table.expand && written.startsWith('expand-') ? lookup(written.slice(7)) : undefined);
+            if (name !== undefined) {
+                if (eq >= 0) parsed.options.push([name, a.slice(eq + 1), i]);
+                else if (table.long[name] === true) {
+                    parsed.options.push([name, args[i + 1], i + 1]);
+                    i++;
+                } else parsed.options.push([name, undefined, i]);
+            } else if (written.startsWith('no-') && lookup(written.slice(3)) !== undefined) {
+                parsed.options.push([`no-${lookup(written.slice(3))}`, undefined, i]);
+            } else parsed.unknown.push(`--${written}`);
+        } else if (a.length > 1 && a.startsWith('-')) {
+            let k = 1;
+            for (; k < a.length; k++) {
+                const name = table.short[a[k]];
+                if (name === undefined) {
+                    parsed.unknown.push(`-${a[k]}`);
+                    continue;
+                }
+                const takes = table.long[name];
+                if (!takes) {
+                    parsed.options.push([name, undefined, i]);
+                    continue;
+                }
+                if (k + 1 < a.length) parsed.options.push([name, a.slice(k + 1), i]);
+                else if (takes === true) {
+                    parsed.options.push([name, args[i + 1], i + 1]);
+                    i++;
+                } else parsed.options.push([name, undefined, i]);
+                break;
+            }
+            parsed.optionNames.push(a.slice(0, k + 1));
+        } else operand(i);
+    }
+    return parsed;
+}
+
+/** The short options in `table` that take their value from the next word when nothing follows them. */
+function valueLetters(table: OptionTable): string {
+    return Object.keys(table.short).filter(letter => table.long[table.short[letter]] === true).join('');
+}
+
+// curl 8.23.0's aliases[] (src/tool_getparam.c): an option of type ARG_STRG, ARG_FILE, ARG_SECS or ARG_UNUM takes a value.
+const CURL_OPTIONS: OptionTable = {
+    expand: true,
+    short: { '#': 'progress-bar', '0': 'http1.0', '1': 'tlsv1', '2': 'sslv2', '3': 'sslv3', '4': 'ipv4', '6': 'ipv6',
+        ':': 'next', A: 'user-agent', B: 'use-ascii', C: 'continue-at', D: 'dump-header', E: 'cert', F: 'form',
+        G: 'get', H: 'header', I: 'head', J: 'remote-header-name', K: 'config', L: 'location', M: 'manual', N: 'buffer',
+        O: 'remote-name', P: 'ftp-port', Q: 'quote', R: 'remote-time', S: 'show-error', T: 'upload-file',
+        U: 'proxy-user', V: 'version', X: 'request', Y: 'speed-limit', Z: 'parallel', a: 'append', b: 'cookie',
+        c: 'cookie-jar', d: 'data', e: 'referer', f: 'fail', g: 'globoff', h: 'help', i: 'show-headers',
+        j: 'junk-session-cookies', k: 'insecure', l: 'list-only', m: 'max-time', n: 'netrc', o: 'output',
+        p: 'proxytunnel', q: 'disable', r: 'range', s: 'silent', t: 'telnet-option', u: 'user', v: 'verbose',
+        w: 'write-out', x: 'proxy', y: 'speed-time', z: 'time-cond' },
+    long: {
+        ...valued('abstract-unix-socket', 'alt-svc', 'aws-sigv4', 'cacert', 'capath', 'cert', 'cert-type', 'ciphers',
+            'config', 'connect-timeout', 'connect-to', 'continue-at', 'cookie', 'cookie-jar', 'create-file-mode',
+            'crlfile', 'curves', 'data', 'data-ascii', 'data-binary', 'data-raw', 'data-urlencode', 'delegation',
+            'dns-interface', 'dns-ipv4-addr', 'dns-ipv6-addr', 'dns-servers', 'doh-url', 'dump-header', 'ech',
+            'egd-file', 'engine', 'etag-compare', 'etag-save', 'expect100-timeout', 'form', 'form-string',
+            'ftp-account', 'ftp-alternative-to-user', 'ftp-method', 'ftp-port', 'ftp-ssl-ccc-mode',
+            'happy-eyeballs-timeout-ms', 'haproxy-clientip', 'header', 'help', 'hostpubmd5', 'hostpubsha256', 'hsts',
+            'httpsig-algo', 'httpsig-headers', 'httpsig-key', 'httpsig-keyid', 'interface', 'ip-tos', 'ipfs-gateway',
+            'json', 'keepalive-cnt', 'keepalive-time', 'key', 'key-type', 'knownhosts', 'krb', 'krb4', 'libcurl',
+            'limit-rate', 'local-port', 'login-options', 'mail-auth', 'mail-from', 'mail-rcpt', 'max-filesize',
+            'max-redirs', 'max-time', 'netrc-file', 'noproxy', 'oauth2-bearer', 'output', 'output-dir', 'parallel-max',
+            'parallel-max-host', 'pass', 'pinnedpubkey', 'preproxy', 'proto', 'proto-default', 'proto-redir', 'proxy',
+            'proxy-cacert', 'proxy-capath', 'proxy-cert', 'proxy-cert-type', 'proxy-ciphers', 'proxy-crlfile',
+            'proxy-header', 'proxy-key', 'proxy-key-type', 'proxy-pass', 'proxy-pinnedpubkey', 'proxy-service-name',
+            'proxy-tls13-ciphers', 'proxy-tlsauthtype', 'proxy-tlspassword', 'proxy-tlsuser', 'proxy-user', 'proxy1.0',
+            'pubkey', 'quote', 'random-file', 'range', 'rate', 'referer', 'request', 'request-target', 'resolve',
+            'retry', 'retry-delay', 'retry-max-time', 'sasl-authzid', 'service-name', 'sigalgs', 'socks4', 'socks4a',
+            'socks5', 'socks5-gssapi-service', 'socks5-hostname', 'speed-limit', 'speed-time', 'ssl-sessions', 'stderr',
+            'telnet-option', 'tftp-blksize', 'time-cond', 'tls-max', 'tls13-ciphers', 'tlsauthtype', 'tlspassword',
+            'tlsuser', 'trace', 'trace-ascii', 'trace-config', 'unix-socket', 'upload-file', 'upload-flags', 'url',
+            'url-query', 'user', 'user-agent', 'variable', 'vlan-priority', 'write-out'),
+        ...flags('alpn', 'anyauth', 'append', 'basic', 'buffer', 'ca-native', 'cert-status', 'clobber', 'compressed',
+            'compressed-ssh', 'create-dirs', 'crlf', 'digest', 'disable', 'disable-eprt', 'disable-epsv',
+            'disallow-username-in-url', 'doh-cert-status', 'doh-insecure', 'dump-ca-embed', 'eprt', 'epsv', 'fail',
+            'fail-early', 'fail-with-body', 'false-start', 'follow', 'form-escape', 'ftp-create-dirs', 'ftp-pasv',
+            'ftp-pret', 'ftp-skip-pasv-ip', 'ftp-ssl', 'ftp-ssl-ccc', 'ftp-ssl-control', 'ftp-ssl-reqd', 'get',
+            'globoff', 'haproxy-protocol', 'head', 'http0.9', 'http1.0', 'http1.1', 'http2', 'http2-prior-knowledge',
+            'http3', 'http3-only', 'ignore-content-length', 'include', 'insecure', 'ipv4', 'ipv6',
+            'junk-session-cookies', 'keepalive', 'list-only', 'location', 'location-trusted', 'mail-rcpt-allowfails',
+            'manual', 'metalink', 'mptcp', 'negotiate', 'netrc', 'netrc-optional', 'next', 'npn', 'ntlm', 'ntlm-wb',
+            'out-null', 'parallel', 'parallel-immediate', 'path-as-is', 'post301', 'post302', 'post303', 'progress-bar',
+            'progress-meter', 'proxy-anyauth', 'proxy-basic', 'proxy-ca-native', 'proxy-digest', 'proxy-http2',
+            'proxy-http3', 'proxy-insecure', 'proxy-negotiate', 'proxy-ntlm', 'proxy-ssl-allow-beast',
+            'proxy-ssl-auto-client-cert', 'proxy-tlsv1', 'proxytunnel', 'raw', 'remote-header-name', 'remote-name',
+            'remote-name-all', 'remote-time', 'remove-on-error', 'retry-all-errors', 'retry-connrefused', 'sasl-ir',
+            'sessionid', 'show-error', 'show-headers', 'silent', 'skip-existing', 'socks5-basic', 'socks5-gssapi',
+            'socks5-gssapi-nec', 'ssl', 'ssl-allow-beast', 'ssl-auto-client-cert', 'ssl-no-revoke', 'ssl-reqd',
+            'ssl-revoke-best-effort', 'sslv2', 'sslv3', 'styled-output', 'suppress-connect-headers', 'tcp-fastopen',
+            'tcp-nodelay', 'test-duphandle', 'test-event', 'tftp-no-options', 'tls-earlydata', 'tlsv1', 'tlsv1.0',
+            'tlsv1.1', 'tlsv1.2', 'tlsv1.3', 'tr-encoding', 'trace-ids', 'trace-time', 'use-ascii', 'verbose',
+            'version', 'wdebug', 'xattr'),
+    },
+};
+// GNU Wget 1.24.5's option_data[] (src/main.c): an OPT_VALUE option, or one with a required argument, takes a value. A
+// boolean's optional argument comes only after `=`.
+const WGET_OPTIONS: OptionTable = {
+    short: { '4': 'inet4-only', '6': 'inet6-only', A: 'accept', B: 'base', D: 'domains', E: 'html-extension',
+        F: 'force-html', H: 'span-hosts', I: 'include-directories', K: 'backup-converted', L: 'relative',
+        N: 'timestamping', O: 'output-document', P: 'directory-prefix', Q: 'quota', R: 'reject', S: 'server-response',
+        T: 'timeout', U: 'user-agent', V: 'version', X: 'exclude-directories', Y: 'proxy__compat', a: 'append-output',
+        b: 'background', c: 'continue', d: 'debug', e: 'execute', h: 'help', i: 'input-file', k: 'convert-links',
+        l: 'level', m: 'mirror', n: 'no', o: 'output-file', p: 'page-requisites', q: 'quiet', r: 'recursive',
+        t: 'tries', v: 'verbose', w: 'wait', x: 'force-directories' },
+    long: {
+        ...valued('accept', 'accept-regex', 'append-output', 'base', 'bind-address', 'bind-dns-address', 'body-data',
+            'body-file', 'ca-certificate', 'ca-directory', 'certificate', 'certificate-type', 'compression', 'config',
+            'connect-timeout', 'crl-file', 'cut-dirs', 'default-page', 'directory-prefix', 'dns-servers', 'dns-timeout',
+            'domains', 'dot-style', 'egd-file', 'exclude-directories', 'exclude-domains', 'execute', 'follow-tags',
+            'ftp-password', 'ftp-user', 'header', 'hsts-file', 'http-passwd', 'http-password', 'http-user',
+            'ignore-tags', 'include-directories', 'input-file', 'input-metalink', 'level', 'limit-rate', 'load-cookies',
+            'local-encoding', 'rejected-log', 'max-redirect', 'metalink-index', 'method', 'no', 'output-document',
+            'output-file', 'password', 'pinnedpubkey', 'post-data', 'post-file', 'prefer-family', 'preferred-location',
+            'ciphers', 'private-key', 'private-key-type', 'progress', 'proxy__compat', 'proxy-passwd', 'proxy-password',
+            'proxy-user', 'quota', 'random-file', 'read-timeout', 'referer', 'regex-type', 'reject', 'reject-regex',
+            'remote-encoding', 'retry-on-http-error', 'save-cookies', 'secure-protocol', 'start-pos', 'timeout',
+            'tries', 'use-askpass', 'user', 'user-agent', 'wait', 'waitretry', 'warc-dedup', 'warc-file', 'warc-header',
+            'warc-max-size', 'warc-tempdir'),
+        ...flags('adjust-extension', 'ask-password', 'auth-no-challenge', 'background', 'backup-converted', 'backups',
+            'cache', 'check-certificate', 'clobber', 'continue', 'convert-file-only', 'convert-links',
+            'content-disposition', 'content-on-error', 'cookies', 'debug', 'delete-after', 'directories', 'dns-cache',
+            'dont-remove-listing', 'follow-ftp', 'force-directories', 'force-html', 'ftp-stmlf',
+            'ftps-clear-data-connection', 'ftps-fallback-to-ftp', 'ftps-implicit', 'ftps-resume-ssl', 'glob', 'help',
+            'host-directories', 'hsts', 'html-extension', 'htmlify', 'http-keep-alive', 'https-only', 'ignore-case',
+            'ignore-length', 'inet4-only', 'inet6-only', 'iri', 'keep-badhash', 'keep-session-cookies',
+            'metalink-over-http', 'mirror', 'netrc', 'no-clobber', 'no-config', 'no-parent', 'page-requisites',
+            'parent', 'passive-ftp', 'preserve-permissions', 'show-progress', 'protocol-directories', 'proxy', 'quiet',
+            'random-wait', 'recursive', 'relative', 'remove-listing', 'report-speed', 'restrict-file-names',
+            'retr-symlinks', 'retry-connrefused', 'retry-on-host-error', 'save-headers', 'server-response',
+            'span-hosts', 'spider', 'strict-comments', 'timestamping', 'if-modified-since', 'unlink',
+            'trust-server-names', 'use-server-timestamps', 'verbose', 'version', 'warc-cdx', 'warc-compression',
+            'warc-digests', 'warc-keep-log', 'wdebug', 'xattr'),
+    },
+};
+// HTTPie 3.2.4's options (httpie/cli/definition.py): one stored from the command line, not a constant, takes a value.
+const HTTPIE_OPTIONS: OptionTable = {
+    short: { A: 'auth-type', F: 'follow', I: 'ignore-stdin', P: 'history-print', S: 'stream', a: 'auth', b: 'body',
+        c: 'continue', d: 'download', f: 'form', h: 'headers', j: 'json', m: 'meta', o: 'output', p: 'print',
+        q: 'quiet', s: 'style', v: 'verbose', x: 'compress' },
+    long: {
+        ...valued('boundary', 'raw', 'pretty', 'style', 'response-charset', 'response-mime', 'format-options', 'print',
+            'history-print', 'output', 'session', 'session-read-only', 'auth', 'auth-type', 'proxy', 'max-redirects',
+            'max-headers', 'timeout', 'verify', 'ssl', 'ciphers', 'cert', 'cert-key', 'cert-key-pass',
+            'default-scheme'),
+        ...flags('json', 'form', 'multipart', 'compress', 'no-unsorted', 'no-sorted', 'unsorted', 'sorted', 'headers',
+            'meta', 'body', 'verbose', 'all', 'stream', 'download', 'continue', 'quiet', 'ignore-netrc', 'offline',
+            'follow', 'check-status', 'path-as-is', 'chunked', 'ignore-stdin', 'help', 'manual', 'version', 'traceback',
+            'debug'),
+    },
+};
+// xh 0.26.3's options (src/cli.rs): one that holds a value, not a flag or a count, takes it.
+const XH_OPTIONS: OptionTable = {
+    short: { '4': 'ipv4', '6': 'ipv6', A: 'auth-type', F: 'follow', I: 'ignore-stdin', P: 'history-print', S: 'stream',
+        V: 'version', a: 'auth', b: 'body', c: 'continue', d: 'download', f: 'form', h: 'headers', j: 'json', m: 'meta',
+        o: 'output', p: 'print', q: 'quiet', s: 'style', v: 'verbose', x: 'compress' },
+    long: {
+        ...valued('raw', 'pretty', 'format-options', 'style', 'response-charset', 'response-mime', 'print',
+            'history-print', 'output', 'session', 'session-read-only', 'auth-type', 'auth', 'bearer',
+            'unstable-m-sig-id', 'unstable-m-sig-key', 'unstable-m-sig-alg', 'unstable-m-sig-comp', 'max-redirects',
+            'timeout', 'proxy', 'verify', 'cert', 'cert-key', 'ssl', 'default-scheme', 'http-version', 'resolve',
+            'interface', 'unix-socket', 'generate'),
+        ...flags('json', 'form', 'multipart', 'headers', 'body', 'meta', 'verbose', 'debug', 'all', 'quiet', 'stream',
+            'compress', 'download', 'continue', 'ignore-netrc', 'offline', 'check-status', 'follow', 'native-tls',
+            'https', 'ipv4', 'ipv6', 'ignore-stdin', 'curl', 'curl-long', 'help', 'version'),
+    },
+};
+const CLIENT_OPTIONS: Record<string, OptionTable> = {
+    curl: CURL_OPTIONS, wget: WGET_OPTIONS, http: HTTPIE_OPTIONS, https: HTTPIE_OPTIONS, xh: XH_OPTIONS, xhs: XH_OPTIONS,
+};
+
+/**
+ * The indexes of the words an HTTP client sends its request to: curl's operands and `--url` values, wget's operands,
+ * and the first operand of HTTPie and xh, or the second as well when the first could be the method word they take ahead
+ * of the URL (letters only, or a word the shell fills in). Their later operands are request items.
+ */
+function clientUrlSlots(client: string, args: string[]): number[] {
+    const { options, operandAt } = parseOptions(args, CLIENT_OPTIONS[client]);
+    if (client === 'curl') return [...operandAt, ...options.filter(([name]) => name === 'url').map(([, , at]) => at)];
+    if (client === 'wget') return operandAt;
+    const [first, second] = operandAt;
+    if (first === undefined) return [];
+    return second !== undefined && /^[A-Za-z]+$|[$`]/.test(args[first]) ? [first, second] : [first];
+}
+
 const RENDER_API_CLIENTS = new Set(['curl', 'wget', 'http', 'https', 'xh', 'xhs', 'xhttps']);
 const RENDER_API_URL = /^(?:--url=)?(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[^/@]*@)?api\.render\.com\.?(?=[:/?#]|$)/i;
 // curl's single-letter options that take a value: in a bundle like -sSXDELETE, the first one owns the rest of the word.
-const CURL_VALUE_LETTERS = 'AbcCdDeEFHKmoPQrtTuUwxXyYz';
+const CURL_VALUE_LETTERS = valueLetters(CURL_OPTIONS);
 // curl's long options whose value is free text, so a value can look like a flag. The list is the common ones, not all.
 const CURL_TEXT_OPTIONS = /^--(?:data(?:-\w+)?|json|form(?:-string)?|header|output|cookie|user-agent|referer)$/;
 const HTTP_VERB = /^(?:get|head|post|put|patch|delete|options)$/i;
@@ -2801,15 +3042,26 @@ function collectCommandsInText(text: string, commands: any[]): void {
     }
 }
 
-/** The inner text of each `$(…)` (not `$((`) and backtick span in `text`, outermost first. */
-function substitutionSpans(text: string): string[] {
-    const spans: string[] = [];
+/**
+ * Where the inner text of each `$(…)` (not `$((`) and backtick span in `text` starts and ends, outermost first. With
+ * `quoted`, `text` is a shell word, and nothing inside its single quotes is a substitution.
+ */
+function substitutionRanges(text: string, quoted = false): Array<[number, number]> {
+    const ranges: Array<[number, number]> = [];
+    let double = false;
     for (let i = 0; i < text.length; i++) {
         if (text[i] === '\\') { i++; continue; }
+        if (quoted && text[i] === '"') { double = !double; continue; }
+        if (quoted && text[i] === "'" && !double) {
+            const close = text.indexOf("'", i + 1);
+            if (close < 0) break;
+            i = close;
+            continue;
+        }
         if (text[i] === '`') {
             const close = text.indexOf('`', i + 1);
             if (close === -1) break;
-            spans.push(text.slice(i + 1, close));
+            ranges.push([i + 1, close]);
             i = close;
             continue;
         }
@@ -2818,14 +3070,19 @@ function substitutionSpans(text: string): string[] {
             const close = substitutionClose(text, i + 2);
             // Text bash's reading can't place is checked whole, to its end, rather than skipped.
             if (close < 0 || close >= text.length) {
-                spans.push(text.slice(i + 2));
+                ranges.push([i + 2, text.length]);
                 break;
             }
-            spans.push(text.slice(i + 2, close));
+            ranges.push([i + 2, close]);
             i = close;
         }
     }
-    return spans;
+    return ranges;
+}
+
+/** The inner text of each `$(…)` (not `$((`) and backtick span in `text`, outermost first. */
+function substitutionSpans(text: string): string[] {
+    return substitutionRanges(text).map(([start, end]) => text.slice(start, end));
 }
 
 /** Split an `env -S` string into words the way GNU env does: whitespace and
@@ -3095,8 +3352,12 @@ export function resolveCommand(node: any): ResolvedCommand | null {
     const stdinFiles: string[] = [];
     const stdoutFiles: string[] = [];
     let stdoutLast: string | undefined;
+    const outputs: any[] = [];
+    const inputs: any[] = [];
     for (const r of (node.redirects || [])) {
         const onStdout = r?.fileDescriptor === undefined || r?.fileDescriptor === 1;
+        if (onStdout && /^(?:>|>>|>\||&>|&>>|<>|>&)$/.test(r?.operator ?? '')) outputs.push(r);
+        if (/^(?:<<|<<-|<<<|<|<>)$/.test(r?.operator ?? '')) inputs.push(r);
         if (['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && onStdout) {
             stdoutFiles.push(wordValue(r.target));
             stdoutLast = wordValue(r.target);
@@ -3132,6 +3393,8 @@ export function resolveCommand(node: any): ResolvedCommand | null {
         ...(stdinFiles.length ? { stdinFiles } : {}),
         ...(stdoutFiles.length ? { stdoutFiles } : {}),
         ...(stdoutLast !== undefined ? { stdoutLast } : {}),
+        ...(outputs.length === 1 && (outputs[0].operator === '>' || outputs[0].operator === '>|') ? { stdoutReplaced: wordValue(outputs[0].target) } : {}),
+        ...(inputs.length === 1 && inputs[0].operator === '<<' && inputs[0].heredocQuoted ? { quotedHeredoc: String(inputs[0].content ?? '') } : {}),
     };
 }
 
@@ -3262,25 +3525,29 @@ const EACH_SUBMODULE_DIR = 'each submodule';
 
 /**
  * What xargs, or each find -exec/-execdir/-ok/-okdir, runs: the option that runs it and the command it runs, with
- * FILLED where its input or a match goes. `tail`: xargs appends what it reads, so more words may follow the last.
+ * FILLED where its input or a match goes. `tail`: xargs appends what it reads, or find's `{} +` the matches, so a
+ * FILLED word may be several and more may follow the last; otherwise each FILLED word is exactly one.
  */
 function execRuns(cmd: ResolvedCommand): Array<{ via: string; inner: ResolvedCommand | null; tail?: boolean }> {
     if (cmd.name === 'xargs') {
         const words = xargsCommand(cmd.args);
         const replace = xargsReplaceString(cmd.args);
-        const filled = replace !== null ? words.map(w => w.split(replace).join(FILLED)) : words.length ? [...words, ...FILLED_TAIL] : [];
-        return [{ via: 'xargs', inner: innerCommand(filled, cmd), tail: replace === null }];
+        const max = replace === null ? xargsMaxArgs(cmd.args) : null;
+        // -n hands each run at most that many words, one to a slot; otherwise any number may follow.
+        const tail = max === null ? FILLED_TAIL : FILLED_TAIL.slice(0, max);
+        const filled = replace !== null ? words.map(w => w.split(replace).join(FILLED)) : words.length ? [...words, ...tail] : [];
+        return [{ via: 'xargs', inner: innerCommand(filled, cmd), tail: replace === null && (max === null || max > FILLED_TAIL.length) }];
     }
     if (cmd.name === 'git') return submoduleForeach(cmd);
     if (cmd.name !== 'find') return [];
-    const runs: Array<{ via: string; inner: ResolvedCommand | null }> = [];
+    const runs: Array<{ via: string; inner: ResolvedCommand | null; tail: boolean }> = [];
     for (let i = 0; i < cmd.args.length; i++) {
         if (!['-exec', '-execdir', '-ok', '-okdir'].includes(cmd.args[i])) continue;
         // The command runs up to its `;`, or a `+` right after `{}`; what follows is find's own expression.
         const end = cmd.args.findIndex((a, j) => j > i && (a === ';' || (a === '+' && cmd.args[j - 1] === '{}')));
         const inner = innerCommand(cmd.args.slice(i + 1, end < 0 ? undefined : end), cmd);
         if (inner && cmd.args[i].endsWith('dir') && inner.chdir === undefined) inner.chdir = EACH_MATCH_DIR;
-        runs.push({ via: `find ${cmd.args[i]}`, inner });
+        runs.push({ via: `find ${cmd.args[i]}`, inner, tail: cmd.args[end] === '+' });
         if (end > i) i = end;
     }
     return runs;
@@ -3299,6 +3566,32 @@ function submoduleForeach(cmd: ResolvedCommand): Array<{ via: string; inner: Res
 }
 
 /** The string xargs replaces with its input (`-I R`, `-J R`, `-i`/`--replace` → `{}`), or null when it appends instead. */
+/**
+ * How many words xargs hands each run when -n (--max-args) bounds it, or null. Of -n and -L, the one given last wins, and
+ * -L (--max-lines, -l) bounds lines, each of which can hold several words: a key and its value.
+ */
+function xargsMaxArgs(args: string[]): number | null {
+    let max: number | null = null;
+    for (const [name, value] of parseOptions(args, XARGS_OPTIONS, true).options) {
+        if (name === 'max-args') max = /^[1-9]\d*$/.test(value ?? '') ? Number(value) : null;
+        else if (name === 'max-lines' || name === 'L') max = null;
+    }
+    return max;
+}
+
+// GNU findutils 4.9.0's xargs options, from its --help, with BSD's -J, -R and -S; -E, -I, -L and those three are short
+// only. It stops at its command.
+const XARGS_OPTIONS: OptionTable = {
+    short: { 0: 'null', a: 'arg-file', d: 'delimiter', E: 'E', e: 'eof', I: 'I', i: 'replace', J: 'J', L: 'L', l: 'max-lines',
+        n: 'max-args', o: 'open-tty', P: 'max-procs', p: 'interactive', R: 'R', r: 'no-run-if-empty', S: 'S', s: 'max-chars',
+        t: 'verbose', x: 'exit' },
+    long: {
+        ...valued('arg-file', 'delimiter', 'max-args', 'max-procs', 'max-chars', 'process-slot-var', 'E', 'I', 'J', 'L', 'R', 'S'),
+        ...attached('eof', 'replace', 'max-lines'),
+        ...flags('null', 'open-tty', 'interactive', 'no-run-if-empty', 'show-limits', 'verbose', 'exit', 'help', 'version'),
+    },
+};
+
 function xargsReplaceString(args: string[]): string | null {
     for (let i = 0; i < args.length && args[i].startsWith('-') && args[i] !== '--'; i += optionWords(args[i], 'adEIJLnPRsS', XARGS_LONG_VALUE_OPTIONS, XARGS_LONG_FLAGS)) {
         const a = args[i];
@@ -3321,7 +3614,7 @@ function xargsReplaceString(args: string[]): string | null {
 // it), a modifier, or text a client runs. A word filled in at run time is tried as each, so a rule whose words are
 // missing here lets xargs input or a find match choose them unseen; runtime-words.test.ts holds every rule to it.
 const RUNTIME_PROBES: string[][] = [
-    ['push', '--force'], ['clean'], ['--no-dry-run'], ['--force'], ['-f'], ['--delete'], ['-d'], ['--mirror'], ['--prune'],
+    ['push', '--force'], ['clean'], ['alias.x', '!x'], ['--no-dry-run'], ['--force'], ['-f'], ['--delete'], ['-d'], ['--mirror'], ['--prune'],
     ['+main'], [':main'],
     ['destroy'], ['delete'], ['apply', '-auto-approve'], ['-auto-approve'], ['uninstall'], ['remove'], ['drain'], ['cordon'],
     ['rm'], ['rb'], ['rmi'], ['system', 'prune'], ['volume', 'rm'], ['s3', 'rm'], ['ec2', 'terminate-instances'],
@@ -3335,11 +3628,13 @@ const RUNTIME_FILLS = [...new Map(RUNTIME_PROBES.flatMap(probe => probe.flatMap(
     .map(words => [words.join('\0'), words])).values()];
 const RUNTIME_PROBE_WORDS = [...new Set(RUNTIME_PROBES.flat())];
 
-/** Each way to fill `args`' FILLED words from RUNTIME_PROBES, with the words it put there. */
-function* runtimeFills(args: string[]): Generator<{ args: string[]; words: string }> {
+/** Each way to fill `args`' FILLED words from RUNTIME_PROBES, with the words it put there; `several` as execRuns' `tail`. */
+function* runtimeFills(args: string[], several: boolean): Generator<{ args: string[]; words: string }> {
     for (let i = 0; i < args.length; i++) {
         if (args[i] === FILLED) {
-            for (const fill of RUNTIME_FILLS) yield { args: [...args.slice(0, i), ...fill, ...args.slice(i + 1)], words: fill.join(' ') };
+            for (const fill of several ? RUNTIME_FILLS : RUNTIME_PROBE_WORDS.map(word => [word])) {
+                yield { args: [...args.slice(0, i), ...fill, ...args.slice(i + 1)], words: fill.join(' ') };
+            }
         } else if (args[i].includes(FILLED)) {
             // Part of a word (`FLUSH{}`, `select … {}`) can complete a probe word around the written text, or hold one.
             const [before, after] = [args[i].slice(0, args[i].indexOf(FILLED)), args[i].slice(args[i].lastIndexOf(FILLED) + FILLED.length)];
@@ -3372,9 +3667,9 @@ function shellFileWords(shell: ResolvedCommand): string[] {
 /**
  * What a word filled in at run time decides in `step` that makes what it runs unknowable, or null: the command it
  * runs (its name, its environment, or find's expression), the script a shell runs, or arguments that make it need
- * approval when it doesn't otherwise.
+ * approval when it doesn't otherwise. `several` as execRuns' `tail`.
  */
-function runtimeReach(step: ResolvedCommand): string | null {
+function runtimeReach(step: ResolvedCommand, several: boolean): string | null {
     if (!holdsFilled(step)) return null;
     if (step.name.includes(FILLED) || step.env?.some(e => e.includes(FILLED))) return 'takes the command it runs';
     if (step.name === 'find' && step.args.some(a => a.includes(FILLED))) return "takes find's expression";
@@ -3382,7 +3677,7 @@ function runtimeReach(step: ResolvedCommand): string | null {
         return `supplies ${step.name}'s script`;
     }
     if (checkGatedCommand(step)) return null;
-    for (const fill of runtimeFills(step.args)) {
+    for (const fill of runtimeFills(step.args, several)) {
         if (checkGatedCommand({ ...step, args: fill.args })) return `can fill in "${fill.words}" for ${step.name}`;
     }
     return null;
@@ -3408,7 +3703,7 @@ function innerGatedSteps(cmd: ResolvedCommand, depth = 0): InnerGate[] {
                 continue;
             }
             const at = moves.length ? [...moves] : undefined;
-            const reach = via === 'git submodule foreach' ? null : runtimeReach(step);
+            const reach = via === 'git submodule foreach' ? null : runtimeReach(step, tail ?? false);
             if (reach) {
                 gated.push({ step: { ...step, pos: undefined }, reason: `${via} ${reach} from ${via === 'xargs' ? 'its input' : 'the files it matches'}, so what it runs can't be checked. Write it in the command.`, runtime: true });
                 continue;
@@ -4044,9 +4339,30 @@ function deploymentFilePath(fileName: string, envVar: string): string | null {
         repoRoot = null;
     }
     for (const candidate of [repoRoot, `/workspace/plugins/bootstrap/${fileName}`]) {
-        if (candidate && existsSync(candidate)) return candidate;
+        if (candidate && mayExist(candidate)) return candidate;
     }
     return null;
+}
+
+/** False only when a lookup finds nothing there: a path that can't be looked up may still hold a file. */
+function mayExist(path: string): boolean {
+    try {
+        statSync(path);
+        return true;
+    } catch (e) {
+        const code = (e as NodeJS.ErrnoException)?.code;
+        return code !== 'ENOENT' && code !== 'ENOTDIR';
+    }
+}
+
+/** A deployment file's text (`deploymentFilePath`): null when there is no file, 'unreadable' when there is one it can't read. */
+function readDeploymentFile(file: string | null): string | null | 'unreadable' {
+    if (!file) return null;
+    try {
+        return readFileSync(file, 'utf-8');
+    } catch (e) {
+        return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? null : 'unreadable';
+    }
 }
 
 function labScopePath(): string | null {
@@ -4168,6 +4484,39 @@ function currentWorkingDir(): string {
 // ── git target resolution ────────────────────────────────────────────────────
 
 const GIT_GLOBAL_VALUE_OPTS = new Set(['-C', '-c', '--config-env', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--attr-source', '--super-prefix', '--shallow-file']);
+// Commands both installs add beside git's own: their git packages put contrib's subtree and sh-prompt, and the
+// sh-i18n--envsubst helper, in the exec path (/usr/lib/git-core), where git runs them ahead of an alias. Its
+// remote-http, remote-https, remote-ftp and remote-ftps helpers stay out, since a helper can push what it reads on stdin,
+// and so does a git-<name> program on PATH (git-filter-repo rewrites history).
+const GIT_INSTALLED_COMMANDS = ['subtree', 'sh-prompt', 'sh-i18n--envsubst'];
+// Git 2.51.0's own commands, which it runs ahead of an alias of the same name: the git-<name> entries of
+// command-list.txt, the builtins in git.c's commands[] table, and the Makefile's SCRIPT_SH and SCRIPT_LIB, at tag v2.51.0.
+// Only those that both the agent container's git (2.39.5) and this host's (2.43.0) can run are kept, since git runs an
+// alias for a name its install lacks: `git --list-cmds=builtins` and the git-<name> files in the exec path and on PATH.
+const GIT_COMMANDS = new Set([
+    'add', 'am', 'annotate', 'apply', 'archive', 'bisect', 'blame', 'branch', 'bugreport',
+    'bundle', 'cat-file', 'check-attr', 'check-ignore', 'check-mailmap', 'check-ref-format', 'checkout',
+    'checkout--worker', 'checkout-index', 'cherry', 'cherry-pick', 'clean', 'clone', 'column', 'commit',
+    'commit-graph', 'commit-tree', 'config', 'count-objects', 'credential', 'credential-cache',
+    'credential-cache--daemon', 'credential-store', 'daemon', 'describe',
+    'diagnose', 'diff', 'diff-files', 'diff-index', 'diff-tree', 'difftool', 'difftool--helper',
+    'fast-export', 'fast-import', 'fetch', 'fetch-pack', 'filter-branch', 'fmt-merge-msg', 'for-each-ref',
+    'for-each-repo', 'format-patch', 'fsck', 'fsck-objects', 'fsmonitor--daemon', 'gc', 'get-tar-commit-id', 'grep',
+    'hash-object', 'help', 'hook', 'http-backend', 'http-fetch', 'http-push', 'imap-send', 'index-pack', 'init',
+    'init-db', 'instaweb', 'interpret-trailers', 'log', 'ls-files', 'ls-remote', 'ls-tree', 'mailinfo', 'mailsplit',
+    'maintenance', 'merge', 'merge-base', 'merge-file', 'merge-index', 'merge-octopus', 'merge-one-file', 'merge-ours',
+    'merge-recursive', 'merge-recursive-ours', 'merge-recursive-theirs', 'merge-resolve', 'merge-subtree', 'merge-tree',
+    'mergetool', 'mergetool--lib', 'mktag', 'mktree', 'multi-pack-index', 'mv', 'name-rev', 'notes',
+    'pack-objects', 'pack-redundant', 'pack-refs', 'patch-id', 'pickaxe', 'prune', 'prune-packed', 'pull', 'push',
+    'quiltimport', 'range-diff', 'read-tree', 'rebase', 'receive-pack', 'reflog', 'remote', 'remote-ext',
+    'remote-fd', 'repack', 'replace', 'request-pull', 'rerere', 'reset', 'restore', 'rev-list', 'rev-parse',
+    'revert', 'rm', 'send-pack', 'sh-i18n', 'sh-setup', 'shell', 'shortlog', 'show', 'show-branch',
+    'show-index', 'show-ref', 'sparse-checkout', 'stage', 'stash', 'status', 'stripspace', 'submodule',
+    'submodule--helper', 'switch', 'symbolic-ref', 'tag', 'unpack-file', 'unpack-objects', 'update-index',
+    'update-ref', 'update-server-info', 'upload-archive', 'upload-archive--writer', 'upload-pack', 'var',
+    'verify-commit', 'verify-pack', 'verify-tag', 'version', 'web--browse', 'whatchanged', 'worktree', 'write-tree',
+    ...GIT_INSTALLED_COMMANDS,
+]);
 // URL and scp-style (`git@github.com:org/repo`) remotes.
 const REPO_URL_RE = /^(?:(?:https?|ssh|git|git\+ssh|file):\/\/|[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:)/;
 // A bare `org/repo` positional. Only consulted in the REMOTE position, so a
@@ -4182,7 +4531,415 @@ function gitSubcommandIndex(args: string[]): number {
         if (args[i].startsWith('-')) { i += 1; continue; }
         break;
     }
-    return i;
+    return Math.min(i, args.length);
+}
+
+/** git's global options before the subcommand, without the values of those that take one. */
+function gitGlobalOptions(args: string[]): string[] {
+    const options: string[] = [];
+    for (let i = 0; i < gitSubcommandIndex(args); i++) {
+        options.push(args[i]);
+        if (GIT_GLOBAL_VALUE_OPTS.has(args[i])) i++;
+    }
+    return options;
+}
+
+// A bare --exec-path prints the path and exits; with `=` it sets the path instead.
+const GIT_PRINT_OPTIONS = new Set(['--help', '-h', '--version', '-v', '--html-path', '--man-path', '--info-path', '--exec-path']);
+
+/** git prints and exits without running the subcommand: a global option before it, or `--help` right after it. */
+function gitOnlyPrints(args: string[]): boolean {
+    const sub = gitSubcommandIndex(args);
+    // git turns `git <word> --help` into `git help <word>` before it looks the word up. Its own commands print usage for
+    // `-h`, which an alias would take as one more argument.
+    return args[sub + 1] === '--help' || (args[sub + 1] === '-h' && GIT_COMMANDS.has(args[sub] ?? ''))
+        || gitGlobalOptions(args).some(a => GIT_PRINT_OPTIONS.has(a) || a.startsWith('--list-cmds='));
+}
+
+/**
+ * A variable that moves where git config is written: the value the command's own prefix gives it, undefined when
+ * `line` never names it, or null when it is set some other way. An export, an assignment and a subshell read alike from
+ * here, and the prefix overrides them all. `line` is the whole command line, since an export there reaches a command
+ * that xargs or find runs, and quotes are dropped because bash drops them from a name (`export GIT_'DIR'=…`).
+ */
+function gitLocationEnv(cmd: ResolvedCommand, name: string, line: string): string | undefined | null {
+    const own = (cmd.env ?? []).findLast(e => e.startsWith(`${name}=`));
+    if (own !== undefined) return own.slice(name.length + 1);
+    return new RegExp(`\\b${name}\\b`).test(line.replace(/['"\\]/g, '')) ? null : undefined;
+}
+
+/**
+ * Where a `git config` or `git remote` write lands, by git v2.51.0's rules: the `--file` or `GIT_CONFIG` file, else the
+ * repository's own and shared git directories, found from `dir`, the directory the `-C` options leave git in. Null for
+ * the user's or the machine's config, and when the line doesn't fix it: a word the shell fills in where a path or an
+ * option goes, a `..`, `--bare`, `--blob`, a directory that isn't there yet, or a location variable set off the command.
+ */
+function gitConfigDestinations(cmd: ResolvedCommand, cwd: string, line: string): { files: string[]; dir: string } | null {
+    // chdir(2) follows a link before a `..`, which path.resolve would cancel out without looking.
+    const path = (base: string, word: string | undefined): string | null => {
+        const value = word === undefined ? null : provableWord(word, cmd, cmd.pos ?? -1);
+        return value === null || value.split('/').includes('..') ? null : physicalPath(pathResolve(base, value));
+    };
+    if (gitLocationEnv(cmd, 'GIT_COMMON_DIR', line) !== undefined) return null;
+    const at = gitSubcommandIndex(cmd.args);
+    let dir: string | null = physicalPath(cwd);
+    let gitDir = gitLocationEnv(cmd, 'GIT_DIR', line);
+    for (let i = 0; i < at && dir !== null; i++) {
+        const a = cmd.args[i];
+        if (unresolvedWord(a)) return null;
+        if (a === '-C') dir = path(dir, cmd.args[++i]);
+        else if (a === '--git-dir') gitDir = cmd.args[++i];
+        else if (a.startsWith('--git-dir=')) gitDir = a.slice('--git-dir='.length);
+        // --bare points GIT_DIR at the directory git is in when it reads the option, which a later -C doesn't move.
+        else if (a === '--bare') return null;
+        // An option's value the shell fills in, unquoted, can split into more options: `-c $(…)` may hold `--git-dir=…`.
+        else if (GIT_GLOBAL_VALUE_OPTS.has(a) && unresolvedWord(cmd.args[++i] ?? '')) return null;
+    }
+    if (dir === null || !isDirectory(dir)) return null;
+    if (cmd.args[at] === 'clone') {
+        const { options, optionNames, operands } = parseOptions(cmd.args.slice(at + 1), GIT_CLONE_OPTIONS);
+        if (gitConfigOptionUnknown({ optionNames, operands }) || options.some(([, value]) => value !== undefined && unresolvedWord(value))) return null;
+        const bare = options.some(([name]) => name === 'bare' || name === 'mirror');
+        const name = operands[1] ?? (operands[0] === undefined ? undefined : cloneDirectoryName(operands[0], bare));
+        const target = name === undefined ? null : path(dir, name);
+        if (target === null || !isDirectory(dirname(target))) return null;
+        const files = [target];
+        for (const [option, value] of options) {
+            if (option !== 'separate-git-dir') continue;
+            const gitDir = path(dir, value);
+            if (gitDir === null) return null;
+            files.push(gitDir);
+        }
+        return { files, dir };
+    }
+    if (cmd.args[at] === 'config') {
+        const parsed = parseGitConfig(cmd.args.slice(at + 1));
+        if (gitConfigOptionUnknown(parsed)) return null;
+        let file: string | null | undefined;
+        for (const [name, value] of parsed.options) {
+            if (name === 'global' || name === 'system' || name === 'blob') return null;
+            if (name !== 'file' && value !== undefined && unresolvedWord(value)) return null;
+            if (name === 'file' || name === 'no-file') file = value;
+        }
+        file ??= gitLocationEnv(cmd, 'GIT_CONFIG', line);
+        if (file !== undefined) {
+            const target = file === null ? null : path(dir, file);
+            return target === null || !isDirectory(dirname(target)) ? null : { files: [target], dir };
+        }
+    }
+    if (gitDir === null) return null;
+    let dirs: ReturnType<typeof gitDirsOf>;
+    try {
+        const named = gitDir === undefined ? undefined : path(dir, gitDir);
+        dirs = named === undefined ? gitDirsOf(dir) : named === null ? null : gitDirsAt(named);
+    } catch {
+        dirs = null;
+    }
+    return dirs && { files: [dirs.gitDir, dirs.commonDir], dir };
+}
+
+/** The directory `git clone` makes from its source when none is named, as builtin/clone.c's git_url_basename picks it. */
+function cloneDirectoryName(source: string, bare: boolean): string | undefined {
+    const trimmed = source.replace(/\/+$/, '').replace(/\/?\.git$/, '').replace(/\/+$/, '');
+    const name = trimmed.slice(Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf(':')) + 1).replace(/\.bundle$/, '');
+    return name === '' ? undefined : bare ? `${name}.git` : name;
+}
+
+function isDirectory(path: string): boolean {
+    try {
+        return statSync(path).isDirectory();
+    } catch {
+        return false;
+    }
+}
+
+// Commands that create, move, link, unpack or remove files, so one of them on the line can put a repository, a `.git`
+// file or a link where git looks for config. sed writes only with -i.
+const PATH_WRITERS = new Set(['mkdir', 'ln', 'mv', 'cp', 'rsync', 'tar', 'unzip', 'install', 'touch', 'truncate', 'tee', 'dd', 'sed', 'trash', 'rm', 'rmdir', 'unlink']);
+const GIT_PATH_WRITERS = new Set(['worktree', 'init', 'clone', 'submodule']);
+
+/**
+ * The paths the steps of `line` may write, as written: what its redirects open, and the words of its path writers,
+ * the steps that xargs and find run included. Null when one of them may write somewhere the line doesn't name as an
+ * absolute path: a relative path, a word the shell fills in, `git worktree`, `init`, `clone` or `submodule`, or patch.
+ */
+function lineWrites(line: string, depth = 0, self?: ResolvedCommand): string[] | null {
+    const written: string[] = [];
+    let steps: ResolvedCommand[];
+    try {
+        steps = extractCommands(line);
+        written.push(...lineRedirectWrites(line, steps[0]?.script?.ast).map(w => w.target).filter(t => !DISCARD_TARGETS.has(t)));
+    } catch {
+        return null;
+    }
+    for (const step of steps) {
+        if (self && step.pos !== undefined && step.pos === self.pos && step.name === self.name) continue;
+        const more = stepWrites(step, depth);
+        if (more === null) return null;
+        written.push(...more);
+    }
+    return written.every(t => t.startsWith('/') && !unresolvedWord(t)) ? written : null;
+}
+
+function stepWrites(step: ResolvedCommand, depth: number): string[] | null {
+    if (step.name === 'patch' || (step.name === 'git' && GIT_PATH_WRITERS.has(step.args[gitSubcommandIndex(step.args)] ?? ''))) return null;
+    const writes = PATH_WRITERS.has(step.name) && (step.name !== 'sed' || step.args.some(a => /^(?:-[a-zA-Z]*i|--in-place)/.test(a)));
+    // A path can sit in an option's own word: `--target-directory=DIR`, `-tDIR`, `-CDIR`, `-dDIR`, `-fFILE`, dd's `of=FILE`.
+    const written = !writes ? [] : step.args.flatMap(a => a.startsWith('-')
+        ? (/^--[^=]+=(.+)$/.exec(a) ?? /^-[a-zA-Z]*?[tCdf](.+)$/.exec(a))?.slice(1) ?? []
+        : [a.replace(/^(?:if|of)=/, '')]);
+    for (const { inner } of execRuns(step)) {
+        if (!inner) continue;
+        if (depth >= EXEC_NESTING_MAX) return null;
+        const script = SHELLS.has(inner.name) ? shellScript(inner.name, inner.args) : null;
+        const more = script ? lineWrites(script.text, depth + 1) : SHELLS.has(inner.name) ? null : stepWrites(inner, depth + 1);
+        if (more === null) return null;
+        written.push(...more);
+    }
+    return written;
+}
+
+/**
+ * A write at `t` can move a config write found from `p`: it is `p` or a directory above it, a path under it, or the
+ * `.git` that git looks for in a directory above it.
+ */
+function movesConfigWrite(t: string, p: string): boolean {
+    if (t.split('/').includes('..')) return true;
+    const within = (a: string, b: string) => a === b || a.startsWith(b.endsWith('/') ? b : `${b}/`);
+    return [pathResolve(t), physicalPath(t)].some(w => {
+        if (within(p, w) || within(w, p)) return true;
+        for (let a = p; ; a = dirname(a)) {
+            if (within(w, join(a, '.git'))) return true;
+            if (a === dirname(a)) return false;
+        }
+    });
+}
+
+/** The command moves git's exec path, where git finds its own script commands and `git-<name>` programs. */
+function gitMovesExecPath(cmd: ResolvedCommand): boolean {
+    return gitGlobalOptions(cmd.args).some(a => a.startsWith('--exec-path=')) || !!cmd.env?.some(e => e.startsWith('GIT_EXEC_PATH='));
+}
+
+/**
+ * The alias git may run, or null. git runs its own commands ahead of an alias of the same name; any other word is an
+ * alias, whatever config defined it, or a `git-<name>` program the guard doesn't look for.
+ */
+function gitAlias(cmd: ResolvedCommand): string | null {
+    const sub = cmd.args[gitSubcommandIndex(cmd.args)];
+    return sub === undefined || /[$`]/.test(sub) || GIT_COMMANDS.has(sub) || gitOnlyPrints(cmd.args) ? null : sub;
+}
+
+// Config that makes a later, ordinary-looking git command do something else: an alias, a push that mirrors or follows
+// configured refspecs, or a program git runs for ssh or paging. core.hooksPath is refused outright (gitHookBypassReason).
+const GIT_RISKY_CONFIG_KEY_RE = /^(?:alias\..+|remote\..+\.(?:mirror|push)|core\.(?:sshcommand|pager))$/i;
+// `-c core.pager=cat`, or an empty pager, runs nothing but cat.
+const GIT_PAGER_RUNS_NOTHING = /^core\.pager=(?:cat)?$/i;
+const GIT_RISKY_CONFIG_SECTION_RE = /^(?:alias|remote(?:\..+)?|core)$/i;
+const GIT_EXEC_PATH_MOVED = 'git with its exec path moved runs whatever that directory holds in place of its own commands, or an alias where one is missing. Run git with its installed exec path.';
+const GIT_NOT_OWN_COMMAND = "is not one of git's own commands, so git runs it as an alias";
+const GIT_RISKY_CONFIG = 'This sets git config (an alias, a remote\'s mirror or push refspecs, core.sshCommand or core.pager) that makes a later, ordinary-looking git command run something else: any command, a mirror push or a force-push. Get approval, or run the command it stands for directly.';
+
+/** The command sets risky git config: with `-c`, `git config`, `git remote add --mirror`, `git clone` or its env. */
+function gitSetsRiskyConfig(cmd: ResolvedCommand): boolean {
+    if (cmd.name === 'git' && gitOnlyPrints(cmd.args)) return false;
+    if (envSetsGitConfig(cmd.env ?? [], GIT_RISKY_CONFIG_KEY_RE)) return true;
+    if (cmd.name !== 'git') return false;
+    const risky = configKeyIs(GIT_RISKY_CONFIG_KEY_RE);
+    const sets = (a: string, fromEnv: boolean) => risky(a) && (fromEnv || !GIT_PAGER_RUNS_NOTHING.test(a));
+    if (gitOptionsSetConfig(cmd.args, sets)) return true;
+    const i = gitSubcommandIndex(cmd.args);
+    const rest = cmd.args.slice(i + 1);
+    switch (cmd.args[i]) {
+        case 'config': return gitConfigWrites(rest, GIT_RISKY_CONFIG_KEY_RE, GIT_RISKY_CONFIG_SECTION_RE, false);
+        case 'remote': {
+            // `git remote [-v] add …`: git remote's own options come before its subcommand.
+            const verb = rest.findIndex(a => !a.startsWith('-'));
+            return rest[verb] === 'add' && parseOptions(rest.slice(verb + 1), GIT_REMOTE_ADD_OPTIONS).options.some(([n]) => n === 'mirror');
+        }
+        case 'clone': return parseOptions(rest, GIT_CLONE_OPTIONS).options.some(([n]) => n === 'mirror')
+            || gitCloneConfig(rest).some(value => sets(value, false));
+        default: return false;
+    }
+}
+
+// GNU parallel 20231122's options (Ubuntu noble's package), from options_completion_hash, each under every name it goes
+// by. It reads them with Getopt::Long's bundling and require_order.
+const PARALLEL_OPTIONS: OptionTable = {
+    getoptLong: true,
+    short: { '0': 'null', B: 'B', C: 'col-sep', D: 'debug', E: 'E', H: 'H', I: 'I', J: 'profile', L: 'L',
+        M: 'controlmaster', N: 'max-replace-args', P: 'max-procs', S: 'sshlogin', T: 'T', U: 'U', V: 'version', W: 'W',
+        X: 'X', Y: 'Y', a: 'arg-file', d: 'delimiter', e: 'eof', g: 'g', h: 'help', i: 'replace', j: 'max-procs',
+        k: 'keep-order', l: 'max-lines', m: 'm', n: 'max-args', o: 'open-tty', p: 'interactive', q: 'quote',
+        r: 'no-run-if-empty', s: 'max-chars', t: 'verbose', u: 'ungroup', v: 'v', x: 'exit' },
+    long: {
+        ...valued('debug', 'sql', 'sql-master', 'sqlmaster', 'sql-worker', 'sqlworker', 'sql-and-worker',
+            'sqlandworker', 'joblog', 'jl', 'results', 'result', 'res', 'parens', 'rpl', 'I', 'extensionreplace', 'er',
+            'U', 'basenamereplace', 'bnr', 'dirnamereplace', 'dnr', 'basenameextensionreplace', 'bner', 'seqreplace',
+            'slotreplace', 'delay', 'ssh-delay', 'sshdelay', 'load', 'nice', 'tag-string', 'tagstring', 'ctag-string',
+            'ctagstring', 'sshlogin', 'sshloginfile', 'slf', 'ssh', 'transfer-file', 'transferfile', 'transfer-files',
+            'transferfiles', 'tf', 'return', 'trc', 'basefile', 'bf', 'template', 'tmpl', 'B', 'work-dir', 'workdir',
+            'wd', 'W', 'rsync-opts', 'rsyncopts', 'tmpdir', 'tempdir', 'use-compress-program', 'compress-program',
+            'usecompressprogram', 'compressprogram', 'use-decompress-program', 'decompress-program',
+            'usedecompressprogram', 'decompressprogram', 'H', 'total-jobs', 'totaljobs', 'total', 'arg-sep', 'argsep',
+            'arg-file-sep', 'argfilesep', 'trim', 'env', 'profile', 'linkinputsource', 'xapplyinputsource',
+            'halt-on-error', 'haltonerror', 'halt', 'limit', 'memfree', 'memsuspend', 'retries', 'timeout', 'term-seq',
+            'termseq', 'max-procs', 'maxprocs', 'jobs', 'delimiter', 'max-chars', 'maxchars', 'arg-file', 'argfile',
+            'E', 'process-slot-var', 'processslotvar', 'max-args', 'maxargs', 'max-replace-args', 'maxreplaceargs',
+            'col-sep', 'colsep', 'L', 'min-version', 'minversion', 'semaphore-timeout', 'semaphoretimeout', 'st',
+            'semaphore-name', 'semaphorename', 'id', 'recstart', 'recend', 'block-size', 'blocksize', 'block',
+            'block-timeout', 'blocktimeout', 'bt', 'header', 'shard', 'bin', 'group-by', 'groupby', 'filter', '_parset',
+            'shell-completion', 'shellcompletion', '_test'),
+        ...attached('replace', 'eof', 'max-lines', 'maxlines'),
+        ...flags('xargs', 'm', 'X', 'v', 'resume', 'resume-failed', 'resumefailed', 'retry-failed', 'retryfailed',
+            'silent', 'keep-order', 'keeporder', 'no-keep-order', 'nokeeporder', 'nok', 'no-k', 'group', 'g', 'ungroup',
+            'latest-line', 'latestline', 'll', 'line-buffer', 'line-buffered', 'linebuffer', 'linebuffered', 'lb',
+            'tmux', 'tmux-pane', 'tmuxpane', 'null', 'quote', 'plus', 'noswap', 'max-line-length-allowed',
+            'maxlinelengthallowed', 'number-of-cpus', 'numberofcpus', 'number-of-sockets', 'numberofsockets',
+            'number-of-cores', 'numberofcores', 'number-of-threads', 'numberofthreads',
+            'use-sockets-instead-of-threads', 'usesocketsinsteadofthreads', 'use-cores-instead-of-threads',
+            'usecoresinsteadofthreads', 'use-cpus-instead-of-cores', 'usecpusinsteadofcores', 'shell-quote',
+            'shellquote', 'shell_quote', 'tag', 'ctag', 'color', 'colour', 'color-failed', 'colour-failed',
+            'colorfailed', 'colourfailed', 'color-fail', 'colour-fail', 'colorfail', 'colourfail', 'cf', 'onall',
+            'nonall', 'filter-hosts', 'filterhosts', 'filter-host', 'controlmaster', 'transfer', 'cleanup', 'ctrl-c',
+            'ctrlc', 'no-ctrl-c', 'no-ctrlc', 'noctrlc', 'compress', 'open-tty', 'tty', 'T', 'dry-run', 'dryrun', 'dr',
+            'progress', 'eta', 'bar', 'shuf', 'recordenv', 'record-env', 'session', 'plain', 'tollef', 'gnu', 'link',
+            'xapply', 'will-cite', 'willcite', 'nn', 'nonotice', 'no-notice', 'no-run-if-empty', 'norunifempty', 'csv',
+            'help', 'interactive', 'verbose', 'version', 'show-limits', 'showlimits', 'exit', 'semaphore', 'fg', 'bg',
+            'wait', 'shebang', 'hashbang', '_pipe-means-argfiles', 'Y', 'skip-first-line', 'skipfirstline', '_bug',
+            '_unsafe', 'pipe', 'spreadstdin', 'round-robin', 'roundrobin', 'round', 'regexp', 'regex', 'remove-rec-sep',
+            'removerecsep', 'rrs', 'output-as-files', 'outputasfiles', 'files', 'output-as-files0', 'outputasfiles0',
+            'files0', 'cat', 'fifo', 'pipe-part', 'pipepart', 'tee', 'hgrp', 'hostgrp', 'hostgroup', 'hostgroups',
+            'embed'),
+    },
+};
+// -n and -N set how many arguments one run takes. -m, -X and --xargs put several in one, and so do -L, -l and -s, which
+// the man page says imply -X.
+const PARALLEL_ARG_COUNTS = new Set(['max-args', 'maxargs', 'max-replace-args', 'maxreplaceargs']);
+const PARALLEL_SEVERAL = new Set(['m', 'X', 'xargs', 'L', 'max-lines', 'maxlines', 'max-chars', 'maxchars']);
+
+// Runners the guard doesn't read the command of, which fill in its words from their input or their `:::` lists.
+const UNREAD_RUNNERS = new Set(['parallel', 'sem']);
+
+/**
+ * git config whose words a runner fills in where the guard can't see them: under parallel, or with a variable that a
+ * `read`, `mapfile` or `readarray` on the line sets from its input (`… | while read k v; do git config "$k" "$v"; done`).
+ * xargs and find are read through RUNTIME_PROBES instead.
+ */
+function runsGitConfigUnseen(cmd: ResolvedCommand): boolean {
+    if (UNREAD_RUNNERS.has(cmd.name)) {
+        // Its command, given as words or one string, runs through a shell up to the first `:::` or `::::` list.
+        const at = cmd.args.findIndex(a => commandName(a) === 'git' || /(?:^|[\s;&|(`])git\s/.test(a));
+        if (at < 0) return false;
+        const end = cmd.args.findIndex((a, i) => i > at && /^::::?\+?$/.test(a));
+        const text = cmd.args.slice(at, end < 0 ? undefined : end).join(' ');
+        // A replacement string is quoted into one word, and -n 1 or -N 1 passes one argument a run. A larger -n or -N,
+        // an option that implies -X, or a `{= … =}` expression can put several in one.
+        let several = text.includes('{=');
+        for (const [name, value] of parseOptions(cmd.args.slice(0, at), PARALLEL_OPTIONS).options) {
+            if (PARALLEL_ARG_COUNTS.has(name)) several ||= value !== '1';
+            else if (PARALLEL_SEVERAL.has(name)) several = true;
+        }
+        const placeholder = /\{[^{}\s]*\}/g;
+        let steps: ResolvedCommand[];
+        try {
+            steps = extractCommands(placeholder.test(text) ? text.replace(placeholder, FILLED) : `${text} ${FILLED}`);
+        } catch {
+            return true;
+        }
+        return steps.some(step => gitConfigFillRisky(step, several));
+    }
+    if (cmd.name !== 'git' || cmd.args[gitSubcommandIndex(cmd.args)] !== 'config' || !cmd.args.some(a => a.includes('$'))) return false;
+    const names = [...inputVariables(cmd.script?.command ?? cmd.raw)].filter(n => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n));
+    if (!names.length) return false;
+    const read = new RegExp(`\\$(?:\\{(?:${names.join('|')})(?![A-Za-z0-9_])[^}]*\\}|(?:${names.join('|')})(?![A-Za-z0-9_]))`, 'g');
+    const args = cmd.args.map(a => a.replace(read, FILLED));
+    // A variable held in quotes stays one argument; unquoted, or as "${a[@]}", it splits into words.
+    const words = argumentWords(cmd);
+    const several = args.some((a, i) => a !== cmd.args[i] && !(words.length === args.length && staysOneWord(words[i].word)));
+    return args.some((a, i) => a !== cmd.args[i]) && gitConfigFillRisky({ ...cmd, args }, several);
+}
+
+/**
+ * git config with FILLED where a runner puts words it reads, judged as xargs's are: risky when some fill from
+ * RUNTIME_PROBES makes it a risky write, with `several` when one FILLED may stand for several words. Reads (`--get`,
+ * `--list`, `get`, `list`) stay reads.
+ */
+function gitConfigFillRisky(step: ResolvedCommand, several: boolean): boolean {
+    if (step.name !== 'git' || step.args[gitSubcommandIndex(step.args)] !== 'config') return false;
+    return gitSetsRiskyConfig(step) || runtimeReach(step, several) !== null;
+}
+
+// bash 5.2's read and mapfile (readarray) options, from `help read` and `help mapfile`: single letters only.
+const READ_OPTIONS: OptionTable = {
+    short: Object.fromEntries([...'adeiNnprstu'].map(c => [c, c])),
+    long: { ...valued('a', 'd', 'i', 'n', 'N', 'p', 't', 'u'), ...flags('e', 'r', 's') },
+};
+const MAPFILE_OPTIONS: OptionTable = {
+    short: Object.fromEntries([...'dnOstuCc'].map(c => [c, c])),
+    long: { ...valued('d', 'n', 'O', 's', 'u', 'C', 'c'), ...flags('t') },
+};
+
+/** The variables that `read`, `mapfile` or `readarray` on `line` set from their input. */
+function inputVariables(line: string): Set<string> {
+    const names = new Set<string>();
+    let steps: ResolvedCommand[];
+    try {
+        steps = extractCommands(line);
+    } catch {
+        return names;
+    }
+    for (const step of steps) {
+        const table = step.name === 'read' ? READ_OPTIONS : step.name === 'mapfile' || step.name === 'readarray' ? MAPFILE_OPTIONS : null;
+        if (table === null) continue;
+        const { options, operands } = parseOptions(step.args, table);
+        // `read -a NAME` reads into the array it names.
+        for (const [option, value] of options) if (option === 'a' && value) names.add(value);
+        if (step.name === 'read') for (const name of operands.length ? operands : ['REPLY']) names.add(name);
+        else names.add(operands.at(-1) ?? 'MAPFILE');
+    }
+    return names;
+}
+
+/** What `git clone <rest>` writes into the new repository's config: its -c and --config values. */
+function gitCloneConfig(rest: string[]): string[] {
+    return parseOptions(rest, GIT_CLONE_OPTIONS).options.flatMap(([name, value]) => (name === 'config' && value !== undefined ? [value] : []));
+}
+
+// The option tables of builtin/config.c, builtin/clone.c and builtin/remote.c's `add` at git v2.51.0.
+const GIT_CONFIG_OPTIONS: OptionTable = {
+    short: { f: 'file', t: 'type', z: 'null', l: 'list', e: 'edit' },
+    long: {
+        ...valued('file', 'blob', 'type', 'value', 'url', 'default', 'comment'),
+        ...flags('global', 'system', 'local', 'worktree', 'bool', 'int', 'bool-or-int', 'bool-or-str', 'path', 'expiry-date',
+            'null', 'name-only', 'show-origin', 'show-scope', 'show-names', 'includes', 'all', 'regexp', 'fixed-value', 'append',
+            'get', 'get-all', 'get-regexp', 'get-urlmatch', 'replace-all', 'add', 'unset', 'unset-all', 'rename-section',
+            'remove-section', 'list', 'edit', 'get-color', 'get-colorbool'),
+    },
+};
+const GIT_CLONE_OPTIONS: OptionTable = {
+    short: { v: 'verbose', q: 'quiet', n: 'no-checkout', l: 'local', s: 'shared', j: 'jobs', o: 'origin', b: 'branch', u: 'upload-pack', c: 'config', 4: 'ipv4', 6: 'ipv6' },
+    long: {
+        ...valued('jobs', 'template', 'reference', 'reference-if-able', 'origin', 'branch', 'revision', 'upload-pack', 'depth',
+            'shallow-since', 'shallow-exclude', 'separate-git-dir', 'ref-format', 'config', 'server-option', 'bundle-uri', 'filter'),
+        ...flags('verbose', 'quiet', 'progress', 'reject-shallow', 'no-checkout', 'bare', 'naked', 'mirror', 'local', 'no-hardlinks',
+            'shared', 'recurse-submodules', 'recursive', 'dissociate', 'single-branch', 'tags', 'shallow-submodules',
+            'also-filter-submodules', 'remote-submodules', 'sparse', 'ipv4', 'ipv6'),
+    },
+};
+const GIT_REMOTE_ADD_OPTIONS: OptionTable = {
+    short: { f: 'fetch', t: 'track', m: 'master' },
+    long: { ...valued('track', 'master'), ...flags('fetch', 'tags', 'mirror') },
+};
+
+// git config's subcommands at v2.51.0 (builtin/config.c), named only as the first word after `config`: `list` and `edit`
+// parse options anywhere, the rest only before their first operand. Without one, the legacy form also stops there.
+const GIT_CONFIG_SUBCOMMANDS: Record<string, boolean> = { list: false, edit: false, get: true, set: true, unset: true, 'rename-section': true, 'remove-section': true };
+
+/** `git config <args>` read as git v2.51.0 reads it: its subcommand, if the first word names one, then its options. */
+function parseGitConfig(args: string[]): { subcommand?: string } & ParsedOptions {
+    const subcommand = Object.prototype.hasOwnProperty.call(GIT_CONFIG_SUBCOMMANDS, args[0]) ? args[0] : undefined;
+    const parsed = parseOptions(subcommand ? args.slice(1) : args, GIT_CONFIG_OPTIONS, subcommand ? GIT_CONFIG_SUBCOMMANDS[subcommand] : true);
+    return { subcommand, ...parsed };
 }
 
 /** Value of `git -C <path>` / `--work-tree <path>`, which relocates the
@@ -4203,9 +4960,22 @@ function gitRemoteArg(args: string[]): string | null {
     return null;
 }
 
-function labGitTarget(cmd: ResolvedCommand, cwd: string): string | null {
+function labGitTarget(cmd: ResolvedCommand, cwd: string, line: string): string | null {
+    // An alias, or a program from a moved exec path, can act on any checkout or remote, whichever one it is run in.
+    if (gitAlias(cmd) !== null || gitMovesExecPath(cmd)) return null;
+    const sub = cmd.args[gitSubcommandIndex(cmd.args)];
+    // A write to git config is a lab repository's own only when every file it can land in is in a lab checkout, and no
+    // other step on the line can move it there from elsewhere. Every step counts, since a pipeline or `&` runs them at
+    // once. A clone writes into the checkout it makes, whatever its source.
+    if (sub === 'config' || sub === 'remote' || sub === 'clone') {
+        const into = gitConfigDestinations(cmd, cwd, line);
+        if (!into?.files.every(isLabWorktreePath)) return null;
+        const written = lineWrites(line, 0, cmd);
+        if (written === null || written.some(t => [into.dir, ...into.files].some(p => movesConfigWrite(t, p)))) return null;
+        if (sub === 'config') return into.files[0];
+    }
     // git clean touches only its work tree; its words (an `-e` pattern, a pathspec) name no repository.
-    if (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean') {
+    if (sub === 'clean') {
         // An exported GIT_WORK_TREE or GIT_DIR elsewhere on the line can move the work tree; only the command's own
         // prefix (which overrides an export) is known.
         const own = (cmd.env ?? []).some(e => e.startsWith('GIT_WORK_TREE='));
@@ -4435,10 +5205,10 @@ function labGhTarget(cmd: ResolvedCommand): string | null {
  * Fails CLOSED: every family it does not recognize, and every target it cannot
  * read literally out of the resolved command, returns null and stays gated.
  */
-export function labTargetOf(cmd: ResolvedCommand, cwd: string = currentWorkingDir()): string | null {
+export function labTargetOf(cmd: ResolvedCommand, cwd: string = currentWorkingDir(), line = cmd.script?.command ?? cmd.raw): string | null {
     switch (cmd.name) {
         case 'git':
-            return labGitTarget(cmd, cwd);
+            return labGitTarget(cmd, cwd, line);
         case 'render':
             return labRenderTarget(cmd);
         case 'gh':
@@ -5087,7 +5857,7 @@ function withoutSingleQuoted(text: string): string {
 
 /**
  * True when a word stays one argument: nothing outside quotes word-splits or globs, so a value can't smuggle in an
- * option of its own. `"$@"` splits even inside double quotes.
+ * option of its own. `"$@"` and `"${a[@]}"` split even inside double quotes.
  */
 function staysOneWord(word: string): boolean {
     let quote: string | null = null;
@@ -5099,7 +5869,7 @@ function staysOneWord(word: string): boolean {
             i++;
         } else if (quote === '"') {
             if (c === '"') quote = null;
-            else if (c === '$' && word[i + 1] === '@') return false;
+            else if (c === '$' && /^(?:@|\{@|\{[A-Za-z_][A-Za-z0-9_]*\[@\])/.test(word.slice(i + 1))) return false;
         } else if (c === "'" || c === '"') {
             quote = c;
         } else if ('$`*?['.includes(c)) {
@@ -6099,20 +6869,62 @@ const GIT_COMMIT_VALUE_LONG = new Set([
     '--message', '--file', '--author', '--date', '--reuse-message', '--reedit-message',
     '--template', '--fixup', '--squash', '--cleanup', '--trailer', '--pathspec-from-file',
 ]);
-const GIT_CONFIG_VALUE_OPTS = new Set(['-f', '--file', '--blob', '--type', '--default', '--comment', '--value']);
-const GIT_CONFIG_WRITE_OPTS = new Set(['--unset', '--unset-all', '--replace-all', '--add']);
-const GIT_CONFIG_SECTION_OPTS = new Set(['--rename-section', '--remove-section']);
-const GIT_CONFIG_READ_OPTS = new Set(['--get', '--get-all', '--get-regexp', '--get-urlmatch', '--list', '-l']);
-const GIT_CONFIG_ACTION_OPTS = new Set([...GIT_CONFIG_WRITE_OPTS, ...GIT_CONFIG_SECTION_OPTS, ...GIT_CONFIG_READ_OPTS]);
+type GitConfigMode = 'read' | 'write' | 'unset' | 'remove' | 'rename';
+// What each of git config's action options does with the names after it.
+const GIT_CONFIG_MODES: Record<string, GitConfigMode> = {
+    'replace-all': 'write', add: 'write', unset: 'unset', 'unset-all': 'unset', 'remove-section': 'remove', 'rename-section': 'rename',
+    get: 'read', 'get-all': 'read', 'get-regexp': 'read', 'get-urlmatch': 'read', list: 'read', 'get-color': 'read', 'get-colorbool': 'read',
+};
 
 function envDisablesHooks(env: string[]): boolean {
-    return env.some((entry) =>
-        /^HUSKY=0$/.test(entry) ||
-        /^HUSKY_SKIP_HOOKS=/.test(entry) ||
-        /^GIT_CONFIG_PARAMETERS=.*(?:core\.hookspath|bootstrap\.boundarychecker)/i.test(entry) ||
-        /^GIT_CONFIG_KEY_\d+=(?:core\.hookspath|bootstrap\.boundarychecker)$/i.test(entry),
-    );
+    return env.some((entry) => /^HUSKY=0$/.test(entry) || /^HUSKY_SKIP_HOOKS=/.test(entry))
+        || envSetsGitConfig(env, GIT_HOOK_CONFIG_KEY_RE);
 }
+
+/** An assignment in `env` that hands git config (GIT_CONFIG_PARAMETERS or GIT_CONFIG_KEY_<n>) whose key `key` matches. */
+function envSetsGitConfig(env: string[], key: RegExp): boolean {
+    return env.some((entry) => {
+        const m = /^GIT_CONFIG_(KEY_\d+|PARAMETERS)=([\s\S]*)$/i.exec(entry);
+        if (!m) return false;
+        if (m[1].toUpperCase() !== 'PARAMETERS') return key.test(m[2]);
+        // GIT_CONFIG_PARAMETERS holds quoted `'key'='value'` or `'key=value'` pairs.
+        return m[2].split(/['"\s=]+/).some((word) => key.test(word));
+    });
+}
+
+const EXPORTERS = new Set(['export', 'declare', 'typeset']);
+
+/** An export, declare or typeset that hands git risky config, or names a config key whose value the line doesn't show. */
+function exportsRiskyConfig(cmd: ResolvedCommand): boolean {
+    return cmd.args.some((arg) => {
+        const m = /^(GIT_CONFIG_(?:KEY_\d+|PARAMETERS))(?:=([\s\S]*))?$/.exec(arg);
+        if (!m) return false;
+        const value = m[2] ?? provableWord(`$${m[1]}`, cmd, cmd.pos ?? -1);
+        return value === null || /[$`]/.test(value) || envSetsGitConfig([`${m[1]}=${value}`], GIT_RISKY_CONFIG_KEY_RE);
+    });
+}
+
+/**
+ * A `-c key=value` or `--config-env key=ENVVAR` before git's subcommand that `sets` picks; `fromEnv` when the value is
+ * the named variable's.
+ */
+function gitOptionsSetConfig(args: string[], sets: (assignment: string, fromEnv: boolean) => boolean): boolean {
+    for (let i = 0; i < gitSubcommandIndex(args); i++) {
+        const arg = args[i];
+        if ((arg === '-c' || arg === '--config-env') && sets(args[i + 1] ?? '', arg !== '-c')) return true;
+        if (arg.startsWith('-c') && arg.length > 2 && sets(arg.slice(2), false)) return true;
+        if (arg.startsWith('--config-env=') && sets(arg.slice('--config-env='.length), true)) return true;
+    }
+    return false;
+}
+
+const configKeyIs = (key: RegExp) => (assignment: string): boolean =>
+    (COMMAND_SUBSTITUTION_RE.test(assignment) ? substitutionWords(assignment) : [assignment]).some(a => key.test(a.split('=')[0] ?? ''));
+
+// A command substitution's output can split into any number of words, so in an option's value the words it shows stand in
+// for what it may add: `--type $(printf 'path alias.x')` may hand git the key alias.x. Quotes are dropped from them.
+const COMMAND_SUBSTITUTION_RE = /\$\(|`/;
+const substitutionWords = (value: string): string[] => value.replace(/['"\\]/g, '').split(/[\s$()`;|&<>]+/).filter(Boolean);
 
 function gitCommitSkipsHooks(args: string[]): boolean {
     for (let i = 0; i < args.length; i++) {
@@ -6139,38 +6951,65 @@ function gitCommitSkipsHooks(args: string[]): boolean {
     return false;
 }
 
-function gitConfigWritesHookConfig(args: string[]): boolean {
-    const positionals: string[] = [];
+/**
+ * `git config <args>` writes config whose key `key`, or section `section`, matches: sets it, renames a section to it,
+ * or, with `removals`, unsets, removes or renames it away.
+ */
+function gitConfigWrites(args: string[], key: RegExp, section: RegExp, removals = true): boolean {
+    const { subcommand, options, optionNames, operands } = parseGitConfig(args);
     // git config takes ONE action option; a later one replaces an earlier one and
     // `--no-<action>` clears it, leaving the positional form to decide.
-    let mode: 'read' | 'write' | 'section' | null = null;
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (GIT_CONFIG_VALUE_OPTS.has(arg)) { i += 1; continue; }
+    let mode: GitConfigMode | null = null;
+    for (const [name] of options) {
         // An editor session can rewrite any key unseen.
-        if (arg === '-e' || arg === '--edit') return true;
-        if (GIT_CONFIG_WRITE_OPTS.has(arg)) { mode = 'write'; continue; }
-        if (GIT_CONFIG_SECTION_OPTS.has(arg)) { mode = 'section'; continue; }
-        if (GIT_CONFIG_READ_OPTS.has(arg)) { mode = 'read'; continue; }
-        if (arg.startsWith('--no-') && GIT_CONFIG_ACTION_OPTS.has(`--${arg.slice('--no-'.length)}`)) { mode = null; continue; }
-        if (arg.startsWith('-')) continue;
-        positionals.push(arg);
+        if (name === 'edit') return true;
+        if (Object.prototype.hasOwnProperty.call(GIT_CONFIG_MODES, name)) mode = GIT_CONFIG_MODES[name];
+        else if (name.startsWith('no-') && Object.prototype.hasOwnProperty.call(GIT_CONFIG_MODES, name.slice(3))) mode = null;
     }
-    const [verb, ...rest] = positionals;
-    if (verb === 'edit') return true;
-    // Removing or renaming the whole section drops the key with it.
-    if (verb === 'remove-section' || verb === 'rename-section') {
-        return GIT_HOOK_CONFIG_SECTION_RE.test(rest[0] ?? '');
+    // A command substitution in an option's value may add options and names, so its words join the operands.
+    const substituted = options.flatMap(([, value]) => (value !== undefined && COMMAND_SUBSTITUTION_RE.test(value) ? [substitutionWords(value)] : []));
+    // A word the guard can't resolve in an option slot leaves the operands' positions unknown, so every operand is read
+    // as if it might be the key.
+    const shifted = substituted.length > 0 || gitConfigOptionUnknown({ optionNames, operands });
+    // An option whose name the line doesn't show may be any of them, --unset or --add among them.
+    const optionUnknown = substituted.length > 0 || optionNames.some(unresolvedWord);
+    const candidates = [...operands, ...substituted.flat()];
+    const matches = (s: string | undefined) => section.test(s ?? '');
+    // Every form names the key first; what follows is a value or a value-pattern.
+    const isKey = () => (shifted ? candidates.some((p) => key.test(p)) : key.test(operands[0] ?? ''));
+    // A rename to the section adds its keys; removing it, or renaming it away, drops them.
+    const renames = () => (shifted ? candidates.some(matches) : matches(operands[1]) || (removals && matches(operands[0])));
+    const removes = () => removals && (shifted ? candidates.some(matches) : matches(operands[0]));
+    switch (subcommand) {
+        case 'edit': return true;
+        case 'rename-section': return renames();
+        case 'remove-section': return removes();
+        case 'unset': return removals && isKey();
+        case 'set': return (operands.length > 1 || optionUnknown) && isKey();
+        case 'get':
+        case 'list': return false;
     }
-    if (mode === 'section') return GIT_HOOK_CONFIG_SECTION_RE.test(verb ?? '');
-    if (verb === 'set' || verb === 'unset') return rest.some((p) => GIT_HOOK_CONFIG_KEY_RE.test(p));
-    if (verb === 'get' || verb === 'list') return false;
-    const keyIndex = positionals.findIndex((p) => GIT_HOOK_CONFIG_KEY_RE.test(p));
-    if (keyIndex === -1) return false;
-    if (mode === 'write') return true;
+    if (mode === 'rename') return renames();
+    if (mode === 'remove') return removes();
+    if (!isKey()) return false;
+    if (mode === 'unset') return removals;
+    // Every write takes a value after the key: one name alone is read, unless an option the line doesn't show may change that.
+    if (operands.length < 2 && !optionUnknown) return false;
     // `git config --get <key> <value-pattern>` is a read with a filter.
-    if (mode === 'read') return false;
-    return positionals.length > keyIndex + 1;
+    return mode !== 'read';
+}
+
+/** A shell word the guard keeps unexpanded: a variable, a command substitution, a glob, a brace or a leading tilde. */
+const unresolvedWord = (word: string): boolean => /[$`*?[{]/.test(word) || word.startsWith('~');
+
+/**
+ * A word the guard can't resolve to a literal stands where `git config` may read an option: an option written with an
+ * expansion, or such a word before the first literal operand, which may expand to nothing or to an option. An option's
+ * value is never such a word.
+ */
+function gitConfigOptionUnknown({ optionNames, operands }: Pick<ParsedOptions, 'optionNames' | 'operands'>): boolean {
+    const firstLiteral = operands.findIndex((o) => !unresolvedWord(o));
+    return optionNames.some(unresolvedWord) || operands.slice(0, firstLiteral < 0 ? undefined : firstLiteral).some(unresolvedWord);
 }
 
 /** Reason to refuse `cmd` because it skips or disables git hooks, or null. */
@@ -6179,20 +7018,9 @@ export function gitHookBypassReason(cmd: ResolvedCommand): string | null {
     if (cmd.name !== 'git') return null;
     if (envDisablesHooks(cmd.env ?? [])) return GIT_HOOK_BYPASS_REASON;
 
-    const sub = gitSubcommandIndex(cmd.args);
-    const overridesHookConfig = (assignment: string) =>
-        GIT_HOOK_CONFIG_KEY_RE.test(assignment.split('=')[0] ?? '');
-    for (let i = 0; i < sub; i++) {
-        const arg = cmd.args[i];
-        if ((arg === '-c' || arg === '--config-env') && overridesHookConfig(cmd.args[i + 1] ?? '')) {
-            return GIT_HOOK_BYPASS_REASON;
-        }
-        if (arg.startsWith('-c') && arg.length > 2 && overridesHookConfig(arg.slice(2))) return GIT_HOOK_BYPASS_REASON;
-        if (arg.startsWith('--config-env=') && overridesHookConfig(arg.slice('--config-env='.length))) {
-            return GIT_HOOK_BYPASS_REASON;
-        }
-    }
+    if (gitOptionsSetConfig(cmd.args, configKeyIs(GIT_HOOK_CONFIG_KEY_RE))) return GIT_HOOK_BYPASS_REASON;
 
+    const sub = gitSubcommandIndex(cmd.args);
     const subcommand = cmd.args[sub];
     const rest = cmd.args.slice(sub + 1);
     // `commit` is parsed with its argument roles (`-m --no-verify` is a message).
@@ -6200,7 +7028,10 @@ export function gitHookBypassReason(cmd: ResolvedCommand): string | null {
     if (subcommand && GIT_NO_VERIFY_SUBCOMMANDS.has(subcommand) && rest.some((a) => GIT_NO_VERIFY_LONG_RE.test(a))) {
         return GIT_HOOK_BYPASS_REASON;
     }
-    if (subcommand === 'config' && gitConfigWritesHookConfig(rest)) return GIT_HOOK_BYPASS_REASON;
+    if (subcommand === 'config' && gitConfigWrites(rest, GIT_HOOK_CONFIG_KEY_RE, GIT_HOOK_CONFIG_SECTION_RE)) {
+        return GIT_HOOK_BYPASS_REASON;
+    }
+    if (subcommand === 'clone' && gitCloneConfig(rest).some(configKeyIs(GIT_HOOK_CONFIG_KEY_RE))) return GIT_HOOK_BYPASS_REASON;
     return null;
 }
 
@@ -6344,45 +7175,60 @@ function applyPatchProtectionReason(cmd: ResolvedCommand): string | null {
 const PROTECTED_WRITE = (path: string) => `file-protection — '${path}' is protected from automated edits.`;
 const UNREADABLE_WRITES = "file-protection — the guard can't read which files this command line writes, so it is refused. Run it as simpler separate commands.";
 
-/** Options, as [letter or long name, value], and operands. `valued` options take the rest of a cluster or the next word. */
-function parseOptions(args: string[], valued: { short: string; long: string[] }, attachedOnly = ''): { options: Array<[string, string | undefined]>; operands: string[] } {
-    const options: Array<[string, string | undefined]> = [];
-    const operands: string[] = [];
-    for (let i = 0; i < args.length; i++) {
-        const a = args[i];
-        if (a === '--') {
-            operands.push(...args.slice(i + 1));
-            break;
-        }
-        if (a.startsWith('--')) {
-            const eq = a.indexOf('=');
-            const name = a.slice(2, eq < 0 ? undefined : eq);
-            options.push([name, eq >= 0 ? a.slice(eq + 1) : valued.long.includes(name) ? args[++i] : undefined]);
-        } else if (a.startsWith('-') && a.length > 1) {
-            for (let c = 1; c < a.length; c++) {
-                const letter = a[c];
-                if (attachedOnly.includes(letter)) {
-                    options.push([letter, a.slice(c + 1)]);
-                    break;
-                }
-                if (valued.short.includes(letter)) {
-                    options.push([letter, a.slice(c + 1) || args[++i]]);
-                    break;
-                }
-                options.push([letter, undefined]);
-            }
-        } else {
-            operands.push(a);
-        }
-    }
-    return { options, operands };
-}
+// util-linux 2.39.3's su and procps-ng 4.0.4's watch options, from their --help. watch stops at its command.
+const SU_OPTIONS: OptionTable = {
+    short: { m: 'preserve-environment', p: 'preserve-environment', w: 'whitelist-environment', g: 'group', G: 'supp-group', l: 'login',
+        c: 'command', f: 'fast', s: 'shell', P: 'pty', h: 'help', V: 'version' },
+    long: {
+        ...valued('whitelist-environment', 'group', 'supp-group', 'command', 'session-command', 'shell'),
+        ...flags('preserve-environment', 'login', 'fast', 'pty', 'help', 'version'),
+    },
+};
+const WATCH_OPTIONS: OptionTable = {
+    short: { b: 'beep', c: 'color', C: 'no-color', d: 'differences', e: 'errexit', g: 'chgexit', q: 'equexit', n: 'interval', p: 'precise',
+        r: 'no-rerun', t: 'no-title', w: 'no-wrap', x: 'exec', h: 'help', v: 'version' },
+    long: {
+        ...valued('equexit', 'interval'),
+        ...attached('differences'),
+        ...flags('beep', 'color', 'no-color', 'errexit', 'chgexit', 'precise', 'no-rerun', 'no-title', 'no-wrap', 'exec', 'help', 'version'),
+    },
+};
+// GNU sed 4.9's and GNU coreutils 9.4's cp and mv options, from their --help.
+const SED_OPTIONS: OptionTable = {
+    short: { n: 'quiet', e: 'expression', f: 'file', i: 'in-place', l: 'line-length', E: 'regexp-extended', r: 'regexp-extended', s: 'separate', u: 'unbuffered', z: 'null-data' },
+    long: {
+        ...valued('expression', 'file', 'line-length'),
+        ...attached('in-place'),
+        ...flags('quiet', 'silent', 'debug', 'follow-symlinks', 'posix', 'regexp-extended', 'separate', 'sandbox', 'unbuffered', 'null-data',
+            'help', 'version'),
+    },
+};
+const CP_OPTIONS: OptionTable = {
+    short: { a: 'archive', f: 'force', i: 'interactive', l: 'link', L: 'dereference', n: 'no-clobber', P: 'no-dereference', R: 'recursive',
+        r: 'recursive', s: 'symbolic-link', S: 'suffix', t: 'target-directory', T: 'no-target-directory', v: 'verbose', x: 'one-file-system' },
+    long: {
+        ...valued('no-preserve', 'sparse', 'suffix', 'target-directory'),
+        ...attached('backup', 'preserve', 'reflink', 'update', 'context'),
+        ...flags('archive', 'attributes-only', 'copy-contents', 'debug', 'force', 'interactive', 'link', 'dereference', 'no-clobber',
+            'no-dereference', 'parents', 'recursive', 'remove-destination', 'strip-trailing-slashes', 'symbolic-link',
+            'no-target-directory', 'verbose', 'one-file-system', 'help', 'version'),
+    },
+};
+const MV_OPTIONS: OptionTable = {
+    short: { f: 'force', i: 'interactive', n: 'no-clobber', S: 'suffix', t: 'target-directory', T: 'no-target-directory', v: 'verbose', Z: 'context' },
+    long: {
+        ...valued('suffix', 'target-directory'),
+        ...attached('backup', 'update'),
+        ...flags('debug', 'force', 'interactive', 'no-clobber', 'no-copy', 'strip-trailing-slashes', 'no-target-directory', 'verbose',
+            'context', 'help', 'version'),
+    },
+};
 
 /** The files `sed` edits in place: its operands after the script, when -i or --in-place is given. */
 function sedInPlaceFiles(args: string[]): string[] {
-    const { options, operands } = parseOptions(args, { short: 'efl', long: ['expression', 'file', 'line-length'] }, 'i');
-    if (!options.some(([o]) => o === 'i' || o === 'in-place')) return [];
-    const scriptGiven = options.some(([o]) => ['e', 'f', 'expression', 'file'].includes(o));
+    const { options, operands } = parseOptions(args, SED_OPTIONS);
+    if (!options.some(([o]) => o === 'in-place')) return [];
+    const scriptGiven = options.some(([o]) => o === 'expression' || o === 'file');
     // BSD sed takes the backup suffix as the next word, so `-i ''` leaves an empty operand before the script.
     const rest = !scriptGiven && operands[0] === '' ? operands.slice(1) : operands;
     return scriptGiven ? rest : rest.slice(1);
@@ -6401,13 +7247,13 @@ function mayBeDirectory(path: string, dir: string | undefined): boolean {
 
 /** The files cp or mv writes, and the ones mv removes: a target directory gets each source's name. */
 function copyMoveWrites(cmd: ResolvedCommand, dir: string | undefined): string[] {
-    const { options, operands } = parseOptions(cmd.args, { short: 'St', long: ['suffix', 'target-directory'] });
-    const target = options.find(([o]) => o === 't' || o === 'target-directory')?.[1];
+    const { options, operands } = parseOptions(cmd.args, cmd.name === 'mv' ? MV_OPTIONS : CP_OPTIONS);
+    const target = options.find(([o]) => o === 'target-directory')?.[1];
     const sources = target === undefined ? operands.slice(0, -1) : operands;
     const dest = target ?? operands[operands.length - 1];
     if (dest === undefined || !sources.length) return [];
     const intoDir = target !== undefined || sources.length > 1
-        || (!options.some(([o]) => o === 'T' || o === 'no-target-directory') && mayBeDirectory(dest, dir));
+        || (!options.some(([o]) => o === 'no-target-directory') && mayBeDirectory(dest, dir));
     const writes = [dest, ...(intoDir ? sources.map(s => join(dest, basename(s))) : [])];
     return cmd.name === 'mv' ? [...writes, ...sources] : writes;
 }
@@ -7043,7 +7889,7 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     if (name === 'git') {
         // Skip git's global options so `git -C /x push -f` classifies like `git push -f`.
         const i = gitSubcommandIndex(args);
-        if (args[i] === 'push') {
+        if (args[i] === 'push' && !gitOnlyPrints(args)) {
             const pushArgs = pushArgsWithoutValues(args.slice(i + 1));
             const end = pushArgs.indexOf('--');
             const options = end === -1 ? pushArgs : pushArgs.slice(0, end);
@@ -7074,8 +7920,8 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         // `--no-dry-run` (an untracked file of that name matches `*`).
         const end = cleanArgs.indexOf('--');
         const literal = cleanArgs.slice(0, end < 0 ? undefined : end).every(a => /^[\w@%+=:,./ -]*$/.test(a));
-        const globalHelp = name === 'git' && args.slice(0, gitSubcommandIndex(args)).some(a => a === '--help' || a === '-h');
-        if (!globalHelp && ((!clean.dryRun && !clean.help) || !literal)) {
+        const onlyPrints = name === 'git' && gitOnlyPrints(args);
+        if (!onlyPrints && ((!clean.dryRun && !clean.help) || !literal)) {
             return 'git clean permanently deletes untracked files (with -x, ignored ones such as .env too). They skip the trash and cannot be recovered.';
         }
     }
@@ -7138,6 +7984,18 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
     }
     if (override) {
         return `${OPERATOR_OVERRIDE_LEAD} (${override}): the tool put that check there to stop a run like this, and only a person may decide to go past it.`;
+    }
+
+    if (EXPORTERS.has(name) && exportsRiskyConfig(cmd)) return GIT_RISKY_CONFIG;
+    if (gitSetsRiskyConfig(cmd) || runsGitConfigUnseen(cmd)) return GIT_RISKY_CONFIG;
+    if (name === 'git') {
+        if (gitMovesExecPath(cmd)) {
+            return GIT_EXEC_PATH_MOVED;
+        }
+        const alias = gitAlias(cmd);
+        if (alias) {
+            return `git ${alias} ${GIT_NOT_OWN_COMMAND} or a git-${alias} program, either of which can stand for any command (push --force, clean -fdx). Write out the command it stands for.`;
+        }
     }
 
     return null;
@@ -9736,7 +10594,7 @@ function* gatedSteps(
                 // it is exempt only if every directory it may be in is.
                 let from: string[] | null = dirs && cmd.chdir ? dirs.map(d => pathResolve(d, cmd.chdir!)) : dirs;
                 for (const move of moves ?? []) from = directoriesAfter(from, move);
-                const target = from && from.every(d => labTargetOf(cmd, d) !== null) ? labTargetOf(cmd, from[0]) : null;
+                const target = from && from.every(d => labTargetOf(cmd, d, command) !== null) ? labTargetOf(cmd, from[0], command) : null;
                 if (target !== null) {
                     if (log) logLabScope(`allowed ${cmd.name} against lab target ${target}`);
                     continue;
@@ -9878,6 +10736,7 @@ export function describeGate(command: string, reason: string, cwd: string = curr
                 : sqlDialect ? sqlStep(sqlDialect, cmd)
                 : dbtCommandOf(cmd) && dbtSubcommand(dbtCommandOf(cmd)!.args) !== 'run-operation' ? dbtStep(dbtCommandOf(cmd)!, dirBefore)
                 : cmd.name === 'git-clean' ? gitCleanStep({ ...cmd, args: ['clean', ...cmd.args] })
+                : cmd.name === 'git' && [GIT_EXEC_PATH_MOVED, GIT_NOT_OWN_COMMAND, GIT_RISKY_CONFIG].some(r => why.includes(r)) ? genericStep(cmd, why)
                 : cmd.name === 'git' ? (cmd.args[gitSubcommandIndex(cmd.args)] === 'clean' ? gitCleanStep(cmd) : gitPushStep(cmd))
                 : cmd.name === 'aws' ? awsStep(cmd)
                 : genericStep(cmd, why);
@@ -10129,6 +10988,50 @@ function literalHeaderValue(text: string): boolean {
     return false;
 }
 
+// Each issuer's token by its documented shape: GitHub's (gh?_ and 36 characters, github_pat_ and 82), GitLab's personal
+// access token (glpat- and at least 20) and Slack's (numeric segments, then the secret; rotating ones start xoxe).
+// A secret of one repeated character (a redacted value, XXXX) is a name. `upper`: the secret is random letters and digits,
+// so one without a capital is a name too. Slack's secret is its last segment, after the numeric ones.
+const ISSUED_TOKENS: Array<{ prefix: string; body: string; upper?: boolean }> = [
+    { prefix: 'gh[pousr]_', body: '[A-Za-z0-9]{36}', upper: true },
+    { prefix: 'github_pat_', body: '[A-Za-z0-9]{22}_[A-Za-z0-9]{59}', upper: true },
+    { prefix: 'glpat-', body: '[A-Za-z0-9_-]{20,}', upper: true },
+    { prefix: 'xox[abp]-', body: String.raw`\d+(?:-\d+){1,2}-[A-Za-z0-9]{6,}` },
+    { prefix: String.raw`xoxe(?:\.xox[abp])?-`, body: String.raw`\d+-[A-Za-z0-9]{20,}` },
+];
+// A token starts a word, or follows = : a quote, a backtick or whitespace; after / or - its prefix is part of a name
+// (fix/glpat-…).
+const ISSUED_TOKEN_RES = ISSUED_TOKENS.map(t => ({ re: new RegExp(String.raw`(?<=^|[\s=:"'\x60])${t.prefix}(${t.body})(?![A-Za-z0-9_-])`, 'g'), upper: t.upper }));
+
+/** A token an issuer hands out, written out anywhere on the line, in any field. */
+function knownPrefixToken(text: string): boolean {
+    return ISSUED_TOKEN_RES.some(({ re, upper }) => [...text.matchAll(re)].some(([, body]) => {
+        const secret = upper ? body.replace(/[-_]/g, '') : body.split('-').pop()!;
+        return new Set(secret).size > 1 && (!upper || /[A-Z]/.test(secret));
+    }));
+}
+
+/** A URL's user info that writes out a credential: user:password, or a user name that starts the way a token does. */
+function literalUrlUserinfo(text: string): boolean {
+    for (const m of text.matchAll(/\b([a-z][a-z0-9+.-]*):\/\/([^/@\s]{1,400})@/gi)) {
+        // A user name that is a token of its issuer's shape is one, whatever password follows it (masked, a placeholder or
+        // a variable).
+        const user = m[2].replace(/^['"]+/, '').split(':')[0];
+        if (!SHELL_EXPANSION.test(user) && knownPrefixToken(user)) return true;
+        if (SHELL_EXPANSION.test(m[2])) continue;
+        if (literalUserinfo(m[2])) return true;
+    }
+    return false;
+}
+
+/**
+ * A message holds a credential only as a token of its issuer's shape, or in a URL's user info. The card shows the exact
+ * text that will be posted, so anything else credential-like is left on it for the approver to reject.
+ */
+function proseHoldsCredential(text: string): boolean {
+    return knownPrefixToken(text) || literalUrlUserinfo(text);
+}
+
 /**
  * True when the text writes out a credential: a value, never a reference to one. Each shape names where a credential
  * goes and fires only on a written-out value (literalWord for shell words, sqlLiteral for SQL), so "$VAR", ${VAR},
@@ -10137,17 +11040,8 @@ function literalHeaderValue(text: string): boolean {
  */
 export function containsCredential(text: string, kind: 'command' | 'any' = 'any'): boolean {
     const dollarQuotes = kind === 'any';
-    if (literalHeaderValue(text)) return true;
-    // A URL's user info: user:password. With no colon it is a user name, unless it starts the way a token does.
-    for (const m of text.matchAll(/\b([a-z][a-z0-9+.-]*):\/\/([^/@\s]{1,400})@/gi)) {
-        // A user name that starts the way a token does is one, whatever password follows it (masked, a placeholder or a
-        // variable), unless what follows the prefix is itself a placeholder (ghp_<token>).
-        const user = m[2].replace(/^['"]+/, '').split(':')[0];
-        const token = /^(?:gh[opusr]_|github_pat_|glpat-|xox[a-z]-)([\s\S]+)$/.exec(user);
-        if (token && !SHELL_EXPANSION.test(user) && !templatePlaceholder(token[1])) return true;
-        if (SHELL_EXPANSION.test(m[2])) continue;
-        if (literalUserinfo(m[2])) return true;
-    }
+    if (literalHeaderValue(text) || knownPrefixToken(text)) return true;
+    if (literalUrlUserinfo(text)) return true;
     for (const m of text.matchAll(PASSWORD_WORD)) {
         const at = (m.index ?? 0) + m[0].length;
         const after = text.slice(at);
@@ -10635,7 +11529,10 @@ export function sleepSync(ms: number): void {
  * host uses even). We compute seq under BEGIN IMMEDIATE to serialize against
  * any concurrent writeMessageOut from the agent-runner process.
  */
-export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'request_prod_gate';
+export type GateAction = 'request_destructive_gate' | 'request_bash_gate' | 'request_prod_gate' | 'request_send_gate';
+
+/** What the host is told beside the command: an email's card fields, or the exact text a Slack post delivers. */
+export type GateRequestCard = EmailCard & { sendParts?: string[]; textFlattened?: boolean };
 
 /**
  * The staged request as the host reads it. `toolUseId` is set only for a gate that joins the shared one-card claim:
@@ -10648,7 +11545,7 @@ export function gateRequestContent(
     summary: string,
     command: string,
     action: GateAction,
-    card: EmailCard = {},
+    card: GateRequestCard = {},
     toolUseId?: string,
 ): string {
     return JSON.stringify({
@@ -10663,6 +11560,8 @@ export function gateRequestContent(
         ...(card.pureSend ? { pureSend: true } : {}),
         ...(card.fullSummary !== undefined ? { fullSummary: card.fullSummary } : {}),
         ...(card.wholeEmail !== undefined ? { wholeEmail: card.wholeEmail } : {}),
+        ...(card.sendParts !== undefined ? { sendParts: card.sendParts } : {}),
+        ...(card.textFlattened ? { textFlattened: true } : {}),
         ...(toolUseId ? { toolUseId } : {}),
     });
 }
@@ -10672,7 +11571,7 @@ export function writeGateRequest(
     summary: string,
     command: string,
     action: GateAction = 'request_destructive_gate',
-    card: EmailCard = {},
+    card: GateRequestCard = {},
     toolUseId?: string,
 ): string {
     // Dynamic import so non-NanoClaw environments (plain Claude Code) never
@@ -10719,6 +11618,68 @@ export function writeGateRequest(
 }
 
 /**
+ * The receipt the host writes when it approves a request: a hash of the request as it read it, so an approval names the
+ * exact request it was given. The host hashes the parsed request re-serialized, which for a request this hook or the
+ * in-tree one wrote as `JSON.stringify` output is the same bytes.
+ */
+export function gateReceiptOf(content: string): string {
+    return 'gate-v1:' + createHash('sha256').update(JSON.stringify(JSON.parse(content)), 'utf8').digest('hex');
+}
+
+/**
+ * What a `delivered` row says about a request whose receipt should be `receipt`: null while it is undecided, and
+ * 'refused' for an approval whose receipt is missing or names another request.
+ */
+export function deliveredDecision(
+    row: { status?: string; gate_receipt?: string | null } | undefined | null,
+    receipt: string,
+): 'approved' | 'denied' | 'refused' | null {
+    if (row?.status === 'failed') return 'denied';
+    if (row?.status !== 'delivered') return null;
+    return row.gate_receipt === receipt ? 'approved' : 'refused';
+}
+
+/**
+ * The receipt to expect for a peer's request this hook would wait on: the stored request's own, when it matches the one
+ * this hook would file, field for field apart from its id; null otherwise, so the hook stages its own card.
+ */
+export function peerReceipt(stored: string | null, own: string): string | null {
+    if (stored === null) return null;
+    try {
+        const { requestId: _theirs, ...peer } = JSON.parse(stored) as Record<string, unknown>;
+        const { requestId: _ours, ...mine } = JSON.parse(own) as Record<string, unknown>;
+        const keys = new Set([...Object.keys(peer), ...Object.keys(mine)]);
+        for (const key of keys) if (JSON.stringify(peer[key]) !== JSON.stringify(mine[key])) return null;
+        return gateReceiptOf(stored);
+    } catch {
+        return null;
+    }
+}
+
+/** The request a peer staged under `requestId`, as outbound.db holds it; null when it can't be read. */
+function stagedRequest(requestId: string): string | null {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+    let db: import('bun:sqlite').Database | undefined;
+    try {
+        db = new Database(NANOCLAW_OUTBOUND_DB, { readonly: true });
+        db.exec('PRAGMA busy_timeout = 2000');
+        const row = db.prepare('SELECT content FROM messages_out WHERE id = ?').get(requestId) as { content?: unknown } | null | undefined;
+        return typeof row?.content === 'string' ? row.content : null;
+    } catch {
+        return null;
+    } finally {
+        try {
+            db?.close();
+        } catch {
+            // Nothing left to do.
+        }
+    }
+}
+
+const RECEIPT_REFUSAL = "Refused: the host's approval does not name the request this hook staged (its receipt differs or is missing), so the command was not run. Ask for approval again.";
+
+/**
  * Poll inbound.db's `delivered` table for the host's decision on our
  * requestId. delivered writes come from:
  *   - admin click-through → bash-gate handler writes status='delivered'
@@ -10729,7 +11690,12 @@ export function writeGateRequest(
  * on an early snapshot and never see host writes — the same reason
  * inbound.db forces journal_mode=DELETE.
  */
-export function pollDeliveredTable(requestId: string, timeoutMs: number): GateDecision {
+export function pollDeliveredTable(
+    requestId: string,
+    timeoutMs: number,
+    receipt: string,
+    onRefused?: (refusal: string) => void,
+): GateDecision {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
     const deadline = Date.now() + timeoutMs;
@@ -10737,12 +11703,12 @@ export function pollDeliveredTable(requestId: string, timeoutMs: number): GateDe
     while (Date.now() < deadline) {
         const db = new Database(NANOCLAW_INBOUND_DB, { readonly: true });
         db.exec('PRAGMA busy_timeout = 2000');
+        let decision: ReturnType<typeof deliveredDecision>;
         try {
             const row = db
-                .prepare('SELECT status FROM delivered WHERE message_out_id = ?')
-                .get(requestId) as { status?: string } | undefined;
-            if (row && row.status === 'delivered') return 'approved';
-            if (row && row.status === 'failed') return 'denied';
+                .prepare('SELECT status, gate_receipt FROM delivered WHERE message_out_id = ?')
+                .get(requestId) as { status?: string; gate_receipt?: string | null } | undefined;
+            decision = deliveredDecision(row, receipt);
         } catch {
             // Schema mismatch (old session DB, table missing) — treat as
             // denied rather than busy-loop forever against a broken surface.
@@ -10751,6 +11717,12 @@ export function pollDeliveredTable(requestId: string, timeoutMs: number): GateDe
         } finally {
             db.close();
         }
+        if (decision === 'refused') {
+            if (onRefused) onRefused(RECEIPT_REFUSAL);
+            else process.stderr.write(`${RECEIPT_REFUSAL}\n`);
+            return 'denied';
+        }
+        if (decision) return decision;
         sleepSync(500);
     }
     return 'timeout';
@@ -10766,6 +11738,7 @@ export function pollDeliveredTable(requestId: string, timeoutMs: number): GateDe
  *   - 'request_destructive_gate' — the destructive-command gate (default path).
  *   - 'request_bash_gate'        — the generic bash gate (email gate uses this).
  *   - 'request_prod_gate'        — a production change or a deleted dev datastore; the host counts only an owner's or admin's click.
+ *   - 'request_send_gate'        — a Slack post in a person's name; only an owner or admin answers it.
  *
  * Fail-closed: if writeGateRequest throws (session DBs in a broken state),
  * returns 'denied'. The CALLER emits the stderr/exit — this function never
@@ -10789,17 +11762,23 @@ export function runGateRequest(
         // tool call share ONE approval card instead of raising one each — see
         // `claimGateRequest`. Omitted, behaviour is exactly as before.
         toolUseId?: string;
-        // The email gate's word on whether the card may leave the command off (EmailGateVerdict).
-        card?: EmailCard;
+        // The email gate's word on whether the card may leave the command off (EmailGateVerdict), or a post's text.
+        card?: GateRequestCard;
+        // Hears why an approval that names another request, or none, released nothing.
+        onRefused?: (refusal: string) => void;
     },
 ): GateDecision {
+    const label = opts.label ?? reason;
+    const summary = opts.summary ?? reason;
     const key = opts.toolUseId ? gateClaimKey(opts.toolUseId, opts.action) : null;
     if (key) {
         const claim = claimGateRequest(key);
         if (!claim.owner && claim.requestId && !gateRequestAlreadyDecided(claim.requestId)) {
             // A peer guard already staged this exact card. Wait on ITS decision
             // so the human answers once and both guards honour that one answer.
-            return pollDeliveredTable(claim.requestId, 60 * 60 * 1000);
+            const own = gateRequestContent(claim.requestId, label, summary, command, opts.action, opts.card, opts.toolUseId);
+            const receipt = peerReceipt(stagedRequest(claim.requestId), own);
+            if (receipt) return pollDeliveredTable(claim.requestId, 60 * 60 * 1000, receipt, opts.onRefused);
         }
         // Either we own the claim, or nobody published in time. Both stage
         // below; the second case is the fail-closed fallback (two cards beats
@@ -10808,7 +11787,7 @@ export function runGateRequest(
 
     let requestId: string;
     try {
-        requestId = writeGateRequest(opts.label ?? reason, opts.summary ?? reason, command, opts.action, opts.card, key ? opts.toolUseId : undefined);
+        requestId = writeGateRequest(label, summary, command, opts.action, opts.card, key ? opts.toolUseId : undefined);
     } catch (err) {
         // If we can't even stage the request, the session DBs are in a broken
         // state. Deny rather than silently allowing — the gate is fail-closed.
@@ -10818,7 +11797,8 @@ export function runGateRequest(
     }
     if (key) publishGateClaim(key, requestId);
 
-    return pollDeliveredTable(requestId, 60 * 60 * 1000); // 60 min, matches host BASH_GATE_TIMEOUT_MS
+    const receipt = gateReceiptOf(gateRequestContent(requestId, label, summary, command, opts.action, opts.card, key ? opts.toolUseId : undefined));
+    return pollDeliveredTable(requestId, 60 * 60 * 1000, receipt, opts.onRefused); // 60 min, matches host BASH_GATE_TIMEOUT_MS
 }
 
 /**
@@ -10834,7 +11814,8 @@ export function runGateRequest(
  * reason: a caller on an older container image passes three arguments and keeps
  * working, and a caller that passes four gets one approval card per tool call
  * even when two guards gate the same command concurrently. `cwd` is appended
- * for the same reason; it lets the description match a lab-scope verdict.
+ * for the same reason; it lets the description match a lab-scope verdict. `onRefused` too: it hears an approval that
+ * names another request, which answers 'denied'.
  */
 export function runNanoclawGate(
     command: string,
@@ -10842,9 +11823,10 @@ export function runNanoclawGate(
     onStageError?: (err: unknown) => void,
     toolUseId?: string,
     cwd?: string,
+    onRefused?: (refusal: string) => void,
 ): GateDecision {
     const action = changesProduction(command, cwd) ? 'request_prod_gate' : 'request_destructive_gate';
-    return runGateRequest(command, reason, { action, onStageError, toolUseId, ...describeGate(command, reason, cwd) });
+    return runGateRequest(command, reason, { action, onStageError, toolUseId, ...describeGate(command, reason, cwd), onRefused });
 }
 
 const heldOnDev = (step: GatedStep): boolean => step.cmd === step.outer && renderDevHeld(step.cmd) !== null;
@@ -10895,12 +11877,37 @@ export function runEmailGate(
     card?: EmailCard,
     draft?: { binding?: DraftBinding; account?: AccountBinding; onChanged: (refusal: string) => void; gwsBin?: string },
 ): GateDecision {
-    const decision = runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId, card });
+    const decision = runGateRequest(command, reason, { action: 'request_bash_gate', onStageError, summary, toolUseId, card, onRefused: draft?.onChanged });
     if (decision !== 'approved' || !draft) return decision;
     const refusal = (draft.account ? accountChangedSince(draft.account) : null)
         ?? (draft.binding ? draftChangedSince(draft.binding, draft.gwsBin) : null);
     if (refusal === null) return 'approved';
     draft.onChanged(refusal);
+    return 'denied';
+}
+
+/**
+ * NanoClaw approval for a Slack post in a person's name (`evaluateSlackPost`). `send.sendParts` is the exact text, when
+ * the command is that one post: a session with no conversation gets a card only when it can show it; `send.textFlattened`
+ * marks text rendered from Slack blocks. `payload.binding` is the file the card showed: once approved, a changed or
+ * retargeted file refuses the post. That refusal, or an approval that names another request, reaches `onChanged`, and
+ * the gate answers 'denied'.
+ */
+export function runSendGate(
+    command: string,
+    reason: string,
+    onStageError?: (err: unknown) => void,
+    summary?: string,
+    toolUseId?: string,
+    send: { sendParts?: string[]; textFlattened?: boolean } = {},
+    payload?: { binding?: PayloadBinding; onChanged: (refusal: string) => void },
+): GateDecision {
+    const card = send.sendParts ? { sendParts: send.sendParts, ...(send.textFlattened ? { textFlattened: true } : {}) } : {};
+    const decision = runGateRequest(command, reason, { action: 'request_send_gate', onStageError, summary, toolUseId, card, onRefused: payload?.onChanged });
+    if (decision !== 'approved' || !payload?.binding) return decision;
+    const refusal = payloadChangedSince(payload.binding);
+    if (refusal === null) return 'approved';
+    payload.onChanged(refusal);
     return 'denied';
 }
 
@@ -10950,13 +11957,8 @@ export function parseMergeScope(text: string): MergeScope | null {
 }
 
 function currentMergeScope(): MergeScope | null | 'unreadable' {
-    const file = deploymentFilePath(MERGE_SCOPE_FILE, MERGE_SCOPE_FILE_ENV);
-    if (!file || !existsSync(file)) return null;
-    try {
-        return parseMergeScope(readFileSync(file, 'utf-8')) ?? 'unreadable';
-    } catch {
-        return 'unreadable';
-    }
+    const text = readDeploymentFile(deploymentFilePath(MERGE_SCOPE_FILE, MERGE_SCOPE_FILE_ENV));
+    return text === null || text === 'unreadable' ? text : parseMergeScope(text) ?? 'unreadable';
 }
 
 /** `org/repo` a remote URL, `org/repo` word or GitHub URL names, lower-cased; null for anything else. */
@@ -10966,7 +11968,6 @@ function githubRepoOf(value: string): string | null {
     return ORG_REPO_RE.test(value) && !REPO_URL_RE.test(value) ? value.replace(/\.git$/, '').toLowerCase() : null;
 }
 
-/** The git directory and common directory of the checkout containing `dir`, or null. */
 /** `dir` with symlinks resolved as far as it exists, so a link into a checkout is read as that checkout. */
 function physicalPath(dir: string): string {
     let existing = pathResolve(dir);
@@ -10983,31 +11984,36 @@ function physicalPath(dir: string): string {
     }
 }
 
+/** The git directory and common directory of the checkout containing `dir`, or null. */
 function gitDirsOf(dir: string): { gitDir: string; commonDir: string } | null {
     let current = physicalPath(dir);
     for (;;) {
-        const dotGit = join(current, '.git');
         try {
-            const stat = statSync(dotGit);
-            let gitDir = dotGit;
-            if (stat.isFile()) {
-                const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf-8'));
-                if (!pointer) return null;
-                gitDir = pathResolve(current, pointer[1].trim());
-            }
-            let commonDir = gitDir;
-            try {
-                commonDir = pathResolve(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf-8').trim());
-            } catch {
-                commonDir = gitDir;
-            }
-            return { gitDir, commonDir };
+            return gitDirsAt(join(current, '.git'));
         } catch {
             const parent = dirname(current);
             if (parent === current) return null;
             current = parent;
         }
     }
+}
+
+/** The git directory and common directory that a `.git` directory, or a file pointing at one, leads to. Throws when it can't be read. */
+function gitDirsAt(dotGit: string): { gitDir: string; commonDir: string } | null {
+    const stat = statSync(dotGit);
+    let gitDir = dotGit;
+    if (stat.isFile()) {
+        const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf-8'));
+        if (!pointer) return null;
+        gitDir = pathResolve(dirname(dotGit), pointer[1].trim());
+    }
+    let commonDir = gitDir;
+    try {
+        commonDir = pathResolve(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf-8').trim());
+    } catch {
+        commonDir = gitDir;
+    }
+    return { gitDir, commonDir };
 }
 
 /** The repository a checkout's remote points at, read from its git config. */
@@ -11491,13 +12497,8 @@ export function parseResponseSecrets(text: string): string[] | null {
 }
 
 function currentResponseSecrets(): string[] | null | 'unreadable' {
-    const file = deploymentFilePath(RESPONSE_SECRETS_FILE, RESPONSE_SECRETS_FILE_ENV);
-    if (!file) return null;
-    try {
-        return parseResponseSecrets(readFileSync(file, 'utf-8')) ?? 'unreadable';
-    } catch (e) {
-        return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? null : 'unreadable';
-    }
+    const text = readDeploymentFile(deploymentFilePath(RESPONSE_SECRETS_FILE, RESPONSE_SECRETS_FILE_ENV));
+    return text === null || text === 'unreadable' ? text : parseResponseSecrets(text) ?? 'unreadable';
 }
 
 function namesHost(text: string, host: string): boolean {
@@ -11518,7 +12519,7 @@ const CLIENT_SHORT_FILE_OPTIONS: Record<string, { value: string; flags: string }
     wget: { value: 'O', flags: 'e' },
     http: { value: 'o', flags: 'd' },
 };
-const CLIENT_SHORT_VALUE_LETTERS: Record<string, string> = { curl: CURL_VALUE_LETTERS, wget: 'aABDeiIlOoPQRtTUwXY', http: 'aApo' };
+const CLIENT_SHORT_VALUE_LETTERS: Record<string, string> = { curl: CURL_VALUE_LETTERS, wget: valueLetters(WGET_OPTIONS), http: valueLetters(HTTPIE_OPTIONS) };
 
 function writesStdout(file: string): boolean {
     return file === '-' || DISCARD_TARGETS.has(file);
@@ -11738,6 +12739,1358 @@ function responseSecretsReason(commands: ResolvedCommand[], line: string): strin
         + `To write a note about the call, use the file tool (Write or Edit), not the shell. To fetch, ${fix.charAt(0).toLowerCase()}${fix.slice(1)}`;
 }
 
+
+// ── Slack calls in a person's name ───────────────────────────────────────────
+// A OneCLI identity can hold a person's Slack user token, and a Slack Web API call made under it acts as that person.
+// Which identities do is deployment data in an untracked `send-scope.local.json`, found like lab-scope.local.json:
+//   {"slack": {"workgroups": ["<workgroup id>"], "onecliAgents": ["<onecli agent identifier>" | {"id": …, "person": …}], "operator": …}}
+// A native session's operator approves a post as an agent the file maps to nobody, or to the operator; one it maps to
+// another person is refused.
+// A listed workgroup's sessions run under such an identity; a listed agent is the one an `onecli run --agent` selects.
+// No file lists none; a file that can't be read or parsed lists every identity.
+// The rule reads the line as written, not as the shell would expand it: a call in a listed workgroup's session, or run
+// as a listed agent, on a line that names a Slack API method other than a read, or names the Slack API with a method
+// left to the shell, waits for the person's OK. Like the database guard, this catches mistakes and ordinary injected
+// commands: a program that reads the token itself, a URL built entirely at run time, or a redirect from a URL on
+// another host reaches Slack unseen; only the token's scope closes that.
+
+export const SEND_SCOPE_FILE_ENV = 'BOOTSTRAP_SEND_SCOPE_FILE';
+const SEND_SCOPE_FILE = 'send-scope.local.json';
+// The Slack methods that only read, and conversations.open, which only opens a direct message. Every other one, a method
+// Slack adds later included, acts in the token's name.
+const SLACK_READ_METHOD = /^(?:(?:[a-z][A-Za-z]*\.)+(?:list|info|history|replies|members|get|getPermalink|getPresence|lookupByEmail|getUploadURLExternal)|search\.[a-z]+|auth\.test|users\.conversations|conversations\.open)$/;
+// Where a line reaches the Slack API: its host's /api path, or a variable named for Slack (a base URL, the token).
+const SLACK_API_BASE = /slack\.com\.?(?::\d+)?\/+api|\$\{?[A-Za-z0-9_]*slack[A-Za-z0-9_]*(?:[%#:/^,][^}\s]*)?\}?(?=["']?\/)/gi;
+// A method name at the start of what follows a base, ended by something no shell expansion starts with.
+const SLACK_METHOD_AFTER = /^["']?(?:\/api)?\/([A-Za-z]+(?:\.[A-Za-z]+)+)(?=$|[\s"'?#&;|)<>,\\\]])/;
+// A placeholder or an ellipsis where the method goes (`/api/<method>`, `/api/...`): prose about the API, which neither a
+// shell nor a program completes.
+const SLACK_PLACEHOLDER_AFTER = /^\/+(?:<[^<>\s]*>|\.\.\.|…)/;
+// A shell word that is an API path, alone or as curl's --request-target value.
+const SLACK_API_PATH = /^(?:--request-target=)?\/api\/([A-Za-z]+(?:\.[A-Za-z]+)+)$/;
+// A Slack user token: one written out, or a variable whose name says it holds one. An app configuration token
+// (`xoxe.xoxp-…`) manages apps and can't post, and prose that names the prefix is no token.
+const SLACK_USER_TOKEN = /(?<![\w.])xoxp-[A-Za-z0-9][A-Za-z0-9-]*|\$\{?[A-Za-z0-9_]*user[A-Za-z0-9_]*token/i;
+// A reference to a variable named for Slack.
+const SLACK_VARIABLE = /\$\{?[A-Za-z0-9_]*slack[A-Za-z0-9_]*(?:[:%#^,][^}]*\})?\}?/gi;
+// The programs whose own text can start onecli: an --agent in that text is theirs.
+const PROGRAM_NAMES = /^(?:python\d*(?:\.\d+)?|node(?:js)?|ruby|perl|php|bun|deno|bash|sh|zsh|dash|ksh)$/;
+// A method a function on the line takes from one of its positional parameters.
+const SLACK_POSITIONAL_METHOD = /^(?:\/api)?\/\$(?:\{([1-9])\}|([1-9]))(?=$|[\s?#&;|)<>,\]\/])/;
+const LITERAL_METHOD = /^[A-Za-z]+(?:\.[A-Za-z]+)+$/;
+const PAYLOAD_EXTENSIONS = new Set(['.json', '.txt']);
+const SLACK_TEXT_MAX_CHARS = 1000;
+
+export interface SendScope {
+    slack: {
+        workgroups: string[];
+        onecliAgents: string[];
+        /** The person each mapped agent posts as, by agent id. */
+        people: Record<string, string>;
+        /** The person each mapped workgroup's sessions post as, by workgroup id. */
+        workgroupPeople: Record<string, string>;
+        /** The person at this terminal, for a native session. */
+        operator?: string;
+    };
+}
+
+/** Parse a send-scope file's text. Null when anything about it is unusable. */
+export function parseSendScope(text: string): SendScope | null {
+    let raw: unknown;
+    try {
+        raw = JSON.parse(text);
+    } catch {
+        return null;
+    }
+    const slack = (raw as { slack?: unknown } | null)?.slack as { workgroups?: unknown; onecliAgents?: unknown; operator?: unknown } | undefined;
+    const isName = (x: unknown): x is string => typeof x === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(x);
+    if (!slack || typeof slack !== 'object' || Array.isArray(slack)) return null;
+    // A workgroup or agent is its id, or {"id", "person"} naming whose Slack token its posts use.
+    const entries = (v: unknown, people: Record<string, string>): string[] | null => {
+        const list = v === undefined ? [] : Array.isArray(v) ? v : null;
+        const ids = list?.map(entry => {
+            if (isName(entry)) return entry;
+            const { id, person, ...rest } = (entry && typeof entry === 'object' && !Array.isArray(entry) ? entry : {}) as Record<string, unknown>;
+            if (!isName(id) || !isName(person) || Object.keys(rest).length) return null;
+            people[id] = person;
+            return id;
+        });
+        return ids && ids.every(isName) ? ids : null;
+    };
+    const people: Record<string, string> = {};
+    const workgroupPeople: Record<string, string> = {};
+    const workgroups = entries(slack.workgroups, workgroupPeople);
+    const onecliAgents = entries(slack.onecliAgents, people);
+    if (!workgroups || !onecliAgents) return null;
+    if (slack.operator !== undefined && !isName(slack.operator)) return null;
+    return { slack: { workgroups, onecliAgents, people, workgroupPeople, ...(slack.operator !== undefined ? { operator: slack.operator } : {}) } };
+}
+
+function currentSendScope(): SendScope | null | 'unreadable' {
+    const text = readDeploymentFile(deploymentFilePath(SEND_SCOPE_FILE, SEND_SCOPE_FILE_ENV));
+    return text === null || text === 'unreadable' ? text : parseSendScope(text) ?? 'unreadable';
+}
+
+export interface SlackPost {
+    /** The Slack method the line names, or 'unknown' when it leaves the method to the shell. */
+    method: string;
+    /** The listed agent the call runs as, or the `--agent` word whose value the line doesn't fix; null for the session's own identity. */
+    onecliAgent: string | null;
+    /** True when the line fixes that agent itself: a literal `--agent`, or one a literal assignment on the line fills in. */
+    literal: boolean;
+    /** True when the call runs under a Slack user token on the line rather than a OneCLI identity or the session's own. */
+    userToken?: boolean;
+    why: string;
+}
+
+/** A OneCLI identity a call runs under, as its `onecli run` selects it. */
+interface OnecliSelector {
+    pos: number;
+    end: number;
+    /** The literal `--agent` value; null for the default identity. */
+    agent: string | null;
+    /** The `--agent` word when the line doesn't fix its value. */
+    unresolved?: string;
+    dryRun: boolean;
+}
+
+/**
+ * The one literal value shell variable `name` holds for certain at offset `at`: every value the line assigns it is that literal,
+ * nothing else on the line sets it, and a plain assignment or `export` of it ran before `at` in the line's own shell. Bash expands a command's words before applying its prefix assignments, so
+ * `NAME=x cmd "$NAME"` reads the value the shell had. Null otherwise.
+ */
+function lineAssignment(command: string, ast: unknown, name: string, at: number): string | null {
+    const values = new Set<string>();
+    const re = new RegExp(`(?:^|[\\s;&|(])${name}=(?:'([^']*)'|"([^"$\x60\\\\]*)"|([^\\s;&|()'"$\x60\\\\]*))(?=$|[\\s;&|)])`, 'g');
+    let literal = 0;
+    for (const m of command.matchAll(re)) {
+        values.add(m[1] ?? m[2] ?? m[3] ?? '');
+        literal++;
+    }
+    const [value] = values;
+    const assigned = command.match(new RegExp(`(?:^|[\\s;&|(])${name}=`, 'g'))?.length ?? 0;
+    if (values.size !== 1 || literal !== assigned || !/^[A-Za-z0-9._-]{1,128}$/.test(value)) return null;
+    return !setsOtherwise(ast, name) && assignedBefore(ast, name, at) ? value : null;
+}
+
+/** Whether the line sets shell variable `name` other than by a plain assignment: a loop, `+=`, an element, `read`, `unset`. */
+function setsOtherwise(ast: unknown, name: string): boolean {
+    const seen = new Set<object>();
+    const walk = (node: any, depth: number): boolean => {
+        if (!node || typeof node !== 'object' || seen.has(node) || depth > 200) return false;
+        seen.add(node);
+        if ((node.type === 'For' || node.type === 'Select') && node.name?.text === name) return true;
+        if (node.type === 'Assignment' && node.name === name && (node.append || node.index !== undefined)) return true;
+        if (node.type === 'Command' && ['read', 'unset', 'mapfile', 'readarray', 'getopts', 'printf', 'let'].includes(node.name?.text)
+            && (node.suffix ?? []).some((w: any) => typeof w?.text === 'string' && (w.text === name || w.text.startsWith(`${name}=`) || w.text.startsWith(`${name}[`)))) return true;
+        return Object.entries(node).some(([key, child]) => key !== 'parent' && walk(child, depth + 1));
+    };
+    return walk(ast, 0);
+}
+
+/**
+ * Whether a top-level statement of the line assigns shell variable `name` before offset `at` and certainly runs: a
+ * statement of its own, the head of an `&&` or `||` list, or a step of the `&&` chain that leads to `at`. One in
+ * the background, a pipe, a subshell, a branch or a loop may not have set it.
+ */
+function assignedBefore(ast: any, name: string, at: number): boolean {
+    const assigns = (node: any): boolean => {
+        if (node?.type !== 'Command') return false;
+        if (!node.name) return (node.prefix ?? []).some((p: any) => p?.name === name);
+        return ['export', 'declare', 'typeset', 'readonly', 'local'].includes(node.name.text)
+            && (node.suffix ?? []).some((w: any) => typeof w?.text === 'string' && w.text.startsWith(`${name}=`));
+    };
+    for (const statement of ast?.commands ?? []) {
+        const node = statement?.command;
+        if (statement.pos <= at && at < statement.end) {
+            if (node?.type !== 'AndOr') return false;
+            const parts: any[] = node.commands ?? [];
+            const k = parts.findIndex(p => p.pos <= at && at < p.end);
+            return k > 0 && (node.operators ?? []).slice(0, k).every((op: string) => op === '&&') && parts.slice(0, k).some(assigns);
+        }
+        if (statement.pos > at) return false;
+        if (!statement.background && (assigns(node) || (node?.type === 'AndOr' && assigns(node.commands?.[0])))) return true;
+    }
+    return false;
+}
+
+/** The literal value of an `--agent` word at offset `at`, filling in a variable the line fixes; null when it doesn't. */
+function agentValue(command: string, ast: unknown, word: string, at: number): string | null {
+    if (!/[$\x60\\]/.test(word)) return word.replace(/^(['"])(.*)\1$/, '$2');
+    const variable = /^"?\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))"?$/.exec(word);
+    return variable ? lineAssignment(command, ast, variable[1] ?? variable[2], at) : null;
+}
+
+/** Every `onecli run` the line's shell starts, with the span of the command it runs and the identity it selects. */
+function onecliSelectors(command: string, ast: unknown): OnecliSelector[] {
+    const out: OnecliSelector[] = [];
+    const seen = new Set<object>();
+    const walk = (node: any, depth: number): void => {
+        if (!node || typeof node !== 'object' || seen.has(node) || depth > 200) return;
+        seen.add(node);
+        if (node.type === 'Command' && typeof node.end === 'number') {
+            const words: Array<{ text: string; value: string; pos: number }> = [node.name, ...(node.suffix ?? [])]
+                .filter((w: any) => w && typeof w.pos === 'number' && typeof w.text === 'string')
+                .map((w: any) => ({ text: w.text, value: typeof w.value === 'string' ? w.value : w.text, pos: w.pos }));
+            for (let i = 0; i + 1 < words.length; i++) {
+                if (commandName(words[i].value) !== 'onecli' || words[i + 1].value !== 'run') continue;
+                const selector: OnecliSelector = { pos: words[i].pos, end: node.end, agent: null, dryRun: false };
+                for (let j = i + 2; j < words.length; j++) {
+                    const { value, text } = words[j];
+                    if (value === '--') break;
+                    if (value === '--dry-run') selector.dryRun = true;
+                    else if (value === '--gateway') j++;
+                    else if (value === '--agent' || value.startsWith('--agent=')) {
+                        const raw = value === '--agent' ? words[++j]?.text ?? '' : text.slice(text.indexOf('=') + 1);
+                        const agent = agentValue(command, ast, raw, words[j]?.pos ?? node.end);
+                        if (agent === null) selector.unresolved = raw.replace(/^(['"])(.*)\1$/, '$2');
+                        else selector.agent = agent;
+                    } else if (!value.startsWith('-')) break;
+                }
+                out.push(selector);
+            }
+        }
+        for (const [key, child] of Object.entries(node)) if (key !== 'parent') walk(child, depth + 1);
+    };
+    walk(ast, 0);
+    return out;
+}
+
+/**
+ * The Slack calls a line makes in a listed person's name, read from the line as written: each place it names the
+ * Slack API with a method other than a literal read, uses a variable named for Slack as a URL, or runs curl with a
+ * config file. A method a function on the line takes as a parameter is read from the calls the line makes to it. The
+ * identity is the one the `onecli run` around the call selects: a listed agent, an `--agent` value the line doesn't fix,
+ * or, with no `--agent`, the session's own.
+ */
+export function gatedSlackPosts(command: string, workgroupId: string | undefined = process.env.NANOCLAW_WORKGROUP_ID): SlackPost[] {
+    const at: number[] = [];
+    let line = '';
+    for (const [i, ch] of [...command].entries()) {
+        if (ch === "'" || ch === '"' || ch === '\\') continue;
+        at.push(i);
+        line += ch;
+    }
+    const configured = /(?:^|\s)(?:-[^-\s]*K|--(?:expand-)?conf)/.test(line) && /(?:^|[\s/(])curl(?:\s|$)/.test(line);
+    if (!/slack/i.test(line) && !configured) return [];
+    const scope = currentSendScope();
+    if (scope === null) return [];
+    const session = scope === 'unreadable' || (workgroupId !== undefined && scope.slack.workgroups.includes(workgroupId));
+    // A Slack user token on the line posts as its person, in any workgroup.
+    const userToken = SLACK_USER_TOKEN.test(command);
+    if (!session && !userToken && !/onecli/.test(line)) return [];
+    const listed = (agent: string) => scope === 'unreadable' || scope.slack.onecliAgents.includes(agent);
+    // A variable can hold a listed agent unless none is listed.
+    const anyListed = scope === 'unreadable' || scope.slack.onecliAgents.length > 0;
+    let commands: ResolvedCommand[] = [];
+    try {
+        parseShell(command);
+        commands = extractCommands(command);
+    } catch {
+        commands = [];
+    }
+    const ast = commands[0]?.script?.ast;
+    const selectors = onecliSelectors(command, ast);
+    const nodes = lineCommandNodes(command, ast);
+    const within = (spans: Array<[number, number]>, offset: number) => spans.some(([s, e]) => s <= offset && offset < e);
+    type Identity = { agent: string | null; literal: boolean; userToken?: boolean };
+    const judge = (s: OnecliSelector): Identity | undefined => s.dryRun ? undefined
+        : s.unresolved !== undefined ? (session || anyListed ? { agent: s.unresolved, literal: false } : undefined)
+        : s.agent !== null ? (listed(s.agent) ? { agent: s.agent, literal: true } : undefined)
+        : session ? { agent: null, literal: false } : undefined;
+    // A program's own text runs in a child, which sees only the line's exports: a variable named there stays unread.
+    const judgeText = (value: string): Identity | undefined => {
+        if (!value.startsWith('$')) return listed(value) ? { agent: value, literal: true } : undefined;
+        return session || anyListed ? { agent: value, literal: false } : undefined;
+    };
+    const held = (xs: Array<Identity | undefined>): Identity[] => xs.filter((x): x is Identity => x !== undefined);
+    // Of several identities a call may run under, none is the one it uses for certain.
+    const unsure = (xs: Identity[]): Identity[] => (new Set(xs.map(x => x.agent)).size > 1 ? xs.map(x => ({ ...x, literal: false })) : xs);
+    const words = shellWords(command);
+    const assignments = lineAssignments(command, words);
+    let fns: LineFunction[] | undefined;
+    /**
+     * The identities a write at `offset` runs under that are a listed person's: the one its own `onecli run` selects; for
+     * a URL a variable on the line holds, those of the calls that use the variable; for a call to a function on the line,
+     * those its body's `onecli run`s select; for a program, the `--agent` its own text passes to onecli; else the
+     * session's. A write the guard can't place counts under every selector on the line.
+     */
+    const identitiesAt = (offset: number | undefined, depth = 0): Identity[] => {
+        const sessionOwn: Identity[] = session ? [{ agent: null, literal: false }] : [];
+        if (offset === undefined) return unsure([...held(selectors.map(judge)), ...sessionOwn]);
+        const own = selectors.filter(s => s.pos <= offset && offset < s.end).sort((a, b) => a.end - a.pos - (b.end - b.pos))[0];
+        if (own) return held([judge(own)]);
+        const assigned = assignments.filter(v => v.start <= offset && offset < v.end).sort((a, b) => a.end - a.start - (b.end - b.start))[0];
+        if (assigned && depth < 4) {
+            const uses = [...command.matchAll(new RegExp(`\\$\\{?${assigned.name}(?!\\w)`, 'g'))].map(m => m.index!)
+                .filter(at => at < assigned.start || at >= assigned.end);
+            if (uses.length) return unsure(uses.flatMap(at => identitiesAt(at, depth + 1)));
+        }
+        fns ??= lineFunctions(command);
+        const called = fns.find(f => nodes.some(n => n.name === f.name && !(f.pos <= n.pos && n.pos < f.end) && within(n.spans, offset))
+            || f.callSpans.some(([s, e]) => s <= offset && offset < e));
+        const inner = called ? selectors.filter(s => called.pos <= s.pos && s.pos < called.end) : [];
+        if (inner.length) return unsure(held(inner.map(judge)));
+        const program = nodes.filter(n => n.program && within(n.spans, offset)).sort((a, b) => a.end - a.pos - (b.end - b.pos))[0];
+        const passed = program ? program.spans.flatMap(([s, e]) => programAgents(command.slice(s, e))) : [];
+        if (passed.length) return unsure(held(passed.map(judgeText)));
+        return sessionOwn;
+    };
+    const identitiesFor = (offset: number | undefined): Identity[] => {
+        const ids = identitiesAt(offset);
+        return ids.length || !userToken ? ids : [{ agent: null, literal: false, userToken: true }];
+    };
+    // The values a client's options take, and HTTPie's request items: a Slack URL there is data, not a call.
+    const data: Array<[number, number]> = [];
+    const targets = clientSlackTargets(command, undefined, 0, data);
+    data.push(...inertSpans(command));
+    const inData = (offset: number) => data.some(([s, e]) => s <= offset && offset < e);
+    /**
+     * The methods a base URL an assignment holds goes on to at each place the line uses the variable, outside text nothing
+     * runs: none when nothing uses it and the line doesn't export it, undefined when the match isn't the whole value or a
+     * child process may read it.
+     */
+    /** Whether an assignment's value is the Slack API base alone, so the method comes from each use of it. */
+    const holdsBase = (a: { start: number; end: number }) => /^https?:\/\/(?:[a-z0-9-]+\.)?slack\.com\.?(?::\d+)?\/+api\/*$/i
+        .test(command.slice(a.start, a.end).replace(/^[A-Za-z_]\w*(?:\[[^\]=]*\])?\+?=/, '').replace(/['"]/g, ''));
+    const useSiteMethods = (start: number, baseEnd: number): Array<string | undefined> | undefined => {
+        const a = assignments.find(v => v.start <= start && start < v.end);
+        if (!a || command.slice(baseEnd, a.end).replace(/['"/]/g, '') !== '') return undefined;
+        const uses = [...command.matchAll(new RegExp(String.raw`\$\{${a.name}(?:[^}]*)\}|\$${a.name}(?![A-Za-z0-9_])`, 'g'))]
+            .filter(u => (u.index! < a.start || u.index! >= a.end) && !inData(u.index!));
+        // The method is read from the joined path, so a base ending in a slash meets a use with none.
+        const slashed = command.slice(baseEnd, a.end).includes('/');
+        const joined = (rest: string) => (slashed && !rest.startsWith('/') ? `/${rest}` : rest);
+        if (uses.length) return uses.map(u => SLACK_METHOD_AFTER.exec(joined(command.slice(u.index! + u[0].length).replace(/^["']+/, '')))?.[1]);
+        // A child process sees only what the line exports: an assignment it doesn't export, and nothing on the line uses,
+        // makes no request.
+        const statement = command.slice(0, a.start).split(/[;&|(\n]/).pop() ?? '';
+        const prefixesCommand = /^[ \t]*[^\s;&|)]/.test(command.slice(a.end)) && !/^[ \t]*[A-Za-z_]\w*\+?=/.test(command.slice(a.end));
+        const exported = /\b(?:export|env|declare|typeset|readonly|local)\b/.test(statement) || prefixesCommand
+            || /\bset\s+(?:-\w*a|-o\s+allexport)\b/.test(command) || new RegExp(String.raw`\bexport\b[^;&|\n]*\b${a.name}\b`).test(command);
+        return exported ? undefined : [];
+    };
+    const posts: SlackPost[] = [];
+    let named = false;
+    for (const m of line.matchAll(SLACK_API_BASE)) {
+        if (inData(at[m.index!])) continue;
+        const end = m.index! + m[0].length;
+        if (SLACK_PLACEHOLDER_AFTER.test(line.slice(end))) continue;
+        named = true;
+        const after = SLACK_METHOD_AFTER.exec(line.slice(end));
+        const resolved = after ? undefined : useSiteMethods(at[m.index!], at[end - 1] + 1);
+        if (resolved?.every(r => r !== undefined && SLACK_READ_METHOD.test(r))) continue;
+        const method = after?.[1] ?? resolved?.find(r => r !== undefined && !SLACK_READ_METHOD.test(r));
+        if (method !== undefined && SLACK_READ_METHOD.test(method)) continue;
+        const identities = identitiesFor(at[m.index!]);
+        if (!identities.length) continue;
+        const param = method === undefined ? SLACK_POSITIONAL_METHOD.exec(line.slice(end)) : null;
+        if (param) {
+            fns ??= lineFunctions(command);
+            const fn = fns.filter(f => f.pos < at[m.index!] && at[m.index!] < f.end).sort((a, b) => a.end - a.pos - (b.end - b.pos))[0];
+            const given = fn?.methods(Number(param[1] ?? param[2]));
+            if (given) {
+                const write = given.find(g => !SLACK_READ_METHOD.test(g));
+                if (write === undefined) continue;
+                for (const { agent, literal, userToken: token } of identities) posts.push({ method: write, onecliAgent: agent, literal, ...(token ? { userToken: true } : {}), why: `the line calls Slack's ${code(write)} through ${code(fn!.name)}` });
+                continue;
+            }
+        }
+        for (const { agent, literal, userToken: token } of identities) {
+            posts.push({
+                method: method ?? 'unknown',
+                onecliAgent: agent,
+                literal,
+                ...(token ? { userToken: true } : {}),
+                why: method !== undefined ? `the line calls Slack's ${code(method)}` : `the line names ${code(clip(m[0], 40))} with a method the shell fills in`,
+            });
+        }
+    }
+    // A variable named for Slack that an HTTP client sends to is a Slack target; one followed by a path is read as a base
+    // above, and one the line sets to the API base is decided at its uses, above.
+    for (const target of targets) {
+        const name = /^\$\{?([A-Za-z_]\w*)/.exec(target.variable)?.[1];
+        if (name !== undefined && assignments.some(a => a.name === name && holdsBase(a))) continue;
+        named = true;
+        for (const { agent, literal, userToken: token } of identitiesFor(target.at)) {
+            posts.push({ method: 'unknown', onecliAgent: agent, literal, ...(token ? { userToken: true } : {}), why: `the line sends to ${code(clip(target.variable, 40))} in ${code(clip(target.word, 60))}` });
+        }
+    }
+    // A request target the call sends in place of its URL's path: curl's --request-target, or a word that is an API path.
+    for (const word of named ? words : []) {
+        if (inData(word.start)) continue;
+        const method = SLACK_API_PATH.exec(word.value)?.[1];
+        if (method === undefined || SLACK_READ_METHOD.test(method)) continue;
+        for (const { agent, literal, userToken: token } of identitiesFor(word.start)) posts.push({ method, onecliAgent: agent, literal, ...(token ? { userToken: true } : {}), why: `the line names Slack's ${code(method)}` });
+    }
+    for (const cmd of configured ? commands.filter(c => c.name === 'curl') : []) {
+        if (!parseOptions(cmd.args, CURL_OPTIONS).options.some(([name]) => name === 'config')) continue;
+        const offset = cmd.pos ?? (offsetsOf(command, cmd.raw).length === 1 ? offsetsOf(command, cmd.raw)[0] : undefined);
+        for (const { agent, literal, userToken: token } of identitiesFor(offset)) posts.push({ method: 'unknown', onecliAgent: agent, literal, ...(token ? { userToken: true } : {}), why: 'the line runs curl with a config file the guard does not read' });
+    }
+    return posts;
+}
+
+/**
+ * The line's words as the shell splits them, each with where it starts and its text with the quotes taken out. A word
+ * ends at whitespace or an operator outside quotes; `(` and `)` split too, so an array's elements are words.
+ */
+function shellWords(command: string): Array<{ start: number; end: number; value: string }> {
+    const out: Array<{ start: number; end: number; value: string }> = [];
+    let quote: string | null = null;
+    let start = -1;
+    let value = '';
+    let i = 0;
+    const close = () => {
+        if (start >= 0) out.push({ start, end: i, value });
+        start = -1;
+        value = '';
+    };
+    for (; i < command.length; i++) {
+        const ch = command[i];
+        // A backslash-newline joins the lines, inside double quotes or none.
+        if (ch === '\\' && command[i + 1] === '\n' && quote !== "'") {
+            i++;
+            continue;
+        }
+        if (quote) {
+            if (ch === quote) quote = null;
+            else if (ch === '\\' && quote === '"' && i + 1 < command.length) value += command[++i];
+            else value += ch;
+            continue;
+        }
+        if (/[\s;&|()<>]/.test(ch)) {
+            close();
+            continue;
+        }
+        if (start < 0) start = i;
+        if (ch === "'" || ch === '"') quote = ch;
+        else if (ch === '\\' && i + 1 < command.length) value += command[++i];
+        else value += ch;
+    }
+    close();
+    return out;
+}
+
+/**
+ * The heredoc bodies on `text` that no shell runs, each with whether the shell still runs its substitutions (an unquoted
+ * delimiter), and the names of the files a shell on `text` runs. A body runs when its own command, or a later one in its
+ * pipe, is a shell, ssh, su or source, or when it is written (by a redirection or tee) to a file the line runs.
+ */
+function shellScripts(text: string): { data: Array<{ start: number; end: number; expands: boolean }>; ran: Set<string> } {
+    let ast: any;
+    try {
+        ast = parseShell(text);
+    } catch {
+        return { data: [], ran: new Set() };
+    }
+    const runner = (word: string) => SHELLS.has(basename(word)) || ['ssh', 'su', 'source', '.'].includes(basename(word));
+    const wordsOf = (node: any): string[] => [node.name, ...(node.suffix ?? [])].filter(Boolean).map((w: any) => String(w.value ?? w.text ?? ''));
+    const bodies: Array<{ start: number; end: number; expands: boolean; runs: boolean; writes: string[] }> = [];
+    const ran = new Set<string>();
+    const seen = new Set<object>();
+    const command = (node: any, piped: boolean) => {
+        seen.add(node);
+        const words = wordsOf(node);
+        const at = words.findIndex(w => runner(w) || w === 'source' || w === '.');
+        if (at >= 0) for (const w of words.slice(at + 1)) if (!w.startsWith('-')) ran.add(basename(w));
+        if (words[0]?.includes('/')) ran.add(basename(words[0]));
+        const writes = [
+            ...(node.redirects ?? []).filter((r: any) => ['>', '>>', '>|'].includes(r?.operator)).map((r: any) => basename(String(r.target?.value ?? ''))),
+            ...(basename(words[0] ?? '') === 'tee' ? words.slice(1).filter(w => !w.startsWith('-')).map(w => basename(w)) : []),
+        ];
+        for (const r of node.redirects ?? []) {
+            if ((r?.operator !== '<<' && r?.operator !== '<<-') || typeof r.content !== 'string' || !r.content) continue;
+            const start = text.indexOf(r.content, node.end);
+            if (start >= 0) bodies.push({ start, end: start + r.content.length, expands: !r.heredocQuoted, runs: piped || words.some(runner), writes });
+        }
+    };
+    const walk = (node: any, depth: number): void => {
+        if (!node || typeof node !== 'object' || seen.has(node) || depth > 200) return;
+        if (node.type === 'Pipeline') {
+            const parts: any[] = node.commands ?? [];
+            parts.forEach((part, k) => {
+                if (part?.type === 'Command') command(part, parts.slice(k + 1).some(later => later?.type === 'Command' && wordsOf(later).some(runner)));
+            });
+        } else if (node.type === 'Command') command(node, false);
+        seen.add(node);
+        for (const [key, child] of Object.entries(node)) if (key !== 'parent') walk(child, depth + 1);
+    };
+    walk(ast, 0);
+    return { data: bodies.filter(b => !b.runs && !b.writes.some(w => ran.has(w))), ran };
+}
+
+// Commands whose words can still reach a request, past any wrapper: they run them as code, hand them to a command they
+// run, or set a variable from them.
+const WORD_RUNNERS = new Set(['eval', 'source', '.', 'xargs', 'parallel', 'sem', 'find', 'watch', 'ssh', 'su', 'doas',
+    'flock', 'script', 'docker', 'podman', 'kubectl', 'npx', 'bunx', 'uvx', 'pipx', 'npm', 'make', 'awk', 'gawk', 'mawk',
+    'sed', 'read', 'mapfile', 'readarray', 'declare', 'typeset', 'local', 'export', 'readonly', 'let', 'alias', 'trap']);
+
+/**
+ * The spans of `text` that nothing sends or runs: the words and heredoc bodies of a command that only handles text (echo,
+ * printf, grep, cat writing a file, a CLI's arguments), when its output reaches no command that runs or sends it, no
+ * function, and no file the line runs or reads as input. A substitution inside one still runs, and is read the same way.
+ * A line that doesn't parse has none.
+ */
+function inertSpans(text: string, depth = 0): Array<[number, number]> {
+    let ast: any;
+    try {
+        ast = parseShell(text);
+    } catch {
+        return [];
+    }
+    const commands: any[] = [];
+    const functions = new Set<string>();
+    const ran = new Set<string>();
+    const names = (s: string) => { for (const m of s.matchAll(/[^\s'"`$(){};|&<>=@,]+/g)) ran.add(basename(m[0])); };
+    const collect = (node: any, d: number): void => {
+        if (!node || typeof node !== 'object' || d > 200) return;
+        if (node.type === 'Command') commands.push(node);
+        if (node.type === 'Function' && typeof node.name?.text === 'string') functions.add(node.name.text);
+        for (const [key, child] of Object.entries(node)) if (key !== 'parent') collect(child, d + 1);
+    };
+    collect(ast, 0);
+    const nameOf = (node: any) => shellUnquote(String(node.name?.text ?? ''));
+    const live = (node: any): boolean => {
+        const written = nameOf(node);
+        if (written === '' || /[/$`]/.test(written) || functions.has(written)) return true;
+        const { name, args } = stripWrappers(written, (node.suffix ?? []).map((w: any) => shellUnquote(String(w?.text ?? ''))));
+        return WRAPPERS.has(name) || functions.has(name) || HTTP_CLIENTS.has(name) || SHELLS.has(name) || PROGRAM_NAMES.test(name)
+            || WORD_RUNNERS.has(name) || (name === 'printf' && args.some(a => /^-[^-]*v/.test(a)));
+    };
+    // A compound command whose redirect feeds it holds a command that reads it, such as a `while read` loop.
+    const holdsLive = (node: any, d = 0): boolean => !!node && typeof node === 'object' && d < 200
+        && ((node.type === 'Command' && live(node)) || Object.entries(node).some(([key, child]) => key !== 'parent' && holdsLive(child, d + 1)));
+    for (const node of commands) if (live(node)) for (const w of [node.name, ...(node.suffix ?? [])]) names(String(w?.text ?? ''));
+    const inputs = (node: any, d: number): void => {
+        if (!node || typeof node !== 'object' || d > 200) return;
+        for (const r of Array.isArray(node.redirects) ? node.redirects : []) if (r?.operator === '<' && holdsLive(node)) names(String(r.target?.text ?? ''));
+        for (const [key, child] of Object.entries(node)) if (key !== 'parent') inputs(child, d + 1);
+    };
+    inputs(ast, 0);
+    const writesRan = (node: any) => (Array.isArray(node.redirects) ? node.redirects : [])
+        .some((r: any) => ['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && ran.has(basename(shellUnquote(String(r.target?.text ?? '')))));
+    const sink = (node: any) => node?.type === 'Command' && !live(node)
+        && !(basename(nameOf(node)) === 'tee' && (node.suffix ?? []).some((w: any) => ran.has(basename(shellUnquote(String(w?.text ?? ''))))));
+    const spans: Array<[number, number]> = [];
+    const mark = (start: number, end: number, word: boolean) => {
+        let at = start;
+        for (const [s, e] of substitutionRanges(text.slice(start, end), word)) {
+            spans.push([at, start + s]);
+            if (depth < 3) for (const [a, b] of inertSpans(text.slice(start + s, start + e), depth + 1)) spans.push([start + s + a, start + s + b]);
+            at = start + e;
+        }
+        spans.push([at, end]);
+    };
+    const walk = (node: any, flows: boolean, d: number): void => {
+        if (!node || typeof node !== 'object' || d > 200) return;
+        if (node.type === 'Function' || writesRan(node)) flows = true;
+        if (node.type === 'Pipeline' && Array.isArray(node.commands)) {
+            node.commands.forEach((part: any, k: number) => walk(part, flows || !node.commands.slice(k + 1).every(sink), d + 1));
+            return;
+        }
+        if (node.type === 'Command' && !flows && !live(node)) {
+            for (const w of node.suffix ?? []) if (typeof w?.pos === 'number' && typeof w?.end === 'number') mark(w.pos, w.end, true);
+            for (const r of node.redirects ?? []) {
+                if ((r?.operator !== '<<' && r?.operator !== '<<-') || typeof r.content !== 'string' || !r.content) continue;
+                const start = text.indexOf(r.content, node.end);
+                if (start < 0) continue;
+                if (r.heredocQuoted) spans.push([start, start + r.content.length]);
+                else mark(start, start + r.content.length, false);
+            }
+        }
+        for (const [key, child] of Object.entries(node)) if (key !== 'parent') walk(child, flows, d + 1);
+    };
+    walk(ast, false, 0);
+    return spans.filter(([s, e]) => e > s);
+}
+
+/** Whether the shell may split a word into several or fill it with options: an unquoted expansion, `"$@"` or `"${a[@]}"`. */
+function splitsIntoWords(raw: string): boolean {
+    let quote: string | null = null;
+    for (let i = 0; i < raw.length; i++) {
+        const ch = raw[i];
+        if (quote === "'") {
+            if (ch === "'") quote = null;
+        } else if (ch === '\\') i++;
+        else if (quote === '"') {
+            if (ch === '"') quote = null;
+            else if (ch === '$' && /^\$(?:@|\{[!#]?@|\{!?[A-Za-z_]\w*\[@\])/.test(raw.slice(i))) return true;
+        } else if (ch === "'" || ch === '"') quote = ch;
+        else if (ch === '\x60' || (ch === '$' && /[A-Za-z_{(@*#?!$0-9-]/.test(raw[i + 1] ?? ''))) return true;
+    }
+    return false;
+}
+
+// Where one command ends and the next starts between two words: a list or pipe operator, a parenthesis, a newline.
+const COMMAND_BREAK = /[;|()\n]|(?<![<>])&(?!>)/;
+
+/**
+ * Each place an HTTP client on `text` sends to a variable named for Slack: a word in one of its URL slots, or any word
+ * after one the shell may split, which leaves the slots unread. A variable, array or loop item `text` sets counts where a
+ * client uses it, and a function's parameter at each call the line makes. Text a shell runs (a `bash -c` script, a
+ * substitution, a heredoc fed to a shell) is read the same way, its finds placed at the word that holds it, or at `base`
+ * when `line` is itself such text. `spans` collects the spans of the values a client's options take, and HTTPie's and xh's
+ * request items, on `line` itself.
+ */
+function clientSlackTargets(line: string, base?: number, depth = 0, spans?: Array<[number, number]>): Array<{ at: number; variable: string; word: string }> {
+    type Arg = { value: string; raw: string; at: number };
+    const found: Array<{ at: number; variable: string; word: string }> = [];
+    const inner = (script: string, at: number) => {
+        if (depth < 3 && HTTP_CLIENT_WORD_RE.test(script)) found.push(...clientSlackTargets(script, base ?? at, depth + 1));
+    };
+    // A heredoc no shell runs is data: it is read only for the substitutions an unquoted delimiter lets the shell run.
+    const { data, ran } = shellScripts(line);
+    let text = line;
+    for (const body of data) {
+        text = text.slice(0, body.start) + text.slice(body.start, body.end).replace(/[^\n]/g, ' ') + text.slice(body.end);
+        if (body.expands) for (const s of substitutionSpans(line.slice(body.start, body.end))) inner(s, body.start);
+    }
+    const words = shellWords(text);
+    const slackVariable = (value: string) => [...value.matchAll(SLACK_VARIABLE)].find(v => value[v.index! + v[0].length] !== '/')?.[0];
+    // Each value a variable takes on the line, as the words it becomes: an array's elements, a scalar's or a loop item's
+    // one word, which splits as its use does.
+    const values = new Map<string, Array<{ array: boolean; parts: Array<{ value: string; raw: string }> }>>();
+    const define = (name: string, array: boolean, parts: Array<{ value: string; raw: string }>) => values.set(name, [...(values.get(name) ?? []), { array, parts }]);
+    for (const a of lineAssignments(text, words)) {
+        const parts = shellWords(text.slice(a.start, a.end));
+        const array = text[a.start + parts[0].end] === '(';
+        define(a.name, array, array
+            ? parts.slice(1).map(p => ({ value: p.value, raw: text.slice(a.start + p.start, a.start + p.end) }))
+            : [{ value: parts[0].value.slice(parts[0].value.indexOf('=') + 1), raw: '' }]);
+    }
+    for (const [i, w] of words.entries()) {
+        if (w.value !== 'for' || !/^[A-Za-z_]\w*$/.test(words[i + 1]?.value ?? '') || words[i + 2]?.value !== 'in') continue;
+        for (let k = i + 3; k < words.length && !COMMAND_BREAK.test(text.slice(words[k - 1].end, words[k].start)); k++) {
+            define(words[i + 1].value, false, [{ value: words[k].value, raw: '' }]);
+        }
+    }
+    let fns: LineFunction[] | undefined;
+    // What a function's positional parameter is at each call the line makes, placed at the call.
+    const passed = (arg: Arg): Arg[][] => {
+        const p = /^\$(?:([1-9])|\{([1-9])\}|[@*]|\{[@*](?::([1-9]))?\})$/.exec(arg.value);
+        if (!p || base !== undefined) return [];
+        fns ??= lineFunctions(text);
+        const fn = fns.filter(f => f.pos <= arg.at && arg.at < f.end).sort((x, y) => x.end - x.pos - (y.end - y.pos))[0];
+        const n = Number(p[1] ?? p[2] ?? 0);
+        const from = n ? n - 1 : Number(p[3] ?? 1) - 1;
+        // A quoted use passes each argument as the call wrote it, so the call's own quoting decides whether it splits.
+        return (fn?.calls ?? []).map(call => call.args.slice(from, n ? n : undefined)
+            .map((value, k) => ({ value, raw: arg.raw.startsWith('"') ? call.words[from + k] ?? arg.raw : arg.raw, at: call.at })));
+    };
+    // `${a[@]}` becomes every element; any other index, or none, one of them, which the guard doesn't pick.
+    const expand = (arg: Arg, level: number): Arg[][] => {
+        const ref = /^\$\{?([A-Za-z_]\w*)(?:\[([^\]]*)\])?\}?$/.exec(arg.value);
+        const defs = ref && level < 4 ? values.get(ref[1]) ?? [] : [];
+        const every = ref?.[2] === '@' || ref?.[2] === '*';
+        const choices = [
+            ...defs.flatMap(def => def.array && !every
+                ? def.parts.map(p => [{ value: p.value, raw: arg.raw, at: arg.at }])
+                : [def.parts.map(p => ({ value: p.value, raw: def.array && arg.raw.startsWith('"') ? p.raw : arg.raw, at: arg.at }))]),
+            ...passed(arg),
+        ];
+        if (!choices.length) return [[arg]];
+        // Choices that name a Slack variable go first, so the cap on variants never drops one.
+        const slackish = (value: string, level: number): boolean => slackVariable(value) !== undefined
+            || (level < 4 && [...value.matchAll(/\$\{?([A-Za-z_]\w*)/g)].some(m => (values.get(m[1]) ?? []).some(def => def.parts.some(p => slackish(p.value, level + 1)))));
+        choices.sort((x, y) => Number(y.some(e => slackish(e.value, 0))) - Number(x.some(e => slackish(e.value, 0))));
+        return choices.flatMap(elements => {
+            let out: Arg[][] = [[]];
+            for (const e of elements) out = out.flatMap(o => expand(e, level + 1).map(x => [...o, ...x])).slice(0, 16);
+            return out;
+        }).slice(0, 16);
+    };
+    const read = (client: string, args: Arg[]) => {
+        let variants: Arg[][] = [[]];
+        for (const a of args) variants = variants.flatMap(v => expand(a, 0).map(x => [...v, ...x])).slice(0, 16);
+        for (const variant of variants) {
+            const slots = new Set(clientUrlSlots(client, variant.map(a => a.value)));
+            const blind = variant.findIndex(a => splitsIntoWords(a.raw));
+            const hit = variant.find((a, i) => (slots.has(i) || (blind >= 0 && i > blind)) && slackVariable(a.value) !== undefined);
+            if (hit) return { at: base ?? hit.at, variable: slackVariable(hit.value)!, word: hit.value };
+        }
+        return undefined;
+    };
+    let command: Array<(typeof words)[number] & { target: boolean; writes: boolean }> = [];
+    const flush = () => {
+        // The client word may follow a wrapper (`onecli run --`, `env`, `timeout 9`) or open a backtick substitution.
+        const name = (value: string) => commandName(value.replace(/^[^\x60]*\x60/, ''));
+        const at = command.findIndex(w => !w.target && HTTP_CLIENTS.has(name(w.value)));
+        const hit = at < 0 ? undefined
+            : read(name(command[at].value), command.slice(at + 1).filter(w => !w.target).map(w => ({ value: w.value, raw: text.slice(w.start, w.end), at: w.start })));
+        if (hit) found.push(hit);
+        if (spans && at >= 0) {
+            const client = name(command[at].value);
+            const argWords = command.slice(at + 1).filter(w => !w.target);
+            const argValues = argWords.map(w => w.value);
+            // Past a word the shell may split, which word is which isn't known.
+            const known = (k: number) => !argWords.slice(0, k).some(w => splitsIntoWords(text.slice(w.start, w.end)));
+            const slots = new Set(clientUrlSlots(client, argValues));
+            const parsed = parseOptions(argValues, CLIENT_OPTIONS[client]);
+            const held = [
+                ...parsed.options.filter(([option, value]) => value !== undefined && option !== 'url' && option !== 'request-target').map(([, , k]) => k),
+                ...(client === 'curl' || client === 'wget' ? [] : parsed.operandAt.filter(k => !slots.has(k))),
+            ];
+            for (const k of held) if (argWords[k] && known(k)) spans.push([argWords[k].start, argWords[k].end]);
+        }
+        // Text a shell runs: a shell's -c script, eval's words, ssh's remote command, su's -c command, what watch runs, a
+        // script written to a file the line runs, and a substitution anywhere outside single quotes. Other quoted text,
+        // such as printf's, is data.
+        const args = command.filter(w => !w.target);
+        const shell = args.findIndex(w => SHELLS.has(name(w.value)));
+        const script = shell < 0 ? null : shellScript(name(args[shell].value), args.slice(shell + 1).map(w => w.value));
+        if (script) inner(script.text, args[shell + script.rest].start);
+        const evaluated = args.findIndex(w => name(w.value) === 'eval');
+        if (evaluated >= 0) inner(args.slice(evaluated + 1).map(w => w.value).join(' '), args[evaluated].start);
+        const remote = args.findIndex(w => name(w.value) === 'ssh');
+        if (remote >= 0) for (const w of args.slice(remote + 1)) inner(w.value, w.start);
+        const su = args.findIndex(w => name(w.value) === 'su');
+        if (su >= 0) {
+            const rest = args.slice(su + 1);
+            for (const [option, value, at] of parseOptions(rest.map(w => w.value), SU_OPTIONS).options) {
+                if ((option === 'command' || option === 'session-command') && value !== undefined) inner(value, rest[at].start);
+            }
+        }
+        const watched = args.findIndex(w => name(w.value) === 'watch');
+        if (watched >= 0) {
+            const rest = args.slice(watched + 1);
+            const { operandAt } = parseOptions(rest.map(w => w.value), WATCH_OPTIONS, true);
+            if (operandAt.length) inner(operandAt.map(k => rest[k].value).join(' '), rest[operandAt[0]].start);
+        }
+        if (command.some(w => w.writes && ran.has(basename(w.value)))) for (const w of args.slice(1)) inner(w.value, w.start);
+        for (const w of command) for (const s of substitutionSpans(withoutSingleQuoted(text.slice(w.start, w.end)))) inner(s, w.start);
+        command = [];
+    };
+    for (const [i, word] of words.entries()) {
+        const gap = i ? text.slice(words[i - 1].end, word.start).replace(/\\\n/g, '') : '';
+        if (COMMAND_BREAK.test(gap)) flush();
+        // A word after a redirection is its file or a heredoc's delimiter, not an argument.
+        const target = !COMMAND_BREAK.test(gap) && /[<>]/.test(gap);
+        command.push({ ...word, target, writes: target && gap.includes('>') });
+    }
+    flush();
+    return found;
+}
+
+/** Each variable assignment on the line, with the span of its value: a word `NAME=…`, `NAME+=…` or `NAME[i]=…`, or an array `NAME=(…)` or `NAME+=(…)`. */
+function lineAssignments(command: string, words: Array<{ start: number; end: number; value: string }>): Array<{ name: string; start: number; end: number }> {
+    const out: Array<{ name: string; start: number; end: number }> = [];
+    for (const word of words) {
+        const assign = /^([A-Za-z_]\w*)(?:\[[^\]=]*\])?\+?=/.exec(command.slice(word.start, word.end));
+        if (!assign) continue;
+        const name = assign[1];
+        let end = word.end;
+        if (word.value === assign[0] && command[end] === '(') {
+            for (let depth = 0, quote: string | null = null; end < command.length; end++) {
+                const ch = command[end];
+                if (quote) quote = ch === quote ? null : quote;
+                else if (ch === "'" || ch === '"') quote = ch;
+                else if (ch === '(') depth++;
+                else if (ch === ')' && --depth === 0) {
+                    end++;
+                    break;
+                }
+            }
+        }
+        out.push({ name, start: word.start, end });
+    }
+    return out;
+}
+
+/** Every offset at which `text` appears in `command`. */
+function offsetsOf(command: string, text: string): number[] {
+    const out: number[] = [];
+    for (let i = text ? command.indexOf(text) : -1; i >= 0; i = command.indexOf(text, i + 1)) out.push(i);
+    return out;
+}
+
+/**
+ * Each command node of the line: its name, its span, any heredoc body it reads, and whether its text is a program that
+ * can start onecli itself: an interpreter's, or a heredoc the line writes to a file an interpreter on the line then runs.
+ */
+function lineCommandNodes(command: string, ast: unknown): Array<{ name: string; pos: number; end: number; spans: Array<[number, number]>; program: boolean }> {
+    type Node = { name: string; pos: number; end: number; spans: Array<[number, number]>; program: boolean; words: string[]; writes: string[] };
+    const out: Node[] = [];
+    const seen = new Set<object>();
+    const walk = (node: any, depth: number): void => {
+        if (!node || typeof node !== 'object' || seen.has(node) || depth > 200) return;
+        seen.add(node);
+        if (node.type === 'Command' && typeof node.pos === 'number' && typeof node.end === 'number') {
+            const words: string[] = [node.name, ...(node.suffix ?? [])].map((w: any) => (typeof w?.value === 'string' ? w.value : ''));
+            const spans: Array<[number, number]> = [[node.pos, node.end]];
+            const writes: string[] = [];
+            for (const r of node.redirects ?? []) {
+                if ((r?.operator === '>' || r?.operator === '>>' || r?.operator === '>|') && typeof r.target?.value === 'string') writes.push(r.target.value);
+                if ((r?.operator !== '<<' && r?.operator !== '<<-') || typeof r.content !== 'string' || !r.content) continue;
+                const at = command.indexOf(r.content, node.end);
+                if (at >= 0) spans.push([at, at + r.content.length]);
+            }
+            out.push({ name: words[0], pos: node.pos, end: node.end, spans, words, writes, program: words.some(v => PROGRAM_NAMES.test(v.split('/').pop() ?? '')) });
+        }
+        for (const [key, child] of Object.entries(node)) if (key !== 'parent') walk(child, depth + 1);
+    };
+    walk(ast, 0);
+    const base = (p: string) => p.split('/').pop() ?? p;
+    const ran = new Set(out.filter(n => n.program).flatMap(n => n.words.slice(1).map(base)));
+    for (const n of out) if (!n.program && n.spans.length > 1 && n.writes.some(w => ran.has(base(w)))) n.program = true;
+    return out.map(({ words: _words, writes: _writes, ...n }) => n);
+}
+
+/** The --agent values a program's text passes to onecli, as in a Python argument list; an unquoted one after a comma is the program's own variable. */
+function programAgents(text: string): string[] {
+    if (!/onecli/.test(text)) return [];
+    return [...text.matchAll(/--agent(['"]?)(\s*,\s*|\s*=\s*|\s+)(['"]?)([^\s,'"\])}]+)\3/g)].map(m => (!m[3] && m[2].includes(',') ? `$${m[4]}` : m[4]));
+}
+
+interface LineFunction {
+    name: string;
+    pos: number;
+    end: number;
+    /** Where calls inside a substitution, which carry no offset of their own, appear. */
+    callSpans: Array<[number, number]>;
+    /** The method each call gives parameter `n`, or null when a call's is not a literal method or the line runs the function some way the guard can't see. */
+    methods(n: number): string[] | null;
+    /** The arguments of each call the line makes, as the shell passes them and as written, and where the call is. */
+    calls: Array<{ args: string[]; words: string[]; at: number }>;
+}
+
+/** The functions a line defines, each with the calls the line makes to it. */
+function lineFunctions(command: string): LineFunction[] {
+    let commands: ResolvedCommand[];
+    try {
+        parseShell(command);
+        commands = extractCommands(command);
+    } catch {
+        return [];
+    }
+    const defs: Array<{ name: string; pos: number; end: number }> = [];
+    const seen = new Set<object>();
+    const walk = (node: any, depth: number): void => {
+        if (!node || typeof node !== 'object' || seen.has(node) || depth > 200) return;
+        seen.add(node);
+        if (node.type === 'Function' && typeof node.name?.text === 'string' && typeof node.pos === 'number' && typeof node.end === 'number') {
+            defs.push({ name: node.name.text, pos: node.pos, end: node.end });
+        }
+        for (const [key, child] of Object.entries(node)) if (key !== 'parent') walk(child, depth + 1);
+    };
+    walk(commands[0]?.script?.ast, 0);
+    return defs.map(def => {
+        const outside = (offset: number) => !(def.pos <= offset && offset < def.end);
+        // A call inside a substitution has no offset of its own: it counts when every place its text appears is outside the body.
+        const calls = commands.filter(c => c.name === def.name
+            && (c.pos !== undefined ? outside(c.pos) : offsetsOf(command, c.raw).length > 0 && offsetsOf(command, c.raw).every(outside)));
+        // Every place the line names the function is its definition or one of these calls; an eval, an export or a
+        // variable holding the name can run it with other arguments.
+        const named = command.split(new RegExp(`(?<![\\w.-])${def.name.replace(/[^\w]/g, '\\$&')}(?![\\w.-])`)).length - 1;
+        const callSpans = calls.filter(c => c.pos === undefined)
+            .flatMap(c => offsetsOf(command, c.raw).map((at): [number, number] => [at, at + c.raw.length]));
+        return {
+            ...def,
+            callSpans,
+            calls: calls.map(c => ({ args: c.args, words: argumentWords(c).map(w => w.word), at: c.pos ?? offsetsOf(command, c.raw).find(outside) ?? def.pos })),
+            methods: (n: number) => {
+                if (named !== calls.length + 1) return null;
+                const given = calls.map(c => c.args[n - 1]);
+                return given.every((g): g is string => g !== undefined && LITERAL_METHOD.test(g)) ? given : null;
+            },
+        };
+    });
+}
+
+/**
+ * The payload file the card showed, by content: an approval covers only that version of it. `written`: the line writes
+ * the file itself before the post, so a file still absent when the post is approved is the one the line will write.
+ */
+export interface PayloadBinding {
+    path: string;
+    real: string;
+    sha256: string;
+    written?: boolean;
+}
+
+/** Null while a payload file still resolves to the file the card showed and holds that version, else the refusal. */
+export function payloadChangedSince(binding: PayloadBinding): string | null {
+    let same = false;
+    try {
+        if (binding.written && !mayExistAsLink(binding.path)) return null;
+        same = realpathSync(binding.path) === binding.real
+            && createHash('sha256').update(readFileSync(binding.real, 'utf-8')).digest('hex') === binding.sha256;
+    } catch {
+        same = false;
+    }
+    return same ? null : `Slack post refused: ${binding.path} changed after the card showed it. Ask for approval again with the same command.`;
+}
+
+/** True unless nothing at all, not even a dangling link, is at `path`. */
+function mayExistAsLink(path: string): boolean {
+    try {
+        lstatSync(path);
+        return true;
+    } catch (e) {
+        return (e as NodeJS.ErrnoException)?.code !== 'ENOENT';
+    }
+}
+
+/** `path` as the file system would resolve it, for a file that may not exist yet; null when its directory doesn't. */
+function canonicalPath(path: string): string | null {
+    try {
+        return mayExistAsLink(path) ? realpathSync(path) : join(realpathSync(dirname(path)), basename(path));
+    } catch {
+        return null;
+    }
+}
+
+// The printf escapes a literal payload may use, and what each prints.
+const PRINTF_ESCAPES: Record<string, string> = { '\\': '\\', n: '\n', t: '\t', r: '\r', '"': '"' };
+
+/** What printf prints for a format with only `%s` and `%%` directives and one argument per `%s`; null for anything else. */
+function literalPrintf([format, ...values]: string[]): string | null {
+    let out = '';
+    let next = 0;
+    for (let i = 0; i < format.length; i++) {
+        const ch = format[i];
+        if (ch === '%') {
+            const directive = format[++i];
+            if (directive === '%') out += '%';
+            else if (directive === 's' && next < values.length) out += values[next++];
+            else return null;
+        } else if (ch === '\\') {
+            const escaped = PRINTF_ESCAPES[format[++i]];
+            if (escaped === undefined) return null;
+            out += escaped;
+        } else {
+            out += ch;
+        }
+    }
+    return next === values.length ? out : null;
+}
+
+/**
+ * The file a command replaces and the text it writes there, when the line fixes that text: a quoted heredoc fed to
+ * `cat`, or a printf with nothing to expand. Null for any other write.
+ */
+function literalWrite(cmd: ResolvedCommand): { target: string; text: string } | null {
+    const target = cmd.stdoutReplaced;
+    if (target === undefined || /[$`]/.test(target) || cmd.args.some(a => /[$`]/.test(a))) return null;
+    if (cmd.name === 'cat') return !cmd.args.length && cmd.quotedHeredoc !== undefined ? { target, text: cmd.quotedHeredoc } : null;
+    if (cmd.name !== 'printf' || !cmd.args.length || cmd.args[0].startsWith('-') || cmd.hasInputRedirect) return null;
+    const text = literalPrintf(cmd.args);
+    return text === null ? null : { target, text };
+}
+
+/** Where each top-level command of the line sits: its statement's &&/|| chain, its place in it, and whether it runs in the background. */
+function topLevelCommands(ast: any): Map<number, { chain: number; index: number; operators: string[]; background: boolean }> {
+    const out = new Map<number, { chain: number; index: number; operators: string[]; background: boolean }>();
+    for (const [chain, statement] of (ast?.type === 'Script' ? ast.commands ?? [] : []).entries()) {
+        const node = statement?.type === 'Statement' ? statement.command : statement;
+        const background = statement?.background === true;
+        const links = node?.type === 'AndOr' ? node.commands ?? [] : [node];
+        const operators = node?.type === 'AndOr' ? node.operators ?? [] : [];
+        for (const [index, link] of links.entries()) {
+            const inner = link?.type === 'Statement' ? link.command : link;
+            const command = inner?.type === 'Pipeline' && inner.commands?.length === 1 ? inner.commands[0] : inner;
+            if (command?.type === 'Command' && typeof command.pos === 'number') out.set(command.pos, { chain, index, operators, background });
+        }
+    }
+    return out;
+}
+
+/** The text a Slack payload shows: its blocks as text when it has them, else its `text` field; null when it can't tell. */
+/** Where a Slack message goes, as its payload names it: a channel and, for a reply or an edit, the message it belongs to. */
+type SlackDestination = { channel: string; threadTs?: string; ts?: string; broadcast?: boolean } | { notShown: string };
+
+/** The destination a payload's fields name, or why it can't be shown. */
+function payloadDestination(fields: Record<string, unknown>): SlackDestination {
+    const { channel, thread_ts: threadTs, ts, reply_broadcast: broadcast } = fields;
+    if (typeof channel !== 'string') return { notShown: 'the payload names no channel' };
+    // The reason is fixed: a rejected value is never repeated on the card, since it may be a secret in the wrong field.
+    if (/[$`]/.test(channel)) return { notShown: "the payload's channel is a shell variable, which curl sends as written" };
+    if (!/^(?:[CDGUW][A-Z0-9]{8,}|#?[a-z0-9][a-z0-9._-]{0,79})$/.test(channel)) return { notShown: "the payload's channel is not a Slack channel id or name" };
+    const stamp = (v: unknown) => v === undefined || (typeof v === 'string' && /^\d+\.\d+$/.test(v));
+    if (!stamp(threadTs) || !stamp(ts)) return { notShown: "the payload's thread_ts or ts is not a message timestamp" };
+    return { channel, ...(typeof threadTs === 'string' ? { threadTs } : {}), ...(typeof ts === 'string' ? { ts } : {}), ...(broadcast === true ? { broadcast: true } : {}) };
+}
+
+/** The destination as the card says it. */
+function destinationLine(d: SlackDestination): string {
+    if ('notShown' in d) return `Destination not shown: ${d.notShown}.`;
+    const kind = /^D/.test(d.channel) ? 'the direct message' : /^[UW]/.test(d.channel) ? 'a direct message to the user'
+        : /^G/.test(d.channel) ? 'the private channel or group message' : 'the channel';
+    const where = /^[CDGUW][A-Z0-9]{8,}$/.test(d.channel) ? `${kind} ${code(d.channel)}` : `the channel ${code(d.channel.startsWith('#') ? d.channel : `#${d.channel}`)}`;
+    return `Destination: ${where}${d.threadTs ? `, in the thread ${code(d.threadTs)}${d.broadcast ? ', also sent to the channel' : ''}` : ''}${d.ts ? `, editing the message ${code(d.ts)}` : ''}.`;
+}
+
+/** The destination as sendParts bind it, after the text. */
+function destinationParts(d: SlackDestination): string[] {
+    if ('notShown' in d) return [];
+    return [`channel=${d.channel}`, ...(d.threadTs ? [`thread_ts=${d.threadTs}`] : []), ...(d.ts ? [`ts=${d.ts}`] : []), ...(d.broadcast ? ['reply_broadcast=true'] : [])];
+}
+
+function payloadMessage(raw: string): { text: string; notification?: string; exact: boolean; simplified?: boolean; destination: SlackDestination } | null {
+    let body: unknown;
+    try {
+        body = JSON.parse(raw);
+    } catch {
+        return null;
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+    const fields = body as Record<string, unknown>;
+    if (fields.attachments !== undefined) return null;
+    if (fields.blocks !== undefined) {
+        const text = blocksText(fields.blocks);
+        if (text === null) return null;
+        const collapse = (t: string) => t.replace(/\s+/g, ' ').trim();
+        const notification = typeof fields.text === 'string' && collapse(fields.text) !== collapse(text) ? fields.text : undefined;
+        const exact = typeof fields.channel === 'string' && Object.keys(fields).every(k => k === 'blocks' || EXACT_SLACK_FIELDS.has(k));
+        return { text, exact, simplified: true, destination: payloadDestination(fields), ...(notification !== undefined ? { notification } : {}) };
+    }
+    if (typeof fields.text !== 'string') return null;
+    return { text: fields.text, destination: payloadDestination(fields), exact: typeof fields.channel === 'string' && Object.keys(fields).every(k => EXACT_SLACK_FIELDS.has(k)) };
+}
+
+/** Slack blocks as the text a reader sees; null for a block or element this doesn't render. */
+function blocksText(blocks: unknown): string | null {
+    if (!Array.isArray(blocks)) return null;
+    type Part = Record<string, unknown>;
+    const inline = (elements: unknown): string | null => {
+        if (!Array.isArray(elements)) return null;
+        let out = '';
+        for (const el of elements as Part[]) {
+            const s = (k: string) => (typeof el?.[k] === 'string' ? el[k] as string : null);
+            const piece = el?.type === 'text' ? s('text')
+                : el?.type === 'link' ? (s('url') === null ? null : s('text') === null ? s('url') : `${s('text')} (${s('url')})`)
+                : el?.type === 'user' ? (s('user_id') && `<@${s('user_id')}>`)
+                : el?.type === 'channel' ? (s('channel_id') && `<#${s('channel_id')}>`)
+                : el?.type === 'usergroup' ? (s('usergroup_id') && `<!subteam^${s('usergroup_id')}>`)
+                : el?.type === 'broadcast' ? (s('range') && `<!${s('range')}>`)
+                : el?.type === 'emoji' ? (s('name') && `:${s('name')}:`)
+                : null;
+            if (piece === null) return null;
+            out += piece;
+        }
+        return out;
+    };
+    const lines: string[] = [];
+    for (const block of blocks as Part[]) {
+        const text = (block?.text as Part | undefined)?.text;
+        if ((block?.type === 'section' || block?.type === 'header') && typeof text === 'string' && block.fields === undefined && block.accessory === undefined) {
+            lines.push(text);
+            continue;
+        }
+        if (block?.type !== 'rich_text' || !Array.isArray(block.elements)) return null;
+        for (const part of block.elements as Part[]) {
+            if (part?.type === 'rich_text_list' && Array.isArray(part.elements)) {
+                const indent = '  '.repeat(typeof part.indent === 'number' ? part.indent : 0);
+                for (const [n, item] of (part.elements as Part[]).entries()) {
+                    const line = inline(item?.elements);
+                    if (line === null) return null;
+                    const start = typeof part.offset === 'number' ? part.offset : 0;
+                    lines.push(`${indent}${part.style === 'ordered' ? `${start + n + 1}.` : '•'} ${line}`);
+                }
+                continue;
+            }
+            if (part?.type !== 'rich_text_section' && part?.type !== 'rich_text_preformatted' && part?.type !== 'rich_text_quote') return null;
+            const line = inline(part.elements);
+            if (line === null) return null;
+            lines.push(part.type === 'rich_text_quote' ? line.split('\n').map(l => `> ${l}`).join('\n') : line);
+        }
+    }
+    return lines.join('\n');
+}
+
+// What a client reads before its command line: where it is looked up, and the config files it loads by default.
+const CLIENT_SETUP_NAMES = /\b(?:PATH|HOME|CURL_HOME|XDG_CONFIG_HOME)=|curlrc/;
+const SYSTEM_BIN = /^\/(?:usr\/)?bin\/[^/]+$/;
+
+/** Why curl may not be the program, or may not run with the options, its command line shows; null when it is. */
+function curlSetupUnproven(cmd: ResolvedCommand, line: string): string | null {
+    const path = cmd.raw.split(/\s+/).map(w => w.replace(/^['"]|['"]$/g, '')).find(w => w.includes('/') && commandName(w) === cmd.name);
+    if (path !== undefined && !SYSTEM_BIN.test(path)) return `${code(clip(path, 60))} may be any program`;
+    if (CLIENT_SETUP_NAMES.test(line)) return 'the line changes where curl is found or which config file it reads';
+    if (cmd.args[0] === '-q' || cmd.args[0] === '--disable') return null;
+    const home = process.env.HOME ?? homedir();
+    const found = [
+        ...(process.env.CURL_HOME ? [join(process.env.CURL_HOME, '.curlrc')] : []),
+        join(process.env.XDG_CONFIG_HOME ?? join(home, '.config'), 'curlrc'), join(home, '.curlrc'),
+    ].find(mayExist);
+    return found ? `curl also reads ${code(found)}, which can add requests` : null;
+}
+
+/** True when every cd before `cmd` on the line has to succeed for it to run: in its own &&-chain, ahead of it. */
+function cdsRanBefore(cmd: ResolvedCommand): boolean {
+    const script = cmd.script;
+    if (!script || cmd.pos === undefined) return false;
+    const before = script.cds.filter(step => step.pos < cmd.pos!);
+    if (!before.length) return true;
+    const own = script.links.get(cmd.pos);
+    return before.every(step => {
+        const link = script.links.get(step.pos);
+        return own !== undefined && link !== undefined && step.scopeEnd === undefined && link.chain === own.chain
+            && own.operators.slice(link.index, own.index).every(op => op === '&&');
+    });
+}
+
+/**
+ * The text the line writes to the payload before the post, from the writes ahead of it: null when there are none, a
+ * reason when one may not write exactly that text to exactly that file before the post reads it.
+ */
+function writtenPayload(writes: ResolvedCommand[], post: ResolvedCommand, canonical: string): { text: string } | { notShown: string } | null {
+    if (!writes.length) return null;
+    const top = topLevelCommands(post.script?.ast);
+    const own = post.pos === undefined ? undefined : top.get(post.pos);
+    let text: string | undefined;
+    for (const writer of writes) {
+        const write = literalWrite(writer);
+        const place = writer.pos === undefined ? undefined : top.get(writer.pos);
+        const dirs = commandDirs(writer);
+        const target = write && (write.target.startsWith('/') ? write.target : dirs.length === 1 && dirs[0] ? join(dirs[0], write.target) : null);
+        if (!write || !target || write.target.split('/').includes('..') || canonicalPath(target) !== canonical) {
+            return { notShown: 'another command runs before the post and may change what it sends; post it in a command of its own' };
+        }
+        // The write has to happen whenever the post does: as a statement of its own, or earlier in the post's &&-chain.
+        const runs = own !== undefined && place !== undefined && !place.background && (place.chain === own.chain
+            ? own.operators.slice(0, own.index).every(op => op === '&&')
+            : place.chain < own.chain && place.operators.length === 0);
+        if (!runs) return { notShown: 'the line writes the payload in a step that may not run, or runs beside the post' };
+        text = write.text;
+    }
+    return { text: text! };
+}
+
+/**
+ * Where each command may run on the line, as the start of each top-level statement that may hold it. A command inside
+ * a substitution carries no offset of its own, so every statement its text appears in counts.
+ */
+function statementPlaces(command: string, commands: ResolvedCommand[]): Map<ResolvedCommand, number[]> {
+    const ast = commands[0]?.script?.ast as { type?: string; commands?: Array<{ pos?: number; end?: number }> } | undefined;
+    const statements = (ast?.type === 'Script' ? ast.commands ?? [] : [])
+        .filter((st): st is { pos: number; end: number } => typeof st?.pos === 'number' && typeof st?.end === 'number');
+    const startOf = (offset: number) => statements.find(st => st.pos <= offset && offset < st.end)?.pos;
+    const out = new Map<ResolvedCommand, number[]>();
+    for (const c of commands) {
+        const starts = (c.pos !== undefined ? [c.pos] : offsetsOf(command, c.raw)).map(startOf);
+        out.set(c, starts.every((p): p is number => p !== undefined) ? [...new Set(starts)] : []);
+    }
+    return out;
+}
+
+/** What a card can show of a post's message, or why it shows none: only text that binds exactly to what is sent. */
+function postMessage(command: string, method: string, opts: { cwd?: string; nanoclaw: boolean }):
+    { text: string; notification?: string; exact: boolean; simplified?: boolean; from?: string; written?: boolean; payload?: PayloadBinding; body: string; destination: SlackDestination } | { notShown: string } {
+    const notShown = (reason: string) => ({ notShown: reason });
+    if (!EXACT_SLACK_METHODS.has(method)) return notShown(`the guard shows text only for ${[...EXACT_SLACK_METHODS].join(' and ')}`);
+    let commands: ResolvedCommand[];
+    try {
+        parseShell(command);
+        commands = extractCommands(command);
+    } catch {
+        return notShown("the guard can't read the line as bash will");
+    }
+    const strip = (t: string) => t.replace(/['"\\]/g, '');
+    // An HTTP client calls only the URLs it takes as URLs; a Slack URL in its data is text.
+    const called = (c: ResolvedCommand) => strip(HTTP_CLIENTS.has(c.name) ? clientUrlSlots(c.name, c.args).map(k => c.args[k]).join(' ') : c.raw);
+    const methodsNamed = (c: ResolvedCommand) => [...called(c).matchAll(SLACK_API_BASE)]
+        .map(m => SLACK_METHOD_AFTER.exec(called(c).slice(m.index! + m[0].length))?.[1]);
+    const naming = commands.filter(c => methodsNamed(c).length > 0);
+    const [cmd] = naming;
+    if (!cmd || cmd.name !== 'curl') return notShown('the guard reads text only from a curl call');
+    const own = methodsNamed(cmd);
+    if (own.length !== 1 || own[0] !== method) return notShown('a Slack call runs before the post, or beside it in the same curl');
+    // Reading the thread back after the post can't change what it sent; any other Slack call on the line can be a post.
+    if (naming.slice(1).some(c => methodsNamed(c).some(m => m === undefined || !SLACK_READ_METHOD.test(m)))) {
+        return notShown('the line makes more than one Slack call');
+    }
+    const places = statementPlaces(command, commands);
+    const postPlaces = places.get(cmd) ?? [];
+    if (postPlaces.length !== 1) return notShown("the guard can't place the post on the line");
+    const [at] = postPlaces;
+    // A command in the post's own statement but inside a substitution may run before it, so it counts as ahead.
+    const ahead = commands.filter(c => c !== cmd && c.name !== 'cd' && (!places.get(c)?.length || places.get(c)!.some(p => p < at
+        || (p === at && (c.pos === undefined || cmd.pos === undefined || c.pos < cmd.pos)))));
+    if (ahead.some(c => literalWrite(c) === null)) {
+        return notShown('another command runs before the post and may change what it sends; post it in a command of its own');
+    }
+    if (commands[0]?.script && opts.cwd !== undefined) commands[0].script.cwd = opts.cwd;
+    if (cmd.args.some(a => a === '--next' || a === '-:')) return notShown('the call makes more than one request');
+    if (cmd.args.some(a => /[$`]/.test(a))) return notShown('a word on the call is only known when it runs');
+    const setup = curlSetupUnproven(cmd, command);
+    if (setup) return notShown(setup);
+    const parsed = exactCurlOptions(cmd.args);
+    if (!parsed) return notShown('the call uses a curl option the guard does not read');
+    if (parsed.urls.length !== 1 || !/^https:\/\/(?:[a-z0-9-]+\.)?slack\.com\/api\/[A-Za-z.]+$/.test(parsed.urls[0])) return notShown('the call does not name one plain Slack API URL');
+    if (parsed.options.some(o => (o.flag === '--request' && o.value !== 'POST') || (o.flag === '--header' && /^\s*host\s*:/i.test(o.value ?? '')))) {
+        return notShown('the call changes its request method or host');
+    }
+    const bodies = parsed.options.filter(o => BODY_FLAGS.has(o.flag));
+    if (bodies.length !== 1) return notShown('the call sends no body, or more than one');
+    const [body] = bodies;
+    if (!body.value!.startsWith('@') || body.flag === '--data-raw') {
+        if (ahead.length) return notShown('another command runs before the post and may change what it sends; post it in a command of its own');
+        const written = [...cmd.raw.matchAll(/'([^']*)'/g)].map(m => m[1]);
+        const message = written.includes(body.value!) ? payloadMessage(body.value!) : null;
+        return message ? { ...message, body: body.value! } : notShown('the body is not one single-quoted Slack message the guard can read');
+    }
+    const named = body.value!.slice(1);
+    if (named === '-' || !named) return notShown('the body is read from stdin');
+    if (named.split('/').includes('..')) return notShown(`the payload path ${code(named)} climbs with ${code('..')}, which curl resolves through links the guard doesn't follow`);
+    const base = named.split('/').pop()!;
+    if (command.split(base).length - 1 > 1 + ahead.length) return notShown(`the line also names ${code(base)}, so it may write it first; post it in a command of its own`);
+    if (!named.startsWith('/') && !cdsRanBefore(cmd)) return notShown('which directory the file is read from depends on a cd that may not run');
+    const dirs = commandDirs(cmd);
+    const dir = dirs.length === 1 ? dirs[0] : undefined;
+    const path = named.startsWith('/') ? named : dir ? join(dir, named) : null;
+    if (path === null) return notShown("the guard can't tell which directory the file is read from");
+    if (!opts.nanoclaw) return notShown('outside NanoClaw the file is not checked again after approval');
+    const canonical = canonicalPath(path);
+    if (canonical === null) return notShown(`the directory ${code(named)} is read from doesn't exist`);
+    const written = writtenPayload(ahead, cmd, canonical);
+    if (written && 'notShown' in written) return written;
+    if (written) {
+        // An earlier version of the file is what the post sends if the write fails.
+        if (mayExistAsLink(path) && readBodyFile(path, dir, PAYLOAD_EXTENSIONS) !== written.text) {
+            return notShown(`${code(named)} already holds other text, which the post would send if the write failed; write the message to a new file`);
+        }
+        const message = payloadMessage(written.text);
+        if (message === null) return notShown(`the text the line writes to ${code(named)} has blocks or attachments the guard can't show, or isn't JSON`);
+        return { ...message, body: written.text, from: named, written: true, payload: { path, real: canonical, sha256: createHash('sha256').update(written.text).digest('hex'), written: true } };
+    }
+    const raw = readBodyFile(path, dir, PAYLOAD_EXTENSIONS);
+    if (raw === null) return notShown(`${code(named)} is missing, not a .json or .txt file, or outside the working directories`);
+    const message = payloadMessage(raw);
+    if (message === null) return notShown(`${code(named)} holds blocks or attachments the guard can't show as text`);
+    return { ...message, body: raw, from: named, payload: { path, real: realpathSync(path), sha256: createHash('sha256').update(raw).digest('hex') } };
+}
+
+/**
+ * True when a post as `agent` posts as someone other than the person who approves its card: the send scope maps the
+ * agent to a person and the approver to another. At a terminal the approver is the operator, and an operator the scope
+ * doesn't name counts as another. In NanoClaw it is the workgroup's person; a workgroup the scope maps to nobody leaves
+ * the card to the group's sender, whom the host routes it to. An agent the scope maps to nobody is the approver's own.
+ */
+function postsAsAnotherPerson(agent: string, nanoclaw: boolean, workgroupId: string | undefined): boolean {
+    const scope = currentSendScope();
+    if (scope === null || scope === 'unreadable') return false;
+    const person = scope.slack.people[agent];
+    const approver = nanoclaw ? (workgroupId === undefined ? undefined : scope.slack.workgroupPeople[workgroupId]) : scope.slack.operator;
+    if (nanoclaw && approver === undefined) return false;
+    return person !== undefined && person !== approver;
+}
+
+/** True when the line is one command and nothing else, so what a send delivers can be all it does. */
+export function soleCommand(command: string): boolean {
+    try {
+        const commands = extractCommands(command);
+        return commands.length === 1 && commands[0].raw.trim() === command.trim();
+    } catch {
+        return false;
+    }
+}
+
+export interface SlackGateVerdict {
+    action: 'allow' | 'gate';
+    label?: string;
+    summary?: string;
+    /** Set when the post must not be offered for approval at all: the adapter refuses with this text. */
+    deny?: string;
+    /** The exact text the post delivers, when the command is that one post stated literally. */
+    sendParts?: string[];
+    /** Set when `sendParts` is text rendered from Slack blocks, whose formatting the rendering drops. */
+    textFlattened?: boolean;
+    /** The payload file the card shows: once approved, the post goes ahead only if the file still holds that version. */
+    payload?: PayloadBinding;
+}
+
+/**
+ * Whether a command writes to Slack in a listed person's name, and the card that asks them. `nanoclaw`: the approval is
+ * NanoClaw's, which checks a payload file again after approval; a native ask can't, so it shows no file's text.
+ */
+export function evaluateSlackPost(
+    command: string,
+    workgroupId: string | undefined = process.env.NANOCLAW_WORKGROUP_ID,
+    opts: { cwd?: string; nanoclaw?: boolean } = {},
+): SlackGateVerdict {
+    const posts = command ? gatedSlackPosts(command, workgroupId) : [];
+    if (!posts.length) return { action: 'allow' };
+    const nanoclaw = opts.nanoclaw ?? IS_NANOCLAW;
+    const [first] = posts;
+    const method = posts.find(p => p.method !== 'unknown')?.method;
+    const label = method ? `Slack post in your name (${method})` : 'Slack call in your name';
+    if (carriesCredential(command, opts.cwd ?? currentWorkingDir())) return { action: 'gate', label, deny: LITERAL_CREDENTIAL_REASON };
+    // Every write is judged on its own identity, and the strictest outcome stands.
+    const agents = [...new Set(posts.map(p => p.onecliAgent).filter((a): a is string => a !== null))];
+    const who = (agent: string) => agent.startsWith('$') ? `the OneCLI identity in ${code(agent)}, which the line doesn't fix` : `the OneCLI identity ${code(agent)}`;
+    // Only an identity the line fixes can be someone else's for certain; an unresolved one, or one of several a script
+    // names, is shown on the card for its approver to judge.
+    const other = posts.find(p => p.onecliAgent !== null && p.literal && postsAsAnotherPerson(p.onecliAgent, nanoclaw, workgroupId))?.onecliAgent;
+    if (other) {
+        const approver = nanoclaw ? "this group's sender" : "this terminal's operator";
+        return {
+            action: 'gate', label,
+            deny: `Slack post refused: it posts as ${who(other)}, which the send scope maps to someone other than ${approver}, who would approve it. Post it from a session of that person's group.`,
+        };
+    }
+    const token = posts.some(p => p.userToken) ? ', with a Slack user token the line sends' : '';
+    const as = (agents.length ? ` as you, through ${agents.map(who).join(' and ')}` : ' as you') + token;
+    const message = posts.length > 1 ? { notShown: 'the line makes more than one Slack call' }
+        : method ? postMessage(command, method, { cwd: opts.cwd, nanoclaw }) : { notShown: 'the shell fills in the method' };
+    // The text the card would show, and the payload it comes from, are prose: no shell option or SQL is read in them.
+    if (!('notShown' in message) && [message.text, message.notification, message.body].some(t => t !== undefined && proseHoldsCredential(t))) {
+        return { action: 'gate', label, deny: LITERAL_CREDENTIAL_REASON };
+    }
+    let summary: string;
+    if ('notShown' in message) {
+        summary = `The agent wants to post to Slack${as} (${first.why}). Message text not shown: ${message.notShown}. Destination not shown, for the same reason. Check the full command before approving.`;
+    } else {
+        const cut = message.text.length > SLACK_TEXT_MAX_CHARS;
+        const lines = [
+            `The agent wants to post this to Slack${as}${message.from ? message.written ? ` (the line writes it to ${code(message.from)} before posting)` : ` (read from ${code(message.from)}; the post goes ahead only if the file still holds this)` : ''}:`,
+            '',
+            destinationLine(message.destination),
+            '',
+            ...(message.simplified ? ['Message text (formatting simplified):'] : []),
+            quoteBlock(cut ? message.text.slice(0, SLACK_TEXT_MAX_CHARS) : message.text),
+            ...(cut ? ['', `Text truncated: the first ${SLACK_TEXT_MAX_CHARS} of ${message.text.length} characters are shown.`] : []),
+            ...(message.notification !== undefined ? ['', 'Notification text (shown in alerts and search):', quoteBlock(clip(message.notification, 300))] : []),
+        ];
+        summary = lines.join('\n');
+    }
+    const exact = !('notShown' in message) && message.exact && soleCommand(command);
+    return {
+        action: 'gate',
+        label,
+        summary,
+        ...(exact ? { sendParts: [message.text, ...destinationParts(message.destination)] } : {}),
+        ...(exact && (message as { simplified?: boolean }).simplified ? { textFlattened: true } : {}),
+        ...(!('notShown' in message) && message.payload ? { payload: message.payload } : {}),
+    };
+}
+
+// The one Slack spelling whose text the guard offers: `curl` to a literal posting URL, options that add no request or
+// body, and one body: a single-quoted JSON message or a payload file.
+const EXACT_SLACK_METHODS = new Set(['chat.postMessage', 'chat.update']);
+const EXACT_SLACK_FIELDS = new Set(['channel', 'text', 'thread_ts', 'ts', 'reply_broadcast', 'unfurl_links', 'unfurl_media', 'mrkdwn']);
+const BODY_FLAGS = new Set(['--data', '--data-raw', '--data-binary', '--data-ascii', '--json']);
+// The options it may use, by their names in curl's option table.
+const EXACT_CURL_OPTIONS = new Set(['silent', 'show-error', 'fail', 'fail-with-body', 'disable', 'location', 'compressed', 'verbose',
+    'include', 'show-headers', 'no-progress-meter', 'header', 'request', 'data', 'data-raw', 'data-binary', 'data-ascii', 'json', 'output',
+    'max-time', 'connect-timeout', 'retry', 'write-out', 'url']);
+
+type CurlOption = { flag: string; value: string | undefined };
+
+/**
+ * A curl command line read with curl's own option table, each option under its long name with `--`, and its URLs:
+ * operands and `--url` values. Null when it uses an option outside EXACT_CURL_OPTIONS or one the table doesn't name,
+ * an `--expand-` form, whose value curl fills in, or an option left without the value it takes.
+ */
+function exactCurlOptions(args: string[]): { options: CurlOption[]; urls: string[] } | null {
+    const parsed = parseOptions(args, CURL_OPTIONS);
+    if (parsed.unknown.length || parsed.optionNames.some(n => n.startsWith('--expand-'))) return null;
+    if (parsed.options.some(([name, value]) => !EXACT_CURL_OPTIONS.has(name) || (CURL_OPTIONS.long[name] === true && value === undefined))) return null;
+    return {
+        options: parsed.options.filter(([name]) => name !== 'url').map(([name, value]) => ({ flag: `--${name}`, value })),
+        urls: [...parsed.operands, ...parsed.options.filter(([name]) => name === 'url').map(([, value]) => value!)],
+    };
+}
 
 // ── OneCLI never prints a credential into tool output ────────────────────────
 // onecli prints OneCLI agent access tokens and the account API key in ordinary output: `agents list` and

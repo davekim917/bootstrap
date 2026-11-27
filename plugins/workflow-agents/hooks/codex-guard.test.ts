@@ -119,6 +119,18 @@ describe('Codex local approval transport', () => {
     );
   });
 
+  test("denies a Slack post in a listed person's name with a hand-off", async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-send-scope-'));
+    temporaryRoots.push(root);
+    writeFileSync(join(root, 'send-scope.json'), JSON.stringify({ slack: { workgroups: ['acme'] } }));
+    const post = `curl https://slack.com/api/chat.postMessage --json '{"channel":"C1","text":"Numbers are in."}'`;
+    expectDecision(
+      await runGuard(shell(post), { BOOTSTRAP_SEND_SCOPE_FILE: join(root, 'send-scope.json'), NANOCLAW_WORKGROUP_ID: 'acme' }),
+      'deny',
+      /Slack post in your name \(chat\.postMessage\)[\s\S]*Numbers are in\./,
+    );
+  });
+
   test.each([
     ['send_email', { to: 'ops@example.com', subject: 'Report', body: 'quarterly numbers attached' }],
     ['mcp__gmail__reply_email', { recipient: 'ops@example.com', subject: 'Re: Report' }],
