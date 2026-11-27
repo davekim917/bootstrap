@@ -565,8 +565,46 @@ describe('the message a card shows', () => {
 
         test('a channel the payload holds as a variable is not shown, and nothing binds it', () => {
             const v = post({ channel: '$SLACK_CHANNEL' });
-            expect(v.summary).toContain("Destination not shown: the payload's channel `$SLACK_CHANNEL` is not a channel id or name.");
+            expect(v.summary).toContain("Destination not shown: the payload's channel is a shell variable, which curl sends as written.");
+            expect(v.summary).not.toContain('SLACK_CHANNEL');
             expect(v.sendParts).toEqual(['Numbers are in.']);
+        });
+
+        test('a channel value the guard rejects is never repeated on the card', () => {
+            const rejected = 'sk-Live' + '0123456789abcdef';
+            const v = post({ channel: rejected });
+            expect(v.summary).toContain("Destination not shown: the payload's channel is not a Slack channel id or name.");
+            expect(v.summary).not.toContain(rejected);
+            expect(JSON.stringify(v)).not.toContain(rejected);
+        });
+
+        test('a post whose background card just fit before the destination line still fits, with its destination', () => {
+            // NanoClaw's background card (bash-gate chatlessCard) for a Slack approver with no task brief: the summary,
+            // the bound text, the command and a footer must fit Slack's 2800 units less the title, separators and the
+            // resolution line. A long payload path keeps the text under the summary's own 1000-character cut.
+            const name = `${'d'.repeat(200)}/${'p'.repeat(200)}.json`;
+            const send = `curl -s https://slack.com/api/chat.postMessage -H 'Content-Type: application/json' --data @${name}`;
+            const fence = (body: string) => '```\n' + body + '\n```';
+            const card = (summary: string, text: string) => ['_Asked by a background task with no conversation_', summary, 'Text, exactly as it will post:', fence(text), 'Command:', fence(send), '_Reject, or no answer within 60 min, cancels the post._'].join('\n\n');
+            const budget = (label: string) => 2800 - Array.from(`✉️ ${label}`).length - 4 - 160;
+            const sent = (text: string) => {
+                let v: ReturnType<typeof shown> | undefined;
+                inDir({ [name]: JSON.stringify({ channel: CHANNEL, text }) }, cwd => { v = shown(send, cwd); });
+                return v!;
+            };
+            const probe = sent('Numbers are in.');
+            const destination = `Destination: the channel \`${CHANNEL}\`.\n\n`;
+            // The summary as it was before the destination line: the same head and excerpt.
+            const before = (text: string) => probe.summary!.replace(destination, '').replace('> Numbers are in.', `> ${text}`);
+            const text = 'x'.repeat(Math.floor((budget(probe.label!) - card(before(''), '').length) / 2));
+            expect(text.length).toBeLessThan(1000);
+            // It fit with no unit to spare, and the destination line added to that summary would not fit.
+            expect(budget(probe.label!) - card(before(text), text).length).toBeLessThan(2);
+            expect(card(before(text).replace('\n\n>', `\n\n${destination}>`), text).length).toBeGreaterThan(budget(probe.label!));
+            const v = sent(text);
+            expect(v.sendParts).toEqual([text, `channel=${CHANNEL}`]);
+            expect(v.summary).toContain(`Destination: the channel \`${CHANNEL}\`.`);
+            expect(card(v.summary!, text).length).toBeLessThanOrEqual(budget(v.label!));
         });
 
         test('a payload the guard cannot read shows no destination either', () => {

@@ -12780,6 +12780,30 @@ const SLACK_POSITIONAL_METHOD = /^(?:\/api)?\/\$(?:\{([1-9])\}|([1-9]))(?=$|[\s?
 const LITERAL_METHOD = /^[A-Za-z]+(?:\.[A-Za-z]+)+$/;
 const PAYLOAD_EXTENSIONS = new Set(['.json', '.txt']);
 const SLACK_TEXT_MAX_CHARS = 1000;
+// NanoClaw's card for a post from a session with no conversation (bash-gate `chatlessCard`): it must fit the approver's
+// message (Slack 2800 units, 1900 elsewhere) less the title, the edit's separators and the resolution line, and it
+// heads the summary with a task brief of up to 200 units.
+const HOST_MESSAGE_LIMITS = [2800, 1900];
+const HOST_RESOLUTION_MAX = 160;
+const HOST_TITLE_MAX = 140;
+const HOST_BRIEF = '_Asked by a background task with no conversation: ' + 'x'.repeat(200) + '_';
+const HOST_BRIEFLESS = '_Asked by a background task with no conversation_';
+
+/** The length of NanoClaw's background card for a post, with the task brief it heads the summary with. */
+function chatlessCardLength(brief: string, summary: string, text: string, command: string): number {
+    const fence = (body: string) => '```\n' + body + '\n```';
+    return [brief, summary, 'Text, exactly as it will post:', fence(text), 'Command:', fence(command), '_Reject, or no answer within 60 min, cancels the post._']
+        .join('\n\n').length;
+}
+
+/** Whether `summary` fits NanoClaw's background card wherever `before`, the same summary without the destination, did. */
+function chatlessCardKeepsFit(before: string, summary: string, text: string, command: string, label: string): boolean {
+    const title = Math.min(HOST_TITLE_MAX, Array.from(`✉️ ${label}`).length);
+    return HOST_MESSAGE_LIMITS.every(limit => {
+        const budget = limit - title - 4 - HOST_RESOLUTION_MAX;
+        return chatlessCardLength(HOST_BRIEFLESS, before, text, command) > budget || chatlessCardLength(HOST_BRIEF, summary, text, command) <= budget;
+    });
+}
 
 export interface SendScope {
     slack: {
@@ -13703,7 +13727,9 @@ type SlackDestination = { channel: string; threadTs?: string; ts?: string; broad
 function payloadDestination(fields: Record<string, unknown>): SlackDestination {
     const { channel, thread_ts: threadTs, ts, reply_broadcast: broadcast } = fields;
     if (typeof channel !== 'string') return { notShown: 'the payload names no channel' };
-    if (!/^(?:[CDGUW][A-Z0-9]{8,}|#?[a-z0-9][a-z0-9._-]{0,79})$/.test(channel)) return { notShown: `the payload's channel ${code(clip(channel, 40))} is not a channel id or name` };
+    // The reason is fixed: a rejected value is never repeated on the card, since it may be a secret in the wrong field.
+    if (/[$`]/.test(channel)) return { notShown: "the payload's channel is a shell variable, which curl sends as written" };
+    if (!/^(?:[CDGUW][A-Z0-9]{8,}|#?[a-z0-9][a-z0-9._-]{0,79})$/.test(channel)) return { notShown: "the payload's channel is not a Slack channel id or name" };
     const stamp = (v: unknown) => v === undefined || (typeof v === 'string' && /^\d+\.\d+$/.test(v));
     if (!stamp(threadTs) || !stamp(ts)) return { notShown: "the payload's thread_ts or ts is not a message timestamp" };
     return { channel, ...(typeof threadTs === 'string' ? { threadTs } : {}), ...(typeof ts === 'string' ? { ts } : {}), ...(broadcast === true ? { broadcast: true } : {}) };
@@ -14040,17 +14066,23 @@ export function evaluateSlackPost(
         summary = `The agent wants to post to Slack${as} (${first.why}). Message text not shown: ${message.notShown}. Destination not shown, for the same reason. Check the full command before approving.`;
     } else {
         const cut = message.text.length > SLACK_TEXT_MAX_CHARS;
-        const lines = [
-            `The agent wants to post this to Slack${as}${message.from ? message.written ? ` (the line writes it to ${code(message.from)} before posting)` : ` (read from ${code(message.from)}; the post goes ahead only if the file still holds this)` : ''}:`,
-            '',
-            destinationLine(message.destination),
-            '',
+        const head = `The agent wants to post this to Slack${as}${message.from ? message.written ? ` (the line writes it to ${code(message.from)} before posting)` : ` (read from ${code(message.from)}; the post goes ahead only if the file still holds this)` : ''}:`;
+        const excerpt = [
             ...(message.simplified ? ['Message text (formatting simplified):'] : []),
             quoteBlock(cut ? message.text.slice(0, SLACK_TEXT_MAX_CHARS) : message.text),
             ...(cut ? ['', `Text truncated: the first ${SLACK_TEXT_MAX_CHARS} of ${message.text.length} characters are shown.`] : []),
             ...(message.notification !== undefined ? ['', 'Notification text (shown in alerts and search):', quoteBlock(clip(message.notification, 300))] : []),
         ];
-        summary = lines.join('\n');
+        const destination = destinationLine(message.destination);
+        summary = [head, '', destination, '', ...excerpt].join('\n');
+        if (message.exact && soleCommand(command)) {
+            // A background card shows the bound text in full beside the summary, so near the host's budget the summary's
+            // copy of it goes first, then the destination line, and the card fits wherever the summary without a
+            // destination did.
+            const before = [head, '', ...excerpt].join('\n');
+            summary = [summary, [head, '', destination, '', 'Message text left out of this summary so the card fits; it is bound in full.'].join('\n'), head]
+                .find(s => chatlessCardKeepsFit(before, s, message.text, command, label)) ?? head;
+        }
     }
     const exact = !('notShown' in message) && message.exact && soleCommand(command);
     return {
