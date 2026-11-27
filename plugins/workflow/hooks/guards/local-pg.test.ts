@@ -431,6 +431,26 @@ describe('dropdb takes the scratch exemption the way psql does', () => {
     });
 });
 
+describe('pg_restore takes the scratch exemption the way psql does', () => {
+    const evaluate = (command: string, f: Fixture = scratch) => evaluateBashCommand(command, { cwd: '/tmp', localPg: fixtureHost(f) });
+
+    test.each([
+        ['TCP on 127.0.0.1', 'pg_restore -h 127.0.0.1 -p 55432 -U scratch -d app_test --no-owner -L toc.list app.dump'],
+        ['the unix socket under /tmp', 'pg_restore --host=/tmp/embedded-pg --port=55432 --dbname=app_test app.dump'],
+    ])('a restore into the scratch postgres needs no approval: %s', (_name, command) => {
+        expect(evaluate(command).action).toBe('allow');
+    });
+
+    test.each<[string, string, Fixture]>([
+        ['a forwarder on the port', 'pg_restore -h 127.0.0.1 -p 55432 -U scratch -d app_test app.dump', { tcp: [['0100007F', PORT_HEX, '9101']], procs: { 5001: { comm: 'ssh', sockets: ['9101'] } } }],
+        ['no port', 'pg_restore -h 127.0.0.1 -U scratch -d app_test app.dump', scratch],
+        ['a connection string as the database', "pg_restore -d 'postgresql://scratch@127.0.0.1:55432/app_test' app.dump", scratch],
+        ['the address from a substitution', 'pg_restore -d "$(/app/skills/scratch-postgres/scratch-pg url app_test)" app.dump', scratch],
+    ])('not exempt: %s', (_name, command, f) => {
+        expect(evaluate(command, f).action).not.toBe('allow');
+    });
+});
+
 describe('the exemption applies only to a cluster scratch-pg started', () => {
     const DROP = "psql -X -h 127.0.0.1 -p 55432 -U harness_user -d postgres -c 'DROP DATABASE x_test'";
     const withFiles = (files: Record<string, string | null>, cwd?: string): Fixture => ({

@@ -957,6 +957,7 @@ describe('replay round', () => {
         const verdict = run('pg_restore -d "$APP_URL" app.dump');
         expect(verdict.action).toBe('block');
         expect(verdict.reason).toContain('scratch-pg url <db>');
+        expect(verdict.reason).toContain('runs without approval when scratch-pg\'s cluster is what listens there');
     });
     test('a multi-host URI shows every host libpq can connect to', () => {
         const summary = body("psql -X 'postgresql://primary.example:5432,failover.example:5433/app' -c 'insert into t values (1)'");

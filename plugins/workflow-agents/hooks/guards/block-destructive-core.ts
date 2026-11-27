@@ -5155,7 +5155,7 @@ const LIVE_LOCAL_PG_HOST: LocalPgHost = {
 };
 
 const PG_CLIENT_UNDER_SAFE_WRAPPERS_RE: Record<string, RegExp> = Object.fromEntries(
-    ['psql', 'dropdb'].map(name => [name, new RegExp(`${SAFE_WRAPPERS_PREFIX}(?:/[^\\s'"$\`\\\\]*/)?${name}\\s`)]),
+    ['psql', 'dropdb', 'pg_restore'].map(name => [name, new RegExp(`${SAFE_WRAPPERS_PREFIX}(?:/[^\\s'"$\`\\\\]*/)?${name}\\s`)]),
 );
 // What else the line may run. Not printf (`-v` assigns), sort (`-o`) or tee, which write; and not a second psql, whose
 // `\!` could stop the checked postgres and start a forwarder before this one connects.
@@ -5471,7 +5471,9 @@ export function localPgTargetOf(
     const written = writtenArgs(cmd);
     if (!written || !written.every(isLiteralShellWord) || cmd.args.some(a => a.includes('\\'))) return null;
 
-    const target = cmd.name === 'psql' ? psqlTarget(cmd.args) : dropdbTarget(cmd.args);
+    const target = cmd.name === 'psql' ? psqlTarget(cmd.args)
+        : cmd.name === 'dropdb' ? dropdbTarget(cmd.args)
+        : pgRestoreWrites(cmd.args) ? pgRestoreTarget(cmd.args) : null;
     if (!target || (!target.noPsqlrc && !assumeNoPsqlrc)) return null;
     if (!target.host || !target.port || !/^\d{1,5}$/.test(target.port)) return null;
     const port = Number(target.port);
@@ -7964,7 +7966,7 @@ function pgRestoreTarget(args: string[]): { host?: string; port?: string; noPsql
 
 // scratch-pg url prints the scratch server's address from its state file without checking what listens there now, so
 // restoring through it names nothing proven.
-const PG_RESTORE_UNNAMED = "this pg_restore writes into a database the guard can't name, through a variable or libpq's defaults, so it is refused instead of sent for approval. Write the server out in the command and keep the password out of it: -h <host> -p <port> -U <user> -d <db>, with the password in ~/.pgpass or PGPASSWORD=\"$VAR\". That goes to a person for approval, unless it is a listed dev database. For a scratch Postgres, write out the host, port, user and database that `scratch-pg url <db>` prints; that also goes to a person for approval.";
+const PG_RESTORE_UNNAMED = "this pg_restore writes into a database the guard can't name, through a variable or libpq's defaults, so it is refused instead of sent for approval. Write the server out in the command and keep the password out of it: -h <host> -p <port> -U <user> -d <db>, with the password in ~/.pgpass or PGPASSWORD=\"$VAR\". That goes to a person for approval, unless it is a listed dev database. For a scratch Postgres, write out the host, port, user and database that `scratch-pg url <db>` prints, on a line with no variables or substitutions: it then runs without approval when scratch-pg's cluster is what listens there, and goes to a person for approval otherwise.";
 
 /** For a pg_restore that writes: a refusal when the line doesn't write out the server it reaches, as unresolvedPgTargetFix does for psql. */
 function unresolvedPgRestoreTargetFix(cmd: ResolvedCommand): string | null {
