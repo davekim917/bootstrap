@@ -162,7 +162,7 @@ describe('data leaving the account takes the card on any target, dev included', 
         ['a share on a dev login', 'snow sql -c acme_dev -q "create share dev_share"'],
         ['adding accounts to a share', 'snow sql -c acme_prod -q "alter share s add accounts = partner_org.partner_acct"'],
         ['a grant to a share in the dev database', 'snow sql -c acme_shared -q "grant select on table dev_db.s.t to share s"'],
-        ['a reader account', 'snow sql -c acme_prod -q "create managed account reader admin_name = \'r\', admin_password = \'x\', type = reader"'],
+        ['a reader account', 'snow sql -c acme_prod -q "create managed account reader admin_name = \'r\', admin_password = $READER_PW, type = reader"'],
         ['a COPY INTO a stage inside EXECUTE IMMEDIATE on a dev login', 'snow sql -c acme_dev -q "execute immediate \'copy into @dev_db.s.out from prod_db.core.orders\'"'],
         ['Postgres COPY TO a server file', PG + ' -c "copy orders to \'/tmp/orders.csv\'"'],
         ['Postgres lo_export', PG + ' -c "select lo_export(42, \'/tmp/blob\')"'],
@@ -173,6 +173,10 @@ describe('data leaving the account takes the card on any target, dev included', 
         const result = evaluate(command);
         expect(result.action).toBe('gate');
         expect(result.reason).toStartWith(SQL_EGRESS);
+    });
+
+    test('a reader account with its password written out is refused, so the password never reaches a card', () => {
+        expect(evaluate('snow sql -c acme_prod -q "create managed account reader admin_name = \'r\', admin_password = \'x\', type = reader"').reason).toContain('literal credential');
     });
 
     test('SQL a dev login builds where the guard cannot read it runs as it does on main', () => {

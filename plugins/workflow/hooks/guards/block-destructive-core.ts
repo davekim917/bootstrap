@@ -2371,6 +2371,8 @@ function renderApiDevTarget(cmd: ResolvedCommand, commands: ResolvedCommand[], c
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = renderApiDeleteUrls(cmd).map(url => RENDER_API_RESOURCE.exec(url)?.[1]);
     if (!ids.length || !renderResourceIds(cmd.args).every(id => listed.has(id))) return null;
+    // curl sends a scheme-less URL over plain HTTP, bearer header included, before any redirect to HTTPS.
+    if (!renderApiDeleteUrls(cmd).every(url => /^https:\/\//i.test(url))) return null;
     return `render resource ${[...new Set(ids)].join(', ')}`;
 }
 
@@ -4467,23 +4469,28 @@ function runsAlone(cmd: ResolvedCommand): boolean {
 }
 
 /** Whether what runs can differ from what the line shows: a path or prefix, an earlier change on the line, or SQL that runs a program. */
-// A literal PGPASSWORD assignment at the start of a line: it only authenticates, and expands nothing.
-const LITERAL_PGPASSWORD_PREFIX = /^PGPASSWORD=(?:'[^']*'|"[^"$`\\]*"|[^\s'"$`\\;&|<>()]*)\s+/;
+// Clients that read PGPASSWORD only as libpq's password.
+const PG_DIRECT_CLIENTS = new Set(['psql', 'dropdb', 'createdb', 'pg_dump', 'pg_dumpall', 'pg_restore']);
 
-function programCanDiffer(cmd: ResolvedCommand, credentialOnly = false): boolean {
-    let line = cmd.script?.command;
-    // PGPASSWORD only authenticates; every other assignment can point the client elsewhere or change what it runs.
-    const env = (cmd.env ?? []).filter(e => !(credentialOnly && /^PGPASSWORD=/.test(e)));
-    if (credentialOnly && line !== undefined && env.length === (cmd.env ?? []).length - 1) {
-        if (!LITERAL_PGPASSWORD_PREFIX.test(line)) return true;
-        line = line.replace(LITERAL_PGPASSWORD_PREFIX, '');
-    }
-    return line === undefined || !!env.length || new RegExp(`(?:^|\\s)\\S*/${cmd.name}\\s`).test(cmd.raw)
-        || changesShellState(line) || extractCommands(line).some(c => ENVIRONMENT_CHANGERS.has(c.name))
+function programCanDiffer(cmd: ResolvedCommand): boolean {
+    const line = cmd.script?.command;
+    // For a direct Postgres client PGPASSWORD only authenticates, so setting it, as a prefix or by export, leaves the
+    // program where it is. Any other client may read it, or a name beside it, differently.
+    const authOnly = (assignments: string[]) => PG_DIRECT_CLIENTS.has(cmd.name) ? assignments.every(a => /^PGPASSWORD=/.test(a)) : !assignments.length;
+    if (line === undefined) return true;
+    // Only what runs before the step can change it, judged by position in the whole parse; a loop runs its body again,
+    // so there the whole line counts.
+    const looped = /\b(?:for|while|until)\b/.test(line);
+    const after = cmd.pos === undefined || looped ? Infinity : cmd.pos + cmd.raw.length;
+    const before = (c: ResolvedCommand) => looped || cmd.pos === undefined || c.pos === undefined || c.pos < cmd.pos;
+    return !authOnly(cmd.env ?? []) || new RegExp(`(?:^|\\s)\\S*/${cmd.name}\\s`).test(cmd.raw)
+        || changesShellState(line, name => name === 'PGPASSWORD' && PG_DIRECT_CLIENTS.has(cmd.name), after) || extractCommands(line).some(c => before(c) && ENVIRONMENT_CHANGERS.has(c.name) && !(c.name === 'export' && c.args.length > 0 && authOnly(c.args)))
         || cmd.args.some(a => a.search(COPY_PROGRAM) >= 0);
 }
 
 function renderDevTarget(cmd: ResolvedCommand): string | null {
+    // An assignment, `env`, `sudo`, a package runner or a path can run another render, or this one against another host.
+    if (!RENDER_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw) || cmd.env?.length) return null;
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
@@ -4514,7 +4521,9 @@ function onlyCopiesFromFiles(word: string): boolean {
 }
 
 function renderDevHeld(cmd: ResolvedCommand, psqlrcAllowed = false): string[] | null {
-    if (!cmd.raw.startsWith(`${cmd.name} `) || programCanDiffer(cmd, cmd.name !== 'render')) return null;
+    // A PGPASSWORD prefix is the one assignment that leaves the step where it is.
+    const raw = (cmd.env ?? []).every(e => /^PGPASSWORD=/.test(e)) ? cmd.raw.replace(/^(?:PGPASSWORD=(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^\s'"]+)\s+)+/, '') : cmd.raw;
+    if (!raw.startsWith(`${cmd.name} `) || programCanDiffer(cmd) || !renderEnvironmentProven(cmd, cmd.script?.command)) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
     const ids = [...new Set(renderResourceIds(cmd.args))];
     if (!ids.length || !ids.every(id => listed.has(id))) return null;
@@ -4668,11 +4677,16 @@ function setsVariableByOption(cmd: ResolvedCommand): boolean {
  * defines a function, or can't be parsed to tell. A function can take the name of the command an exemption reads, and
  * run something else under it.
  */
-function changesShellState(command: string): boolean {
+function changesShellState(command: string, harmless: (name: string) => boolean = () => false, from = Infinity): boolean {
     const found = (node: unknown): boolean => {
         if (!node || typeof node !== 'object') return false;
         if (Array.isArray(node)) return node.some(found);
+        // A node that starts at or past `from` runs after the step asking, so it can't change that step.
+        const pos = (node as { pos?: unknown }).pos;
+        if (typeof pos === 'number' && pos >= from) return false;
         const type = (node as { type?: unknown }).type;
+        const name = (node as { name?: unknown }).name;
+        if (type === 'Assignment' && typeof name === 'string' && harmless(name)) return false;
         if (type === 'Assignment' || type === 'For' || type === 'Select' || type === 'Function' || type === 'ArithmeticCommand' || type === 'ArithmeticFor') return true;
         return Object.values(node).some(found);
     };
@@ -4804,6 +4818,9 @@ function trustedDevLogin(name: string, login: DevLogin | undefined): boolean {
 // Environment names that decide which config, binary or code snow runs with.
 // EXECIGNORE is not inherited, but this shell's PATH search for `snow` skips what it names.
 const SNOW_ENVIRONMENT_NAME = /^(?:HOME|PATH|EXECIGNORE|SNOWFLAKE_\w*|PYTHON\w*|LD_\w+)$/;
+// The same for the render CLI, the psql and ssh it starts, and curl to the Render API.
+// PGPASSWORD only authenticates, so it can't move a client to another server; every other PG variable can.
+const RENDER_ENVIRONMENT_NAME = /^(?:HOME|PATH|EXECIGNORE|RENDER_\w*|CURL_HOME|XDG_\w+|SSL_\w+|SSH_\w+|PG(?!PASSWORD$)\w+|LD_\w+)$/;
 // bash's own variables: an integer one (RANDOM, SECONDS, OPTIND) evaluates an assigned value as arithmetic, which can
 // assign any name, and BASH_CMDS/BASH_ALIASES repoint a command.
 const BASH_SPECIAL_NAME = /^(?:BASH\w*|RANDOM|SRANDOM|SECONDS|OPTIND|OPTARG|OPTERR|LINENO|HISTCMD|EPOCH\w+|FUNCNAME|FUNCNEST|GROUPS|DIRSTACK|COMP_\w+|IFS|OLDPWD|PWD|SHELLOPTS|PS4|PROMPT_COMMAND|ENV|CDPATH|GLOBIGNORE|HIST\w*|TMOUT|IGNOREEOF|POSIXLY_CORRECT|PPID|UID|EUID|SHLVL)$/;
@@ -4811,7 +4828,7 @@ const BASH_SPECIAL_NAME = /^(?:BASH\w*|RANDOM|SRANDOM|SECONDS|OPTIND|OPTARG|OPTE
 // any other command is a child process.
 const BASH_BUILTINS = new Set(['.', ':', '[', 'alias', 'bg', 'bind', 'break', 'builtin', 'caller', 'cd', 'command', 'compgen', 'complete', 'compopt', 'continue', 'declare', 'dirs', 'disown', 'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg', 'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local', 'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray', 'readonly', 'return', 'set', 'shift', 'shopt', 'source', 'suspend', 'test', 'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias', 'unset', 'wait']);
 // The builtins that assign no variable and change no lookup (`hash -p` repoints a command, so it is not here).
-const NEUTRAL_BUILTINS = new Set(['cd', 'true', ':']);
+const NEUTRAL_BUILTINS = new Set(['cd', 'true', ':', 'exit', 'pwd', 'type']);
 
 /**
  * True when a word expands nothing that can assign: only `$NAME`, `${NAME}`, command substitutions (a subshell) and
@@ -4821,6 +4838,30 @@ function assignsNothing(text: string): boolean {
     // bash drops a backslash-newline and expands braces before it expands `$`, so `{$,}[x]` and `$\⏎{x}` can make `$[x]` or `${x}`.
     const words = braceExpand(text.replace(/\\\n/g, ''));
     return !!words && words.every(word => !/\$\(\(|\$\[/.test(word) && ![...word.matchAll(/\$\{/g)].some(m => !/^\$\{[A-Za-z_]\w*\}/.test(word.slice(m.index))));
+}
+
+/** A word's text with each single-quoted part, which bash passes as it stands, replaced by `_`; double quotes and escapes kept. */
+function withoutSingleQuoted(text: string): string {
+    let out = '';
+    let double = false;
+    for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (c === '\\') {
+            out += text.slice(i, i + 2);
+            i++;
+        } else if (c === '"') {
+            double = !double;
+            out += c;
+        } else if (c === "'" && !double) {
+            const close = text.indexOf("'", i + 1);
+            if (close < 0) return text;
+            out += '_';
+            i = close;
+        } else {
+            out += c;
+        }
+    }
+    return out;
 }
 
 /**
@@ -4853,7 +4894,7 @@ function staysOneWord(word: string): boolean {
  * assignments to names the environment doesn't hold and a few commands that change no environment; the step's own
  * words expand nothing that assigns. A pipeline's other stages and anything after the step can't reach it.
  */
-function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean {
+function stepEnvironmentProven(command: string, step: ResolvedCommand, steering = SNOW_ENVIRONMENT_NAME, compounds = false): boolean {
     type Node = { type?: string; name?: unknown; prefix?: Node[]; suffix?: Node[]; commands?: Node[]; command?: Node; text?: string; index?: unknown; pos?: number; end?: number };
     let script: Node;
     try {
@@ -4863,15 +4904,19 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
     }
     type Redirect = { target?: { text?: string }; content?: string };
     // Redirect targets and here-document bodies are expanded by this shell too.
-    const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => String(w?.text ?? ''))
-        .concat(((n as { redirects?: Redirect[] }).redirects ?? []).flatMap(r => [String(r.target?.text ?? ''), String(r.content ?? '')]));
+    // A here-document body expands `$` inside quote marks, so only words lose their single-quoted parts.
+    const words = (n: Node) => [...(n.prefix ?? []), ...(n.suffix ?? [])].map(w => withoutSingleQuoted(String(w?.text ?? '')))
+        .concat(((n as { redirects?: Redirect[] }).redirects ?? []).flatMap(r => [withoutSingleQuoted(String(r.target?.text ?? '')), String(r.content ?? '')]));
     const variableSafe = (name: unknown): name is string => typeof name === 'string' && /^[A-Za-z_]\w*$/.test(name)
-        && !(name in process.env) && !SNOW_ENVIRONMENT_NAME.test(name) && !BASH_SPECIAL_NAME.test(name);
+        && !(name in process.env) && !steering.test(name) && !BASH_SPECIAL_NAME.test(name);
     const assignmentSafe = (a: Node) => a.type === 'Assignment' && variableSafe(a.name) && a.index === undefined && (a as { array?: unknown }).array === undefined
-        && assignsNothing(String(a.text ?? ''));
+        && assignsNothing(withoutSingleQuoted(String(a.text ?? '')));
     const quiet = (n: Node) => ((n as { redirects?: Array<{ operator?: string; target?: { text?: string } }> }).redirects ?? []).every(r =>
         (['>', '>>', '&>', '&>>'].includes(r.operator ?? '') && r.target?.text === '/dev/null') || (r.operator === '>&' && /^[12]$/.test(r.target?.text ?? '')));
-    const runsNothing = (word: unknown) => assignsNothing(String(word ?? '')) && !/\$\(|`|[<>]\(/.test(String(word ?? ''));
+    const runsNothing = (word: unknown) => {
+        const text = withoutSingleQuoted(String(word ?? ''));
+        return assignsNothing(text) && !/\$\(|`|[<>]\(/.test(text);
+    };
     const nameOf = (n: Node) => (n.name as { text?: string } | undefined)?.text;
     // printf is not here: its `-v NAME` and `%n` both assign.
     const printing = (n: Node): boolean => n.type === 'Command' && nameOf(n) === 'echo' && !(n.prefix ?? []).length && quiet(n)
@@ -4890,9 +4935,44 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
     const neutral = (n: Node): boolean => {
         if (n.type === 'Pipeline') return (n.commands?.length ?? 0) > 1;
         if (n.type === 'AndOr') return (n.commands ?? []).every(neutral);
+        if (n.type === 'TestCommand') return testReadsOnly((n as { expression?: Node }).expression);
         if (n.type !== 'Command') return false;
         if (printing(n)) return true;
         const name = nameOf(n);
+        const args = (n.suffix ?? []).map(w => String(w?.text ?? ''));
+        // printf's `-v NAME` and `%n` assign; a format that is neither prints and does nothing else.
+        // Literal words only, so no value set earlier on the line can turn into an option or a format.
+        const literal = (a: string) => staysOneWord(a) && !/[$`]/.test(withoutSingleQuoted(a));
+        // A login-less or Render step reads only its own line, as on main, so there an output command's words may hold a
+        // $(…), which runs in a subshell; nothing it prints assigns.
+        const data = (a: string) => (compounds ? assignsNothing(withoutSingleQuoted(a)) : runsNothing(a));
+        if (name === 'echo' && compounds) return !(n.prefix ?? []).length && quiet(n) && args.every(data);
+        // printf takes `-v NAME` only first, and `%n` only from its format; the words after a literal format are data.
+        if (name === 'printf') {
+            return !(n.prefix ?? []).length && quiet(n) && args.length > 0 && literal(args[0])
+                && !shellUnquote(args[0]).startsWith('-') && !/%[^a-zA-Z%]*n/.test(shellUnquote(args[0])) && args.slice(1).every(data);
+        }
+        // `-v` reads a subscript as arithmetic, which can assign; the other tests only compare.
+        if (name === '[' || name === 'test') {
+            if ((n.prefix ?? []).length || !quiet(n)) return false;
+            if (args.every(a => literal(a) && shellUnquote(a) !== '-v')) return true;
+            // A value in double quotes stays one operand. With a literal unary operator first, or a literal binary one
+            // between two operands (bash then compares, whatever the first holds; `[` reads -eq operands as plain integers),
+            // it can't become -v.
+            const words = name === '[' ? (shellUnquote(args.at(-1) ?? '') === ']' ? args.slice(0, -1) : null) : args;
+            const quoted = (a: string) => /^"[^"]*"$/.test(a) && runsNothing(a);
+            const operand = (a: string) => quoted(a) || (literal(a) && shellUnquote(a) !== '-v');
+            // A leading literal `!` negates the test that follows and changes nothing about how it reads.
+            if (words && words.length > 1 && literal(words[0]) && shellUnquote(words[0]) === '!') words.shift();
+            if (!words) return false;
+            if (words.length === 2) return literal(words[0]) && /^-[bcdefghknprstuwxzGLNOS]$/.test(shellUnquote(words[0])) && operand(words[1]);
+            return words.length === 3 && literal(words[1]) && /^(?:=|==|!=|<|>|-(?:eq|ne|lt|le|gt|ge|nt|ot|ef))$/.test(shellUnquote(words[1])) && operand(words[0]) && operand(words[2]);
+        }
+        // Before a direct Postgres client, an export of PGPASSWORD only supplies its password.
+        if (name === 'export') {
+            return PG_DIRECT_CLIENTS.has(step.name) && !(n.prefix ?? []).length && quiet(n) && args.length > 0
+                && args.every(a => /^PGPASSWORD=/.test(a) && assignsNothing(withoutSingleQuoted(a)));
+        }
         if (name === 'set') {
             return !(n.prefix ?? []).length && !((n as { redirects?: unknown[] }).redirects ?? []).length
                 && setsOnlyErrorOptions((n.suffix ?? []).map(w => String(w?.text ?? '')));
@@ -4902,6 +4982,28 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
             || (/^[A-Za-z0-9_./+@%:,-]+$/.test(name) && (!BASH_BUILTINS.has(name) || NEUTRAL_BUILTINS.has(name)));
         return neutralName && words(n).every(assignsNothing);
     };
+    // `[[ ]]` neither splits nor globs its words. Its file and string tests only compare; -v and the arithmetic
+    // comparisons (-eq and the rest) evaluate their operands, which can assign.
+    const testReadsOnly = (e: Node | undefined): boolean => {
+        const t = e as (Node & { operator?: string; operand?: Node; left?: Node; right?: Node; expression?: Node }) | undefined;
+        if (!t) return false;
+        if (t.type === 'TestNot' || t.type === 'TestGroup') return testReadsOnly(t.operand ?? t.expression);
+        if (t.type === 'TestAnd' || t.type === 'TestOr' || t.type === 'TestLogical') return testReadsOnly(t.left) && testReadsOnly(t.right);
+        const word = (w: Node | undefined) => w !== undefined && runsNothing(w.text);
+        if (t.type === 'TestUnary') return /^-[abcdefghknprstuwxzGLNOS]$/.test(t.operator ?? '') && word(t.operand);
+        if (t.type === 'TestBinary') return /^(?:=|==|!=|=~|<|>|-nt|-ot|-ef)$/.test(t.operator ?? '') && word(t.left) && word(t.right);
+        return false;
+    };
+    // A compound's redirects sit on its statement, and this shell expands them before the step runs.
+    const expandsSafely = (n: Node) => ((n as { redirects?: Redirect[] }).redirects ?? []).every(r =>
+        assignsNothing(withoutSingleQuoted(String(r.target?.text ?? ''))) && assignsNothing(String(r.content ?? '')));
+    // A list of statements: those before the one holding the step change nothing, and that one reaches it.
+    const sequence = (list: Node[]): boolean => {
+        const statements = list.map(st => st.command ?? st);
+        const at = statements.findIndex(holds);
+        return at >= 0 && list.slice(0, at).every((st, i) => expandsSafely(st) && (loop(st) || neutral(statements[i])))
+            && expandsSafely(list[at]) && expandsSafely(statements[at]) && reaches(statements[at]);
+    };
     const holds = (n: Node) => typeof n.pos === 'number' && typeof n.end === 'number' && n.pos <= step.pos! && step.pos! < n.end;
     // The step itself, or a stage of a pipeline, reached through `&&`/`||` lists whose earlier members are neutral.
     const reaches = (n: Node): boolean => {
@@ -4909,8 +5011,27 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
             return n.pos === step.pos && words(n).every(assignsNothing)
                 && (n.suffix ?? []).every(w => staysOneWord(String(w?.text ?? '')));
         }
-        if (n.type === 'Pipeline') return (n.commands ?? []).some(c => c.type === 'Command' && holds(c) && reaches(c));
-        if (n.type !== 'AndOr') return false;
+        if (n.type === 'Pipeline') {
+            return (n.commands ?? []).some(st => {
+                const c = st.command ?? st;
+                return (c.type === 'Command' || compounds) && holds(c) && expandsSafely(st) && expandsSafely(c) && reaches(c);
+            });
+        }
+        if (!quiet(n)) return false;
+        // A subshell or group runs its list in turn, as the line does; an `if` first runs its condition.
+        const body = (n as { body?: Node }).body;
+        if (!compounds) return n.type === 'AndOr' && andOr(n);
+        if ((n.type === 'Subshell' || n.type === 'BraceGroup') && body?.type === 'CompoundList') return sequence(body.commands ?? []);
+        if (n.type === 'If') {
+            const branches = n as { clause?: Node; then?: Node; else?: Node };
+            if (!branches.clause || holds(branches.clause)) return false;
+            const branch = [branches.then, branches.else].find(b => b && holds(b));
+            if (!branch || !(branches.clause.commands ?? []).every(st => neutral(st.command ?? st))) return false;
+            return branch.type === 'If' ? reaches(branch) : sequence(branch.commands ?? []);
+        }
+        return n.type === 'AndOr' && andOr(n);
+    };
+    const andOr = (n: Node): boolean => {
         const members = n.commands ?? [];
         const at = members.findIndex(holds);
         return at >= 0 && members.slice(0, at).every(neutral) && reaches(members[at]);
@@ -4920,9 +5041,12 @@ function snowEnvironmentProven(command: string, step: ResolvedCommand): boolean 
     const namesDescriptor = (node: unknown): boolean => !!node && typeof node === 'object'
         && ((node as { variableName?: unknown }).variableName !== undefined || Object.values(node).some(namesDescriptor));
     if (namesDescriptor(script)) return false;
-    const statements = (script.commands ?? []).map(st => st.command ?? st);
-    const at = statements.findIndex(holds);
-    return at >= 0 && (script.commands ?? []).slice(0, at).every((st, i) => loop(st) || neutral(statements[i])) && reaches(statements[at]);
+    return sequence(script.commands ?? []);
+}
+
+/** True when nothing on the line can change the environment a Render dev step, or the psql, ssh or curl it is, inherits. */
+function renderEnvironmentProven(cmd: ResolvedCommand, line: string | undefined): boolean {
+    return line !== undefined && stepEnvironmentProven(line, cmd, RENDER_ENVIRONMENT_NAME, true);
 }
 
 /** The connection a `snow sql` step names, when every option it carries is one a trusted dev login may take. */
@@ -4959,6 +5083,7 @@ function plainSnowSql(cmd: ResolvedCommand, commands: ResolvedCommand[], command
     if ((cmd.env ?? []).length || cmd.chdir !== undefined || !SNOW_UNDER_SAFE_WRAPPERS_RE.test(cmd.raw)) return null;
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
     if (commands.some(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c)) || changesShellState(command)) return null;
+    if (!stepEnvironmentProven(command, cmd, SNOW_ENVIRONMENT_NAME, true)) return null;
     let connection: string | undefined;
     for (let i = 1; i < cmd.args.length; i++) {
         const a = cmd.args[i];
@@ -5036,9 +5161,9 @@ function standingGrantOf(cmd: ResolvedCommand, commands: ResolvedCommand[], comm
     return used.size ? `standing grant ${[...used].join(', ')} on snowflake connection ${plain.connection}` : null;
 }
 
-function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
-    if (cmd.name === 'render') return topLevel ? renderDevTarget(cmd) : null;
-    if (RENDER_API_CLIENTS.has(cmd.name)) return topLevel ? renderApiDevTarget(cmd, commands, command) : null;
+export function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], command: string, topLevel = true): string | null {
+    if (cmd.name === 'render') return topLevel && renderEnvironmentProven(cmd, command) ? renderDevTarget(cmd) : null;
+    if (RENDER_API_CLIENTS.has(cmd.name)) return topLevel && renderEnvironmentProven(cmd, command) ? renderApiDevTarget(cmd, commands, command) : null;
     if (cmd.name !== 'snow' || cmd.args[0] !== 'sql' || cmd.snowConfigFile !== undefined) return null;
     const scope = currentDevScope();
     if (!scope) return null;
@@ -5046,15 +5171,16 @@ function devScopeTargetOf(cmd: ResolvedCommand, commands: ResolvedCommand[], com
     // snow inherits this process's environment, where SNOWFLAKE_* can repoint a named connection.
     if (Object.keys(process.env).some(k => k.toUpperCase().startsWith('SNOWFLAKE_'))) return null;
     const changers = commands.filter(c => ENVIRONMENT_CHANGERS.has(c.name) || setsVariableByOption(c));
-    // snowEnvironmentProven reads every statement before the step itself, so only the trusted path may keep an error-option `set`.
+    // stepEnvironmentProven reads every statement before the step itself, so only the trusted path may keep an error-option `set`.
     if (!changers.every(c => c.name === 'set' && !c.env?.length && setsOnlyErrorOptions(c.args))) return null;
 
     // An xargs or find step's words are not the ones read here.
     const trusted = topLevel ? trustedLoginConnection(cmd) : null;
     const trustedEntry = trusted === null ? undefined : scope.snowflake.find(e => e.connection === trusted);
-    if (trustedEntry && snowEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
+    if (trustedEntry && stepEnvironmentProven(command, cmd) && trustedDevLogin(trustedEntry.connection, trustedEntry.login)) {
         return `snowflake connection ${trustedEntry.connection}, ${DEV_ONLY_LOGIN} ${trustedEntry.login!.user}`;
     }
+    if (changers.length || changesShellState(command) || !stepEnvironmentProven(command, cmd, SNOW_ENVIRONMENT_NAME, true)) return null;
     const plain = plainSnowSql(cmd, commands, command, true);
     const entry = plain && scope.snowflake.find(e => e.connection === plain.connection);
     if (!plain || !entry) return null;
@@ -9318,6 +9444,218 @@ function shellParseProblem(command: string): string | null {
     }
 }
 
+// ── Literal credentials ──────────────────────────────────────────────────────
+
+export const LITERAL_CREDENTIAL_REASON =
+    'This command contains a literal credential. Move it into an environment variable or the gateway, then run it again.';
+
+// A shell expansion: a value with one in it is taken from somewhere else, not written out.
+const SHELL_EXPANSION = /[$`]/;
+
+/**
+ * Whether a shell word's value is written out: a single-quoted string, or a double-quoted or bare value with no shell
+ * expansion in it, and not empty. A path names where a credential is kept, not the credential itself, so it doesn't
+ * count unless `pathCounts` (a name that holds the credential itself).
+ */
+function literalWord(word: string, pathCounts = false): boolean {
+    let v: string;
+    if (word.startsWith("'")) {
+        const end = word.indexOf("'", 1);
+        v = end < 0 ? word.slice(1) : word.slice(1, end);
+    } else {
+        const quoted = word.startsWith('"');
+        const end = quoted ? word.indexOf('"', 1) : -1;
+        v = quoted ? (end < 0 ? word.slice(1) : word.slice(1, end)) : word.split(/[\s;&|)'"]/)[0];
+        if (SHELL_EXPANSION.test(v)) return false;
+    }
+    return v !== '' && (pathCounts || !/^(?:\/|~\/|\.{1,2}\/)/.test(v));
+}
+
+/** Whether SQL text holds a literal here: a quoted string (E'…', U&'…' too) or a dollar-quoted body; never an identifier or $1. */
+function sqlLiteral(text: string, dollarQuotes = true): boolean {
+    const v = text.replace(/^[EeUu]&?(?=')/, '');
+    // Inside a quoted string (an EXECUTE's), a literal is written with doubled quotes: ''secret''.
+    const nested = /^''([^']+)''/.exec(v);
+    if (nested) return !/\$[A-Za-z_{(]|`/.test(nested[1]);
+    if (v.startsWith("'")) {
+        const end = v.indexOf("'", 1);
+        const body = end < 0 ? v.slice(1) : v.slice(1, end);
+        // A $ that a shell would expand (a name, ${…}, $(…)) means the text came unexpanded; $4096 in a SCRAM verifier doesn't.
+        return body !== '' && !/\$[A-Za-z_{(]|`/.test(body);
+    }
+    const tag = dollarQuotes ? /^\$([A-Za-z_]\w*)?\$/.exec(v) : null;
+    return !!tag && v.indexOf(tag[0], tag[0].length) > tag[0].length;
+}
+
+/** user:password with a written-out password, or a written-out user with an empty one (a token as the user). */
+function literalUserinfo(value: string): boolean {
+    const v = value.replace(/^['"]+|['"]+$/g, '');
+    const colon = v.indexOf(':');
+    if (colon < 0 || SHELL_EXPANSION.test(v)) return false;
+    const password = v.slice(colon + 1);
+    // A template's placeholder (%s, {password}, <password>) stands for a value; it isn't one.
+    if (/^(?:%[a-z]|\{\w*\}|<[^>]*>)$/i.test(password || v.slice(0, colon))) return false;
+    return password === '' ? v.slice(0, colon) !== '' : true;
+}
+
+const HEADER_NAME = /\b(?:(?:proxy-)?authorization|(?:x-)?(?:api|auth)[-_]?(?:key|token))\s*:/gi;
+const PASSWORD_WORD = /passw(?:or)?d(?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*/gi;
+// Options whose value names a file (curl's client key and certificates): the file holds the secret, the option doesn't.
+const FILE_VALUED_OPTIONS = new Set(['key', 'cert', 'cacert', 'capath', 'pubkey', 'proxy-key', 'proxy-cert', 'proxy-cacert', 'proxy-capath', 'key-type', 'crlfile']);
+const CREDENTIAL_WORDS = ['TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PASS', 'APIKEY', 'PGPASSWORD'];
+
+/**
+ * Whether a name says it holds a credential: its last _ or - segment is one (AWS_SESSION_TOKEN, client_secret,
+ * refresh_token, PGPASSWORD, REDISCLI_AUTH), or it ends in an API, access, secret or private KEY. A word inside a
+ * segment never counts, so GIT_ASKPASS, token_type and SORT_KEY don't. Bare KEY, AUTH and PWD name too many other
+ * things (a storage key, --auth=trust, the working directory) to count.
+ */
+function credentialName(name: string): boolean {
+    const upper = name.toUpperCase();
+    if (upper === 'REDISCLI_AUTH') return true;
+    const segments = upper.split(/[_-]+/).filter(Boolean);
+    const last = segments[segments.length - 1] ?? '';
+    if (CREDENTIAL_WORDS.includes(last)) return true;
+    return last === 'KEY' && ['API', 'ACCESS', 'SECRET', 'PRIVATE'].includes(segments[segments.length - 2]);
+}
+
+/** A name that holds the credential itself, never a path to it: a password, token or secret. */
+const holdsCredentialItself = (name: string): boolean =>
+    ['TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PASS', 'PGPASSWORD'].includes(name.toUpperCase().split(/[_-]+/).filter(Boolean).pop() ?? '');
+
+/** Whether text[at…] starts a shell assignment the shell makes: a prefix to a command, or one export or env names. */
+function prefixAssignment(text: string, at: number): boolean {
+    const before = text.slice(0, at).replace(/\s+$/, '');
+    if (before === '' || /[;&|({\n]$/.test(before)) return true;
+    if (/\b(?:export|env|local|readonly|(?:declare|typeset)(?:\s+-\w+)*)$/.test(before)) return true;
+    // Another assignment word before it on the same command, as in A=1 TOKEN=… cmd; never part of the same word.
+    if (!/\s$/.test(text.slice(0, at))) return false;
+    const previous = /(\S+)$/.exec(before)?.[1] ?? '';
+    return /^[A-Za-z_]\w*\+?=/.test(previous) && prefixAssignment(text, before.length - previous.length);
+}
+
+/** Each header value with a credential shape, read within its own word: up to its closing quote, or to unescaped space. */
+function literalHeaderValue(text: string): boolean {
+    for (const m of text.matchAll(HEADER_NAME)) {
+        const at = (m.index ?? 0) + m[0].length;
+        const quote = text[(m.index ?? 0) - 1];
+        let value: string;
+        if (quote === "'" || quote === '"') {
+            const end = text.indexOf(quote, at);
+            value = end < 0 ? text.slice(at) : text.slice(at, end);
+            if (quote === '"' && SHELL_EXPANSION.test(value)) continue;
+        } else {
+            value = /^(?:\\\s|[^\s'"])*/.exec(text.slice(at))![0];
+            if (SHELL_EXPANSION.test(value)) continue;
+        }
+        // An auth scheme (Bearer, Basic, token) comes before the credential itself.
+        const credential = value.replace(/^(?:\\?\s)*(?:(?:Bearer|Basic|Token|Digest|Bot|ApiKey)\b|[A-Za-z]+(?=\\?\s))?(?:\\?\s)*/i, '');
+        if (credential.trim() !== '') return true;
+    }
+    return false;
+}
+
+/**
+ * True when the text writes out a credential: a value, never a reference to one. Each shape names where a credential
+ * goes and fires only on a written-out value (literalWord for shell words, sqlLiteral for SQL), so "$VAR", ${VAR},
+ * $(cmd), an identifier and $1 never do. On a command line (`command`) the SQL shapes read only quoted strings: a
+ * dollar-quote there could be shell variables ($A$B). SQL text the clients read (`any`) gets every shape.
+ */
+export function containsCredential(text: string, kind: 'command' | 'any' = 'any'): boolean {
+    const dollarQuotes = kind === 'any';
+    if (literalHeaderValue(text)) return true;
+    // A URL's user info: user:password. With no colon it is a user name, unless it starts the way a token does.
+    for (const m of text.matchAll(/\b([a-z][a-z0-9+.-]*):\/\/([^/@\s]{1,400})@/gi)) {
+        if (SHELL_EXPANSION.test(m[2])) continue;
+        if (literalUserinfo(m[2])) return true;
+        if (!m[2].includes(':') && /^['"]?(?:gh[opusr]_|github_pat_|glpat-|xox[a-z]-)/.test(m[2])) return true;
+    }
+    for (const m of text.matchAll(PASSWORD_WORD)) {
+        const at = (m.index ?? 0) + m[0].length;
+        const after = text.slice(at);
+        // A connection string's or option's password=value, written with nothing around the =.
+        // Only as its own word (a conninfo key, a URL query, --password=): PGPASSWORD= and the like are assignments.
+        const own = /(?:^|[\s'"?&;]|--)$/.test(text.slice(0, m.index ?? 0));
+        // After a SQL keyword it is a column: WHERE password=archived_password compares two columns.
+        const sqlColumn = /\b(?:WHERE|AND|OR|NOT|SET|ON|WHEN|HAVING|SELECT)\s+$/i.test(text.slice(0, m.index ?? 0));
+        if (own && !sqlColumn && m[0].length === (/passw(?:or)?d/i.exec(m[0])?.[0].length ?? 0) && after.startsWith('=') && literalWord(after.slice(1), true)) return true;
+        // An option's name (--password, --no-password): psql's take no value, and the option loop below reads the rest.
+        if (/-$/.test(text.slice(0, m.index ?? 0))) continue;
+        // SQL's PASSWORD 'x', password = 'x' and the like: the keyword or column as its own word, with space or = before
+        // the literal (POSTGRES_PASSWORD',… is a name in some other code).
+        if (/[\w$]$/.test(text.slice(0, m.index ?? 0))) continue;
+        const assigned = /^\s*\+?=\s*/.exec(after);
+        if (!assigned && m[0].length === (/passw(?:or)?d/i.exec(m[0])?.[0].length ?? 0)) continue;
+        if (sqlLiteral(assigned ? after.slice(assigned[0].length) : after, dollarQuotes)) return true;
+    }
+    {
+        for (const m of text.matchAll(/\bidentified\s+(?:with\s+\S+\s+)?by\s+(?:password\s+)?/gi)) if (sqlLiteral(text.slice((m.index ?? 0) + m[0].length), dollarQuotes)) return true;
+        // A literal compared with or assigned to a credential-named column on one statement; a bare KEY column is a
+        // settings key.
+        for (const m of text.matchAll(/["`]?(\w+)["`]?\s*(?:=|<>|!=|(?:\bNOT\s+)?\bLIKE\b|(?:\bNOT\s+)?\bIN\s*\()\s*/gi)) {
+            if (credentialName(m[1]) && sqlLiteral(text.slice((m.index ?? 0) + m[0].length), dollarQuotes)) return true;
+        }
+    }
+    // An assignment the shell makes to a credential-named variable, bare (TOKEN=) or not: a prefix, or one export names.
+    for (const m of text.matchAll(/(?<![\w-])([A-Za-z_][\w-]*)\+?=/g)) {
+        if (!credentialName(m[1]) || !prefixAssignment(text, m.index ?? 0)) continue;
+        if (literalWord(text.slice((m.index ?? 0) + m[0].length), holdsCredentialItself(m[1]))) return true;
+    }
+    // An option named for a credential, given a value; a password option only with =, since psql's takes none.
+    for (const m of text.matchAll(/(?:^|[\s'"])--(?!no-)([a-z0-9-]+)(?=(=|\s+)(\S+))/gi)) {
+        if (!credentialName(m[1]) || FILE_VALUED_OPTIONS.has(m[1].toLowerCase()) || m[3].startsWith('-')) continue;
+        if (m[2] !== '=' && /^(?:password|passwd|pass)$/i.test(m[1])) continue;
+        if (literalWord(m[3], holdsCredentialItself(m[1]))) return true;
+    }
+    // psql -v with a credential-named variable.
+    for (const m of text.matchAll(/(?:^|\s)(?:-v|--set|--variable)(?:=|\s+|(?=[A-Za-z_]))['"]?([A-Za-z_]\w*)=(\S*)/g)) {
+        if (credentialName(m[1]) && literalWord(m[2], holdsCredentialItself(m[1]))) return true;
+    }
+    const valueAfter = (rx: RegExp, check: (v: string) => boolean) => [...text.matchAll(rx)].some(m => check(m[1]));
+    if (/\bcurl\b/.test(text)) {
+        if (valueAfter(/(?:^|[\s'"])(?:-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:=|\s+))(\S+)/g, literalUserinfo)) return true;
+        if (valueAfter(/--(?:proxy-)?oauth2-bearer(?:=|\s+)(\S+)/g, v => literalWord(v, true))) return true;
+    }
+    // HTTPie's -a/--auth: user:password, or a bearer token with -A bearer.
+    if (/(?:^|[\s;&|(])https?\s/.test(text) && valueAfter(/(?:^|\s)(?:-a|--auth)(?:=|\s+)(\S+)/g, v => literalUserinfo(v) || (!v.includes(':') && literalWord(v, true)))) return true;
+    if (/\b(?:mysql|mariadb|mysqldump|mysqladmin)\b/.test(text) && valueAfter(/(?:^|\s)-p(\S+)/g, v => literalWord(v, true))) return true;
+    if (/\bredis-cli\b/.test(text) && valueAfter(/(?:^|\s)(?:-a|--pass)(?:\s+|(?=\S))(\S+)/g, v => literalWord(v, true))) return true;
+    return false;
+}
+
+let lastEvaluated: { command: string; cwd: string; commands: ResolvedCommand[] } | null = null;
+
+/** The command, or SQL its clients read from a file (as the evaluator read them), writes out a credential. */
+function carriesCredential(command: string, cwd: string): boolean {
+    if (containsCredential(command, 'command')) return true;
+    const sqlClient = (cmd: ResolvedCommand) => SQL_CLIS[cmd.name] || (cmd.name === 'snow' && cmd.args[0] === 'sql');
+    try {
+        // The parse evaluateBashLine just made, whose SQL inputs it has already read (sqlInputFor caches them). A shell a
+        // SQL client runs is evaluated inside it and leaves its own, so then the line is parsed again.
+        let commands = lastEvaluated?.command === command && lastEvaluated.cwd === cwd ? lastEvaluated.commands : null;
+        if (!commands) {
+            commands = extractCommands(command);
+            if (commands[0]?.script) commands[0].script.cwd = cwd;
+        }
+        // A SQL client find -exec or xargs runs reads its files too, and its card can quote them.
+        const steps = commands.flatMap(c => [c, ...innerGatedSteps(c).map(g => g.step)]);
+        // Many steps can read one text, as in a loop over one file: each is scanned once.
+        return [...new Set(steps.filter(sqlClient).flatMap(cmd => sqlInputFor(cmd).texts))].some(t => containsCredential(t));
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * A command the guard would hold or refuse that writes out a credential is refused with fixed text: neither its card
+ * nor its refusal repeats any of it, and nothing is staged. Run with the credential in a variable, it takes the
+ * ordinary card. A command that runs without approval is left alone.
+ */
+function refusingLiteralCredentials(command: string, verdict: GateEvaluation, cwd: string): GateEvaluation {
+    if (verdict.action === 'allow' || !carriesCredential(command, cwd)) return verdict;
+    return { action: 'block', reason: LITERAL_CREDENTIAL_REASON };
+}
+
 /**
  * Replicate main()'s decision ordering against a raw bash command string,
  * WITHOUT the approval-bypass step (that stays in the caller) and without any
@@ -9353,10 +9691,11 @@ export function evaluateBashCommand(
     command: string,
     opts: { skipGate?: boolean; cwd?: string; localPg?: LocalPgHost } = {},
 ): GateEvaluation {
-    if (clientShellVerdicts) return evaluateBashLine(command, opts);
+    const cwd = opts.cwd ?? currentWorkingDir();
+    if (clientShellVerdicts) return refusingLiteralCredentials(command, evaluateBashLine(command, opts), cwd);
     clientShellVerdicts = new Map();
     try {
-        return evaluateBashLine(command, opts);
+        return refusingLiteralCredentials(command, evaluateBashLine(command, opts), cwd);
     } finally {
         clientShellVerdicts = null;
     }
@@ -9371,6 +9710,7 @@ function evaluateBashLine(
     const lab = isLabSession();
     const cwd = opts.cwd ?? currentWorkingDir();
     if (commands[0]?.script) commands[0].script.cwd = cwd;
+    lastEvaluated = { command, cwd, commands };
 
     // --- Hard block checks (no bypass, ever — lab included) ---
     for (const cmd of commands) {

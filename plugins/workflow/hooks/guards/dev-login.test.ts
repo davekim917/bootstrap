@@ -255,6 +255,8 @@ describe('anything that could point the command at another login keeps the card'
             "cat > /tmp/q.sql <<'EOF'\nselect count(*) from dev_db.s.t;\nEOF",
             'snow sql -c acme_dev -f /tmp/q.sql 2>&1 | grep -v "New version"',
         ].join('\n')],
+        ['exit with arithmetic that assigns', 'cd /tmp/w || exit $((HOME=1)); snow sql -c acme_dev -q "drop table t"'],
+        ['type with arithmetic that assigns', 'type $[PATH=1]; snow sql -c acme_dev -q "drop table t"'],
         ['a command name that expands', '$CMD x; snow sql -c acme_dev -q "drop table t"'],
         ['arithmetic in an external command', 'ls $((HOME=1)); snow sql -c acme_dev -q "drop table t"'],
         ['assigning any name the environment holds', 'DEV_LOGIN_TEST_EXPORTED=x; snow sql -c acme_dev -q "drop table t"'],

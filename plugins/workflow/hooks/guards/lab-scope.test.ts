@@ -94,7 +94,7 @@ const LAB_TARGETS: Array<[string, string]> = [
   ['psql --dbname=lab_app -c "TRUNCATE events"', '/tmp'],
   ['psql -U lab_app_admin -d lab_app -c "DELETE FROM sessions"', '/tmp'],
   [
-    'psql postgresql://lab_app_admin:pw@example.com/lab_app -c "DROP SCHEMA public CASCADE"',
+    'psql postgresql://lab_app_admin:$PW@example.com/lab_app -c "DROP SCHEMA public CASCADE"',
     '/tmp',
   ],
   ['psql "host=example.com dbname=lab_app" -c "DROP TABLE t"', '/tmp'],
@@ -113,7 +113,7 @@ const NON_LAB_TARGETS: Array<[string, string]> = [
   // prod / dev databases
   ['psql -h db.example -d app_prod -c "DROP TABLE users"', LAB_WORKTREE],
   ['psql -h db.example -d app_dev -c "TRUNCATE events"', LAB_WORKTREE],
-  ['psql postgresql://app_admin:pw@example.com/app_prod -c "DROP TABLE t"', LAB_WORKTREE],
+  ['psql postgresql://app_admin:$PW@example.com/app_prod -c "DROP TABLE t"', LAB_WORKTREE],
   // a runtime-constructed target has no visible lab signal — fails closed
   ['psql "$DATABASE_URL" -c "DROP TABLE users"', LAB_WORKTREE],
   // Snowflake has no lab tenant
