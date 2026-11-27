@@ -10999,7 +10999,6 @@ const ISSUED_TOKENS: Array<{ prefix: string; body: string; upper?: boolean }> = 
     { prefix: 'xox[abp]-', body: String.raw`\d+(?:-\d+){1,2}-[A-Za-z0-9]{6,}` },
     { prefix: String.raw`xoxe(?:\.xox[abp])?-`, body: String.raw`\d+-[A-Za-z0-9]{20,}` },
 ];
-const TOKEN_PREFIX = `(?:${ISSUED_TOKENS.map(t => t.prefix).join('|')})`;
 // A token starts a word, or follows = : a quote, a backtick or whitespace; after / or - its prefix is part of a name
 // (fix/glpat-…).
 const ISSUED_TOKEN_RES = ISSUED_TOKENS.map(t => ({ re: new RegExp(String.raw`(?<=^|[\s=:"'\x60])${t.prefix}(${t.body})(?![A-Za-z0-9_-])`, 'g'), upper: t.upper }));
