@@ -80,6 +80,8 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['a second curl transfer with a bearer header', `curl -X GET https://api.render.com/v1/services --next -H 'Authorization: Bearer ${SECRET}' -X DELETE ${PROD}`],
         ['a bare TOKEN assignment a later header uses', `TOKEN=${SECRET}; curl -H "Authorization: Bearer $TOKEN" -X DELETE ${PROD}`],
         ['a bare PASSWORD assignment', `PASSWORD=${SECRET} ${H} -c "drop table orders"`],
+        ['an api_key NOT IN list', `${H} -c "DELETE FROM integrations WHERE api_key NOT IN ('${SECRET}')"`],
+        ['a PGPASSWORD that starts with a slash', `PGPASSWORD='/sample-${SECRET}' ${H} -c "drop table orders"`],
         ['a kubectl step beside a credentialed psql', `kubectl scale deployment archive-worker -n staging --replicas=0 && PGPASSWORD=${SECRET} ${H} -d billing -c 'DROP TABLE old_invoices'`],
     ])('%s', (_name, command) => {
         expect(evaluate(command)).toEqual({ action: 'block', reason: LITERAL_CREDENTIAL_REASON });
@@ -121,6 +123,9 @@ describe('the same command with the credential in a variable takes the ordinary 
         ['a helper path in GIT_ASKPASS', 'GIT_ASKPASS=/usr/local/bin/git-askpass git push origin --delete stale-topic', 'stale-topic'],
         ['psql --password before the database name', `${H} -c 'DROP TABLE orders' --password "app"`, 'DROP TABLE orders'],
         ['a curl client key file', `curl --key client.pem --cert client.crt -X DELETE ${PROD}`, PROD],
+        ['a settings key compared with a literal', `${H} -d app -c "DELETE FROM settings WHERE key = 'feature_enabled'"`, 'settings'],
+        ['a password column tested for NULL, with a literal on the next line', `${H} -d app -c "DELETE FROM accounts WHERE password\nIS NULL AND status = 'disabled'"`, 'accounts'],
+        ['a long user name in a git URL', 'git push --force https://deployment-service@192.0.2.40/team/repo.git main', 'main'],
         ['a token_type category in SQL', `${H} -d app -c "DELETE FROM sessions WHERE token_type = 'refresh'"`, 'token_type'],
         ['a MySQL password from a variable', 'mysql -h db.example.com -p"$MYSQL_PW" -e "drop table orders"', 'drop table orders'],
         ['a URI password from a variable', 'psql "postgresql://app:$PGPW@192.0.2.20/app" -c "drop table orders"', 'drop table orders'],
@@ -149,6 +154,8 @@ describe('the detector fires on literal values only', () => {
         ['a table named for passwords', 'DELETE FROM password_reset_tokens'],
         ['psql --password, which takes no value', 'psql --password -h db.example.com app'],
         ['an askpass helper', 'SSH_ASKPASS=/usr/bin/ssh-askpass'],
+        ['a bare key column', "SELECT 1 FROM settings WHERE key = 'feature_enabled'"],
+        ['a user name with no colon in a URL', 'https://deployment-service@192.0.2.40/team/repo.git'],
         ['psql -W', 'psql -W -h db.example.com app'],
         ['curl --key and --cacert files', 'curl --key client.pem --cacert ca.pem https://example.com'],
         ['ssh -i', 'ssh -i deploy_key host.example.com'],
@@ -174,7 +181,9 @@ describe('the detector fires on literal values only', () => {
         ['bare KEY', `KEY=${SECRET}`],
         ['bare API_KEY', `API_KEY=${SECRET}`],
         ['a backtick-quoted secret column', `UPDATE t SET \`client_secret\` = '${SECRET}'`],
-        ['a token as an https user', `https://${SECRET}abcdefgh@192.0.2.40/x`],
+        ['a Slack token as a URL user', `https://xoxb-${SECRET}@192.0.2.40/x`],
+        ['an api_key NOT IN list', `DELETE FROM integrations WHERE api_key NOT IN ('${SECRET}')`],
+        ['a password that starts with a slash', `PGPASSWORD='/sample-${SECRET}'`],
     ])('%s fires', (_name, text) => {
         expect(containsCredential(text)).toBe(true);
     });
