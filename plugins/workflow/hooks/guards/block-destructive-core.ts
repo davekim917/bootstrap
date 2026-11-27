@@ -773,6 +773,8 @@ export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^ALTER\s+(?:DATABASE|TABLESPACE)\b[\s\S]*\bOWNER\s+TO\b/i, label: 'ALTER DATABASE OWNER' },
     { rx: /^ALTER\s+POLICY\b/i, label: 'ALTER POLICY' },
     { rx: /^CREATE\s+POLICY\b/i, label: 'CREATE POLICY' },
+    // A view's security_invoker and security_barrier decide whose privileges and row policies apply through it.
+    { rx: /^ALTER\s+(?:MATERIALIZED\s+)?VIEW\b[\s\S]*\b(?:SET|RESET)\s*\([\s\S]*\bsecurity_(?:invoker|barrier)\b/i, label: 'ALTER VIEW SECURITY' },
     // PostgreSQL's DROP POLICY names no kind; removing a restrictive policy can widen who reads which rows.
     { rx: /^DROP\s+POLICY\b/i, label: 'DROP ROW SECURITY POLICY' },
     { rx: /^ALTER\s+TABLE\b[\s\S]*\b(?:DISABLE|NO\s+FORCE)\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'DISABLE ROW LEVEL SECURITY' },
@@ -2120,7 +2122,10 @@ export function psqlReadableInput(cmd: ResolvedCommand, given: string[], texts: 
         const writer = stdinNamed(f) ? null : lineWriterOf(cmd, f, true);
         if (writer) return result(`${f}, which \`${writer}\` earlier on the line writes`);
     }
+    const optionValues = new Set(cmd.args.filter(a => !commandSql.has(a)));
     for (const text of texts) {
+        // An option's value other than -c's (a -P display setting, a -v value, a host) is never run as SQL.
+        if (optionValues.has(text)) continue;
         const sql = withoutCopyData(text);
         const skeleton = metaSkeleton(sql);
         if (/\\gexec(?=[\s\\;]|$)/.test(skeleton)) return result('\\gexec, which runs what its query returns as SQL');
@@ -4537,7 +4542,7 @@ function psqlLeavesDatabase(text: string): string | null {
     }
     const skeleton = metaSkeleton(withoutCopyData(text));
     if (skeleton.includes('\\')) return 'a psql meta-command';
-    return /\b(?:CREATE|ALTER|DROP)\s+DATABASE\b/i.test(skeleton) ? 'a statement on a whole database' : null;
+    return /\b(?:CREATE|ALTER|DROP)\s+(?:DATABASE|TABLESPACE)\b/i.test(skeleton) ? 'a statement on a whole database or tablespace' : null;
 }
 
 /** psqlLeavesDatabase for a step's whole input; an archive pg_restore applies, or input the guard can't read, counts. */
@@ -4550,6 +4555,10 @@ function changesClusterRoles(cmd: ResolvedCommand): boolean {
 
 function labSqlTarget(cmd: ResolvedCommand): string | null {
     const { args } = cmd;
+    if (cmd.name === 'mysql') {
+        const db = mysqlDatabase(args);
+        return db !== undefined && LAB_DB_NAME_RE.test(db) && !mysqlLeavesDatabase(cmd) ? db : null;
+    }
     if (cmd.name === 'psql' || cmd.name === 'pg_restore') {
         // The database decides, read from a conninfo or URI too.
         const target = pgConnectionTarget(cmd.name, args, true, true);
@@ -4583,8 +4592,46 @@ function labSqlTarget(cmd: ResolvedCommand): string | null {
         }
         db = fromConnection(a) ?? db;
     }
-    if (db === undefined || !LAB_DB_NAME_RE.test(db)) return null;
-    return cmd.name === 'mysql' && mysqlLeavesDatabase(cmd) ? null : db;
+    return db !== undefined && LAB_DB_NAME_RE.test(db) ? db : null;
+}
+
+// mysql's short options that take a value; -p takes one only attached.
+const MYSQL_SHORT_VALUES = 'DehPSu';
+const MYSQL_LONG_VALUES = new Set(['--database', '--execute', '--host', '--port', '--socket', '--user', '--default-character-set', '--login-path',
+    '--defaults-file', '--defaults-extra-file', '--init-command', '--pager', '--prompt', '--tee', '--protocol', '--bind-address']);
+
+/**
+ * The database mysql uses: its first operand, which overrides -D and --database, else the last of those. Undefined
+ * for a long option the guard can't place, whose value could be read as the operand.
+ */
+function mysqlDatabase(args: string[]): string | undefined {
+    let option: string | undefined;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') return args[i + 1] ?? option;
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const name = eq < 0 ? a : a.slice(0, eq);
+            const value = eq < 0 ? (MYSQL_LONG_VALUES.has(name) ? args[++i] : undefined) : a.slice(eq + 1);
+            if (eq < 0 && !MYSQL_LONG_VALUES.has(name) && !/^--(?:no-|skip-|disable-|enable-)?[a-z-]+$/.test(name)) return undefined;
+            if (name === '--database') option = value;
+            continue;
+        }
+        if (a.length > 1 && a.startsWith('-')) {
+            for (let j = 1; j < a.length; j++) {
+                if (!MYSQL_SHORT_VALUES.includes(a[j])) {
+                    if (a[j] === 'p') break;
+                    continue;
+                }
+                const value = j + 1 < a.length ? a.slice(j + 1) : args[++i];
+                if (a[j] === 'D') option = value;
+                break;
+            }
+            continue;
+        }
+        return a;
+    }
+    return option;
 }
 
 /**
@@ -5484,12 +5531,13 @@ function mayWriteFiles(command: string): boolean {
 // pg_restore's long options, as its getopt table declares them: those that take a value, and those that don't.
 const PG_RESTORE_LONG_VALUES = new Set(['--dbname', '--file', '--format', '--host', '--port', '--username', '--jobs', '--use-list',
     '--schema', '--exclude-schema', '--function', '--index', '--section', '--table', '--trigger', '--role', '--superuser', '--filter',
-    '--exclude-database', '--transaction-size']);
+    '--exclude-database', '--transaction-size', '--restrict-key']);
 const PG_RESTORE_LONG_FLAGS = new Set(['--help', '--version', '--data-only', '--clean', '--create', '--exit-on-error', '--list', '--no-owner', '--no-reconnect',
     '--schema-only', '--verbose', '--no-password', '--password', '--single-transaction', '--disable-triggers', '--enable-row-security',
     '--if-exists', '--no-comments', '--no-data-for-failed-tables', '--no-publications', '--no-security-labels', '--no-subscriptions',
     '--no-table-access-method', '--no-tablespaces', '--strict-names', '--use-set-session-authorization', '--no-acl', '--no-privileges',
-    '--statistics-only', '--no-statistics', '--no-data', '--no-schema', '--with-data', '--with-schema', '--with-statistics', '--globals-only']);
+    '--statistics-only', '--no-statistics', '--no-data', '--no-schema', '--with-data', '--with-schema', '--with-statistics', '--globals-only',
+    '--no-policies', '--statistics']);
 const PG_RESTORE_SHORT_NAMES: Record<string, string> = { d: '--dbname', f: '--file', F: '--format', h: '--host', I: '--index', j: '--jobs',
     L: '--use-list', n: '--schema', N: '--exclude-schema', p: '--port', P: '--function', S: '--superuser', t: '--table', T: '--trigger',
     U: '--username' };

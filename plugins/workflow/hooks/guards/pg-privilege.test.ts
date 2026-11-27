@@ -382,6 +382,8 @@ describe('psql input, writers and coverage after review', () => {
         ['pg_restore with -d clustered after another flag', () => 'pg_restore -cd app -h db.example.com dump.custom'],
         ['CREATE POLICY', () => `${H} -c "CREATE POLICY p ON t USING (true)"`],
         ['PostgreSQL DROP POLICY', () => `${H} -c "DROP POLICY tenant_isolation ON orders"`],
+        ['a view made security_invoker', () => `${H} -X -d app -c 'BEGIN; ALTER VIEW reporting.orders SET (security_invoker = true); ROLLBACK'`],
+        ['a view without security_barrier', () => `${H} -X -d app -c 'ALTER VIEW reporting.orders RESET (security_barrier)'`],
         ['-d taking -l as its value, so psql reads the stdin it inherits', () => `${H} -d -l`],
         ['a :name the line sets from a variable', () => `${H} -v t="$X" <<'SQL'\nselect * from :t;\nSQL`],
         ["a :'name' the line sets from a variable", () => `${H} -v t="$X" <<'SQL'\nselect :'t';\nSQL`],
@@ -394,6 +396,9 @@ describe('psql input, writers and coverage after review', () => {
     test.each([
         ['psql -l, which reads no SQL', () => `${H} -l`],
         ['-l first in a cluster', () => `${H} -lq`],
+        ['a -P display setting that reads like a variable', () => `${H} -X -P 'null=:missing' -c 'SELECT NULL'`],
+        ['pg_restore --no-policies writing a script to stdout', () => 'pg_restore --no-policies --file=- dump.custom'],
+        ['pg_restore --statistics and --restrict-key writing a script', () => 'pg_restore --statistics --restrict-key=abc --file=- dump.custom'],
         ['-l after another flag in a cluster', () => `${H} -Xl`],
         ['printf -- with the format after it', () => `printf -- '%s\\n' 'SELECT 1;' | ${H}`],
         ['a variable the line sets to a literal', () => `B='SELECT 1;'; ${H} -c "$B"`],
@@ -499,6 +504,8 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['a MySQL client command', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE orders; \\u app'`],
         ['a psql \\connect after SQL on the same line', () => `${LAB} -f ${join(fx, 'connect-inline.sql')}`],
         ['a database rename', `${LAB} -c "ALTER DATABASE prod_app RENAME TO old_app"`],
+        ['a MySQL operand that overrides -D', `mysql -h db.example.com -D lab_app inventory -e 'DELETE FROM orders WHERE FALSE'`],
+        ['a tablespace rename', `${LAB} -c 'BEGIN; ALTER TABLESPACE archive RENAME TO archive_review; ROLLBACK'`],
         ['an ALTER DATABASE beside a grant', `${LAB} -c "GRANT SELECT ON t TO r; ALTER DATABASE prod_app SET search_path = x"`],
     ])('%s on a lab database gates', (_name, command) => {
         expect(run(typeof command === 'function' ? command() : command).action).toBe('gate');
@@ -513,6 +520,7 @@ describe('a Lab database waives database objects, not roles the whole cluster ho
         ['a grant on an object, chosen by the database and not the user', `psql -X -h db.example.com -U app -d lab_app -c "GRANT SELECT ON t TO r"`],
         ['DROP TABLE beside -P and a positional database name', `psql -X -P pager=off -h db.example.com lab_app -c "DROP TABLE t"`],
         ['DROP SCHEMA in the connected database', `${LAB} -c "DROP SCHEMA old_area CASCADE"`],
+        ['a MySQL Lab operand that overrides another -D', `mysql -h db.example.com -D inventory lab_app -e 'TRUNCATE TABLE orders'`],
         ['a MySQL table in the default database', `mysql -h db.example.com -D lab_app -e 'TRUNCATE TABLE orders'`],
     ])('%s on a lab database runs', (_name, command) => {
         expect(run(command).action).toBe('allow');
