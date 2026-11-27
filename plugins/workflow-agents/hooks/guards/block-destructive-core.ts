@@ -10968,14 +10968,12 @@ function prefixAssignment(text: string, at: number): boolean {
 }
 
 /** Each header value with a credential shape, read within its own word: up to its closing quote, or to unescaped space. */
-function literalHeaderValue(text: string, prose = false): boolean {
+function literalHeaderValue(text: string): boolean {
     for (const m of text.matchAll(HEADER_NAME)) {
         const at = (m.index ?? 0) + m[0].length;
         const quote = text[(m.index ?? 0) - 1];
         let value: string;
-        // In prose a header's value runs to the end of its line, as pasted from a request.
-        if (prose) value = /^[^\n]*/.exec(text.slice(at))![0];
-        else if (quote === "'" || quote === '"') {
+        if (quote === "'" || quote === '"') {
             const end = text.indexOf(quote, at);
             value = end < 0 ? text.slice(at) : text.slice(at, end);
             if (quote === '"' && SHELL_EXPANSION.test(value)) continue;
@@ -10985,9 +10983,7 @@ function literalHeaderValue(text: string, prose = false): boolean {
         }
         // An auth scheme (Bearer, Basic, token) comes before the credential itself.
         const credential = value.replace(/^(?:\\?\s)*(?:(?:Bearer|Basic|Token|Digest|Bot|ApiKey)\b|[A-Za-z]+(?=\\?\s))?(?:\\?\s)*/i, '');
-        // In prose a value counts only when it looks like one: an opaque word mixing letters and digits, or cases.
-        const word = credential.trim().split(/\s+/)[0] ?? '';
-        if (prose ? /^[A-Za-z0-9._~+/=-]{8,}$/.test(word) && [/[a-z]/, /[A-Z]/, /\d/].filter(re => re.test(word)).length >= 2 : credential.trim() !== '') return true;
+        if (credential.trim() !== '') return true;
     }
     return false;
 }
@@ -11029,11 +11025,11 @@ function literalUrlUserinfo(text: string): boolean {
 }
 
 /**
- * Prose a message carries holds a credential only as a credential header's value, a token of its issuer's shape, or a
- * URL's user info.
+ * A message holds a credential only as a token of its issuer's shape, or in a URL's user info. The card shows the exact
+ * text that will be posted, so anything else credential-like is left on it for the approver to reject.
  */
 function proseHoldsCredential(text: string): boolean {
-    return literalHeaderValue(text, true) || knownPrefixToken(text) || literalUrlUserinfo(text);
+    return knownPrefixToken(text) || literalUrlUserinfo(text);
 }
 
 /**
