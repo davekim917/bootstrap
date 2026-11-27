@@ -8337,57 +8337,113 @@ function databaseParts(cmd: ResolvedCommand): Array<[string, string]> {
  * override the authority and path. A host list (primary,failover) is tried in turn, so each is a target. A dbname
  * holding an unresolved expansion can be a connection string naming any server, which hidden carries.
  */
-function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hostaddrs: string[]; database?: string; hidden?: string; verbatim?: string[] } {
+/** psql's options as its getopt reads them, with each -h, -d and -p kept as written, and each value a dbname can be. */
+function psqlOptions(args: string[]): {
+    last: { host?: string; dbname?: string };
+    written: Array<{ text: string; dbname?: string }>;
+    operands: string[];
+} {
     const valueOptions = new Set(['-c', '--command', '-f', '--file', '-v', '--set', '--variable', '-o', '--output', '-L', '--log-file', '-F', '-R', '-P', '-T']);
     const operands: string[] = [];
-    // -h, -d and -p as psql's getopt reads them, separate (-d NAME, --dbname NAME), glued (--dbname=NAME) or attached
-    // (-dNAME); the last one given wins. The words are kept as written for a card that shows them.
+    // Separate (-d NAME, --dbname NAME), glued (--dbname=NAME) or attached (-dNAME); the last one given wins.
     const last: { host?: string; dbname?: string } = {};
-    const written: string[] = [];
-    const key = (flag: string) => ({ h: 'host', host: 'host', d: 'dbname', dbname: 'dbname' } as const)[flag as 'h'];
+    const written: Array<{ text: string; dbname?: string }> = [];
+    const keys: Record<string, 'host' | 'dbname' | undefined> = { h: 'host', host: 'host', d: 'dbname', dbname: 'dbname' };
+    const key = (flag: string) => keys[flag];
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
         const m = /^(?:-([hdp])(.+)|--(host|dbname|port)=(.*))$/.exec(a);
         if (m) {
             const k = key(m[1] ?? m[3]);
-            if (k) last[k] = m[2] ?? m[4];
-            written.push(a);
+            const value = m[2] ?? m[4];
+            if (k) last[k] = value;
+            written.push(k === 'dbname' ? { text: a, dbname: value } : { text: a });
         } else if (/^-[hdp]$|^--(?:host|dbname|port)$/.test(a)) {
             const value = args[++i];
             if (value === undefined) continue;
             const k = key(a.replace(/^-+/, ''));
             if (k) last[k] = value;
-            written.push(`${a} ${value}`);
+            written.push(k === 'dbname' ? { text: `${a} ${value}`, dbname: value } : { text: `${a} ${value}` });
         } else if (/^-U$|^--username$/.test(a) || valueOptions.has(a)) i++;
         else if (!a.startsWith('-')) operands.push(a);
     }
-    const decode = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
+    return { last, written, operands };
+}
+
+type ConnectionParam = { key: string; value: string; start: number; end: number };
+
+/**
+ * A libpq connection string's key/value pairs, each with where its value sits in the string, in the order libpq reads
+ * them (a later one replaces an earlier one, so a URI's query comes after its authority and path); null for a plain
+ * database name. A URI's user info gives its password.
+ */
+function connectionParams(s: string): ConnectionParam[] | null {
+    const decode = (v: string) => { try { return decodeURIComponent(v); } catch { return v; } };
+    const uri = /^postgres(?:ql)?:\/\/([^/?#]*)(?:\/([^?#]*))?(?:\?([^#]*))?/.exec(s);
+    if (uri) {
+        const out: ConnectionParam[] = [];
+        const authority = s.indexOf('//') + 2;
+        const at = uri[1].lastIndexOf('@');
+        const colon = at < 0 ? -1 : uri[1].slice(0, at).indexOf(':');
+        if (colon >= 0) out.push({ key: 'password', value: decode(uri[1].slice(colon + 1, at)), start: authority + colon + 1, end: authority + at });
+        const hosts = uri[1].slice(at + 1).split(',').map(spec => spec.startsWith('[') ? spec.slice(1, spec.indexOf(']')) : spec.replace(/:\d*$/, ''))
+            .map(decode).filter(Boolean);
+        if (hosts.length) out.push({ key: 'host', value: hosts.join(','), start: authority + at + 1, end: authority + uri[1].length });
+        const path = authority + uri[1].length + 1;
+        if (uri[2]) out.push({ key: 'dbname', value: decode(uri[2]), start: path, end: path + uri[2].length });
+        if (uri[3] !== undefined) {
+            let pos = s.indexOf('?', authority + uri[1].length) + 1;
+            for (const pair of uri[3].split('&')) {
+                const eq = pair.indexOf('=');
+                if (eq > 0) out.push({ key: decode(pair.slice(0, eq)), value: decode(pair.slice(eq + 1)), start: pos + eq + 1, end: pos + pair.length });
+                pos += pair.length + 1;
+            }
+        }
+        return out;
+    }
+    if (!s.includes('=')) return null;
+    const out: ConnectionParam[] = [];
+    // libpq splits a connection string on ASCII whitespace only (isspace in the C locale).
+    for (const m of s.matchAll(/(\w+)[ \t\n\v\f\r]*=[ \t\n\v\f\r]*(?:'((?:\\.|[^'\\])*)'|([^ \t\n\v\f\r]+))/g)) {
+        const raw = m[2] !== undefined ? `'${m[2]}'` : m[3];
+        const end = (m.index ?? 0) + m[0].length;
+        out.push({ key: m[1], value: (m[2] ?? m[3]).replace(/\\(.)/g, '$1'), start: end - raw.length, end });
+    }
+    return out;
+}
+
+const isLibpqCredentialKey = (key: string) => LIBPQ_CREDENTIAL_KEYS.includes(key.toLowerCase());
+
+/**
+ * Whether a psql step writes a libpq credential out in its connection inputs: a password or sslpassword with a value
+ * in any connection string it is given (every -d, the dbname operand), or a PG variable for one in its environment.
+ */
+function libpqCredentialWritten(cmd: ResolvedCommand): boolean {
+    if (cmd.name !== 'psql') return false;
+    const literal = (v: string) => v !== '' && !/[$\x60]/.test(v);
+    const { written, operands } = psqlOptions(cmd.args);
+    const inputs = [...written.flatMap(w => (w.dbname === undefined ? [] : [w.dbname])), ...operands.slice(0, 1)];
+    if (inputs.some(s => (connectionParams(s) ?? []).some(p => isLibpqCredentialKey(p.key) && literal(p.value)))) return true;
+    return (cmd.env ?? []).some(e => {
+        const m = /^PG([A-Z]+)=([\s\S]*)$/.exec(e);
+        return !!m && isLibpqCredentialKey(m[1]) && literal(m[2]);
+    });
+}
+
+/**
+ * Every server a psql step can connect to, as libpq reads them: a connection string (a URI or key=value pairs) given
+ * as the dbname, with -d or as the first operand, overrides -h; a later parameter replaces an earlier one. A dbname
+ * holding an unresolved expansion can be a connection string naming any server, which hidden carries.
+ */
+function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hostaddrs: string[]; database?: string; hidden?: string; verbatim?: string[] } {
+    const { last, written, operands } = psqlOptions(args);
     const list = (v: string | undefined) => (v ?? '').split(',').map(s => s.trim()).filter(Boolean);
     const given = last.dbname ?? operands[0];
     const hidden = given !== undefined && /[$\x60]/.test(given) ? given : undefined;
     const dbname = hidden ? undefined : given;
-    let conn: { host?: string; hostaddr?: string; dbname?: string } | null = null;
-    const uri = dbname === undefined ? null : /^postgres(?:ql)?:\/\/([^/?#]*)(?:\/([^?#]*))?(?:\?([^#]*))?/.exec(dbname);
-    if (uri) {
-        const authority = uri[1].slice(uri[1].lastIndexOf('@') + 1);
-        const hosts = authority.split(',').map(spec => spec.startsWith('[') ? spec.slice(1, spec.indexOf(']')) : spec.replace(/:\d*$/, ''))
-            .map(decode).filter(Boolean);
-        // libpq stores a repeated parameter over the one before, so the last wins.
-        const query = new URLSearchParams(uri[3] ?? '');
-        const param = (key: string) => query.getAll(key).at(-1);
-        conn = {
-            host: param('host') ?? (hosts.length ? hosts.join(',') : undefined),
-            hostaddr: param('hostaddr'),
-            dbname: param('dbname') ?? (uri[2] ? decode(uri[2]) : undefined),
-        };
-    } else if (dbname?.includes('=')) {
-        conn = {};
-        // libpq splits a connection string on ASCII whitespace only (isspace in the C locale).
-        for (const m of dbname.matchAll(/(\w+)[ \t\n\v\f\r]*=[ \t\n\v\f\r]*(?:'((?:\\.|[^'\\])*)'|([^ \t\n\v\f\r]+))/g)) {
-            const value = (m[2] ?? m[3]).replace(/\\(.)/g, '$1');
-            if (m[1] === 'host' || m[1] === 'hostaddr' || m[1] === 'dbname') conn[m[1]] = value;
-        }
-    }
+    const params = dbname === undefined ? null : connectionParams(dbname);
+    const lastOf = (k: string) => params?.filter(p => p.key === k).at(-1)?.value;
+    const conn = params ? { host: lastOf('host'), hostaddr: lastOf('hostaddr'), dbname: lastOf('dbname') } : null;
     const envHost = env.map(a => /^PGHOST=([^$\x60]*)$/.exec(a)?.[1]).filter((v): v is string => v !== undefined).at(-1);
     const host = conn?.host ?? last.host ?? envHost;
     // A hostaddr, or a host list, pairs entries by position with empty slots that mean something: the card shows the
@@ -8402,19 +8458,17 @@ function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hos
     };
 }
 
-/**
- * The connection parameters a psql step gives, from libpqTarget's own reading of its options, with the value of every
- * key the literal-credential check knows withheld.
- */
-function connectionWords(written: string[], env: string[], operand: string | undefined): string[] {
-    const secretKey = (k: string) => LIBPQ_CREDENTIAL_KEYS.includes(k.toLowerCase()) || credentialName(k);
-    const withhold = (s: string) => s
-        .replace(/^(postgres(?:ql)?:\/\/[^:@/?#]*:)[^@/?#]*@/, '$1<withheld>@')
-        .replace(/((?:^|[ \t\n\v\f\r?&])(\w+)[ \t\n\v\f\r]*=[ \t\n\v\f\r]*)('(?:\\.|[^'\\])*'|[^ \t\n\v\f\r&]*)/g,
-            (all, keyPart: string, k: string) => (secretKey(k) ? `${keyPart}<withheld>` : all));
-    const words = [...env.filter(a => /^PG(?:HOST|HOSTADDR|PORT|DATABASE)=/.test(a)), ...written];
-    if (operand !== undefined) words.push(operand);
-    return words.map(withhold);
+/** The connection parameters a psql step gives, as psqlOptions read them, with each credential key's value withheld. */
+function connectionWords(written: Array<{ text: string; dbname?: string }>, env: string[], operand: string | undefined): string[] {
+    const withheld = (text: string, value: string) => {
+        // The value ends the word as written: -d VALUE, --dbname=VALUE, -dVALUE, or the operand itself.
+        const offset = text.length - value.length;
+        const secrets = (connectionParams(value) ?? []).filter(p => isLibpqCredentialKey(p.key)).sort((a, b) => b.start - a.start);
+        return secrets.reduce((t, p) => t.slice(0, offset + p.start) + '<withheld>' + t.slice(offset + p.end), text);
+    };
+    const words = [...env.filter(a => /^PG(?:HOST|HOSTADDR|PORT|DATABASE)=/.test(a)), ...written.map(w => (w.dbname === undefined ? w.text : withheld(w.text, w.dbname)))];
+    if (operand !== undefined) words.push(withheld(operand, operand));
+    return words;
 }
 
 function databaseLine(cmd: ResolvedCommand): string | null {
@@ -9553,10 +9607,8 @@ const PASSWORD_WORD = /passw(?:or)?d(?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*/gi;
 // Options whose value names a file (curl's client key and certificates): the file holds the secret, the option doesn't.
 const FILE_VALUED_OPTIONS = new Set(['key', 'cert', 'cacert', 'capath', 'pubkey', 'proxy-key', 'proxy-cert', 'proxy-cacert', 'proxy-capath', 'key-type', 'crlfile']);
 const CREDENTIAL_WORDS = ['TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PASS', 'APIKEY', 'PGPASSWORD'];
-// The libpq connection keys whose value is a credential: the literal-credential check and the card's redactor read both.
+// The libpq connection keys whose value is a credential: libpqCredentialWritten refuses a literal one, and the card withholds it.
 const LIBPQ_CREDENTIAL_KEYS = ['password', 'sslpassword'];
-// What comes before "password" in the others (ssl), so the password=value check below reads them as its own word too.
-const LIBPQ_PASSWORD_PREFIX_RE = new RegExp(`(?:${LIBPQ_CREDENTIAL_KEYS.filter(k => k !== 'password' && k.endsWith('password')).map(k => k.slice(0, -'password'.length)).join('|')})$`, 'i');
 
 /**
  * Whether a name says it holds a credential: its last _ or - segment is one (AWS_SESSION_TOKEN, client_secret,
@@ -9629,7 +9681,7 @@ export function containsCredential(text: string, kind: 'command' | 'any' = 'any'
         const after = text.slice(at);
         // A connection string's or option's password=value, written with nothing around the =.
         // Only as its own word (a conninfo key, a URL query, --password=): PGPASSWORD= and the like are assignments.
-        const own = /(?:^|[\s'"?&;]|--)$/.test(text.slice(0, m.index ?? 0).replace(LIBPQ_PASSWORD_PREFIX_RE, ''));
+        const own = /(?:^|[\s'"?&;]|--)$/.test(text.slice(0, m.index ?? 0));
         // After a SQL keyword it is a column: WHERE password=archived_password compares two columns.
         const sqlColumn = /\b(?:WHERE|AND|OR|NOT|SET|ON|WHEN|HAVING|SELECT)\s+$/i.test(text.slice(0, m.index ?? 0));
         if (own && !sqlColumn && m[0].length === (/passw(?:or)?d/i.exec(m[0])?.[0].length ?? 0) && after.startsWith('=') && literalWord(after.slice(1), true)) return true;
@@ -9693,6 +9745,7 @@ function carriesCredential(command: string, cwd: string): boolean {
         }
         // A SQL client find -exec or xargs runs reads its files too, and its card can quote them.
         const steps = commands.flatMap(c => [c, ...innerGatedSteps(c).map(g => g.step)]);
+        if (steps.some(libpqCredentialWritten)) return true;
         // Many steps can read one text, as in a loop over one file: each is scanned once.
         return [...new Set(steps.filter(sqlClient).flatMap(cmd => sqlInputFor(cmd).texts))].some(t => containsCredential(t));
     } catch {

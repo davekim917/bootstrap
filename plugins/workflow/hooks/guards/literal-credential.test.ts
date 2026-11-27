@@ -46,6 +46,8 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['a URI whose only query parameter is password', `psql "postgresql://app@192.0.2.20/app?password=${SECRET}" -c "drop table orders"`],
         ['a libpq sslpassword', `psql "host=192.0.2.20 sslpassword=${SECRET} dbname=app" -c "drop table orders"`],
         ['an sslpassword in a URI query', `psql "postgresql://app@192.0.2.20/app?sslmode=verify-full&sslpassword=${SECRET}" -c "drop table orders"`],
+        ['an sslpassword in a connection string glued to --dbname', `psql -X --dbname="sslpassword=${SECRET} host=192.0.2.20 dbname=app" -c "drop table orders"`],
+        ['an sslpassword in a connection string attached to -d', `psql -X -d"host=192.0.2.20 sslpassword=${SECRET} dbname=app" -c "drop table orders"`],
         ['a URI password in adjacent quoted pieces', `psql postgresql://app:"${SECRET}"'x'@192.0.2.20/app -c "drop table orders"`],
         ['a PGPASSWORD prefix', `PGPASSWORD=${SECRET} ${H} -c "drop table orders"`],
         ['a PGPASSWORD prefix on a psql the dev waiver would hold', `PGPASSWORD=example-pw psql -h dpg-devdatabase000000001-a.example-postgres.render.com -X -d app -c 'delete from accounts'`],
@@ -118,6 +120,7 @@ describe('the same command with the credential in a variable takes the ordinary 
     test.each([
         ['PGPASSWORD from a variable', `PGPASSWORD="$PW" ${H} -c "drop table orders"`, 'drop table orders'],
         ['an sslpassword from a variable', `psql -X "host=192.0.2.20 sslpassword=$SSL_PW dbname=app" -c "drop table orders"`, 'drop table orders'],
+        ['a column named sslpassword set to DEFAULT', `${H} -X -d app -c "UPDATE accounts SET sslpassword=DEFAULT WHERE id = 1"`, 'accounts'],
         ['a bearer header from a variable', `curl -H "Authorization: Bearer $TOKEN" -X DELETE ${PROD}`, PROD],
         ['a psql variable from the environment', `${H} -v pw="$NEW_PW" -c "ALTER ROLE app PASSWORD :'pw'; DROP TABLE orders"`, 'DROP TABLE orders'],
         ['a kubectl token from a variable', 'kubectl delete deployment old-api -n staging --token="$KUBE_TOKEN"', 'old-api'],
