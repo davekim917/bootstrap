@@ -4484,6 +4484,24 @@ const UNREAD_RUNNERS = new Set(['parallel', 'sem']);
  * `read`, `mapfile` or `readarray` on the line sets from its input (`… | while read k v; do git config "$k" "$v"; done`).
  * xargs and find are read through RUNTIME_PROBES instead.
  */
+const PARALLEL_MAX_OPTIONS = ['max-args', 'max-chars', 'max-line-length-allowed', 'max-lines', 'max-procs', 'max-replace-args'];
+
+/**
+ * How a GNU parallel long option groups arguments: 'count' takes how many arguments a run gets, 'several' can put
+ * several in one run, null leaves grouping alone. Getopt::Long takes any unique prefix; an ambiguous one is refused by
+ * parallel, so it counts as 'several'.
+ */
+function parallelLongOption(name: string): 'count' | 'several' | null {
+    if (name === 'xargs') return 'several';
+    if (name === 'maxargs') return 'count';
+    if (!name.startsWith('max-')) return null;
+    const matches = PARALLEL_MAX_OPTIONS.filter(o => o.startsWith(name));
+    const option = matches.includes(name) ? name : matches.length === 1 ? matches[0] : undefined;
+    if (!option) return matches.length > 1 ? 'several' : null;
+    if (option === 'max-args' || option === 'max-replace-args') return 'count';
+    return option === 'max-lines' || option === 'max-chars' ? 'several' : null;
+}
+
 function runsGitConfigUnseen(cmd: ResolvedCommand): boolean {
     if (UNREAD_RUNNERS.has(cmd.name)) {
         // Its command, given as words or one string, runs through a shell up to the first `:::` or `::::` list.
@@ -4496,9 +4514,18 @@ function runsGitConfigUnseen(cmd: ResolvedCommand): boolean {
         let several = text.includes('{=');
         const options = cmd.args.slice(0, at);
         for (let i = 0; i < options.length; i++) {
-            const count = /^(?:-[nN]|--max-(?:replace-)?args)(?:=?(.*))?$/.exec(options[i]);
-            if (count) several ||= (count[1] || options[++i]) !== '1';
-            else if (/^-(?:-(?:xargs|max-)|[A-Za-z]*[mXnNLl])/.test(options[i])) several = true;
+            const option = options[i];
+            if (option.startsWith('--')) {
+                const [name, value] = [option.slice(2).split('=')[0].toLowerCase(), option.includes('=') ? option.slice(option.indexOf('=') + 1) : undefined];
+                const grouping = parallelLongOption(name);
+                if (grouping === 'count') several ||= (value ?? options[++i]) !== '1';
+                else if (grouping === 'several') several = true;
+                continue;
+            }
+            const cluster = /^-([A-Za-z]+)(.*)$/.exec(option);
+            if (!cluster) continue;
+            if (/[mXLls]/.test(cluster[1])) several = true;
+            else if (/[nN]$/.test(cluster[1])) several ||= (cluster[2] || options[++i]) !== '1';
         }
         const placeholder = /\{[^{}\s]*\}/g;
         let steps: ResolvedCommand[];

@@ -273,6 +273,9 @@ const BASH_GATE = [
   'parallel -n2 git config --local ::: alias.st status',
   'parallel -m git config --local ::: alias.st status',
   'parallel -n1 -m git config --local ::: alias.st status',
+  'parallel --max-args=2 git config --local ::: alias.st status',
+  'parallel --max-lines=1 git config --local ::: alias.st status',
+  'parallel --xargs git config --local ::: alias.st status',
   // An unquoted variable, or an array's elements, can be a key and its value.
   "printf '%s\\n' user.name | while read -r key; do git config --local $key; done",
   'mapfile -t keys < keys.txt; git config --local "${keys[@]}"',
@@ -535,6 +538,10 @@ const BASH_ALLOW = [
   'parallel -n1 git config --local ::: user.name',
   'parallel --max-args=1 git config --local ::: user.name',
   'parallel -N1 git config --local ::: user.name',
+  // Options that set how many runs go at once, or print a limit, leave one argument a run.
+  'parallel --max-procs=2 git config --local ::: user.name',
+  'parallel -j2 git config --local ::: user.name',
+  'parallel --max-line-length-allowed git config --local ::: user.name',
   "printf '%s\\n' user.name | while read -r key; do git config --local \"$key\"; done",
   "printf '%s\\n' user.name | while read -r key; do git config --local \"${key}\"; done",
   // An installed contrib command, and -h after one of git's own commands, which prints its usage.
