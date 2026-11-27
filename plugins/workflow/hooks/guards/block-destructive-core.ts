@@ -4688,9 +4688,8 @@ function renderDevTarget(cmd: ResolvedCommand): string | null {
 }
 
 /** A role or privilege change in render psql's SQL, which keeps its card even on a listed dev database. */
-function renderPsqlPrivilegeChange(renderArgs: string[]): string | null {
-    const args = renderPsqlArgs(renderArgs);
-    if (!args) return null;
+function renderPsqlPrivilegeChange(args: string[]): string | null {
+    if (args[0] !== 'psql') return null;
     for (const word of args.slice(2)) {
         const sql = word.replace(/^(?:--command=|-c)/, '');
         // A grant on the dev database's own objects stays waived; a role, which the whole cluster holds, does not, and
@@ -7831,7 +7830,7 @@ function sqlReadings(cmd: ResolvedCommand, texts: string[]): Array<{ text: strin
 
 /**
  * render psql's words from `psql` on, read past the global flags render takes before a command with renderShape's
- * flag tables; null for any other render line.
+ * flag tables; null for any other render line. Only the credential scan reads this far.
  */
 function renderPsqlArgs(args: string[]): string[] | null {
     let i = 0;
@@ -7848,8 +7847,11 @@ function renderPsqlArgs(args: string[]): string[] | null {
 
 /** The SQL a `render psql` step passes with -c or --command; null for any other step. */
 function renderPsqlTexts(cmd: ResolvedCommand): string[] | null {
-    const args = cmd.name === 'render' ? renderPsqlArgs(cmd.args) : null;
-    if (!args) return null;
+    return cmd.name === 'render' && cmd.args[0] === 'psql' ? psqlCommandTexts(cmd.args) : null;
+}
+
+/** The -c and --command values among render psql's words. */
+function psqlCommandTexts(args: string[]): string[] {
     const texts: string[] = [];
     args.forEach((a, i) => {
         if ((a === '-c' || a === '--command') && args[i + 1] !== undefined) texts.push(args[i + 1]);
@@ -8826,16 +8828,35 @@ const isLibpqCredentialKey = (key: string) => LIBPQ_CREDENTIAL_KEYS.includes(key
  * since its card prints the whole step; or a PG variable for one. Which of them the client uses is the target's
  * business (libpqTarget), not this check's.
  */
+/** Whether a string is a complete libpq connection string with a password or sslpassword written out in it. */
+function conninfoCredential(s: string): boolean {
+    return (connectionParams(s) ?? []).some(p => isLibpqCredentialKey(p.key) && libpqLiteral(p.raw, p.value));
+}
+
+// Written out or not is read from the text as written: %24 decodes to $ only for libpq, after the shell is done.
+const libpqLiteral = (raw: string, value: string) => value !== '' && !/[$\x60]/.test(raw);
+
+/**
+ * Whether SQL holds a single-quoted literal that is a connection string with a credential (CREATE SUBSCRIPTION …
+ * CONNECTION, dblink). The literal must also name where it connects: a lone 'sslpassword=x' is a value like any other.
+ */
+function sqlConninfoCredential(sql: string): boolean {
+    return [...sql.matchAll(/'((?:[^']|'')*)'/g)].some(m => {
+        const s = m[1].replace(/''/g, "'");
+        const params = connectionParams(s);
+        return !!params && (/^postgres(?:ql)?:\/\//.test(s) || params.some(p => /^(?:host|hostaddr|dbname|user|port|service)$/.test(p.key))) && conninfoCredential(s);
+    });
+}
+
 function libpqCredentialWritten(cmd: ResolvedCommand): boolean {
     if (!PG_DIRECT_CLIENTS.has(cmd.name)) return false;
-    // Written out or not is read from the text as written: %24 decodes to $ only for libpq, after the shell is done.
-    const literal = (raw: string, value: string) => value !== '' && !/[$\x60]/.test(raw);
+    const literal = libpqLiteral;
     // Each word whole, the value an option glues on (--dbname=…, -d…), and for psql every dbname its getopt extracts
     // (a cluster such as -Xd<URI>).
     const words = [...cmd.args, ...(cmd.env ?? []).map(e => e.slice(e.indexOf('=') + 1))];
     const extracted = cmd.name === 'psql' ? psqlOptions(cmd.args).written.flatMap(w => (w.dbname === undefined ? [] : [w.dbname])) : [];
     const inputs = [...words.flatMap(w => [w, /^--[^=]+=([\s\S]*)$/.exec(w)?.[1], /^-[A-Za-z]([\s\S]+)$/.exec(w)?.[1]]), ...extracted].filter((v): v is string => v !== undefined);
-    if (inputs.some(s => (connectionParams(s) ?? []).some(p => isLibpqCredentialKey(p.key) && literal(p.raw, p.value)))) return true;
+    if (inputs.some(conninfoCredential)) return true;
     return (cmd.env ?? []).some(e => {
         const m = /^PG([A-Z]+)=([\s\S]*)$/.exec(e);
         return !!m && isLibpqCredentialKey(m[1]) && literal(m[2], m[2]);
@@ -10159,7 +10180,10 @@ function carriesCredential(command: string, cwd: string): boolean {
         const steps = commands.flatMap(c => [c, ...innerGatedSteps(c).map(g => g.step)]);
         if (steps.some(libpqCredentialWritten)) return true;
         // Many steps can read one text, as in a loop over one file: each is scanned once.
-        return [...new Set(steps.flatMap(cmd => sqlClient(cmd) ? sqlInputFor(cmd).texts : renderPsqlTexts(cmd) ?? []))].some(t => containsCredential(t));
+        const renderTexts = (cmd: ResolvedCommand) => (cmd.name === 'render' ? psqlCommandTexts(renderPsqlArgs(cmd.args) ?? []) : []);
+        const texts = [...new Set(steps.flatMap(cmd => sqlClient(cmd) ? sqlInputFor(cmd).texts : renderTexts(cmd)))];
+        const postgres = new Set(steps.flatMap(cmd => cmd.name === 'psql' ? sqlInputFor(cmd).texts : renderTexts(cmd)));
+        return texts.some(t => containsCredential(t) || (postgres.has(t) && sqlConninfoCredential(t)));
     } catch {
         return false;
     }

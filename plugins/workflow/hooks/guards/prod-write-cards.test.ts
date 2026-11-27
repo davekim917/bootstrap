@@ -408,6 +408,12 @@ describe('the card says what the step does', () => {
         expect(describeGate(command, evaluate(command).reason ?? '', dir).label).toContain(`(${label})`);
     });
 
+    test('render psql after -o text takes the generic Render card, as on main', () => {
+        const verdict = evaluate(`render -o text psql dpg-proddatabase00000001-a -c "alter publication reporting set (publish = 'insert')"`);
+        expect(verdict.action).toBe('gate');
+        expect(verdict.reason).toStartWith('Production change on Render');
+    });
+
     test('SET TABLE says it can remove tables, with its own title and undo', () => {
         const command = `${PG} -c "alter publication pub set table orders"`;
         const card = describeGate(command, evaluate(command).reason ?? '', dir);
