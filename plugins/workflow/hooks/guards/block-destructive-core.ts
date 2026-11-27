@@ -7928,6 +7928,218 @@ function shellParseProblem(command: string): string | null {
     }
 }
 
+// ── Literal credentials ──────────────────────────────────────────────────────
+
+export const LITERAL_CREDENTIAL_REASON =
+    'This command contains a literal credential. Move it into an environment variable or the gateway, then run it again.';
+
+// A shell expansion: a value with one in it is taken from somewhere else, not written out.
+const SHELL_EXPANSION = /[$`]/;
+
+/**
+ * Whether a shell word's value is written out: a single-quoted string, or a double-quoted or bare value with no shell
+ * expansion in it, and not empty. A path names where a credential is kept, not the credential itself, so it doesn't
+ * count unless `pathCounts` (a name that holds the credential itself).
+ */
+function literalWord(word: string, pathCounts = false): boolean {
+    let v: string;
+    if (word.startsWith("'")) {
+        const end = word.indexOf("'", 1);
+        v = end < 0 ? word.slice(1) : word.slice(1, end);
+    } else {
+        const quoted = word.startsWith('"');
+        const end = quoted ? word.indexOf('"', 1) : -1;
+        v = quoted ? (end < 0 ? word.slice(1) : word.slice(1, end)) : word.split(/[\s;&|)'"]/)[0];
+        if (SHELL_EXPANSION.test(v)) return false;
+    }
+    return v !== '' && (pathCounts || !/^(?:\/|~\/|\.{1,2}\/)/.test(v));
+}
+
+/** Whether SQL text holds a literal here: a quoted string (E'…', U&'…' too) or a dollar-quoted body; never an identifier or $1. */
+function sqlLiteral(text: string, dollarQuotes = true): boolean {
+    const v = text.replace(/^[EeUu]&?(?=')/, '');
+    // Inside a quoted string (an EXECUTE's), a literal is written with doubled quotes: ''secret''.
+    const nested = /^''([^']+)''/.exec(v);
+    if (nested) return !/\$[A-Za-z_{(]|`/.test(nested[1]);
+    if (v.startsWith("'")) {
+        const end = v.indexOf("'", 1);
+        const body = end < 0 ? v.slice(1) : v.slice(1, end);
+        // A $ that a shell would expand (a name, ${…}, $(…)) means the text came unexpanded; $4096 in a SCRAM verifier doesn't.
+        return body !== '' && !/\$[A-Za-z_{(]|`/.test(body);
+    }
+    const tag = dollarQuotes ? /^\$([A-Za-z_]\w*)?\$/.exec(v) : null;
+    return !!tag && v.indexOf(tag[0], tag[0].length) > tag[0].length;
+}
+
+/** user:password with a written-out password, or a written-out user with an empty one (a token as the user). */
+function literalUserinfo(value: string): boolean {
+    const v = value.replace(/^['"]+|['"]+$/g, '');
+    const colon = v.indexOf(':');
+    if (colon < 0 || SHELL_EXPANSION.test(v)) return false;
+    const password = v.slice(colon + 1);
+    // A template's placeholder (%s, {password}, <password>) stands for a value; it isn't one.
+    if (/^(?:%[a-z]|\{\w*\}|<[^>]*>)$/i.test(password || v.slice(0, colon))) return false;
+    return password === '' ? v.slice(0, colon) !== '' : true;
+}
+
+const HEADER_NAME = /\b(?:(?:proxy-)?authorization|(?:x-)?(?:api|auth)[-_]?(?:key|token))\s*:/gi;
+const PASSWORD_WORD = /passw(?:or)?d(?:\s|\/\*[\s\S]*?\*\/|--[^\n]*\n)*/gi;
+// Options whose value names a file (curl's client key and certificates): the file holds the secret, the option doesn't.
+const FILE_VALUED_OPTIONS = new Set(['key', 'cert', 'cacert', 'capath', 'pubkey', 'proxy-key', 'proxy-cert', 'proxy-cacert', 'proxy-capath', 'key-type', 'crlfile']);
+const CREDENTIAL_WORDS = ['TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PASS', 'APIKEY', 'PGPASSWORD'];
+
+/**
+ * Whether a name says it holds a credential: its last _ or - segment is one (AWS_SESSION_TOKEN, client_secret,
+ * refresh_token, PGPASSWORD, REDISCLI_AUTH), or it ends in an API, access, secret or private KEY. A word inside a
+ * segment never counts, so GIT_ASKPASS, token_type and SORT_KEY don't. Bare KEY, AUTH and PWD name too many other
+ * things (a storage key, --auth=trust, the working directory) to count.
+ */
+function credentialName(name: string): boolean {
+    const upper = name.toUpperCase();
+    if (upper === 'REDISCLI_AUTH') return true;
+    const segments = upper.split(/[_-]+/).filter(Boolean);
+    const last = segments[segments.length - 1] ?? '';
+    if (CREDENTIAL_WORDS.includes(last)) return true;
+    return last === 'KEY' && ['API', 'ACCESS', 'SECRET', 'PRIVATE'].includes(segments[segments.length - 2]);
+}
+
+/** A name that holds the credential itself, never a path to it: a password, token or secret. */
+const holdsCredentialItself = (name: string): boolean =>
+    ['TOKEN', 'SECRET', 'PASSWORD', 'PASSWD', 'PASS', 'PGPASSWORD'].includes(name.toUpperCase().split(/[_-]+/).filter(Boolean).pop() ?? '');
+
+/** Whether text[at…] starts a shell assignment the shell makes: a prefix to a command, or one export or env names. */
+function prefixAssignment(text: string, at: number): boolean {
+    const before = text.slice(0, at).replace(/\s+$/, '');
+    if (before === '' || /[;&|({\n]$/.test(before)) return true;
+    if (/\b(?:export|env|local|readonly|(?:declare|typeset)(?:\s+-\w+)*)$/.test(before)) return true;
+    // Another assignment word before it on the same command, as in A=1 TOKEN=… cmd; never part of the same word.
+    if (!/\s$/.test(text.slice(0, at))) return false;
+    const previous = /(\S+)$/.exec(before)?.[1] ?? '';
+    return /^[A-Za-z_]\w*\+?=/.test(previous) && prefixAssignment(text, before.length - previous.length);
+}
+
+/** Each header value with a credential shape, read within its own word: up to its closing quote, or to unescaped space. */
+function literalHeaderValue(text: string): boolean {
+    for (const m of text.matchAll(HEADER_NAME)) {
+        const at = (m.index ?? 0) + m[0].length;
+        const quote = text[(m.index ?? 0) - 1];
+        let value: string;
+        if (quote === "'" || quote === '"') {
+            const end = text.indexOf(quote, at);
+            value = end < 0 ? text.slice(at) : text.slice(at, end);
+            if (quote === '"' && SHELL_EXPANSION.test(value)) continue;
+        } else {
+            value = /^(?:\\\s|[^\s'"])*/.exec(text.slice(at))![0];
+            if (SHELL_EXPANSION.test(value)) continue;
+        }
+        // An auth scheme (Bearer, Basic, token) comes before the credential itself.
+        const credential = value.replace(/^(?:\\?\s)*(?:(?:Bearer|Basic|Token|Digest|Bot|ApiKey)\b|[A-Za-z]+(?=\\?\s))?(?:\\?\s)*/i, '');
+        if (credential.trim() !== '') return true;
+    }
+    return false;
+}
+
+/**
+ * True when the text writes out a credential: a value, never a reference to one. Each shape names where a credential
+ * goes and fires only on a written-out value (literalWord for shell words, sqlLiteral for SQL), so "$VAR", ${VAR},
+ * $(cmd), an identifier and $1 never do. On a command line (`command`) the SQL shapes read only quoted strings: a
+ * dollar-quote there could be shell variables ($A$B). SQL text the clients read (`any`) gets every shape.
+ */
+export function containsCredential(text: string, kind: 'command' | 'any' = 'any'): boolean {
+    const dollarQuotes = kind === 'any';
+    if (literalHeaderValue(text)) return true;
+    // A URL's user info: user:password. With no colon it is a user name, unless it starts the way a token does.
+    for (const m of text.matchAll(/\b([a-z][a-z0-9+.-]*):\/\/([^/@\s]{1,400})@/gi)) {
+        if (SHELL_EXPANSION.test(m[2])) continue;
+        if (literalUserinfo(m[2])) return true;
+        if (!m[2].includes(':') && /^['"]?(?:gh[opusr]_|github_pat_|glpat-|xox[a-z]-)/.test(m[2])) return true;
+    }
+    for (const m of text.matchAll(PASSWORD_WORD)) {
+        const at = (m.index ?? 0) + m[0].length;
+        const after = text.slice(at);
+        // A connection string's or option's password=value, written with nothing around the =.
+        // Only as its own word (a conninfo key, a URL query, --password=): PGPASSWORD= and the like are assignments.
+        const own = /(?:^|[\s'"?&;]|--)$/.test(text.slice(0, m.index ?? 0));
+        // After a SQL keyword it is a column: WHERE password=archived_password compares two columns.
+        const sqlColumn = /\b(?:WHERE|AND|OR|NOT|SET|ON|WHEN|HAVING|SELECT)\s+$/i.test(text.slice(0, m.index ?? 0));
+        if (own && !sqlColumn && m[0].length === (/passw(?:or)?d/i.exec(m[0])?.[0].length ?? 0) && after.startsWith('=') && literalWord(after.slice(1), true)) return true;
+        // An option's name (--password, --no-password): psql's take no value, and the option loop below reads the rest.
+        if (/-$/.test(text.slice(0, m.index ?? 0))) continue;
+        // SQL's PASSWORD 'x', password = 'x' and the like: the keyword or column as its own word, with space or = before
+        // the literal (POSTGRES_PASSWORD',… is a name in some other code).
+        if (/[\w$]$/.test(text.slice(0, m.index ?? 0))) continue;
+        const assigned = /^\s*\+?=\s*/.exec(after);
+        if (!assigned && m[0].length === (/passw(?:or)?d/i.exec(m[0])?.[0].length ?? 0)) continue;
+        if (sqlLiteral(assigned ? after.slice(assigned[0].length) : after, dollarQuotes)) return true;
+    }
+    {
+        for (const m of text.matchAll(/\bidentified\s+(?:with\s+\S+\s+)?by\s+(?:password\s+)?/gi)) if (sqlLiteral(text.slice((m.index ?? 0) + m[0].length), dollarQuotes)) return true;
+        // A literal compared with or assigned to a credential-named column on one statement; a bare KEY column is a
+        // settings key.
+        for (const m of text.matchAll(/["`]?(\w+)["`]?\s*(?:=|<>|!=|(?:\bNOT\s+)?\bLIKE\b|(?:\bNOT\s+)?\bIN\s*\()\s*/gi)) {
+            if (credentialName(m[1]) && sqlLiteral(text.slice((m.index ?? 0) + m[0].length), dollarQuotes)) return true;
+        }
+    }
+    // An assignment the shell makes to a credential-named variable, bare (TOKEN=) or not: a prefix, or one export names.
+    for (const m of text.matchAll(/(?<![\w-])([A-Za-z_][\w-]*)\+?=/g)) {
+        if (!credentialName(m[1]) || !prefixAssignment(text, m.index ?? 0)) continue;
+        if (literalWord(text.slice((m.index ?? 0) + m[0].length), holdsCredentialItself(m[1]))) return true;
+    }
+    // An option named for a credential, given a value; a password option only with =, since psql's takes none.
+    for (const m of text.matchAll(/(?:^|[\s'"])--(?!no-)([a-z0-9-]+)(?=(=|\s+)(\S+))/gi)) {
+        if (!credentialName(m[1]) || FILE_VALUED_OPTIONS.has(m[1].toLowerCase()) || m[3].startsWith('-')) continue;
+        if (m[2] !== '=' && /^(?:password|passwd|pass)$/i.test(m[1])) continue;
+        if (literalWord(m[3], holdsCredentialItself(m[1]))) return true;
+    }
+    // psql -v with a credential-named variable.
+    for (const m of text.matchAll(/(?:^|\s)(?:-v|--set|--variable)(?:=|\s+|(?=[A-Za-z_]))['"]?([A-Za-z_]\w*)=(\S*)/g)) {
+        if (credentialName(m[1]) && literalWord(m[2], holdsCredentialItself(m[1]))) return true;
+    }
+    const valueAfter = (rx: RegExp, check: (v: string) => boolean) => [...text.matchAll(rx)].some(m => check(m[1]));
+    if (/\bcurl\b/.test(text)) {
+        if (valueAfter(/(?:^|[\s'"])(?:-[A-Za-z]*[uU]\s*|--(?:proxy-)?user(?:=|\s+))(\S+)/g, literalUserinfo)) return true;
+        if (valueAfter(/--(?:proxy-)?oauth2-bearer(?:=|\s+)(\S+)/g, v => literalWord(v, true))) return true;
+    }
+    // HTTPie's -a/--auth: user:password, or a bearer token with -A bearer.
+    if (/(?:^|[\s;&|(])https?\s/.test(text) && valueAfter(/(?:^|\s)(?:-a|--auth)(?:=|\s+)(\S+)/g, v => literalUserinfo(v) || (!v.includes(':') && literalWord(v, true)))) return true;
+    if (/\b(?:mysql|mariadb|mysqldump|mysqladmin)\b/.test(text) && valueAfter(/(?:^|\s)-p(\S+)/g, v => literalWord(v, true))) return true;
+    if (/\bredis-cli\b/.test(text) && valueAfter(/(?:^|\s)(?:-a|--pass)(?:\s+|(?=\S))(\S+)/g, v => literalWord(v, true))) return true;
+    return false;
+}
+
+let lastEvaluated: { command: string; cwd: string; commands: ResolvedCommand[] } | null = null;
+
+/** The command, or SQL its clients read from a file (as the evaluator read them), writes out a credential. */
+function carriesCredential(command: string, cwd: string): boolean {
+    if (containsCredential(command, 'command')) return true;
+    const sqlClient = (cmd: ResolvedCommand) => SQL_CLIS[cmd.name] || (cmd.name === 'snow' && cmd.args[0] === 'sql');
+    try {
+        // The parse evaluateBashLine just made, whose SQL inputs it has already read (sqlInputFor caches them). A shell a
+        // SQL client runs is evaluated inside it and leaves its own, so then the line is parsed again.
+        let commands = lastEvaluated?.command === command && lastEvaluated.cwd === cwd ? lastEvaluated.commands : null;
+        if (!commands) {
+            commands = extractCommands(command);
+            if (commands[0]?.script) commands[0].script.cwd = cwd;
+        }
+        // A SQL client find -exec or xargs runs reads its files too, and its card can quote them.
+        const steps = commands.flatMap(c => [c, ...innerGatedSteps(c).map(g => g.step)]);
+        // Many steps can read one text, as in a loop over one file: each is scanned once.
+        return [...new Set(steps.filter(sqlClient).flatMap(cmd => sqlInputFor(cmd).texts))].some(t => containsCredential(t));
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * A command the guard would hold or refuse that writes out a credential is refused with fixed text: neither its card
+ * nor its refusal repeats any of it, and nothing is staged. Run with the credential in a variable, it takes the
+ * ordinary card. A command that runs without approval is left alone.
+ */
+function refusingLiteralCredentials(command: string, verdict: GateEvaluation, cwd: string): GateEvaluation {
+    if (verdict.action === 'allow' || !carriesCredential(command, cwd)) return verdict;
+    return { action: 'block', reason: LITERAL_CREDENTIAL_REASON };
+}
+
 /**
  * Replicate main()'s decision ordering against a raw bash command string,
  * WITHOUT the approval-bypass step (that stays in the caller) and without any
@@ -7963,10 +8175,11 @@ export function evaluateBashCommand(
     command: string,
     opts: { skipGate?: boolean; cwd?: string; localPg?: LocalPgHost } = {},
 ): GateEvaluation {
-    if (clientShellVerdicts) return evaluateBashLine(command, opts);
+    const cwd = opts.cwd ?? currentWorkingDir();
+    if (clientShellVerdicts) return refusingLiteralCredentials(command, evaluateBashLine(command, opts), cwd);
     clientShellVerdicts = new Map();
     try {
-        return evaluateBashLine(command, opts);
+        return refusingLiteralCredentials(command, evaluateBashLine(command, opts), cwd);
     } finally {
         clientShellVerdicts = null;
     }
@@ -7981,6 +8194,7 @@ function evaluateBashLine(
     const lab = isLabSession();
     const cwd = opts.cwd ?? currentWorkingDir();
     if (commands[0]?.script) commands[0].script.cwd = cwd;
+    lastEvaluated = { command, cwd, commands };
 
     // --- Hard block checks (no bypass, ever — lab included) ---
     for (const cmd of commands) {

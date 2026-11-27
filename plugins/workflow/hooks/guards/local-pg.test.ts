@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from 'bun:test';
 
-import { evaluateBashCommand, type LocalPgHost } from './block-destructive-core';
+import { LITERAL_CREDENTIAL_REASON, evaluateBashCommand, type LocalPgHost } from './block-destructive-core';
 
 // The host is a fixture: procfs, /etc files and the environment are all supplied, so nothing here reads this machine.
 
@@ -208,7 +208,9 @@ describe('a connection the guard cannot read exactly as psql will make it is nev
         ['SQL on stdin', "psql -X -h 127.0.0.1 -p 55432 <<'SQL'\nDROP TABLE orders;\nSQL"],
         ['a stdin file read beside -c', "echo x | psql -X -h 127.0.0.1 -p 55432 -Xf- -c 'DROP TABLE orders'"],
     ])('%s', (name, command) => {
-        if (REFUSED_WITH_THE_FORM_IT_READS.has(name)) expect(verdict(command)).toBe('block');
+        // Its user info reads as a password to libpq, so it is refused as a literal credential.
+        if (name === 'a URI whose userinfo hides the real host') expect(evaluateBashCommand(command, { cwd: '/tmp', localPg: fixtureHost(scratch) })).toEqual({ action: 'block', reason: LITERAL_CREDENTIAL_REASON });
+        else if (REFUSED_WITH_THE_FORM_IT_READS.has(name)) expect(verdict(command)).toBe('block');
         else if (NAMES_A_REMOTE_HOST.has(name)) expect(verdict(command)).toBe('gate');
         else refusedToScratchPg(command);
     });
@@ -300,7 +302,6 @@ describe('a connection string or localhost the guard does not resolve is answere
     const v6only: Fixture = { tcp6: [['0'.repeat(24) + '01000000', PORT_HEX, '9004']], procs: { 4301: { comm: 'postgres', sockets: ['9004'] } } };
 
     test.each<[string, string, string, Fixture]>([
-        ['a URI with a password, as the first operand', "psql 'postgresql://tester:s3cret-example@localhost:55432/foo_test' -X -c 'DROP TABLE orders'", "psql foo_test -h 127.0.0.1 -p 55432 -U tester -X -c 'DROP TABLE orders'", scratch],
         ['a URI given to -d, without -X', "psql -d postgres://127.0.0.1:55432/foo_test -c 'DROP TABLE orders'", "psql -d foo_test -X -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'", scratch],
         ['a URI given to --dbname=', "psql -X --dbname='postgresql://localhost:55432/foo_test' -c 'DROP TABLE orders'", "psql -X --dbname=foo_test -h 127.0.0.1 -p 55432 -c 'DROP TABLE orders'", scratch],
         ['-h localhost, without -X', "psql -h localhost -p 55432 -c 'DROP TABLE orders'", "psql -h 127.0.0.1 -X -p 55432 -c 'DROP TABLE orders'", scratch],
@@ -313,9 +314,10 @@ describe('a connection string or localhost the guard does not resolve is answere
         expect(evaluate(rewrite, f).action).toBe('allow');
     });
 
-    test('the password never appears in the refusal; the ~/.pgpass line names the rewritten host', () => {
-        const v = evaluate("psql 'postgresql://tester:s3cret-example@localhost:55432/foo_test' -X -c 'DROP TABLE orders'");
-        expect(v.reason).not.toContain('s3cret-example');
+    test('a URI with a written-out password is refused with the fixed text; with the password in a variable it gets the rewrite', () => {
+        expect(evaluate("psql 'postgresql://tester:s3cret-example@localhost:55432/foo_test' -X -c 'DROP TABLE orders'")).toEqual({ action: 'block', reason: LITERAL_CREDENTIAL_REASON });
+        const v = evaluate('psql "postgresql://tester:$PGPW@localhost:55432/foo_test" -X -c \'DROP TABLE orders\'');
+        expect(v.action).toBe('block');
         expect(v.reason).toContain('add the line 127.0.0.1:55432:foo_test:tester:<password> to ~/.pgpass (mode 0600)');
     });
 
@@ -329,7 +331,7 @@ describe('a connection string or localhost the guard does not resolve is answere
         ['-h localhost without a port', "psql -X -h localhost -c 'DROP TABLE orders'", scratch],
         ['a forwarder behind the URI', "psql 'postgresql://localhost:55432/foo_test' -X -c 'DROP TABLE orders'", { tcp: [['0100007F', PORT_HEX, '9101']], procs: { 5001: { comm: 'ssh', sockets: ['9101'] } } }],
         ['a postgres whose data directory is outside /tmp', "psql -X -h localhost -p 55432 -c 'DROP TABLE orders'", { ...scratch, procs: { 4242: { comm: 'postgres', sockets: ['9001', '9002'], cwd: '/var/lib/postgresql/data' } } }],
-        ['an environment prefix on psql', "PGPASSWORD=x psql 'postgresql://localhost:55432/foo_test' -X -c 'DROP TABLE orders'", scratch],
+        ['an environment prefix on psql', "PGPASSWORD=\"$PGPW\" psql 'postgresql://localhost:55432/foo_test' -X -c 'DROP TABLE orders'", scratch],
     ])('no rewrite passes the exemption: %s', (name, command, f) => {
         if (name === 'a URI to another host') expect(evaluate(command, f).action).toBe('gate');
         else refusedToScratchPg(command, f);
