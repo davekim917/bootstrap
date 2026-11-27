@@ -8862,10 +8862,13 @@ const libpqLiteral = (raw: string, value: string) => value !== '' && !/[$\x60]/.
  * connects, and a template's placeholder there is not a credential (a lone 'sslpassword=x' or a DSN help text is a
  * value like any other).
  */
-function sqlConninfoCredential(sql: string): boolean {
+function sqlConninfoCredential(sql: string, depth = 0): boolean {
     const literals: SqlLiteral[] = [];
     const { skeleton } = sqlSkeleton(sql, false, true, false, literals);
     return literals.some(lit => {
+        // A DO block or function body is code: its own literals are read the same way.
+        const body = sql[lit.start] === '$' && /\b(?:DO(?:\s+LANGUAGE\s+\w+)?|AS)\s*$/i.test(skeleton.slice(0, lit.start));
+        if (body && depth < SQL_RECURSION_LIMIT && sqlConninfoCredential(lit.value, depth + 1)) return true;
         const params = connectionParams(lit.value);
         if (!params) return false;
         const before = skeleton.slice(skeleton.lastIndexOf(';', lit.start) + 1, lit.start);
@@ -10052,9 +10055,9 @@ function sqlLiteral(text: string, dollarQuotes = true): boolean {
     return !!tag && v.indexOf(tag[0], tag[0].length) > tag[0].length;
 }
 
-/** A template's placeholder (%s, {password}, <password>) stands for a value; it isn't one. */
+/** A template's placeholder (%s, {password}, <password>) or a masked value (********, xxxxxx, ••••) stands for a value; it isn't one. */
 function templatePlaceholder(value: string): boolean {
-    return /^(?:%[a-z]|\{\w*\}|<[^>]*>)$/i.test(value);
+    return /^(?:%[a-z]|\{\w*\}|<[^>]*>)$/i.test(value) || /^([*xX•●#])\1{2,}$/u.test(value);
 }
 
 /** user:password with a written-out password, or a written-out user with an empty one (a token as the user). */
