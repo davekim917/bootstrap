@@ -8453,11 +8453,16 @@ function connectionParams(s: string): ConnectionParam[] | null {
     }
     if (!s.includes('=')) return null;
     const out: ConnectionParam[] = [];
-    // libpq splits a connection string on ASCII whitespace only (isspace in the C locale).
-    for (const m of s.matchAll(/(\w+)[ \t\n\v\f\r]*=[ \t\n\v\f\r]*(?:'((?:\\.|[^'\\])*)'|([^ \t\n\v\f\r]+))/g)) {
+    // libpq splits a connection string on ASCII whitespace only (isspace in the C locale), and reads nothing but
+    // keyword=value pairs: anything else between them makes it a string libpq refuses, not a connection string.
+    const pair = /[ \t\n\v\f\r]*(\w+)[ \t\n\v\f\r]*=[ \t\n\v\f\r]*(?:'((?:\\.|[^'\\])*)'|([^ \t\n\v\f\r]+))[ \t\n\v\f\r]*/y;
+    while (pair.lastIndex < s.length) {
+        const at = pair.lastIndex;
+        const m = pair.exec(s);
+        if (!m) return null;
         const raw = m[2] !== undefined ? `'${m[2]}'` : m[3];
-        const end = (m.index ?? 0) + m[0].length;
-        out.push({ key: m[1], value: (m[2] ?? m[3]).replace(/\\(.)/g, '$1'), raw, start: end - raw.length, end });
+        const start = s.indexOf(raw, at + m[0].indexOf('=') + 1);
+        out.push({ key: m[1], value: (m[2] ?? m[3]).replace(/\\(.)/g, '$1'), raw, start, end: start + raw.length });
     }
     return out;
 }
@@ -8465,15 +8470,18 @@ function connectionParams(s: string): ConnectionParam[] | null {
 const isLibpqCredentialKey = (key: string) => LIBPQ_CREDENTIAL_KEYS.includes(key.toLowerCase());
 
 /**
- * Whether a psql step writes a libpq credential out in its connection inputs: a password or sslpassword with a value
- * in any connection string it is given (every -d, the dbname operand), or a PG variable for one in its environment.
+ * Whether a Postgres client step writes a libpq credential out: a password or sslpassword with a written-out value in
+ * any of its arguments or environment values that is a connection string, whether or not the client would read it,
+ * since its card prints the whole step; or a PG variable for one. Which of them the client uses is the target's
+ * business (libpqTarget), not this check's.
  */
 function libpqCredentialWritten(cmd: ResolvedCommand): boolean {
-    if (cmd.name !== 'psql') return false;
+    if (!PG_DIRECT_CLIENTS.has(cmd.name)) return false;
     // Written out or not is read from the text as written: %24 decodes to $ only for libpq, after the shell is done.
     const literal = (raw: string, value: string) => value !== '' && !/[$\x60]/.test(raw);
-    const { written, operands } = psqlOptions(cmd.args, psqlPosixlyCorrect(cmd.env ?? []));
-    const inputs = [...written.flatMap(w => (w.dbname === undefined ? [] : [w.dbname])), ...operands.slice(0, 1)];
+    // Each word whole, and the value an option glues on (--dbname=…, -d…).
+    const words = [...cmd.args, ...(cmd.env ?? []).map(e => e.slice(e.indexOf('=') + 1))];
+    const inputs = words.flatMap(w => [w, /^--[^=]+=([\s\S]*)$/.exec(w)?.[1], /^-[A-Za-z]([\s\S]+)$/.exec(w)?.[1]]).filter((v): v is string => v !== undefined);
     if (inputs.some(s => (connectionParams(s) ?? []).some(p => isLibpqCredentialKey(p.key) && literal(p.raw, p.value)))) return true;
     return (cmd.env ?? []).some(e => {
         const m = /^PG([A-Z]+)=([\s\S]*)$/.exec(e);

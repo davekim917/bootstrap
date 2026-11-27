@@ -49,6 +49,8 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['an sslpassword in a connection string glued to --dbname', `psql -X --dbname="sslpassword=${SECRET} host=192.0.2.20 dbname=app" -c "drop table orders"`],
         ['an sslpassword in a connection string attached to -d', `psql -X -d"host=192.0.2.20 sslpassword=${SECRET} dbname=app" -c "drop table orders"`],
         ['an sslpassword whose value percent-encodes a dollar sign', `psql "postgresql://app@192.0.2.20/app?sslpassword=%24${SECRET}" -c "drop table orders"`],
+        ['an sslpassword in a trailing --dbn psql ignores under POSIXLY_CORRECT, which the card still prints', `POSIXLY_CORRECT=1 psql -X -U app -c 'DROP TABLE old_orders' postgresql://192.0.2.20/live_app '--dbn=postgresql://192.0.2.20/other_app?sslpassword=%24${SECRET}'`],
+        ['an sslpassword in a pg_restore connection string', `pg_restore -d "host=192.0.2.20 sslpassword=${SECRET} dbname=app" app.dump`],
         ['an sslpassword whose value percent-encodes a backtick', `psql "postgresql://app@192.0.2.20/app?sslpassword=%60${SECRET}" -c "drop table orders"`],
         ['a URI password in adjacent quoted pieces', `psql postgresql://app:"${SECRET}"'x'@192.0.2.20/app -c "drop table orders"`],
         ['a PGPASSWORD prefix', `PGPASSWORD=${SECRET} ${H} -c "drop table orders"`],
