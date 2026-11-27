@@ -3042,15 +3042,26 @@ function collectCommandsInText(text: string, commands: any[]): void {
     }
 }
 
-/** The inner text of each `$(…)` (not `$((`) and backtick span in `text`, outermost first. */
-function substitutionSpans(text: string): string[] {
-    const spans: string[] = [];
+/**
+ * Where the inner text of each `$(…)` (not `$((`) and backtick span in `text` starts and ends, outermost first. With
+ * `quoted`, `text` is a shell word, and nothing inside its single quotes is a substitution.
+ */
+function substitutionRanges(text: string, quoted = false): Array<[number, number]> {
+    const ranges: Array<[number, number]> = [];
+    let double = false;
     for (let i = 0; i < text.length; i++) {
         if (text[i] === '\\') { i++; continue; }
+        if (quoted && text[i] === '"') { double = !double; continue; }
+        if (quoted && text[i] === "'" && !double) {
+            const close = text.indexOf("'", i + 1);
+            if (close < 0) break;
+            i = close;
+            continue;
+        }
         if (text[i] === '`') {
             const close = text.indexOf('`', i + 1);
             if (close === -1) break;
-            spans.push(text.slice(i + 1, close));
+            ranges.push([i + 1, close]);
             i = close;
             continue;
         }
@@ -3059,14 +3070,19 @@ function substitutionSpans(text: string): string[] {
             const close = substitutionClose(text, i + 2);
             // Text bash's reading can't place is checked whole, to its end, rather than skipped.
             if (close < 0 || close >= text.length) {
-                spans.push(text.slice(i + 2));
+                ranges.push([i + 2, text.length]);
                 break;
             }
-            spans.push(text.slice(i + 2, close));
+            ranges.push([i + 2, close]);
             i = close;
         }
     }
-    return spans;
+    return ranges;
+}
+
+/** The inner text of each `$(…)` (not `$((`) and backtick span in `text`, outermost first. */
+function substitutionSpans(text: string): string[] {
+    return substitutionRanges(text).map(([start, end]) => text.slice(start, end));
 }
 
 /** Split an `env -S` string into words the way GNU env does: whitespace and
@@ -12712,6 +12728,9 @@ const SLACK_READ_METHOD = /^(?:(?:[a-z][A-Za-z]*\.)+(?:list|info|history|replies
 const SLACK_API_BASE = /slack\.com\.?(?::\d+)?\/+api|\$\{?[A-Za-z0-9_]*slack[A-Za-z0-9_]*(?:[%#:/^,][^}\s]*)?\}?(?=["']?\/)/gi;
 // A method name at the start of what follows a base, ended by something no shell expansion starts with.
 const SLACK_METHOD_AFTER = /^["']?(?:\/api)?\/([A-Za-z]+(?:\.[A-Za-z]+)+)(?=$|[\s"'?#&;|)<>,\\\]])/;
+// A placeholder or an ellipsis where the method goes (`/api/<method>`, `/api/...`): prose about the API, which neither a
+// shell nor a program completes.
+const SLACK_PLACEHOLDER_AFTER = /^\/+(?:<[^<>\s]*>|\.\.\.|…)/;
 // A shell word that is an API path, alone or as curl's --request-target value.
 const SLACK_API_PATH = /^(?:--request-target=)?\/api\/([A-Za-z]+(?:\.[A-Za-z]+)+)$/;
 // A Slack user token: one written out, or a variable whose name says it holds one. An app configuration token
@@ -12989,13 +13008,15 @@ export function gatedSlackPosts(command: string, workgroupId: string | undefined
     // The values a client's options take, and HTTPie's request items: a Slack URL there is data, not a call.
     const data: Array<[number, number]> = [];
     const targets = clientSlackTargets(command, undefined, 0, data);
+    data.push(...inertSpans(command));
     const inData = (offset: number) => data.some(([s, e]) => s <= offset && offset < e);
     const posts: SlackPost[] = [];
     let named = false;
     for (const m of line.matchAll(SLACK_API_BASE)) {
         if (inData(at[m.index!])) continue;
-        named = true;
         const end = m.index! + m[0].length;
+        if (SLACK_PLACEHOLDER_AFTER.test(line.slice(end))) continue;
+        named = true;
         const after = SLACK_METHOD_AFTER.exec(line.slice(end));
         const method = after?.[1];
         if (method !== undefined && SLACK_READ_METHOD.test(method)) continue;
@@ -13133,6 +13154,91 @@ function shellScripts(text: string): { data: Array<{ start: number; end: number;
     };
     walk(ast, 0);
     return { data: bodies.filter(b => !b.runs && !b.writes.some(w => ran.has(w))), ran };
+}
+
+// Commands whose words can still reach a request, past any wrapper: they run them as code, hand them to a command they
+// run, or set a variable from them.
+const WORD_RUNNERS = new Set(['eval', 'source', '.', 'xargs', 'parallel', 'sem', 'find', 'watch', 'ssh', 'su', 'doas',
+    'flock', 'script', 'docker', 'podman', 'kubectl', 'npx', 'bunx', 'uvx', 'pipx', 'npm', 'make', 'awk', 'gawk', 'mawk',
+    'sed', 'read', 'mapfile', 'readarray', 'declare', 'typeset', 'local', 'export', 'readonly', 'let', 'alias', 'trap']);
+
+/**
+ * The spans of `text` that nothing sends or runs: the words and heredoc bodies of a command that only handles text (echo,
+ * printf, grep, cat writing a file, a CLI's arguments), when its output reaches no command that runs or sends it, no
+ * function, and no file the line runs or reads as input. A substitution inside one still runs, and is read the same way.
+ * A line that doesn't parse has none.
+ */
+function inertSpans(text: string, depth = 0): Array<[number, number]> {
+    let ast: any;
+    try {
+        ast = parseShell(text);
+    } catch {
+        return [];
+    }
+    const commands: any[] = [];
+    const functions = new Set<string>();
+    const ran = new Set<string>();
+    const names = (s: string) => { for (const m of s.matchAll(/[^\s'"`$(){};|&<>=@,]+/g)) ran.add(basename(m[0])); };
+    const collect = (node: any, d: number): void => {
+        if (!node || typeof node !== 'object' || d > 200) return;
+        if (node.type === 'Command') commands.push(node);
+        if (node.type === 'Function' && typeof node.name?.text === 'string') functions.add(node.name.text);
+        for (const [key, child] of Object.entries(node)) if (key !== 'parent') collect(child, d + 1);
+    };
+    collect(ast, 0);
+    const nameOf = (node: any) => shellUnquote(String(node.name?.text ?? ''));
+    const live = (node: any): boolean => {
+        const written = nameOf(node);
+        if (written === '' || /[/$`]/.test(written) || functions.has(written)) return true;
+        const { name, args } = stripWrappers(written, (node.suffix ?? []).map((w: any) => shellUnquote(String(w?.text ?? ''))));
+        return WRAPPERS.has(name) || functions.has(name) || HTTP_CLIENTS.has(name) || SHELLS.has(name) || PROGRAM_NAMES.test(name)
+            || WORD_RUNNERS.has(name) || (name === 'printf' && args.some(a => /^-[^-]*v/.test(a)));
+    };
+    // A compound command whose redirect feeds it holds a command that reads it, such as a `while read` loop.
+    const holdsLive = (node: any, d = 0): boolean => !!node && typeof node === 'object' && d < 200
+        && ((node.type === 'Command' && live(node)) || Object.entries(node).some(([key, child]) => key !== 'parent' && holdsLive(child, d + 1)));
+    for (const node of commands) if (live(node)) for (const w of [node.name, ...(node.suffix ?? [])]) names(String(w?.text ?? ''));
+    const inputs = (node: any, d: number): void => {
+        if (!node || typeof node !== 'object' || d > 200) return;
+        for (const r of Array.isArray(node.redirects) ? node.redirects : []) if (r?.operator === '<' && holdsLive(node)) names(String(r.target?.text ?? ''));
+        for (const [key, child] of Object.entries(node)) if (key !== 'parent') inputs(child, d + 1);
+    };
+    inputs(ast, 0);
+    const writesRan = (node: any) => (Array.isArray(node.redirects) ? node.redirects : [])
+        .some((r: any) => ['>', '>>', '>|', '&>', '&>>'].includes(r?.operator) && ran.has(basename(shellUnquote(String(r.target?.text ?? '')))));
+    const sink = (node: any) => node?.type === 'Command' && !live(node)
+        && !(basename(nameOf(node)) === 'tee' && (node.suffix ?? []).some((w: any) => ran.has(basename(shellUnquote(String(w?.text ?? ''))))));
+    const spans: Array<[number, number]> = [];
+    const mark = (start: number, end: number, word: boolean) => {
+        let at = start;
+        for (const [s, e] of substitutionRanges(text.slice(start, end), word)) {
+            spans.push([at, start + s]);
+            if (depth < 3) for (const [a, b] of inertSpans(text.slice(start + s, start + e), depth + 1)) spans.push([start + s + a, start + s + b]);
+            at = start + e;
+        }
+        spans.push([at, end]);
+    };
+    const walk = (node: any, flows: boolean, d: number): void => {
+        if (!node || typeof node !== 'object' || d > 200) return;
+        if (node.type === 'Function' || writesRan(node)) flows = true;
+        if (node.type === 'Pipeline' && Array.isArray(node.commands)) {
+            node.commands.forEach((part: any, k: number) => walk(part, flows || !node.commands.slice(k + 1).every(sink), d + 1));
+            return;
+        }
+        if (node.type === 'Command' && !flows && !live(node)) {
+            for (const w of node.suffix ?? []) if (typeof w?.pos === 'number' && typeof w?.end === 'number') mark(w.pos, w.end, true);
+            for (const r of node.redirects ?? []) {
+                if ((r?.operator !== '<<' && r?.operator !== '<<-') || typeof r.content !== 'string' || !r.content) continue;
+                const start = text.indexOf(r.content, node.end);
+                if (start < 0) continue;
+                if (r.heredocQuoted) spans.push([start, start + r.content.length]);
+                else mark(start, start + r.content.length, false);
+            }
+        }
+        for (const [key, child] of Object.entries(node)) if (key !== 'parent') walk(child, flows, d + 1);
+    };
+    walk(ast, false, 0);
+    return spans.filter(([s, e]) => e > s);
 }
 
 /** Whether the shell may split a word into several or fill it with options: an unquoted expansion, `"$@"` or `"${a[@]}"`. */
@@ -13815,6 +13921,7 @@ export function evaluateSlackPost(
     const [first] = posts;
     const method = posts.find(p => p.method !== 'unknown')?.method;
     const label = method ? `Slack post in your name (${method})` : 'Slack call in your name';
+    if (carriesCredential(command, opts.cwd ?? currentWorkingDir())) return { action: 'gate', label, deny: LITERAL_CREDENTIAL_REASON };
     // Every write is judged on its own identity, and the strictest outcome stands.
     const agents = [...new Set(posts.map(p => p.onecliAgent).filter((a): a is string => a !== null))];
     const who = (agent: string) => agent.startsWith('$') ? `the OneCLI identity in ${code(agent)}, which the line doesn't fix` : `the OneCLI identity ${code(agent)}`;

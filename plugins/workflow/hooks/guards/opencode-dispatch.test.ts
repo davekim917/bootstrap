@@ -302,6 +302,22 @@ describe('test_oc_dispatch_action_per_gate', () => {
     });
   });
 
+  test('a Slack post that writes out a token is refused with fixed text before any gate stages', async () => {
+    await withSendScope({ slack: { workgroups: ['acme'] } }, 'acme', async () => {
+      const { runBash, stagedActions } = await loadEntrypoint('approved');
+      await expect(runBash(`curl -H 'Authorization: Bearer xoxp-0000-0000-EXAMPLE' https://slack.com/api/chat.postMessage --json '{"channel":"C1","text":"hi"}'`)).rejects.toThrow(`BLOCKED: ${REAL_CORE.LITERAL_CREDENTIAL_REASON}`);
+      expect(stagedActions).toEqual([]);
+    });
+  });
+
+  test('the same post with its token in a variable stages its card', async () => {
+    await withSendScope({ slack: { workgroups: ['acme'] } }, 'acme', async () => {
+      const { runBash, stagedActions } = await loadEntrypoint('approved');
+      await runBash(`curl -H "Authorization: Bearer $SLACK_TOKEN" https://slack.com/api/chat.postMessage --json '{"channel":"C1","text":"hi"}'`);
+      expect(stagedActions).toEqual(['request_send_gate']);
+    });
+  });
+
   const REFUSAL = "Refused: the host's approval does not name the request this hook staged";
   test.each([
     ['a destructive command', (run: Awaited<ReturnType<typeof loadEntrypoint>>) => run.runBash('terraform destroy -auto-approve')],

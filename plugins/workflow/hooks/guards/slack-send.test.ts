@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { SEND_SCOPE_FILE_ENV, evaluateSlackPost, gateRequestContent, parseSendScope, payloadChangedSince } from './block-destructive-core';
+import { LITERAL_CREDENTIAL_REASON, SEND_SCOPE_FILE_ENV, evaluateSlackPost, gateRequestContent, parseSendScope, payloadChangedSince } from './block-destructive-core';
 
 /**
  * SLACK WRITES IN A PERSON'S NAME. In a listed workgroup's session, or on a line naming a listed OneCLI agent, a line
@@ -141,6 +141,19 @@ describe('which lines wait for the person whose Slack token they use', () => {
         ['a post with a Slack user token written out, outside any listed workgroup', 'other', `curl -H 'Authorization: Bearer xoxp-EXAMPLE' --json '{"channel":"C1","text":"hi"}' https://slack.com/api/chat.postMessage`],
         ['a post with a variable that holds a Slack user token', undefined, `curl -H "Authorization: Bearer $SLACK_USER_TOKEN" -d text=hi https://slack.com/api/chat.postMessage`],
         ['a listed identity run by onecli from its path', 'other', `/opt/tools/bin/onecli run --agent ag-acme -- ${POST}`],
+        // Text that names the Slack API still counts where something runs or sends it.
+        ['a write URL in a heredoc fed to a shell', 'acme', `cat <<'EOF' | bash\ncurl -X POST https://slack.com/api/chat.postMessage -d @payload.json\nEOF`],
+        ['a write URL in a script a heredoc writes and the line runs', 'acme', `cat > send.sh <<'EOF'\ncurl -X POST https://slack.com/api/chat.postMessage -d @payload.json\nEOF\nbash send.sh`],
+        ['a write URL echo hands to xargs', 'acme', `echo https://slack.com/api/chat.postMessage | xargs curl -X POST -d @payload.json`],
+        ['a write URL echo writes to a file xargs reads', 'acme', `echo https://slack.com/api/chat.postMessage > urls.txt; xargs curl -d @payload.json < urls.txt`],
+        ['a write URL a loop reads from a file echo writes', 'acme', `echo https://slack.com/api/chat.postMessage > urls.txt; while read -r u; do curl -X POST "$u" -d @payload.json; done < urls.txt`],
+        ['a post in a substitution inside echo\'s argument', 'acme', `echo "$(curl -s -X POST https://slack.com/api/chat.postMessage -d @payload.json)"`],
+        ['a post in a substitution inside another program\'s argument', 'acme', `notes-cli add --text "$(curl -s -X POST https://slack.com/api/chat.postMessage -d @payload.json)"`],
+        ['a post in a substitution inside an unquoted heredoc written to a file', 'acme', `cat <<EOF > notes.md\nresult: $(curl -s -X POST https://slack.com/api/chat.postMessage -d @payload.json)\nEOF`],
+        ['a write URL printf -v assigns', 'acme', `printf -v U 'https://slack.com/api/%s' chat.postMessage; curl -X POST "$U" -d @payload.json`],
+        ['a write URL a function echoes to a client', 'acme', `f(){ echo https://slack.com/api/chat.postMessage; }; curl -X POST "$(f)" -d @payload.json`],
+        ['a Python script a heredoc writes and the line runs', 'acme', `cat > /tmp/pull.py <<'EOF'\nimport urllib.request\nurllib.request.urlopen("https://slack.com/api/" + m)\nEOF\npython3 /tmp/pull.py`],
+        ['a post echo pipes through a wrapper into a shell', 'acme', `echo 'curl -X POST https://slack.com/api/chat.postMessage -d @payload.json' | timeout 30 bash`],
     ] as Array<[string, string | undefined, string]>)('%s gates', (_label, workgroup, command) => {
         expect(verdict(command, workgroup)).toBe('gate');
     });
@@ -201,8 +214,36 @@ describe('which lines wait for the person whose Slack token they use', () => {
         // A Slack URL is a call only where an HTTP client takes it as its URL, not in the values its options take.
         ['a search whose query holds a Slack API URL', 'acme', `curl -G https://slack.com/api/search.messages --data-urlencode 'query=https://slack.com/api/chat.postMessage'`],
         ['a Slack API URL in a header to another host', 'acme', `curl -H 'Referer: https://slack.com/api/chat.postMessage' https://api.example.com/v1/x`],
+        // Text nothing runs or sends: a pattern, a printed string, a document or JSON a heredoc writes, another program's argument.
+        ['a grep pattern that names the Slack API', 'acme', `grep -n "slack.com/api" notes.sh | head -20`],
+        ['an rg pattern for a write URL', 'acme', `rg 'slack\\.com/api/chat\\.postMessage' src/`],
+        ['echo\'s argument naming a write URL', 'acme', `echo "post with curl https://slack.com/api/chat.postMessage"`],
+        ['printf writing a write URL to a file the line never runs', 'acme', `printf '%s\\n' 'https://slack.com/api/chat.postMessage' > notes.txt`],
+        ['JSON a heredoc writes that names a write URL', 'acme', `cat > claims.json <<'EOF'\n{"slack": {"ref": "readable with curl https://slack.com/api/chat.postMessage"}}\nEOF`],
+        ['a prompt a heredoc pipes through a wrapper to another program', 'acme', `{ cat brief.md; cat <<'EOF'\nPost with curl https://slack.com/api/chat.postMessage\nEOF\n} | timeout 600 review-cli run`],
+        ['a prompt file a heredoc writes and another program reads', 'acme', `cat > prompt.md <<EOF\nPost with curl https://slack.com/api/chat.postMessage\nEOF\ntimeout 600 review-cli run < prompt.md`],
+        ['a heredoc in a substitution inside another program\'s argument', 'acme', `notes-cli add --text "$(cat <<'EOF'\nPost with curl https://slack.com/api/chat.postMessage\nEOF\n)"`],
+        ['a document that names the API with a placeholder method', 'acme', `cat > notes.md <<'EOF'\nRead Slack with curl https://slack.com/api/<method> and no auth header.\nEOF`],
+        ['an ellipsis where the method goes, in a program\'s text', 'acme', `python3 - <<'EOF'\nimport json\njson.dump({"ref": "readable with curl https://slack.com/api/... and no auth"}, open("claims.json", "w"))\nEOF`],
     ] as Array<[string, string | undefined, string]>)('%s is allowed', (_label, workgroup, command) => {
         expect(verdict(command, workgroup)).toBe('allow');
+    });
+});
+
+describe('a Slack post that writes out a credential', () => {
+    test.each([
+        ['a bearer token in a post', 'acme', `curl -s -X POST https://slack.com/api/chat.postMessage -H 'Authorization: Bearer xoxp-0000-0000-EXAMPLE' -d @payload.json`],
+        ['a bearer token in a post under a listed identity', undefined, `onecli run --agent ag-acme -- curl -s -X POST https://slack.com/api/chat.postMessage -H "Authorization: Bearer xoxb-0000-EXAMPLE" -d @payload.json`],
+        ['an app configuration token, which the credential reader counts like any other header value', 'acme', `curl -s https://slack.com/api/apps.manifest.update -H 'Authorization: Bearer xoxe.xoxp-1-EXAMPLE' -d app_id=A1`],
+    ] as Array<[string, string | undefined, string]>)('%s is refused with fixed text and no card', (_label, workgroup, command) => {
+        const v = evaluateSlackPost(command, workgroup, { nanoclaw: true });
+        expect([v.action, v.deny, v.summary, v.sendParts]).toEqual(['gate', LITERAL_CREDENTIAL_REASON, undefined, undefined]);
+    });
+
+    test('a token held in a variable still gets a card', () => {
+        const v = evaluateSlackPost(`curl -s -X POST https://slack.com/api/chat.postMessage -H "Authorization: Bearer $SLACK_TOKEN" -d @payload.json`, 'acme', { nanoclaw: true });
+        expect([v.action, v.deny]).toEqual(['gate', undefined]);
+        expect(v.summary).toContain('The agent wants to post');
     });
 });
 
