@@ -8844,14 +8844,22 @@ function conninfoCredential(s: string, templates = false): boolean {
 const libpqLiteral = (raw: string, value: string) => value !== '' && !/[$\x60]/.test(raw);
 
 /**
- * Whether SQL holds a single-quoted literal that is a connection string with a credential (CREATE SUBSCRIPTION …
- * CONNECTION, dblink). The literal must also name where it connects: a lone 'sslpassword=x' is a value like any other.
+ * Whether SQL holds a single-quoted literal that is a connection string with a credential. A live one, the CONNECTION
+ * of CREATE or ALTER SUBSCRIPTION or a value in a foreign server's or user mapping's OPTIONS, refuses on any written-out
+ * password or sslpassword. Any other literal is stored data: it counts only when it names where it connects, and a
+ * template's placeholder there is not a credential (a lone 'sslpassword=x' or a DSN help text is a value like any other).
  */
 function sqlConninfoCredential(sql: string): boolean {
+    const skeleton = stripSqlLiteralsAndComments(sql);
     return [...sql.matchAll(/'((?:[^']|'')*)'/g)].some(m => {
         const s = m[1].replace(/''/g, "'");
         const params = connectionParams(s);
-        return !!params && (/^postgres(?:ql)?:\/\//.test(s) || params.some(p => /^(?:host|hostaddr|dbname|user|port|service)$/.test(p.key))) && conninfoCredential(s, true);
+        if (!params) return false;
+        const before = skeleton.slice(skeleton.lastIndexOf(';', m.index) + 1, m.index);
+        const live = /\b(?:CREATE|ALTER)\s+SUBSCRIPTION\b[\s\S]*\bCONNECTION\s*$/i.test(before)
+            || /\b(?:CREATE|ALTER)\s+(?:SERVER|USER\s+MAPPING)\b[\s\S]*\bOPTIONS\s*\([^)]*$/i.test(before);
+        if (live) return conninfoCredential(s);
+        return (/^postgres(?:ql)?:\/\//.test(s) || params.some(p => /^(?:host|hostaddr|dbname|user|port|service)$/.test(p.key))) && conninfoCredential(s, true);
     });
 }
 
@@ -10031,13 +10039,9 @@ function sqlLiteral(text: string, dollarQuotes = true): boolean {
     return !!tag && v.indexOf(tag[0], tag[0].length) > tag[0].length;
 }
 
-// A placeholder's name: words that name the value (password, db_password, your-password), not the value itself.
-const PLACEHOLDER_NAME = String.raw`(?:[a-z]+[-_ ])*(?:password|passwd|pass|pwd|pw|secret|token|key|credentials?|value)(?:[-_ ][a-z]+)*`;
-const TEMPLATE_PLACEHOLDER = new RegExp(String.raw`^(?:%[a-z]|\{\}|<>|\{${PLACEHOLDER_NAME}\}|<${PLACEHOLDER_NAME}>|\$\{\w+\})$`, 'i');
-
-/** A template's placeholder (%s, {password}, <your-password>) stands for a value; a bracketed <s3cr3t-Value9> is one. */
+/** A template's placeholder (%s, {password}, <password>) stands for a value; it isn't one. */
 function templatePlaceholder(value: string): boolean {
-    return TEMPLATE_PLACEHOLDER.test(value);
+    return /^(?:%[a-z]|\{\w*\}|<[^>]*>)$/i.test(value);
 }
 
 /** user:password with a written-out password, or a written-out user with an empty one (a token as the user). */
