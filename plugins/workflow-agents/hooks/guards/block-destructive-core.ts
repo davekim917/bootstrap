@@ -1960,7 +1960,9 @@ function metaSkeleton(sql: string): string {
         if (metaSkeletons.size > 64) metaSkeletons.clear();
         // A blanked comment or literal keeps its line breaks, so the skeleton's lines are the text's lines.
         const blanked = sqlSkeleton(sql, false, true).skeleton;
-        metaSkeletons.set(sql, (skeleton = [...blanked].map((ch, i) => (sql[i] === '\n' ? '\n' : ch)).join('')));
+        const kept: string[] = [];
+        for (let i = 0; i < blanked.length; i++) kept.push(sql[i] === '\n' ? '\n' : blanked[i]);
+        metaSkeletons.set(sql, (skeleton = kept.join('')));
     }
     return skeleton;
 }
@@ -4247,7 +4249,10 @@ function psqlLeavesDatabase(text: string, depth = 0, meta = true): string | null
     const skeleton = metaSkeleton(withoutCopyData(text));
     if (meta && depth === 0 && skeleton.includes('\\')) return 'a psql meta-command';
     const shared = /\b(?:(?:CREATE|ALTER|DROP)\s+(?:DATABASE|TABLESPACE)|(?:COMMENT|SECURITY\s+LABEL(?:\s+FOR\s+\S+)?)\s+ON\s+(?:DATABASE|TABLESPACE|ROLE))\b/i.exec(skeleton);
-    if (shared) return oneLine(withoutCopyData(text).slice(shared.index).split(/[;\n]/)[0]).slice(0, STATEMENT_PREVIEW_CHARS);
+    if (shared) {
+        const end = skeleton.indexOf(';', shared.index);
+        return withoutCopyData(text).slice(shared.index, end < 0 ? undefined : end).replace(/\s+/g, ' ').trim().slice(0, STATEMENT_PREVIEW_CHARS);
+    }
     // A DO or function body runs as SQL too, so it is read with the same predicate.
     if (depth >= SQL_RECURSION_LIMIT) return null;
     for (const m of text.matchAll(/\$([A-Za-z_]\w*)?\$([\s\S]*?)\$\1\$/g)) {
@@ -4685,8 +4690,9 @@ function renderDevTarget(cmd: ResolvedCommand): string | null {
 }
 
 /** A role or privilege change in render psql's SQL, which keeps its card even on a listed dev database. */
-function renderPsqlPrivilegeChange(args: string[]): string | null {
-    if (args[0] !== 'psql') return null;
+function renderPsqlPrivilegeChange(renderArgs: string[]): string | null {
+    const args = renderPsqlArgs(renderArgs);
+    if (!args) return null;
     for (const word of args.slice(2)) {
         const sql = word.replace(/^(?:--command=|-c)/, '');
         // A grant on the dev database's own objects stays waived; a role, which the whole cluster holds, does not, and
@@ -7805,12 +7811,30 @@ function sqlReadings(cmd: ResolvedCommand, texts: string[]): Array<{ text: strin
     return out;
 }
 
+/**
+ * render psql's words from `psql` on, read past the global flags render takes before a command with renderShape's
+ * flag tables; null for any other render line.
+ */
+function renderPsqlArgs(args: string[]): string[] | null {
+    let i = 0;
+    for (; i < args.length && args[i].startsWith('-') && args[i] !== '-'; i++) {
+        const a = args[i];
+        const at = a.startsWith('--') ? a.indexOf('=') : -1;
+        const flag = a.startsWith('--') ? (at < 0 ? a : a.slice(0, at)) : RENDER_SHORT.get(a[1]);
+        const arity = flag && Object.hasOwn(RENDER_GLOBAL, flag) ? RENDER_GLOBAL[flag] : undefined;
+        if (!arity) return null;
+        if (arity === 'value' && (a.startsWith('--') ? at < 0 : a.length === 2)) i++;
+    }
+    return args[i] === 'psql' ? args.slice(i) : null;
+}
+
 /** The SQL a `render psql` step passes with -c or --command; null for any other step. */
 function renderPsqlTexts(cmd: ResolvedCommand): string[] | null {
-    if (cmd.name !== 'render' || cmd.args[0] !== 'psql') return null;
+    const args = cmd.name === 'render' ? renderPsqlArgs(cmd.args) : null;
+    if (!args) return null;
     const texts: string[] = [];
-    cmd.args.forEach((a, i) => {
-        if ((a === '-c' || a === '--command') && cmd.args[i + 1] !== undefined) texts.push(cmd.args[i + 1]);
+    args.forEach((a, i) => {
+        if ((a === '-c' || a === '--command') && args[i + 1] !== undefined) texts.push(args[i + 1]);
         else if (a.startsWith('--command=')) texts.push(a.slice('--command='.length));
     });
     return texts;

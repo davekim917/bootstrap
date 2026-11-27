@@ -102,6 +102,7 @@ describe('a role or privilege change on a reachable Postgres is never run withou
         ['its host written out', viaHost(DEV_DB, 'GRANT app_admin TO app_reader'), 'whole cluster holds'],
         ['a statement on another database', viaRender(DEV_DB, 'DROP DATABASE other_db'), 'DROP DATABASE other_db'],
         ['a comment on another database', viaRender(DEV_DB, "COMMENT ON DATABASE other_db IS 'x'"), 'COMMENT ON DATABASE other_db'],
+        ['a database named on the next line', viaRender(DEV_DB, 'DROP DATABASE\n  other_db'), 'DROP DATABASE other_db'],
     ])('a listed dev database holds it as dev and says why: %s', (_how, command, why) => {
         const { reason } = run(command);
         expect(changesProduction(command, '/tmp')).toBe(false);
@@ -178,6 +179,7 @@ describe('psql input the guard reads as psql does', () => {
             'role.sql': 'CREATE ROLE app_reader;\n',
             'nested-role.sql': '/* note /* inner */\nCREATE ROLE app_reader;\n*/\nselect 1;\n',
             'copy-hides.sql': "COPY t FROM stdin;\nO'Brien\n\\.\nGRANT ALL ON t TO public;\n",
+            'copy-after-emoji.sql': "SELECT 1 AS \u{1F680};\n/* load\n   orders */\n\\copy orders FROM 'orders.csv'\n",
             'copy-after-comment.sql': "/* load\n   orders */\n\\copy orders FROM 'orders.csv'\n",
             'copy-comment.sql': '-- Previous import used COPY staging_orders FROM STDIN;\nDROP TABLE IF EXISTS staging_orders;\nCOPY import_log FROM STDIN;\nimported\n\\.\n',
         };
@@ -189,6 +191,7 @@ describe('psql input the guard reads as psql does', () => {
     test.each([
         ['-f clustered after -X', () => `${H} -Xf ${f('grant.sql')}`],
         ['a \\copy FROM after a comment that spans lines', () => `${H} -X -d app -f ${f('copy-after-comment.sql')}`],
+        ['a \\copy FROM after an emoji and a comment that spans lines', () => `${H} -X -d app -f ${f('copy-after-emoji.sql')}`],
         ['\\gexec, which runs query results as SQL', () => `${H} -f ${f('gexec.sql')}`],
         ['\\password, which alters a role', () => `${H} -f ${f('password.sql')}`],
         ['a GRANT first in a labelled block', () => `${H} -f ${f('label.sql')}`],

@@ -68,6 +68,8 @@ describe('a gated or refused command that writes out a credential is refused wit
         ['an escape-string password', `${H} -c "ALTER ROLE app PASSWORD E'${SECRET}'; DROP TABLE orders"`],
         ['a dollar-quoted password', `${H} -c 'ALTER ROLE app PASSWORD $p$${SECRET}$p$; DROP TABLE orders'`],
         ['a dollar-quoted password through render psql', `render psql dpg-proddatabase00000001-a -c 'ALTER ROLE app PASSWORD $p$${SECRET}$p$'`],
+        ['a dollar-quoted password through render psql after -o text', `render -o text psql dpg-proddatabase00000001-a -c 'ALTER ROLE app PASSWORD $p$${SECRET}$p$'`],
+        ['a dollar-quoted password through render psql after --output=text', `render --output=text psql dpg-proddatabase00000001-a -c 'ALTER ROLE app PASSWORD $p$${SECRET}$p$'`],
         ['a comment between PASSWORD and its value', `${H} -c "ALTER ROLE app PASSWORD /* new */ '${SECRET}'; DROP TABLE orders"`],
         ['a password on the line after PASSWORD, refused for its target', `psql "$DATABASE_URL" -c "ALTER ROLE app PASSWORD\n'${SECRET}'; DROP TABLE orders"`],
         ['a Snowflake user password', `snow sql -c acme_prod -q "create user u password = '${SECRET}'; drop table orders"`],
