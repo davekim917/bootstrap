@@ -122,6 +122,7 @@ interface PipedInput {
     opaque?: string[];          // programs before it in the pipeline whose output isn't traced (anything but echo/printf/cat/tee)
 }
 
+
 /**
  * Everything an input carries, following its `from` links. Inputs link to each other instead of copying, because a
  * copy at each nesting level made deep pipelines cost the cube of their depth; each node is visited once.
@@ -202,7 +203,7 @@ function argumentWords(cmd: ResolvedCommand, joinSplit = false): ExpandableWord[
 
 /**
  * The value of each word whose provable variables change it (a word without one, or whose variables stay unknown, is
- * left out); null once the line's word or trace budget runs out.
+ * left out, and reported to `unresolved` when one stays unknown); null once the line's word or trace budget runs out.
  */
 function expandWords(words: ExpandableWord[], cmd: ResolvedCommand): string[] | null {
     const out: string[] = [];
@@ -760,11 +761,46 @@ export const DESTRUCTIVE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
     { rx: /^ALTER\b[\s\S]*\bSET\s+TAG\b/i, label: 'ALTER ... SET TAG' },
 ];
 
+// Postgres role and privilege changes outlive the data they were made for: a login, a grant or an owner stays after a
+// dev table is dropped. Checked only for Postgres clients; Snowflake and the other dialects keep their own rules. A
+// statement matching one of these and a destructive pattern reads as the privilege change.
+export const PG_PRIVILEGE_SQL_PATTERNS: Array<{ rx: RegExp; label: string }> = [
+    { rx: /^CREATE\s+(?:ROLE|GROUP|USER(?!\s+MAPPING\b))\b/i, label: 'CREATE ROLE' },
+    { rx: /^ALTER\s+DEFAULT\s+PRIVILEGES\b/i, label: 'ALTER DEFAULT PRIVILEGES' },
+    { rx: /^ALTER\s+(?:ROLE|GROUP|USER(?!\s+MAPPING\b))\b/i, label: 'ALTER ROLE' },
+    { rx: /^DROP\s+(?:ROLE|GROUP|USER(?!\s+MAPPING\b))\b/i, label: 'DROP ROLE' },
+    { rx: /^DROP\s+OWNED\b/i, label: 'DROP OWNED' },
+    // A database, tablespace, foreign server or parameter is shared by the whole cluster, not held by one database.
+    { rx: /^GRANT\b[\s\S]*?\bON\s+(?:DATABASE|TABLESPACE|FOREIGN\s+(?:SERVER|DATA\s+WRAPPER)|PARAMETER)\b/i, label: 'GRANT ON SHARED OBJECT' },
+    { rx: /^REVOKE\b[\s\S]*?\bON\s+(?:DATABASE|TABLESPACE|FOREIGN\s+(?:SERVER|DATA\s+WRAPPER)|PARAMETER)\b/i, label: 'GRANT ON SHARED OBJECT' },
+    { rx: /^ALTER\s+(?:DATABASE|TABLESPACE)\b[\s\S]*\bOWNER\s+TO\b/i, label: 'ALTER DATABASE OWNER' },
+    { rx: /^ALTER\s+POLICY\b/i, label: 'ALTER POLICY' },
+    { rx: /^CREATE\s+POLICY\b/i, label: 'CREATE POLICY' },
+    // A view's security_invoker and security_barrier decide whose privileges and row policies apply through it.
+    { rx: /^ALTER\s+(?:MATERIALIZED\s+VIEW|VIEW|TABLE)\b[\s\S]*\b(?:SET|RESET)\s*\([\s\S]*\bsecurity_(?:invoker|barrier)\b/i, label: 'ALTER VIEW SECURITY' },
+    // PostgreSQL's DROP POLICY names no kind; removing a restrictive policy can widen who reads which rows.
+    { rx: /^DROP\s+POLICY\b/i, label: 'DROP ROW SECURITY POLICY' },
+    { rx: /^ALTER\s+TABLE\b[\s\S]*\b(?:DISABLE|ENABLE|(?:NO\s+)?FORCE)\s+ROW\s+LEVEL\s+SECURITY\b/i, label: 'DISABLE ROW LEVEL SECURITY' },
+    // With no ON, GRANT and REVOKE add or remove a role's membership in another role.
+    { rx: /^GRANT\s+(?![\s\S]*\bON\b)/i, label: 'GRANT ROLE' },
+    { rx: /^GRANT\s/i, label: 'GRANT' },
+    { rx: /^REVOKE\s+(?![\s\S]*\bON\b)/i, label: 'REVOKE ROLE' },
+    { rx: /^REVOKE\s/i, label: 'REVOKE' },
+    { rx: /^REASSIGN\s+OWNED\b/i, label: 'REASSIGN OWNED' },
+    { rx: /^ALTER\b[\s\S]*(?<!\bRENAME\s+(?:COLUMN\s+)?)\bOWNER\s+TO\b/i, label: 'ALTER ... OWNER TO' },
+    { rx: /^CREATE\b[\s\S]*?\b(?:FUNCTION|PROCEDURE)\b[\s\S]*\bSECURITY\s+DEFINER\b/i, label: 'SECURITY DEFINER' },
+    { rx: /^ALTER\s+(?:FUNCTION|PROCEDURE|ROUTINE)\b[\s\S]*\bSECURITY\s+(?:DEFINER|INVOKER)\b/i, label: 'SECURITY DEFINER' },
+];
+const PG_SQL_PATTERNS = [...PG_PRIVILEGE_SQL_PATTERNS, ...DESTRUCTIVE_SQL_PATTERNS];
+const PG_PRIVILEGE_LABELS = new Set(PG_PRIVILEGE_SQL_PATTERNS.map(p => p.label));
+// Roles belong to the whole cluster, not to the database a connection names.
+const PG_CLUSTER_ROLE_LABELS = new Set(['CREATE ROLE', 'ALTER ROLE', 'DROP ROLE', 'GRANT ROLE', 'REVOKE ROLE', 'REASSIGN OWNED', 'DROP OWNED', 'GRANT ON SHARED OBJECT', 'ALTER DATABASE OWNER']);
+
 // Control-flow words that can open a statement inside a scripting block
 // (Snowflake Scripting, PL/pgSQL, T-SQL). Stripped before matching, so the
 // statement they lead into is checked like a top-level one.
 // A Snowflake Scripting RESULTSET assignment or ASYNC child job runs the statement in its parentheses.
-const BLOCK_LEAD = /^(?:(?:BEGIN|DECLARE|ELSE|LOOP|DO|REPEAT)\b\s*|(?:EXCEPTION\s+)?(?:IF|ELSEIF|ELSIF|CASE|WHEN)\b[\s\S]*?\bTHEN\b\s*|(?:FOR|WHILE)\b[\s\S]*?\b(?:DO|LOOP)\b\s*|(?:(?:LET\s+)?[A-Za-z_][\w$]*(?:\s+[A-Za-z_][\w$]*)?\s*(?::=|\bDEFAULT\b)\s*)?(?:ASYNC\s*)?\(\s*)/i;
+const BLOCK_LEAD = /^(?:<<\s*[A-Za-z_][\w$]*\s*>>\s*|(?:BEGIN|DECLARE|ELSE|LOOP|DO|REPEAT)\b\s*|(?:EXCEPTION\s+)?(?:IF|ELSEIF|ELSIF|CASE|WHEN)\b[\s\S]*?\bTHEN\b\s*|(?:FOR|WHILE)\b[\s\S]*?\b(?:DO|LOOP)\b\s*|(?:(?:LET\s+)?[A-Za-z_][\w$]*(?:\s+[A-Za-z_][\w$]*)?\s*(?::=|\bDEFAULT\b)\s*)?(?:ASYNC\s*)?\(\s*)/i;
 const BLOCK_LEAD_MAX_STRIPS = 16;
 // Inside a scripting block a statement can start after any of these, and a lead's condition can hold a CASE expression
 // with THENs of its own, so every one is tried as a statement start.
@@ -781,13 +817,13 @@ const SCRIPT_STATEMENTS_MAX = 32;
 const TOO_COMPLEX = 'SQL too complex to scan';
 
 const UPDATE_LEADING = /^UPDATE\b/i;
-const STATEMENT_VERBS = new Set(['UPDATE', ...DESTRUCTIVE_SQL_PATTERNS.map(p => /^\^([A-Z]+)/.exec(p.rx.source)![1])]);
+const STATEMENT_VERBS = new Set(['UPDATE', ...PG_SQL_PATTERNS.map(p => /^\^([A-Z]+)/.exec(p.rx.source)![1])]);
 const HAS_WHERE = /\bWHERE\b/i;
 
 // Cheap superset prefilter — if none of these verbs appear anywhere in the
 // SQL arg, no destructive pattern can match. Skips the full strip+scan
 // pipeline on SELECT-only queries (the common case).
-const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE|GRANT|PROCEDURE|DO|PURGE)\b/i;
+const SQL_PREFILTER = /\b(?:DROP|TRUNCATE|DELETE|MERGE|UPDATE|INSERT|CREATE|ALTER|EXECUTE|GRANT|REVOKE|REASSIGN|PROCEDURE|DO|PURGE)\b/i;
 
 // Hoisted to module scope — these regexes are matched per-segment / per-call
 // inside the SQL scanner; defining them inline would recompile on every
@@ -805,6 +841,7 @@ const SQL_BODY_LANGUAGE = /^(?:SQL|PLPGSQL)$/i;
 const EXECUTE_IMMEDIATE_END = /^(?:$|;|\)|USING\b|INTO\b|\/\/)/i;
 const UNREADABLE_EXECUTE_IMMEDIATE = "EXECUTE IMMEDIATE of SQL the guard can't read";
 const UNREADABLE_BODY = "a procedure or DO body the guard can't read";
+const PG_UNREADABLE_LABELS = new Set([UNREADABLE_EXECUTE_IMMEDIATE, UNREADABLE_BODY, TOO_COMPLEX]);
 const DOLLAR_TAG = /^\$([A-Za-z0-9_]*)\$/;
 
 const STATEMENT_PREVIEW_CHARS = 200;
@@ -848,7 +885,21 @@ export function stripSqlLiteralsAndComments(sql: string): string {
  * stripSqlLiteralsAndComments, plus where the first literal or comment that never closes starts (-1 when every one
  * closes). From there to the end the skeleton is blank, so no statement there was read.
  */
-export function sqlSkeleton(sql: string, backslashEscapes = false): { skeleton: string; openAt: number } {
+function nestedCommentClose(sql: string, start: number): number {
+    let depth = 0;
+    for (let i = start; i < sql.length - 1; i++) {
+        if (sql[i] === '/' && sql[i + 1] === '*') {
+            depth++;
+            i++;
+        } else if (sql[i] === '*' && sql[i + 1] === '/') {
+            if (--depth === 0) return i;
+            i++;
+        }
+    }
+    return -1;
+}
+
+export function sqlSkeleton(sql: string, backslashEscapes = false, nestedComments = false): { skeleton: string; openAt: number } {
     const out: string[] = [];
     let openAt = -1;
     let i = 0;
@@ -864,7 +915,8 @@ export function sqlSkeleton(sql: string, backslashEscapes = false): { skeleton: 
             continue;
         }
         if (c2 === '/*') {
-            const close = sql.indexOf('*/', i + 2);
+            // Postgres nests block comments, so its comment ends at the `*/` that closes the first `/*`.
+            const close = nestedComments ? nestedCommentClose(sql, i) : sql.indexOf('*/', i + 2);
             if (close < 0) openAt = i;
             const end = close < 0 ? sql.length : close + 2;
             out.push(' '.repeat(end - i));
@@ -968,7 +1020,7 @@ export function decomposeSqlSegment(skel: string): Array<{ body: string; isCTE: 
     return bodies;
 }
 
-export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | null {
+export function checkSqlBody(body: string, isCTE: boolean, postgres = false): DestructiveMatch | null {
     const whole = body.trim();
     let trimmed = whole;
     let scripted = false;
@@ -976,7 +1028,7 @@ export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | n
         trimmed = trimmed.replace(BLOCK_LEAD, '').trim();
         scripted = true;
     }
-    const found = checkStatement(trimmed, isCTE);
+    const found = checkStatement(trimmed, isCTE, postgres);
     if (found || !scripted) return found;
     let candidates = 0;
     let statements = 0;
@@ -989,17 +1041,17 @@ export function checkSqlBody(body: string, isCTE: boolean): DestructiveMatch | n
         const word = BOUNDARY_WORD.exec(whole);
         if (!word || word[2] || !STATEMENT_VERBS.has(word[1].toUpperCase())) continue;
         if (++statements > SCRIPT_STATEMENTS_MAX) return { pattern: TOO_COMPLEX, statement: whole.slice(0, STATEMENT_PREVIEW_CHARS) };
-        const inner = checkStatement(whole.slice(at), isCTE);
+        const inner = checkStatement(whole.slice(at), isCTE, postgres);
         if (inner) return inner;
     }
     return null;
 }
 
-function checkStatement(trimmed: string, isCTE: boolean): DestructiveMatch | null {
+function checkStatement(trimmed: string, isCTE: boolean, postgres: boolean): DestructiveMatch | null {
     if (!trimmed) return null;
     const preview = trimmed.slice(0, STATEMENT_PREVIEW_CHARS);
 
-    for (const { rx, label } of DESTRUCTIVE_SQL_PATTERNS) {
+    for (const { rx, label } of postgres ? PG_SQL_PATTERNS : DESTRUCTIVE_SQL_PATTERNS) {
         if (rx.test(trimmed)) {
             return { pattern: isCTE ? `CTE-wrapped ${label}` : label, statement: preview };
         }
@@ -1153,17 +1205,17 @@ export function findExecuteImmediateLiterals(
  * `snowflake`: `sql` is snow's input as snowLexed reads it exactly, so a dynamic body that reading can't vouch for is
  * also checked for a destructive keyword anywhere in it.
  */
-export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpgsql = false, snowflake = false): DestructiveMatch | null {
+export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpgsql = false, snowflake = false, postgres = false): DestructiveMatch | null {
     if (!SQL_PREFILTER.test(sql)) return null;
     if (depth > SQL_RECURSION_LIMIT) return { pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: sql.trim().slice(0, STATEMENT_PREVIEW_CHARS) };
 
     // MySQL and Snowflake read a backslash in a quoted string as an escape, so text holding one is read both ways.
     const readings = sql.includes('\\') ? [false, true] : [false];
     for (const backslash of readings) {
-        const skeleton = sqlSkeleton(sql, backslash).skeleton;
+        const skeleton = sqlSkeleton(sql, backslash, postgres).skeleton;
         for (const segment of skeleton.split(';')) {
             for (const { body, isCTE } of decomposeSqlSegment(segment)) {
-                const match = checkSqlBody(body, isCTE);
+                const match = checkSqlBody(body, isCTE, postgres);
                 if (match) return match;
             }
         }
@@ -1175,8 +1227,8 @@ export function findDestructiveSqlStatement(sql: string, depth: number = 0, plpg
         }
         for (const literal of dynamic.literals) {
             const lexedBody = snowLexed(literal.body);
-            const inner = findDestructiveSqlStatement(literal.body, depth + 1, literal.plpgsql, snowflake)
-                ?? findDestructiveSqlStatement(lexedBody.text, depth + 1, literal.plpgsql, snowflake)
+            const inner = findDestructiveSqlStatement(literal.body, depth + 1, literal.plpgsql, snowflake, postgres)
+                ?? findDestructiveSqlStatement(lexedBody.text, depth + 1, literal.plpgsql, snowflake, postgres)
                 ?? (snowflake && !lexedBody.exact ? destructiveKeywordAnywhere(literal.body) : null);
             if (inner) {
                 return { pattern: `EXECUTE IMMEDIATE → ${inner.pattern}`, statement: inner.statement };
@@ -1339,6 +1391,12 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
         for (const o of fileOptions) {
             const v = optionValueAt(args, i, o, attaches);
             if (v !== undefined) files.push(v);
+            // `-Xf FILE`: a single-letter file option clustered after flags takes the rest of the word, or the next one.
+            const at = /^-[a-z]$/i.test(o) && !a.startsWith(o) && clusterValueOption(client, a) === o[1] ? a.indexOf(o[1], 1) : -1;
+            if (at > 0) {
+                const value = a.slice(at + 1) || args[i + 1];
+                if (value !== undefined) files.push(value);
+            }
         }
         for (const o of preludeOptions) {
             const v = optionValueAt(args, i, o, attaches);
@@ -1457,7 +1515,6 @@ export function sqlInputOf(cmd: ResolvedCommand): SqlInput {
     if (pending.length) unreadable ??= pending[0];
     return { texts, unreadable, argCounts };
 }
-
 const sqlInputs = new WeakMap<ResolvedCommand, SqlInput>();
 
 /** sqlInputOf, once per step: a second read would spend the line's trace budget again. */
@@ -1827,7 +1884,6 @@ function readSqlFiles(file: string, cmd: ResolvedCommand): Array<{ path: string;
     }
     return out;
 }
-
 /**
  * Every absolute path `file` can name when the step runs, or null when the
  * command line does not prove it (a variable without a provable value, a glob,
@@ -1891,6 +1947,32 @@ function writesTo(file: string, reader: ResolvedCommand): PipedInput[] | null {
     }
     return out;
 }
+
+
+
+
+
+// The same SQL is often read by every psql on a long line; its skeleton is computed once.
+const metaSkeletons = new Map<string, string>();
+function metaSkeleton(sql: string): string {
+    let skeleton = metaSkeletons.get(sql);
+    if (skeleton === undefined) {
+        if (metaSkeletons.size > 64) metaSkeletons.clear();
+        metaSkeletons.set(sql, (skeleton = sqlSkeleton(sql, false, true).skeleton));
+    }
+    return skeleton;
+}
+
+
+
+
+
+
+
+
+
+
+
 
 const SQL_PATH_UNPROVEN = "a path the command line doesn't prove";
 const SQL_PATH_MISSING = "a file that isn't there yet";
@@ -3549,6 +3631,7 @@ function emittedText(cmd: ResolvedCommand): string[] {
     return [...(cmd.stdinTexts ?? []), operands.join(' '), ...operands, renderPrintf(operands)];
 }
 
+
 const PRINTF_DIRECTIVE = /%(?:%|[-+ #0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?[sbqdiouxXcfFeEgGaA])/g;
 
 /** printf's output for a format and its arguments, reusing the format until the arguments run out. */
@@ -4154,52 +4237,143 @@ const LAB_DB_NAME_RE = /^lab[-_]/i;
 // so the reliable lab signals are the DATABASE and USER names, not the host.
 const CONNECTION_URI_RE =
     /\b(?:postgres(?:ql)?|mysql|mysqlx|mariadb):\/\/(?:([^:@/\s]*)(?::[^@/\s]*)?@)?([^/?#:\s]*)(?::\d+)?(?:\/([^?#\s]*))?/i;
-// libpq keyword/value form: `psql "host=... dbname=lab_app user=lab_app_admin"`.
-const CONNECTION_KV_RE = /\b(?:host|user|dbname|database)=([^\s'"]+)/gi;
 const SQL_HOST_FLAGS = new Set(['-h', '--host']);
 const SQL_USER_FLAGS = new Set(['-U', '--username']);
 const SQL_DB_FLAGS = new Set(['-d', '--dbname']);
 
-function labSqlSignal(value: string): string | null {
-    if (!value) return null;
-
-    const uri = CONNECTION_URI_RE.exec(value);
-    if (uri) {
-        for (const part of [uri[1], uri[2], uri[3]]) {
-            if (part && LAB_DB_NAME_RE.test(part)) return part;
-        }
+/**
+ * Whether psql SQL may act outside the one database the connection names, which no database-scoped waiver covers: a
+ * backslash meta-command anywhere outside a literal (\connect, \gexec, \! and \i among them, at a line's start or
+ * after SQL), a statement on a whole database (CREATE, ALTER or DROP DATABASE, a rename included), a role or other
+ * object the whole cluster holds, or SQL the scanner can't read (an EXECUTE it can't follow). A waiver is an allowlist:
+ * anything else keeps its card.
+ */
+function psqlLeavesDatabase(text: string, depth = 0, meta = true): string | null {
+    for (const s of psqlStatementTexts(text)) {
+        const found = destructiveStatements(s, 0, true, false, true).find(st => PG_CLUSTER_ROLE_LABELS.has(st.pattern) || PG_UNREADABLE_LABELS.has(st.pattern));
+        if (found) return found.pattern;
     }
-
-    CONNECTION_KV_RE.lastIndex = 0;
-    let kv: RegExpExecArray | null;
-    while ((kv = CONNECTION_KV_RE.exec(value)) !== null) {
-        if (LAB_DB_NAME_RE.test(kv[1])) return kv[1];
+    const skeleton = metaSkeleton(withoutCopyData(text));
+    if (meta && depth === 0 && skeleton.includes('\\')) return 'a psql meta-command';
+    if (/\b(?:CREATE|ALTER|DROP)\s+DATABASE\b/i.test(skeleton)) return 'a statement on a whole database';
+    if (/\b(?:CREATE|ALTER|DROP)\s+TABLESPACE\b/i.test(skeleton)) return 'a tablespace, which the whole cluster holds';
+    // A DO or function body runs as SQL too, so it is read with the same predicate.
+    if (depth >= SQL_RECURSION_LIMIT) return null;
+    for (const m of text.matchAll(/\$([A-Za-z_]\w*)?\$([\s\S]*?)\$\1\$/g)) {
+        const inner = psqlLeavesDatabase(m[2], depth + 1, meta);
+        if (inner) return inner;
     }
-
     return null;
+}
+
+/** psqlLeavesDatabase over the SQL a psql step's input holds, as far as the guard reads it; `meta` counts meta-commands. */
+function changesClusterRoles(cmd: ResolvedCommand, meta = true): boolean {
+    return cmd.name === 'psql' && sqlInputFor(cmd).texts.some(t => psqlLeavesDatabase(t, 0, meta) !== null);
 }
 
 function labSqlTarget(cmd: ResolvedCommand): string | null {
     const { args } = cmd;
+    if (cmd.name === 'mysql') {
+        const db = mysqlDatabase(args);
+        return db !== undefined && LAB_DB_NAME_RE.test(db) && !mysqlLeavesDatabase(cmd, db) ? db : null;
+    }
+    if (cmd.name === 'psql' || cmd.name === 'pg_restore') {
+        // Without -X a psqlrc file runs first, and it can \connect to another database.
+        if (cmd.name === 'psql' && !args.some(a => a === '--no-psqlrc' || /^-[A-Za-z]*X/.test(a))) return null;
+        // The database decides, named the ways main read it: -d or --dbname, or a connection string. A plain operand
+        // never named a Lab database there, and pg_restore's operand is its archive.
+        const { database, hidden, named, conninfo } = libpqTarget(args, cmd.env ?? []);
+        if (hidden !== undefined || !(named === 'option' || (named === 'operand' && conninfo && cmd.name === 'psql'))) return null;
+        return database !== undefined && LAB_DB_NAME_RE.test(database) ? database : null;
+    }
+    // The database the step selects decides. A Lab-named user or host can reach any database, so neither proves one.
+    let db: string | undefined;
+    const fromConnection = (value: string): string | undefined => {
+        const uri = CONNECTION_URI_RE.exec(value);
+        if (uri) return uri[3] || undefined;
+        return /\b(?:dbname|database)=([^\s'"]+)/i.exec(value)?.[1];
+    };
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
-
-        // --host=lab-x / --username=lab_x / --dbname=lab_app
-        const eq = a.match(/^(?:--host|--username|--dbname)=(.+)$/);
-        if (eq && LAB_DB_NAME_RE.test(eq[1])) return eq[1];
-
-        // -h lab-x / -U lab_app_admin / -d lab_app
-        if (SQL_HOST_FLAGS.has(a) || SQL_USER_FLAGS.has(a) || SQL_DB_FLAGS.has(a)) {
-            const v = args[i + 1];
-            if (v && !v.startsWith('-') && LAB_DB_NAME_RE.test(v)) return v;
+        const eq = a.match(/^(?:--dbname|--database)=(.+)$/);
+        if (eq) {
+            db = fromConnection(eq[1]) ?? eq[1];
             continue;
         }
-
-        // A connection string, given bare or as some other flag's value.
-        const signal = labSqlSignal(a);
-        if (signal) return signal;
+        if (SQL_DB_FLAGS.has(a) || a === '-D' || a === '--database') {
+            const v = args[i + 1];
+            if (v !== undefined && !v.startsWith('-')) db = fromConnection(v) ?? v;
+            i++;
+            continue;
+        }
+        if (SQL_HOST_FLAGS.has(a) || SQL_USER_FLAGS.has(a)) {
+            i++;
+            continue;
+        }
+        db = fromConnection(a) ?? db;
     }
-    return null;
+    return db !== undefined && LAB_DB_NAME_RE.test(db) ? db : null;
+}
+
+// mysql's short options that take a value; -p takes one only attached.
+const MYSQL_SHORT_VALUES = 'DehPSu';
+const MYSQL_LONG_VALUES = new Set(['--database', '--execute', '--host', '--port', '--socket', '--user', '--default-character-set', '--login-path',
+    '--defaults-file', '--defaults-extra-file', '--init-command', '--pager', '--prompt', '--tee', '--protocol', '--bind-address']);
+
+/**
+ * The database mysql uses: its first operand, which overrides -D and --database, else the last of those. Undefined
+ * for a long option the guard can't place, whose value could be read as the operand.
+ */
+function mysqlDatabase(args: string[]): string | undefined {
+    let option: string | undefined;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === '--') return args[i + 1] ?? option;
+        if (a.startsWith('--')) {
+            const eq = a.indexOf('=');
+            const name = eq < 0 ? a : a.slice(0, eq);
+            const value = eq < 0 ? (MYSQL_LONG_VALUES.has(name) ? args[++i] : undefined) : a.slice(eq + 1);
+            if (eq < 0 && !MYSQL_LONG_VALUES.has(name) && !/^--(?:no-|skip-|disable-|enable-)?[a-z-]+$/.test(name)) return undefined;
+            if (name === '--database') option = value;
+            continue;
+        }
+        if (a.length > 1 && a.startsWith('-')) {
+            for (let j = 1; j < a.length; j++) {
+                if (!MYSQL_SHORT_VALUES.includes(a[j])) {
+                    if (a[j] === 'p') break;
+                    continue;
+                }
+                const value = j + 1 < a.length ? a.slice(j + 1) : args[++i];
+                if (a[j] === 'D') option = value;
+                break;
+            }
+            continue;
+        }
+        return a;
+    }
+    return option;
+}
+
+/**
+ * Whether MySQL SQL may act outside the default database -D selects, which sets only the default: any qualified name
+ * (db.table, or a quoted name the skeleton blanks, whose dot stays), a USE, CONNECT or SOURCE, a client command
+ * (\u and the rest), or a statement on a whole database or schema. An allowlist, like the psql one: anything else, or
+ * input the guard can't read, keeps its card.
+ */
+function mysqlLeavesDatabase(cmd: ResolvedCommand, db: string): boolean {
+    const input = sqlInputFor(cmd);
+    if (input.unreadable) return true;
+    // The texts include every argument; only -e's value is SQL, so the others (a dotted host among them) are left out.
+    const notSql = new Set(cmd.args.filter((a, i) => !/^(?:-e|--execute)$/.test(cmd.args[i - 1] ?? '') && !/^(?:-e.|--execute=)/.test(a)));
+    return input.texts.filter(t => !notSql.has(t)).some(text => {
+        const skeleton = stripSqlLiteralsAndComments(text);
+        // Any qualifier other than the selected database, a table.column included, keeps the card; so does a quoted one
+        // the skeleton blanks, whose dot stays with nothing written before it.
+        const qualifiers = [...skeleton.matchAll(/(\S*?)\s*\.\s*[A-Za-z_$`]/g)].map(m => /([\w$]+)$/.exec(m[1])?.[1]);
+        if (qualifiers.some(q => q !== db)) return true;
+        return /\b(?:CREATE|ALTER|DROP)\s+TABLESPACE\b/i.test(skeleton) || skeleton.includes('\\')
+            || /(?:^|;)\s*(?:USE|CONNECT|SOURCE)\b/i.test(skeleton) || /\b(?:CREATE|ALTER|DROP|RENAME)\s+(?:DATABASE|SCHEMA)\b/i.test(skeleton);
+    });
 }
 
 // ── Platform / service target resolution ─────────────────────────────────────
@@ -4249,7 +4423,7 @@ export function labTargetOf(cmd: ResolvedCommand, cwd: string = currentWorkingDi
         case 'gh':
             return cmd.args[0] === 'repo' && cmd.args[1] === 'delete' ? labGhTarget(cmd) : null;
         default:
-            return LAB_SQL_CLIS.has(cmd.name) ? labSqlTarget(cmd) : null;
+            return LAB_SQL_CLIS.has(cmd.name) && !changesClusterRoles(cmd) ? labSqlTarget(cmd) : null;
     }
 }
 
@@ -4498,12 +4672,26 @@ function renderDevTarget(cmd: ResolvedCommand): string | null {
     // Render keeps no backup of a deleted datastore, so even a listed dev one keeps its card.
     if (RENDER_DATASTORE_DELETE.test(renderShape(cmd.args)?.command ?? '')) return null;
     const listed = new Set(currentDevScope()?.render?.resources ?? []);
+    if (renderPsqlPrivilegeChange(cmd.args)) return null;
     const args = renderLiteralArgs(cmd);
     const accepts = (r: string) => listed.has(r);
     const unread = args.some(a => RENDER_EXPANDS.test(a)) || programCanDiffer(cmd) || (cmd.args[0] === 'psql' && !runsAlone(cmd));
     const read = unread ? null : renderDevRead(args, listed);
     const target = read && renderResourceIds(args).every(accepts) ? read : renderProvenTarget({ ...cmd, args }, accepts);
     return target ? `render resource ${target}` : null;
+}
+
+/** A role or privilege change in render psql's SQL, which keeps its card even on a listed dev database. */
+function renderPsqlPrivilegeChange(args: string[]): string | null {
+    if (args[0] !== 'psql') return null;
+    for (const word of args.slice(2)) {
+        const sql = word.replace(/^(?:--command=|-c)/, '');
+        // A grant on the dev database's own objects stays waived; a role, which the whole cluster holds, does not, and
+        // nor does SQL the scanner can't read (EXECUTE format(…), a body in another language), which may change one.
+        const leaves = psqlLeavesDatabase(sql);
+        if (leaves) return leaves;
+    }
+    return null;
 }
 
 /** Whether each word the guard can't read is quoted SQL for render psql: anywhere else it can be, or split into, another target or flag. */
@@ -4573,9 +4761,17 @@ type GatedStep = { cmd: ResolvedCommand; reason: string; outer: ResolvedCommand 
 
 /** What a step held on listed dev resources says instead of calling itself production. */
 function renderDevHoldReason(cmd: ResolvedCommand, reason: string): string {
-    const ids = reason.includes(RENDER_CHANGE_REASON) ? renderDevHeld(cmd) : null;
+    const psqlLeaves = cmd.name === 'psql' && reason.includes(SQL_WRITE)
+        ? sqlInputFor(cmd).texts.map(t => psqlLeavesDatabase(t, 0, false)).find(l => l !== null) ?? null : null;
+    const ids = reason.includes(RENDER_CHANGE_REASON) || psqlLeaves ? renderDevHeld(cmd) : null;
     if (!ids) return reason;
-    const why = renderDeletesDatastore(cmd) ? 'Render keeps no backup of a deleted datastore' : "the guard can't confirm what this form does there";
+    const privilege = cmd.name === 'render' ? renderPsqlPrivilegeChange(cmd.args) : psqlLeaves;
+    const why = renderDeletesDatastore(cmd) ? 'Render keeps no backup of a deleted datastore'
+        : privilege && PG_CLUSTER_ROLE_LABELS.has(privilege) ? `it changes roles or objects the whole cluster holds (${privilege}), not only this database`
+        : privilege === '\\connect' ? 'its SQL connects to another database (\\connect), which the listing does not cover'
+        : privilege && !PG_UNREADABLE_LABELS.has(privilege) ? `its SQL acts outside this database (${privilege}), which the listing does not cover`
+        : privilege ? `it runs SQL the guard can't read (${privilege}), which could change roles or privileges`
+        : "the guard can't confirm what this form does there";
     return `${RENDER_DEV_HOLD} ${ids.join(', ')}: ${why}.`;
 }
 
@@ -5574,6 +5770,8 @@ function postgresListening(host: LocalPgHost, endpoint: string, inodes: string[]
     return `${endpoint} (postgres pid ${[...pids].join(', ')}, data ${[...dataDirs].join(', ')})`;
 }
 
+
+
 /**
  * The local scratch Postgres a top-level psql command is exempt against, or null. `commands` and `command` are the
  * whole command line, so anything set up around the call counts. `assumeNoPsqlrc` asks whether the command would be
@@ -6557,7 +6755,44 @@ export function awsServiceAndOperation(args: string[]): [string, string, number]
 // two SQL lines) or end at it (`\g`), so the SQL is also read with each one removed and with each one ending a statement.
 const PSQL_BACKSLASH_TO_LINE_END = /\\[^\s\\][^\n]*/g;
 
-function psqlStatementTexts(text: string): string[] {
+/**
+ * psql's \gexec runs each value its query returns as a statement, and \password runs ALTER ROLE … PASSWORD; neither
+ * leaves SQL the guard can read.
+ */
+function psqlRoleMeta(input: string): { pattern: string; statement: string } | null {
+    // Comments and string literals blanked, so a mention in either reads as nothing.
+    const text = metaSkeleton(withoutCopyData(input));
+    const password = /\\password\b[^\n]*/.exec(text);
+    return password ? { pattern: 'ALTER ROLE', statement: `${password[0].trim()} sets a role's password` } : null;
+}
+
+// `COPY … FROM STDIN;` takes the lines after it, up to a line holding only `\.`, as data rather than SQL.
+const PSQL_COPY_FROM_STDIN = /\bCOPY\b[^;]*?\bFROM\s+STDIN\b[^;]*;[^\n]*\n/gi;
+
+/**
+ * The input without the data of each COPY … FROM STDIN, keeping the statement. A COPY counts only where psql would run
+ * it, outside a comment or literal, so a comment that mentions one hides nothing after it.
+ */
+function withoutCopyData(input: string): string {
+    let out = '';
+    let rest = input;
+    PSQL_COPY_FROM_STDIN.lastIndex = 0;
+    for (let m = PSQL_COPY_FROM_STDIN.exec(rest); m; m = PSQL_COPY_FROM_STDIN.exec(rest)) {
+        const head = m.index + m[0].length;
+        // The skeleton up to the candidate, blanking comments and literals with offsets kept: a COPY inside one is blanked.
+        const skeleton = sqlSkeleton(rest.slice(0, head), false, true).skeleton;
+        if (!/^COPY\b/i.test(skeleton.slice(m.index))) continue;
+        const end = /^\\\.[ \t]*$/m.exec(rest.slice(head));
+        if (!end) break;
+        out += rest.slice(0, head);
+        rest = rest.slice(head + end.index + end[0].length);
+        PSQL_COPY_FROM_STDIN.lastIndex = 0;
+    }
+    return out + rest;
+}
+
+function psqlStatementTexts(input: string): string[] {
+    const text = withoutCopyData(input);
     if (!text.includes('\\')) return [text];
     // `\\` ends a backslash command's arguments, and SQL may follow it on the same line.
     const separated = text.replace(/\\\\/g, '\n');
@@ -6635,6 +6870,15 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
             const unread = unreadSqlExpansion(cmd);
             if (unread) return unreadSqlReason(sqlDialect, unread);
         }
+        // A role or privilege change that is not a write above: a psql meta-command, or a form only Postgres reads.
+        for (const text of name === 'psql' ? input.texts : []) {
+            const meta = psqlRoleMeta(text);
+            if (meta) return `Destructive ${sqlDialect} SQL detected (${meta.pattern}) — ${meta.statement}`;
+            for (const statements of psqlStatementTexts(text)) {
+                const matched = findDestructiveSqlStatement(statements, 0, false, false, true);
+                if (matched) return `Destructive ${sqlDialect} SQL detected (${matched.pattern}) — ${matched.statement}`;
+            }
+        }
     }
 
     // MongoDB
@@ -6647,6 +6891,9 @@ export function checkGatedCommand(cmd: ResolvedCommand): string | null {
         return 'Destructive Redis command detected (FLUSHDB/FLUSHALL).';
     }
 
+    if ((name === 'createuser' || name === 'dropuser') && !['--help', '-?', '--version', '-V'].includes(args[0])) {
+        return `${name} ${name === 'createuser' ? 'creates' : 'drops'} a PostgreSQL role, which the whole cluster holds`;
+    }
     // dropdb reads help and version only as its first argument; anywhere else they are options or the database.
     if (name === 'dropdb' && !['--help', '-?', '--version', '-V'].includes(args[0])) {
         return 'dropdb drops a whole PostgreSQL database';
@@ -7139,17 +7386,17 @@ function sqlStatements(
     return out;
 }
 
-function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgsql = false): FoundStatement[] {
+function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgsql = false, postgres = false): FoundStatement[] {
     if (!SQL_PREFILTER.test(sql)) return [];
     if (depth > SQL_RECURSION_LIMIT) {
         const text = sql.trim();
         return [{ pattern: UNREADABLE_EXECUTE_IMMEDIATE, statement: text, text, skeleton: stripSqlLiteralsAndComments(text), parsed: false }];
     }
     const found: FoundStatement[] = [];
-    const lexed = sqlSkeleton(sql);
+    const lexed = sqlSkeleton(sql, false, postgres);
     for (const { segment, original, text, skeleton, parsed } of sqlStatements(sql, outerParsed, lexed)) {
         for (const { body, isCTE } of decomposeSqlSegment(segment)) {
-            const match = checkSqlBody(body, isCTE);
+            const match = checkSqlBody(body, isCTE, postgres);
             if (match) {
                 found.push({ pattern: match.pattern, statement: original, text, skeleton, parsed });
                 break;
@@ -7162,7 +7409,7 @@ function destructiveStatements(sql: string, depth = 0, outerParsed = true, plpgs
         found.push({ pattern: label, statement: text.trim(), text, skeleton: lexed.skeleton.slice(start, start + text.length), parsed: false });
     }
     for (const literal of dynamic.literals) {
-        found.push(...destructiveStatements(literal.body, depth + 1, outerParsed && lexed.openAt < 0, literal.plpgsql));
+        found.push(...destructiveStatements(literal.body, depth + 1, outerParsed && lexed.openAt < 0, literal.plpgsql, postgres));
     }
     return found;
 }
@@ -7701,7 +7948,10 @@ function psqlVariableValues(cmd: ResolvedCommand, texts: string[]): string[] {
 
 /** psql backslash commands that write: `\copy … FROM` loads a table, and `\gexec` runs each value a query returns as SQL. */
 function psqlMetaWrite(text: string): DestructiveMatch | null {
-    for (const line of text.split('\n')) {
+    // A comment or string literal that mentions a meta-command runs nothing, so only what the skeleton keeps counts.
+    const skeleton = metaSkeleton(text).split('\n');
+    for (const [i, line] of text.split('\n').entries()) {
+        if (!skeleton[i]?.includes('\\')) continue;
         if (/\\gexec\b/.test(line)) return { pattern: '\\gexec', statement: oneLine(line).slice(0, STATEMENT_PREVIEW_CHARS) };
         // \lo_import stores a file as a large object; \lo_unlink deletes one.
         const lo = /\\(lo_import|lo_unlink)\b/i.exec(line);
@@ -8277,6 +8527,22 @@ function sqlEffect(st: FoundStatement, dialect: string, whereElsewhere: WhereEls
                 note: "(the guard couldn't tell which rows)",
             };
     }
+    if (pattern === 'DROP OWNED') {
+        return {
+            title: `Drop everything a ${dialect} role owns (DROP OWNED)`,
+            effect: `Deletes every object the named roles own in this database, with its data, and revokes their privileges. With CASCADE, objects of other roles that depend on them go too: ${code(clip(s, 160))}.`,
+            plain: 'Deletes the tables and other objects a role owns, with their data, and with CASCADE the objects that depend on them',
+            loss: "the deleted tables and their data can't be recovered without a backup",
+        };
+    }
+    if (PG_PRIVILEGE_LABELS.has(pattern)) {
+        return {
+            title: `Change ${dialect} roles or privileges (${pattern})`,
+            effect: `Changes who can sign in, or what a role can read or change: ${code(clip(s, 160))}.`,
+            plain: 'Changes who can sign in to the database, or what they can read or change',
+            loss: 'a login, grant or owner stays in place until someone reverses it',
+        };
+    }
     return { title: `Run destructive ${dialect} SQL (${pattern})`, effect: `Runs a ${pattern} statement.`, plain: `Runs a ${pattern} statement that can delete or overwrite data` };
 }
 
@@ -8501,7 +8767,7 @@ function libpqCredentialWritten(cmd: ResolvedCommand): boolean {
  * as the dbname, with -d or as the first operand, overrides -h; a later parameter replaces an earlier one. A dbname
  * holding an unresolved expansion can be a connection string naming any server, which hidden carries.
  */
-function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hostaddrs: string[]; database?: string; hidden?: string; verbatim?: string[] } {
+function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hostaddrs: string[]; database?: string; hidden?: string; verbatim?: string[]; named?: 'option' | 'operand'; conninfo: boolean } {
     const { last, written, operands } = psqlOptions(args, psqlPosixlyCorrect(env));
     const list = (v: string | undefined) => (v ?? '').split(',').map(s => s.trim()).filter(Boolean);
     const given = last.dbname ?? operands[0];
@@ -8521,6 +8787,8 @@ function libpqTarget(args: string[], env: string[] = []): { hosts: string[]; hos
         database: conn ? conn.dbname : dbname,
         hidden,
         verbatim: paired ? connectionWords(written, env, last.dbname === undefined ? operands[0] : undefined) : undefined,
+        named: given === undefined ? undefined : last.dbname !== undefined ? 'option' : 'operand',
+        conninfo: conn !== null,
     };
 }
 
@@ -8615,7 +8883,7 @@ function sqlStep(dialect: string, cmd: ResolvedCommand): StepCard {
         const segs = segments[r];
         // Statements come in the order of their segments; one run from an EXECUTE IMMEDIATE literal matches none.
         let next = 0;
-        for (const st of destructiveStatements(text)) {
+        for (const st of destructiveStatements(text, 0, true, false, cmd.name === 'psql')) {
             if (cmd.name === 'snow' && st.pattern === 'CREATE OR REPLACE' && !findDestructiveSqlStatement(snowTempTablesAsSelect(st.text))) continue;
             const found = { ...st, parsed: st.parsed && !guessed };
             let at = -1;
@@ -9311,7 +9579,9 @@ function* gatedSteps(
             let stepDirs: string[] | null = dirs && cmd.chdir ? dirs.map(d => pathResolve(d, cmd.chdir!)) : dirs;
             for (const move of moves ?? []) stepDirs = directoriesAfter(stepDirs, move);
             // SQL the guard can't read could send data out, so only a verified dev login, which runs any SQL, still covers it.
-            const listedDb = !egress && cmd === outer && reason.includes(SQL_WRITE) ? renderDevHeld(cmd) : null;
+            // A role, which the whole cluster holds, is never the dev database's own, so a change to one keeps its card there;
+            // renderDevHeld already admits only the meta-commands it reads.
+            const listedDb = !egress && cmd === outer && reason.includes(SQL_WRITE) && !changesClusterRoles(cmd, false) ? renderDevHeld(cmd) : null;
             const scoped = devScopeTargetOf(cmd, commands, command, cmd === outer);
             const dbtStepOf = dbtCommandOf(cmd);
             const dev = egress ? (scoped?.includes(DEV_ONLY_LOGIN) ? scoped : null)

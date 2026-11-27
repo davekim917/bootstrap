@@ -570,7 +570,7 @@ describe('what main ran without a card still does', () => {
             else process.env.NANOCLAW_INSTRUCTIONS_PROFILE = profile;
         });
         test('unreadable SQL on a lab database runs as on main', () => {
-            expect(evaluate('psql -d lab_app -f "$F"').action).toBe('allow');
+            expect(evaluate('psql -X -d lab_app -f "$F"').action).toBe('allow');
         });
         test('a literal unload from a lab database keeps its card', () => {
             expect(evaluate('psql -d lab_app -c "select lo_export(1, \'/srv/out.bin\')"').action).not.toBe('allow');
