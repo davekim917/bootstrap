@@ -107,6 +107,16 @@ describe('hook configs agy hot-reloads cannot be changed by the agent', () => {
         expect(reasonOf(call('run_command', { CommandLine: command }))).toMatch(/hook configs live/);
     });
 
+    test('a .agents link protects the directory it points to, named by its own path', () => {
+        const root = scratch();
+        const real = scratch();
+        const other = scratch();
+        symlinkSync(real, join(root, '.agents'));
+        expect(reasonOf(call('write_file', { Path: join(real, 'hooks.json'), Content: '{}' }, root))).toMatch(/hook-config location/);
+        expect(reasonOf(call('run_command', { CommandLine: `printf '{}' > ${join(real, 'hooks.json')}` }, root))).toMatch(/where hook configs live/);
+        expect(decideAgyCall(call('write_file', { Path: join(other, 'hooks.json'), Content: '{}' }, root))).toEqual({ action: 'allow' });
+    });
+
     test('a shell command run from inside .agents', () => {
         const root = scratch();
         mkdirSync(join(root, '.agents'));
